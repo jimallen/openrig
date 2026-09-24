@@ -34,3 +34,4 @@ rig up ~/.openrig/specs/jims-team/rig.yaml --cwd "$PWD"   # from the target repo
 | `rig-codex` | `codex` with `CODEX_HOME=~/.rig/codex` (auth.json symlinked from personal; everything else isolated) |
 | `rig-cmux` | Tile a rig's seats in cmux via the daemon API directly (CLI's hardcoded 5s timeout is too short for multi-tile layout applies) + auto-names the tab `<rig> · <repo>` |
 | `rig-herdr` | Tile a rig's seats in herdr via the socket protocol directly, with a weighted layout (lead seat 50% width full-height, rest gridded right) and a repo-named tab — openrig's adapter only does the equal auto-grid |
+| `rig-here` | Open tiles for whichever rig runs in the current directory (`--rig <name>` disambiguates; `cmux` arg switches provider) |
