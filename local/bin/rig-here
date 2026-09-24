@@ -1,17 +1,60 @@
 #!/usr/bin/env python3
-"""rig-here: open the tiles for whichever rig is working in the current directory.
+"""rig-here: open tiles for the rig working in the current directory.
 
 Reads $PWD, scans live tmux sessions for openrig seats (<pod>-<member>@<rig>),
 groups them by rig, and tiles the rig whose seats run in this dir (exact match,
 or longest prefix match when you're in a subdir).
 
-Usage: rig-here [herdr|cmux]        (provider default: herdr)
-       rig-here <provider> --rig <name>   disambiguate when several rigs share this dir
+If NO rig works here, it STARTS one: a per-directory instance of the jims-team
+spec named jims-team-<dirname> (unique tmux session namespace — same-name
+instances would collide at spawn), then tiles it.
+
+Usage: rig-here [herdr|cmux]                    (provider default: herdr)
+       rig-here <provider> --rig <name>        disambiguate when several rigs share this dir
 """
+import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from collections import defaultdict
+
+SPEC_SRC = os.path.expanduser("~/.openrig/specs/jims-team")
+
+
+def launch_rig_instance(name, cwd, provider):
+    """Start a fresh per-directory instance of the jims-team spec."""
+    tmp = tempfile.mkdtemp(prefix="rig-here-")
+    shutil.copytree(SPEC_SRC, tmp, dirs_exist_ok=True)
+    spec_path = os.path.join(tmp, "rig.yaml")
+    src = open(spec_path).read()
+    if not re.search(r"^name:", src, re.M):
+        sys.exit("rig-here: spec has no top-level name field — cannot derive instance name")
+    open(spec_path, "w").write(
+        re.sub(r"^name:.*$", f"name: {name}", src, count=1, flags=re.M))
+    print(f"rig-here: launching '{name}' ({SPEC_SRC}) in {cwd} — this takes a minute…", flush=True)
+    r = subprocess.run(["rig", "up", spec_path, "--cwd", cwd],
+                       capture_output=True, text=True)
+    sys.stdout.write(r.stdout)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
+        sys.exit(f"rig-here: rig up failed for instance '{name}'")
+    subprocess.run(["rig", "ps", "--nodes", "--rig", name, "--json"],
+                   capture_output=True, text=True)
+    for _ in range(30):
+        out = subprocess.run(["rig", "ps", "--nodes", "--rig", name, "--json"],
+                             capture_output=True, text=True)
+        try:
+            nodes = json.loads(out.stdout or "[]")
+        except Exception:
+            nodes = []
+        if nodes and any(n.get("startupStatus") == "ready" for n in nodes):
+            break
+        time.sleep(4)
+    print(f"rig-here: instance '{name}' launched in {cwd}", flush=True)
 
 
 def tmux(*args):
@@ -64,14 +107,18 @@ def main():
 
     if not hits:
         known = "\n".join(f"  {rig} → {d}" for rig, d in rig_dirs.items()) or "  (no live rig seats)"
-        sys.exit(f"rig-here: no rig is working in {cwd}\nLive rigs and their dirs:\n{known}")
-
-    if len(hits) > 1 and not hint:
-        others = ", ".join(r for r, _ in hits[1:])
-        print(f"rig-here: {len(hits)} rigs share this dir ({others}); tiling '{hits[0][0]}' (override: rig-here {provider} --rig <name>)", flush=True)
-
-    rig = hits[0][0]
-    print(f"rig-here: {cwd} → rig '{rig}' ({hits[0][1]}), provider {provider}", flush=True)
+        print(f"rig-here: no rig is working in {cwd} — starting one.", flush=True)
+        if rig_dirs:
+            print(f"Live rigs (elsewhere):\n{known}", flush=True)
+        slug = re.sub(r"[^a-z0-9-]+", "-", os.path.basename(cwd).lower()).strip("-") or "rig"
+        rig = f"jims-team-{slug}"
+        launch_rig_instance(rig, cwd, provider)
+    else:
+        if len(hits) > 1 and not hint:
+            others = ", ".join(r for r, _ in hits[1:])
+            print(f"rig-here: {len(hits)} rigs share this dir ({others}); tiling '{hits[0][0]}' (override: rig-here {provider} --rig <name>)", flush=True)
+        rig = hits[0][0]
+        print(f"rig-here: {cwd} → rig '{rig}' ({hits[0][1]}), provider {provider}", flush=True)
     sys.stdout.flush()
     opener = {"herdr": "rig-herdr", "cmux": "rig-cmux"}[provider]
     os.execvp(opener, [opener, rig])
