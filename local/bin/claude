@@ -6,7 +6,7 @@
 # 2026-02-15: --session-id forwards fine, --name stalls) — so it is stripped on
 # the diverted path. Seat identity is enforced by openrig externally (tmux session
 # name), so this is display-metadata only.
-# Model override: JIMS_COS_MODEL (default: glm-5.3:cloud — fast cloud model, no local load).
+# Model override: JIMS_COS_MODEL (default: kimi-k3:cloud).
 REAL_CLAUDE=/opt/homebrew/bin/claude
 divert=0
 for arg in "$@"; do
@@ -25,6 +25,6 @@ if [ "$divert" = 1 ]; then
       *) out+=("$arg") ;;
     esac
   done
-  exec ollama launch claude --model "${JIMS_COS_MODEL:-glm-5.3:cloud}" -- "${out[@]}"
+  exec ollama launch claude --model "${JIMS_COS_MODEL:-kimi-k3:cloud}" -- "${out[@]}"
 fi
 exec "$REAL_CLAUDE" "$@"
