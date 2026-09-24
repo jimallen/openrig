@@ -1,0 +1,6 @@
+#!/bin/bash
+# rig-codex: Codex CLI with the rig-team config home (~/.rig/codex).
+# auth.json is symlinked from your personal config (login stays shared);
+# everything else (trust, hooks, history) is separate from ~/.codex.
+export CODEX_HOME="$HOME/.rig/codex"
+exec codex "$@"

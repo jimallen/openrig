@@ -1,0 +1,95 @@
+version: "0.2"
+name: jims-team
+permission_policy: builtin:yolo
+culture_file: CULTURE.md
+summary: >
+  Jim's role-based delivery team: a Chief of Staff who coordinates and holds
+  merge authority, a build pod (architect, engineer, ux) on Claude Code, and an
+  independent verify pod (qa, security, devops) on Codex. Personas come from
+  ~/.claude/agents; separate from the shipped starter rigs.
+
+pods:
+  - id: exec
+    label: Executive
+    members:
+      - id: cos
+        agent_ref: "local:agents/chief-of-staff"
+        runtime: claude-code
+        profile: default
+        cwd: "."
+    edges: []
+
+  - id: build
+    label: Build
+    members:
+      - id: arch
+        agent_ref: "local:agents/architect"
+        runtime: claude-code
+        profile: default
+        cwd: "."
+      - id: impl
+        agent_ref: "local:agents/engineer"
+        runtime: claude-code
+        profile: default
+        cwd: "."
+      - id: ux
+        agent_ref: "local:agents/ux-engineer"
+        runtime: claude-code
+        profile: default
+        cwd: "."
+    edges:
+      - kind: delegates_to
+        from: arch
+        to: impl
+      - kind: can_observe
+        from: arch
+        to: impl
+
+  - id: verify
+    label: Verify
+    members:
+      - id: qa
+        agent_ref: "local:agents/qa-engineer"
+        runtime: codex
+        profile: default
+        cwd: "."
+      - id: sec
+        agent_ref: "local:agents/security-engineer"
+        runtime: codex
+        profile: default
+        cwd: "."
+      - id: ops
+        agent_ref: "local:agents/devops"
+        runtime: codex
+        profile: default
+        cwd: "."
+    edges: []
+
+edges:
+  - kind: delegates_to
+    from: exec.cos
+    to: build.arch
+  - kind: delegates_to
+    from: exec.cos
+    to: build.impl
+  - kind: delegates_to
+    from: exec.cos
+    to: build.ux
+  - kind: delegates_to
+    from: exec.cos
+    to: verify.qa
+  - kind: delegates_to
+    from: exec.cos
+    to: verify.sec
+  - kind: delegates_to
+    from: exec.cos
+    to: verify.ops
+  - kind: can_observe
+    from: verify.qa
+    to: build.impl
+  - kind: can_observe
+    from: verify.sec
+    to: build.impl
+  - kind: can_observe
+    from: verify.sec
+    to: build.ux

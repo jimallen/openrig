@@ -1,0 +1,31 @@
+name: security-engineer
+version: "1.0"
+description: >-
+  Security audit AND implementation on auth, OAuth, credential, egress, approval and telemetry boundaries: producer-side censuses that prove zero orphans, guard-shape correction by measurement, fixes landed with a predicted-then-measured mutation battery and explicit residual risk. Independent security review. Does not hold merge authority. Use for any security-boundary work, even a fix that looks small.
+
+defaults:
+  runtime: codex
+
+imports:
+  - ref: path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
+
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []

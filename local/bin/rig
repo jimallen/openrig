@@ -1,0 +1,5 @@
+#!/bin/bash
+# OpenRig needs Node <= 24 (better-sqlite3 11.x prebuilds/ABI).
+# Run rig CLI — and therefore its daemon child (spawned via process.execPath) — under node@22.
+export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+exec /opt/homebrew/bin/rig "$@"

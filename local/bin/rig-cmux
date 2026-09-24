@@ -1,0 +1,40 @@
+#!/bin/bash
+# rig-cmux: open a rig's seats as terminal tiles in cmux.
+# Usage: rig-cmux [view]   (view = rig name [default: jims-team], mission:<id>, slice:<id>, saved-view id)
+# NB: talks to the daemon API directly — the `rig terminal open` CLI caps requests
+# at 5s, but cmux's multi-tile layout apply takes longer; the tiles DO get opened
+# daemon-side regardless. 45s window here.
+view="${1:-jims-team}"
+body="$(RIG_VIEW="$view" python3 -c 'import json,os; print(json.dumps({"view": os.environ["RIG_VIEW"], "provider": "cmux"}))')"
+resp="$(curl -sS --max-time 45 -X POST http://127.0.0.1:7433/api/terminal/open -H 'content-type: application/json' -d "$body" 2>&1)"
+RIG_RESP="$resp" python3 - <<'PY'
+import json, os, sys
+raw = os.environ.get("RIG_RESP", "")
+try:
+    r = json.loads(raw)
+except Exception:
+    print(f"rig-cmux: no/invalid daemon response:\n{raw}")
+    sys.exit(1)
+if not r.get("opened"):
+    print(f"No tiles opened in cmux.{('  ' + r['error']) if r.get('error') else ''}")
+    sys.exit(1)
+print(f"Opened {len(r['opened'])} tile(s) in cmux" + (f" across {r['pages']} page(s)" if r.get('pages', 1) > 1 else "") + ".")
+for s in r["opened"]: print(f"  ● {s}")
+for a in r.get("absent", []): print(f"  ○ {a['seat']} — absent: {a['reason']}")
+for d in r.get("degraded", []): print(f"  ▲ {d['seat']} — skipped ({d['host']}): {d['reason']}")
+# name the tab for the auto-rename step below
+os.makedirs(os.path.expanduser("~/.local/state"), exist_ok=True)
+open(os.path.expanduser("~/.local/state/rig-cmux-lastview"), "w").write(os.environ.get("RIG_VIEW_NAME", "") + "\n" + r["opened"][0] + "\n")
+PY
+[ $? -ne 0 ] && exit 1
+
+# Auto-name the fresh cmux workspace tab: "<view> · <repo-basename>" (repo from the
+# first opened seat's live tmux pane cwd).
+read -r view_name first_seat < <(cat ~/.local/state/rig-cmux-lastview 2>/dev/null)
+view_name="${view_name:-$view}"
+repo="$(tmux display-message -p -t "$first_seat" '#{pane_current_path}' 2>/dev/null | xargs basename 2>/dev/null)"
+if [ -n "$repo" ]; then
+  # newest workspace whose title starts with openrig:rig:<view>#
+  ws="$(CMUX_QUIET=1 cmux list-workspaces 2>/dev/null | awk -v want="openrig:rig:${view_name}#" '$0 ~ want {gsub(/^[ *]+/,"",$1); split($1,r,":"); if (r[2]>max){max=r[2]; ref=$1}} END {print ref}')"
+  [ -n "$ws" ] && cmux workspace-action --action rename --workspace "$ws" --title "${view_name} · ${repo}" >/dev/null 2>&1 && echo "Tab named: ${view_name} · ${repo}"
+fi

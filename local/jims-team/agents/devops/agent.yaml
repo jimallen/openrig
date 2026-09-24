@@ -1,0 +1,31 @@
+name: devops
+version: "1.0"
+description: >-
+  Deploys and live production measurement on any provider: ship a merged change, diff before apply, verify the rollout reached healthy, read logs and metrics, run post-deploy acceptance, answer "is this actually true in production?" Usually the only role with live platform credentials; other roles depend on it for live evidence. Deploys what is already gated; does not decide whether to merge.
+
+defaults:
+  runtime: codex
+
+imports:
+  - ref: path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
+
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []
