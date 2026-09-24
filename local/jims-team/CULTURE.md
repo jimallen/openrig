@@ -8,6 +8,27 @@ The house doctrine binds every seat. Claude seats: load the `house-doctrine`
 skill first. Codex seats: read `~/.claude/skills/house-doctrine/SKILL.md`
 directly before work begins.
 
+## Coordination mechanics (read this before delegating)
+
+Your teammates are NOT Claude Code subagents and NOT entries in `.claude/agents/`.
+They are separate live agent seats in YOUR rig, each a full harness session in its
+own terminal. You reach them with the `rig` CLI from your shell:
+
+- `rig whoami --json` — your seat identity, rig name, node id, cwd. Run FIRST.
+- `rig ps --nodes --rig <your-rig-name> --json` — the live roster: every teammate's
+  canonical session name, runtime, and state.
+- `rig send <seat>@<rig> "<message>"` — delegate a lane. A delegation states why
+  the work matters, the deliverable, the write boundary, the completion evidence,
+  and when to report — never "take a look".
+
+Seat names are `<pod>-<member>@<rig>`: for this topology exec-cos (you),
+build-arch, build-impl, build-ux, verify-qa, verify-sec, verify-ops — the rig
+suffix varies per instance (jims-team, jims-team-eztrack, ...). ALWAYS derive the
+suffix with `rig whoami --json`; never guess it.
+
+Delegation is a rig send, not a Task call. If you catch yourself composing a Task
+or subagent invocation for a teammate, stop — that tool does not reach them.
+
 Authority split, always:
 
 - **Decision owner**: the human (Jim). Product and visual direction are his.
