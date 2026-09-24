@@ -36,3 +36,7 @@ rig up ~/.openrig/specs/jims-team/rig.yaml --cwd "$PWD"   # from the target repo
 | `rig-herdr` | Tile a rig's seats in herdr via the socket protocol directly, with a weighted layout (lead seat 50% width full-height, rest gridded right) and a repo-named tab — openrig's adapter only does the equal auto-grid |
 | `rig-here` | Open tiles for whichever rig runs in the current directory (`--rig <name>` disambiguates; `cmux` arg switches provider); when no rig lives there it launches a per-directory `jims-team-<dirname>` instance from the library spec and tiles it |
 | `claude` | Selective shim: jims-team's CoS seat (`--name exec-cos@jims-team*`) boots via `ollama launch claude --model $JIMS_COS_MODEL` (default `glm-5.3:cloud`); everything else passes through to the real binary. NB: Claude Code's `--name` flag hangs the ollama path — the shim strips it; seat identity lives in the tmux session name anyway |
+
+## Ops notes
+
+- **CoS is text-only** (`glm-5.3:cloud` via ollama rejects image input with HTTP 400, and a pasted image poisons the session — every later turn replays it and fails). Route screenshots/UI evidence to the claude seats (or codex seats) instead. Recovery recipe after a poisoned CoS turn: `/exit` in the pane → `ollama launch claude --model glm-5.3:cloud -- --dangerously-skip-permissions` → paste `~/.openrig/specs/jims-team/agents/chief-of-staff/guidance/role.md` (tmux load-buffer/paste-buffer) → submit → `rig reconcile-session exec-cos@jims-team`.
