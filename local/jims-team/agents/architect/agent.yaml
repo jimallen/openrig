@@ -1,0 +1,31 @@
+name: architect
+version: "1.0"
+description: >-
+  Architecture review and design gating. Owns seams, contracts and consequential design calls; stages a cross-cutting change into ordered PRs (seam → consumer → migration); returns design verdicts on other agents' branches measured as a census. Use for design calls, seam/contract review, or re-measuring an earlier claim. Implements at the seam; never merges.
+
+defaults:
+  runtime: claude-code
+
+imports:
+  - ref: path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
+
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []

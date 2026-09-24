@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""rig-herdr: open a rig's seats as herdr tiles with a prominent LEAD tile by default.
+
+Layout: lead seat (exec/cos/lead — or first seat) gets a full-height left column
+(~50% width); the rest grid out in rows of up to 3 on the right. Tab is named
+"<rig> · <repo-basename>" from the lead seat's live tmux pane cwd.
+
+Speaks the herdr socket directly (~/.config/herdr/herdr.sock, NDJSON) — the same
+layout.apply mechanism openrig uses, just with weighted ratios instead of the
+hardcoded equal auto-grid.
+
+Usage: rig-herdr [rig-name]   (default: jims-team)
+"""
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+
+SOCK = os.path.expanduser("~/.config/herdr/herdr.sock")
+
+
+def rpc(method, params, timeout=15):
+    req = {"id": f"rig-herdr:{method}", "method": method, "params": params}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+        c.settimeout(timeout)
+        c.connect(SOCK)
+        c.sendall(json.dumps(req).encode() + b"\n")
+        buf = b""
+        while True:
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                if msg.get("id") == req["id"]:
+                    return msg
+    raise RuntimeError(f"herdr socket closed without answering {method}")
+
+
+def pane(label, session):
+    return {"type": "pane", "label": label,
+            "command": ["sh", "-c", f"tmux attach -t '{session}'"]}
+
+
+def split(direction, ratio, first, second):
+    return {"type": "split", "direction": direction, "ratio": ratio,
+            "first": first, "second": second}
+
+
+def hrow(panes):
+    """Split N panes horizontally with equal shares via first-vs-rest chain."""
+    n = len(panes)
+    node = panes[-1]
+    for i in range(n - 2, -1, -1):
+        share = 1.0 / (i + 1 + (1 if i == n - 2 else 0))
+        # ratio = first pane's share of the remaining segment
+        share = 1.0 / (n - i)
+        node = split("right", share, panes[i], node)
+    return node
+
+
+def vrows(rows):
+    """Stack row trees vertically with equal shares."""
+    k = len(rows)
+    node = rows[-1]
+    for i in range(k - 2, -1, -1):
+        node = split("down", 1.0 / (k - i), rows[i], node)
+    return node
+
+
+def weighted(root_lead, rest):
+    if not rest:
+        return root_lead
+    rows = [rest[i:i + 3] for i in range(0, len(rest), 3)]
+    right = vrows([hrow(r) for r in rows])
+    return split("right", 0.5, root_lead, right)
+
+
+def main():
+    rig = sys.argv[1] if len(sys.argv) > 1 else "jims-team"
+
+    out = subprocess.run(["rig", "ps", "--nodes", "--rig", rig, "--json"],
+                         capture_output=True, text=True)
+    try:
+        nodes = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        sys.exit(f"rig-herdr: no rig named '{rig}' (or daemon down): {out.stderr.strip()[:200]}")
+    if not nodes:
+        sys.exit(f"rig-herdr: rig '{rig}' has no seats")
+
+    alive, absent = [], []
+    for n in nodes:
+        session = n["canonicalSessionName"]
+        ok = subprocess.run(["tmux", "has-session", "-t", session],
+                            capture_output=True).returncode == 0
+        (alive if ok else absent).append(n)
+
+    if not alive:
+        sys.exit(f"rig-herdr: no live tmux sessions for '{rig}' ({len(absent)} absent)")
+
+    # lead = executive seat if present, else first alive
+    lead = next((n for n in alive
+                 if re.search(r"(^|[.-])(exec|cos|lead|orch)[.-]", n["canonicalSessionName"])),
+                alive[0])
+    rest = [n for n in alive if n is not lead]
+
+    lead_session = lead["canonicalSessionName"]
+    repo_path = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", lead_session, "#{pane_current_path}"],
+        capture_output=True, text=True).stdout.strip()
+    repo = os.path.basename(repo_path) if repo_path else ""
+
+    # fresh workspace per open (same fresh-on-relaunch discipline as openrig)
+    created = rpc("workspace.create", {"focus": False, "label": f"rig:{rig}"})
+    result = created.get("result") or {}
+    ws = (result.get("workspace") or {}).get("workspace_id") or result.get("workspace_id")
+    if not ws:
+        sys.exit(f"rig-herdr: workspace.create failed: {json.dumps(created)[:300]}")
+
+    label_of = lambda n: re.sub(r"^.*?@", "", "").replace("@", "") or n["canonicalSessionName"]
+    label_of = lambda n: n["canonicalSessionName"].split("@")[0]
+    tree = weighted(pane(label_of(lead), lead_session),
+                    [pane(label_of(n), n["canonicalSessionName"]) for n in rest])
+
+    tab = f"{rig} · {repo}" if repo else rig
+    applied = rpc("layout.apply", {"workspace_id": ws, "tab_label": tab,
+                                   "focus": True, "root": tree})
+    if applied.get("error"):
+        sys.exit(f"rig-herdr: layout.apply failed: {json.dumps(applied)[:300]}")
+
+    print(f"Opened {len(alive)} tile(s) in herdr — tab '{tab}' (lead tile: {label_of(lead)}, 50% width).")
+    for n in alive:
+        print(f"  ● {n['canonicalSessionName']}")
+    for n in absent:
+        print(f"  ○ {n['canonicalSessionName']} — absent: tmux session not alive")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,6 @@
+#!/bin/bash
+# rig-claude: Claude Code with the rig-team config home (~/.rig/claude).
+# Personas (CoS, architect, engineer, ...) are available as subagents here
+# without touching your personal ~/.claude configuration. State is separate.
+export CLAUDE_CONFIG_DIR="$HOME/.rig/claude"
+exec claude "$@"

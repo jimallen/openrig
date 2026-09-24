@@ -1,0 +1,31 @@
+name: qa-engineer
+version: "1.0"
+description: >-
+  Reproduces a defect or a claim against real code at a named commit before anyone theorises: reproduce the failure, pin the behaviour, prove existing tests bite by mutating the code they cover, or capture a defect it must NOT fix as a strict-xfail. Delivers evidence, a filed bead and a handoff — never a patch or a merge verdict. Use to reproduce a failure, scope coverage, or prove a pin bites.
+
+defaults:
+  runtime: codex
+
+imports:
+  - ref: path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
+
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []

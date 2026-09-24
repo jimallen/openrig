@@ -1,0 +1,31 @@
+name: engineer
+version: "1.0"
+description: >-
+  Takes one filed bead end to end — reproduce and fix a defect, or pin behaviour — and lands one small PR whose body is the entire evidence record: red at a named base, a call-site census sizing the test table, one enumerated mutation per row, suite counts at an exact sha. Does not review, gate, merge or deploy. Use to implement or pin a single bead.
+
+defaults:
+  runtime: claude-code
+
+imports:
+  - ref: path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/agents/shared
+
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []
