@@ -24,6 +24,27 @@ rules and observed evidence win, and an override names which recommendation was
 whose. A Jev result never authorizes a command, skips a required check, or
 approves a merge.
 
+## Surge scaling (personas are load-bearing — read before growing)
+
+Base staffing is fixed at spec time (7 seats). Extra capacity is added at runtime,
+never by spec edit: `rig grow <rig-id> <name>… --pod build` adds seats to the
+running rig; `rig shrink <rig-id> <pod>` removes a pod (reroute live queue items
+with --fallback first).
+
+Rules:
+
+1. **Growth is a consequential lane.** The CoS proposes (names, pod, runtime, why
+   now, expected duration) and the human owner approves before any grow. No
+   autonomous scaling.
+2. **A grown seat has NO persona until you give it one.** Grow is bare metal:
+   immediately after the seat lands, deliver the role from the spec copy —
+   `rig send <seat>@<rig> "$(cat ~/.openrig/specs/jims-team/agents/<persona>/guidance/role.md)"`
+   — followed by the §Coordination mechanics card. A seat without its persona is
+   not a teammate; do not assign it lanes.
+3. **Unique member names** (impl2, impl3, …) — tmux session names are
+   `<pod>-<member>@<rig>` and collisions are fatal at spawn.
+4. **Shrink only idle capacity** and hand its beads back to the queue first.
+
 ## Coordination mechanics (read this before delegating)
 
 Your teammates are NOT Claude Code subagents and NOT entries in `.claude/agents/`.
