@@ -52,16 +52,19 @@ pods:
         agent_ref: "local:agents/qa-engineer"
         runtime: codex
         profile: default
+        codex_config_profile: rig-yolo
         cwd: "."
       - id: sec
         agent_ref: "local:agents/security-engineer"
         runtime: codex
         profile: default
+        codex_config_profile: rig-yolo
         cwd: "."
       - id: ops
         agent_ref: "local:agents/devops"
         runtime: codex
         profile: default
+        codex_config_profile: rig-yolo
         cwd: "."
     edges: []
 
