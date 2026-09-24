@@ -8,6 +8,22 @@ The house doctrine binds every seat. Claude seats: load the `house-doctrine`
 skill first. Codex seats: read `~/.claude/skills/house-doctrine/SKILL.md`
 directly before work begins.
 
+## Intake classification (Jev — TypeSafe)
+
+Every objective entering the rig gets exactly ONE Jev triage, taken at intake by
+the CoS (the intake owner), using the `jev-triage` skill (`~/.claude/skills/jev-triage/`;
+Claude seats: Skill tool; Codex seats: read the SKILL.md and run its embedded
+Python helper directly — TYPESAFE_API_KEY is in your shell env).
+
+The intake note records the verdict line — `workflow`, `boundary`, model version,
+probability and separately-labelled confidence — and every lane READS that record
+rather than re-triaging. One call per unchanged evidence; no retries to seek
+greement. A lane may re-run Jev only when evidence materially changed, and says
+so with both answers side by side. Jev advises; user instructions, repository
+rules and observed evidence win, and an override names which recommendation was
+whose. A Jev result never authorizes a command, skips a required check, or
+approves a merge.
+
 ## Coordination mechanics (read this before delegating)
 
 Your teammates are NOT Claude Code subagents and NOT entries in `.claude/agents/`.
