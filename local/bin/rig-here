@@ -25,6 +25,40 @@ from collections import defaultdict
 SPEC_SRC = os.path.expanduser("~/.openrig/specs/jims-team")
 
 
+TRUST_MENU = "Trust all and continue"
+
+
+def rig_has_live_seats(name):
+    out = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                         capture_output=True, text=True).stdout
+    return any(s.endswith(f"@{name}") for s in out.splitlines())
+
+
+def clear_codex_trust_gates(name, wait=12):
+    """Answer '2 <Enter>' on any seat pane showing the codex hook-trust menu.
+
+    Scoped to the exact daemon-authored trust menu openrig itself intends to
+    auto-clear (hook-trust-autoclear, OPR.0.4.3.33); nothing else is touched.
+    """
+    sessions = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                              capture_output=True, text=True).stdout.splitlines()
+    cleared = []
+    for s in sessions:
+        if not s.endswith(f"@{name}"):
+            continue
+        pane = subprocess.run(["tmux", "capture-pane", "-t", s, "-p"],
+                              capture_output=True, text=True).stdout
+        if TRUST_MENU in pane:
+            subprocess.run(["tmux", "send-keys", "-t", s, "2", "Enter"])
+            cleared.append(s)
+    if cleared:
+        time.sleep(wait)
+        print(f"rig-here: trust cleared on {len(cleared)} seat(s): "
+              + ", ".join(cleared), flush=True)
+        return wait
+    return 0
+
+
 def launch_rig_instance(name, cwd, provider):
     """Start a fresh per-directory instance of the jims-team spec."""
     tmp = tempfile.mkdtemp(prefix="rig-here-")
@@ -41,7 +75,14 @@ def launch_rig_instance(name, cwd, provider):
     sys.stdout.write(r.stdout)
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
-        sys.exit(f"rig-here: rig up failed for instance '{name}'")
+        # A 409 import_rig 'blocked' means seats spawned but some parked in
+        # attention (e.g. codex hook-trust dialogs) — recoverable, not fatal.
+        blocked = "blocked" in r.stdout or "409" in r.stderr + r.stdout
+        if not blocked or not rig_has_live_seats(name):
+            sys.exit(f"rig-here: rig up failed for instance '{name}'")
+        print("rig-here: up returned blocked — clearing codex hook-trust gates "
+              "(the daemon's autoclear is broken on codex ≥0.15x, openrig #17)…", flush=True)
+        clear_codex_trust_gates(name)
     subprocess.run(["rig", "ps", "--nodes", "--rig", name, "--json"],
                    capture_output=True, text=True)
     for _ in range(30):
