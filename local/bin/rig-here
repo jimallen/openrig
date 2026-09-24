@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""rig-here: open the tiles for whichever rig is working in the current directory.
+
+Reads $PWD, scans live tmux sessions for openrig seats (<pod>-<member>@<rig>),
+groups them by rig, and tiles the rig whose seats run in this dir (exact match,
+or longest prefix match when you're in a subdir).
+
+Usage: rig-here [herdr|cmux]        (provider default: herdr)
+       rig-here <provider> --rig <name>   disambiguate when several rigs share this dir
+"""
+import os
+import subprocess
+import sys
+from collections import defaultdict
+
+
+def tmux(*args):
+    r = subprocess.run(["tmux", *args], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def seat_cwd(session):
+    return tmux("display-message", "-p", "-t", session, "#{pane_current_path}")
+
+
+def main():
+    provider = "herdr"
+    hint = None
+    args = [a for a in sys.argv[1:]]
+    if "--rig" in args:
+        i = args.index("--rig")
+        hint = args[i + 1]
+        args = args[:i] + args[i + 2:]
+        if args:
+            provider = args[0]
+    elif args:
+        provider = args[0]
+    if provider not in ("herdr", "cmux"):
+        sys.exit(f"rig-here: unknown provider '{provider}' (herdr|cmux)")
+
+    cwd = os.path.realpath(os.environ.get("PWD") or os.getcwd())
+
+    sessions = [s for s in tmux("list-sessions", "-F", "#{session_name}").splitlines() if "@" in s]
+    by_rig = defaultdict(list)
+    for s in sessions:
+        by_rig[s.split("@", 1)[1]].append(s)
+
+    rig_dirs = {rig: seat_cwd(seats[0]) for rig, seats in sorted(by_rig.items())}
+
+    # match: exact, else longest-prefix (subdir of the rig's root)
+    def match(path):
+        if not path:
+            return 0
+        p = os.path.realpath(path)
+        if cwd == p:
+            return len(p) + 10_000
+        return len(p) + 1 if cwd.startswith(p + os.sep) else 0
+
+    scored = sorted(((match(d), rig, d) for rig, d in rig_dirs.items()), reverse=True)
+    hits = [(rig, d) for score, rig, d in scored if score > 0]
+
+    if hint:
+        hits = [(r, d) for r, d in hits if r == hint] or hits
+
+    if not hits:
+        known = "\n".join(f"  {rig} → {d}" for rig, d in rig_dirs.items()) or "  (no live rig seats)"
+        sys.exit(f"rig-here: no rig is working in {cwd}\nLive rigs and their dirs:\n{known}")
+
+    if len(hits) > 1 and not hint:
+        others = ", ".join(r for r, _ in hits[1:])
+        print(f"rig-here: {len(hits)} rigs share this dir ({others}); tiling '{hits[0][0]}' (override: rig-here {provider} --rig <name>)", flush=True)
+
+    rig = hits[0][0]
+    print(f"rig-here: {cwd} → rig '{rig}' ({hits[0][1]}), provider {provider}", flush=True)
+    sys.stdout.flush()
+    opener = {"herdr": "rig-herdr", "cmux": "rig-cmux"}[provider]
+    os.execvp(opener, [opener, rig])
+
+
+if __name__ == "__main__":
+    main()

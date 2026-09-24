@@ -35,6 +35,6 @@ view_name="${view_name:-$view}"
 repo="$(tmux display-message -p -t "$first_seat" '#{pane_current_path}' 2>/dev/null | xargs basename 2>/dev/null)"
 if [ -n "$repo" ]; then
   # newest workspace whose title starts with openrig:rig:<view>#
-  ws="$(CMUX_QUIET=1 cmux list-workspaces 2>/dev/null | awk -v want="openrig:rig:${view_name}#" '$0 ~ want {gsub(/^[ *]+/,"",$1); split($1,r,":"); if (r[2]>max){max=r[2]; ref=$1}} END {print ref}')"
+  ws="$(CMUX_QUIET=1 cmux list-workspaces 2>/dev/null | awk -v want="openrig:rig:${view_name}#" 'index($0, want) {gsub(/^[ *]+/,"",$1); split($1,r,":"); if (r[2]>max){max=r[2]; ref=$1}} END {print ref}')"
   [ -n "$ws" ] && cmux workspace-action --action rename --workspace "$ws" --title "${view_name} · ${repo}" >/dev/null 2>&1 && echo "Tab named: ${view_name} · ${repo}"
 fi
