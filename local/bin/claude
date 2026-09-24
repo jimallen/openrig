@@ -1,0 +1,30 @@
+#!/bin/bash
+# claude shim: divert jims-team's CoS seat to `ollama launch claude`.
+# Managed openrig seats launch as: claude <flags> --session-id <uuid> --name <seat>@<rig>.
+# Only --name exec-cos@jims-team* (either form) diverts; everything else passes through.
+# NB: Claude Code's --name flag hangs when routed through ollama launch (bisected
+# 2026-02-15: --session-id forwards fine, --name stalls) — so it is stripped on
+# the diverted path. Seat identity is enforced by openrig externally (tmux session
+# name), so this is display-metadata only.
+# Model override: JIMS_COS_MODEL (default: glm-5.3:cloud — fast cloud model, no local load).
+REAL_CLAUDE=/opt/homebrew/bin/claude
+divert=0
+for arg in "$@"; do
+  case "$arg" in
+    exec-cos@jims-team*|--name=exec-cos@jims-team*) divert=1 ;;
+  esac
+done
+if [ "$divert" = 1 ]; then
+  out=()
+  skip_next=0
+  for arg in "$@"; do
+    if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+    case "$arg" in
+      --name) skip_next=1 ;;
+      --name=*) ;;
+      *) out+=("$arg") ;;
+    esac
+  done
+  exec ollama launch claude --model "${JIMS_COS_MODEL:-glm-5.3:cloud}" -- "${out[@]}"
+fi
+exec "$REAL_CLAUDE" "$@"
