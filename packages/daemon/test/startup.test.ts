@@ -352,7 +352,16 @@ describe("createDaemon startup composition", () => {
       expect((await result.deps.nodeLauncher.launchNode(rig.id, "worker")).ok).toBe(true);
       const command = tmuxExec.mock.calls.map((call) => call[0]).find((line) => line.includes("tmux new-session"));
       expect(command).toContain(`-e 'HOME=${daemonHome}'`);
-      expect(command).toContain(`-e 'CODEX_HOME=${path.join(daemonHome, ".codex")}'`);
+      // Codex seats override the projected shared CODEX_HOME with a per-seat
+      // home under the daemon-projected OPENRIG_HOME — that override IS the
+      // identity fix (a shared home freezes the first launcher's env into
+      // the shared app-server).
+      const seatHome = path.join(
+        result.deps.sessionEnv["OPENRIG_HOME"] ?? "<no-openrig-home>",
+        "codex-seats",
+        "r00-gap7-default-worker",
+      );
+      expect(command).toContain(`-e 'CODEX_HOME=${seatHome}'`);
       expect(command).toContain("-e 'PATH=/proof/openrig/bin:/usr/bin:/bin'");
       expect(command).toContain("-e 'OPENAI_API_KEY=gap7-openai-key'");
     } finally {

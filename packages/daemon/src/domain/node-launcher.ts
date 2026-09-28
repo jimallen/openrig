@@ -13,6 +13,7 @@ import {
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { observeSolePane, paneObservationVerdict } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
+import { ensureCodexSeatHome } from "./codex-seat-home.js";
 import type { OccupantKind } from "./session-registry.js";
 
 import type { Session, Binding } from "./types.js";
@@ -141,13 +142,31 @@ export class NodeLauncher {
       ...this.sessionEnv,
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
     });
+    const codexSeatWarnings: string[] = [];
+    if (node.runtime === "codex") {
+      // codex seats get a per-seat CODEX_HOME so their managed app-server
+      // freezes THIS seat's env, not the first launcher's on the shared
+      // ~/.codex (measured: verify seats resolved identity as
+      // queue-worker@kernel through the shared daemon — see codex-seat-home).
+      try {
+        const seatHome = await ensureCodexSeatHome(sessionName, {
+          openrigHome: this.sessionEnv["OPENRIG_HOME"],
+          sharedCodexHome: this.sessionEnv["CODEX_HOME"],
+        });
+        openRigEnv["CODEX_HOME"] = seatHome.path;
+      } catch (err) {
+        codexSeatWarnings.push(
+          `codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); seat launches on the shared home and may inherit a foreign session identity`,
+        );
+      }
+    }
     const sessionCwd = opts?.cwd ?? node.cwd ?? undefined;
     const tmuxResult = await this.tmuxAdapter.createSession(sessionName, sessionCwd, openRigEnv);
     if (!tmuxResult.ok) {
       return { ok: false, code: tmuxResult.code, message: tmuxResult.message };
     }
 
-    const launchWarnings: string[] = [];
+    const launchWarnings: string[] = [...codexSeatWarnings];
 
     // Observe the pane before the DB transaction. A concrete pane is committed
     // with session+binding; an unresolved pane gets a durable named verdict in
