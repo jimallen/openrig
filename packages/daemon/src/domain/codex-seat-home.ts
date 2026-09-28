@@ -26,13 +26,21 @@ const SYMLINKED_ENTRIES = [
   "auth.json",
   "config.toml",
   "AGENTS.md",
-  "packages",
   "plugins",
   "rules",
   "skills",
   "shell_snapshots",
   "mcp-oauth-locks",
 ] as const;
+
+// `packages` is deliberately NOT symlinked wholesale: codex's app-server
+// management mutates `packages/app-server-daemon/current` (absolute link). If
+// every seat home shared the packages dir, each daemon install would repoint
+// the link INTO the last-installed seat's home — observed live: a test-run
+// seat home was later deleted and the shared current dangled, breaking daemon
+// startup for every other seat. Instead each seat gets a REAL packages dir:
+// releases are symlinked (the heavy payload, immutable), and `current` is an
+// absolute link rooted INSIDE the seat home (through the releases symlink).
 
 export interface CodexSeatHome {
   /** The per-seat CODEX_HOME directory (…/codex-seats/<sanitized session>). */
@@ -62,6 +70,76 @@ async function linkIfMissing(source: string, dest: string): Promise<boolean> {
 }
 
 /**
+ * Per-seat packages dir: shared everything EXCEPT the app-server-daemon
+ * management state. `current` is rooted inside the seat home so one seat's
+ * daemon install/update can never repoint a link another seat depends on.
+ * Returns labels of seats-linked entries for reporting.
+ */
+async function seedSeatPackages(home: string, shared: string): Promise<string[]> {
+  const sharedPkgs = path.join(shared, "packages");
+  const sharedAsd = path.join(sharedPkgs, "app-server-daemon");
+  const linked: string[] = [];
+  try {
+    await fs.lstat(path.join(sharedAsd, "releases"));
+  } catch {
+    return linked; // no managed daemon on the shared home — nothing to seed
+  }
+  const seatPkgs = path.join(home, "packages");
+  const seatAsd = path.join(seatPkgs, "app-server-daemon");
+  await fs.mkdir(seatAsd, { recursive: true });
+
+  // heavy, immutable payload: one directory, one link
+  if (await linkIfMissing(path.join(sharedAsd, "releases"), path.join(seatAsd, "releases")))
+    linked.push("packages/app-server-daemon/releases");
+
+  // small mutable housekeeping: copied so one seat's update never writes the
+  // shared file
+  for (const small of ["auto-update-version"] as const) {
+    const src = path.join(sharedAsd, small);
+    const dest = path.join(seatAsd, small);
+    try {
+      await fs.copyFile(src, dest);
+      linked.push(`packages/app-server-daemon/${small}`);
+    } catch {
+      // absent — fine
+    }
+  }
+
+  // `current`: absolute, rooted INSIDE the seat home (via its releases link).
+  // Version source of truth: the shared current link if it resolves, else the
+  // newest release dir.
+  let version: string | null = null;
+  try {
+    const sharedCurrent = await fs.readlink(path.join(sharedAsd, "current"));
+    const byName = path.basename(sharedCurrent);
+    await fs.lstat(path.join(sharedAsd, "releases", byName));
+    version = byName;
+  } catch {
+    const releases = await fs.readdir(path.join(sharedAsd, "releases")).catch(() => []);
+    version = releases.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop() ?? null;
+  }
+  if (version) {
+    const dest = path.join(seatAsd, "current");
+    try {
+      await fs.lstat(dest);
+    } catch {
+      await fs.symlink(path.join(seatAsd, "releases", version), dest);
+      linked.push("packages/app-server-daemon/current");
+    }
+  }
+
+  // every other top-level packages entry links straight through
+  const otherPkgs = await fs.readdir(sharedPkgs).catch(() => [] as string[]);
+  for (const entry of otherPkgs) {
+    if (entry === "app-server-daemon") continue;
+    const src = path.join(sharedPkgs, entry);
+    if (await linkIfMissing(src, path.join(seatPkgs, entry)))
+      linked.push(`packages/${entry}`);
+  }
+  return linked;
+}
+
+/**
  * Create (idempotently) the per-seat codex home under
  * `<openrigHome>/codex-seats/<session>` seeded from the shared codex home.
  * Missing shared entries are skipped (a minimal codex install still works;
@@ -88,6 +166,7 @@ export async function ensureCodexSeatHome(
     const dest = path.join(home, entry);
     if (await linkIfMissing(source, dest)) linked.push(entry);
   }
+  linked.push(...(await seedSeatPackages(home, shared)));
 
   // Profile fragments are COPIED (see module doc): per-seat canonical path,
   // per-seat identity edits stay seat-local.
