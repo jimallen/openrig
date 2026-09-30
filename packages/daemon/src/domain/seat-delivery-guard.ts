@@ -215,15 +215,40 @@ export class SeatDeliveryGuard {
 }
 
 /** Current binding, never a latest historical session-name guess. Unbound seats
- * resolve by node/canonical address for preferences and lifecycle preflight. */
+ * resolve by node/canonical address for preferences and lifecycle preflight.
+ *
+ * Fork note (identity-era regression, observed 2026-09-30): same-name relaunches
+ * leave stale rows behind — a stopped rig kept its binding, and clause-5 catches
+ * every old unbound node of the same name. The strict ambiguity refusal must not
+ * change for pane-duplicates or same-rig collisions (see #141 tests); the narrow
+ * fix: exclude archived rigs, and when a SESSION NAME matches bound rows across
+ * DIFFERENT rigs (history stacking), resolve to the binding whose session is
+ * running — never to the dead row. */
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
-  const rows = db.prepare(`SELECT n.id AS nodeId,
+  const rows = db.prepare(`SELECT n.id AS nodeId, n.rig_id AS rigId,
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
       b.tmux_pane AS pane,
+      s.id AS liveSessionId,
       (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
-    WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
-      OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)`)
-    .all(name, name, name, name, name) as GuardTarget[];
-  return rows.length === 1 ? rows[0]! : null;
+    LEFT JOIN sessions s ON s.node_id=n.id AND s.status='running'
+    WHERE r.archived_at IS NULL
+      AND (n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
+      OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?))
+    ORDER BY (CASE WHEN b.tmux_session = ? AND s.id IS NOT NULL THEN 0 ELSE 1 END),
+             (b.tmux_session IS NOT NULL) DESC, r.created_at DESC`)
+    .all(name, name, name, name, name, name) as Array<GuardTarget & { rigId: string; liveSessionId: string | null }>;
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return rows[0]!;
+  const boundBySession = rows.filter((r) => r.session === name);
+  const boundByPane = rows.filter((r) => r.pane === name);
+  if (boundByPane.length > 1) return null; // bare-pane duplicates stay refused (#141)
+  const rigsMatchingBySession = new Set(boundBySession.map((r) => r.rigId));
+  if (rigsMatchingBySession.size === 1) return null; // same-rig ambiguity stays refused (#141)
+  const live = boundBySession.filter((r) => r.liveSessionId !== null);
+  const distinctLiveRigs = new Set(live.map((r) => r.rigId));
+  if (distinctLiveRigs.size === 1) return live[0]!; // history stacking across rigs
+  if (distinctLiveRigs.size > 1) return null;
+  // no live session anywhere: a launch in progress is the newest rig's row.
+  return rows[0]!;
 }
