@@ -45,6 +45,19 @@ describe("codex-seat-home", () => {
     expect(stat.isDirectory()).toBe(true);
   });
 
+  it("bounds long session names (SUN_LEN: codex app-server unix sockets live under the home)", async () => {
+    // 'verify-qa@jims-team-rfp-rulz' measured failing in production with
+    // 'shorter than SUN_LEN' — the daemon socket path could not bind.
+    const short = sanitizeSessionForPath("verify-qa@jims-team-rfp-rulz");
+    expect(short.length).toBeLessThanOrEqual(24);
+    expect(short.startsWith("verify-qa@")).toBe(true);
+    // deterministic + distinct per session, so two long instance names never collide
+    expect(short).toBe(sanitizeSessionForPath("verify-qa@jims-team-rfp-rulz"));
+    expect(short).not.toBe(sanitizeSessionForPath("verify-qa@jims-team-other"));
+    // no-@ names also bound
+    expect(sanitizeSessionForPath("x".repeat(100)).length).toBeLessThanOrEqual(24);
+  });
+
   it("symlinks shared account material but copies profile fragments", async () => {
     const home = await ensureCodexSeatHome("verify-qa@jims-team", { openrigHome, sharedCodexHome: shared });
     const auth = await fs.lstat(path.join(home.path, "auth.json"));

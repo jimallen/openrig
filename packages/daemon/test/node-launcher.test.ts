@@ -12,6 +12,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
+import { codexSeatHomePath } from "../src/domain/codex-seat-home.js";
 import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaults.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { PersistedEvent } from "../src/domain/types.js";
@@ -151,8 +152,10 @@ describe("NodeLauncher", () => {
       expect(codexLaunch.ok).toBe(true);
       const codexSession = codexLaunch.ok ? codexLaunch.sessionName : "";
       const codexEnv = captured.find((c) => c.name === codexSession)?.env;
+      // long session names hash-compact to respect the SUN_LEN socket limit —
+      // expect via the same helper, not the raw name
       expect(codexEnv?.["CODEX_HOME"]).toBe(
-        path.join(process.env["OPENRIG_HOME"]!, "codex-seats", codexSession),
+        codexSeatHomePath(process.env["OPENRIG_HOME"]!, codexSession),
       );
       // identity stamps still present alongside the new CODEX_HOME
       expect(codexEnv?.["OPENRIG_SESSION_NAME"]).toBe(codexSession);

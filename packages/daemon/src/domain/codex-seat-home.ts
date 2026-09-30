@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -49,10 +50,28 @@ export interface CodexSeatHome {
   copiedProfiles: string[];
 }
 
+/**
+ * Seat-home directory length budget. Codex's managed app-server binds a unix
+ * socket UNDER the home dir; macOS sun_path (~104 bytes) is breached by long
+ * instance rig names (measured: verify-qa@jims-team-rfp-rulz died with
+ * 'shorter than SUN_LEN' under /Users/<u>/.openrig/codex-seats/). Long names
+ * fall back to a bounded readable+hashed form: the member stays legible, the
+ * hash keeps per-instance distinctness.
+ */
+const MAX_SESSION_DIR_CHARS = 24;
+
 export function sanitizeSessionForPath(sessionName: string): string {
   // tmux session names are already constrained (letters/digits/._-);
   // keep `@` for readability (exec-cos@jims-team), defend the rest.
-  return sessionName.replace(/[^A-Za-z0-9._@-]+/g, "_");
+  const safe = sessionName.replace(/[^A-Za-z0-9._@-]+/g, "_");
+  if (safe.length <= MAX_SESSION_DIR_CHARS) return safe;
+  const at = safe.indexOf("@");
+  const member = at > 0 ? safe.slice(0, at) : safe.slice(0, 12);
+  const rig = at > 0 ? safe.slice(at + 1) : undefined;
+  const hash = createHash("sha256").update(sessionName).digest("hex").slice(0, 8);
+  if (!rig) return `${member}-${hash}`;
+  const rigBudget = Math.max(4, MAX_SESSION_DIR_CHARS - member.length - 10); // '@' + '-' + 8-char hash
+  return `${member}@${rig.slice(0, rigBudget)}-${hash}`;
 }
 
 export function codexSeatHomePath(openrigHome: string, sessionName: string): string {
