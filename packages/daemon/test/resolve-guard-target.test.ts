@@ -71,6 +71,20 @@ describe("resolveGuardTarget — stale-generation disambiguation", () => {
     void old;
   });
 
+  it("recycled pane ids across rigs do not starve the live binding (pathology D: pane %N reuse)", () => {
+    // tmux pane ids are per-server and recycle: a stopped rig's binding can hold
+    // the SAME '%3' as the live rig's fresh binding. The down/kill path observed
+    // this live: 'Kill failed for session …' guard_target_unknown on a rig down
+    // after a same-name relaunch.
+    const old_ = seedRigWithBoundCos("jims-team", { sessionStatus: "stopped", pane: "%3" });
+    const cur = seedRigWithBoundCos("jims-team", { sessionStatus: "running", pane: "%3" });
+    void old_;
+    const target = resolveGuardTarget(db, "%3");
+    expect(target).not.toBeNull();
+    expect(target!.nodeId).toBe(cur.node.id);
+    expect(target!.session).toBe("exec-cos@jims-team");
+  });
+
   it("unknown names still resolve to null", () => {
     seedUnboundCos("jims-team");
     expect(resolveGuardTarget(db, "nobody@elsewhere")).toBeNull();

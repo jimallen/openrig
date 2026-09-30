@@ -242,13 +242,18 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
   if (rows.length === 1) return rows[0]!;
   const boundBySession = rows.filter((r) => r.session === name);
   const boundByPane = rows.filter((r) => r.pane === name);
-  if (boundByPane.length > 1) return null; // bare-pane duplicates stay refused (#141)
-  const rigsMatchingBySession = new Set(boundBySession.map((r) => r.rigId));
-  if (rigsMatchingBySession.size === 1) return null; // same-rig ambiguity stays refused (#141)
-  const live = boundBySession.filter((r) => r.liveSessionId !== null);
-  const distinctLiveRigs = new Set(live.map((r) => r.rigId));
-  if (distinctLiveRigs.size === 1) return live[0]!; // history stacking across rigs
-  if (distinctLiveRigs.size > 1) return null;
+  // Same-rig duplicates stay refused (#141). Cross-rig history stacking — pane
+  // ids like %42 recycle across servers/restarts, so a dead rig's pane binding
+  // may numerically equal the live one's — disambiguates to the running session.
+  for (const set of [boundBySession, boundByPane]) {
+    if (set.length <= 1) continue;
+    const rigsForSet = new Set(set.map((r) => r.rigId));
+    if (rigsForSet.size === 1) return null;
+    const live = set.filter((r) => r.liveSessionId !== null);
+    const distinctLiveRigs = new Set(live.map((r) => r.rigId));
+    if (distinctLiveRigs.size === 1) return live[0]!;
+    if (distinctLiveRigs.size > 1) return null;
+  }
   // no live session anywhere: a launch in progress is the newest rig's row.
   return rows[0]!;
 }
