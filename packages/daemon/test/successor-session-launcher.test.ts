@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
@@ -21,8 +24,12 @@ describe("SuccessorSessionLauncher", () => {
   let checkReady: ReturnType<typeof vi.fn>;
   let getDefaultShell: ReturnType<typeof vi.fn>;
   let getPaneCommand: ReturnType<typeof vi.fn>;
+  // Per-seat codex homes need a WRITABLE openrig home in tests (was "/home",
+  // unwritable, which silently skipped seeding).
+  let seatHomes: string;
 
   beforeEach(() => {
+    seatHomes = fs.mkdtempSync(path.join(os.tmpdir(), "ssl-openrig-home-"));
     db = createFullTestDb();
     discoveryRepo = new DiscoveryRepository(db);
     createSession = vi.fn(async () => ({ ok: true }));
@@ -42,7 +49,10 @@ describe("SuccessorSessionLauncher", () => {
     checkReady = vi.fn(async () => ({ ready: true }));
   });
 
-  afterEach(() => db.close());
+  afterEach(() => {
+    db.close();
+    fs.rmSync(seatHomes, { recursive: true, force: true });
+  });
 
   function fakeAdapter(runtime: string): RuntimeAdapter {
     return { runtime, launchHarness, checkReady } as unknown as RuntimeAdapter;
@@ -51,7 +61,7 @@ describe("SuccessorSessionLauncher", () => {
   function launcher(tmuxOptionDefaults?: TmuxOptionDefaultsApplier): SuccessorSessionLauncher {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
     return new SuccessorSessionLauncher(tmux, discoveryRepo, {
-      sessionEnv: { OPENRIG_HOME: "/home", HOME: "/daemon-home", CODEX_HOME: "/daemon-codex" },
+      sessionEnv: { OPENRIG_HOME: seatHomes, HOME: "/daemon-home", CODEX_HOME: "/daemon-codex" },
       newId: () => "01ABCDEFG",
       runtimeAdapters: { codex: fakeAdapter("codex") },
       readinessTimeoutMs: 50,
@@ -109,9 +119,12 @@ describe("SuccessorSessionLauncher", () => {
       OPENRIG_NODE_ID: "node-1",
       OPENRIG_SESSION_NAME: "dev-impl@rig",
       OPENRIG_RUNTIME: "codex",
-      OPENRIG_HOME: "/home",
+      OPENRIG_HOME: seatHomes,
       HOME: "/daemon-home",
-      CODEX_HOME: "/daemon-codex",
+      // per-seat codex home OVERRIDES the sessionEnv projection (the fix for
+      // shared app-server env freezing — the successor keeps the canonical
+      // name, so the seat home keys on it too)
+      CODEX_HOME: path.join(seatHomes, "codex-seats", "dev-impl@rig"),
     });
 
     // Retiree terminated IN PLACE before the respawn: remain-on-exit set, then GRACEFUL SIGTERM; the

@@ -7,6 +7,7 @@ import { isAttentionRequiredReadinessCode } from "./runtime-adapter.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { isShellForeground } from "./shell-classifier.js";
+import { ensureCodexSeatHome } from "./codex-seat-home.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -167,6 +168,22 @@ export class SuccessorSessionLauncher {
       ...this.sessionEnv,
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
     });
+    // Same per-seat codex home as fresh launches (see codex-seat-home.ts):
+    // without it the successor's codex re-inherits the shared app-server's
+    // frozen first-launcher identity. Fail-open: a seeding failure keeps the
+    // sessionEnv's projected (shared) CODEX_HOME rather than blocking the
+    // handover.
+    if (input.node.runtime === "codex") {
+      try {
+        const seatHome = await ensureCodexSeatHome(departingSession, {
+          openrigHome: this.sessionEnv?.["OPENRIG_HOME"],
+          sharedCodexHome: this.sessionEnv?.["CODEX_HOME"],
+        });
+        env["CODEX_HOME"] = seatHome.path;
+      } catch {
+        // seeding failed — keep the sessionEnv projection
+      }
+    }
     const cwd = input.node.cwd ?? undefined;
 
     // 1. Resolve the DEPARTING session's active pane — the retiree's pane we take over. A probe throw or

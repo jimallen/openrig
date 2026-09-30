@@ -1,17 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { coreSchema } from "../src/db/migrations/001_core_schema.js";
 import { bindingsSessionsSchema } from "../src/db/migrations/002_bindings_sessions.js";
 import { eventsSchema } from "../src/db/migrations/003_events.js";
-import { nodeSpecFieldsSchema } from "../src/db/migrations/007_node_spec_fields.js";
-import { checkpointsSchema } from "../src/db/migrations/005_checkpoints.js";
-import { agentspecRebootSchema } from "../src/db/migrations/014_agentspec_reboot.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
+import { codexSeatHomePath } from "../src/domain/codex-seat-home.js";
 import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaults.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { PersistedEvent } from "../src/domain/types.js";
@@ -43,6 +44,24 @@ describe("NodeLauncher", () => {
   let rigRepo: RigRepository;
   let sessionRegistry: SessionRegistry;
   let eventBus: EventBus;
+  let fakeHomes: string;
+
+  beforeAll(async () => {
+    // Hermeticity: codex seat homes are seeded on LAUNCH — point the module's
+    // env-resolved roots at a per-suite temp dir so tests never touch the
+    // operator's real ~/.openrig / ~/.codex.
+    fakeHomes = await fs.mkdtemp(path.join(os.tmpdir(), "nl-homes-"));
+    await fs.mkdir(path.join(fakeHomes, "codex"), { recursive: true });
+    await fs.writeFile(path.join(fakeHomes, "codex", "auth.json"), "{}");
+    process.env["OPENRIG_HOME"] = path.join(fakeHomes, "openrig");
+    process.env["CODEX_HOME_DEFAULT"] = path.join(fakeHomes, "codex");
+  });
+
+  afterAll(async () => {
+    delete process.env["OPENRIG_HOME"];
+    delete process.env["CODEX_HOME_DEFAULT"];
+    await fs.rm(fakeHomes, { recursive: true, force: true });
+  });
 
   beforeEach(() => {
     db = setupDb();
@@ -81,7 +100,7 @@ describe("NodeLauncher", () => {
   }
 
   it("happy path: derives name, creates tmux, persists session+binding+event in one txn, notifies", async () => {
-    const { rig, node } = seedRigWithNode();
+    const { rig } = seedRigWithNode();
     const notifications: PersistedEvent[] = [];
     eventBus.subscribe((e) => notifications.push(e));
 
@@ -115,7 +134,44 @@ describe("NodeLauncher", () => {
     expect(notifications[0]!.type).toBe("node.launched");
   });
 
+  it("codex seats launch with a per-seat CODEX_HOME; claude seats get none", async () => {
+    const rig = rigRepo.createRig("identity-rig");
+    rigRepo.addNode(rig.id, "verify-qa", { role: "qa", runtime: "codex" });
+    rigRepo.addNode(rig.id, "build-impl", { role: "worker", runtime: "claude-code" });
+
+    const captured: Array<{ name: string; env?: Record<string, string> }> = [];
+    const createSession = vi.fn(
+      async (name: string, _cwd?: string, env?: Record<string, string>) => {
+        captured.push({ name, env });
+        return { ok: true as const };
+      },
+    );
+    const launcher = createLauncher(mockTmuxAdapter({ createSession }));
+
+      const codexLaunch = await launcher.launchNode(rig.id, "verify-qa");
+      expect(codexLaunch.ok).toBe(true);
+      const codexSession = codexLaunch.ok ? codexLaunch.sessionName : "";
+      const codexEnv = captured.find((c) => c.name === codexSession)?.env;
+      // long session names hash-compact to respect the SUN_LEN socket limit —
+      // expect via the same helper, not the raw name
+      expect(codexEnv?.["CODEX_HOME"]).toBe(
+        codexSeatHomePath(process.env["OPENRIG_HOME"]!, codexSession),
+      );
+      // identity stamps still present alongside the new CODEX_HOME
+      expect(codexEnv?.["OPENRIG_SESSION_NAME"]).toBe(codexSession);
+      // the seat home is real and carries the shared auth by symlink
+      const auth = await fs.lstat(path.join(codexEnv!["CODEX_HOME"]!, "auth.json"));
+      expect(auth.isSymbolicLink()).toBe(true);
+
+      const claudeLaunch = await launcher.launchNode(rig.id, "build-impl");
+      expect(claudeLaunch.ok).toBe(true);
+      const claudeSession = claudeLaunch.ok ? claudeLaunch.sessionName : "";
+      const claudeEnv = captured.find((c) => c.name === claudeSession)?.env;
+      expect(claudeEnv?.["CODEX_HOME"]).toBeUndefined();
+  });
+
   it("launchNode commits the created session's sole live pane with its session and binding", async () => {
+
     const { rig, node } = seedRigWithNode();
     const listPanes = vi.fn(async () => [{ id: "%fresh" }]);
     const launcher = createLauncher(mockTmuxAdapter({ listPanes }));
@@ -161,6 +217,7 @@ describe("NodeLauncher", () => {
       OPENRIG_OCCUPANT_GENERATION: expect.any(String),
       OPENRIG_URL: "http://127.0.0.1:7644",
       OPENRIG_ACTIVITY_HOOK_TOKEN: "secret-token",
+      CODEX_HOME: expect.any(String),
     });
   });
 
