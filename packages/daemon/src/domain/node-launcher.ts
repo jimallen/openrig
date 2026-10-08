@@ -14,6 +14,9 @@ import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { observeSolePane, paneObservationVerdict } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
+import { ensureGitWorktreeShim, withWorktreeShimPath } from "./git-worktree-shim.js";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { OccupantKind } from "./session-registry.js";
 
 import type { Session, Binding } from "./types.js";
@@ -143,6 +146,20 @@ export class NodeLauncher {
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
     });
     const codexSeatWarnings: string[] = [];
+
+    // Worktree placement law: every rig seat gets the git shim first on PATH,
+    // so 'git worktree add' outside <repo>/.rig-worktrees redirects rather
+    // than sprawling into ~/Code as a sibling (171-tree pileup, 2026-10-02).
+    try {
+      const shimHome = this.sessionEnv["OPENRIG_HOME"] ?? process.env["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
+      await ensureGitWorktreeShim(shimHome);
+      withWorktreeShimPath(openRigEnv, shimHome);
+    } catch (err) {
+      codexSeatWarnings.push(
+        `worktree shim materialization failed (${err instanceof Error ? err.message : String(err)}); seat launches without the placement shim`,
+      );
+    }
+
     if (node.runtime === "codex") {
       // codex seats get a per-seat CODEX_HOME so their managed app-server
       // freezes THIS seat's env, not the first launcher's on the shared

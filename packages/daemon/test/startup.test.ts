@@ -292,9 +292,11 @@ describe("createDaemon startup composition", () => {
   });
 
   it("passes daemon CLI reachability env and PATH into launched tmux sessions", async () => {
+    const shimHome = path.join(os.tmpdir(), `shim-home-${process.pid}`);
     vi.stubEnv("PATH", "/proof/openrig/bin:/usr/bin:/bin");
     vi.stubEnv("OPENRIG_PORT", "17433");
     vi.stubEnv("OPENRIG_HOST", "127.0.0.1");
+    vi.stubEnv("OPENRIG_HOME", shimHome);
     const cmuxFactory: CmuxTransportFactory = async () => {
       throw Object.assign(new Error(""), { code: "ENOENT" });
     };
@@ -312,9 +314,12 @@ describe("createDaemon startup composition", () => {
         .map((call) => call[0])
         .find((cmd) => cmd.includes("tmux new-session"));
       expect(newSessionCmd).toBeDefined();
-      expect(newSessionCmd).toContain("-e 'PATH=/proof/openrig/bin:/usr/bin:/bin'");
+      // The shim prefix rides on the DAEMON-PROJECTED home, not the stubbed env
+      const projectedHome = deps.nodeLauncher["sessionEnv"]?.["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
+      expect(newSessionCmd).toContain(`-e 'PATH=${projectedHome}/rig-bin:/proof/openrig/bin:/usr/bin:/bin'`);
       expect(newSessionCmd).toContain("-e 'OPENRIG_PORT=17433'");
       expect(newSessionCmd).toContain("-e 'OPENRIG_HOST=127.0.0.1'");
+      expect(newSessionCmd).toContain("-e 'OPENRIG_URL=http://127.0.0.1:17433'");
 
       db.close();
     } finally {
@@ -362,7 +367,8 @@ describe("createDaemon startup composition", () => {
         "r00-gap7-default-worker",
       );
       expect(command).toContain(`-e 'CODEX_HOME=${seatHome}'`);
-      expect(command).toContain("-e 'PATH=/proof/openrig/bin:/usr/bin:/bin'");
+      // PATH carries the worktree-placement shim first (daemon-projected OPENRIG_HOME root)
+      expect(command).toContain(`-e 'PATH=${result.deps.sessionEnv["OPENRIG_HOME"]}/rig-bin:/proof/openrig/bin:/usr/bin:/bin'`);
       expect(command).toContain("-e 'OPENAI_API_KEY=gap7-openai-key'");
     } finally {
       result?.db.close();
