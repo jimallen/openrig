@@ -36,4 +36,12 @@ describe("seat verbs with same-name rig history", () => {
     const out = svc.getStatus("exec-cos@history-rig");
     expect(out.ok).toBe(true);
   });
+
+  it("all generations stopped: newest generation answers (dead-seat verbs need a target)", () => {
+    rigWithCos("history-rig", "stopped");
+    rigWithCos("history-rig", "stopped");
+    const svc = new SeatStatusService({ rigRepo });
+    const out = svc.getStatus("exec-cos@history-rig");
+    expect(out.ok).toBe(true);
+  });
 });

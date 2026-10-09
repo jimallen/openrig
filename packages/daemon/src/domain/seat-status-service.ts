@@ -59,8 +59,15 @@ export class SeatStatusService {
     // Same-name rig history (per-dir relaunches) must not make every seat verb
     // refuse forever: if exactly one match belongs to a currently-running rig,
     // that is the answer. SeatLifecycleService.resolveSeat mirrors this rule.
-    const running = matches.filter((m) => m.entry.lifecycleState === "running");
-    if (running.length === 1) matches = running;
+    const running = matches.filter((m) => m.entry.sessionStatus === "running");
+    if (running.length === 1) {
+      matches = running;
+    } else if (running.length === 0 && matches.length > 1) {
+      // Dead-seat verbs (launch/clean) need the newest generation, not a refusal.
+      const newest = matches[matches.length - 1]!;
+      const inNewest = matches.filter((m) => m.entry.rigId === newest.entry.rigId);
+      if (inNewest.length === 1) matches = inNewest;
+    }
     if (matches.length === 0) {
       return { ok: false, code: "seat_not_found", message: `Seat "${ref}" not found`, guidance: SEAT_LOOKUP_GUIDANCE };
     }

@@ -1065,8 +1065,17 @@ export class SeatLifecycleService {
 
     let matches = this.findMatches(ref);
     if (matches.length > 1) {
-      const running = matches.filter((m) => m.lifecycleState === "running");
-      if (running.length === 1) matches = running;
+      const running = matches.filter((m) => m.sessionStatus === "running");
+      if (running.length === 1) {
+        matches = running;
+      } else if (running.length === 0) {
+        // History stacking: nothing live anywhere; the newest generation is the
+        // next launch target. Two LIVE matches still refuse loudly (#141).
+        const newest = matches[matches.length - 1]!;
+        const newestRig = newest.rigId;
+        const inNewest = matches.filter((m) => m.rigId === newestRig);
+        if (inNewest.length === 1) matches = inNewest;
+      }
     }
     if (matches.length === 0) {
       return {
