@@ -1063,7 +1063,11 @@ export class SeatLifecycleService {
       return { ok: false, code: "seat_ref_required", message: "seat reference is required", guidance: SEAT_LOOKUP_GUIDANCE };
     }
 
-    const matches = this.findMatches(ref);
+    let matches = this.findMatches(ref);
+    if (matches.length > 1) {
+      const running = matches.filter((m) => m.lifecycleState === "running");
+      if (running.length === 1) matches = running;
+    }
     if (matches.length === 0) {
       return {
         ok: false,

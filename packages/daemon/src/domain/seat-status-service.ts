@@ -55,7 +55,12 @@ export class SeatStatusService {
       return { ok: false, code: "seat_ref_required", message: "seat reference is required", guidance: SEAT_LOOKUP_GUIDANCE };
     }
 
-    const matches = this.findMatches(ref);
+    let matches = this.findMatches(ref);
+    // Same-name rig history (per-dir relaunches) must not make every seat verb
+    // refuse forever: if exactly one match belongs to a currently-running rig,
+    // that is the answer. SeatLifecycleService.resolveSeat mirrors this rule.
+    const running = matches.filter((m) => m.entry.lifecycleState === "running");
+    if (running.length === 1) matches = running;
     if (matches.length === 0) {
       return { ok: false, code: "seat_not_found", message: `Seat "${ref}" not found`, guidance: SEAT_LOOKUP_GUIDANCE };
     }
