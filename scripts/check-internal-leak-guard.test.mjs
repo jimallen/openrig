@@ -43,6 +43,26 @@ test("full mode passes a clean tracked tree and ignores untracked files", () => 
   });
 });
 
+test("optional exact-line rules reach the full guard and malformed values are refused", () => {
+  withRepo((repo, rulesPath) => {
+    const line = "Generic operator-agent@<seat> example";
+    const rules = { ...fixtureRules(), allowed_context_lines: [line] };
+    writeFileSync(rulesPath, JSON.stringify(rules));
+    write(join(repo, "README.md"), `${line}\n`);
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "generic example");
+    const result = runGuard(repo, rulesPath, "--mode", "full");
+    assert.equal(result.status, 0, result.stderr);
+
+    for (const invalid of [null, "text", [42], [""], ["two\nlines"], ["two\rlines"]]) {
+      writeFileSync(rulesPath, JSON.stringify({ ...rules, allowed_context_lines: invalid }));
+      const rejected = runGuard(repo, rulesPath, "--mode", "full");
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr, /allowed_context_lines/);
+    }
+  });
+});
+
 test("staged mode reads index bytes rather than the worktree", () => {
   requireGuard();
   withRepo((repo, rules) => {
@@ -247,7 +267,8 @@ test("Plain B keeps guard enforcement out of root test:repo while fixture tests 
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   const command = pkg.scripts["test:repo"];
 
-  assert.match(command, /node --test scripts\/\*\.test\.mjs/);
+  // Packaging tests rebuild daemon/dist while other script tests import it.
+  assert.match(command, /node --test --test-concurrency=1 scripts\/\*\.test\.mjs/);
   assert.doesNotMatch(command, /node scripts\/check-internal-leak-guard\.mjs/);
 });
 

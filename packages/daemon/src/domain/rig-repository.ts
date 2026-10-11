@@ -121,6 +121,7 @@ interface NodeOptions {
   role?: string;
   runtime?: string;
   model?: string;
+  effort?: string;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -149,17 +150,27 @@ export class RigRepository {
     this.db = db;
   }
 
-  createRig(name: string): Rig {
+  createRig(name: string, installRoot?: string): Rig {
     const id = ulid();
-    this.db
-      .prepare("INSERT INTO rigs (id, name) VALUES (?, ?)")
-      .run(id, name);
+    if (installRoot !== undefined) {
+      this.db.prepare("INSERT INTO rigs (id, name, install_root) VALUES (?, ?, ?)")
+        .run(id, name, installRoot);
+    } else {
+      this.db.prepare("INSERT INTO rigs (id, name) VALUES (?, ?)").run(id, name);
+    }
 
     const rig = this.rowToRig(
       this.db.prepare("SELECT * FROM rigs WHERE id = ?").get(id) as RigRow
     );
     this.onRigCreated?.(rig);
     return rig;
+  }
+
+  /** Canonical bundle materialization folder, independent of seats' working directories. */
+  getRigInstallRoot(rigId: string): string | null {
+    const row = this.db.prepare("SELECT * FROM rigs WHERE id = ?").get(rigId) as
+      { install_root?: string | null } | undefined;
+    return row?.install_root ?? null;
   }
 
   /**
@@ -188,6 +199,19 @@ export class RigRepository {
     } catch {
       return null;
     }
+  }
+
+  setRigNonInterruptive(rigId: string, enabled: boolean): void {
+    if (!this.hasRigColumn("non_interruptive")) return;
+    this.db.prepare("UPDATE rigs SET non_interruptive = ?, updated_at = ? WHERE id = ?")
+      .run(enabled ? 1 : 0, new Date().toISOString(), rigId);
+  }
+
+  getRigNonInterruptive(rigId: string): boolean {
+    if (!this.hasRigColumn("non_interruptive")) return false;
+    const row = this.db.prepare("SELECT non_interruptive FROM rigs WHERE id = ?")
+      .get(rigId) as { non_interruptive: number } | undefined;
+    return row?.non_interruptive === 1;
   }
 
   /** OPR.0.4.8.3 Seam B — persist a rig's attached permission_policy REF (builtin:<name> or a
@@ -231,7 +255,7 @@ export class RigRepository {
       origin: "builtin" | "custom" | "deliberate_none";
       resolvedTarget: string | null;
       declaringDir: string | null;
-      launchPosture: "floor" | "full_bypass";
+      launchPosture: "floor" | "full_bypass" | "auto";
     },
   ): void {
     if (!this.hasRigColumn("rig_policy_launch_posture")) return;
@@ -245,7 +269,7 @@ export class RigRepository {
     origin: "builtin" | "custom" | "deliberate_none";
     resolvedTarget: string | null;
     declaringDir: string | null;
-    launchPosture: "floor" | "full_bypass";
+    launchPosture: "floor" | "full_bypass" | "auto";
     /** the raw rig ref (056) alongside, for re-validation */
     rigRef: string | null;
   } | null {
@@ -264,7 +288,7 @@ export class RigRepository {
       origin: row.rig_policy_origin as "builtin" | "custom" | "deliberate_none",
       resolvedTarget: row.rig_policy_resolved_target,
       declaringDir: row.rig_policy_declaring_dir,
-      launchPosture: row.rig_policy_launch_posture as "floor" | "full_bypass",
+      launchPosture: row.rig_policy_launch_posture as "floor" | "full_bypass" | "auto",
       rigRef: row.permission_policy,
     };
   }
@@ -279,7 +303,7 @@ export class RigRepository {
       origin: "builtin" | "custom" | "deliberate_none";
       resolvedTarget: string | null;
       declaringDir: string | null;
-      launchPosture: "floor" | "full_bypass";
+      launchPosture: "floor" | "full_bypass" | "auto";
     },
   ): void {
     if (!this.hasNodeColumn("policy_launch_posture")) return;
@@ -294,7 +318,7 @@ export class RigRepository {
     origin: "builtin" | "custom" | "deliberate_none";
     resolvedTarget: string | null;
     declaringDir: string | null;
-    launchPosture: "floor" | "full_bypass";
+    launchPosture: "floor" | "full_bypass" | "auto";
     /** The node's own raw ref (member-level; null when the attachment came from the rig). */
     nodeRef: string | null;
   } | null {
@@ -313,7 +337,7 @@ export class RigRepository {
       origin: row.policy_origin as "builtin" | "custom" | "deliberate_none",
       resolvedTarget: row.policy_resolved_target,
       declaringDir: row.policy_declaring_dir,
-      launchPosture: row.policy_launch_posture as "floor" | "full_bypass",
+      launchPosture: row.policy_launch_posture as "floor" | "full_bypass" | "auto",
       nodeRef: row.permission_policy,
     };
   }
@@ -431,6 +455,11 @@ export class RigRepository {
         .run(JSON.stringify(opts.sessionSource), id);
     }
 
+    if (opts?.effort && this.hasNodeColumn("effort")) {
+      this.db.prepare("UPDATE nodes SET effort = ? WHERE id = ?")
+        .run(opts.effort, id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -443,6 +472,22 @@ export class RigRepository {
     const result = this.db
       .prepare("UPDATE nodes SET model = ? WHERE id = ?")
       .run(model, nodeId);
+    return result.changes > 0;
+  }
+
+  setNodeEffort(nodeId: string, effort: string): boolean {
+    if (!this.hasNodeColumn("effort")) return false;
+    const result = this.db
+      .prepare("UPDATE nodes SET effort = ? WHERE id = ?")
+      .run(effort, nodeId);
+    return result.changes > 0;
+  }
+
+  clearNodeEffort(nodeId: string): boolean {
+    if (!this.hasNodeColumn("effort")) return false;
+    const result = this.db
+      .prepare("UPDATE nodes SET effort = NULL WHERE id = ?")
+      .run(nodeId);
     return result.changes > 0;
   }
 
@@ -492,12 +537,18 @@ export class RigRepository {
     };
   }
 
-  listRigs(filter?: RigArchiveFilter): Rig[] {
+  listRigs(filter?: RigArchiveFilter, observe?: import("./request-phase-observer.js").QueryObservation): Rig[] {
     const cond = archiveWhereClause("archived_at", filter);
     const where = cond ? `WHERE ${cond}` : "";
-    const rows = this.db
-      .prepare(`SELECT * FROM rigs ${where} ORDER BY created_at`)
-      .all() as RigRow[];
+    let rows: RigRow[];
+    try { observe?.("begin"); } catch { /* Best-effort measurement only. */ }
+    try {
+      rows = this.db.prepare(`SELECT * FROM rigs ${where} ORDER BY created_at`).all() as RigRow[];
+    } catch (error) {
+      try { observe?.("end", true); } catch { /* Preserve the actual query error. */ }
+      throw error;
+    }
+    try { observe?.("end", false); } catch { /* Preserve the query result. */ }
     return rows.map((r) => this.rowToRig(r));
   }
 
@@ -513,6 +564,15 @@ export class RigRepository {
   findRigsByName(name: string): Rig[] {
     const rows = this.db
       .prepare("SELECT * FROM rigs WHERE name = ? ORDER BY created_at")
+      .all(name) as RigRow[];
+    return rows.map((r) => this.rowToRig(r));
+  }
+
+  /** #174: seat-ref resolution sees only unarchived rigs, as default reads do since migration 042. */
+  findUnarchivedRigsByName(name: string): Rig[] {
+    const archived = this.hasRigColumn("archived_at") ? " AND archived_at IS NULL" : "";
+    const rows = this.db
+      .prepare(`SELECT * FROM rigs WHERE name = ?${archived} ORDER BY created_at`)
       .all(name) as RigRow[];
     return rows.map((r) => this.rowToRig(r));
   }
@@ -582,9 +642,10 @@ export class RigRepository {
   setServicesRecord(rigId: string, record: RigServicesRecordInput): RigServicesRecord {
     const now = new Date().toISOString();
     const composeFile = resolve(record.rigRoot, record.composeFile);
-    const rig = this.db.prepare("SELECT name FROM rigs WHERE id = ?").get(rigId) as { name: string } | undefined;
+    const rig = this.db.prepare("SELECT 1 AS present FROM rigs WHERE id = ?").get(rigId);
     if (!rig) throw new Error(`Rig not found: ${rigId}`);
-    const projectName = record.projectName ?? deriveComposeProjectName(rig.name);
+    // Keep the fallback aligned with bootstrap's unique, stable rig-ID default.
+    const projectName = record.projectName ?? this.getServicesRecord(rigId)?.projectName ?? deriveComposeProjectName(rigId);
     this.db.prepare(`
       INSERT INTO rig_services (
         rig_id,
@@ -620,6 +681,19 @@ export class RigRepository {
     const stored = this.db.prepare("SELECT * FROM rig_services WHERE rig_id = ?").get(rigId) as RigServicesRow | undefined;
     if (!stored) throw new Error(`Failed to persist services record for rig ${rigId}`);
     return this.rowToServicesRecord(stored);
+  }
+
+  /** A retained generation must not tear down a live generation's project. */
+  getLiveServicesSuccessor(rigId: string, projectName: string): { id: string; name: string } | null {
+    if (!this.hasRigColumn("archived_at")) return null;
+    return this.db.prepare(`
+      SELECT r.id, r.name FROM rig_services s JOIN rigs r ON r.id = s.rig_id
+      JOIN rigs predecessor ON predecessor.id = ?
+      WHERE s.project_name = ? AND r.id != predecessor.id
+        AND predecessor.archived_at IS NOT NULL AND r.archived_at IS NULL
+        AND r.name = predecessor.name
+      ORDER BY r.created_at DESC LIMIT 1
+    `).get(rigId, projectName) as { id: string; name: string } | undefined ?? null;
   }
 
   getServicesRecord(rigId: string): RigServicesRecord | null {
@@ -658,6 +732,7 @@ export class RigRepository {
       role: row.role,
       runtime: row.runtime,
       model: row.model,
+      effort: row.effort ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
       cwd: row.cwd,
@@ -746,6 +821,7 @@ interface NodeRow {
   role: string | null;
   runtime: string | null;
   model: string | null;
+  effort?: string | null;
   codex_config_profile?: string | null;
   permission_policy?: string | null;
   cwd: string | null;

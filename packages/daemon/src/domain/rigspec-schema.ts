@@ -46,12 +46,12 @@ const VALID_WORKSPACE_KINDS = new Set<string>(WORKSPACE_KINDS as readonly string
 
 const RIG_KEYS = new Set([
   "version", "name", "summary", "culture_file", "permission_policy", "managed_blocks", "docs",
-  "startup", "services", "workspace", "pods", "edges",
+  "startup", "services", "workspace", "pods", "edges", "non_interruptive",
 ]);
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
 const MEMBER_KEYS = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
-  "model", "role", "permission_policy", "cwd", "restore_policy",
+  "model", "effort", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref",
 ]);
 const EDGE_KEYS = new Set(["kind", "from", "to"]);
@@ -89,6 +89,10 @@ function rejectUnknownTopologyKeys(
     });
 }
 
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /**
  * Pod-aware RigSpec validator. Canonical contract for the AgentSpec reboot.
  */
@@ -103,7 +107,7 @@ export class RigSpecSchema {
     // OPR.0.5.3.3 — fail-open advisories (never affect `valid`); e.g. alias-form model pins.
     const advisories: string[] = [];
 
-    if (!raw || typeof raw !== "object") {
+    if (!isMapping(raw)) {
       return { valid: false, errors: ["rig spec must be an object"] };
     }
 
@@ -172,6 +176,10 @@ export class RigSpecSchema {
       if (refErr) errors.push(refErr);
     }
 
+    if (obj["non_interruptive"] !== undefined && typeof obj["non_interruptive"] !== "boolean") {
+      errors.push("non_interruptive: must be a boolean");
+    }
+
     // #25: optional per-runtime managed-block destination. Only claude-code is
     // configurable in this release; Codex stays on AGENTS.md.
     if (obj["managed_blocks"] !== undefined) {
@@ -194,11 +202,13 @@ export class RigSpecSchema {
       // Cross-pod edge validation
       const allQualifiedIds = new Set<string>(opts?.externalQualifiedIds ?? []);
       for (const pod of pods) {
+        if (!isMapping(pod)) continue; // Its indexed validation error was recorded above.
         const podId = pod["id"] as string;
         const members = pod["members"] as Record<string, unknown>[] | undefined;
-        if (podId && Array.isArray(members)) {
+        if (typeof podId === "string" && podId.length > 0 && Array.isArray(members)) {
           for (const m of members) {
-            if (m["id"]) allQualifiedIds.add(`${podId}.${m["id"]}`);
+            if (!isMapping(m)) continue;
+            if (typeof m["id"] === "string") allQualifiedIds.add(`${podId}.${m["id"]}`);
             const pinAdvisory = aliasModelPinAdvisory(m["model"], `pods.${podId}.members.${m["id"] ?? "?"}`);
             if (pinAdvisory) advisories.push(pinAdvisory);
           }
@@ -245,6 +255,7 @@ export class RigSpecSchema {
       summary: raw["summary"] as string | undefined,
       cultureFile: raw["culture_file"] as string | undefined,
       permissionPolicy: raw["permission_policy"] as string | undefined,
+      nonInterruptive: raw["non_interruptive"] as boolean | undefined,
       managedBlocks: raw["managed_blocks"] as RigSpec["managedBlocks"],
       docs,
       startup: raw["startup"] ? normalizeStartupBlock(raw["startup"]) : undefined,
@@ -370,6 +381,7 @@ function normalizeWorkspaceBlock(raw: unknown): WorkspaceSpec | undefined {
 function validatePod(pod: Record<string, unknown>, index: number, podIds: Set<string>, advisories: string[]): string[] {
   const errors: string[] = [];
   const prefix = `pods[${index}]`;
+  if (!isMapping(pod)) return [`${prefix}: must be an object`];
   errors.push(...rejectUnknownTopologyKeys(pod, POD_KEYS, prefix));
 
   // id
@@ -426,6 +438,7 @@ function validatePod(pod: Record<string, unknown>, index: number, podIds: Set<st
 function validateMember(member: Record<string, unknown>, index: number, podPrefix: string, memberIds: Set<string>, advisories: string[]): string[] {
   const errors: string[] = [];
   const prefix = `${podPrefix}.members[${index}]`;
+  if (!isMapping(member)) return [`${prefix}: must be an object`];
   errors.push(...rejectUnknownTopologyKeys(member, MEMBER_KEYS, prefix));
 
   // OPR.0.5.6.20 A5 — member-level compaction_strategy: all vocabulary decisions go
@@ -473,6 +486,11 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.codex_config_profile: must contain only letters, numbers, underscores, dots, or hyphens`);
     } else if (member["runtime"] !== "codex") {
       errors.push(`${prefix}.codex_config_profile: only valid when runtime is "codex"`);
+    }
+  }
+  if (member["effort"] !== undefined) {
+    if (typeof member["effort"] !== "string" || !member["effort"].trim()) {
+      advisories.push(`${prefix}.effort: non-string value "${member["effort"]}" ignored; effort must be a text value`);
     }
   }
   if (!member["cwd"] || typeof member["cwd"] !== "string") {
@@ -748,6 +766,7 @@ function validateRebuildSessionSource(ss: Record<string, unknown>, prefix: strin
 function validatePodLocalEdge(edge: Record<string, unknown>, index: number, podPrefix: string, memberIds: Set<string>): string[] {
   const errors: string[] = [];
   const prefix = `${podPrefix}.edges[${index}]`;
+  if (!isMapping(edge)) return [`${prefix}: must be an object`];
   errors.push(...rejectUnknownTopologyKeys(edge, EDGE_KEYS, prefix));
   const from = edge["from"] as string;
   const to = edge["to"] as string;
@@ -777,6 +796,7 @@ function validatePodLocalEdge(edge: Record<string, unknown>, index: number, podP
 function validateCrossPodEdge(edge: Record<string, unknown>, index: number, allQualifiedIds: Set<string>): string[] {
   const errors: string[] = [];
   const prefix = `edges[${index}]`;
+  if (!isMapping(edge)) return [`${prefix}: must be an object`];
   errors.push(...rejectUnknownTopologyKeys(edge, EDGE_KEYS, prefix));
   const from = edge["from"] as string;
   const to = edge["to"] as string;
@@ -801,7 +821,7 @@ function validateCrossPodEdge(edge: Record<string, unknown>, index: number, allQ
   }
 
   // Same-pod check: cross-pod edges must reference different pods
-  if (from && to && from.includes(".") && to.includes(".")) {
+  if (typeof from === "string" && typeof to === "string" && from.includes(".") && to.includes(".")) {
     const fromPod = from.split(".")[0];
     const toPod = to.split(".")[0];
     if (fromPod === toPod) {
@@ -1124,6 +1144,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     runtime: m["runtime"] as string,
     codexConfigProfile: m["codex_config_profile"] as string | undefined,
     model: m["model"] as string | undefined,
+    effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
     cwd: m["cwd"] as string,
@@ -1177,7 +1198,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
 // -- Legacy flat-node RigSpec validation (pre-reboot) --
 // TODO: Remove when AS-T08b/AS-T12 migrate all consumers
 
-const LEGACY_KNOWN_RUNTIMES = new Set(["claude-code", "codex", "pi"]);
+const LEGACY_KNOWN_RUNTIMES = new Set(["claude-code", "codex", "pi", "omp"]);
 const LEGACY_KNOWN_RESTORE_POLICIES = new Set(["resume_if_possible", "relaunch_fresh", "checkpoint_only"]);
 const LEGACY_KNOWN_EDGE_KINDS = new Set(["delegates_to", "spawned_by", "can_observe"]);
 
@@ -1239,6 +1260,12 @@ export class LegacyRigSpecSchema {
           errors.push(`node ${node["id"]}: unknown runtime '${node["runtime"]}'`);
         }
 
+        if (node["effort"] !== undefined) {
+          if (typeof node["effort"] !== "string" || !node["effort"].trim()) {
+            advisories.push(`nodes.${nodeWhere}.effort: non-string value "${node["effort"]}" ignored; effort must be a text value`);
+          }
+        }
+
         if (node["restore_policy"] != null && !LEGACY_KNOWN_RESTORE_POLICIES.has(node["restore_policy"] as string)) {
           errors.push(`node ${node["id"]}: unknown restorePolicy '${node["restore_policy"]}'`);
         }
@@ -1288,6 +1315,7 @@ export class LegacyRigSpecSchema {
       runtime: n["runtime"] as string,
       role: (n["role"] as string) ?? undefined,
       model: (n["model"] as string) ?? undefined,
+      effort: typeof n["effort"] === "string" && n["effort"].trim() ? n["effort"].trim() : undefined,
       cwd: (n["cwd"] as string) ?? undefined,
       surfaceHint: (n["surface_hint"] as string) ?? undefined,
       workspace: (n["workspace"] as string) ?? undefined,

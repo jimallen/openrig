@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { AgentActivityStore } from "../domain/agent-activity-store.js";
@@ -9,6 +10,7 @@ import type { AgentActivity } from "../domain/types.js";
 import * as parkedQuery from "../domain/parked-query.js";
 import { runtimeRungInventory } from "../domain/activity-taxonomy.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
+import { claudeHookFromLaunchedProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { transportSenderSession } from "./require-sender-identity.js";
 
 // ── S19 A4 — the ingest half of the adapter seam: hook events reach the ONE oracle ──
@@ -106,6 +108,60 @@ activityRoutes.post("/hooks", async (c) => {
     if (!resolved) {
       return c.json({ ok: false, code: "session_not_found", error: `No session found for ${sessionName}` }, 404);
     }
+    // OMP session identity (hook or seat) is strict: the exact seat name, the
+    // seat's own runtime, the current occupant generation, and a materialized
+    // session file that matches the seat's runner sidecar. Every refusal
+    // reports tokenPersisted: false so the OMP runner keeps re-announcing.
+    // Pi, Claude, Codex and terminal seats keep the paths below unchanged.
+    if (runtime === "omp" || resolved.runtime === "omp") {
+      if (sessionName !== resolved.sessionName) {
+        return c.json({ ok: false, code: "session_not_found", tokenPersisted: false, error: "Session identity does not match the managed seat." }, 404);
+      }
+      if (runtime !== resolved.runtime) {
+        return c.json({ ok: false, code: "runtime_mismatch", tokenPersisted: false, error: "Session identity runtime does not match the managed seat." }, 409);
+      }
+      // Same occupant-generation gate as Pi below, before any file eligibility.
+      const generation = stringOrNull(body.generation);
+      let reason: string | null = null;
+      try {
+        const current = sessionRegistry.currentOccupantTenure(resolved.nodeId);
+        if (!generation) reason = "generation_unverifiable";
+        else if (!current || !sessionRegistry.isOccupantGenerationRegistered(resolved.nodeId, generation)) {
+          reason = "generation_unresolvable";
+        } else if (current.generationUuid !== generation) reason = "generation_mismatch";
+      } catch {
+        return c.json({
+          ok: false, code: "generation_resolver_error", tokenPersisted: false,
+          error: "OMP session identity ignored: occupant generation is unavailable.",
+        }, 503);
+      }
+      if (reason) {
+        return c.json({
+          ok: false, code: reason, tokenPersisted: false,
+          error: "OMP session identity ignored: emitter is not the registered current occupant.",
+        }, 409);
+      }
+      const validation = validateResumeToken("omp", stringOrNull(body.sessionFile));
+      // OMP reports a path before its first turn is written. Persist only
+      // materialized history; the runner can re-announce identity later.
+      const adapters = c.get("runtimeAdapters" as never) as Record<string, unknown> | undefined;
+      const omp = adapters?.["omp"] as { readSessionFile?: (sessionName: string) => { ok: true; sessionFile: string } | { ok: false; reason: string } } | undefined;
+      const ownFile = typeof omp?.readSessionFile === "function" ? omp.readSessionFile(resolved.sessionName) : null;
+      const tokenPersisted = validation.ok && ownFile?.ok === true && ownFile.sessionFile === validation.token && existsSync(validation.token)
+        ? sessionRegistry.updateResumeToken(resolved.sessionId, validation.resumeType, validation.token, "hook")
+          || sessionRegistry.resumeTokenMatches(resolved.sessionId, validation.resumeType, validation.token)
+        : false;
+      eventBus.emit({
+        type: "agent.session_identity",
+        rigId: resolved.rigId,
+        nodeId: resolved.nodeId,
+        sessionName: resolved.sessionName,
+        runtime: "omp",
+        sessionId,
+        provenance: "rpc",
+      });
+      return c.json({ ok: true, sessionId, provenance: "rpc", tokenPersisted });
+    }
 
     // OPR.0.4.6.PI1 FR-5 — Pi session identity arrives from the pi-runner's
     // RPC get_state (provenance "rpc" on the bus, never scrape). The resume
@@ -157,10 +213,42 @@ activityRoutes.post("/hooks", async (c) => {
     // correct token value — and a restore path selecting its resume MECHANISM by label would pick the
     // wrong one while looking healthy. The relay only posts session_identity with a runtime present;
     // an unmapped runtime skips the persist (tokenPersisted: false) rather than guessing a label.
+    // tokenPersisted reports the stored state, not format validity: a higher-provenance token
+    // (operator) refuses the hook write, which only counts as persisted when it already matches.
     const validation = validateResumeToken(runtime, sessionId);
-    if (validation.ok) {
-      sessionRegistry.updateResumeToken(resolved.sessionId, validation.resumeType, validation.token, "hook");
+    // A Claude hook also says how the session began. That only counts as evidence about this
+    // seat's launch when the post carries the node's current occupant generation (#1077).
+    const generation = stringOrNull(body.generation);
+    let currentGeneration = false;
+    try {
+      currentGeneration = !!generation && sessionRegistry.currentOccupantTenure(resolved.nodeId)?.generationUuid === generation;
+    } catch { /* an unreadable ledger is no evidence */ }
+    const source = stringOrNull(body.source);
+    const resumeLaunch = stringOrNull(body.resumeLaunch);
+    // Only for a hook that could name the armed launch: was it the launch's first SessionStart (the
+    // relay records that locally, so a first hook lost in delivery still counts), and was it sent
+    // by the process OpenRig launched?
+    let launchedProcess: ClaudeLaunchedProcess | null = null;
+    const armed = runtime === "claude-code" && currentGeneration && source === "resume" && resumeLaunch
+      && body.resumeLaunchFirst === true ? sessionRegistry.armedResumeLaunch(resolved.sessionId) : null;
+    const hookPid = typeof body.hookPid === "number" && Number.isInteger(body.hookPid) && body.hookPid > 0 ? body.hookPid : null;
+    const tmux = c.get("tmuxAdapter" as never) as { getPanePid(target: string): Promise<number | null> } | undefined;
+    if (armed && armed === resumeLaunch?.trim() && hookPid && tmux) {
+      const binding = sessionRegistry.getBindingForNode(resolved.nodeId);
+      const target = binding?.tmuxPane ?? binding?.tmuxSession;
+      if (target) {
+        launchedProcess = await claudeHookFromLaunchedProcess({ target, tmux, launchToken: armed, hookPid,
+          listProcesses: c.get("listProcesses" as never) as NativeProcessLister | undefined });
+      }
     }
+    const persistHook = (type: string, token: string): boolean => {
+      if (runtime !== "claude-code") return sessionRegistry.updateResumeToken(resolved.sessionId, type, token, "hook");
+      return sessionRegistry.recordHookSessionIdentity(resolved.sessionId, type, token,
+        { source, currentGeneration, resumeLaunch, launchedProcess });
+    };
+    const tokenPersisted = validation.ok
+      && (persistHook(validation.resumeType, validation.token)
+        || sessionRegistry.resumeTokenMatches(resolved.sessionId, validation.resumeType, validation.token));
     eventBus.emit({
       type: "agent.session_identity",
       rigId: resolved.rigId,
@@ -171,7 +259,7 @@ activityRoutes.post("/hooks", async (c) => {
       provenance: "hook",
     });
 
-    return c.json({ ok: true, sessionId, provenance: "hook", tokenPersisted: validation.ok });
+    return c.json({ ok: true, sessionId, provenance: "hook", tokenPersisted });
   }
 
   // OPR.0.4.3.06 — startup proof ingestion. Mirrors session_identity: reuses
@@ -226,12 +314,30 @@ activityRoutes.post("/hooks", async (c) => {
     | import("../domain/seat-activity-service.js").SeatActivityService
     | undefined;
   const emitted = result.event as { nodeId?: string; sessionName?: string; runtime?: string } | undefined;
-  if (oracle && emitted?.nodeId && emitted.sessionName) {
+  // Recording a historical hook is valid, but its raw activity cannot staff the
+  // current oracle. The store may resolve nodeId to a newer session even when
+  // the emitter supplied an old sessionName, so check both identities before
+  // declaring an inventory (which would reactivate a retired seat).
+  const currentSession = oracle && emitted?.nodeId
+    ? store.db.prepare("SELECT session_name, status FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1")
+      .get(emitted.nodeId) as { session_name: string; status: string } | undefined
+    : undefined;
+  const suppliedSessionName = stringOrNull(body.sessionName);
+  if (oracle && emitted?.nodeId && emitted.sessionName
+      && currentSession?.status === "running" && currentSession.session_name === emitted.sessionName
+      && (!suppliedSessionName || suppliedSessionName === emitted.sessionName)) {
+    // A same-name relaunch can have a different registered occupant generation.
+    // Honor the store's positive mismatch verdict, while preserving legacy hooks
+    // with unresolved provenance and the archival response below.
+    if (result.activity.generation != null
+        && store.getLatestForNode({ nodeId: emitted.nodeId, sessionName: emitted.sessionName })?.reason === "generation_mismatch") {
+      return c.json({ ok: true, activity: result.activity });
+    }
     const runtime = emitted.runtime ?? stringOrNull(body.runtime);
     // Auto-declare on first hook evidence (and after a swap cleared the inventory):
     // the runtime's inventory sets each rung's INITIAL trust (claude standing, codex
     // hooks-at-trial per AM-2) — a successor's rungs always start unpromoted.
-    if (!oracle.hasRungInventory(emitted.nodeId)) {
+    if (!oracle.hasRungInventory(emitted.nodeId, emitted.sessionName)) {
       oracle.declareRungInventory(
         { seatNodeId: emitted.nodeId, sessionName: emitted.sessionName },
         runtimeRungInventory(runtime),

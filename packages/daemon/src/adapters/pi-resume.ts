@@ -11,12 +11,13 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
+import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import type { ResumeResult } from "./claude-resume.js";
-import { piTrust } from "./yolo-mode.js";
+import { piTrust, yoloEnabled } from "./yolo-mode.js";
 import {
-  piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
+  piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
-import { observePiResourceTrust } from "../domain/permission-drift.js";
+import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
 
 export { type ResumeResult };
 
@@ -28,6 +29,7 @@ export interface PiResumeFsOps {
 }
 
 interface PiResumeOptions {
+  seatLaunchEnvironment?: SeatLaunchEnvironment;
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -37,6 +39,9 @@ interface PiResumeOptions {
 }
 
 export class PiResumeAdapter {
+  protected readonly runtime: RunnerRuntime = "pi";
+  /** Operator-facing name in resume messages; Pi keeps main's wording. */
+  private get label(): string { return this.runtime === "pi" ? "Pi" : "OMP"; }
   constructor(
     private tmux: TmuxAdapter,
     private fs: PiResumeFsOps,
@@ -45,7 +50,7 @@ export class PiResumeAdapter {
   ) {}
 
   canResume(resumeType: string | null, resumeToken: string | null): boolean {
-    return resumeType === "pi_session_file" && !!resumeToken;
+    return resumeType === `${this.runtime}_session_file` && !!resumeToken;
   }
 
   async resume(
@@ -55,17 +60,17 @@ export class PiResumeAdapter {
     cwd: string,
     model?: string | null,
     // OPR.0.4.8.3 Seam B: persisted resolved posture (resource-trust wording for Pi).
-    resolvedPosture?: "floor" | "full_bypass",
+    resolvedPosture?: "floor" | "full_bypass" | "auto",
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
-      return { ok: false, code: "no_resume", message: "Pi resume not available" };
+      return { ok: false, code: "no_resume", message: `${this.label} resume not available` };
     }
     const sessionFile = resumeToken!;
 
     if (!this.fs.exists(sessionFile)) {
       // The honest zero-session outcome: the caller's retry_fresh mapping
       // realizes the awaiting-decision stop-and-ask (BR-6).
-      return { ok: false, code: "retry_fresh", message: "Pi resume failed: the persisted session file no longer exists" };
+      return { ok: false, code: "retry_fresh", message: `${this.label} resume failed: the persisted session file no longer exists` };
     }
 
     const seat = piSeatPaths(this.paths.stateRoot, tmuxSessionName);
@@ -83,9 +88,14 @@ export class PiResumeAdapter {
       JSON.stringify(buildPendingRunnerState(launchId, new Date().toISOString(), prior)),
     );
 
-    const trust = piTrust(this.options.trustPosture, process.env, resolvedPosture);
-    const appliedLaunch = observePiResourceTrust(trust);
+    const trust = this.runtime === "omp"
+      ? (yoloEnabled(process.env, resolvedPosture) ? "approve" : "no-approve")
+      : piTrust(this.options.trustPosture, process.env, resolvedPosture);
+    const appliedLaunch = this.runtime === "omp"
+      ? observeOmpApprovalMode(`--approval-mode ${trust === "approve" ? "yolo" : "always-ask"}`)
+      : observePiResourceTrust(trust);
     const cmd = buildPiRunnerCommand({
+      runtime: this.runtime,
       runnerEntryPath: this.paths.runnerEntryPath,
       sessionName: tmuxSessionName,
       stateRoot: this.paths.stateRoot,
@@ -100,18 +110,18 @@ export class PiResumeAdapter {
       launchId,
     });
 
-    const textResult = await this.tmux.sendText(tmuxSessionName, cmd);
+    const command = this.runtime === "pi" && this.options.seatLaunchEnvironment
+      ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { runtime: this.runtime })
+      : cmd;
+    // Short commands retain the direct path; long commands exec from a private script.
+    let textResult = await this.tmux.sendShellCommand(tmuxSessionName, command, undefined, { stageIfLong: true, execInScript: true });
+    // This refusal precedes any input: retain the bare-command fallback when routing cannot fit.
+    if (!textResult.ok && textResult.code === "launch_path_too_long" && command !== cmd) {
+      textResult = await this.tmux.sendShellCommand(tmuxSessionName, cmd, undefined, { stageIfLong: true, execInScript: true });
+    }
     if (!textResult.ok) {
       return { ok: false, code: "resume_failed", message: textResult.message };
     }
-    const keyResult = await this.tmux.sendKeys(tmuxSessionName, ["Enter"]);
-    if (!keyResult.ok) {
-      // Partial failure: command text is in the buffer but Enter failed.
-      // Best-effort cleanup: send C-c to clear the typed command.
-      await this.tmux.sendKeys(tmuxSessionName, ["C-c"]);
-      return { ok: false, code: "resume_failed", message: keyResult.message };
-    }
-
     const result = await this.verifyResume(tmuxSessionName, sessionFile, launchId);
     return result.ok ? { ...result, appliedLaunch } : result;
   }
@@ -137,7 +147,7 @@ export class PiResumeAdapter {
           return {
             ok: false,
             code: "resume_failed",
-            message: `Pi resume failed: the runner exited (code ${state.exited.code ?? "unknown"})`,
+            message: `${this.label} resume failed: the runner exited (code ${state.exited.code ?? "unknown"})`,
             evidence: paneContent.split("\n").slice(-12).join("\n"),
           } as ResumeResult;
         }
@@ -146,7 +156,7 @@ export class PiResumeAdapter {
             return {
               ok: false,
               code: "resume_failed",
-              message: "Pi resume failed: the runner is ready but does not report the requested session file",
+              message: `${this.label} resume failed: the runner is ready but does not report the requested session file`,
             };
           }
           return { ok: true };
@@ -161,7 +171,7 @@ export class PiResumeAdapter {
     return {
       ok: false,
       code: "resume_failed",
-      message: "Pi resume failed: timed out waiting for the runner to prove the requested session",
+      message: `${this.label} resume failed: timed out waiting for the runner to prove the requested session`,
     };
   }
 

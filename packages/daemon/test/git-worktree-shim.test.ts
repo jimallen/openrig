@@ -45,6 +45,8 @@ describe("git-worktree-shim", () => {
     await fs.writeFile(path.join(repo, "f.txt"), "x");
     spawnSync("git", ["-C", repo, "add", "f.txt"], { stdio: "ignore" });
     spawnSync("git", ["-C", repo, "commit", "-qm", "init"], { stdio: "ignore" });
+    // tests run with an isolated HOME, so no global excludes: ignore the scratch dir here
+    await fs.appendFile(path.join(repo, ".git", "info", "exclude"), ".rig-worktrees/\n");
 
     const shimDirPath = await ensureGitWorktreeShim(tmp);
     const env = { ...process.env, PATH: shimDirPath + ":" + process.env.PATH };

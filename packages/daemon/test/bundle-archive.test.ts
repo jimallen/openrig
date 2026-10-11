@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import * as tar from "tar";
-import { pack, unpack, verifyArchiveDigest } from "../src/domain/bundle-archive.js";
+import { pack, unpack, verifyArchiveDigest, unsafeArchiveEntryReason, collectUnsafeArchiveEntries } from "../src/domain/bundle-archive.js";
 // TODO: AS-T12 — migrate to pod-aware bundle types
 import { serializeLegacyBundleManifest as serializeBundleManifest, type LegacyBundleManifest as BundleManifest } from "../src/domain/bundle-types.js";
 import { computeIntegrity, writeIntegrity, type IntegrityFsOps } from "../src/domain/bundle-integrity.js";
@@ -64,6 +64,17 @@ describe("Bundle archive", () => {
     return staging;
   }
 
+  it("pack creates parent directory if it does not exist", async () => {
+    const staging = createStaging();
+    const nestedOut = path.join(tmpDir, "missing", "sub", "test.rigbundle");
+
+    const hash = await pack(staging, nestedOut);
+
+    expect(fs.existsSync(nestedOut)).toBe(true);
+    expect(fs.existsSync(`${nestedOut}.sha256`)).toBe(true);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   // T1: Pack creates valid tar.gz
   it("pack creates valid tar.gz file", async () => {
     const staging = createStaging();
@@ -74,6 +85,27 @@ describe("Bundle archive", () => {
     expect(fs.existsSync(outputPath)).toBe(true);
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
     expect(fs.statSync(outputPath).size).toBeGreaterThan(0);
+  });
+
+  it.skipIf(process.platform === "win32")("preserves executable file modes through pack and unpack", async () => {
+    const staging = createStaging();
+    const scriptPath = path.join(staging, "packages/pkg/bin/hello.sh");
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.writeFileSync(scriptPath, "#!/bin/sh\necho hello\n", { mode: 0o755 });
+    fs.chmodSync(scriptPath, 0o755);
+    writeIntegrity(staging, computeIntegrity(staging, realIntegrityFsOps()), realIntegrityFsOps());
+
+    const archivePath = path.join(tmpDir, "executable.rigbundle");
+    await pack(staging, archivePath);
+    let archivedMode: number | undefined;
+    await tar.list({ file: archivePath, onReadEntry: (entry) => {
+      if (entry.path === "packages/pkg/bin/hello.sh") archivedMode = entry.mode;
+    } });
+    expect((archivedMode ?? 0) & 0o111).toBeGreaterThan(0);
+
+    const extractDir = path.join(tmpDir, "executable-extracted");
+    await unpack(archivePath, extractDir);
+    expect(fs.statSync(path.join(extractDir, "packages/pkg/bin/hello.sh")).mode & 0o111).toBeGreaterThan(0);
   });
 
   // T2: Unpack extracts to correct structure
@@ -124,6 +156,42 @@ describe("Bundle archive", () => {
 
     await expect(unpack(malArchive, path.join(tmpDir, "out")))
       .rejects.toThrow(/Unsafe archive entry|path traversal/i);
+  });
+
+  it("backslash path traversal in archive entry rejected during extraction", async () => {
+    const malDir = path.join(tmpDir, "mal-win-staging");
+    fs.mkdirSync(malDir, { recursive: true });
+    fs.writeFileSync(path.join(malDir, "evil.txt"), "escape!");
+
+    const malArchive = path.join(tmpDir, "mal-win.rigbundle");
+    await tar.create(
+      { gzip: true, file: malArchive, cwd: malDir, prefix: "..\\escape" },
+      ["evil.txt"],
+    );
+
+    const archiveHash = createHash("sha256").update(fs.readFileSync(malArchive)).digest("hex");
+    fs.writeFileSync(`${malArchive}.sha256`, archiveHash);
+
+    await expect(unpack(malArchive, path.join(tmpDir, "out")))
+      .rejects.toThrow(/Unsafe archive entry|path traversal/i);
+  });
+
+  it("windows drive letter in archive entry rejected during extraction", async () => {
+    const malDir = path.join(tmpDir, "mal-drive-staging");
+    fs.mkdirSync(malDir, { recursive: true });
+    fs.writeFileSync(path.join(malDir, "evil.txt"), "escape!");
+
+    const malArchive = path.join(tmpDir, "mal-drive.rigbundle");
+    await tar.create(
+      { gzip: true, file: malArchive, cwd: malDir, prefix: "C:\\windows\\temp" },
+      ["evil.txt"],
+    );
+
+    const archiveHash = createHash("sha256").update(fs.readFileSync(malArchive)).digest("hex");
+    fs.writeFileSync(`${malArchive}.sha256`, archiveHash);
+
+    await expect(unpack(malArchive, path.join(tmpDir, "out")))
+      .rejects.toThrow(/Unsafe archive entry|absolute path/i);
   });
 
   // T4b: Symlink entry rejection
@@ -271,5 +339,40 @@ describe("Bundle archive", () => {
 
     expect(hash1).toBe(hash2);
     expect(fs.readFileSync(out1).equals(fs.readFileSync(out2))).toBe(true);
+  });
+
+  // S1: the shared unsafe-entry verdict used by both unpack() and /inspect.
+  describe("unsafeArchiveEntryReason (shared safety verdict)", () => {
+    it("rejects a POSIX absolute path", () => {
+      expect(unsafeArchiveEntryReason("/etc/passwd")).toMatch(/absolute path/);
+    });
+    it("rejects a Windows drive-letter path", () => {
+      expect(unsafeArchiveEntryReason("C:\\windows\\temp")).toMatch(/absolute path/);
+    });
+    it("rejects forward-slash traversal", () => {
+      expect(unsafeArchiveEntryReason("../../escape")).toMatch(/path traversal/);
+    });
+    it("rejects backslash traversal", () => {
+      expect(unsafeArchiveEntryReason("..\\escape")).toMatch(/path traversal/);
+    });
+    it("rejects symlink and hardlink entries", () => {
+      expect(unsafeArchiveEntryReason("link", "SymbolicLink")).toMatch(/SymbolicLink/);
+      expect(unsafeArchiveEntryReason("link", "Link")).toMatch(/Link/);
+    });
+    it("accepts an ordinary in-tree path", () => {
+      expect(unsafeArchiveEntryReason("packages/pkg/SKILL.md")).toBeNull();
+      // A filename that merely contains dots is not a traversal segment.
+      expect(unsafeArchiveEntryReason("packages/pkg/foo..bar.md")).toBeNull();
+    });
+  });
+
+  it("collectUnsafeArchiveEntries flags a backslash-traversal archive", async () => {
+    const malDir = path.join(tmpDir, "mal-scan-staging");
+    fs.mkdirSync(malDir, { recursive: true });
+    fs.writeFileSync(path.join(malDir, "evil.txt"), "escape!");
+    const malArchive = path.join(tmpDir, "mal-scan.rigbundle");
+    await tar.create({ gzip: true, file: malArchive, cwd: malDir, prefix: "..\\escape" }, ["evil.txt"]);
+    const entries = await collectUnsafeArchiveEntries(malArchive);
+    expect(entries.some((e) => /path traversal/.test(e))).toBe(true);
   });
 });

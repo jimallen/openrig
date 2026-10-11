@@ -9,7 +9,11 @@ Include the affected version even when reporting a problem in an older installat
 ## What OpenRig touches
 
 OpenRig runs a local daemon, drives coding agents in tmux sessions on your machine, and writes
-configuration for those harnesses (for example under `~/.claude` and `~/.codex`). The README
+configuration for those harnesses, including workspace trust records and executable hooks: for
+example `~/.claude.json`, skills under `~/.claude`, `$CODEX_HOME/config.toml` (default `~/.codex`),
+and, in the project, `.claude/settings.local.json`, `.mcp.json` and managed blocks in `CLAUDE.md`,
+`CLAUDE.local.md` or `AGENTS.md`. `rig setup` also edits `~/.tmux.conf` and, on macOS, cmux's
+settings. OpenRig's own state lives under `$OPENRIG_HOME` (default `~/.openrig`). The README
 section [What OpenRig changes on your machine](README.md#what-openrig-changes-on-your-machine)
 describes these effects and the trust/permission choices. Unexpected access, disclosure or
 permission changes are useful reports; include what you expected and what you observed.
@@ -39,6 +43,10 @@ could do. A proof of concept is welcome; a working exploit against a third party
 
 ## Scope notes
 
+- OpenRig is designed for your own machine or a trusted private network, for you and people you trust, not for the
+  open internet. We assess reports by their practical impact on a user in that setup. Exposing an install to the open
+  internet isn't a supported deployment. OpenRig's own gateway integrations with outside services, such as Slack, and
+  anything that lets an untrusted party reach the daemon or an agent are in scope.
 - OpenRig assumes the machine and the accounts it runs under are trusted by their owner. Reports
   that require a hostile local user with the same account are still welcome but are unlikely to be
   treated as high severity.

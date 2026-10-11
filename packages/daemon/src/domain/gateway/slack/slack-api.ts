@@ -68,6 +68,7 @@ export async function postWebhook(
 }
 
 export interface WebApiResult {
+  retryAfterSeconds?: number;
   ok: boolean; // Slack-level ok (json.ok === true AND 2xx)
   status: number;
   grantedScopes: string[]; // parsed from x-oauth-scopes response header (item 5)
@@ -77,10 +78,14 @@ export interface WebApiResult {
 
 /** S10 shape-fix — the per-method REQUEST SHAPE. Slack's read methods (conversations.info /
  *  history / replies) reject a JSON POST with `invalid_arguments` (operator-measured live);
- *  their supported shape is GET with URL-query args. Write/JSON methods (auth.test,
- *  apps.connections.open, chat.postMessage, files.completeUploadExternal) keep JSON POST
- *  byte-identically — the default, so no existing caller changes shape implicitly. */
-export type WebApiRequestShape = "json-post" | "get-query";
+ *  their supported shape is GET with URL-query args. The external-upload methods
+ *  (files.getUploadURLExternal / files.completeUploadExternal) are sent "form-post": url-encoded
+ *  fields, objects/arrays as JSON strings, which is how Slack's own Web API client sends every call.
+ *  files.getUploadURLExternal answers a JSON body with `invalid_arguments` ("missing required
+ *  field: length / filename") although its reference lists JSON. Write methods (auth.test,
+ *  apps.connections.open, chat.postMessage) keep JSON POST byte-identically — the default, so no
+ *  existing caller changes shape implicitly. */
+export type WebApiRequestShape = "json-post" | "get-query" | "form-post";
 
 /** Call a Slack Web API method (Bearer token) and surface the granted-scope header. */
 export async function callWebApi(
@@ -106,6 +111,17 @@ export async function callWebApi(
           headers: { authorization: `Bearer ${token}` },
           signal,
         });
+      } else if (shape === "form-post") {
+        const form = new URLSearchParams();
+        for (const [k, v] of Object.entries(body)) {
+          if (v !== undefined && v !== null) form.set(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+        }
+        res = await fetchImpl(`https://slack.com/api/${method}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
+          body: form.toString(),
+          signal,
+        });
       } else {
         res = await fetchImpl(`https://slack.com/api/${method}`, {
           method: "POST",
@@ -126,7 +142,9 @@ export async function callWebApi(
         /* non-JSON */
       }
       const ok = res.ok && json.ok === true;
-      return { ok, status: res.status, grantedScopes, json, error: ok ? undefined : String(json.error ?? `http ${res.status}`) };
+      const retryAfter = Number(res.headers.get("retry-after"));
+      return { ok, status: res.status, grantedScopes, json,
+        ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfterSeconds: retryAfter } : {}), error: ok ? undefined : String(json.error ?? `http ${res.status}`) };
     });
   } catch (e) {
     return { ok: false, status: 0, grantedScopes: [], json: {}, error: `web-api transport: ${(e as Error).message}` };
@@ -144,13 +162,26 @@ export async function getGrantedScopes(
 }
 
 /** OPR.0.5.6.2 — authenticated private-file download (`url_private` + Bearer,
- *  the verified inbound mechanic from the human-layer design §4.1). Bounded:
+ *  the verified inbound mechanic from the human-layer design §4.1). The host
+ *  gate (`isSlackHost`) is enforced HERE so the Bearer token can never reach
+ *  a non-Slack URL, whatever caller reaches this function. Bounded:
  *  a body over `maxBytes` is refused, never truncated-and-stored. Slack's
  *  classic auth-failure mode returns an HTML login page with status 200 —
  *  detected by content-type and named, so garbage is never stored as the file.
  *  Errors are MESSAGES, not exceptions: the caller's failure-honesty contract
  *  needs a name per file, never a thrown loss of the whole event. */
 export const INBOUND_FILE_MAX_BYTES = 26_214_400; // 25 MiB — bounded write per product limits
+
+/** R1 F1 — the anchored Slack-host verdict: https + URL-parsed hostname that is
+ *  exactly `slack.com` or ends with `.slack.com`. Never a substring match. */
+export function isSlackHost(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && (u.hostname === "slack.com" || u.hostname.endsWith(".slack.com"));
+  } catch {
+    return false;
+  }
+}
 
 export async function downloadPrivateFile(
   url: string,
@@ -159,6 +190,11 @@ export async function downloadPrivateFile(
   timeoutMs = 30_000,
   maxBytes = INBOUND_FILE_MAX_BYTES,
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; error: string }> {
+  // The token boundary: refuse before ANY network I/O so a future caller
+  // cannot send this Bearer token off slack.com by forgetting its own check.
+  if (!isSlackHost(url)) {
+    return { ok: false as const, error: "refused: non-Slack url host" };
+  }
   try {
     return await withTimeout(timeoutMs, async (signal) => {
       const res = await fetchImpl(url, { headers: { authorization: `Bearer ${token}` }, signal } as RequestInit);
@@ -167,9 +203,34 @@ export async function downloadPrivateFile(
       if (contentType.includes("text/html")) {
         return { ok: false as const, error: "auth failure (Slack served an HTML page instead of the file)" };
       }
-      const buf = new Uint8Array(await res.arrayBuffer());
-      if (buf.byteLength > maxBytes) return { ok: false as const, error: `exceeds size bound (${buf.byteLength} > ${maxBytes})` };
-      return { ok: true as const, bytes: buf };
+      // Enforce the bound while receiving, including chunked responses without
+      // Content-Length. arrayBuffer() would allocate the entire oversized file
+      // before checking the limit.
+      if (!res.body) return { ok: true as const, bytes: new Uint8Array() };
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          length += value.byteLength;
+          if (length > maxBytes) {
+            await reader.cancel().catch(() => {});
+            return { ok: false as const, error: `exceeds size bound (${length} > ${maxBytes})` };
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { ok: true as const, bytes };
     });
   } catch (e) {
     return { ok: false, error: (e as Error).message || "download failed" };
@@ -235,17 +296,18 @@ export async function getUploadURLExternal(
   fetchImpl: FetchImpl = defaultFetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; uploadUrl?: string; fileId?: string; error?: string }> {
-  const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, fetchImpl, timeoutMs);
+  const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, fetchImpl, timeoutMs, "form-post");
   if (!r.ok) return { ok: false, error: r.error };
   return { ok: true, uploadUrl: r.json.upload_url as string, fileId: r.json.file_id as string };
 }
 
-/** Leg 2: POST the raw bytes to the pre-signed upload URL (octet-stream, no auth header). */
+/** Leg 2: POST the raw bytes to the pre-signed upload URL (octet-stream, no auth header). The
+ *  default timeout grows with the size (a screen recording can be tens of MB): 15 s plus 1 s per 512 KiB. */
 export async function uploadBytesExternal(
   uploadUrl: string,
   bytes: Uint8Array,
   fetchImpl: FetchImpl = defaultFetch,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs = DEFAULT_TIMEOUT_MS + Math.ceil(bytes.length / 524_288) * 1000,
 ): Promise<HttpResult> {
   try {
     return await withTimeout(timeoutMs, async (signal) => {
@@ -272,14 +334,14 @@ export async function completeUploadExternal(
   const body: Record<string, unknown> = { files: input.files, channel_id: input.channelId };
   if (input.threadTs) body.thread_ts = input.threadTs;
   if (input.initialComment) body.initial_comment = input.initialComment;
-  const r = await callWebApi("files.completeUploadExternal", token, body, fetchImpl, timeoutMs);
+  const r = await callWebApi("files.completeUploadExternal", token, body, fetchImpl, timeoutMs, "form-post");
   return { ok: r.ok, error: r.error };
 }
 
-/** S10 (H) — read recent message TEXTS for reconcile-by-marker: a timeout is an AMBIGUOUS
- *  outcome (the post may have landed), so before any resend the sender searches for the
- *  embedded row-id marker. threadTs set → conversations.replies (a threaded reply lives in its
- *  thread, not channel history); absent → conversations.history. Read-only; bounded. */
+/** Search either history order (root newest-first; replies earliest-first) via
+ * supported cursors under one total timeout and a finite page bound. A found
+ * marker stops the scan; incomplete records partial evidence for the caller.
+ * No timestamp cutoff is inferred from in-memory or durable attempt records. */
 export async function fetchRecentMessageTexts(
   token: string,
   channel: string,
@@ -287,17 +349,40 @@ export async function fetchRecentMessageTexts(
   fetchImpl: FetchImpl = defaultFetch,
   limit = 100,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<{ ok: boolean; texts: string[]; messages: { text: string; ts: string }[]; error?: string }> {
+  reconcileMarker?: string,
+): Promise<{ ok: boolean; texts: string[]; messages: { text: string; ts: string }[]; error?: string; incomplete?: string }> {
   const method = threadTs ? "conversations.replies" : "conversations.history";
-  const body: Record<string, unknown> = threadTs ? { channel, ts: threadTs, limit } : { channel, limit };
-  const r = await callWebApi(method, token, body, fetchImpl, timeoutMs, "get-query");
-  if (!r.ok) return { ok: false, texts: [], messages: [], error: r.error };
-  const messages = (r.json.messages ?? []) as { text?: string; ts?: string }[];
-  // S14 repair: retain each message's REAL Slack ts alongside its text — the
-  // reconcile-by-marker path needs the matched message's ts to open the thread
-  // map and stamp receipts with the real anchor, not a synthetic value.
-  const shaped = messages.map((m) => ({ text: String(m.text ?? ""), ts: String(m.ts ?? "") }));
-  return { ok: true, texts: shaped.map((m) => m.text), messages: shaped };
+  const messages: { text: string; ts: string }[] = [];
+  const result = (ok: boolean, error?: string) => ({ ok, texts: messages.map((m) => m.text), messages, error });
+  const deadline = performance.now() + timeoutMs;
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let usablePages = 0;
+  // Partial history is evidence about the scan, never proof of absence. Preserve
+  // the initial-request failure outcome; after a usable page let delivery warn
+  // and retain main's at-least-once retry policy for human notifications.
+  const incomplete = (reason: string) => usablePages === 0
+    ? result(false, reason)
+    : { ...result(true), incomplete: reason.slice(0, 160) };
+  for (let page = 0; page < 10; page++) {
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) return incomplete("reconcile pagination exceeded its total timeout");
+    const body: Record<string, unknown> = { channel, limit, ...(threadTs ? { ts: threadTs } : {}), ...(cursor ? { cursor } : {}) };
+    const response = await callWebApi(method, token, body, fetchImpl, remainingMs, "get-query");
+    if (!response.ok) return incomplete(response.error ?? "reconcile request failed");
+    usablePages++;
+    const pageMessages = (response.json.messages ?? []) as { text?: string; ts?: string }[];
+    messages.push(...pageMessages.map((message) => ({ text: String(message.text ?? ""), ts: String(message.ts ?? "") })));
+    if (reconcileMarker && messages.some((message) => message.text.includes(reconcileMarker))) return result(true);
+    const metadata = response.json.response_metadata as { next_cursor?: unknown } | undefined;
+    const nextCursor = typeof metadata?.next_cursor === "string" ? metadata.next_cursor.trim() : "";
+    if (!nextCursor && response.json.has_more !== true) return result(true);
+    if (!nextCursor) return incomplete("reconcile pagination has more messages but no next cursor");
+    if (cursors.has(nextCursor)) return incomplete("reconcile pagination repeated a cursor");
+    cursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+  return incomplete("reconcile pagination exceeded its 10-page bound");
 }
 
 export interface PostChatMessageInput {
@@ -312,6 +397,14 @@ export type PostChatMessageResult =
   | { ok: true; status: number; ts: string }
   | { ok: false; status: number; error?: string };
 
+/** The longest Retry-After `postChatMessage` waits for inline. A 429 means Slack
+ *  rejected the post WITHOUT accepting it, so one bounded wait and one retry can
+ *  never double-post (and delivery reconciles by marker on any later replay). A
+ *  longer requested pause, a missing header, or any non-429 failure keeps the
+ *  immediate-failure behavior: the existing retain-and-replay machinery owns
+ *  long rate-limit windows, not this call. */
+const MAX_POST_RATE_LIMIT_WAIT_MS = 10_000;
+
 /** S10 — outbound posting via the Web API (`chat.postMessage`). The R2 native shape needs
  *  thread_ts, which an incoming webhook cannot carry — the webhook path retires with the relay.
  *  A1.2 identity rail: this function NEVER accepts per-message `username`/`icon_*` overrides —
@@ -322,11 +415,19 @@ export async function postChatMessage(
   input: PostChatMessageInput,
   fetchImpl: FetchImpl = defaultFetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<PostChatMessageResult> {
   const body: Record<string, unknown> = { channel: input.channel, text: input.text };
   if (input.blocks?.length) body.blocks = input.blocks;
   if (input.thread_ts) body.thread_ts = input.thread_ts;
-  const r = await callWebApi("chat.postMessage", token, body, fetchImpl, timeoutMs);
+  let r = await callWebApi("chat.postMessage", token, body, fetchImpl, timeoutMs);
+  if (!r.ok && r.status === 429) {
+    const waitMs = (r.retryAfterSeconds ?? 0) * 1000;
+    if (waitMs > 0 && waitMs <= MAX_POST_RATE_LIMIT_WAIT_MS) {
+      await sleep(waitMs);
+      r = await callWebApi("chat.postMessage", token, body, fetchImpl, timeoutMs);
+    }
+  }
   if (!r.ok) return { ok: false, status: r.status, error: r.error };
   const ts = typeof r.json.ts === "string" ? r.json.ts.trim() : "";
   if (!ts) {

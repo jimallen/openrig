@@ -130,7 +130,7 @@ export class ComposeServicesAdapter {
   }): Promise<ComposeLogsResult> {
     const args = this.baseArgs(opts.composeFile, opts.projectName, opts.profiles);
     const serviceArg = opts.service ? ` ${sq(opts.service)}` : "";
-    const tailArg = opts.tail ? ` --tail ${opts.tail}` : "";
+    const tailArg = Number.isFinite(opts.tail) ? ` --tail ${opts.tail}` : "";
     const cmd = `docker compose ${args} logs${tailArg}${serviceArg} 2>&1`;
     try {
       const output = await this.exec(cmd);
@@ -160,7 +160,8 @@ export class ComposeServicesAdapter {
     }
   }
 
-  /** Probe an HTTP wait target. Returns true if the URL responds with 2xx. */
+  /** Probe an HTTP wait target. Any 2xx or 3xx response passes this target;
+   * redirects are not followed. This proves the server answered, not application readiness. */
   async probeHttp(url: string, timeoutMs: number = 5000): Promise<boolean> {
     try {
       const cmd = `curl -sf -o /dev/null -w '%{http_code}' --max-time ${Math.ceil(timeoutMs / 1000)} ${sq(url)} 2>/dev/null`;
@@ -175,7 +176,9 @@ export class ComposeServicesAdapter {
   /** Probe a TCP wait target. Returns true if the port is open. */
   async probeTcp(target: string, timeoutMs: number = 5000): Promise<boolean> {
     try {
-      const [host, portStr] = target.split(":");
+      const match = /^(?:\[([^\]]+)\]|([^:]+)):([^:]+)$/.exec(target);
+      const host = match?.[1] ?? match?.[2];
+      const portStr = match?.[3];
       if (!host || !portStr) return false;
       const cmd = `nc -z -w ${Math.ceil(timeoutMs / 1000)} ${sq(host)} ${sq(portStr)} 2>/dev/null`;
       await this.exec(cmd);

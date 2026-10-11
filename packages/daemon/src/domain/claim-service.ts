@@ -7,7 +7,7 @@ import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { startTmuxTranscriptCapture } from "./transcript-capture.js";
-import { deriveResumeToken } from "./resume-token-capture.js";
+import { deriveResumeToken, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import {
   observeSolePane,
   paneObservationVerdict,
@@ -72,8 +72,10 @@ interface ClaimServiceDeps {
   // that omit them make capture a silent no-op). contextUsageStore reads the
   // Claude status-line sidecar; resumeTokenCapturer derives the Codex thread id.
   contextUsageStore?: {
-    readSidecar(sessionName: string): { ok: true; data: { session_id?: string } } | { ok: false; reason: string };
+    readSidecar(sessionName: string): { ok: true; data: { session_id?: string; sampled_at?: string } } | { ok: false; reason: string };
   };
+  /** #421 — start time of the pane's current Claude process; a sidecar sampled earlier is skipped. */
+  claudeProcessStartedAt?: ResumeTokenCaptureDeps["claudeProcessStartedAt"];
   resumeTokenCapturer?: {
     captureCodexThreadId(sessionName: string): Promise<string | undefined>;
   };
@@ -81,6 +83,7 @@ interface ClaimServiceDeps {
   piRunnerStateStore?: {
     readSessionFile(sessionName: string): { ok: true; sessionFile: string } | { ok: false; reason: string };
   };
+  ompRunnerStateStore?: ResumeTokenCaptureDeps["ompRunnerStateStore"];
 }
 
 interface BindOptions {
@@ -112,8 +115,10 @@ export class ClaimService {
   private transcriptStore: TranscriptStore | null;
   private claudeContextProvisioner: ClaimServiceDeps["claudeContextProvisioner"] | null;
   private contextUsageStore: ClaimServiceDeps["contextUsageStore"] | null;
+  private claudeProcessStartedAt: ClaimServiceDeps["claudeProcessStartedAt"] | null;
   private resumeTokenCapturer: ClaimServiceDeps["resumeTokenCapturer"] | null;
   private piRunnerStateStore: ClaimServiceDeps["piRunnerStateStore"] | null;
+  private ompRunnerStateStore: ClaimServiceDeps["ompRunnerStateStore"] | null;
 
   constructor(deps: ClaimServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("ClaimService: rigRepo must share the same db handle");
@@ -129,8 +134,10 @@ export class ClaimService {
     this.transcriptStore = deps.transcriptStore ?? null;
     this.claudeContextProvisioner = deps.claudeContextProvisioner ?? null;
     this.contextUsageStore = deps.contextUsageStore ?? null;
+    this.claudeProcessStartedAt = deps.claudeProcessStartedAt ?? null;
     this.resumeTokenCapturer = deps.resumeTokenCapturer ?? null;
     this.piRunnerStateStore = deps.piRunnerStateStore ?? null;
+    this.ompRunnerStateStore = deps.ompRunnerStateStore ?? null;
   }
 
   private async observeBindingPane(
@@ -148,6 +155,7 @@ export class ClaimService {
     nodeId: string,
     sessionName: string,
     observation: PaneBindingObservation,
+    sessionId: string,
     tmuxWindow?: string | null,
   ): void {
     this.sessionRegistry.updateBinding(nodeId, {
@@ -158,6 +166,7 @@ export class ClaimService {
     if (!observation.ok) {
       new SeatIdentityStore(this.db).upsert(paneObservationVerdict({
         nodeId,
+        sessionId,
         sessionName,
         observation,
       }));
@@ -189,7 +198,7 @@ export class ClaimService {
     const hint = `--- OpenRig: You have been adopted into rig "${meta.rigName}" as ${meta.logicalId}. Run: rig whoami --json ---`;
     const write = async () => {
       const sent = await this.tmuxAdapter!.sendText(tmuxSession, hint);
-      if (sent.ok) await this.tmuxAdapter!.sendKeys(tmuxSession, ["C-m"]);
+      if (sent.ok) await this.tmuxAdapter!.sendKeys(tmuxSession, ["Enter"]);
     };
     const guard = this.tmuxAdapter.deliveryGuard;
     if (guard) await guard.operation(tmuxSession, write, async target => {
@@ -236,7 +245,7 @@ export class ClaimService {
       // FR-3's adoption provenance/audit semantics are unchanged.
       const derived = await deriveResumeToken(
         { runtime: input.runtime, sessionName: input.sessionName },
-        { contextUsageStore: this.contextUsageStore, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore },
+        { contextUsageStore: this.contextUsageStore, claudeProcessStartedAt: this.claudeProcessStartedAt, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore, ompRunnerStateStore: this.ompRunnerStateStore },
       );
       if (derived.outcome === "exempt" || derived.outcome === "noop") return;
       const runtime = input.runtime as string; // non-null past exempt
@@ -273,7 +282,7 @@ export class ClaimService {
   private emitCaptureSkip(
     input: { rigId: string; nodeId: string; sessionId: string; sessionName: string },
     runtime: string,
-    reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token",
+    reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token" | "stale_sidecar",
   ): void {
     try {
       this.eventBus.emit({
@@ -327,14 +336,14 @@ export class ClaimService {
     );
 
     const bindTx = this.db.transaction(() => {
+      const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);
       this.persistPaneBinding(
         node.id,
         discovered.tmuxSession,
         paneObservation,
+        session.id,
         discovered.tmuxWindow,
       );
-
-      const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);
       this.discoveryRepo.markClaimed(discovered.id, node.id);
       this.eventBus.persistWithinTransaction({
         type: "node.claimed",
@@ -532,8 +541,8 @@ export class ClaimService {
         for (const row of stale) {
           this.sessionRegistry.markSuperseded(row.id);
         }
-        this.persistPaneBinding(nodeRow!.id, sessionName, paneObservation);
         const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName);
+        this.persistPaneBinding(nodeRow!.id, sessionName, paneObservation, session.id);
         sessionId = session.id;
         persistedEvent = this.eventBus.persistWithinTransaction({
           type: "node.reconciled",
@@ -672,14 +681,14 @@ export class ClaimService {
         podId: opts.podId,
       });
 
+      const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);
       this.persistPaneBinding(
         node.id,
         discovered.tmuxSession,
         paneObservation,
+        session.id,
         discovered.tmuxWindow,
       );
-
-      const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);
       this.discoveryRepo.markClaimed(discovered.id, node.id);
       this.eventBus.persistWithinTransaction({
         type: "node.claimed",

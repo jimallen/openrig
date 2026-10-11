@@ -1,7 +1,9 @@
 import { Command } from "commander";
 import fs from "node:fs";
+import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
 import { acquireDaemonStartLock } from "../daemon-start-lock.js";
+import { formatDaemonHostForUrl } from "../client.js";
 import { execFileSync, spawn } from "node:child_process";
 import { fetchWithTimeout } from "../fetch-with-timeout.js";
 import {
@@ -11,6 +13,7 @@ import {
   readLogs,
   tailLogs,
   type LifecycleDeps,
+  type ProcessLiveness,
   OPENRIG_DIR,
   STATE_FILE,
   resolveBindIntent,
@@ -32,26 +35,63 @@ export function createIsProcessAlive(deps: ProcessAliveDeps): (pid: number) => b
   };
 }
 
+export type SignalOutcome = "sent" | "missing" | "not-permitted";
+
+/** kill(pid, 0) as an outcome. POSIX: only ESRCH means no such process; EPERM means the process
+ *  EXISTS but this shell may not signal it (another user's process, or a sandbox such as Codex's). */
+export function signalProbe(pid: number, kill: (pid: number, signal: 0) => unknown = process.kill): SignalOutcome {
+  try {
+    kill(pid, 0);
+    return "sent";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM" ? "not-permitted" : "missing";
+  }
+}
+
+/** #275 — three-state liveness for status reads. Only a missing process (ESRCH) or a zombie is
+ *  dead. A process that exists but cannot be inspected (EPERM, or `ps` cannot run, as inside
+ *  Codex's macOS sandbox) is UNKNOWN, never dead: calling it dead turned a running daemon into
+ *  `stale` before any health probe. The boolean createIsProcessAlive (start/stop) is unchanged. */
+export function createProcessLiveness(deps: {
+  signal: (pid: number) => SignalOutcome;
+  readProcessState: (pid: number) => string | null;
+}): (pid: number) => ProcessLiveness {
+  return (pid: number) => {
+    if (deps.signal(pid) === "missing") return "dead";
+    const state = deps.readProcessState(pid)?.trim();
+    if (!state) return "unknown";
+    return state.startsWith("Z") ? "dead" : "alive";
+  };
+}
+
+type ExecFile = (file: string, args: string[], options: { encoding: "utf-8" }) => string;
+
+// Windows has no ps(1) and no zombie state, so the signal probe alone decides liveness there.
+export function readProcessState(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+  run: ExecFile = execFileSync,
+): string | null {
+  if (platform === "win32") return "R";
+  try {
+    return run("ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf-8" });
+  } catch {
+    return null;
+  }
+}
+
 export function realDeps(): LifecycleDeps {
   const isProcessAlive = createIsProcessAlive({
-    signalCheck: (pid) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    readProcessState: (pid) => {
-      try {
-        return execFileSync("ps", ["-o", "state=", "-p", String(pid)], { encoding: "utf-8" });
-      } catch {
-        return null;
-      }
-    },
+    signalCheck: (pid) => signalProbe(pid) === "sent",
+    readProcessState: (pid) => readProcessState(pid),
+  });
+  const processLiveness = createProcessLiveness({
+    signal: (pid) => signalProbe(pid),
+    readProcessState: (pid) => readProcessState(pid),
   });
 
   return {
+    processLiveness,
     acquireStartLock: () => acquireDaemonStartLock(OPENRIG_DIR),
     spawn: (cmd, args, opts) => spawn(cmd, args, opts as Parameters<typeof spawn>[2]),
     fetch: async (url) => {
@@ -62,6 +102,26 @@ export function realDeps(): LifecycleDeps {
       // OPR.0.4.3.21 — expose json() so getDaemonStatus can read the enriched
       // /healthz event-loop evidence. Bound to this Response instance.
       return { ok: res.ok, json: () => res.json() };
+    },
+    isPortOccupied: (host, port) => new Promise((resolve) => {
+      const server = createServer();
+      server.once("error", (error: NodeJS.ErrnoException) => resolve(error.code === "EADDRINUSE"));
+      try {
+        server.listen({ host, port, exclusive: true }, () => server.close(() => resolve(false)));
+      } catch { resolve(false); }
+    }),
+    fileSize: (p) => { try { return fs.statSync(p).size; } catch { return 0; } },
+    readFileFrom: (p, offset) => {
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(p, "r");
+        const size = fs.fstatSync(fd).size;
+        const start = size < offset ? 0 : offset; // The log may have been truncated.
+        const buffer = Buffer.alloc(size - start);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, start);
+        return buffer.toString("utf-8", 0, read);
+      } catch { return null; }
+      finally { if (fd !== undefined) fs.closeSync(fd); }
     },
     kill: (pid, signal) => { process.kill(pid, signal as NodeJS.Signals); return true; },
     readFile: (p) => { try { return fs.readFileSync(p, "utf-8"); } catch { return null; } },
@@ -112,7 +172,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
     // a no-kernel daemon for ad-hoc topology work. The daemon proceeds
     // and serves its HTTP API normally; just doesn't materialize the
     // kernel rig.
-    .option("--no-kernel", "Skip kernel auto-boot (daemon serves without the kernel rig)")
+    .option("--no-kernel", "Skip the kernel and its operator, which helps you start a team; for automation or when requested. Normal installation keeps the kernel")
     // V0.3.1 slice 05 kernel-rig-as-default — forward-fix #3 architectural.
     // After the daemon's healthz binds (current behavior preserved),
     // additionally poll /api/kernel/status until kernel_state is
@@ -124,8 +184,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
     .action(async (opts: { port?: string; host?: string; db?: string; kernel?: boolean; waitForKernel?: boolean; waitForKernelMs?: string }) => {
       try {
         const { ConfigStore } = await import("../config-store.js");
-        const { SystemPreflight } = await import("../system-preflight.js");
-        const { execSync } = await import("node:child_process");
+        const { SystemPreflight, quietPreflightExec } = await import("../system-preflight.js");
         const configStore = new ConfigStore();
         const config = configStore.resolve();
         const effectivePort = opts.port ? parseInt(opts.port, 10) : config.daemon.port;
@@ -150,7 +209,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
 
         // Run preflight before starting
           const preflight = new SystemPreflight({
-            exec: async (cmd) => execSync(cmd, { encoding: "utf-8" }),
+            exec: quietPreflightExec,
             configStore,
             getDaemonStatus: () => getDaemonStatus(getDeps()),
             openrigHome: OPENRIG_DIR,
@@ -179,13 +238,8 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
             contextRoot: config.context.root,
             skillsRoot: config.skills.root,
             topologyRoot: config.topology.root,
-            // V1 pre-release CLI/daemon Item 1 — project the
-            // ConfigStore-resolved rotation tunables into the daemon
-            // process env so file-stored values
-            // (`rig config set transcripts.lines 500`) actually
-            // reach the rotation hook.
-            transcriptsLines: config.transcripts.lines,
-            transcriptsPollIntervalSeconds: config.transcripts.pollIntervalSeconds,
+            // Live transcript tunables are read from the shared config file.
+            // Only operator-provided environment overrides should mask edits.
             // V0.3.1 slice 05 kernel-rig-as-default — propagated via
             // OPENRIG_NO_KERNEL env var so the daemon's kernel-boot
             // check in startup.ts honors the flag.
@@ -205,7 +259,7 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
           const timeoutMs = opts.waitForKernelMs && /^\d+$/.test(opts.waitForKernelMs)
             ? parseInt(opts.waitForKernelMs, 10)
             : 60_000;
-          const baseUrl = `http://${state.host}:${state.port}`;
+          const baseUrl = `http://${formatDaemonHostForUrl(state.host ?? "127.0.0.1")}:${state.port}`;
           const result = await waitForKernelReady(baseUrl, timeoutMs);
           if (result.ok) {
             console.log(`Kernel ${result.kernelState}; variant=${result.variant ?? "(none)"}`);

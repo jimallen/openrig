@@ -12,7 +12,7 @@
 // (4) undelivered/classifyNudgeFailure read only the nudge literal and never
 // consult the delivery ledger (the 34a6ad0b contradiction); (5) the row face
 // carries no delivery outcome.
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,8 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
 import type { HumanFragment } from "../src/domain/gateway/human-registry.js";
 import { makeQueuePorts } from "../src/domain/gateway/slack/queue-access.js";
+import { Hono } from "hono";
+import { queueRoutes } from "../src/routes/queue.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -93,6 +95,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     const fixture = makeHarness({ entities: () => entities });
     const item = await fixture.repo.create({ sourceSession: "dev-a@rig1", destinationSession: alias,
       tier: "human-gate", summary: "Legacy decision", evidenceRef: EVIDENCE, body: "preserve these bytes" });
+    await vi.waitFor(() => expect(fixture.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
     expect(fixture.repo.getById(item.qitemId)).toMatchObject({ state: "pending", body: "preserve these bytes", lastNudgeResult: expect.stringMatching(/unroutable/) });
     expect(fixture.sends).toHaveLength(0);
     const ports = makeQueuePorts(fixture.repo, { loadHumanRegistry: () => ({ ok: true, entities }) });
@@ -103,6 +106,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     expect(await ports.listHumanAlerts({})).toHaveLength(0);
     const registered = await fixture.repo.create({ sourceSession: "dev-a@rig1", destinationSession: alias,
       summary: "Registered legacy spelling", evidenceRef: EVIDENCE, body: "new explicit request" });
+    await vi.waitFor(() => expect(fixture.repo.getById(registered.qitemId)!.lastNudgeResult).not.toBeNull());
     const alerts = await ports.listHumanAlerts({});
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({ qitemId: registered.qitemId, destinationSession: `${local}@external` });
@@ -120,6 +124,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
       summary: "Founder decision ask (alias-addressed)",
       evidenceRef: EVIDENCE,
     });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
     expect(h.sends, "tmux transport must never be consulted for a registry-resolved human").toHaveLength(0);
     const fresh = h.repo.getById(item.qitemId)!;
     expect(fresh.lastNudgeResult).toMatch(/^gateway-owned/);
@@ -135,6 +140,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
       summary: "Founder alert",
       evidenceRef: EVIDENCE,
     });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
     expect(h.sends).toHaveLength(0);
     expect(h.repo.getById(item.qitemId)!.lastNudgeResult).toMatch(/^gateway-owned/);
   });
@@ -146,6 +152,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
       body: "row to a destination that is neither topology nor registry",
       nudge: true,
     });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
     const fresh = h.repo.getById(item.qitemId)!;
     expect(h.sends, "tmux is not consulted for a destination it can never hold").toHaveLength(0);
     expect(fresh.lastNudgeResult, "the refusal teaches both checks performed").toMatch(/not a known seat|no registered human|unroutable/i);
@@ -159,6 +166,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
       body: "ordinary seat nudge",
       nudge: true,
     });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
     expect(h.sends).toHaveLength(1);
     expect(h.sends[0]!.session).toBe("dev-a@rig1");
     const fresh = h.repo.getById(item.qitemId)!;
@@ -175,6 +183,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
       destinationSession: "human-founder@rig1",
       body: "pane-backed founder seat",
     });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
     expect(h.sends.map((send) => send.session)).toEqual(["human-founder@rig1"]);
     expect(h.repo.getById(item.qitemId)!.lastNudgeResult).toMatch(/^failed:/);
   });
@@ -191,6 +200,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
       summary: "Founder decision",
       evidenceRef: EVIDENCE,
     });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
 
     expect(h.sends, "a paneless external_cli binding has no terminal transport").toHaveLength(0);
     expect(h.repo.getById(item.qitemId)!.lastNudgeResult).toMatch(/^gateway-owned/);
@@ -527,5 +537,37 @@ describe("OPR.0.5.6.14 — the delivery ledger is universal and consulted", () =
     const note = "slack-owner-notification-posted notification_key=" + key + " level=ALERT kind=unclassified message_ts=333.44 thread_ts=333.44";
     h.repo.update({ qitemId: row.qitemId, actorSession: "daemon@kernel", transitionNote: note });
     expect(h.repo.transitionLog.hasOwnerNotificationReceipt(row.qitemId, key), "the receipt suppresses the repeat").toBe(true);
+  });
+});
+
+// #1029 — the single-row read carries the resolver's own routing decision, so a reader such as
+// `rig queue create --verify` never has to guess a registered person's alias from its
+// spelling, even when no wake result exists yet (--no-nudge). getById itself stays unchanged.
+describe("GET /api/queue/:qitemId carries the destination class", () => {
+  const MIKE = { ...FOUNDER_FRAGMENT, entityId: "mike", displayName: "Mike", address: "mike@external" } as unknown as HumanFragment;
+
+  it.each([
+    ["dev-a@rig1", "pane-bound"],
+    ["mike@kernel", "gateway-routable"],
+    ["human-founder@kernel", "gateway-routable"],
+    ["founder@external", "gateway-routable"],
+    ["revieweer@rig1", "unroutable"],
+  ] as const)("%s reads as %s on a --no-nudge row", async (destinationSession, destinationClass) => {
+    const h = makeHarness({ entities: () => [FOUNDER_FRAGMENT, MIKE] });
+    const app = new Hono();
+    app.use("*", async (c, next) => { c.set("queueRepo" as never, h.repo); await next(); });
+    app.route("/api/queue", queueRoutes());
+    const item = await h.repo.create({
+      sourceSession: "dev-a@rig1", destinationSession, nudge: false,
+      summary: "Routing", evidenceRef: EVIDENCE, body: "b",
+    });
+    const res = await app.request(`/api/queue/${item.qitemId}`);
+    expect(res.status).toBe(200);
+    const row = await res.json() as Record<string, unknown>;
+    expect(row.lastNudgeResult).toBeNull();
+    expect(row.destinationClass).toBe(destinationClass);
+    expect(h.repo.getById(item.qitemId)).not.toHaveProperty("destinationClass");
+    expect(h.sends).toHaveLength(0);
+    h.db.close();
   });
 });

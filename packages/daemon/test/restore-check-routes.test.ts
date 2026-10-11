@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { OPENRIG_HOME } from "../src/openrig-compat.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import type { Hono } from "hono";
@@ -9,12 +10,9 @@ import { createApp } from "../src/server.js";
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotRepository } from "../src/domain/snapshot-repository.js";
+import { createRestoreCheckService } from "../src/routes/restore-check.js";
 import {
   RestoreCheckService,
-  // OPR.0.3.2.14 — imported from source; previously copy-pasted here.
-  CLAUDE_HOOKS_ROOT,
-  CLAUDE_SESSION_START_COMPACT_COMMAND as REQUIRED_SESSION_START_COMPACT_COMMAND,
-  CLAUDE_USER_PROMPT_SUBMIT_COMMAND as REQUIRED_USER_PROMPT_SUBMIT_COMMAND,
 } from "../src/domain/restore-check-service.js";
 
 const VALID_HOST_INFRA_DECLARATION = JSON.stringify({
@@ -55,24 +53,6 @@ function v2HostInfraDeclaration(overrides?: {
         evidencePaths: overrides?.supportingInfraEvidencePaths ?? ["${OPENRIG_HOME}/supervisor-wake/README.md"],
       },
     ],
-  });
-}
-
-function claudeHookSettings(): string {
-  return JSON.stringify({
-    hooks: {
-      SessionStart: [
-        {
-          matcher: "compact",
-          hooks: [{ type: "command", command: REQUIRED_SESSION_START_COMPACT_COMMAND }],
-        },
-      ],
-      UserPromptSubmit: [
-        {
-          hooks: [{ type: "command", command: REQUIRED_USER_PROMPT_SUBMIT_COMMAND }],
-        },
-      ],
-    },
   });
 }
 
@@ -137,7 +117,92 @@ describe("Restore check routes", () => {
     fs.rmSync(openRigHome, { recursive: true, force: true });
   });
 
-  it.each(["configured", "legacy"])("resolves spec and queue paths under the %s shared-docs root", async (layout) => {
+  // These fixtures isolate other diagnostics from snapshot-availability/occupant failures.
+  function seedCurrentSnapshot(rigId: string) {
+    const rig = rigRepo.getRig(rigId)!;
+    const sessions = sessionRegistry.getSessionsForRig(rigId);
+    return snapshotRepo.createSnapshot(rigId, "auto-pre-down", {
+      rig: rig.rig, nodes: rig.nodes, edges: rig.edges, sessions, checkpoints: {},
+      activeSessionIdByNode: Object.fromEntries(sessions.map((s) => [s.nodeId, s.id])),
+    });
+  }
+
+  it("uses restore's ranked snapshot and reports missing service inputs in compact output", async () => {
+    const rig = rigRepo.createRig("service-rig");
+    const selected = snapshotRepo.createSnapshot(rig.id, "auto-pre-down", minimalSnapshotData(rig.id, rig.name) as never);
+    snapshotRepo.createSnapshot(rig.id, "manual", minimalSnapshotData(rig.id, rig.name) as never);
+    rigRepo.setServicesRecord(rig.id, {
+      kind: "compose", specJson: "{}", rigRoot: path.join(openRigHome, "missing-service"),
+      composeFile: path.join(openRigHome, "missing-compose.yaml"),
+    });
+    const before = db.prepare("SELECT COUNT(*) AS n FROM snapshots").get();
+    const response = await app.request("/api/restore-check?rig=service-rig&compact=1&noQueue=true&noHooks=true");
+    const body = await response.json();
+    const check = body.checks.find((c: { check: string }) => c.check === "rig.service-rig.restore-preconditions");
+    expect(response.status).toBe(200);
+    expect(check.status).toBe("red");
+    expect(check.evidence).toContain(`Snapshot ${selected.id}`);
+    expect(check.evidence).toContain("service_rig_root_missing");
+    expect(check.evidence).toContain("service_compose_file_missing");
+    expect(body.recovery.status).toBe("blocked");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM snapshots").get()).toEqual(before);
+  });
+
+  it("reports eligible current-state recovery for an older-occupant snapshot without capture", async () => {
+    const rig = rigRepo.createRig("changed-occupant");
+    const node = rigRepo.addNode(rig.id, "seat", { runtime: "terminal" });
+    sessionRegistry.registerSession(node.id, "seat@changed-occupant");
+    insertStartupContextRow(db, node.id, { runtime: "terminal" });
+    snapshotRepo.createSnapshot(rig.id, "auto-pre-down", minimalSnapshotData(rig.id, rig.name) as never);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM snapshots").get();
+    const body = await (await app.request("/api/restore-check?rig=changed-occupant&noQueue=true&noHooks=true")).json();
+    expect(body.recovery.status).toBe("actionable");
+    const input = body.checks.find((c: { check: string }) => c.check.endsWith(".restore-preconditions"));
+    expect(input.status).toBe("yellow");
+    expect(input.evidence).toContain("older occupant");
+    expect(body.recovery.actions[0].command).toBe("rig up --existing changed-occupant");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM snapshots").get()).toEqual(before);
+  });
+
+  it("isolates a real factory snapshot read error to its rig", () => {
+    const broken = rigRepo.createRig("broken-read");
+    const good = rigRepo.createRig("good-read");
+    snapshotRepo.createSnapshot(good.id, "manual", minimalSnapshotData(good.id, good.name) as never);
+    const original = snapshotRepo.selectRestoreUsable.bind(snapshotRepo);
+    const selection = vi.spyOn(snapshotRepo, "selectRestoreUsable").mockImplementation((id) => {
+      if (id === broken.id) throw new Error("fixture snapshot read failure");
+      return original(id);
+    });
+    try {
+      const result = createRestoreCheckService(rigRepo, snapshotRepo).check({ noQueue: true, noHooks: true });
+      expect(result.rigs.find((r) => r.rigId === broken.id)?.status).toBe("unknown");
+      expect(result.checks.find((c) => c.check === "rig.good-read.restore-preconditions")?.status).toBe("green");
+      expect(result.recovery.unknown[0]?.reason).toContain("fixture snapshot read failure");
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it("does not add snapshot selection to a running-ready composed status poll", async () => {
+    const rig = rigRepo.createRig("ready-poll");
+    const node = rigRepo.addNode(rig.id, "seat", { runtime: "terminal" });
+    const session = sessionRegistry.registerSession(node.id, "seat@ready-poll");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateStartupStatus(session.id, "ready");
+    insertStartupContextRow(db, node.id, { runtime: "terminal" });
+    seedCurrentSnapshot(rig.id);
+    const selection = vi.spyOn(snapshotRepo, "selectRestoreUsable");
+    try {
+      expect((await app.request(`/api/rigs/${rig.id}/status`)).status).toBe(200);
+      expect(selection).not.toHaveBeenCalled();
+      await app.request("/api/restore-check?rig=ready-poll&noQueue=true&noHooks=true");
+      expect(selection).toHaveBeenCalledTimes(1);
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it.each(["configured", "legacy"])("resolves the spec root and probes the SQLite queue store for %s shared-docs", async (layout) => {
     const home = path.join(openRigHome, "isolated-home");
     const sharedDocs = layout === "configured"
       ? path.join(openRigHome, "custom shared-docs")
@@ -149,18 +214,41 @@ describe("Restore check routes", () => {
       const rig = rigRepo.createRig("test-rig");
       rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
       const rigRoot = path.join(sharedDocs, "rigs", "test-rig");
-      const queuePath = path.join(rigRoot, "state", "dev", "impl.queue.md");
-      fs.mkdirSync(path.dirname(queuePath), { recursive: true });
+      fs.mkdirSync(rigRoot, { recursive: true });
       fs.writeFileSync(path.join(rigRoot, "rig.yaml"), "name: test-rig\n");
-      fs.writeFileSync(queuePath, "");
 
       const res = await app.request("/api/restore-check?noHooks=true");
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.checks).toEqual(expect.arrayContaining([
         expect.objectContaining({ check: "rig.test-rig.spec-present", status: "green", evidence: `Spec present at ${path.join(rigRoot, "rig.yaml")}` }),
-        expect.objectContaining({ check: "seat.dev.impl.queue-file", status: "green", evidence: `Queue file exists at ${queuePath}` }),
+        expect.objectContaining({
+          check: "seat.dev.impl.queue-store", status: "green",
+          evidence: "Daemon SQLite queue_items store is queryable; an empty queue is valid",
+        }),
       ]));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("reports a rig launched from a spec outside the shared-docs root as not checked, not red (#130)", async () => {
+    const sharedDocs = path.join(openRigHome, "empty shared-docs");
+    fs.mkdirSync(sharedDocs, { recursive: true });
+    vi.stubEnv("OPENRIG_SHARED_DOCS_ROOT", sharedDocs);
+    try {
+      const rig = rigRepo.createRig("outside-rig");
+      seedCurrentSnapshot(rig.id);
+
+      const res = await app.request("/api/restore-check?rig=outside-rig&noQueue=true&noHooks=true");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const spec = body.checks.find((c: { check: string }) => c.check === "rig.outside-rig.spec-present");
+      expect(spec).toEqual(expect.objectContaining({ status: "yellow", remediationSafe: true }));
+      expect(spec.evidence).toContain("Not checked: no launch spec location could be established");
+      expect(spec.evidence).toContain(path.join(sharedDocs, "rigs", "outside-rig", "rig.yaml"));
+      expect(body.counts.red).toBe(0);
+      expect(body.verdict).toBe("restorable_with_caveats");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -228,7 +316,7 @@ describe("Restore check routes", () => {
     const res = await app.request("/api/restore-check?noQueue=true");
     const body = await res.json();
 
-    const queueChecks = body.checks.filter((c: { check: string }) => c.check.includes("queue-file"));
+    const queueChecks = body.checks.filter((c: { check: string }) => c.check.includes("queue-store"));
     expect(queueChecks).toHaveLength(0);
   });
 
@@ -243,14 +331,34 @@ describe("Restore check routes", () => {
     expect(hookChecks).toHaveLength(0);
   });
 
-  it("GET /api/restore-check uses node cwd to inspect project-local Claude hook settings", async () => {
+  it("GET /api/restore-check recognizes the selected Claude activity-hook delivery", async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-route-hook-cwd-"));
     const settingsDir = path.join(projectDir, ".claude");
     const settingsPath = path.join(settingsDir, "settings.local.json");
+    // beforeEach changes the environment; delivery and this reader must retain the daemon root.
+    expect(openRigHome).not.toBe(OPENRIG_HOME);
+    const relayPath = path.join(OPENRIG_HOME, "state", "claude-activity-hooks", "activity-relay.cjs");
+    const previousRelay = fs.existsSync(relayPath) ? fs.readFileSync(relayPath) : null;
     fs.mkdirSync(settingsDir, { recursive: true });
-    fs.writeFileSync(settingsPath, claudeHookSettings());
+    fs.mkdirSync(path.dirname(relayPath), { recursive: true });
+    fs.writeFileSync(relayPath, "// test relay\n");
+    const manifestPath = path.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const relayEvents = Object.entries(manifest.hooks)
+      .filter(([, groups]) => groups.some((group) => group.hooks.some((hook) => hook.command.includes("activity-relay.cjs"))))
+      .map(([event]) => event);
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks: Object.fromEntries(relayEvents.map((event) => [
+      event, [{ hooks: [{ type: "command", command: `node '${relayPath}'` }] }],
+    ])) }));
     const rig = rigRepo.createRig("hooked-rig");
-    rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: projectDir });
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: projectDir });
+    insertStartupContextRow(db, node.id, {
+      projectionEntriesJson: JSON.stringify([{
+        category: "runtime_resource", effectiveId: "shared:claude_activity_hooks",
+        sourceSpec: "shared", sourcePath: "/source/activity-hooks", resourcePath: "hooks",
+        absolutePath: "/source/activity-hooks", resourceType: "claude_activity_hooks",
+      }]),
+    });
 
     try {
       const res = await app.request("/api/restore-check?rig=hooked-rig");
@@ -263,9 +371,11 @@ describe("Restore check routes", () => {
         remediation: "",
       }));
       expect(hook.evidence).toContain(settingsPath);
-      expect(hook.evidence).toContain("configuration present, not hook-execution verified");
+      expect(hook.evidence).toContain("hook execution is not verified");
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true });
+      if (previousRelay) fs.writeFileSync(relayPath, previousRelay);
+      else fs.rmSync(relayPath, { force: true });
     }
   });
 
@@ -276,7 +386,7 @@ describe("Restore check routes", () => {
     sessionRegistry.updateStatus(session.id, "stopped");
     sessionRegistry.updateStartupStatus(session.id, "failed");
     insertStartupContextRow(db, node.id);
-    snapshotRepo.createSnapshot(rig.id, "auto-pre-down", minimalSnapshotData(rig.id, rig.name) as never);
+    seedCurrentSnapshot(rig.id);
 
     const res = await app.request("/api/restore-check?rig=recoverable-rig&noQueue=true&noHooks=true");
     expect(res.status).toBe(200);
@@ -306,7 +416,7 @@ describe("Restore check routes", () => {
     const session = sessionRegistry.registerSession(node.id, "dev-impl@recoverable-rig");
     sessionRegistry.updateStatus(session.id, "stopped");
     sessionRegistry.updateStartupStatus(session.id, "failed");
-    snapshotRepo.createSnapshot(rig.id, "auto-pre-down", minimalSnapshotData(rig.id, rig.name) as never);
+    seedCurrentSnapshot(rig.id);
 
     const res = await app.request("/api/restore-check?rig=recoverable-rig&noQueue=true&noHooks=true");
     expect(res.status).toBe(200);
@@ -343,6 +453,7 @@ describe("Restore check routes", () => {
     insertStartupContextRow(db, node.id, {
       resolvedFilesJson: "{",
     });
+    seedCurrentSnapshot(rig.id);
 
     const res = await app.request("/api/restore-check?rig=malformed-startup-rig&noQueue=true&noHooks=true");
     expect(res.status).toBe(200);
@@ -360,6 +471,25 @@ describe("Restore check routes", () => {
     expect(body.checks.some((c: { check: string }) => c.check === "probe.error")).toBe(false);
   });
 
+  it.each([
+    [null],
+    [{ category: "runtime_resource", resourceType: "claude_activity_hooks" }],
+  ])("GET /api/restore-check preserves malformed selection members as hook caveats: %j", async (member) => {
+    const rig = rigRepo.createRig("malformed-selection-rig");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "dev-impl@malformed-selection-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateStartupStatus(session.id, "ready");
+    insertStartupContextRow(db, node.id, { projectionEntriesJson: JSON.stringify([member]) });
+    const res = await app.request("/api/restore-check?rig=malformed-selection-rig&noQueue=true");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const hook = body.checks.find((c: { check: string }) => c.check === "seat.dev-impl@malformed-selection-rig.hooks");
+    expect(hook.status).toBe("yellow");
+    expect(hook.evidence).not.toContain("not selected");
+    expect(body.checks.find((c: { check: string }) => c.check.endsWith(".startup-context")).evidence).toContain("projection_entries_json");
+  });
+
   it("GET /api/restore-check does not false-green malformed startup_actions_json", async () => {
     const rig = rigRepo.createRig("malformed-startup-actions-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
@@ -369,6 +499,7 @@ describe("Restore check routes", () => {
     insertStartupContextRow(db, node.id, {
       startupActionsJson: "{",
     });
+    seedCurrentSnapshot(rig.id);
 
     const res = await app.request("/api/restore-check?rig=malformed-startup-actions-rig&noQueue=true&noHooks=true");
     expect(res.status).toBe(200);
@@ -400,8 +531,8 @@ describe("Restore check routes", () => {
   });
 
   it("GET /api/restore-check returns non-null repairPacket with blocking field for broken fixture", async () => {
-    // Create a rig with a node — hooks are yellow by default (Slice 2 unimplemented),
-    // producing restorable_with_caveats and a non-null repairPacket
+    // Create a rig with a node and no persisted startup context, producing a
+    // non-null repairPacket without treating an uninspected hook selection as ready.
     const rig = rigRepo.createRig("broken-rig");
     rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
 
@@ -425,7 +556,7 @@ describe("Restore check routes", () => {
     expect(body.hostInfra).toEqual(expect.objectContaining({
       status: "not_declared",
     }));
-    // Hooks yellow → restorable_with_caveats → repairPacket populated
+    // Missing startup context remains a non-blocking caveat.
     expect(body.repairPacket).toBeInstanceOf(Array);
     expect(body.repairPacket.length).toBeGreaterThan(0);
 
@@ -438,7 +569,7 @@ describe("Restore check routes", () => {
       expect(typeof step.blocking).toBe("boolean");
     }
 
-    // Yellow hooks are non-blocking caveats
+    // Hook selection is unavailable, so its repair remains non-blocking.
     const hookStep = body.repairPacket.find((s: { rationale: string }) => s.rationale.includes("Hook"));
     if (hookStep) {
       expect(hookStep.blocking).toBe(false);

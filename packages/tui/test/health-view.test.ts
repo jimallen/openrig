@@ -178,6 +178,29 @@ describe("fleet/system health TUI", () => {
     }
   });
 
+  it("keeps PARTIAL visible ahead of a long finding summary on a narrow line", () => {
+    const snap = healthSnapshot();
+    snap.health = { availability: "loaded", evaluatedAt: "2026-09-05T12:00:00.000Z", total: 1, truncated: true,
+      records: [record({ id: "long", seatId: "node-guard", summary: "Seat context is filling quickly and the operator should look soon. ".repeat(4) })] };
+    expect(healthSummaryLine(snap, { kind: "rig", rigId: "openrig-build", rigName: "openrig-build", local: true }, 70).text).toContain("PARTIAL");
+  });
+
+  it("marks a partial source evaluation and never presents omitted families as healthy", () => {
+    const coverage = [{ source: "passive-ceremony", unit: "handoff families", limit: 200, total: 634, evaluated: 200, omitted: 434, partial: true,
+      order: "most queue transitions in the observation window, then lineage ID" }];
+    for (const records of [[], [record({ id: "ceremony", seatId: "node-guard", summary: "Ceremony source." })]]) {
+      const snap = healthSnapshot();
+      snap.health = { availability: "loaded", evaluatedAt: "2026-09-05T12:00:00.000Z", total: records.length, truncated: false, records, coverage };
+      const view = open(snap, "rig openrig-build");
+      view.dispatch(parseCommand("tab health"));
+      const text = renderScreen(view.get(), snap, { cols: 220, rows: 60, colorMode: "none" }).lines.join("\n");
+      const summary = healthSummaryLine(snap, { kind: "rig", rigId: "openrig-build", rigName: "openrig-build", local: true }, 220).text;
+      expect(summary).toMatch(/^HEALTH.*· PARTIAL/);
+      if (records.length) expect(text).toContain("PARTIAL · passive-ceremony evaluated 200 of 634 handoff families; 434 omitted were not evaluated and are not healthy");
+      else { expect(text).toContain("not a healthy verdict"); expect(text).toContain("PARTIAL"); }
+    }
+  });
+
   it.each([[80, 24], [140, 42]])("keeps the complete empty-health explanation readable at %ix%i", (cols, rows) => {
     const snap = healthSnapshot();
     snap.health = { availability: "loaded", evaluatedAt: null, total: 0, truncated: false, records: [] };
@@ -232,4 +255,20 @@ describe("fleet/system health TUI", () => {
   expect(text).toContain("human-led"); expect(text).toContain("product-default"); expect(text).toContain("planning");
   expect(text).toContain("context.pressure"); expect(snap.health!.records).toHaveLength(2);
   expect(lines.every(l => stripAnsi(l.text).length <= width)).toBe(true);
+});
+
+
+it("names source failures with and without findings, including narrow empty views", () => {
+  for (const hasFindings of [true, false]) {
+    const snap = healthSnapshot();
+    if (!hasFindings) snap.health!.records = [];
+    snap.health!.coverage = [{ source: "passive-ceremony", status: "unavailable", partial: true, reason: "health_passive_queue_window_truncated" }];
+    const scope = { kind: "instance", local: true } as const;
+    expect(healthSummaryLine(snap, scope, 70).text).toContain("PARTIAL");
+    const text = healthListLines(snap, scope, 70).map(l => l.text).join("\n");
+    expect(text).toContain("UNAVAILABLE · passive-ceremony");
+    expect(text).toContain("health_passive_queue_window_truncated");
+    expect(text).not.toMatch(/undefined|0 of 0/);
+    if (hasFindings) expect(text).toContain("Guard context");
+  }
 });

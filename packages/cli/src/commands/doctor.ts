@@ -4,6 +4,7 @@ import path from "node:path";
 import net from "node:net";
 import { execSync } from "node:child_process";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
+import { formatDaemonHostForUrl } from "../client.js";
 import { ConfigStore } from "../config-store.js";
 import { buildWritableHomeCheck } from "../system-preflight.js";
 import {
@@ -16,6 +17,7 @@ import { buildTmuxControlFailure, probeTmuxControl } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
 import { compareSpecToLive, topologyFromRigSpec, topologyFromLiveLogicalIds } from "@openrig/daemon/spec-conformance";
 import { classifyNodeVersion } from "../node-support.js";
+import { checkProviderReadiness } from "../provider-auth.js";
 
 interface DoctorCheck {
   name: string;
@@ -33,6 +35,8 @@ export interface DoctorDeps {
   checkPort: (port: number, host: string) => Promise<boolean>;
   configStore: Pick<ConfigStore, "resolve">;
   platform?: NodeJS.Platform;
+  /** Same CODEX_HOME and credential environment used by setup. */
+  env?: NodeJS.ProcessEnv;
   mkdirp?: (path: string) => void;
   checkWritable?: (path: string) => void;
   fetch?: (url: string) => Promise<{ ok: boolean; json?: () => Promise<unknown> }>;
@@ -62,8 +66,8 @@ function defaultCheckPort(port: number, host: string): Promise<boolean> {
   });
 }
 
-export function runDoctorChecks(deps: DoctorDeps): { checks: DoctorCheck[]; portCheck: Promise<DoctorCheck>; asyncChecks: Promise<DoctorCheck>[] } {
-  const checks: DoctorCheck[] = [];
+export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] = checkProviderReadiness(deps)): { checks: DoctorCheck[]; portCheck: Promise<DoctorCheck>; asyncChecks: Promise<DoctorCheck>[] } {
+  const checks: DoctorCheck[] = [...providerChecks];
   const platform = deps.platform ?? process.platform;
 
   // 1. Daemon dist
@@ -212,7 +216,7 @@ export function runDoctorChecks(deps: DoctorDeps): { checks: DoctorCheck[]; port
   // configured host/port must not be reported missing). Defaults stay 127.0.0.1:7433.
   const daemonHost = config.daemon.host ?? "127.0.0.1";
   const daemonPort = config.daemon.port ?? DEFAULT_PORT;
-  const daemonBase = `http://${daemonHost}:${daemonPort}`;
+  const daemonBase = `http://${formatDaemonHostForUrl(daemonHost)}:${daemonPort}`;
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const portCheck = deps.checkPort(daemonPort, daemonHost).then(async (available): Promise<DoctorCheck> => {
     if (available) {
@@ -385,7 +389,9 @@ function readTmuxMouseMode(deps: DoctorDeps): "on" | "off" | null {
 }
 
 export function doctorCommand(depsOverride?: DoctorDeps): Command {
-  const cmd = new Command("doctor").description("Verify OpenRig install health");
+  const cmd = new Command("doctor")
+    .description("Check installation, provider authentication, writable paths, port/daemon and conditional cmux control")
+    .addHelpText("after", "\nWith --spec, compares declared and live topology. This is not an end-to-end readiness check.\nReports Claude and Codex authentication using setup's checks, including configured Codex credential variables. No agent task or provider request is tested.\nInspect your team with rig ps --nodes --rig <rig> and rig capture <seat> --lines 30.");
 
   cmd
     .option("--json", "JSON output for agents")
@@ -406,7 +412,7 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         fetchLiveLogicalIds: async (rigName: string): Promise<string[] | null> => {
           try {
             const cfg = new ConfigStore().resolve();
-            const base = `http://${cfg.daemon.host ?? "127.0.0.1"}:${cfg.daemon.port ?? DEFAULT_PORT}`;
+            const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
             const rigsRes = await fetch(`${base}/api/rigs`);
             if (!rigsRes.ok) return null;
             const rigs = (await rigsRes.json()) as Array<{ id?: string; name?: string }>;
@@ -422,7 +428,12 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         },
       };
 
-      const { checks, asyncChecks } = runDoctorChecks(deps);
+      // Only the newly added provider probes inherit setup's timeout.
+      const providerChecks = checkProviderReadiness(depsOverride ?? {
+        ...deps,
+        exec: (c: string) => execSync(c, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }),
+      });
+      const { checks, asyncChecks } = runDoctorChecks(deps, providerChecks);
       const resolvedAsync = await Promise.all(asyncChecks);
       const allChecks = [...checks, ...resolvedAsync];
       const healthy = allChecks.every((c) => c.status !== "fail");
@@ -441,7 +452,11 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
       }
 
       console.log("");
-      console.log(healthy ? "System checks look good." : "Some checks failed.");
+      console.log(healthy ? "No failures in the checks above. Review any WARN or SKIP rows." : "Some checks failed. Review the FAIL rows and their fixes above.");
+      console.log("Authentication checks report local provider facts; no agent task or provider request was tested.");
+      console.log("Only the harnesses selected for your project need a login; an unused harness does not.");
+      console.log("A credential variable being set does not prove the provider accepts it or that managed seats receive it.");
+      console.log("Inspect your team with `rig ps --nodes --rig <rig>` and `rig capture <seat> --lines 30`.");
       if (!healthy) process.exitCode = 1;
     });
 

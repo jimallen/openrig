@@ -5,6 +5,11 @@ import type Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
+import { QueueRepository } from "../src/domain/queue-repository.js";
+import { EventBus } from "../src/domain/event-bus.js";
+import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { migrate } from "../src/db/migrate.js";
+import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
 import {
   makeParkedOwnerConsumerPolicy,
   makeRigAnchor,
@@ -30,6 +35,7 @@ function tmuxWithPane(getPaneCommand: () => Promise<string | null>) {
     sendKeys,
     capturePaneContent: async () => "idle prompt\n❯ ",
     getPanePid: async () => null,
+    listPanes: async () => [{ id: "%1" }],
     getPaneCommand,
   } as unknown as TmuxAdapter;
   return { tmux, sendText, sendKeys };
@@ -63,12 +69,16 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
     });
 
   it.each([["claude-code", "zsh"], ["codex", "-bash"]])("%s seat showing %s: refused, nothing typed", async (runtime, shell) => {
-    seat(runtime, "dev-impl@my-rig");
+    const { node } = seat(runtime, "dev-impl@my-rig");
     const { tmux, sendText, sendKeys } = tmuxWithPane(async () => shell);
-    const result = await watchdogSend(new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux }), "dev-impl@my-rig");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@my-rig", tmuxPane: "%1" });
+    tmux.getPanePid = async () => 1135;
+    const listProcesses = async () => [{ pid: 1135, ppid: 1, pgid: 1135, tpgid: 1135,
+      executableName: shell.replace(/^-/, ""), command: shell, startedAt: "Thu Oct 1 11:00:00 2026" }];
+    const result = await watchdogSend(new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, listProcesses }), "dev-impl@my-rig");
 
-    expect(result).toMatchObject({ ok: false, sent: false, reason: "target_runtime_not_running" });
-    expect(result.error).toContain(`bare ${shell.replace(/^-/, "")} shell`);
+    expect(result).toMatchObject({ ok: false, sent: false, reason: runtime === "claude-code" ? "target_runtime_not_running" : "target_runtime_unverified" });
+    expect(result.error).toContain(runtime === "claude-code" ? "idle shell" : `${shell.replace(/^-/, "")} as the foreground command`);
     expect(result.error).toContain("No text was sent");
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
@@ -137,6 +147,35 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
     expect(sendText).toHaveBeenCalledOnce();
   });
 
+  // #1079: a `codex` launcher that spawns Codex, which spawns its native child.
+  function launcherProcesses(): NativeProcessRow[] {
+    const [shell, sh] = wrapperProcesses();
+    const link = (pid: number, ppid: number, command: string): NativeProcessRow =>
+      ({ ...sh!, pid, ppid, executableName: "codex", command });
+    return [shell!, sh!,
+      link(1199, 1196, "codex --no-daemon -s workspace-write -c check_for_update_on_startup=false"),
+      link(1203, 1199, "codex --no-daemon -s workspace-write"),
+      link(1205, 1203, "codex -c model_provider=local")];
+  }
+
+  it.each(["ordinary verified send", "watchdog wake"])("#1079 Codex behind a spawning launcher receives %s", async kind => {
+    const { transport, sendText, sendKeys } = wrappedSeat(vi.fn(async () => launcherProcesses()));
+    const result = kind === "watchdog wake"
+      ? await watchdogSend(transport, "dev-check@my-rig")
+      : await transport.send("dev-check@my-rig", "existing review", { verify: true });
+    expect(result.ok).toBe(true);
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendKeys).toHaveBeenCalledOnce();
+  });
+
+  it("#1079 two Codex processes on different branches still refuse", async () => {
+    const siblings = [...launcherProcesses(), { ...launcherProcesses()[4]!, pid: 1206 }];
+    const { transport, sendText, sendKeys } = wrappedSeat(vi.fn(async () => siblings));
+    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_unverified" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
   const unproved: [string, (rows: NativeProcessRow[]) => NativeProcessRow[]][] = [
     ["exited native with stale UI", rows => rows.slice(0, -1)],
     ["background native", rows => rows.map(r => r.pid === 1205 ? { ...r, pgid: 999 } : r)],
@@ -146,7 +185,7 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
   ];
   it.each(unproved)("shell label still refuses %s without input", async (_name, mutate) => {
     const { transport, sendText, sendKeys } = wrappedSeat(vi.fn(async () => mutate(wrapperProcesses())));
-    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_not_running" });
+    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_unverified" });
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
   });
@@ -158,9 +197,133 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
     if (kind === "missing resume identity") sessionRegistry.clearResumeToken(session.id);
     if (kind === "changed process") listProcesses.mockResolvedValueOnce(wrapperProcesses()).mockResolvedValueOnce(wrapperProcesses().slice(0, -1));
     if (kind === "unavailable processes") listProcesses.mockRejectedValue(new Error("process observation failed"));
-    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_not_running" });
+    expect(await watchdogSend(transport, "dev-check@my-rig")).toMatchObject({ ok: false, sent: false, reason: "target_runtime_unverified" });
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  // #197: reported pane -> managed sh -> native Claude. The OS metadata is
+  // synthetic; argv follows the managed fresh/resume commands in the adapter.
+  function claudeProcesses(identity = `--session-id ${nativeToken}`): NativeProcessRow[] {
+    return wrapperProcesses().filter(row => row.pid !== 1199).map(row => row.pid === 1205
+      ? { ...row, ppid: 1196, executableName: "claude",
+        command: `/opt/bin/claude --permission-mode auto ${identity} --name dev-check@my-rig` } : row);
+  }
+
+  function wrappedClaude(listProcesses = vi.fn(async () => claudeProcesses())) {
+    const { node, session } = seat("claude-code", "dev-check@my-rig");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-check@my-rig", tmuxPane: "%1" });
+    sessionRegistry.updateResumeToken(session.id, "claude_id", nativeToken);
+    const ports = tmuxWithPane(async () => "sh");
+    ports.tmux.getPanePid = vi.fn(async () => 1135);
+    return { ...ports, node, session, listProcesses,
+      transport: new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: ports.tmux, listProcesses, sleep: async () => {} }) };
+  }
+
+  it.each(["fresh", "resume", "versioned process title", "queue nudge"])("#197 wrapped Claude receives %s", async kind => {
+    const rows = claudeProcesses(kind === "resume" ? `--resume ${nativeToken}` : `--session-id ${nativeToken}`);
+    if (kind === "versioned process title") rows.at(-1)!.command = rows.at(-1)!.command.replace("/opt/bin/claude", "claude (2.1.284)");
+    const { transport, sendText, sendKeys, listProcesses } = wrappedClaude(vi.fn(async () => rows));
+    const result = await transport.send("dev-check@my-rig", "existing review", {
+      verify: true, ...(kind === "queue nudge" ? { actorSession: "dev-owner@my-rig", auditPointer: "existing-review", deliveryId: "nudge-claude" } : {}),
+    });
+    expect(result.ok).toBe(true);
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendKeys).toHaveBeenCalledOnce();
+    expect(listProcesses).toHaveBeenCalledTimes(2);
+  });
+
+  // #197 C1: Root observed macOS ucomm "claude.exe" with argv basename
+  // "claude". A versioned argv fixture alone did not exercise this OS-name axis.
+  it.each(["--session-id", "--resume"])("#197 accepts observed Claude OS name with %s", async identityFlag => {
+    const rows = claudeProcesses().map(row => row.pid === 1205
+      ? { ...row, executableName: "claude.exe",
+        command: `/opt/runtime/bin/claude --permission-mode acceptEdits --model claude-opus-5-5 ${identityFlag} ${nativeToken} --name dev-check@my-rig` } : row);
+    const { transport, sendText, sendKeys, listProcesses } = wrappedClaude(vi.fn(async () => rows));
+    expect((await transport.send("dev-check@my-rig", "existing review")).ok).toBe(true);
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendKeys).toHaveBeenCalledOnce();
+    expect(listProcesses).toHaveBeenCalledTimes(2);
+  });
+
+  const unprovedClaude: [string, (rows: NativeProcessRow[]) => NativeProcessRow[]][] = [
+    ...unproved,
+    ["wrong Claude identity", rows => rows.map(r => r.pid === 1205 ? { ...r, command: "/opt/bin/claude --session-id other" } : r)],
+    ["argv label without native executable", rows => rows.map(r => r.pid === 1205 ? { ...r, executableName: "echo" } : r)],
+    ["ambiguous native children", rows => [...rows, { ...rows.at(-1)!, pid: 1206 }]],
+    ["fork with only parent identity", () => claudeProcesses(`--resume ${nativeToken} --fork-session`)],
+    ["conflicting identity arguments", () => claudeProcesses(`--resume other --session-id ${nativeToken}`)],
+    ["identity flag only in name value", () => claudeProcesses(`--name --session-id ${nativeToken}`)],
+  ];
+  it.each(unprovedClaude)("#197 distinguishes missing evidence from a conflict: %s", async (label, mutate) => {
+    const { transport, sendText, sendKeys } = wrappedClaude(vi.fn(async () => mutate(claudeProcesses())));
+    const result = await transport.send("dev-check@my-rig", "existing review");
+    const conflict = label === "ambiguous native children";
+    expect(result.ok).toBe(!conflict);
+    if (conflict) expect(result.reason).toBe("target_runtime_conflict");
+    else expect(result.warning).toContain("without verified native identity");
+    expect(sendText).toHaveBeenCalledTimes(conflict ? 0 : 1);
+    expect(sendKeys).toHaveBeenCalledTimes(conflict ? 0 : 1);
+  });
+
+  it.each(["missing identity", "process disappears from observation", "changed bound pane", "process lookup failed"])("#197 handles %s honestly", async kind => {
+    const { transport, session, tmux, listProcesses, sendText, sendKeys } = wrappedClaude();
+    if (kind === "missing identity") sessionRegistry.clearResumeToken(session.id);
+    if (kind === "process disappears from observation") listProcesses.mockResolvedValueOnce(claudeProcesses()).mockResolvedValueOnce(claudeProcesses().slice(0, -1));
+    if (kind === "changed bound pane") tmux.getPanePid = async target => target === "%1" ? 999 : 1135;
+    if (kind === "process lookup failed") listProcesses.mockRejectedValue(new Error("unavailable"));
+    const result = await transport.send("dev-check@my-rig", "existing review");
+    const conflict = kind === "changed bound pane";
+    expect(result.ok).toBe(!conflict);
+    if (conflict) expect(result.reason).toBe("target_runtime_conflict");
+    else expect(result.warning).toContain("without verified native identity");
+    expect(sendText).toHaveBeenCalledTimes(conflict ? 0 : 1);
+    expect(sendKeys).toHaveBeenCalledTimes(conflict ? 0 : 1);
+  });
+
+  it("#1088 a Codex launcher chain in a Claude seat keeps main's warn-and-send", async () => {
+    const { transport, sendText, sendKeys } = wrappedClaude(vi.fn(async () => launcherProcesses()));
+    const result = await transport.send("dev-check@my-rig", "existing review");
+    expect(result.ok).toBe(true);
+    expect(result.warning).toContain("without verified native identity");
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(sendKeys).toHaveBeenCalledOnce();
+  });
+
+  it("#197 still refuses native approval after proving the Claude wrapper", async () => {
+    const { transport, tmux, sendText, sendKeys } = wrappedClaude();
+    tmux.capturePaneContent = async () => "Would you like to run the following command?\n› 1. Yes, proceed (y)\n2. No\nPress enter to confirm or esc to cancel";
+    expect(await transport.send("dev-check@my-rig", "existing review")).toMatchObject({ ok: false, reason: "target_needs_input" });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it.each(["matching", "historical-token", "different-runtime"])("queue handoff records actual wrapper delivery (%s)", async identity => {
+    migrate(db, [outboxEntriesSchema]);
+    const { transport, sendText, sendKeys } = wrappedClaude(vi.fn(async () =>
+      claudeProcesses(`--resume ${identity === "matching" ? nativeToken : "other"}`).map(row =>
+        identity === "different-runtime" && row.pid === 1205
+          ? { ...row, executableName: "codex", command: "codex resume other" } : row)));
+    const repo = new QueueRepository(db, new EventBus(db), {
+      transport, loadHumanRegistry: () => ({ ok: true, entities: [] }),
+    });
+    repo.attachOutbox(new OutboxHandler(db));
+    const source = await repo.create({ sourceSession: "orch@my-rig", destinationSession: "dev-owner@my-rig", body: "review", nudge: false });
+    const { created } = await repo.handoff({ qitemId: source.qitemId, fromSession: "dev-owner@my-rig", toSession: "dev-check@my-rig" });
+    await vi.waitFor(() => expect(repo.getById(created.qitemId)!.lastNudgeAttempt).not.toBeNull());
+    const stored = repo.getById(created.qitemId)!;
+    expect(stored.lastNudgeAttempt).not.toBeNull();
+    if (identity !== "different-runtime") {
+      expect(stored.lastNudgeResult).toBe("delivered-ack-pending");
+      expect(sendText).toHaveBeenCalledOnce();
+      expect(sendText).toHaveBeenCalledWith("dev-check@my-rig", expect.stringContaining(`Queue handoff: ${created.qitemId}`));
+      expect(sendKeys).toHaveBeenCalledOnce();
+    } else {
+      expect(stored.lastNudgeResult).toContain("failed:");
+      expect(stored.lastNudgeResult).toContain("different native runtime");
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+    }
   });
 
   it("negative: a terminal node's shell is its runtime, so it still receives text", async () => {
@@ -213,7 +376,7 @@ describe("#142 the parked-owner wake records the refusal honestly and does not r
 
     const first = await makeParkedOwnerConsumerPolicy(deps()).evaluate(job);
     expect(first.action).toBe("send");
-    const refusal = `Refused: '${SEAT}' shows a bare zsh shell, so its claude-code runtime is not running. Text sent there would run as shell commands. Relaunch the seat first. No text was sent.`;
+    const refusal = `Refused: '${SEAT}' reports zsh as the foreground command, but OpenRig could not verify its expected claude-code agent in the bound pane. The agent may still be running behind a wrapper. No text was sent.`;
     history.push({
       historyId: "h1", jobId: "job-1", evaluatedAt: new Date().toISOString(), outcome: "sent", skipReason: null,
       deliveryTargetSession: SEAT, deliveryStatus: "failed", deliveryMessage: "wake",
@@ -223,7 +386,7 @@ describe("#142 the parked-owner wake records the refusal honestly and does not r
     const second = await makeParkedOwnerConsumerPolicy(deps()).evaluate(job);
     expect(second.action).toBe("skip");
     expect(JSON.stringify(second.notes)).toMatch(/already[-_]woken/);
-    expect(transitions.some((t) => t.transitionNote?.startsWith(FAILED_PREFIX) && t.transitionNote.includes("runtime is not running"))).toBe(true);
-    expect(nudges.some((n) => n.startsWith(NUDGE_FAIL_PREFIX) && n.includes("runtime is not running"))).toBe(true);
+    expect(transitions.some((t) => t.transitionNote?.startsWith(FAILED_PREFIX) && t.transitionNote.includes("could not verify"))).toBe(true);
+    expect(nudges.some((n) => n.startsWith(NUDGE_FAIL_PREFIX) && n.includes("could not verify"))).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import { inventoryCaptureOptions, type ShadowCapture } from "../domain/shadow-capture.js";
 import { DeliveryGuardError } from "../domain/seat-delivery-guard.js";
 import { Hono } from "hono";
+import { observeInventoryHandler, observeInventoryQuery } from "../domain/request-phase-observer.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SessionRegistry } from "../domain/session-registry.js";
@@ -22,6 +23,7 @@ import type { AgentActivityStore } from "../domain/agent-activity-store.js";
 import type { SeatActivityService } from "../domain/seat-activity-service.js";
 import type { SeatStructuralActivityService } from "../domain/seat-structural-activity-service.js";
 import { deriveRigLifecycleState } from "../domain/ps-projection.js";
+import { identityVerdictConfirmsSessionMissing } from "../domain/types.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
@@ -268,7 +270,7 @@ rigsRoutes.get("/:id/status", (c) => {
   let recovery: RecoveryPlan | null = null;
   try {
     recovery = createRestoreCheckService(repo, snapshotRepo)
-      .check({ rig: rig.rig.name, noQueue: true, noHooks: true })
+      .check({ rig: rig.rig.name, noQueue: true, noHooks: true, recoveryOnly: true })
       .recovery;
   } catch {
     recovery = null;
@@ -322,11 +324,11 @@ rigsRoutes.post("/", async (c) => {
   return c.json(rig, 201);
 });
 
-rigsRoutes.get("/", (c) => {
+rigsRoutes.get("/", observeInventoryHandler, (c) => {
   // OPR.0.3.3.19 - default excludes archived; ?includeArchived=true / ?archived=only opt in.
   const includeArchived = c.req.query("includeArchived") === "true";
   const archivedOnly = c.req.query("archived") === "only";
-  const rigs = getRepo(c).listRigs({ includeArchived, archivedOnly });
+  const rigs = getRepo(c).listRigs({ includeArchived, archivedOnly }, observeInventoryQuery(c));
   return c.json(rigs);
 });
 
@@ -477,10 +479,13 @@ rigsRoutes.post("/:id/archive", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const force = body["force"] === true;
 
-  // AC-6 running-rig guard (daemon-layer, so every client inherits it): a
-  // running/degraded rig requires --force, with a 3-part honest error.
-  const inventory = getNodeInventory(repo.db, rigId);
-  const lifecycleState = deriveRigLifecycleState(inventory.map((e) => e.lifecycleState));
+  // Preserve main's action decision: only a stored running session with
+  // confirmed absence was attention_required before this read projection.
+  const lifecycleState = deriveRigLifecycleState(getNodeInventory(repo.db, rigId).map((entry) =>
+    entry.storedSessionStatus === "running" && identityVerdictConfirmsSessionMissing(entry.identityVerdict)
+      ? "attention_required"
+      : entry.lifecycleState
+  ));
   if ((lifecycleState === "running" || lifecycleState === "degraded") && !force) {
     return c.json({
       error: {
@@ -575,7 +580,7 @@ rigsRoutes.post("/:id/attach-self", async (c) => {
   const tmuxPane = typeof body["tmuxPane"] === "string" ? body["tmuxPane"].trim() : "";
 
   const hasNodeTarget = logicalId.length > 0;
-  const hasPodFields = podNamespace.length > 0 || memberName.length > 0 || runtime.length > 0;
+  const hasPodFields = podNamespace.length > 0 || memberName.length > 0;
 
   if (hasNodeTarget && hasPodFields) {
     return c.json({ error: "Specify either logicalId or podNamespace + memberName + runtime" }, 400);
@@ -783,7 +788,7 @@ rigsRoutes.post("/:rigId/expand", async (c) => {
 // spec snake_case field names (id, runtime, agent_ref, profile, cwd, ...).
 rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
   const rigId = c.req.param("rigId")!;
-  const podNamespace = decodeURIComponent(c.req.param("podNamespace")!);
+  const podNamespace = c.req.param("podNamespace")!;
   const podInstantiator = c.get("podInstantiator" as never) as PodRigInstantiator | undefined;
   if (!podInstantiator) {
     return c.json({ error: "Pod instantiator not available" }, 500);
@@ -844,7 +849,7 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
 // DELETE /api/rigs/:rigId/pods/:podRef
 rigsRoutes.delete("/:rigId/pods/:podRef", async (c) => {
   const rigId = c.req.param("rigId")!;
-  const podRef = decodeURIComponent(c.req.param("podRef")!);
+  const podRef = c.req.param("podRef")!;
   const fallbackDestination = c.req.query("fallback");
   const lifecycleService = c.get("rigLifecycleService" as never) as RigLifecycleService | undefined;
   if (!lifecycleService) {

@@ -1,25 +1,35 @@
+import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TmuxAdapter } from "./tmux.js";
+import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import { shellQuote } from "./shell-quote.js";
+import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
+import { verifyClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { observeClaudePermission, type AppliedLaunchObservation } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 
 export type ResumeResult =
-  | { ok: true; appliedLaunch?: AppliedLaunchObservation }
-  // L3: `attention_required` is a non-terminal failure — Claude is alive and
-  // recoverable, but the resume-selection prompt is blocking. Caller maps to
-  // restoreOutcome=attention_required (do NOT auto-answer per Decision 2).
+  // `launchedProcess` (Claude): the process this resume's own identity check observed (#1077).
+  | { ok: true; appliedLaunch?: AppliedLaunchObservation; launchedProcess?: ClaudeLaunchedProcess }
+  // Non-terminal: a chooser or an inconclusive observation must preserve the
+  // launch. Attention is not proof of native identity or successful continuity.
   | { ok: false; code: "attention_required"; message: string; evidence?: string }
   | { ok: false; code: string; message: string };
 
 const CLAUDE_TYPES = new Set(["claude_name", "claude_id"]);
-const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
+
+/** The legacy name and native ID are both supported Claude resume inputs. */
+export function isClaudeResumeType(resumeType: string | null | undefined): boolean {
+  return resumeType != null && CLAUDE_TYPES.has(resumeType);
+}
 
 interface ClaudeResumeOptions {
+  seatLaunchEnvironment?: SeatLaunchEnvironment;
   claudeManagedLaunch?: ClaudeManagedLaunch;
+  listProcesses?: NativeProcessLister;
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -32,7 +42,7 @@ export class ClaudeResumeAdapter {
   ) {}
 
   canResume(resumeType: string | null, resumeToken: string | null): boolean {
-    if (!resumeType || !CLAUDE_TYPES.has(resumeType)) return false;
+    if (!isClaudeResumeType(resumeType)) return false;
     if (!resumeToken) return false;
     return true;
   }
@@ -44,13 +54,17 @@ export class ClaudeResumeAdapter {
     cwd: string,
     // OPR.0.4.8.3 Seam B: the seat's PERSISTED resolved posture (restore re-derivation);
     // absent = the env decision (0.4.8.2), unchanged.
-    resolvedPosture?: "floor" | "full_bypass",
+    resolvedPosture?: "floor" | "full_bypass" | "auto",
     // 0.5.2-07: the seat's SPEC-pinned model. TRAILING param so existing positional callers that pass
     // resolvedPosture as the 5th arg stay correct; threaded so the legacy (non-pod-aware) restore boots
     // the resumed seat on its spec model, not the runtime default; absent → command byte-identical.
     model?: string | null,
     selectedPermissionMode?: string,
     nodeId?: string,
+    effort?: string | null,
+    nonInterruptive?: boolean,
+    kernelAuthority?: boolean,
+    teamPermissionDefault?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };
@@ -60,6 +74,7 @@ export class ClaudeResumeAdapter {
     // unconditional acceptEdits floor when OFF; the full bypass when YOLO is ON) — every seat.
     // 0.5.2-07: --model matches the fresh-launch adapter (claude-code-adapter), emitted after posture.
     const modelArg = model ? ` --model ${shellQuote(model)}` : "";
+    const effortArg = effort ? ` --effort ${shellQuote(effort)}` : "";
     let managed: Awaited<ReturnType<ClaudeManagedLaunch["prepare"]>> | undefined;
     if (selectedPermissionMode !== undefined) {
       try {
@@ -67,19 +82,23 @@ export class ClaudeResumeAdapter {
         managed = await this.options.claudeManagedLaunch!.prepare({ nodeId: nodeId!, cwd, session: tmuxSessionName }, selectedPermissionMode);
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
-    const permissionMode = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
-    const appliedLaunch = observeClaudePermission(permissionMode);
-    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...(model ? ["--model", model] : []), "--resume", resumeToken!])
-      : `${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg} --resume ${shellQuote(resumeToken!)}`;
+    const choice = { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode };
+    const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
+    const appliedLaunch = observeClaudePermission(posture);
+    const permissionMode = posture + operationalLaunchArg("claude-code", choice);
+    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), "--resume", resumeToken!], claudeResumeLaunchEnv(resumeToken!))
+      : `${claudeResumeLaunchPrefix(resumeToken!)}${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(resumeToken!)}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent)
-      : await this.tmux.sendText(tmuxSessionName, cmd);
+      : this.options.seatLaunchEnvironment
+        ? await this.tmux.sendShellCommand(tmuxSessionName, await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { runtime: "claude-code", nodeId }), undefined, { sourceInPane: true })
+        : await this.tmux.sendText(tmuxSessionName, cmd);
     if (!textResult.ok) {
       // sendText failed — nothing in the buffer, no cleanup needed
       return { ok: false, code: "resume_failed", message: textResult.message };
     }
 
-    const keyResult = managed ? { ok: true as const } : await this.tmux.sendKeys(tmuxSessionName, ["Enter"]);
+    const keyResult = managed || this.options.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(tmuxSessionName, ["Enter"]);
     if (!keyResult.ok) {
       // Partial failure: command text is in the buffer but Enter failed.
       // Best-effort cleanup: send C-c to clear the typed command.
@@ -87,11 +106,15 @@ export class ClaudeResumeAdapter {
       return { ok: false, code: "resume_failed", message: keyResult.message };
     }
 
-    const result = await this.verifyResume(tmuxSessionName);
+    const result = await this.verifyResume(tmuxSessionName, resumeToken!).catch((error): ResumeResult => ({
+      ok: false,
+      code: "attention_required",
+      message: `Claude resume observation unavailable; launch retained: ${error instanceof Error ? error.message : String(error)}`,
+    }));
     return result.ok ? { ...result, appliedLaunch } : result;
   }
 
-  private async verifyResume(tmuxSessionName: string): Promise<ResumeResult> {
+  private async verifyResume(tmuxSessionName: string, resumeToken: string): Promise<ResumeResult> {
     const pollMs = this.options.pollMs ?? 200;
     const maxWaitMs = this.options.maxWaitMs ?? 5_000;
     const sleepFn = this.options.sleep ?? sleep;
@@ -145,11 +168,45 @@ export class ClaudeResumeAdapter {
       paneContent: finalContent,
     });
 
+    if (finalProbe.code === "no_conversation_found") {
+      return { ok: false, code: "retry_fresh", message: "Claude resume failed: no conversation found for the requested session" };
+    }
+    if (finalProbe.status === "attention_required") {
+      return { ok: false, code: "attention_required", message: finalProbe.detail, evidence: finalContent.split("\n").slice(-12).join("\n") };
+    }
     if (finalProbe.status === "resumed") {
       return { ok: true };
     }
 
-    if (finalCommand && SHELL_COMMANDS.has(finalCommand)) {
+    // The exact --resume identity is stronger evidence than a pane command or
+    // a version/footer heuristic. Use it only with Claude's interactive prompt
+    // visible, and after the untrusted screen classifiers have had their say.
+    const mayBeWrappedComposer = finalProbe.status === "inconclusive"
+      || (finalProbe.status === "failed" && finalProbe.code === "returned_to_shell");
+    if (/(^|\n)\s*❯/.test(finalContent) && mayBeWrappedComposer) {
+      const identity = await verifyClaudePaneProcess({
+        target: tmuxSessionName,
+        tmux: this.tmux,
+        ...(this.options.listProcesses ? { listProcesses: this.options.listProcesses } : {}),
+        expectedToken: resumeToken,
+      });
+      if (identity) {
+        const verifiedProbe = assessNativeResumeProbe({
+          runtime: "claude-code",
+          paneCommand: finalCommand,
+          paneContent: finalContent,
+          claudeResumeIdentityVerified: true,
+        });
+        if (verifiedProbe.status === "resumed") {
+          // The process this check proved is the launch's record of what it started; the caller
+          // keeps it rather than reading the pane again.
+          return { ok: true, ...(identity.process.startedAt
+            ? { launchedProcess: { pid: identity.process.pid, startedAt: identity.process.startedAt } } : {}) };
+        }
+      }
+    }
+
+    if (finalProbe.code === "returned_to_shell") {
       return {
         ok: false,
         code: "retry_fresh",
@@ -159,8 +216,9 @@ export class ClaudeResumeAdapter {
 
     return {
       ok: false,
-      code: "resume_failed",
-      message: "Claude resume failed: timed out waiting for Claude to become active",
+      code: "attention_required",
+      message: `Claude resume could not be verified; launch retained: ${finalProbe.detail}`,
+      evidence: finalContent.split("\n").slice(-12).join("\n"),
     };
   }
 }

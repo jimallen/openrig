@@ -1,7 +1,12 @@
+import { claudeActivityRelayPath } from "./claude-activity-hooks.js";
 import { existsSync, accessSync, constants } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
+import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
+import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
+import { validatePreRestore } from "./restore-preconditions.js";
+import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
+import type { Snapshot, RigServicesRecord, SeatIdentityVerdict } from "./types.js";
 
 // --- Types ---
 
@@ -112,12 +117,20 @@ export interface StartupContextResolvedFile {
   required: boolean;
   path?: string | null;
   deliveryHint?: string | null;
+  ownerRoot?: string | null;
 }
 
 export interface StartupContextProjectionEntry {
   absolutePath: string;
   effectiveId?: string | null;
   category?: string | null;
+  sourcePath?: string | null;
+  resourceType?: string | null;
+}
+
+export interface QueueStoreProbeResult {
+  available: boolean;
+  evidence: string;
 }
 
 export type StartupContextProbeResult =
@@ -154,6 +167,8 @@ export interface RestoreCheckOpts {
   /** OPR.0.4.0.29 FR-2: in compact mode, still assemble ready-seat detail so
    *  `--ready` shows ready seats without dropping to the full firehose. */
   includeReady?: boolean;
+  /** Composed status polls need preconditions only for rigs needing recovery. */
+  recoveryOnly?: boolean;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -170,6 +185,8 @@ export interface NodeInventoryEntry {
   runtime: string | null;
   sessionStatus: string | null;
   startupStatus: string | null;
+  storedStartupStatus?: string | null;
+  identityVerdict?: SeatIdentityVerdict | null;
   tmuxAttachCommand: string | null;
   latestError: string | null;
   cwd?: string | null;
@@ -186,20 +203,32 @@ export interface RestoreCheckDeps {
   hasSnapshot: (rigId: string) => boolean;
   /** Get the newest snapshot for exact restore planning when available */
   getLatestSnapshot?: (rigId: string) => { id: string; kind: string } | null;
+  /** Exact ordinary-restore input; never captures an auto-rehydrate snapshot. */
+  getRestoreInputs: (rigId: string) =>
+    | { snapshot: Pick<Snapshot, "id" | "kind" | "data">; servicesRecord: RigServicesRecord | null }
+    | { currentStateRehydrate: CurrentStateRehydrateEligibility; reason: string }
+    | { unavailable: string };
   /** Probe daemon health: returns { healthy: boolean; evidence: string } */
   probeDaemonHealth: () => { healthy: boolean; evidence: string };
   /** Filesystem probes */
   exists: (path: string) => boolean;
   /** Read a declaration/config file. Kept injectable so restore-check remains testable and source-safe. */
   readFile: (path: string) => string;
-  /** Substrate root for queue file path resolution */
+  /** Shared-docs root for rig spec path resolution. */
   substrateRoot?: string;
+  /** Read-only probe of the daemon SQLite queue store. */
+  probeQueueStore?: () => QueueStoreProbeResult;
+  /** Configured OpenRig instance root, matching the Claude adapter stateDir. */
+  stateDir?: string;
+  /** Relay-backed Claude hook events derived from the shipped hook manifest. */
+  getClaudeActivityHookEvents?: () => string[];
 }
 
 interface RigRollupInput {
   rig: { rigId: string; name: string };
   nodes: NodeInventoryEntry[];
   checks: CheckEntry[];
+  preconditionError?: string;
 }
 
 interface RecoveryRigInput {
@@ -220,48 +249,6 @@ interface HostInfraCheckResult {
 // --- Service ---
 
 const DAEMON_HEALTHY_PATTERN = /^Daemon running\b/m;
-// OPR.0.3.2.14 — fallback subpath uses a generic .openrig placeholder
-// rather than an internal-team layout, to close the source-side
-// privacy leak. Fallback preserved per slice README §"Architecture
-// note" (option-A removal cascaded 36 test yellows in 0.3.1 cleanup).
-const SUBSTRATE_SHARED_DOCS_ROOT = process.env["OPENRIG_SUBSTRATE_SHARED_DOCS"]
-  ?? join(homedir(), ".openrig", "shared-docs");
-// OPR.0.3.2.14 — these four constants used to be copy-pasted in 7+
-// test files. Exporting from source + importing in tests eliminates
-// the divergence class that broke 17 tests during 0.3.1 cleanup.
-export const CLAUDE_HOOKS_ROOT = join(
-  SUBSTRATE_SHARED_DOCS_ROOT,
-  "control-plane",
-  "services",
-  "claude-hooks",
-);
-export const CLAUDE_SESSION_START_COMPACT_COMMAND = join(
-  CLAUDE_HOOKS_ROOT,
-  "bin",
-  "session-start-compact-context.sh",
-);
-export const CLAUDE_USER_PROMPT_SUBMIT_COMMAND = join(
-  CLAUDE_HOOKS_ROOT,
-  "bin",
-  "userpromptsubmit-queue-attention.sh",
-);
-export const CLAUDE_HOOK_FRAGMENT_PATH = join(
-  CLAUDE_HOOKS_ROOT,
-  "config",
-  "settings.fragment.json",
-);
-
-interface ClaudeSettingsCandidate {
-  path: string;
-  scope: "host-global" | "project" | "project-local";
-}
-
-interface ClaudeHookInspection {
-  path: string;
-  hasSessionStartCompact: boolean;
-  hasUserPromptSubmit: boolean;
-}
-
 export class RestoreCheckService {
   private deps: RestoreCheckDeps;
 
@@ -278,6 +265,7 @@ export class RestoreCheckService {
     const deferredAssessmentChecks: CheckEntry[] = [];
     const rigRollupInputs: RigRollupInput[] = [];
     const recoveryRigInputs: RecoveryRigInput[] = [];
+    const restoreInputsByRig = new Map<string, { snapshot: { id: string; kind: string } | null; error?: string }>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -340,6 +328,20 @@ export class RestoreCheckService {
         ]);
       }
 
+      // No added snapshot/history read on a routine status poll for an all-ready rig.
+      // Explicit restore-check still assesses its next restore, even while it is running.
+      let preconditionError: string | undefined;
+      const allReady = nodes.length > 0 && nodes.every((node) =>
+        Boolean(node.canonicalSessionName) && node.sessionStatus === "running" && node.startupStatus === "ready"
+      );
+      if (!opts.recoveryOnly || !allReady) {
+        const preconditions = this.checkRestorePreconditions(rig);
+        checks.push(preconditions.check);
+        rigChecks.push(preconditions.check);
+        preconditionError = preconditions.error;
+        restoreInputsByRig.set(rig.rigId, { snapshot: preconditions.snapshot, error: preconditions.error });
+      }
+
       for (const node of nodes) {
         const readinessCheck = this.checkSeatReadiness(node);
         checks.push(readinessCheck);
@@ -386,7 +388,7 @@ export class RestoreCheckService {
         rigChecks.push(resumeCheck);
 
         if (!opts.noQueue) {
-          const queueCheck = this.checkQueueFile(rig.name, node);
+          const queueCheck = this.checkQueueStore(node);
           checks.push(queueCheck);
           rigChecks.push(queueCheck);
         }
@@ -397,12 +399,12 @@ export class RestoreCheckService {
         }
       }
 
-      rigRollupInputs.push({ rig, nodes, checks: rigChecks });
+      rigRollupInputs.push({ rig, nodes, checks: rigChecks, preconditionError });
     }
 
     const rigRollups = rigRollupInputs.map((input) => this.buildRigRollup(input));
     for (const rollup of rigRollups) {
-      const latestSnapshot = this.inspectLatestSnapshot(rollup.rigId);
+      const latestSnapshot = restoreInputsByRig.get(rollup.rigId) ?? this.inspectLatestSnapshot(rollup.rigId);
       recoveryRigInputs.push({
         rigId: rollup.rigId,
         rigName: rollup.rigName,
@@ -415,6 +417,58 @@ export class RestoreCheckService {
     }
 
     return this.buildResult(checks, rigRollups, hostInfraCheck.hostInfra, recoveryRigInputs, deferredAssessmentChecks);
+  }
+
+  private checkRestorePreconditions(rig: { rigId: string; name: string }): {
+    check: CheckEntry;
+    snapshot: { id: string; kind: string } | null;
+    error?: string;
+  } {
+    const check = `rig.${rig.name}.restore-preconditions`;
+    try {
+      const input = this.deps.getRestoreInputs(rig.rigId);
+      if ("unavailable" in input) throw new Error(input.unavailable);
+      if ("currentStateRehydrate" in input) {
+        const { ok, blockers } = input.currentStateRehydrate;
+        return {
+          snapshot: null,
+          check: {
+            check,
+            status: ok ? "yellow" : "red",
+            evidence: ok
+              ? `${input.reason}; restore inputs not inspected. Current-state rehydrate is eligible to attempt: ordinary rig up would capture current state. This does not validate that future snapshot or prove native continuity.`
+              : `${input.reason}; current-state rehydrate is not eligible: ${blockers.join("; ")}`,
+            remediation: "Inspect the rig's persisted state before choosing manual recovery",
+            remediationSafe: true,
+          },
+        };
+      }
+      const validation = validatePreRestore(input.snapshot.data, {
+        fsOps: { exists: this.deps.exists },
+        servicesRecord: input.servicesRecord,
+      });
+      const { blockers, warnings } = validation;
+      return {
+        snapshot: { id: input.snapshot.id, kind: input.snapshot.kind },
+        check: {
+          check,
+          status: blockers.length > 0 ? "red" : warnings.length > 0 ? "yellow" : "green",
+          evidence: `Snapshot ${input.snapshot.id}: ${[
+            ...blockers.map((blocker) => `${blocker.code}: ${blocker.message}`),
+            ...warnings,
+          ].join("; ") || "restore pre-validation passed (not a native resume proof)"}`,
+          remediation: blockers.map((blocker) => blocker.remediation).join("; "),
+          remediationSafe: false,
+        },
+      };
+    } catch (err) {
+      const error = `Restore preconditions unavailable for ${rig.name}: ${err instanceof Error ? err.message : String(err)}`;
+      return {
+        snapshot: null,
+        error,
+        check: { check, status: "yellow", evidence: error, remediation: "Inspect the rig's restore snapshot and persisted inputs before trusting restore", remediationSafe: true },
+      };
+    }
   }
 
   /** Returns CheckEntry on success/definite-down; null on probe exception
@@ -712,7 +766,7 @@ export class RestoreCheckService {
       const openRigHome = getCompatibleOpenRigPath("");
       const resolved = join(openRigHome, relativePath);
       const relativeToHome = relative(openRigHome, resolved);
-      if (relativeToHome.startsWith("..") || isAbsolute(relativeToHome)) {
+      if (relativeToHome === ".." || relativeToHome.startsWith(`..${sep}`) || isAbsolute(relativeToHome)) {
         return { error: "path traversal outside OPENRIG_HOME rejected" };
       }
       return { path: resolved };
@@ -779,6 +833,20 @@ export class RestoreCheckService {
         status: "red",
         evidence: "Missing canonical session identity",
         remediation: "Restore or relaunch the seat so it has a canonical session identity",
+        remediationSafe: false,
+      };
+    }
+
+    if (node.sessionStatus === "running" && node.storedStartupStatus === "ready"
+      && node.startupStatus === "attention_required"
+      && (node.identityVerdict?.verdict === "mismatch" || node.identityVerdict?.verdict === "pane_missing")) {
+      return {
+        check,
+        status: "red",
+        evidence: `Seat identity needs verification: verdict=${node.identityVerdict.verdict} reason=${node.identityVerdict.reason ?? "unknown"}; stored startupStatus=ready`,
+        remediation: node.identityVerdict.verdict === "mismatch"
+          ? "Verify the current pane identity, then use rig seat clear-attention for this seat and rerun rig restore-check"
+          : "If the seat's tmux session or pane is gone, restore or relaunch the seat; if it now runs in another pane of its session, rig seat clear-attention for this seat rebinds and verifies it. Then rerun rig restore-check.",
         remediationSafe: false,
       };
     }
@@ -851,7 +919,21 @@ export class RestoreCheckService {
         break;
     }
 
-    const startupContext = probe;
+    // #261: inspect (and report) the paths replay will actually use — recognized built-in startup
+    // files and shipped-spec projection resources follow the running install.
+    const startupContext = {
+      ...probe,
+      resolvedStartupFiles: probe.resolvedStartupFiles.map((file) => (
+        typeof file.path === "string" && typeof file.ownerRoot === "string"
+          ? reanchorBuiltinStartupFile({ ...file, path: file.path, ownerRoot: file.ownerRoot }, undefined, undefined, this.deps.exists)
+          : file
+      )),
+      projectionEntries: probe.projectionEntries.map((entry) => (
+        typeof entry.sourcePath === "string"
+          ? reanchorShippedProjectionEntry({ ...entry, sourcePath: entry.sourcePath }, undefined, this.deps.exists)
+          : entry
+      )),
+    };
     const missingRequired = startupContext.resolvedStartupFiles.filter((file) => file.required && !this.deps.exists(file.absolutePath));
     const missingOptional = startupContext.resolvedStartupFiles.filter((file) => !file.required && !this.deps.exists(file.absolutePath));
     const missingProjectionEntries = startupContext.projectionEntries.filter((entry) => !this.deps.exists(entry.absolutePath));
@@ -922,29 +1004,25 @@ export class RestoreCheckService {
     };
   }
 
-  private checkQueueFile(rigName: string, node: NodeInventoryEntry): CheckEntry {
+  private checkQueueStore(node: NodeInventoryEntry): CheckEntry {
     const session = node.canonicalSessionName ?? node.logicalId;
-    const check = `seat.${session}.queue-file`;
-
-    // Derive queue file path from pod/member
-    const podName = node.podNamespace ?? (node.logicalId.includes(".") ? node.logicalId.split(".")[0] : null);
-    const memberName = node.logicalId.includes(".") ? node.logicalId.split(".").slice(1).join(".") : node.logicalId;
-
-    if (!podName) {
-      return { check, status: "yellow", evidence: "Cannot derive queue path (no pod namespace)", remediation: "" };
+    const check = `seat.${session}.queue-store`;
+    let probe: QueueStoreProbeResult | undefined;
+    try {
+      probe = this.deps.probeQueueStore?.();
+    } catch (err) {
+      probe = {
+        available: false,
+        evidence: `Daemon SQLite queue_items store probe failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
-
-    // OPR.0.3.2.14 — subpath scrubbed (internal-team layout → generic placeholder).
-    const substrateRoot = this.deps.substrateRoot ?? join(process.env["HOME"] ?? "~", ".openrig", "shared-docs");
-    const queuePath = join(substrateRoot, "rigs", rigName, "state", podName, `${memberName}.queue.md`);
-
-    if (this.deps.exists(queuePath)) {
-      return { check, status: "green", evidence: `Queue file exists at ${queuePath}`, remediation: "" };
+    if (probe?.available) {
+      return { check, status: "green", evidence: probe.evidence, remediation: "" };
     }
     return {
       check, status: "yellow",
-      evidence: `Queue file missing: ${queuePath}`,
-      remediation: "Create the missing durable queue file before relying on restored queue continuity",
+      evidence: probe?.evidence ?? "Daemon SQLite queue store could not be inspected",
+      remediation: "Restore the daemon SQLite queue store before relying on queue continuity",
       remediationSafe: false,
     };
   }
@@ -968,112 +1046,116 @@ export class RestoreCheckService {
       };
     }
 
-    const candidates = this.getClaudeSettingsCandidates(node);
-    const searchedPaths = candidates.map((candidate) => candidate.path);
-    const cwdUnavailable = !node.cwd;
-    const inspections: ClaudeHookInspection[] = [];
-    const malformed: string[] = [];
-
-    for (const candidate of candidates) {
-      if (!this.deps.exists(candidate.path)) continue;
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(this.deps.readFile(candidate.path));
-      } catch (err) {
-        malformed.push(`${candidate.path}: ${err instanceof Error ? err.message : String(err)}`);
-        continue;
-      }
-
-      inspections.push({
-        path: candidate.path,
-        hasSessionStartCompact: this.hasClaudeCommandHook(parsed, "SessionStart", CLAUDE_SESSION_START_COMPACT_COMMAND, "compact"),
-        hasUserPromptSubmit: this.hasClaudeCommandHook(parsed, "UserPromptSubmit", CLAUDE_USER_PROMPT_SUBMIT_COMMAND),
-      });
+    // Current Claude activity hooks are selected as a runtime resource and
+    // delivered by ClaudeCodeAdapter: settings in the seat CWD, relay in instance state.
+    // Do not require the retired internal control-plane shell hooks on public installs.
+    const startup = node.nodeId ? this.deps.getStartupContext(node.nodeId) : null;
+    if (startup?.status === "ok" && !startup.projectionEntries.some((entry) => (
+      entry.category === "runtime_resource" && entry.resourceType === "claude_activity_hooks"
+    ))) {
+      return {
+        check: `seat.${session}.hooks`, status: "green",
+        evidence: "Claude activity hooks are not selected for this seat; hook inspection is not applicable",
+        remediation: "",
+      };
     }
-
-    if (malformed.length > 0) {
+    if (startup?.status === "ok") {
+      if (!node.cwd) {
+        return {
+          check: `seat.${session}.hooks`, status: "yellow",
+          evidence: "Claude activity hooks are selected, but seat cwd is unavailable for delivery inspection",
+          remediation: "Restore the seat working directory before trusting activity-hook readiness",
+          remediationSafe: false,
+        };
+      }
+      const settingsPath = join(node.cwd, ".claude", "settings.local.json");
+      const relayPath = claudeActivityRelayPath(this.deps.stateDir);
+      const events = this.deps.getClaudeActivityHookEvents?.() ?? [];
+      if (events.length === 0) {
+        return {
+          check: `seat.${session}.hooks`, status: "yellow",
+          evidence: "Claude activity hook events could not be derived from the shipped manifest",
+          remediation: "Restore the daemon's Claude activity-hook assets before trusting hook readiness",
+          remediationSafe: false,
+        };
+      }
+      if (!this.deps.exists(relayPath) || !this.deps.exists(settingsPath)) {
+        return {
+          check: `seat.${session}.hooks`, status: "yellow",
+          evidence: `Claude activity hook delivery is incomplete: expected relay ${relayPath} and settings ${settingsPath}`,
+          remediation: "Relaunch the seat to project its selected Claude activity hooks",
+          remediationSafe: false,
+        };
+      }
+      let settings: unknown;
+      try {
+        settings = JSON.parse(this.deps.readFile(settingsPath));
+      } catch (err) {
+        return {
+          check: `seat.${session}.hooks`, status: "yellow",
+          evidence: `Claude activity-hook settings could not be trusted at ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`,
+          remediation: `Fix the Claude settings JSON at ${settingsPath}`,
+          remediationSafe: false,
+        };
+      }
+      if (isRecord(settings) && settings["disableAllHooks"] === true) {
+        return {
+          check: `seat.${session}.hooks`, status: "yellow",
+          evidence: `Selected Claude activity hooks are explicitly disabled in ${settingsPath}; projection does not prove usable hooks`,
+          remediation: "Review the intentional hook-disable setting before relying on activity-hook readiness",
+          remediationSafe: false,
+        };
+      }
+      const missingEvents = events.filter((event) => !this.hasActivityRelayHook(settings, event, relayPath));
+      if (missingEvents.length === 0) {
+        return {
+          check: `seat.${session}.hooks`, status: "green",
+          evidence: `Selected Claude activity hooks are projected in ${settingsPath}, with relay present at ${relayPath}; hook execution is not verified`,
+          remediation: "",
+        };
+      }
       return {
         check: `seat.${session}.hooks`, status: "yellow",
-        evidence: `Malformed applicable Claude settings file(s): ${malformed.join("; ")}. Claude hook configuration could not be trusted until the malformed applicable settings file is fixed. Searched settings paths: ${searchedPaths.join(", ")}`,
-        remediation: `Fix Claude settings JSON before trusting hook readiness: ${malformed.map((entry) => entry.split(":")[0]).join(", ")}`,
+        evidence: `Claude activity-hook settings at ${settingsPath} are missing relay entries for: ${missingEvents.join(", ")}`,
+        remediation: "Relaunch the seat to project its selected Claude activity hooks",
         remediationSafe: false,
       };
     }
 
-    const sessionStartPaths = inspections
-      .filter((inspection) => inspection.hasSessionStartCompact)
-      .map((inspection) => inspection.path);
-    const userPromptSubmitPaths = inspections
-      .filter((inspection) => inspection.hasUserPromptSubmit)
-      .map((inspection) => inspection.path);
-    const hasSessionStart = sessionStartPaths.length > 0;
-    const hasUserPromptSubmit = userPromptSubmitPaths.length > 0;
-
-    if (hasSessionStart && hasUserPromptSubmit) {
-      return {
-        check: `seat.${session}.hooks`, status: "green",
-        evidence: `Claude Code hook configuration present, not hook-execution verified; SessionStart matcher compact command found in ${sessionStartPaths.join(", ")}; UserPromptSubmit command found in ${userPromptSubmitPaths.join(", ")}. Searched settings paths: ${searchedPaths.join(", ")}`,
-        remediation: "",
-      };
-    }
-
-    const missing = [];
-    if (!hasSessionStart) {
-      missing.push(`SessionStart matcher compact command ${CLAUDE_SESSION_START_COMPACT_COMMAND}`);
-    }
-    if (!hasUserPromptSubmit) {
-      missing.push(`UserPromptSubmit command ${CLAUDE_USER_PROMPT_SUBMIT_COMMAND}`);
-    }
-
-    const inspected = inspections.length > 0
-      ? `Existing settings inspected: ${inspections.map((inspection) => inspection.path).join(", ")}.`
-      : "No existing Claude settings files were found.";
-    const cwdEvidence = cwdUnavailable
-      ? " project settings were not inspected because cwd is unavailable."
-      : "";
-
     return {
       check: `seat.${session}.hooks`, status: "yellow",
-      evidence: `Claude Code hook configuration missing required entries: ${missing.join("; ")}. Searched settings paths: ${searchedPaths.join(", ")}. ${inspected}${cwdEvidence}`,
-      remediation: `Merge required Claude hook entries from ${CLAUDE_HOOK_FRAGMENT_PATH} into host-global or project Claude settings`,
+      evidence: startup?.status === "probe_error"
+        ? `Claude activity-hook selection could not be inspected: ${startup.evidence}`
+        : "Claude activity-hook selection could not be inspected because persisted startup context is unavailable",
+      remediation: "Restore the seat startup context before trusting hook readiness",
       remediationSafe: false,
     };
   }
 
-  private getClaudeSettingsCandidates(node: NodeInventoryEntry): ClaudeSettingsCandidate[] {
-    const home = process.env["HOME"] ?? "~";
-    const candidates: ClaudeSettingsCandidate[] = [{
-      path: join(home, ".claude", "settings.json"),
-      scope: "host-global",
-    }];
-
-    if (node.cwd) {
-      candidates.push({
-        path: join(node.cwd, ".claude", "settings.json"),
-        scope: "project",
-      });
-      candidates.push({
-        path: join(node.cwd, ".claude", "settings.local.json"),
-        scope: "project-local",
-      });
-    }
-
-    return candidates;
-  }
-
-  private hasClaudeCommandHook(settings: unknown, eventName: string, requiredCommand: string, requiredMatcher?: string): boolean {
+  private hasActivityRelayHook(settings: unknown, eventName: string, relayPath: string): boolean {
     if (!isRecord(settings) || !isRecord(settings["hooks"])) return false;
     const eventEntries = settings["hooks"][eventName];
     if (!Array.isArray(eventEntries)) return false;
-
-    return eventEntries.some((entry) => {
-      if (!isRecord(entry)) return false;
-      if (requiredMatcher !== undefined && entry["matcher"] !== requiredMatcher) return false;
-      const hooks = entry["hooks"];
-      if (!Array.isArray(hooks)) return false;
-      return hooks.some((hook) => isRecord(hook) && hook["command"] === requiredCommand);
-    });
+    const contexts = eventName === "SessionStart" ? ["startup", "resume"]
+      : eventName === "Notification" ? ["permission_prompt", "idle_prompt"] : [null];
+    return contexts.every((context) => eventEntries.some((entry) => {
+      if (!isRecord(entry) || !Array.isArray(entry["hooks"])) return false;
+      if (context !== null && entry["matcher"] !== undefined && entry["matcher"] !== "" && entry["matcher"] !== "*") {
+        if (typeof entry["matcher"] !== "string") return false;
+        try {
+          const matcher = entry["matcher"];
+          const matches = /^[a-zA-Z0-9_\- ,|]+$/.test(matcher)
+            ? matcher.split(/[|,]/).some((value) => value.trim() === context)
+            : new RegExp(matcher).test(context);
+          if (!matches) return false;
+        }
+        catch { return false; }
+      }
+      return entry["hooks"].some((hook) => (
+        isRecord(hook) && hook["type"] === "command" && typeof hook["command"] === "string" &&
+        hook["command"] === `node ${quoteShellArgument(relayPath)}`
+      ));
+    }));
   }
 
   private checkSpecPresent(rig: { rigId: string; name: string }): CheckEntry {
@@ -1083,11 +1165,13 @@ export class RestoreCheckService {
     const rigYaml = join(rigRoot, "rig.yaml");
 
     if (!this.deps.exists(rigRoot)) {
+      // A rig can launch from a spec anywhere, and restore reads the snapshot, never the spec,
+      // so a spec this check cannot find is a caveat, not a blocker.
       return {
-        check: `rig.${rig.name}.spec-present`, status: "red",
-        evidence: `Rig root missing: ${rigRoot}`,
-        remediation: `Create the rig root directory at ${rigRoot} with a rig.yaml spec`,
-      remediationSafe: false,
+        check: `rig.${rig.name}.spec-present`, status: "yellow",
+        evidence: `Not checked: no launch spec location could be established; looked for ${rigYaml}, and ${rigRoot} does not exist`,
+        remediation: `Confirm where this rig's spec lives; restore-check only looks at ${rigYaml}`,
+        remediationSafe: true,
       };
     }
     if (!this.deps.exists(rigYaml)) {
@@ -1136,6 +1220,8 @@ export class RestoreCheckService {
     let verdict: Verdict;
     if (red > 0) {
       verdict = "not_restorable";
+    } else if (rigs.some((rig) => rig.status === "unknown")) {
+      verdict = "unknown";
     } else if (yellow > 0) {
       verdict = "restorable_with_caveats";
     } else {
@@ -1229,12 +1315,12 @@ export class RestoreCheckService {
         attention_required: acc.attention_required + r.classCounts.attention_required,
         unknown: acc.unknown + r.classCounts.unknown,
       }), { ready: 0, ready_with_caveats: 0, not_ready: 0, attention_required: 0, unknown: 0 }),
-      hostInfra: result.verdict === "unknown"
+      hostInfra: hostInfra ?? (result.verdict === "unknown"
         ? {
             status: "unknown",
             evidence: "Host bootstrap/autostart source could not be inspected because restore-check state is unknown",
           }
-        : (hostInfra ?? {
+        : {
             status: "not_inspected",
             evidence: "No host bootstrap/autostart source inspected by v0; readiness only covers observable daemon, rig, and seat checks",
           }),
@@ -1248,7 +1334,7 @@ export class RestoreCheckService {
     if (checks.some((c) => c.check === "daemon.reachable" && c.status === "green")) proven.push("daemon_reachable");
     if (checks.some((c) => c.check.endsWith(".transcript") && c.status === "green")) proven.push("transcript_readable");
     if (checks.some((c) => c.check.endsWith(".spec-present") && c.status === "green")) proven.push("spec_present");
-    if (checks.some((c) => c.check.endsWith(".queue-file") && c.status === "green")) proven.push("queue_file_present");
+    if (checks.some((c) => c.check.endsWith(".queue-store") && c.status === "green")) proven.push("queue_store_available");
     if (checks.some((c) => c.check.endsWith(".resume-path") && c.status === "green")) proven.push("seat_identity_resolvable");
     return proven;
   }
@@ -1258,7 +1344,7 @@ export class RestoreCheckService {
     checks: CheckEntry[],
     recoveryInputs: RecoveryRigInput[],
   ): RecoveryPlan {
-    if (verdict === "unknown") {
+    if (verdict === "unknown" && recoveryInputs.length === 0) {
       const evidence = checks.find((check) => check.status === "red")?.evidence
         ?? "Restore-check state could not be inspected";
       return {
@@ -1290,7 +1376,9 @@ export class RestoreCheckService {
       };
     }
 
-    const allReady = recoveryInputs.every((input) => input.runningReadyNodes === input.expectedNodes);
+    const allReady = recoveryInputs.every((input) => !input.snapshotLookupError
+      && input.runningReadyNodes === input.expectedNodes
+      && !input.blockingChecks.some((check) => this.classifyRecoveryBlockingCheck(check) === "restore_input"));
     if (allReady) {
       return {
         status: "not_needed",
@@ -1306,8 +1394,6 @@ export class RestoreCheckService {
     const unknown: RecoveryIssue[] = [];
 
     for (const input of recoveryInputs) {
-      if (input.runningReadyNodes === input.expectedNodes) continue;
-
       if (input.snapshotLookupError) {
         unknown.push({
           scope: "rig",
@@ -1317,7 +1403,6 @@ export class RestoreCheckService {
         });
         continue;
       }
-
       const restoreInputBlockers = input.blockingChecks.filter((check) =>
         this.classifyRecoveryBlockingCheck(check) === "restore_input"
       );
@@ -1330,6 +1415,7 @@ export class RestoreCheckService {
         });
         continue;
       }
+      if (input.runningReadyNodes === input.expectedNodes) continue;
 
       if (input.latestSnapshot) {
         actions.push({
@@ -1351,7 +1437,7 @@ export class RestoreCheckService {
         rigName: input.rigName,
         action: "restore_from_latest_snapshot",
         command: `rig up --existing ${shellQuote(input.rigName)}`,
-        reason: "Rig has persisted current DB state but no latest snapshot; rig up will capture an auto-rehydrate snapshot and restore.",
+        reason: "Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.",
         safe: false,
         blocking: true,
       });
@@ -1376,6 +1462,8 @@ export class RestoreCheckService {
 
   private classifyRecoveryBlockingCheck(check: CheckEntry): "restore_input" | "runtime" | "other" {
     if (check.status !== "red") return "other";
+
+    if (check.check.startsWith("rig.") && check.check.endsWith(".restore-preconditions")) return "restore_input";
 
     if (check.check.startsWith("seat.") && check.check.endsWith(".readiness")) {
       if (check.evidence.includes("Missing canonical session identity")) {
@@ -1458,7 +1546,10 @@ export class RestoreCheckService {
 
     let verdict: Verdict;
     let status: ReadinessStatus;
-    if (blockingChecks.length > 0) {
+    if (input.preconditionError) {
+      verdict = "unknown";
+      status = "unknown";
+    } else if (blockingChecks.length > 0) {
       verdict = "not_restorable";
       status = "not_ready";
     } else if (caveatChecks.length > 0) {

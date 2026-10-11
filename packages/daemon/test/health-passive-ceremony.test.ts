@@ -237,3 +237,179 @@ it("includes the typed workflow acceptance join after the queue closure without 
   expect(finding.ceremony?.stage).toBe("needs-diagnosis"); expect(finding.explanation).toContain("no ratio is computed");
   expect(finding.lastObservedAt).toBe("2026-09-05T12:00:29.500Z");
 });
+
+// Each family is one undelegated row with `n` in-window transitions, in the fixture's slice.
+function addFamilies(t: Awaited<ReturnType<typeof setup>>, counts: number[], prefix = "family") {
+  const item = t.db.prepare("INSERT INTO queue_items(qitem_id,ts_created,ts_updated,source_session,destination_session,state,tags,body) VALUES(?,?,?,'a@rig','b@rig','pending',?,'family')");
+  const transition = t.db.prepare("INSERT INTO queue_transitions(qitem_id,ts,state,actor_session) VALUES(?,?,'pending','a@rig')");
+  counts.forEach((n, i) => {
+    const id = `${prefix}-${String(i).padStart(3, "0")}`;
+    item.run(id, "2026-09-05T11:59:00.000Z", "2026-09-05T11:59:00.000Z", JSON.stringify(["mission:mission", "slice:slice-1"]));
+    for (let k = 0; k < n; k++) transition.run(id, new Date(Date.parse("2026-09-05T11:59:00.000Z") + k * 1000).toISOString());
+  });
+}
+
+it("past the family limit evaluates exactly the busiest families and reports the rest as omitted, not healthy", async () => {
+  const t = await setup();
+  // root has 30 transitions; 198 families have 22; three tie at 21. The limit keeps root,
+  // the 198 and the lowest-ID tie, and omits the other two ties.
+  addFamilies(t, [...Array<number>(198).fill(22), 21, 21, 21]);
+  const read = vi.spyOn(t.queue.transitionLog, "listForQitemWindow");
+  const lineages = t.projection.records().map((r) => r.ceremony!.lineageId).sort();
+  expect(lineages).toHaveLength(200);
+  expect(lineages).toContain("root"); expect(lineages).toContain("family-198");
+  expect(lineages).not.toContain("family-199"); expect(lineages).not.toContain("family-200");
+  // Omitted families are never read, so nothing about them can be concluded.
+  expect(new Set(read.mock.calls.map((c) => c[0]))).toEqual(new Set(lineages));
+  expect(t.projection.list({ limit: 200 })).toMatchObject({ total: 200, coverage: [{ source: "passive-ceremony", unit: "handoff families",
+    limit: 200, total: 202, evaluated: 200, omitted: 2, partial: true, order: "most queue transitions in the observation window, then lineage ID" }] });
+  expect(t.projection.records().map((r) => r.ceremony!.lineageId).sort()).toEqual(lineages);
+});
+
+it("at the family limit evaluates every family as before and reports complete coverage", async () => {
+  const t = await setup();
+  addFamilies(t, [...Array<number>(197).fill(22), 3, 2]);
+  expect(t.projection.records().map((r) => r.ceremony!.lineageId)).toHaveLength(198);
+  expect(t.projection.list({ limit: 200 }).coverage).toEqual([expect.objectContaining({ total: 200, evaluated: 200, omitted: 0, partial: false })]);
+});
+
+it("the scheduled evaluation records partial coverage instead of failing past the family limit", async () => {
+  const t = await setup();
+  addFamilies(t, Array<number>(201).fill(1));
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  t.service.start();
+  await vi.advanceTimersByTimeAsync(60000);
+  await t.service.stop();
+  expect(t.service.status().lastEvaluation).toMatchObject({ error: null,
+    coverage: [{ source: "passive-ceremony", total: 202, evaluated: 200, omitted: 2, partial: true }] });
+  expect(t.service.list()).toHaveLength(1);
+});
+
+it("the scheduled evaluation keeps its own coverage when another health read runs during delivery", async () => {
+  const t = await setup();
+  addFamilies(t, Array<number>(201).fill(1));
+  // A health-list request served while the evaluation awaits delivery replaces the source's latest coverage.
+  t.send.mockImplementation(async () => { addFamilies(t, [1, 1, 1], "late"); t.projection.list(); return { ok: true, verified: true }; });
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  t.service.start();
+  await vi.advanceTimersByTimeAsync(60000);
+  await t.service.stop();
+  expect(t.send).toHaveBeenCalledTimes(1);
+  expect(t.projection.coverage()).toMatchObject([{ total: 205, omitted: 5 }]);
+  expect(t.service.status().lastEvaluation).toMatchObject({ error: null, coverage: [{ total: 202, evaluated: 200, omitted: 2, partial: true }] });
+});
+
+it("a skipped evaluation reports no coverage, never coverage left by an earlier read", async () => {
+  const t = await setup();
+  const p = t.policy.read().policy;
+  t.policy.apply({ ...p, diagnosis: { ...p.diagnosis, enabled: false } }, "operator@rig");
+  t.projection.list();
+  expect(t.projection.coverage()).toHaveLength(1);
+  expect((await t.service.evaluate("system:health", true)).coverage).toBeNull();
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  t.service.start();
+  await vi.advanceTimersByTimeAsync(60000);
+  await t.service.stop();
+  expect(t.service.status().lastEvaluation).toMatchObject({ error: null, coverage: null });
+});
+
+
+// #613: exercise the real bounded readers; a failed source is not an empty healthy read.
+it.each([
+  "queue_window_truncated", "lineage_cycle_or_limit", "family_member_limit",
+  "transition_window_truncated", "workflow_receipts_truncated", "episode_history_truncated",
+  "diagnosis_history_truncated", "scope_membership_limit", "proof_directory_limit",
+  "lineage_parent_unavailable",
+])("reports health_passive_%s as unavailable without stale census counts", async (reason) => {
+  const t = await setup();
+  expect(t.projection.list().records).toHaveLength(1);
+  if (reason === "queue_window_truncated") addFamilies(t, Array(2000).fill(1));
+  if (reason === "lineage_cycle_or_limit") t.db.prepare("UPDATE queue_items SET handed_off_from = 'root' WHERE qitem_id = 'root'").run();
+  if (reason === "lineage_parent_unavailable") t.db.prepare("UPDATE queue_items SET handed_off_from = 'missing' WHERE qitem_id = 'root'").run();
+  if (reason === "family_member_limit") {
+    addFamilies(t, Array(1000).fill(1));
+    t.db.prepare("UPDATE queue_items SET handed_off_from = 'root' WHERE qitem_id <> 'root'").run();
+  }
+  if (reason === "transition_window_truncated") {
+    const insert = t.db.prepare("INSERT INTO queue_transitions(qitem_id,ts,state,actor_session) VALUES('root','2026-09-05T12:00:01.000Z','pending','a@rig')");
+    t.db.transaction(() => { for (let i = 0; i < 10000; i++) insert.run(); })();
+  }
+  if (reason === "workflow_receipts_truncated") {
+    t.db.prepare("INSERT INTO workflow_instances(instance_id,workflow_name,workflow_version,created_by_session,created_at) VALUES('run','journey','1','a@rig','2026-09-05T12:00:00Z')").run();
+    const insert = t.db.prepare("INSERT INTO workflow_step_trails(trail_id,instance_id,step_id,step_role,closed_at,closure_reason,actor_session,prior_qitem_id) VALUES(?,'run','accept','evaluator','2026-09-05T12:00:29.500Z','done','a@rig','root')");
+    for (let i = 0; i < 201; i++) insert.run(`trail-${i}`);
+  }
+  if (reason === "episode_history_truncated" || reason === "diagnosis_history_truncated") {
+    addFamilies(t, Array(reason === "episode_history_truncated" ? 201 : 1).fill(0), "diagnosis");
+    t.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id LIKE 'diagnosis-%'").run(JSON.stringify(["health-lineage:root", "health-diagnosis"]));
+    if (reason === "diagnosis_history_truncated") {
+      const insert = t.db.prepare("INSERT INTO queue_transitions(qitem_id,ts,state,actor_session) VALUES('diagnosis-000','2026-09-05T12:00:01.000Z','pending','a@rig')");
+      for (let i = 0; i < 1001; i++) insert.run();
+    }
+  }
+  if (reason === "scope_membership_limit") {
+    const slices = Array.from({ length: 201 }, (_, i) => {
+      const ref = `slices/work/member-${i}.yaml`;
+      writeFileSync(join(t.workspace, "missions/mission", ref), "kind: slice\n");
+      return { ref, order: i };
+    });
+    writeFileSync(join(t.workspace, "missions/mission/mission.yaml"), JSON.stringify({ kind: "mission", composition: { slices } }));
+  }
+  if (reason === "proof_directory_limit") for (let i = 0; i < 100; i++) writeFileSync(join(t.slice, "proof", `extra-${i}.md`), "proof");
+  // Direct source access still retains the genuine error. Projection alone isolates it.
+  expect(() => t.source.read()).toThrow(`health_passive_${reason}`);
+  const result = t.projection.list();
+  expect(result.records).toEqual([]);
+  expect(result.coverage).toEqual([{ source: "passive-ceremony", status: "unavailable", partial: true,
+    evaluatedAt: expect.any(String), reason: `health_passive_${reason}` }]);
+});
+
+it("does not read disabled ceremony sources or retain their earlier coverage", async () => {
+  const t = await setup();
+  t.projection.list();
+  expect(t.projection.coverage()).toHaveLength(1);
+  const read = vi.spyOn(t.source, "read");
+  const p = t.policy.read().policy;
+  t.policy.apply({ ...p, disabledDetectors: ["process.ceremony-amplification"] }, "operator@rig");
+  expect(t.projection.list()).toMatchObject({ records: [] });
+  expect(read).not.toHaveBeenCalled();
+  expect(t.projection.coverage()).toEqual([]);
+  t.policy.apply(p, "operator@rig");
+  expect(t.projection.list().records).toHaveLength(1);
+  expect(read).toHaveBeenCalledTimes(1);
+});
+
+
+it.each(["health_checkpoint_source_limit", "health_checkpoint_too_large"])("#613 additional: isolates %s", async (reason) => {
+  const t = await setup();
+  const dir = join(t.home, "health/checkpoints");
+  mkdirSync(dir, { recursive: true });
+  if (reason === "health_checkpoint_source_limit") {
+    for (let i = 0; i < 201; i++) writeFileSync(join(dir, `${i.toString(16).padStart(64, "0")}.json`), "{}");
+  } else writeFileSync(join(dir, `${"0".repeat(64)}.json`), "x".repeat(1048577));
+  const source = new HealthCheckpointSource(t.home, t.queue, t.policy);
+  expect(() => source.read()).toThrow(reason);
+  expect(new HealthProjectionService(source).list().coverage).toEqual([{ source: "health-checkpoints",
+    evaluatedAt: expect.any(String), status: "unavailable", partial: true, reason }]);
+});
+it("#613 additional: retains the distinct over-depth lineage refusal as unavailable", async () => {
+  const t = await setup();
+  addFamilies(t, Array(1000).fill(0), "ancestor");
+  const link = t.db.prepare("UPDATE queue_items SET handed_off_from = ? WHERE qitem_id = ?");
+  link.run("ancestor-000", "root");
+  for (let i = 0; i < 999; i++) link.run(`ancestor-${String(i+1).padStart(3, "0")}`, `ancestor-${String(i).padStart(3, "0")}`);
+  expect(() => t.source.read()).toThrow("health_passive_lineage_cycle_or_limit");
+  expect(t.projection.list().coverage?.[0]).toMatchObject({ status: "unavailable", reason: "health_passive_lineage_cycle_or_limit" });
+});
+it("#613 additional: disabled real checkpoint source never opens malformed files", async () => {
+  const t = await setup();
+  const dir = join(t.home, "health/checkpoints");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${"0".repeat(64)}.json`), "malformed");
+  const p = t.policy.read().policy;
+  t.policy.apply({ ...p, disabledDetectors: ["process.ceremony-amplification"] }, "operator@rig");
+  const source = new HealthCheckpointSource(t.home, t.queue, t.policy);
+  const read = vi.spyOn(source, "read");
+  expect(new HealthProjectionService(source, () => t.policy.read()).list().records).toEqual([]);
+  expect(read).not.toHaveBeenCalled();
+});

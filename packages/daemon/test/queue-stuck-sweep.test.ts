@@ -25,17 +25,20 @@ import { QueueRepository, deriveCrossHostSuccessorId, type QueueItem } from "../
 import { EventBus } from "../src/domain/event-bus.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { archiveAgedTerminalTransitions } from "../src/domain/queue-retention.js";
+import type { HumanFragment } from "../src/domain/gateway/human-registry.js";
 
 const sweepMod = () => import("../src/domain/queue-stuck-sweep.js");
 
 describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-observable", () => {
   let db: Database.Database;
+  let bus: EventBus;
   let repo: QueueRepository;
 
   beforeEach(() => {
     db = new Database(":memory:");
     migrate(db, ALL_MIGRATIONS);
-    repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
+    bus = new EventBus(db);
+    repo = new QueueRepository(db, bus, { validateRig: () => true });
   });
   afterEach(() => {
     db.close();
@@ -111,6 +114,108 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(f.body).toContain(row.qitemId); // row id
     expect(f.body).toMatch(/overdue|claimed/i);
     expect(f.body).toMatch(/\d+\s*min/i); // age
+  });
+
+  it("OVERDUE EVENT: standing sweep emits qitem.closure_overdue on first observation, deduplicates on subsequent sweeps, and re-emits on re-claim", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    makeOverdue(row.qitemId);
+
+    const emitted: Array<{ type: string; [k: string]: unknown }> = [];
+    bus.subscribe((e) => emitted.push(e));
+
+    // First sweep emits qitem.closure_overdue and records transition note
+    await runSweep();
+    const overdueEvents1 = emitted.filter((e) => e.type === "qitem.closure_overdue");
+    expect(overdueEvents1).toHaveLength(1);
+    expect(overdueEvents1[0]).toMatchObject({
+      type: "qitem.closure_overdue",
+      qitemId: row.qitemId,
+      destinationSession: "worker@r",
+    });
+
+    const transitions1 = db.prepare(
+      "SELECT * FROM queue_transitions WHERE qitem_id = ? AND transition_note = 'closure-overdue'",
+    ).all(row.qitemId);
+    expect(transitions1).toHaveLength(1);
+
+    // Second sweep deduplicates: no duplicate event or transition note
+    await runSweep();
+    const overdueEvents2 = emitted.filter((e) => e.type === "qitem.closure_overdue");
+    expect(overdueEvents2).toHaveLength(1);
+    const transitions2 = db.prepare(
+      "SELECT * FROM queue_transitions WHERE qitem_id = ? AND transition_note = 'closure-overdue'",
+    ).all(row.qitemId);
+    expect(transitions2).toHaveLength(1);
+
+    // Unclaim and re-claim: new claim episode allows a new closure_overdue when past deadline again
+    repo.unclaim(row.qitemId, "worker@r", "reassign");
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    makeOverdue(row.qitemId);
+
+    await runSweep();
+    const overdueEvents3 = emitted.filter((e) => e.type === "qitem.closure_overdue");
+    expect(overdueEvents3).toHaveLength(2);
+    expect(overdueEvents3[1]).toMatchObject({
+      type: "qitem.closure_overdue",
+      qitemId: row.qitemId,
+      destinationSession: "worker@r",
+    });
+
+    // If the transition is archived into queue_transitions_archive, deduplication still holds
+    db.prepare(`
+      INSERT INTO queue_transitions_archive (
+        transition_id, qitem_id, ts, state, transition_note,
+        actor_session, closure_reason, closure_target, archived_at
+      )
+      SELECT transition_id, qitem_id, ts, state, transition_note,
+             actor_session, closure_reason, closure_target, ?
+        FROM queue_transitions WHERE qitem_id = ?
+    `).run(new Date().toISOString(), row.qitemId);
+    db.prepare("DELETE FROM queue_transitions WHERE qitem_id = ? AND transition_note = 'closure-overdue'").run(row.qitemId);
+
+    await runSweep();
+    const overdueEvents4 = emitted.filter((e) => e.type === "qitem.closure_overdue");
+    expect(overdueEvents4).toHaveLength(2);
+  });
+
+  it("OVERDUE FINDING LAST TRANSITION: shows claimant's last transition, skipping daemon closure-overdue note", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      transitionNote: "investigating edge case",
+    });
+    makeOverdue(row.qitemId);
+
+    await runSweep();
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.body).toContain("last transition: investigating edge case at");
+    expect(findings[0]!.body).not.toContain("last transition: closure-overdue");
+  });
+
+  it("OVERDUE SWEEP ERROR RESILIENCE: recordClosureOverdue write failure does not crash sweep or drop findings", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    makeOverdue(row.qitemId);
+
+    const logLines: string[] = [];
+    const origRecord = repo.recordClosureOverdue.bind(repo);
+    repo.recordClosureOverdue = () => {
+      throw new Error("SQLITE_BUSY: database is locked");
+    };
+
+    try {
+      const { result } = await runSweep({ log: (msg: string) => logLines.push(msg) });
+      expect(result.outcome).toBe("findings");
+      const findings = await findingsFor(row.qitemId);
+      expect(findings).toHaveLength(1);
+      expect(logLines.some((l) => l.includes("failed to record closure-overdue") && l.includes("SQLITE_BUSY"))).toBe(true);
+    } finally {
+      repo.recordClosureOverdue = origRecord;
+    }
   });
 
   it("S04 PICKUP SEAM: stalled-after-claim routes one finding to the claimant and later motion auto-closes it", async () => {
@@ -279,13 +384,13 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings[0]!.body).not.toContain(a.qitemId);
   });
 
-  it("HOST-QUALIFIED KEY: a foreign successor is classified without a local lookup, including handed-off source rows", async () => {
+  it("HOST-QUALIFIED KEY: a foreign successor is classified without a local lookup, for closed source rows", async () => {
     const row = await mkRow();
     const foreign = "qitem-xh-0123456789abcdef@vps-b";
     repo.update({
       qitemId: row.qitemId,
       actorSession: "worker@r",
-      state: "handed-off",
+      state: "done",
       closureReason: "handed_off_to",
       closureTarget: foreign,
     });
@@ -598,7 +703,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     repo.update({
       qitemId: row.qitemId,
       actorSession: "worker@r",
-      state: "handed-off",
+      state: "done",
       closureReason: "handed_off_to",
       closureTarget: "qitem-xh-0123456789abcdef@mm2-parent",
     });
@@ -774,5 +879,593 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       value: 60,
       source: "default",
     });
+  });
+});
+
+// #318: a generic close to a seat address (e.g. state=done closure_reason=handed_off_to
+// closure_target=next@r) without a linked local successor must be swept as a dangling closure.
+// Transactional handoffs (which atomically create linked successors) and explicit repairs
+// (creating a linked successor or reopening) are respected and not flagged / auto-close the finding.
+describe("#318 seat-target handoff closure without successor", () => {
+  let db: Database.Database;
+  let repo: QueueRepository;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db, ALL_MIGRATIONS);
+    repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  async function mkRow(dest = "worker@r"): Promise<QueueItem> {
+    return repo.create({ sourceSession: "sender@r", destinationSession: dest, body: "work" });
+  }
+
+  async function runSweep(overrides: Record<string, unknown> = {}) {
+    const mod = await sweepMod();
+    const status = mod.createStuckSweepStatus();
+    const result = await mod.runStuckSweep({
+      db,
+      queueRepo: repo,
+      status,
+      resolveOrchestrator: () => null,
+      unclaimedAgeMinutes: 60,
+      log: () => {},
+      isRegisteredHost: () => false,
+      ...overrides,
+    });
+    return { mod, status, result };
+  }
+
+  async function findingsFor(qitemId: string): Promise<QueueItem[]> {
+    const mod = await sweepMod();
+    const all = repo.list({ limit: 500 });
+    return all.filter(
+      (i) =>
+        (i.tags ?? []).includes(mod.STUCK_SWEEP_FINDING_TAG) &&
+        (i.tags ?? []).some((t) => t.endsWith(`:${qitemId}`)),
+    );
+  }
+
+  it("GENERIC SEAT-TARGET CLOSE WITHOUT SUCCESSOR: swept as dangling-closure with successor-verification-required", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("findings");
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!).toMatchObject({
+      state: "pending",
+      destinationSession: "worker@r",
+    });
+    expect(findings[0]!.summary).toContain("successor-verification-required");
+    expect(findings[0]!.body).toContain("- next@r");
+    expect(findings[0]!.body).toContain("OPENRIG_URL=<registered-host> rig queue list --destination next@r");
+    expect(findings[0]!.body).toContain("custody-verified: <target>");
+    expect(findings[0]!.tags).toContain(`stuck-sweep:dangling-closure:${row.qitemId}`);
+  });
+
+  it("TRANSACTIONAL HANDOFF: repo.handoff to a seat target creates linked successor in same txn — zero findings", async () => {
+    const row = await mkRow();
+    await repo.handoff({
+      qitemId: row.qitemId,
+      fromSession: "worker@r",
+      toSession: "next@r",
+      nudge: false,
+    });
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("clean");
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
+  it("TRANSACTIONAL HANDOFF-AND-COMPLETE: repo.handoffAndComplete to a seat target creates linked successor in same txn — zero findings", async () => {
+    const row = await mkRow();
+    await repo.handoffAndComplete({
+      qitemId: row.qitemId,
+      fromSession: "worker@r",
+      toSession: "next@r",
+      nudge: false,
+    });
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("clean");
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
+  it("EXPLICIT SUCCESSOR WITH LINEAGE: successor created with chainOfRecord before generic close is not flagged", async () => {
+    const row = await mkRow();
+    await repo.create({
+      sourceSession: "worker@r",
+      destinationSession: "next@r",
+      body: "follow-on",
+      chainOfRecord: [row.qitemId],
+      nudge: false,
+    });
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("clean");
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
+  it("UNRELATED ITEM FOR SAME SEAT DOES NOT SUPPRESS: row for next@r without lineage to source leaves it flagged", async () => {
+    const row = await mkRow();
+    await repo.create({
+      sourceSession: "other@r",
+      destinationSession: "next@r",
+      body: "unrelated obligation",
+      nudge: false,
+    });
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+
+    await runSweep();
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.body).toContain("- next@r");
+  });
+
+  it("REMOTE CUSTODY NOTE SILENCES SEAT TARGET: custody-verified note on source row prevents finding", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "verifier@r",
+      transitionNote: "custody-verified: next@r confirmed on parent host via OPENRIG_URL read",
+    });
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("clean");
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
+  it("DISPOSITION AUTO-CLOSES OPEN FINDING: remote verification note appended after finding mints auto-resolves on next sweep", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    await runSweep();
+    const open = (await findingsFor(row.qitemId))[0]!;
+    expect(open.state).toBe("pending");
+
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "verifier@r",
+      transitionNote: "custody-verified: next@r confirmed on remote host",
+    });
+    const next = await runSweep();
+    expect(next.result.findings).toContainEqual(expect.objectContaining({
+      kind: "dangling-closure",
+      qitemId: row.qitemId,
+      action: "closed",
+    }));
+    expect((await findingsFor(row.qitemId))[0]).toMatchObject({
+      state: "done",
+      closureReason: "no-follow-on",
+    });
+  });
+
+  it("LOCAL REPAIR BY CREATING SUCCESSOR: creating linked successor auto-resolves open finding on next sweep", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    await runSweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+
+    await repo.create({
+      sourceSession: "worker@r",
+      destinationSession: "next@r",
+      chainOfRecord: [row.qitemId],
+      body: "repaired successor",
+      nudge: false,
+    });
+    const next = await runSweep();
+    expect(next.result.findings).toContainEqual(expect.objectContaining({
+      kind: "dangling-closure",
+      qitemId: row.qitemId,
+      action: "closed",
+    }));
+    expect((await findingsFor(row.qitemId))[0]!.state).toBe("done");
+  });
+
+  it("LOCAL REPAIR BY REOPEN: reopening source row auto-resolves open finding on next sweep", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    await runSweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "in-progress",
+      reopen: true,
+      transitionNote: "reopened to repair missing successor",
+    });
+    const next = await runSweep();
+    expect(next.result.findings).toContainEqual(expect.objectContaining({
+      kind: "dangling-closure",
+      qitemId: row.qitemId,
+      action: "closed",
+    }));
+    expect((await findingsFor(row.qitemId))[0]!.state).toBe("done");
+  });
+
+  it("MIXED COMMA FAN-OUT WITH SEAT TARGET: reports only unresolved seat member when one member has successor", async () => {
+    const row = await mkRow();
+    await repo.create({
+      sourceSession: "worker@r",
+      destinationSession: "local-valid@r",
+      chainOfRecord: [row.qitemId],
+      body: "local valid",
+      nudge: false,
+    });
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "local-valid@r,missing-seat@r",
+    });
+
+    await runSweep();
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.body).toContain("- missing-seat@r");
+    expect(findings[0]!.body).not.toContain("- local-valid@r");
+  });
+
+  it("SKIP HANDED-OFF ROWS: a row with state 'handed-off' is skipped by the sweep even without a successor", async () => {
+    const row = await mkRow();
+    db.prepare(
+      "UPDATE queue_items SET state = 'handed-off', closure_reason = 'handed_off_to', closure_target = 'next@r' WHERE qitem_id = ?"
+    ).run(row.qitemId);
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("clean");
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
+  it("UPGRADE / RECENT WINDOW: closure outside the custody window gives no finding; closure inside window is flagged", async () => {
+    const oldRow = await mkRow();
+    await repo.update({
+      qitemId: oldRow.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    // Age oldRow to 48 hours ago (outside 24h window)
+    const oldTime = new Date(Date.now() - 48 * 3_600_000).toISOString();
+    db.prepare("UPDATE queue_items SET ts_updated = ? WHERE qitem_id = ?").run(oldTime, oldRow.qitemId);
+
+    const recentRow = await mkRow();
+    await repo.update({
+      qitemId: recentRow.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    // Age recentRow to 2 hours ago (inside 24h window)
+    const recentTime = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    db.prepare("UPDATE queue_items SET ts_updated = ? WHERE qitem_id = ?").run(recentTime, recentRow.qitemId);
+
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("findings");
+    expect(await findingsFor(oldRow.qitemId)).toHaveLength(0);
+    expect(await findingsFor(recentRow.qitemId)).toHaveLength(1);
+  });
+
+  it("UPGRADE / RECENT WINDOW: custodyWindowHours in deps overrides the 24h window", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    const pastTime = new Date(Date.now() - 36 * 3_600_000).toISOString();
+    db.prepare("UPDATE queue_items SET ts_updated = ? WHERE qitem_id = ?").run(pastTime, row.qitemId);
+
+    // Outside 24h window -> clean
+    const sweepDefault = await runSweep();
+    expect(sweepDefault.result.outcome).toBe("clean");
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+
+    // Inside overridden 48h window -> flagged
+    const sweepCustom = await runSweep({ custodyWindowHours: 48 });
+    expect(sweepCustom.result.outcome).toBe("findings");
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+  });
+
+  it("UPGRADE / RECENT WINDOW: open finding remains active and monitored after window elapses until resolved", async () => {
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: "done",
+      closureReason: "handed_off_to",
+      closureTarget: "next@r",
+    });
+    // First sweep within window creates finding
+    await runSweep();
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.state).toBe("pending");
+
+    // Age row past window (e.g. 30 hours ago)
+    const pastTime = new Date(Date.now() - 30 * 3_600_000).toISOString();
+    db.prepare("UPDATE queue_items SET ts_updated = ? WHERE qitem_id = ?").run(pastTime, row.qitemId);
+
+    // Finding is NOT closed simply because time passed; it is refreshed
+    const secondSweep = await runSweep();
+    expect(secondSweep.result.findings).toContainEqual(expect.objectContaining({
+      kind: "dangling-closure",
+      qitemId: row.qitemId,
+      action: "refreshed",
+    }));
+    expect((await findingsFor(row.qitemId))[0]!.state).toBe("pending");
+
+    // Once resolved, it closes
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "verifier@r",
+      transitionNote: "custody-verified: next@r confirmed",
+    });
+    const thirdSweep = await runSweep();
+    expect(thirdSweep.result.findings).toContainEqual(expect.objectContaining({
+      kind: "dangling-closure",
+      qitemId: row.qitemId,
+      action: "closed",
+    }));
+    expect((await findingsFor(row.qitemId))[0]!.state).toBe("done");
+  });
+
+  it("RECIPE COMMAND: verificationCommand generates --destination for seat targets", async () => {
+    const { mod } = await runSweep();
+    expect(mod.verificationCommand("next@r")).toBe("OPENRIG_URL=<registered-host> rig queue list --destination next@r");
+    expect(mod.verificationCommand("qitem-123")).toBe("OPENRIG_URL=<registered-host> rig queue show qitem-123");
+    expect(mod.verificationCommand("(unspecified)")).toBe("OPENRIG_URL=<registered-host> rig queue list");
+  });
+});
+
+// #514: an ask already POSTED to a registered human in its current delivery episode is waiting on
+// that human, not stuck. The unclaimed net must not raise a finding for it (which would post the
+// human a second time), and the waiting view must not promise that sweep.
+describe("#514 unclaimed sweep and a pending ask posted to a registered human", () => {
+  const OWNER = { entityId: "human-owner", class: "human", displayName: "Owner", address: "human-owner@external",
+    connectorBindings: [{ connector: "slack", ref: "U0OWNER", primary: true }], prefs: {} } as unknown as HumanFragment;
+  const human = (entityId: string) => ({ entityId, class: "human", displayName: entityId, address: `${entityId}@external`,
+    connectorBindings: [], prefs: {} }) as unknown as HumanFragment;
+  const ALPHA = human("human-alpha");
+  const BETA = human("human-beta");
+  // A registered human whose id has no human- prefix: its canonical alias (owner@kernel) cannot carry an intent.
+  const PLAIN = human("owner");
+  let db: Database.Database;
+  let repo: QueueRepository;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db, ALL_MIGRATIONS);
+    repo = new QueueRepository(db, new EventBus(db), {
+      validateRig: () => true,
+      loadHumanRegistry: () => ({ ok: true as const, entities: [OWNER, ALPHA, BETA, PLAIN] }),
+      transport: { send: async () => ({ ok: true, verified: true }) },
+    });
+  });
+  afterEach(() => { db.close(); });
+
+  async function ask(destinationSession = "human-owner@external"): Promise<QueueItem> {
+    return repo.create({ sourceSession: "asker@r", destinationSession, body: "Pick option A or B", summary: "A or B?",
+      evidenceRef: "rig queue show qitem-fixture", humanIntent: "decision" } as never);
+  }
+  const currentKey = (id: string) => `${id}:${repo.transitionLog.latestOwnerNotificationForQitem(id)!.transitionId}`;
+  const receipt = (id: string, kind: "posted" | "transport-failed", key = currentKey(id)) => repo.update({
+    qitemId: id, actorSession: "daemon@kernel",
+    transitionNote: `slack-owner-notification-${kind} notification_key=${key} level=ALERT ${kind === "posted" ? "message_ts=1.2" : "detail=http-500"}`,
+  });
+  /** Fixture aging of existing facts: the row and every transition move back by `minutes`. */
+  function age(id: string, minutes = 61): void {
+    const past = new Date(Date.now() - minutes * 60_000).toISOString();
+    db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?").run(past, id);
+    db.prepare("UPDATE queue_transitions SET ts = ? WHERE qitem_id = ?").run(past, id);
+  }
+  async function sweep() {
+    const mod = await sweepMod();
+    return mod.runStuckSweep({ db, queueRepo: repo, status: mod.createStuckSweepStatus(), resolveOrchestrator: () => null,
+      unclaimedAgeMinutes: 60, log: () => {}, isRegisteredHost: () => false });
+  }
+  async function findingsFor(qitemId: string): Promise<QueueItem[]> {
+    const mod = await sweepMod();
+    return repo.list({ limit: 500 }).filter((i) => (i.tags ?? []).includes(mod.STUCK_SWEEP_FINDING_TAG)
+      && (i.tags ?? []).some((t) => t.endsWith(`:${qitemId}`)));
+  }
+
+  // human-owner@kernel is the registry alias form (canonical member name = entity id).
+  it.each(["human-owner@external", "human-owner@kernel"])("a %s ask with a POSTED receipt for its current episode gets no finding and stays the human's open decision", async (destination) => {
+    const row = await ask(destination);
+    receipt(row.qitemId, "posted");
+    age(row.qitemId);
+    await sweep();
+    expect(await findingsFor(row.qitemId)).toEqual([]);
+    expect(repo.getById(row.qitemId)).toMatchObject({ state: "pending", sourceSession: "asker@r", destinationSession: destination });
+    expect(repo.listAttention({ destinationSession: destination }).map((i) => i.qitemId)).toContain(row.qitemId);
+  });
+
+  it.each(["human-owner@external", "human-owner@kernel"])("the waiting view of a POSTED %s ask does not promise the unclaimed sweep", async (destination) => {
+    const row = await ask(destination);
+    receipt(row.qitemId, "posted");
+    age(row.qitemId);
+    const backstop = repo.waitingView(row.qitemId)!.nextBackstop;
+    expect(backstop.mechanism).not.toContain("queue-stuck-sweep:unclaimed");
+    expect(backstop).toMatchObject({ owner: destination, dueAt: null, intervalSeconds: null });
+  });
+
+  it("an agent's unclaimed row still gets its finding, and its waiting view still names the sweep", async () => {
+    const row = await repo.create({ sourceSession: "asker@r", destinationSession: "worker@r", body: "work" });
+    age(row.qitemId);
+    expect(repo.waitingView(row.qitemId)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
+    await sweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+  });
+
+  it.each(["never-posted", "transport-failed"] as const)("a %s human ask keeps its existing finding", async (outcome) => {
+    const row = await ask();
+    if (outcome === "transport-failed") receipt(row.qitemId, "transport-failed");
+    age(row.qitemId);
+    expect(repo.deliveryOutcomeFor(row.qitemId)?.outcome).toBe(outcome);
+    expect(repo.waitingView(row.qitemId)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
+    await sweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+  });
+
+  it("a posted-looking note on an ask with no current human episode (unregistered @external) does not suppress the finding", async () => {
+    const row = await ask("stranger@external");
+    expect(repo.transitionLog.latestOwnerNotificationForQitem(row.qitemId)).toBeFalsy();
+    receipt(row.qitemId, "posted", `${row.qitemId}:0`);
+    age(row.qitemId);
+    // deliveryOutcomeFor keeps its legacy row-scoped fallback; that is not a current human episode.
+    expect(repo.deliveryOutcomeFor(row.qitemId)?.outcome).toBe("posted");
+    expect(repo.humanNotificationPostedThisEpisode(row.qitemId)).toBe(false);
+    await sweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+  });
+
+  it("a POSTED receipt for an earlier episode cannot suppress a newer, unposted one (the predicate and view pin it; the finding may be either half's)", async () => {
+    const row = await ask();
+    receipt(row.qitemId, "posted");
+    const firstKey = currentKey(row.qitemId);
+    await repo.update({ qitemId: row.qitemId, actorSession: "asker@r", state: "blocked", blockedOn: "human-owner@external",
+      transitionNote: "parked on the owner" } as never);
+    await repo.update({ qitemId: row.qitemId, actorSession: "asker@r", state: "pending", transitionNote: "back to pending" } as never);
+    expect(currentKey(row.qitemId)).not.toBe(firstKey);
+    age(row.qitemId);
+    expect(repo.deliveryOutcomeFor(row.qitemId)?.outcome).toBe("never-posted");
+    // The finding below may come from the undelivered half; the episode scoping itself is pinned here.
+    expect(repo.humanNotificationPostedThisEpisode(row.qitemId)).toBe(false);
+    expect(repo.waitingView(row.qitemId)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
+    await sweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(1);
+  });
+
+  it("an open finding for an ask that is later POSTED closes through the normal path; the ask stays open", async () => {
+    const row = await ask();
+    age(row.qitemId);
+    await sweep();
+    const [finding] = await findingsFor(row.qitemId);
+    expect(finding).toBeDefined();
+    receipt(row.qitemId, "posted");
+    const second = await sweep();
+    expect(second.findings).toContainEqual(expect.objectContaining({ findingQitemId: finding!.qitemId, action: "closed" }));
+    expect(repo.getById(finding!.qitemId)).toMatchObject({ state: "done", closureReason: "no-follow-on" });
+    expect(repo.getById(row.qitemId)).toMatchObject({ state: "pending", destinationSession: "human-owner@external" });
+  });
+
+  const unclaimedFinding = async (qitemId: string) => (await findingsFor(qitemId))
+    .filter((f) => (f.tags ?? []).includes(`stuck-sweep:unclaimed-obligation:${qitemId}`));
+
+  it("a registered alias without an intent (owner@kernel) is suppressed like its @external address", async () => {
+    const row = await repo.create({ sourceSession: "asker@r", destinationSession: "owner@kernel", body: "Pick option A or B",
+      summary: "A or B?", evidenceRef: "rig queue show qitem-fixture" });
+    receipt(row.qitemId, "posted");
+    age(row.qitemId);
+    expect(repo.humanNotificationPostedThisEpisode(row.qitemId)).toBe(true);
+    await sweep();
+    expect(await findingsFor(row.qitemId)).toEqual([]);
+  });
+
+  // F1 (review-r2): the latest delivery episode describes a resolution notice, not an unanswered ask to the destination.
+  it("an agent's row claimed, parked on a human, resolved with a POSTED notice, then unclaimed keeps its unclaimed finding", async () => {
+    const row = await repo.create({ sourceSession: "asker@r", destinationSession: "worker@r", body: "work" });
+    const id = row.qitemId;
+    repo.claim({ qitemId: id, destinationSession: "worker@r" });
+    await repo.update({ qitemId: id, actorSession: "worker@r", state: "blocked", blockedOn: "human-owner@external",
+      transitionNote: "needs a human decision" } as never);
+    await repo.update({ qitemId: id, actorSession: "human-owner@external", state: "in-progress",
+      ownerNotificationKind: "human-decision-resolved", transitionNote: "decision supplied" } as never);
+    receipt(id, "posted");
+    repo.unclaim(id, "worker@r", "handing back for pickup");
+    age(id);
+    expect(repo.getById(id)).toMatchObject({ state: "pending", destinationSession: "worker@r", claimedAt: null });
+    expect(repo.humanNotificationPostedThisEpisode(id)).toBe(false);
+    expect(repo.waitingView(id)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
+    await sweep();
+    expect(await unclaimedFinding(id)).toHaveLength(1);
+  });
+
+  // F2 (review-r2): routeToFallback changes the recipient without opening a new notification episode.
+  it("a POSTED receipt to alpha does not suppress the obligation after routeToFallback to beta", async () => {
+    const row = await ask("human-alpha@external");
+    const id = row.qitemId;
+    receipt(id, "posted");
+    repo.routeToFallback(id, "human-beta@external", "recipient change");
+    age(id);
+    // The ledger's existing recipient association is unchanged; only the suppression is bound to the recipient.
+    expect(repo.deliveryOutcomeFor(id)?.outcome).toBe("posted");
+    expect(repo.humanNotificationPostedThisEpisode(id)).toBe(false);
+    expect(repo.waitingView(id)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
+    await sweep();
+    const findings = await unclaimedFinding(id);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.destinationSession).toBe("human-beta@external");
+  });
+
+  it("an ask returned to pending after a POSTED park notice keeps its finding: the park's recipient is not retained", async () => {
+    const row = await ask();
+    const id = row.qitemId;
+    receipt(id, "posted");
+    await repo.update({ qitemId: id, actorSession: "asker@r", state: "blocked", blockedOn: "human-owner@external",
+      transitionNote: "parked on the owner" } as never);
+    receipt(id, "posted");
+    await repo.update({ qitemId: id, actorSession: "asker@r", state: "pending", transitionNote: "back to pending" } as never);
+    age(id);
+    expect(repo.deliveryOutcomeFor(id)?.outcome).toBe("posted");
+    expect(repo.humanNotificationPostedThisEpisode(id)).toBe(false);
+    expect(repo.waitingView(id)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
+    await sweep();
+    expect(await unclaimedFinding(id)).toHaveLength(1);
   });
 });

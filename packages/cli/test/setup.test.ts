@@ -2,15 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
-import { setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
+import { setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, parseSetupProviders, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
 import type { DoctorDeps } from "../src/commands/doctor.js";
-import { resolveCmuxSettingsPath } from "../src/cmux-config.js";
-
-const CMUX_SETTINGS_PATH = resolveCmuxSettingsPath();
 
 function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   return {
     exec: (cmd: string) => {
+      if (cmd === "herdr --version") return "herdr 0.9.3\n";
       if (cmd === "brew --version") return "Homebrew 4.0\n";
       if (cmd === "tmux -V") return "tmux 3.4\n";
       if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
@@ -48,16 +46,15 @@ function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCod
 }
 
 function expectRuntimeConfigDisclosure(result: SetupResult): void {
-  // OPR.0.4.8.2 agnostic rip-out: the ~/.claude/settings.json disclosure (the global allow-list,
-  // C2) is REMOVED — OpenRig no longer writes that file. Disclosure drops from 6 to 5 entries.
-  expect(result.runtimeConfig).toHaveLength(5);
+  // Setup leaves cmux configuration alone; only managed runtime disclosures remain.
+  expect(result.runtimeConfig).toHaveLength(4);
   expect(result.runtimeConfig.find((d) => d.path === "~/.claude/settings.json")).toBeUndefined();
   expect(result.runtimeConfig).toEqual(expect.arrayContaining([
     {
       scope: "global",
       runtime: "claude-code",
-      path: "~/.claude.json",
-      purpose: "Pre-trust managed workspaces and mark Claude onboarding complete.",
+      path: "~/.claude.json or <CLAUDE_CONFIG_DIR>/.claude.json",
+      purpose: "Pre-trust managed workspaces and mark Claude onboarding complete. Explicit permission modes use the launch-selected HOME/config; classic startup uses the daemon home.",
     },
     {
       scope: "project",
@@ -74,14 +71,8 @@ function expectRuntimeConfigDisclosure(result: SetupResult): void {
     {
       scope: "global",
       runtime: "codex",
-      path: "~/.codex/config.toml",
+      path: "$CODEX_HOME/config.toml (default: ~/.codex/config.toml)",
       purpose: "Pre-trust managed workspaces and apply selected Codex config runtime-resource fragments.",
-    },
-    {
-      scope: "global",
-      runtime: "cmux",
-      path: "~/.config/cmux/settings.json",
-      purpose: "Set cmux socket control to an OpenRig-compatible automation mode.",
     },
   ]));
 }
@@ -108,7 +99,7 @@ describe("rig setup", () => {
     const stepIds = result.steps.map((s) => s.id);
     expect(stepIds).toContain("brew");
     expect(stepIds).toContain("tmux_install");
-    expect(stepIds).toContain("cmux_install");
+    expect(stepIds).toContain("herdr_install");
     expect(stepIds).toContain("claude_install");
     expect(stepIds).toContain("claude_auth");
     expect(stepIds).toContain("codex_install");
@@ -138,7 +129,7 @@ describe("rig setup", () => {
     // Core steps still present
     expect(stepIds).toContain("brew");
     expect(stepIds).toContain("tmux_install");
-    expect(stepIds).toContain("cmux_install");
+    expect(stepIds).toContain("herdr_install");
     expect(stepIds).toContain("claude_install");
     expect(stepIds).toContain("claude_auth");
     expect(stepIds).toContain("codex_install");
@@ -169,6 +160,28 @@ describe("rig setup", () => {
     expect(execSpy).not.toHaveBeenCalled();
   });
 
+  it("--dry-run on linux reports the macOS-only steps as skipped with the real run's reasons", async () => {
+    const dry = await runSetup(makeDeps({ platform: "linux" }), { dryRun: true });
+    const real = await runSetup(makeDeps({ platform: "linux", exec: (cmd: string) => {
+      if (cmd === "tmux -V") return "tmux 3.4\n";
+      throw new Error(`not found: ${cmd}`);
+    } }), {});
+
+    for (const id of ["brew"]) {
+      const dryStep = dry.steps.find((s) => s.id === id);
+      expect(dryStep?.status).toBe("skipped");
+      expect(dryStep?.message).toBe(real.steps.find((s) => s.id === id)?.message);
+    }
+    expect(dry.steps.find((s) => s.id === "brew")?.message).toBe("Skipped: Homebrew setup path is only used on macOS.");
+    expect(dry.steps.find((s) => s.id === "tmux_install")?.message).toBe("Dry run: tmux_install would be attempted.");
+  });
+
+  it("--dry-run on darwin still reports brew and herdr_install as would be attempted", async () => {
+    const dry = await runSetup(makeDeps({ platform: "darwin" }), { dryRun: true });
+    expect(dry.steps.find((s) => s.id === "brew")).toEqual({ id: "brew", status: "skipped", message: "Dry run: brew would be attempted." });
+    expect(dry.steps.find((s) => s.id === "herdr_install")).toEqual({ id: "herdr_install", status: "skipped", message: "Dry run: herdr_install would be attempted." });
+  });
+
   it("core profile execution with all tools present returns pass/applied steps and ready=true", async () => {
     const writeSpy = vi.fn();
     const deps = makeDeps({ writeFile: writeSpy });
@@ -183,8 +196,8 @@ describe("rig setup", () => {
     const tmux = result.steps.find((s) => s.id === "tmux_install");
     expect(tmux?.status).toBe("pass");
 
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("applied");
+    const herdr = result.steps.find((s) => s.id === "herdr_install");
+    expect(herdr?.status).toBe("pass");
 
     const claudeInstall = result.steps.find((s) => s.id === "claude_install");
     expect(claudeInstall?.status).toBe("pass");
@@ -210,23 +223,38 @@ describe("rig setup", () => {
   it("AC-1: goldenPathNextSteps is the ordered sequence over existing verbs, with the durable doc", () => {
     const out = goldenPathNextSteps().join("\n");
     const upIdx = out.indexOf("rig up");
+    const loginIdx = out.indexOf("claude auth status");
+    const daemonIdx = out.indexOf("rig daemon start");
     const statusIdx = out.indexOf("rig status");
+    const offerIdx = out.indexOf("Show the person OpenRig");
+    const viewIdx = out.indexOf("rig terminal open saved:kernel");
     const wsIdx = out.indexOf("rig workspace doctor");
     const wfIdx = out.indexOf("rig workflow specs");
     const scopeIdx = out.indexOf("rig scope");
     expect(upIdx).toBeGreaterThan(-1);
-    expect(statusIdx).toBeGreaterThan(upIdx);
+    expect(loginIdx).toBeGreaterThan(-1);
+    expect(daemonIdx).toBeGreaterThan(loginIdx);
+    expect(statusIdx).toBeGreaterThan(daemonIdx);
+    expect(offerIdx).toBeGreaterThan(statusIdx);
+    expect(viewIdx).toBeGreaterThan(offerIdx);
+    expect(upIdx).toBeGreaterThan(viewIdx);
     expect(wsIdx).toBeGreaterThan(statusIdx);
     expect(wfIdx).toBeGreaterThan(wsIdx);
     expect(scopeIdx).toBeGreaterThan(wsIdx);
-    expect(out).toContain("rig up <starter> --cwd . --plan");
-    for (const name of ["first-project", "first-project-claude", "first-project-mixed"]) expect(out).toContain(name);
-    expect(out).toContain("check only selected logins");
-    expect(out).toContain("rig send dev-owner@<starter>");
-    expect(out).toContain("rig queue list --destination dev-owner@<starter>");
+    expect(out).toContain("rig up <team> --cwd . --plan");
+    for (const name of ["starter", "workshop", "factory"]) expect(out).toContain(name);
+    expect(out).not.toContain("first-project-claude");
+    expect(out).not.toContain("first-project-mixed");
+    expect(out).toContain("Check only selected logins");
+    expect(out).toContain("Started is not ready");
+    expect(out).toContain("If they said not now: give the command to open it later");
+    expect(out).toContain("Over headless SSH: ask the person to open a new terminal/tab and give the exact connection/attach command");
+    expect(out).toContain("On a desktop, no copying or typing for the person; check the result notes, not just CLI success");
+    expect(out).toContain("rig send dev-build@starter");
+    expect(out).toContain("rig queue list --destination dev-build@starter");
     expect(out).not.toContain("rig queue list --rig");
     expect(out).toContain("rig tui --shared");
-    expect(out).toContain("docs/reference/getting-started.md");
+    expect(out).toContain("rig context get reference/getting-started.md");
     // no magic mega-command - the path is existing verbs only
     expect(out).not.toMatch(/rig (journey|onboarding)\b/);
     // built-in discovery surface is `rig workflow specs` (lists registered specs,
@@ -239,6 +267,7 @@ describe("rig setup", () => {
   it("fails setup honestly when tmux is installed but the default control socket is unhealthy", async () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "tmux -V") return "tmux 3.4\n";
         if (cmd === "tmux list-sessions") throw new Error("server exited unexpectedly");
@@ -285,6 +314,7 @@ describe("rig setup", () => {
     let claudeInstalled = false;
     const deps = makeDeps({
       exec: (cmd: string) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "tmux -V") return "tmux 3.4\n";
         if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
@@ -315,6 +345,7 @@ describe("rig setup", () => {
   it("fails setup honestly when Codex is installed but not logged in", async () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "tmux -V") return "tmux 3.4\n";
         if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
@@ -337,6 +368,7 @@ describe("rig setup", () => {
     const deps = makeDeps({
       platform: "linux",
       exec: (cmd: string) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "tmux -V") return "tmux 3.4\n";
         if (cmd === "tmux list-sessions") return "";
         if (cmd === "cmux capabilities --json") throw new Error("not found");
@@ -359,6 +391,7 @@ describe("rig setup", () => {
   it("brew failure does not crash — later brew-dependent steps are skipped honestly", async () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") throw new Error("command not found: brew");
         if (cmd === "tmux -V") throw new Error("command not found: tmux");
         if (cmd === "tmux list-sessions") throw new Error("command not found: tmux");
@@ -377,8 +410,8 @@ describe("rig setup", () => {
     const tmux = result.steps.find((s) => s.id === "tmux_install");
     expect(tmux?.status).toBe("skipped");
 
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("skipped");
+    const herdr = result.steps.find((s) => s.id === "herdr_install");
+    expect(herdr?.status).toBe("pass");
 
     // verify step should reflect the failures
     const verify = result.steps.find((s) => s.id === "verify");
@@ -476,6 +509,7 @@ describe("rig setup", () => {
   it("tmux install failure returns structured fail, does not crash setup", async () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "tmux -V") throw new Error("not found");
         if (cmd === "brew install tmux") throw new Error("brew install failed");
@@ -490,224 +524,9 @@ describe("rig setup", () => {
     expect(result.ready).toBe(false);
 
     // Other steps still attempted
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux).toBeDefined();
-    expect(cmux?.status).toBe("applied");
-  });
-
-  it("enables cmux automation mode on macOS when cmux is installed but not yet controllable", async () => {
-    let cmuxReady = false;
-    const seen: string[] = [];
-    const writeSpy = vi.fn();
-    const deps = makeDeps({
-      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? null : null,
-      writeFile: writeSpy,
-      exec: (cmd: string) => {
-        seen.push(cmd);
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "cmux capabilities --json") {
-          if (cmuxReady) return '{"methods":["surface.focus"]}\n';
-          throw new Error("socket not ready");
-        }
-        if (cmd === "cmux --help") return "cmux help\n";
-        if (cmd === "open -a /Applications/cmux.app") {
-          cmuxReady = true;
-          return "";
-        }
-        if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
-        if (cmd === "claude auth status") return "Authenticated\n";
-        if (cmd === "codex --version") return "codex-cli 0.118.0\n";
-        if (cmd === "codex login status") return "Logged in\n";
-        return "";
-      },
-    });
-
-    const result = await runSetup(deps, {});
-
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("applied");
-    expect(cmux?.message).toContain("Enabled cmux socket control");
-    expect(seen).toContain("open -a /Applications/cmux.app");
-    expect(writeSpy).toHaveBeenCalledWith(
-      CMUX_SETTINGS_PATH,
-      expect.stringContaining("\"socketControlMode\": \"automation\""),
-    );
-    expect(result.ready).toBe(true);
-  });
-
-  it("normalizes restrictive cmux socket control on macOS even when shell cmux already works", async () => {
-    const seen: string[] = [];
-    const writeSpy = vi.fn();
-    const doctorDeps: DoctorDeps = {
-      exists: () => true,
-      baseDir: "/install/cli/dist",
-      readFile: () => null,
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        return "";
-      },
-      checkPort: async () => false,
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts" } }) },
-      platform: "darwin",
-      mkdirp: () => {},
-      checkWritable: () => {},
-      fetch: async (url: string) => {
-        if (url.includes("/healthz")) return { ok: true };
-        if (url.includes("/api/adapters/cmux/status")) return { ok: true, json: async () => ({ available: true }) };
-        throw new Error(`unexpected fetch ${url}`);
-      },
-    };
-    const deps = makeDeps({
-      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? "{\n  \"automation\": {\n    \"socketControlMode\": \"cmuxOnly\"\n  }\n}\n" : null,
-      writeFile: writeSpy,
-      exec: (cmd: string) => {
-        seen.push(cmd);
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        if (cmd === "cmux reload-config") return "";
-        if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
-        if (cmd === "claude auth status") return "Authenticated\n";
-        if (cmd === "codex --version") return "codex-cli 0.118.0\n";
-        if (cmd === "codex login status") return "Logged in\n";
-        return "";
-      },
-    });
-
-    const result = await runSetup(deps, { doctorDeps });
-
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("applied");
-    expect(cmux?.message).toContain("automation");
-    expect(seen).toContain("cmux reload-config");
-    expect(writeSpy).toHaveBeenCalledWith(
-      CMUX_SETTINGS_PATH,
-      expect.stringContaining("\"socketControlMode\": \"automation\""),
-    );
-    expect(result.ready).toBe(true);
-  });
-
-  it("fails honestly when cmux stays uncontrollable after automatic macOS setup", async () => {
-    const deps = makeDeps({
-      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? "{\n  \"automation\": {\n    \"socketControlMode\": \"cmuxOnly\"\n  }\n}\n" : null,
-      exec: (cmd: string) => {
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "cmux capabilities --json") throw new Error("broken pipe");
-        if (cmd === "cmux --help") return "cmux help\n";
-        if (cmd === "open -a /Applications/cmux.app") return "";
-        if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
-        if (cmd === "claude auth status") return "Authenticated\n";
-        if (cmd === "codex --version") return "codex-cli 0.118.0\n";
-        if (cmd === "codex login status") return "Logged in\n";
-        return "";
-      },
-    });
-
-    const result = await runSetup(deps, {});
-
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("fail");
-    expect(cmux?.message).toContain("cmux installed but control unavailable");
-    expect(result.ready).toBe(false);
-  });
-
-  it("does not rewrite compatible password mode when shell cmux already works", async () => {
-    const writeSpy = vi.fn();
-    const deps = makeDeps({
-      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? "{\n  \"automation\": {\n    \"socketControlMode\": \"password\"\n  }\n}\n" : null,
-      writeFile: writeSpy,
-      exec: (cmd: string) => {
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") return "";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
-        if (cmd === "claude auth status") return "Authenticated\n";
-        if (cmd === "codex --version") return "codex-cli 0.118.0\n";
-        if (cmd === "codex login status") return "Logged in\n";
-        throw new Error(`unexpected: ${cmd}`);
-      },
-    });
-
-    const result = await runSetup(deps, {});
-
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("pass");
-    expect(writeSpy).not.toHaveBeenCalledWith(
-      CMUX_SETTINGS_PATH,
-      expect.any(String),
-    );
-    expect(result.ready).toBe(true);
-  });
-
-  it("fails setup when shell cmux works but the running daemon still cannot control cmux", async () => {
-    const doctorDeps: DoctorDeps = {
-      exists: () => true,
-      baseDir: "/install/cli/dist",
-      readFile: () => null,
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        return "";
-      },
-      checkPort: async () => false,
-      configStore: { resolve: () => ({ daemon: { port: 7433, host: "127.0.0.1" }, db: { path: "/tmp/openrig/openrig.sqlite" }, transcripts: { enabled: true, path: "/tmp/openrig/transcripts" } }) },
-      platform: "darwin",
-      mkdirp: () => {},
-      checkWritable: () => {},
-      fetch: async (url: string) => {
-        if (url.includes("/healthz")) return { ok: true };
-        if (url.includes("/api/adapters/cmux/status")) return { ok: true, json: async () => ({ available: false }) };
-        throw new Error(`unexpected fetch ${url}`);
-      },
-    };
-    const deps = makeDeps({
-      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? "{\n  \"automation\": {\n    \"socketControlMode\": \"password\"\n  }\n}\n" : null,
-    });
-
-    const result = await runSetup(deps, { doctorDeps });
-
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("fail");
-    expect(cmux?.message).toContain("running daemon still cannot control cmux");
-    expect(result.ready).toBe(false);
-  });
-
-  it("gives fresh install commands a longer timeout budget and fails cmux honestly when install still errors", async () => {
-    const seenTimeouts = new Map<string, number | undefined>();
-    const deps = makeDeps({
-      exec: (cmd: string, opts?: { timeoutMs?: number }) => {
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") throw new Error("error connecting to /tmp/tmux (No such file or directory)");
-        if (cmd === "cmux capabilities --json") throw new Error("command not found: cmux");
-        if (cmd === "cmux --help") throw new Error("command not found: cmux");
-        if (cmd === "brew install --cask cmux") {
-          seenTimeouts.set(cmd, opts?.timeoutMs);
-          throw new Error("spawnSync /bin/sh ETIMEDOUT");
-        }
-        if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
-        if (cmd === "claude auth status") return "Authenticated\n";
-        if (cmd === "codex --version") return "codex-cli 0.118.0\n";
-        if (cmd === "codex login status") return "Logged in\n";
-        throw new Error(`unexpected: ${cmd}`);
-      },
-    });
-
-    const result = await runSetup(deps, {});
-
-    expect(seenTimeouts.get("brew install --cask cmux")).toBe(300000);
-    const cmux = result.steps.find((s) => s.id === "cmux_install");
-    expect(cmux?.status).toBe("fail");
-    expect(cmux?.message).toContain("ETIMEDOUT");
-    expect(result.ready).toBe(false);
+    const herdr = result.steps.find((s) => s.id === "herdr_install");
+    expect(herdr).toBeDefined();
+    expect(herdr?.status).toBe("pass");
   });
 
   it("uses the extended timeout budget for npm runtime installs", async () => {
@@ -716,6 +535,7 @@ describe("rig setup", () => {
     let codexInstalled = false;
     const deps = makeDeps({
       exec: (cmd: string, opts?: { timeoutMs?: number }) => {
+        if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
         if (cmd === "tmux -V") return "tmux 3.4\n";
         if (cmd === "tmux list-sessions") return "";
@@ -867,7 +687,7 @@ describe("rig setup --policy (onboarding record)", () => {
     const step = result.steps.find((s) => s.id === "policy_record");
     expect(step?.status).toBe("fail");
     // The rejection surfaces the valid set to the operator (message + reason are what they see).
-    expect(`${step?.message ?? ""} ${step?.reason ?? ""}`).toMatch(/locked, standard, open, yolo, none/);
+    expect(`${step?.message ?? ""} ${step?.reason ?? ""}`).toMatch(/locked, standard, open, yolo, auto, none/);
     expect(sink[SPEC]).toBeUndefined();
   });
 
@@ -924,10 +744,12 @@ describe("rig setup permission-policy menu copy (frozen)", () => {
     expect(out).toContain("YOLO Mode");
   });
 
-  it("renders the exact frozen deliberate-none and skip-line copy", () => {
+  it("renders the deliberate-none and skip-line copy with the team default", () => {
     const out = permissionPolicyMenuLines().join("\n");
-    expect(out).toContain("No policy — deliberate choice (recorded)");
-    expect(out).toContain("If you skip: OpenRig sets nothing — the usability floor only");
+    expect(out).toContain("No policy — deliberate choice (recorded): the floor, without the team allowances");
+    expect(out).toContain("If you skip: nothing is recorded; team seats launch with the team default unless a seat choice or named Codex profile applies");
+    expect(out).toContain("Yes / No — keep the team default.");
+    expect(out).not.toContain("keep prompts");
   });
 
   it("marks Standard with the ⭐ recommendation marker and pre-selects nothing", () => {
@@ -948,5 +770,175 @@ describe("rig setup permission-policy menu copy (frozen)", () => {
     for (const banned of ["treacherous", "dangerous", "yolo mode is reckless", "footgun"]) {
       expect(out).not.toContain(banned);
     }
+  });
+});
+
+// Issue #194 — a Codex provider that does not use an OpenAI login.
+describe("codex_auth — provider-aware Codex readiness (#194)", () => {
+  const CODEX_HOME = "/synthetic/codex-cli-home";
+  const BEDROCK_CONFIG = [
+    'model_provider = "bedrock-runtime-us"',
+    "",
+    "[model_providers.bedrock-runtime-us]",
+    'name = "Amazon Bedrock Runtime"',
+    'env_key = "AWS_BEARER_TOKEN_BEDROCK"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "",
+  ].join("\n");
+  const TOKEN = "synthetic-bedrock-token-value";
+
+  function providerDeps(opts: {
+    config?: string | null;
+    env?: NodeJS.ProcessEnv;
+    loggedIn?: boolean;
+    codexInstalled?: boolean;
+  }) {
+    const commands: string[] = [];
+    const reads: string[] = [];
+    const base = makeDeps();
+    const deps = makeDeps({
+      env: opts.env ?? { HOME: "/synthetic/home", CODEX_HOME },
+      readFile: (p: string) => {
+        reads.push(p);
+        return p === `${CODEX_HOME}/config.toml` ? (opts.config ?? null) : null;
+      },
+      exec: (cmd: string) => {
+        commands.push(cmd);
+        if (cmd === "codex --version" && opts.codexInstalled === false) throw new Error("codex: command not found");
+        if (cmd === "npm install -g @openai/codex" && opts.codexInstalled === false) throw new Error("install refused in test");
+        if (cmd === "codex login status" && !opts.loggedIn) throw new Error("Not logged in");
+        return base.exec(cmd);
+      },
+    });
+    return { deps, commands, reads };
+  }
+
+  const codexAuthStep = (result: SetupResult) => result.steps.find((s) => s.id === "codex_auth");
+
+  it("passes the explicit Bedrock provider from the selected CODEX_HOME without an OpenAI login", async () => {
+    const { deps, commands, reads } = providerDeps({
+      config: BEDROCK_CONFIG,
+      env: { HOME: "/synthetic/home", CODEX_HOME, AWS_BEARER_TOKEN_BEDROCK: TOKEN },
+      loggedIn: false,
+    });
+    const result = await runSetup(deps, {});
+    const step = codexAuthStep(result);
+    expect(step?.status).toBe("pass");
+    expect(step?.message).toContain("AWS_BEARER_TOKEN_BEDROCK");
+    expect(step?.message).toContain("not that the provider accepts it");
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(commands).not.toContain("codex login status");
+    expect(reads).toContain(`${CODEX_HOME}/config.toml`);
+    expect(reads).not.toContain("/synthetic/home/.codex/config.toml");
+  });
+
+  it("fails with the provider's variable named, never its value, when the token is missing or blank", async () => {
+    for (const env of [
+      { HOME: "/synthetic/home", CODEX_HOME },
+      { HOME: "/synthetic/home", CODEX_HOME, AWS_BEARER_TOKEN_BEDROCK: "   " },
+    ]) {
+      const { deps, commands } = providerDeps({ config: BEDROCK_CONFIG, env, loggedIn: true });
+      const result = await runSetup(deps, {});
+      const step = codexAuthStep(result);
+      expect(step?.status).toBe("fail");
+      expect(step?.message).toContain("AWS_BEARER_TOKEN_BEDROCK");
+      expect(step?.fixHint).toContain("Export AWS_BEARER_TOKEN_BEDROCK");
+      expect(step?.fixHint).not.toContain("codex login");
+      expect(result.ready).toBe(false);
+      expect(commands).not.toContain("codex login status");
+    }
+  });
+
+  it("keeps the OpenAI login check for the default provider and for providers that require it", async () => {
+    const requiresLogin = BEDROCK_CONFIG.replace("requires_openai_auth = false", "requires_openai_auth = true");
+    for (const config of [null, 'model_provider = "openai"\n', requiresLogin]) {
+      const env = { HOME: "/synthetic/home", CODEX_HOME, AWS_BEARER_TOKEN_BEDROCK: TOKEN };
+      const ok = providerDeps({ config, env, loggedIn: true });
+      expect(codexAuthStep(await runSetup(ok.deps, {}))?.status).toBe("pass");
+      expect(ok.commands).toContain("codex login status");
+
+      const notLoggedIn = providerDeps({ config, env, loggedIn: false });
+      const step = codexAuthStep(await runSetup(notLoggedIn.deps, {}));
+      expect(step?.status).toBe("fail");
+      expect(step?.fixHint).toContain("codex login");
+    }
+  });
+
+  it("reports a malformed-config explanation when the fallback OpenAI login fails", async () => {
+    const env = { HOME: "/synthetic/home", CODEX_HOME, AWS_BEARER_TOKEN_BEDROCK: TOKEN };
+    const { deps } = providerDeps({ config: "model_provider = [broken", env, loggedIn: false });
+    const step = codexAuthStep(await runSetup(deps, {}));
+    expect(step?.status).toBe("fail");
+    expect(step?.message).toContain("config.toml could not be parsed");
+  });
+
+  it("skips the provider check when the Codex executable is missing", async () => {
+    const { deps } = providerDeps({
+      config: BEDROCK_CONFIG,
+      env: { HOME: "/synthetic/home", CODEX_HOME, AWS_BEARER_TOKEN_BEDROCK: TOKEN },
+      codexInstalled: false,
+    });
+    const result = await runSetup(deps, {});
+    expect(result.steps.find((s) => s.id === "codex_install")?.status).toBe("fail");
+    expect(codexAuthStep(result)?.status).toBe("skipped");
+  });
+});
+
+describe("--providers: a provider the person didn't choose reads not selected, never failed (0.6.9 F3)", () => {
+  const base = makeDeps().exec;
+  /** A machine with Claude Code signed in and Codex neither installed nor installable. */
+  function claudeOnlyMachine(execs: string[], claudeAuth = true): SetupDeps {
+    return makeDeps({
+      exec: (cmd: string) => {
+        execs.push(cmd);
+        if (cmd.startsWith("codex") || cmd.includes("@openai/codex")) throw new Error("codex unavailable");
+        if (cmd === "claude auth status" && !claudeAuth) throw new Error("not logged in");
+        return base(cmd);
+      },
+    });
+  }
+
+  it("leaves Codex out when the person chose Claude: not installed, not checked, and setup is ready", async () => {
+    const execs: string[] = [];
+    const result = await runSetup(claudeOnlyMachine(execs), { providers: ["claude"] });
+    expect(result.steps.find((s) => s.id === "codex_install")).toMatchObject({ status: "skipped", message: expect.stringContaining("Not selected") });
+    expect(result.steps.find((s) => s.id === "codex_auth")).toMatchObject({ status: "skipped", message: expect.stringContaining("Not selected") });
+    expect(execs.filter((cmd) => cmd.includes("codex"))).toEqual([]);
+    expect(result.ready).toBe(true);
+  });
+
+  it("without --providers still installs and checks both, so the same machine reads failed for Codex", async () => {
+    const result = await runSetup(claudeOnlyMachine([]), {});
+    expect(result.steps.find((s) => s.id === "codex_install")?.status).toBe("fail");
+    expect(result.ready).toBe(false);
+  });
+
+  it("still reads failed for a provider the person chose", async () => {
+    const result = await runSetup(claudeOnlyMachine([], false), { providers: ["claude"] });
+    expect(result.steps.find((s) => s.id === "claude_auth")?.status).toBe("fail");
+    expect(result.ready).toBe(false);
+  });
+
+  it("names a provider left out in the dry-run plan", async () => {
+    const result = await runSetup(makeDeps(), { dryRun: true, providers: ["codex"] });
+    expect(result.steps.find((s) => s.id === "claude_install")?.message).toContain("Not selected");
+    expect(result.steps.find((s) => s.id === "codex_install")?.message).toContain("would be attempted");
+  });
+
+  it("parses the person's choice and rejects an unknown provider", async () => {
+    expect(parseSetupProviders("claude")).toEqual(["claude"]);
+    expect(parseSetupProviders("both")).toEqual(["claude", "codex"]);
+    expect(parseSetupProviders(" Codex , claude ")).toEqual(["codex", "claude"]);
+    expect(parseSetupProviders("gemini")).toEqual({ error: expect.stringContaining("Unknown provider 'gemini'") });
+    expect(parseSetupProviders(",")).toEqual({ error: expect.stringContaining("needs claude, codex, or both") });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args.map(String).join(" ")); });
+    process.exitCode = undefined;
+    await new Command().addCommand(setupCommand(makeDeps())).parseAsync(["node", "rig", "setup", "--providers", "gemini"]);
+    expect(process.exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("Unknown provider 'gemini'");
+    process.exitCode = undefined;
+    vi.restoreAllMocks();
   });
 });

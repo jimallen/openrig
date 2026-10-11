@@ -5,7 +5,8 @@
 // partition rules live here, in one testable pure function, so no provider
 // re-implements them:
 //
-//   local live       → `tmux attach -t <session>`
+//   local live       → `tmux attach -t <session>` (tmux = the daemon-resolved
+//                      absolute path when the context carries one)
 //   view-only / cross-rig (read-only)
 //                    → `tmux attach -r -t <session>`
 //   ssh host         → `ssh <dest> tmux attach [-r] -t <session>`
@@ -61,6 +62,18 @@ export interface ComposeContext {
   resolveHost(id: string): HostEntry | null;
   /** Panes per page for the target provider; defaults to PANES_PER_PAGE. */
   panesPerPage?: number;
+  /**
+   * Absolute path of the tmux executable the daemon resolves. Used only for LOCAL panes, so a
+   * provider started with a narrower PATH can still run the attach (#707). Absent → the bare
+   * `tmux` token, unchanged. Never put into an ssh remote command: that host resolves its own.
+   */
+  localTmux?: string;
+  /**
+   * The daemon's tmux server flags (`-L <name>` or `-S <path>`), for LOCAL panes only. The daemon's
+   * sessions live on the server its inherited $TMUX names, which a new terminal doesn't reach by
+   * default. Absent or empty → no flags, unchanged. Never put into an ssh remote command.
+   */
+  localTmuxServer?: readonly string[];
 }
 
 /** POSIX single-quote a string so session names / targets are shell-inert in the composed command. */
@@ -99,6 +112,8 @@ export function composeView(
   const opened: ComposedPane[] = [];
   const absent: AbsentSeat[] = [];
   const degraded: DegradedSeat[] = [];
+  const localServer = (ctx.localTmuxServer ?? []).map((arg, i) => (i % 2 === 0 ? arg : shellQuote(arg))).join(" ");
+  const localTmux = `${ctx.localTmux ? shellQuote(ctx.localTmux) : "tmux"}${localServer ? ` ${localServer}` : ""}`;
 
   for (const m of members) {
     const attachFlag = m.readOnly ? "-r " : "";
@@ -151,11 +166,12 @@ export function composeView(
         });
         continue;
       }
+      const remoteCommand = `tmux attach ${attachFlag}-t ${shellQuote(m.tmuxSession)}`;
       opened.push({
         seat: m.seat,
         ...(m.runtime ? { runtime: m.runtime } : {}),
         label: m.label,
-        paneCommand: `ssh ${shellQuote(dest)} tmux attach ${attachFlag}-t ${shellQuote(m.tmuxSession)}`,
+        paneCommand: `ssh ${shellQuote(dest)} ${shellQuote(remoteCommand)}`,
         readOnly: m.readOnly,
       });
       continue;
@@ -182,7 +198,7 @@ export function composeView(
       seat: m.seat,
       ...(m.runtime ? { runtime: m.runtime } : {}),
       label: m.label,
-      paneCommand: `tmux attach ${attachFlag}-t ${shellQuote(m.tmuxSession)}`,
+      paneCommand: `${localTmux} attach ${attachFlag}-t ${shellQuote(m.tmuxSession)}`,
       readOnly: m.readOnly,
     });
   }

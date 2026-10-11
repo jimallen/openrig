@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type Database from "better-sqlite3";
+import { getNodeInventory } from "../src/domain/node-inventory.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { coreSchema } from "../src/db/migrations/001_core_schema.js";
@@ -99,6 +100,20 @@ describe("NodeLauncher", () => {
     return { rig, node };
   }
 
+  it("a missing pane at registration immediately projects attention", async () => {
+    const { rig } = seedRigWithNode();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // SQLite keeps its real clock; freeze registration safely after that floor.
+      vi.setSystemTime(Date.now() + 60_000);
+      const result = await createLauncher().launchNode(rig.id, "dev1-impl");
+      expect(result.ok).toBe(true);
+      expect(getNodeInventory(db, rig.id)[0]).toMatchObject({
+        startupStatus: "attention_required", identityVerdict: { verdict: "pane_missing", reason: "pane_pid_gone" },
+      });
+    } finally { vi.useRealTimers(); }
+  });
+
   it("happy path: derives name, creates tmux, persists session+binding+event in one txn, notifies", async () => {
     const { rig } = seedRigWithNode();
     const notifications: PersistedEvent[] = [];
@@ -168,6 +183,26 @@ describe("NodeLauncher", () => {
       const claudeSession = claudeLaunch.ok ? claudeLaunch.sessionName : "";
       const claudeEnv = captured.find((c) => c.name === claudeSession)?.env;
       expect(claudeEnv?.["CODEX_HOME"]).toBeUndefined();
+  });
+
+  it("adds runtime-scoped launch env (OMP provider keys) to that runtime's seats only", async () => {
+    const rig = rigRepo.createRig("r02");
+    rigRepo.addNode(rig.id, "omp-worker", { role: "worker", runtime: "omp" });
+    rigRepo.addNode(rig.id, "claude-worker", { role: "worker", runtime: "claude-code" });
+    const envs: Record<string, Record<string, string> | undefined> = {};
+    const launcher = new NodeLauncher({
+      db, rigRepo, sessionRegistry, eventBus,
+      tmuxAdapter: mockTmuxAdapter({ createSession: async (name, _cwd, env) => { envs[name] = env; return { ok: true }; } }),
+      sessionEnv: { OPENRIG_HOME: "/home" },
+      runtimeSessionEnv: { omp: { MISTRAL_API_KEY: "omp-only" } },
+    });
+    const omp = await launcher.launchNode(rig.id, "omp-worker");
+    const claude = await launcher.launchNode(rig.id, "claude-worker");
+    expect(omp.ok && claude.ok).toBe(true);
+    if (!omp.ok || !claude.ok) return;
+    expect(envs[omp.sessionName]).toMatchObject({ OPENRIG_HOME: "/home", MISTRAL_API_KEY: "omp-only" });
+    expect(envs[claude.sessionName]).toMatchObject({ OPENRIG_HOME: "/home" });
+    expect(envs[claude.sessionName]).not.toHaveProperty("MISTRAL_API_KEY");
   });
 
   it("launchNode commits the created session's sole live pane with its session and binding", async () => {

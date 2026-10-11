@@ -93,6 +93,7 @@ function stateToken(word: string): Token {
   if (word === "working" || word === "done" || word === "outcome complete" || word === "active") return "ok";
   if (word === "needs input" || word === "blocked" || word === "parked") return "warn";
   if (word === "failed") return "error";
+  if (word === "retired" || word === "deferred") return "dim";
   return "dim";
 }
 
@@ -112,7 +113,7 @@ function row(text: string, key: string, width = Number.MAX_SAFE_INTEGER): Conten
 
 // ---- facts per slice ----------------------------------------------------------
 
-interface RungCell { value: unknown; basis: string; state: "yes" | "no" | "undetermined" }
+interface RungCell { value: unknown; basis: string; state: "yes" | "no" | "undetermined" | "N/A" }
 
 function rungCell(ladder: Record<string, unknown>, rung: Rung): RungCell {
   const cell = record(ladder[rung]);
@@ -122,7 +123,7 @@ function rungCell(ladder: Record<string, unknown>, rung: Rung): RungCell {
     return { value: sha, basis, state: typeof sha === "string" && sha !== INDETERMINATE ? "yes" : "undetermined" };
   }
   const value = cell["value"];
-  return { value, basis, state: value === true ? "yes" : value === false ? "no" : "undetermined" };
+  return { value, basis, state: value === "NOT_APPLICABLE" ? "N/A" : value === true ? "yes" : value === false ? "no" : "undetermined" };
 }
 
 /** Highest rung actually confirmed (true / built sha), 0 = nothing confirmed. */
@@ -210,6 +211,10 @@ function blockerText(rows: unknown, lead: "blocker" | "row" = "row"): string {
     .join("; ");
 }
 
+function stageText(slice: SliceFacts): string {
+  return slice.scope?.stage?.trim().toLowerCase() || "";
+}
+
 /** Declared work state — the slice file's own status word, verbatim. */
 function declaredText(slice: SliceFacts): string {
   return slice.scope?.status?.trim().toLowerCase() || "no declared status";
@@ -248,6 +253,8 @@ function stateWord(slice: SliceFacts): string {
   if (outcomeComplete(slice)) return "outcome complete";
   if (slice.readiness?.items.some(i => i.state === "withdrawn" || i.state === "rejected")) return "reopened";
   if (slice.readiness?.configured) return "outcomes pending";
+  if (stageText(slice) === "retired" || declaredText(slice) === "retired") return "retired";
+  if (declaredText(slice) === "deferred" || declaredText(slice) === "closed-deferred") return "deferred";
   return declaredText(slice) === "done" ? "declared done" : "planned";
 }
 
@@ -421,7 +428,7 @@ function evidenceDetail(execution: ExecutionViewSnap, slices: SliceFacts[], widt
   }
   lines.push({ text: "" }, sectionRule("code lineage · separate from item judgments", width),
     { text: `  git:         ${gitBasis}` },
-    ...wrapDetailLines([{ text: "  Build, review, merge and live-runtime facts remain on each slice's code evidence. Artifact acceptance supplies none of these code facts." }], width));
+    ...wrapDetailLines([{ text: "  Build, review and merge facts remain on each slice's code evidence. Daemon adoption applies only to the unscoped daemon-source view. Artifact acceptance supplies none of these code facts." }], width));
   for (const item of collectIndeterminate(execution, slices)) {
     lines.push({ text: "" }, sectionRule(`${item.where} unconfirmed for ${item.members.length} slice${item.members.length === 1 ? "" : "s"}`, width));
     lines.push({ text: `  basis:       ${item.basis}` });
@@ -487,7 +494,7 @@ function overviewLines(execution: ExecutionViewSnap, scopes: readonly MissionSco
   const provenanceAction = attributed || unknown > 0 ? open("evidence") : open("sources");
   const provenance: SemanticSeg[] = [
     { text: "  provenance · ", token: "dim" },
-    { text: attributed ? `proof judgments · ${done}/${slices.length} ready${unknown ? ` · ${unknown} legacy unknown` : ""}` : unknown > 0 ? `evidence gap ${unknown}/${slices.length} unknown` : `build ${build}`, token: unknown > 0 || (attributed && execution.readiness!.state === "unknown") ? "warn" : "dim" },
+    { text: attributed ? `proof judgments · ${done}/${slices.length} ready${unknown ? ` · ${unknown} legacy unknown` : ""}` : unknown > 0 ? `evidence gap ${unknown}/${slices.length} unknown` : `daemon build ${build}`, token: unknown > 0 || (attributed && execution.readiness!.state === "unknown") ? "warn" : "dim" },
   ];
   const localTime = displayTime(execution.derived_at, timeZone);
   if (provenance.reduce((n, s) => n + s.text.length, 0) + localTime.length + 3 <= width) {
@@ -634,7 +641,7 @@ function sliceDetail(
   for (const rung of RUNGS) {
     const cell = slice.cells[rung];
     const value = rung === "built" ? (cell.state === "yes" ? shortSha(cell.value) : "undetermined") : cell.state;
-    evidence.push(cardField(RUNG_WORD[rung], `${value} · ${cell.basis}`));
+    evidence.push(...wrappedCardField(rung === "adopted" && cell.state === "N/A" ? "daemon live" : RUNG_WORD[rung], `${value} · ${cell.basis}`, width));
   }
   const legs = record(slice.ladder["reviewed"])["legs"];
   if (Array.isArray(legs)) for (const leg of legs) {
@@ -658,10 +665,13 @@ function sliceDetail(
   ];
 
   const source = record(slice.sequencing?.["source"]);
+  const supersededBy = record(execution.sources["wave_map"])["superseded_by"];
+  const waveMapSource = typeof supersededBy === "string" && supersededBy
+    ? `superseded by ${supersededBy}` : str(source["wave_map_row"], "not named");
   const sourceRows = [
     cardField("spec", str(source["spec_path"], "not named")),
     cardField("arrangement", str(source["arrangement_path"], "not named")),
-    cardField("wave map", str(source["wave_map_row"], "not named")),
+    ...wrappedCardField("wave map", waveMapSource, width),
   ];
   const identity = slice.scope
     ? scopeIdentityLines(slice.scope, execution.mission, width)
@@ -816,8 +826,8 @@ export function executionSliceStripLines(
   const evidence = `${evidenceText(slice.cells, slice.rank)}${unconfirmed.length ? ` · ${unconfirmed.join(" / ")} unconfirmed (${slice.cells[RUNGS.find((rung) => slice.cells[rung].state === "undetermined")!].basis})` : ""}`;
   const liveWord = slice.lane ? str(activity["activity"], "claimed") : "no claimed lane";
   const declaredWord = declared?.trim().toLowerCase() || "no declared status";
-  const next = declaredWord === "done" && !slice.lane
-    ? "none — declared done"
+  const next = (declaredWord === "done" || declaredWord === "retired" || declaredWord === "deferred" || declaredWord === "closed-deferred") && !slice.lane
+    ? `none — declared ${declaredWord}`
     : nextText(slice) ?? (slice.lane ? "in progress on the lane above" : "nothing the projection can sequence");
   return [
     { text: "" },

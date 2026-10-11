@@ -44,6 +44,9 @@ function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCod
 describe("rig env", () => {
   let server: http.Server;
   let port: number;
+  let probeStatus = "fresh";
+  let probeError: string | undefined;
+  let kept: string | undefined;
 
   const rigSummary = [{ id: "rig-1", name: "my-rig", nodeCount: 2 }];
 
@@ -67,7 +70,7 @@ describe("rig env", () => {
 
         if (url.includes("/env/down") && req.method === "POST") {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, ...(kept ? { kept } : {}) }));
           return;
         }
 
@@ -76,6 +79,8 @@ describe("rig env", () => {
           res.end(JSON.stringify({
             ok: true,
             hasServices: true,
+            probeStatus,
+            ...(probeError ? { probeError } : {}),
             kind: "compose",
             projectName: "my-rig",
             receipt: {
@@ -151,6 +156,35 @@ describe("rig env", () => {
     expect(parsed.receipt.services).toHaveLength(1);
   });
 
+  it.each(["stale", "no_orchestrator"])("env status discloses a saved receipt when probe status is %s", async (status) => {
+    probeStatus = status;
+    probeError = status === "stale" ? "Docker daemon connection refused" : undefined;
+    try {
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "env", "status", "my-rig"]);
+      });
+      const output = logs.join("\n");
+      expect(output).toContain("saved receipt");
+      expect(output).toContain(status);
+      if (probeError) expect(output).toContain(probeError);
+      expect(output).toContain("vault");
+      expect(output).toContain("healthy");
+      expect(exitCode).toBeUndefined();
+    } finally { probeStatus = "fresh"; probeError = undefined; }
+  });
+
+  it("env status --json preserves stale probe metadata without extra output", async () => {
+    probeStatus = "stale";
+    probeError = "Docker daemon connection refused";
+    try {
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "env", "status", "my-rig", "--json"]);
+      });
+      expect(JSON.parse(logs.join(""))).toMatchObject({ probeStatus, probeError, receipt: { services: [{ health: "healthy" }] } });
+      expect(exitCode).toBeUndefined();
+    } finally { probeStatus = "fresh"; probeError = undefined; }
+  });
+
   it("env logs returns service logs", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "env", "logs", "my-rig"]);
@@ -165,6 +199,17 @@ describe("rig env", () => {
     });
 
     expect(logs.join("\n")).toContain("Services stopped");
+  });
+
+  it("env down explains an archived predecessor's retained project", async () => {
+    kept = "kept project shared: still used by rig successor (rig-2)";
+    try {
+      const { logs } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "env", "down", "my-rig"]);
+      });
+      expect(logs.join("\n")).toContain(kept);
+      expect(logs.join("\n")).not.toContain("Services stopped");
+    } finally { kept = undefined; }
   });
 
   it("env is wired via createProgram", async () => {

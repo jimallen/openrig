@@ -28,6 +28,21 @@ describe("ChatRepository", () => {
     db.close();
   });
 
+  it("same-day ISO since uses UTC chronology including offsets and fractions", () => {
+    const early = chatRepo.send(rigId, "alice", "before cutoff");
+    const boundary = chatRepo.send(rigId, "alice", "at cutoff");
+    const late = chatRepo.send(rigId, "bob", "after cutoff");
+    const stamp = db.prepare("UPDATE chat_messages SET created_at = ? WHERE id = ?");
+    stamp.run("2026-09-30 10:59:59", early.id);
+    stamp.run("2026-09-30 11:00:00", boundary.id);
+    stamp.run("2026-09-30 11:00:01", late.id);
+    for (const since of ["2026-09-30T11:00:00Z", "2026-09-30 11:00:00", "2026-09-30T07:00:00-04:00"]) {
+      expect(chatRepo.history(rigId, { since }).map(m => m.body)).toEqual(["at cutoff", "after cutoff"]);
+    }
+    expect(chatRepo.history(rigId, { since: "2026-09-30T11:00:00.500Z" }).map(m => m.body)).toEqual(["after cutoff"]);
+    expect(chatRepo.history(rigId, { since: "2026-09-30T11:00:00Z", sender: "alice", after: early.id, limit: 1 }).map(m => m.body)).toEqual(["at cutoff"]);
+  });
+
   it("send persists with ULID", () => {
     const msg = chatRepo.send(rigId, "alice", "hello world");
     expect(msg.id).toBeTruthy();
@@ -49,6 +64,27 @@ describe("ChatRepository", () => {
     expect(messages[0]!.body).toBe("first");
     expect(messages[1]!.body).toBe("second");
     expect(messages[2]!.body).toBe("third");
+  });
+
+  it("history with a limit and no cursor returns the newest messages in chronological order", () => {
+    for (let i = 1; i <= 5; i++) chatRepo.send(rigId, "alice", `msg ${i}`);
+
+    expect(chatRepo.history(rigId, { limit: 2 }).map((m) => m.body)).toEqual(["msg 4", "msg 5"]);
+    expect(chatRepo.history(rigId, { sender: "alice", limit: 3 }).map((m) => m.body)).toEqual(["msg 3", "msg 4", "msg 5"]);
+  });
+
+  it("history with --after pages forward from the cursor", () => {
+    const sent = [1, 2, 3, 4, 5].map((i) => chatRepo.send(rigId, "alice", `msg ${i}`));
+
+    expect(chatRepo.history(rigId, { after: sent[0]!.id, limit: 2 }).map((m) => m.body)).toEqual(["msg 2", "msg 3"]);
+  });
+
+  it("history with --since pages forward from the starting point", () => {
+    const sent = [1, 2, 3, 4, 5].map((i) => chatRepo.send(rigId, "alice", `msg ${i}`));
+    const stamp = db.prepare("UPDATE chat_messages SET created_at = ? WHERE id = ?");
+    sent.forEach((m, i) => stamp.run(`2026-09-30 11:00:0${i}`, m.id));
+
+    expect(chatRepo.history(rigId, { since: "2026-09-30T11:00:01Z", limit: 2 }).map((m) => m.body)).toEqual(["msg 2", "msg 3"]);
   });
 
   it("history --topic returns messages between topic marker and next topic marker", () => {

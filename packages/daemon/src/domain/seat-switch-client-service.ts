@@ -1,6 +1,7 @@
 import type { RigRepository } from "./rig-repository.js";
 import type { TmuxAdapter, TmuxWindow, TmuxClient } from "../adapters/tmux.js";
 import { SeatStatusService } from "./seat-status-service.js";
+import { tmuxAttachCommand } from "../adapters/tmux-server.js";
 
 /**
  * OPR.0.4.3.26 — seat-recovery switch-client VIEW retarget.
@@ -19,7 +20,7 @@ const RECONCILE_GUIDANCE =
   "Repair routing first (rig reconcile-session <session>, or rig seat handover <seat> ...), then re-run switch-client. switch-client only retargets a client's view; it never repairs routing.";
 
 function attachGuidance(session: string): string {
-  return `Attach a client first: tmux attach -t ${session} (or open the seat in CMUX), then re-run switch-client. switch-client never opens a new terminal.`;
+  return `Attach a client first: ${tmuxAttachCommand(session)} (or open the seat in CMUX), then re-run switch-client. switch-client never opens a new terminal.`;
 }
 
 export interface SeatSwitchClientRequest {
@@ -140,7 +141,7 @@ export class SeatSwitchClientService {
     if (req.toWindow != null) {
       let windows: TmuxWindow[];
       try {
-        windows = await this.tmuxAdapter.listWindows(session);
+        windows = await this.tmuxAdapter.listWindows(`=${session}`);
       } catch (err) {
         return this.probeFailed(`list-windows for "${session}"`, err);
       }
@@ -201,7 +202,8 @@ export class SeatSwitchClientService {
     // 5. Retarget the client's VIEW (the only side effect; not a mutation of
     //    OpenRig routing/identity).
     const target = `${session}:${windowIndex}`;
-    const switchResult = await this.tmuxAdapter.switchClient(targetClient, target);
+    // The canonical session may have ended since the probes; never switch to a prefix sibling.
+    const switchResult = await this.tmuxAdapter.switchClient(targetClient, `=${target}`);
     if (!switchResult.ok) {
       return {
         ok: false,

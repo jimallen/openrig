@@ -12,7 +12,8 @@
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
-import { piTrust } from "./yolo-mode.js";
+import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
+import { piTrust, yoloEnabled } from "./yolo-mode.js";
 import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
   InstalledResource, ProjectionResult, StartupDeliveryResult, ReadinessResult,
@@ -22,11 +23,11 @@ import { resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
-import { observePiResourceTrust } from "../domain/permission-drift.js";
+import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
   PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER,
-  type PiRunnerState,
+  type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
@@ -37,10 +38,13 @@ export interface PiAdapterFsOps {
   exists(path: string): boolean;
   mkdirp(path: string): void;
   listFiles?(dirPath: string): string[];
+  statMode?(path: string): number;
+  chmod?(path: string, mode: number): void;
 }
 
 export interface PiRuntimeAdapterDeps {
   tmux: TmuxAdapter;
+  seatLaunchEnvironment?: SeatLaunchEnvironment;
   fsOps: PiAdapterFsOps;
   /** Root under which every Pi seat gets its isolated state dir (FR-7).
    *  Typically <OPENRIG_HOME>/state/pi. */
@@ -58,10 +62,11 @@ export interface PiRuntimeAdapterDeps {
 }
 
 export class PiRuntimeAdapter implements RuntimeAdapter {
-  readonly runtime = "pi";
+  readonly runtime: RunnerRuntime = "pi";
   private tmux: TmuxAdapter;
+  private seatLaunchEnvironment?: SeatLaunchEnvironment;
   private fs: PiAdapterFsOps;
-  private stateRoot: string;
+  protected stateRoot: string;
   private runnerEntryPath: string;
   private trustPosture: "approve" | "no-approve";
   private sleep: (ms: number) => Promise<void>;
@@ -69,6 +74,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
 
   constructor(deps: PiRuntimeAdapterDeps) {
     this.tmux = deps.tmux;
+    this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
     this.stateRoot = deps.stateRoot;
     this.runnerEntryPath = deps.runnerEntryPath;
@@ -88,6 +94,9 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
         : { ok: false, reason: "missing_sidecar" };
     }
     if (!state.sessionFile) return { ok: false, reason: "missing_sidecar" };
+    // OMP announces a future path before its first persisted turn. A path
+    // that does not exist cannot be used as a resume token.
+    if (this.runtime === "omp" && !this.fs.exists(state.sessionFile)) return { ok: false, reason: "missing_sidecar" };
     return { ok: true, sessionFile: state.sessionFile };
   }
 
@@ -105,18 +114,29 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     return results;
   }
 
+  /** Conflict detection must inspect this seat's copy, not a Claude sibling. */
+  skillTargetPath(tmuxSession: string | null, effectiveId: string): string | null {
+    if (!tmuxSession) return null;
+    return nodePath.join(piSeatPaths(this.stateRoot, tmuxSession).agentDir, "skills", effectiveId, "SKILL.md");
+  }
+
   async project(plan: ProjectionPlan, binding: NodeBinding): Promise<ProjectionResult> {
     const projected: string[] = [];
+    const warnings: string[] = [];
     const skipped: string[] = [];
     const failed: Array<{ effectiveId: string; error: string }> = [];
 
     for (const entry of plan.entries) {
-      if (entry.classification === "no_op") {
+      // The planner compares only SKILL.md for directory skills. Helpers can
+      // change independently, so still copy the selected directory on reapply.
+      const directorySkill = entry.category === "skill"
+        && this.fs.exists(nodePath.join(entry.absolutePath, "SKILL.md"));
+      if (entry.classification === "no_op" && !directorySkill) {
         skipped.push(entry.effectiveId);
         continue;
       }
       try {
-        if (this.projectEntry(entry, binding)) {
+        if (this.projectEntry(entry, binding, warnings)) {
           projected.push(entry.effectiveId);
         } else {
           skipped.push(entry.effectiveId);
@@ -126,10 +146,11 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { projected, skipped, failed };
+    return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
   async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding): Promise<StartupDeliveryResult> {
+    const warnings: string[] = [];
     let delivered = 0;
     const failed: Array<{ path: string; error: string }> = [];
 
@@ -144,7 +165,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
             // replace Pi's default system prompt). Pi reads AGENTS.md from
             // the managed cwd as a project context file.
             const targetPath = nodePath.join(binding.cwd, "AGENTS.md");
-            const merged = this.mergeGuidance(targetPath, file.path, content);
+            const merged = this.mergeGuidance(targetPath, file.path, content, warnings);
             if (!merged) continue; // rig-role skip: do not count as delivered
             break;
           }
@@ -162,7 +183,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
               const textResult = await this.tmux.sendText(binding.tmuxSession, content);
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
-              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["C-m"]);
+              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
               if (!submitResult.ok) throw new Error(submitResult.message);
             }
             break;
@@ -176,7 +197,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { delivered, failed };
+    return { delivered, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
   async launchHarness(
@@ -184,7 +205,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     opts: { name: string; resumeToken?: string; forkSource?: ForkSource },
   ): Promise<HarnessLaunchResult> {
     if (!binding.tmuxSession) {
-      return { ok: false, error: "No tmux session bound — cannot launch the Pi harness" };
+      return { ok: false, error: `No tmux session bound — cannot launch the ${this.runtime === "pi" ? "Pi" : "OMP"} harness` };
     }
     if (opts.resumeToken && opts.forkSource) {
       return { ok: false, error: "resumeToken and forkSource are mutually exclusive — pick one" };
@@ -195,25 +216,25 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       if (opts.forkSource.kind !== "native_id") {
         return {
           ok: false,
-          error: `pi fork: ref.kind="${opts.forkSource.kind}" is not supported in v1; use ref.kind="native_id" with the parent session file path or session id`,
+          error: `${this.runtime} fork: ref.kind="${opts.forkSource.kind}" is not supported in v1; use ref.kind="native_id" with the parent session file path or session id`,
         };
       }
       forkRef = opts.forkSource.value?.trim();
       if (!forkRef) {
-        return { ok: false, error: "pi fork: forkSource.value is required (parent session file path or session id)" };
+        return { ok: false, error: `${this.runtime} fork: forkSource.value is required (parent session file path or session id)` };
       }
     }
 
     if (opts.resumeToken) {
       // Validity floor before we type anything into the pane.
-      const validation = validateResumeToken("pi", opts.resumeToken);
+      const validation = validateResumeToken(this.runtime, opts.resumeToken);
       if (!validation.ok) {
-        return { ok: false, error: `pi resume: ${validation.error}` };
+        return { ok: false, error: `${this.runtime} resume: ${validation.error}` };
       }
       if (!this.fs.exists(opts.resumeToken)) {
         // Session file gone — the honest outcome is the caller's stop-and-ask
         // (awaiting-decision), never a silent fresh start (BR-6).
-        return { ok: false, error: "pi resume: the persisted session file no longer exists", recovery: "retry_fresh" };
+        return { ok: false, error: `${this.runtime} resume: the persisted session file no longer exists`, recovery: "retry_fresh" };
       }
     }
 
@@ -234,9 +255,14 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       JSON.stringify(buildPendingRunnerState(launchId, new Date().toISOString(), prior)),
     );
 
-    const trust = piTrust(this.trustPosture, process.env, binding.launchPosture);
-    const appliedLaunch = observePiResourceTrust(trust);
+    const trust = this.runtime === "omp"
+      ? (yoloEnabled(process.env, binding.launchPosture) ? "approve" : "no-approve")
+      : piTrust(this.trustPosture, process.env, binding.launchPosture);
+    const appliedLaunch = this.runtime === "omp"
+      ? observeOmpApprovalMode(`--approval-mode ${trust === "approve" ? "yolo" : "always-ask"}`)
+      : observePiResourceTrust(trust);
     const cmd = buildPiRunnerCommand({
+      runtime: this.runtime,
       runnerEntryPath: this.runnerEntryPath,
       sessionName,
       stateRoot: this.stateRoot,
@@ -250,13 +276,17 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       launchId,
     });
 
-    const textResult = await this.tmux.sendText(sessionName, cmd);
+    const command = this.runtime === "pi" && this.seatLaunchEnvironment
+      ? await this.seatLaunchEnvironment.command(sessionName, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
+      : cmd;
+    // Stage long commands without leaving a shell above the live runner.
+    let textResult = await this.tmux.sendShellCommand(sessionName, command, undefined, { stageIfLong: true, execInScript: true });
+    // This refusal precedes any input: retain the bare-command fallback when routing cannot fit.
+    if (!textResult.ok && textResult.code === "launch_path_too_long" && command !== cmd) {
+      textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { stageIfLong: true, execInScript: true });
+    }
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
-    }
-    const enterResult = await this.tmux.sendKeys(sessionName, ["Enter"]);
-    if (!enterResult.ok) {
-      return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
     }
 
     // The runner writes the sidecar after its first successful get_state;
@@ -266,19 +296,28 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
 
     const sessionFile = state.value.sessionFile;
     if (!sessionFile) {
-      return { ok: false, error: "pi launch: the runner became ready but reported no session file" };
+      return { ok: false, error: `${this.runtime} launch: the runner became ready but reported no session file` };
+    }
+    if (this.runtime === "omp" && opts.resumeToken && sessionFile !== opts.resumeToken) {
+      // An exact OMP resume must continue the requested history; a runner
+      // that came up on any other file started a different session. Same
+      // contract as the separate resume adapter's verifyResume.
+      return { ok: false, error: "omp resume: the runner is ready but does not report the requested session file" };
     }
     if (forkRef && sessionFile === forkRef) {
       // The adapter contract requires the NEW post-fork token, never the
       // parent's (runtime-adapter.ts fork rule).
-      return { ok: false, error: "pi fork: the runner reported the parent session file instead of the post-fork child" };
+      return { ok: false, error: `${this.runtime} fork: the runner reported the parent session file instead of the post-fork child` };
     }
-    const validation = validateResumeToken("pi", sessionFile);
+    const validation = validateResumeToken(this.runtime, sessionFile);
     if (!validation.ok) {
-      return { ok: false, error: `pi launch: the runner reported a malformed session file (${validation.error})` };
+      return { ok: false, error: `${this.runtime} launch: the runner reported a malformed session file (${validation.error})` };
     }
 
-    return { ok: true, resumeToken: validation.token, resumeType: "pi_session_file", appliedLaunch };
+    // OMP lazily creates its JSONL on the first persisted turn. Readiness
+    // is real, but until then there is no history to resume after a reboot.
+    if (this.runtime === "omp" && !this.fs.exists(validation.token)) return { ok: true, appliedLaunch };
+    return { ok: true, resumeToken: validation.token, resumeType: `${this.runtime}_session_file`, appliedLaunch };
   }
 
   async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
@@ -298,30 +337,31 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     const atShell = SHELL_COMMANDS.has(paneCommand);
     const state = this.readRunnerState(binding.tmuxSession);
     if (state?.exited) {
-      return { ready: false, reason: `pi-runner exited (code ${state.exited.code ?? "unknown"})`, code: "runner_exited" };
+      return { ready: false, reason: `${this.runtime}-runner exited (code ${state.exited.code ?? "unknown"})`, code: "runner_exited" };
     }
     if (state?.ready) {
       if (atShell) {
-        return { ready: false, reason: "pi-runner sidecar says ready but the pane is back at a shell (runner process gone)", code: "runner_exited" };
+        return { ready: false, reason: `${this.runtime}-runner sidecar says ready but the pane is back at a shell (runner process gone)`, code: "runner_exited" };
       }
       return { ready: true };
     }
     // Runner-authored pane marker as the secondary signal (FR-2) — still the
     // runner's own output, never Pi TUI heuristics; same foreground guard.
     const paneContent = (await this.tmux.capturePaneContent(binding.tmuxSession, 40)) ?? "";
-    if (paneContent.includes(PI_RUNNER_ERROR_MARKER)) {
-      return { ready: false, reason: "pi-runner reported an error in the pane", code: "runner_error" };
+    const marker = this.runtime === "omp" ? "[omp-runner]" : "[pi-runner]";
+    if (paneContent.includes(`${marker} ERROR`)) {
+      return { ready: false, reason: `${this.runtime}-runner reported an error in the pane`, code: "runner_error" };
     }
-    if (paneContent.includes(PI_RUNNER_EXIT_MARKER)) {
-      return { ready: false, reason: "pi-runner exited", code: "runner_exited" };
+    if (paneContent.includes(`${marker} EXITED`)) {
+      return { ready: false, reason: `${this.runtime}-runner exited`, code: "runner_exited" };
     }
-    if (paneContent.includes(PI_RUNNER_READY_MARKER)) {
+    if (paneContent.includes(`${marker} READY`)) {
       if (atShell) {
         return { ready: false, reason: "READY marker is stale scrollback; the pane is back at a shell", code: "runner_exited" };
       }
       return { ready: true };
     }
-    return { ready: false, reason: "pi-runner has not reported ready yet", code: "awaiting_runtime" };
+    return { ready: false, reason: `${this.runtime}-runner has not reported ready yet`, code: "awaiting_runtime" };
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -356,7 +396,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
             ok: false,
             failure: {
               ok: false,
-              error: `pi launch failed: the runner exited (code ${state.exited.code ?? "unknown"})`,
+              error: `${this.runtime} launch failed: the runner exited (code ${state.exited.code ?? "unknown"})`,
               recovery: "attention_required",
               evidence: paneContent.split("\n").slice(-12).join("\n"),
             },
@@ -370,17 +410,17 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       ok: false,
       failure: {
         ok: false,
-        error: "pi launch: timed out waiting for the runner to report ready",
+        error: `${this.runtime} launch: timed out waiting for the runner to report ready`,
         recovery: "attention_required",
       },
     };
   }
 
-  private projectEntry(entry: ProjectionEntry, binding: NodeBinding): boolean {
+  private projectEntry(entry: ProjectionEntry, binding: NodeBinding, warnings: string[]): boolean {
     if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
       const targetPath = nodePath.join(binding.cwd, "AGENTS.md");
       const content = this.fs.readFile(entry.absolutePath);
-      return this.mergeGuidance(targetPath, entry.effectiveId, content);
+      return this.mergeGuidance(targetPath, entry.effectiveId, content, warnings);
     }
 
     if (entry.category === "skill") {
@@ -388,18 +428,29 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       const { agentDir } = piSeatPaths(this.stateRoot, binding.tmuxSession);
       const targetDir = nodePath.join(agentDir, "skills", entry.effectiveId);
       this.fs.mkdirp(targetDir);
-      const isDir = this.fs.listFiles ? this.fs.listFiles(entry.absolutePath).length > 0 : false;
+      let isDir = false;
+      if (this.fs.listFiles) {
+        try {
+          isDir = this.fs.listFiles(entry.absolutePath).length > 0;
+        } catch {
+          // File-shaped sources make the production listFiles (recursive
+          // fs.readdirSync walk) throw ENOTDIR — treat the entry as file-shaped.
+          isDir = false;
+        }
+      }
       if (isDir && this.fs.listFiles) {
         for (const file of this.fs.listFiles(entry.absolutePath)) {
           const dest = nodePath.join(targetDir, file);
           this.fs.mkdirp(nodePath.dirname(dest));
           this.fs.writeFile(dest, this.fs.readFile(nodePath.join(entry.absolutePath, file)));
+          this.preserveMode(nodePath.join(entry.absolutePath, file), dest);
         }
       } else {
         this.fs.writeFile(
           nodePath.join(targetDir, nodePath.basename(entry.absolutePath)),
           this.fs.readFile(entry.absolutePath),
         );
+        this.preserveMode(entry.absolutePath, nodePath.join(targetDir, nodePath.basename(entry.absolutePath)));
       }
       return true;
     }
@@ -409,7 +460,11 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     return false;
   }
 
-  private mergeGuidance(targetPath: string, blockId: string, content: string): boolean {
+  private preserveMode(source: string, target: string): void {
+    if (this.fs.statMode && this.fs.chmod) this.fs.chmod(target, this.fs.statMode(source) & 0o777);
+  }
+
+  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
     // Mirrors the Claude/Codex adapters: per-seat `rig-role` content collides
     // across pod-mates when merged into a shared cwd file; it is delivered via
     // send_text instead. See ADR-0006.
@@ -420,6 +475,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       return false;
     }
     mergeManagedBlock(this.fs, targetPath, blockId, content, {
+      warnings,
       replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],
     });
     return true;

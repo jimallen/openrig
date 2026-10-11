@@ -7,6 +7,9 @@
 import { describe, it, expect } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import {
   parseFilePathArg,
   checkLocalPath,
@@ -43,6 +46,97 @@ describe("parseFilePathArg — the explicit-or-local grammar", () => {
   it("id-shaped colon prefix parses as a HOST qualifier (resolve-or-fail-loud happens at planning)", () => {
     expect(parseFilePathArg("vps-a:/srv/x.md")).toEqual({ ok: true, arg: { kind: "remote", hostId: "vps-a", path: "/srv/x.md" } });
     expect(parseFilePathArg("mac_mini2:/tmp/y")).toEqual({ ok: true, arg: { kind: "remote", hostId: "mac_mini2", path: "/tmp/y" } });
+  });
+
+  it("resolves dotted registered host ids for both transfer sides", () => {
+    const host = { ...VPS, id: "edge.dev" };
+    const registryLoader = () => ({ ok: true as const, registry: { hosts: [host] } });
+    for (const [src, dst, operandIndex] of [
+      ["edge.dev:/srv/source", "/tmp/dst", -2],
+      ["/tmp/source", "edge.dev:/srv/dst", -1],
+    ] as const) {
+      const result = planFileCopy(src, dst, { registryLoader });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(buildRsyncArgv(result.plan).at(operandIndex)).toContain(`${host.target}:/srv/`);
+    }
+
+    expect(parseFilePathArg("./edge.dev:/srv/x")).toEqual({ ok: true, arg: { kind: "local", path: "./edge.dev:/srv/x" } });
+  });
+
+  it("keeps unregistered dotted source and destination names local, including empty suffixes", () => {
+    const registryLoader = REGISTRY_OK;
+    for (const operand of ["notes.md:version", "missing.dev:/srv/x", "notes.md:"]) {
+      for (const [src, dst] of [[operand, "./out.md"], ["./in.md", operand]]) {
+        const result = planFileCopy(src!, dst!, { registryLoader });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.plan.src.kind).toBe("local");
+          expect(result.plan.dst.kind).toBe("local");
+        }
+      }
+    }
+  });
+
+  it("preserves dotted explicit local escapes even when that host is registered", () => {
+    const registryLoader = () => ({ ok: true as const, registry: { hosts: [{ ...VPS, id: "edge.dev" }] } });
+    for (const operand of ["/edge.dev:x", "./edge.dev:x", "../edge.dev:x", "~/edge.dev:x"]) {
+      for (const [src, dst] of [[operand, "./out.md"], ["./in.md", operand]]) {
+        const result = planFileCopy(src!, dst!, { registryLoader });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.plan.src.kind).toBe("local");
+          expect(result.plan.dst.kind).toBe("local");
+        }
+      }
+    }
+  });
+
+  it("does not misclassify a dotted local operand paired with a registered remote", () => {
+    const registryLoader = () => ({ ok: true as const, registry: { hosts: [{ ...VPS, id: "edge.dev" }] } });
+    for (const [src, dst] of [["notes.md:v2", "edge.dev:/srv/out"], ["edge.dev:/srv/in", "notes.md:"]]) {
+      expect(planFileCopy(src!, dst!, { registryLoader }).ok).toBe(true);
+    }
+    expect(planFileCopy("edge.dev:/srv/in", "edge.dev:/srv/out", { registryLoader }))
+      .toMatchObject({ ok: false, code: "remote_to_remote" });
+  });
+
+  it("retains remote validation failures after positive dotted registration", () => {
+    const ssh = { ...VPS, id: "edge.dev" };
+    const http = { id: "web.dev", transport: "http" as const, url: "http://h:7433" };
+    const badUser = { ...VPS, id: "bad.dev", user: "invalid user" };
+    const registryLoader = () => ({ ok: true as const, registry: { hosts: [ssh, http, badUser] } });
+    for (const [operand, code] of [["edge.dev:", "bad_operand"], ["edge.dev:relative", "denied_path"], ["edge.dev:/srv/a b", "denied_path"], ["edge.dev:/srv/.ssh/key", "denied_path"], ["web.dev:/srv/x", "unsupported_transport"], ["bad.dev:/srv/x", "invalid_registry_user"]]) {
+      for (const [src, dst] of [[operand, "./out.md"], ["./in.md", operand]]) {
+        expect(planFileCopy(src!, dst!, { registryLoader })).toMatchObject({ ok: false, code });
+      }
+    }
+  });
+
+  it("uses the registration snapshot through remote validation without a second lookup", () => {
+    let loads = 0;
+    const host = { ...VPS, id: "edge.dev" };
+    const registryLoader = () => {
+      loads++;
+      return loads === 1
+        ? { ok: true as const, registry: { hosts: [host] } }
+        : { ok: false as const, error: "later registry error" };
+    };
+    const result = planFileCopy("edge.dev:/srv/in", "./out.md", { registryLoader });
+    expect(result.ok).toBe(true);
+    expect(loads).toBe(1);
+    if (result.ok) expect(result.plan.src.kind).toBe("remote");
+  });
+
+  it("retains undotted unknown-host errors on source and destination", () => {
+    for (const [src, dst] of [["missing:/srv/x", "./out.md"], ["./in.md", "missing:/srv/x"]]) {
+      expect(planFileCopy(src!, dst!, { registryLoader: REGISTRY_OK })).toMatchObject({ ok: false, code: "unknown_host" });
+    }
+  });
+
+  it("keeps dotted local names local when no registry can be positively read", () => {
+    const registryLoader = () => ({ ok: false as const, error: "registry unreadable" });
+    expect(planFileCopy("notes.md:", "./out.md", { registryLoader }).ok).toBe(true);
+    expect(planFileCopy("known:/srv/x", "./out.md", { registryLoader })).toMatchObject({ ok: false, code: "registry_error" });
   });
 
   it("N18-1: a bare colon-named file parses as an (unknown) host — fail-closed at planning, never silent-local", () => {
@@ -310,5 +404,67 @@ describe("classifyRsyncResult / runFileCopy", () => {
     const res = await runFileCopy({ src: local("/tmp/a"), dst: local("/tmp/b"), dryRun: true }, { spawn: fakeSpawn });
     expect(res.failedStep).toBe("rsync-missing");
     expect(res.hint).toContain("brew install rsync");
+  });
+});
+
+
+describe("file copy output byte boundaries", () => {
+  it("preserves split UTF-8 on both rsync output pipes", async () => {
+    const text = "copied café/日本語.md 🙂\n";
+    const spawn = (() => {
+      const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        for (const byte of Buffer.from(text)) {
+          child.stdout.emit("data", Buffer.from([byte]));
+          child.stderr.emit("data", Buffer.from([byte]));
+        }
+        child.emit("close", 0);
+      });
+      return child;
+    }) as unknown as NonNullable<Parameters<typeof runFileCopy>[1]>["spawn"];
+    const result = await runFileCopy({ src: local("/tmp/src"), dst: local("/tmp/dst"), dryRun: true }, { spawn });
+    expect(result).toMatchObject({ ok: true, stdout: text, stderr: text });
+  });
+});
+
+let rsyncAvailable = false;
+try { execFileSync("rsync", ["--version"], { stdio: "ignore" }); rsyncAvailable = true; }
+catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+}
+
+describe("local directory copy semantics", () => {
+  it("preserves the trailing slash in the normalized local source and rsync argv", () => {
+    const source = "." + path.sep + "copy-source" + path.sep;
+    const planned = planFileCopy(source, "." + path.sep + "copy-destination");
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    const expectedSource = path.resolve("copy-source") + path.sep;
+    expect(planned.plan.src.path).toBe(expectedSource);
+    expect(buildRsyncArgv(planned.plan).slice(-2)[0]).toBe(expectedSource);
+  });
+
+  it.skipIf(!rsyncAvailable).each([false, true])("native rsync preserves source directory trailing slash=%s (requires installed rsync)", async (contentsOnly) => {
+    const root = mkdtempSync(path.join(process.cwd(), "openrig-copy-contents-"));
+    try {
+      const src = path.join(root, "source");
+      const dst = path.join(root, "destination");
+      mkdirSync(src); mkdirSync(dst);
+      writeFileSync(path.join(src, "artifact.txt"), "owned test artifact");
+      const localSrc = "." + path.sep + path.relative(process.cwd(), src);
+      const localDst = "." + path.sep + path.relative(process.cwd(), dst);
+      const planned = planFileCopy(localSrc + (contentsOnly ? path.sep : ""), localDst);
+      expect(planned.ok).toBe(true);
+      if (!planned.ok) return;
+      const result = await runFileCopy(planned.plan);
+      expect(result.ok, result.stderr).toBe(true);
+      const expected = path.join(dst, ...(contentsOnly ? [] : ["source"]), "artifact.txt");
+      expect(existsSync(expected), `rsync destination should be ${expected}`).toBe(true);
+      expect(readFileSync(expected, "utf8")).toBe("owned test artifact");
+      if (contentsOnly) expect(existsSync(path.join(dst, "source"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

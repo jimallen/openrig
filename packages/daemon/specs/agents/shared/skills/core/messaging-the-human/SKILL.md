@@ -79,6 +79,44 @@ never silently clipped. Shorten the brief or related detail as directed. Inspect
 the failed row, then deliberately cancel/replace the authored request if its
 content needs correction; a timeout alone is never a reason to replace it.
 
+A follow-up **update** about earlier work ("the change you approved is merged")
+can post into that item's thread with `--reply-to <earlier-qitem-id>`. It is
+accepted only with `--human-intent update`. Name the item whose thread the
+human saw, such as the parked row, and create the update on the same host as
+that item. Send the update from the seat that owns that thread: the seat that
+parked the row, or the author of the earlier item. A human reply in a thread
+reaches its owning seat, so an update from any other seat posts as a new
+message. It also posts as a new message, rather than being refused, if the
+earlier thread is missing or closed, or while the earlier item still waits on
+the human (a pending human decision, or a row parked on the human), since a
+reply in that thread would answer the decision. In every such case the
+`--verify` result says `threaded: false` with the reason.
+
+To answer a reply the human typed inside one of your threads, `--reply-to` the
+row their reply landed as. The update posts in that thread unless one of the
+cases above applies, and `--verify` reports it the same way. A message the
+human started at the top level of the channel has no thread yet, so the answer
+posts as a new message.
+
+A **decision** with a few clear choices can carry `--human-questions-file <path>`:
+a JSON array of 1–4 questions, each
+`{"id", "question", "options": [{"id", "label", "recommended"?}]}` with 2–4
+options (labels up to 75 characters, at most one recommended). Slack shows each
+question as a row of buttons. Each click records that answer on the item, and
+the decision resolves once every question has one. You then receive one reply
+row listing the answers. In `humanAnswers`, clicked answers are option-id strings.
+A whole typed reply is an object:
+`{kind: "typed-reply", text: "…", placement: "first-unanswered", unansweredCount: N}`.
+It is placed automatically under the first unanswered question; the person did
+not select that question. `N` counts the other question slots still empty in
+`humanAnswers` after that placement.
+Earlier button answers stay intact. Read `text` as the person's words, never as
+an option id even if the strings match. The typed reply still closes the decision
+with the other questions unanswered; `done` is not approval. If every button
+answer was already recorded, that final answer set stays intact and the typed
+reply remains in its correlated reply row. Keep the brief complete: the questions
+add buttons, they do not replace the explanation.
+
 If an existing agent-owned row must wait for a **decision**, block it on the **new live qitem ID**
 (`rig queue block <work-id> --on <human-qitem-id> ...`), not on the human address.
 Completion of the human qitem resumes its dependants. Blocking on the human as

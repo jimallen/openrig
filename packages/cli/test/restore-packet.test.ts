@@ -432,6 +432,18 @@ describe("M2b omitted-records classifier", () => {
 });
 
 describe("M2b runtime-detect", () => {
+  it.each([
+    ["session_meta", "codex"],
+    ["user", "claude-code"],
+  ])("skips non-object JSONL before detecting %s", (type, runtime) => {
+    const content = ["null", "false", "7", '"text"', "[]", JSON.stringify({ type })].join("\n");
+    expect(detectRuntime(content)).toBe(runtime);
+  });
+
+  it("returns null when JSONL contains only non-object records", () => {
+    expect(detectRuntime('null\nfalse\n7\n"text"\n[]')).toBe(null);
+  });
+
   it("detects Codex JSONL via response_item type marker", () => {
     const content = `{"type":"session_meta","payload":{"cwd":"/x"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":"hi"}}`;
@@ -1320,6 +1332,33 @@ describe("M2c-CLI R2 --source-jsonl provenance from parsed session_meta", () => 
     expect(summary.source_session_id).not.toContain(tmpRoot);
     // transcript.md emitted (messageCount > 0 → includeFullTranscript true).
     expect(fs.existsSync(path.join(target, "transcript.md"))).toBe(true);
+  });
+
+  it("without --target-rig or --role-pointer, restores the seat to its own rig and points at its notes", async () => {
+    const { createProgram } = await import("../src/index.js");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = path.join(tmpRoot, "own-rig.jsonl");
+    fs.writeFileSync(src, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/work/project", id: "dev-build@starter" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: "hi" } }),
+    ].join("\n"), "utf8");
+    const target = path.join(tmpRoot, "own-rig-packet");
+
+    const program = createProgram();
+    program.exitOverride();
+    await program.parseAsync([
+      "node", "rig", "restore-packet", "write",
+      "--source-jsonl", src,
+      "--target", target,
+      "--current-work-summary", "Default target rig.",
+      "--authority-boundaries", "Defaults only.",
+    ]);
+
+    const summary = JSON.parse(fs.readFileSync(path.join(target, "restore-summary.json"), "utf-8"));
+    expect(validateRestoreSummary(summary).valid).toBe(true);
+    expect(summary.target_rig).toBe("starter");
+    expect(summary.role_pointer).toBe("rigs/starter/seats/dev-build/LEARNED.md");
   });
 
   // OPR.0.4.6.MH1 rev1-r2 B2: the parse contract's greedy rig is the

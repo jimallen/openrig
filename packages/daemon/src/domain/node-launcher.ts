@@ -47,6 +47,9 @@ interface NodeLauncherDeps {
   tmuxAdapter: TmuxAdapter;
   transcriptStore?: TranscriptStore;
   sessionEnv?: Record<string, string | undefined>;
+  /** Extra launch env for one runtime only (OMP's provider keys), merged over
+   *  sessionEnv so other runtimes' seats never receive it. */
+  runtimeSessionEnv?: Record<string, Record<string, string | undefined>>;
   /** Default silence window (seconds). Currently used only as the
    *  SeatActivityService global default (3s). Per-seat override via
    *  LaunchOpts is currently inert. */
@@ -70,6 +73,7 @@ export class NodeLauncher {
   private tmuxAdapter: TmuxAdapter;
   private transcriptStore: TranscriptStore | null;
   private sessionEnv: Record<string, string>;
+  private runtimeSessionEnv: Record<string, Record<string, string | undefined>>;
   private defaultSilenceWindowSeconds: number;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
 
@@ -93,6 +97,7 @@ export class NodeLauncher {
     this.tmuxAdapter = deps.tmuxAdapter;
     this.transcriptStore = deps.transcriptStore ?? null;
     this.sessionEnv = compactEnv(deps.sessionEnv ?? {});
+    this.runtimeSessionEnv = deps.runtimeSessionEnv ?? {};
     this.defaultSilenceWindowSeconds = deps.defaultSilenceWindowSeconds ?? 3;
     this.tmuxOptionDefaults = deps.tmuxOptionDefaults ?? null;
   }
@@ -143,6 +148,7 @@ export class NodeLauncher {
       OPENRIG_SESSION_NAME: sessionName,
       OPENRIG_RUNTIME: node.runtime ?? undefined,
       ...this.sessionEnv,
+      ...(node.runtime ? this.runtimeSessionEnv[node.runtime] : undefined),
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
     });
     const codexSeatWarnings: string[] = [];
@@ -213,6 +219,7 @@ export class NodeLauncher {
           sessionName,
           transcriptPath,
           getTranscriptRotationOptionsFromEnv(),
+          getTranscriptRotationOptionsFromEnv,
         );
       } else {
         launchWarnings.push(`Transcript directory creation failed for rig ${rig.rig.name}`);
@@ -239,6 +246,7 @@ export class NodeLauncher {
         if (!paneObservation.ok) {
           new SeatIdentityStore(this.db).upsert(paneObservationVerdict({
             nodeId: node.id,
+            sessionId: session.id,
             sessionName,
             observation: paneObservation,
           }));

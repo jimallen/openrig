@@ -143,7 +143,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        'tmux list-panes -t \'my-session:0\' -F "#{pane_id}|#{pane_index}|#{pane_current_path}|#{pane_width}|#{pane_height}|#{pane_active}"'
+        'tmux list-panes -t \'=my-session:0\' -F "#{pane_id}|#{pane_index}|#{pane_current_path}|#{pane_width}|#{pane_height}|#{pane_active}"'
       );
     });
 
@@ -155,7 +155,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        'tmux list-panes -t \'my session\'\"\'\"\'s:0\' -F "#{pane_id}|#{pane_index}|#{pane_current_path}|#{pane_width}|#{pane_height}|#{pane_active}"'
+        'tmux list-panes -t \'=my session\'\"\'\"\'s:0\' -F "#{pane_id}|#{pane_index}|#{pane_current_path}|#{pane_width}|#{pane_height}|#{pane_active}"'
       );
     });
 
@@ -188,6 +188,25 @@ describe("TmuxAdapter", () => {
     it("returns true when tmux has-session exits 0", async () => {
       const adapter = new TmuxAdapter(mockExec({ "has-session": { stdout: "" } }));
       expect(await adapter.hasSession("target-session")).toBe(true);
+    });
+
+    it("probes the exact session name so tmux cannot prefix-match (issue #423)", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("");
+      const adapter = new TmuxAdapter(exec);
+
+      expect(await adapter.hasSession("worker@demo")).toBe(true);
+
+      expect(exec).toHaveBeenCalledOnce();
+      // tmux `=name` forces an exact match: with only `worker@demo2`
+      // present, `-t worker@demo` would wrongly succeed.
+      expect(exec.mock.calls[0]![0]).toContain("=worker@demo");
+    });
+
+    it("still reports absent when the exact probe misses", async () => {
+      const adapter = new TmuxAdapter(mockExec({
+        "has-session": { error: new Error("can't find session: =worker@demo") },
+      }));
+      expect(await adapter.hasSession("worker@demo")).toBe(false);
     });
 
     it("returns false when session not found", async () => {
@@ -268,7 +287,7 @@ describe("TmuxAdapter", () => {
       expect(await adapter.hasSessionEnv("seat@rig", "OPENRIG_ACTIVITY_HOOK_TOKEN")).toBe(false);
       expect(await adapter.hasSessionEnv("seat@rig", "RIGGED_URL")).toBe(false);
       expect(await adapter.hasSessionEnv("seat@rig", "RIGGED_ACTIVITY_HOOK_TOKEN")).toBe(false);
-      expect(exec).toHaveBeenCalledWith("tmux show-environment -t 'seat@rig'");
+      expect(exec).toHaveBeenCalledWith("tmux show-environment -t '=seat@rig'");
     });
 
     it("returns unknown when the session environment cannot be inspected", async () => {
@@ -289,7 +308,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux new-session -d -s 'r01-dev1-impl' -c '/home/user/code'"
+        "tmux new-session -d -s 'r01-dev1-impl' -c '/home/user/code' -e 'OPENRIG_TRANSCRIPTS_LINES=' -e 'OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS='"
       );
     });
 
@@ -301,7 +320,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux new-session -d -s 'r01-dev1-impl' -c '/home/user/my project/code'"
+        "tmux new-session -d -s 'r01-dev1-impl' -c '/home/user/my project/code' -e 'OPENRIG_TRANSCRIPTS_LINES=' -e 'OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS='"
       );
     });
 
@@ -313,7 +332,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux new-session -d -s 'r01-dev'\"'\"'s session' -c '/tmp'"
+        "tmux new-session -d -s 'r01-dev'\"'\"'s session' -c '/tmp' -e 'OPENRIG_TRANSCRIPTS_LINES=' -e 'OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS='"
       );
     });
 
@@ -325,7 +344,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux new-session -d -s 'r01-dev1-impl'"
+        "tmux new-session -d -s 'r01-dev1-impl' -e 'OPENRIG_TRANSCRIPTS_LINES=' -e 'OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS='"
       );
     });
 
@@ -358,8 +377,8 @@ describe("TmuxAdapter", () => {
       await adapter.createSession("r01-test", "/tmp");
 
       const cmd = exec.mock.calls[0]![0] as string;
-      expect(cmd).not.toContain("-e ");
-      expect(cmd).toBe("tmux new-session -d -s 'r01-test' -c '/tmp'");
+      expect(cmd).toContain("-e 'OPENRIG_TRANSCRIPTS_LINES='");
+      expect(cmd).toBe("tmux new-session -d -s 'r01-test' -c '/tmp' -e 'OPENRIG_TRANSCRIPTS_LINES=' -e 'OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS='");
     });
 
     it("returns { ok: false, code: 'duplicate_session' } on duplicate", async () => {
@@ -374,6 +393,22 @@ describe("TmuxAdapter", () => {
   });
 
   describe("sendText", () => {
+    it.each([";", "answer;", "answer\\;", "x".repeat(163840)])("preserves unbracketed answer bytes with the legacy executor (%#)", async (text) => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("");
+      const writeFile = vi.fn(async () => {});
+      const unlink = vi.fn(async () => {});
+      const adapter = new TmuxAdapter(exec, {
+        writeFile, unlink, tmpName: () => "/tmp/text.txt", bufferName: () => "fixture",
+      });
+      expect(await adapter.sendText("worker@rig", text, undefined, { bracketed: false })).toEqual({ ok: true });
+      expect(writeFile).toHaveBeenCalledWith("/tmp/text.txt", text, { mode: 0o600, flag: "wx" });
+      expect(exec.mock.calls.map(([cmd]) => cmd)).toEqual([
+        "tmux load-buffer -b 'fixture' '/tmp/text.txt'",
+        "tmux paste-buffer -t 'worker@rig' -b 'fixture' -d -r",
+      ]);
+      expect(unlink).toHaveBeenCalledWith("/tmp/text.txt");
+    });
+
     it.each([
       "hello world",
       "echo \"hello\" && $HOME's dir; `literal` $(literal)",
@@ -390,7 +425,7 @@ describe("TmuxAdapter", () => {
         writeFile, unlink, tmpName: () => "/tmp/text.txt", bufferName: () => "fixture",
       });
       expect(await adapter.sendText("dev'qa@rig", text)).toEqual({ ok: true });
-      expect(writeFile).toHaveBeenCalledWith("/tmp/text.txt", text);
+      expect(writeFile).toHaveBeenCalledWith("/tmp/text.txt", text, { mode: 0o600, flag: "wx" });
       expect(exec.mock.calls.map(([cmd]) => cmd)).toEqual([
         "tmux load-buffer -b 'fixture' '/tmp/text.txt'",
         "tmux paste-buffer -t 'dev'\"'\"'qa@rig' -b 'fixture' -d -r -p",
@@ -464,10 +499,41 @@ describe("TmuxAdapter", () => {
 
       await adapter.killSession("r01-dev1-impl");
 
-      expect(exec).toHaveBeenCalledOnce();
-      expect(exec.mock.calls[0]![0]).toBe(
-        "tmux kill-session -t 'r01-dev1-impl'"
-      );
+      expect(exec.mock.calls.map((call) => call[0])).toEqual([
+        "tmux detach-client -s '=r01-dev1-impl'",
+        "tmux kill-session -t '=r01-dev1-impl'",
+      ]);
+    });
+
+    it("still kills the session when no client is attached", async () => {
+      const exec = vi.fn<ExecFn>(async (cmd: string) => {
+        if (cmd.includes("detach-client")) throw new Error("no current client");
+        return "";
+      });
+      const adapter = new TmuxAdapter(exec);
+
+      const result = await adapter.killSession("r01-dev1-impl");
+
+      expect(result).toEqual({ ok: true });
+      expect(exec.mock.calls.map((call) => call[0])).toEqual([
+        "tmux detach-client -s '=r01-dev1-impl'",
+        "tmux kill-session -t '=r01-dev1-impl'",
+      ]);
+    });
+
+    it("does not kill the session when detach fails unexpectedly", async () => {
+      const exec = vi.fn<ExecFn>(async (cmd: string) => {
+        if (cmd.includes("detach-client")) throw new Error("permission denied");
+        return "";
+      });
+      const adapter = new TmuxAdapter(exec);
+
+      const result = await adapter.killSession("r01-dev1-impl");
+
+      expect(result).toEqual({ ok: false, code: "unknown", message: "permission denied" });
+      expect(exec.mock.calls.map((call) => call[0])).toEqual([
+        "tmux detach-client -s '=r01-dev1-impl'",
+      ]);
     });
 
     it("returns { ok: true } on success", async () => {
@@ -492,10 +558,10 @@ describe("TmuxAdapter", () => {
 
       await adapter.killSession("r01-dev's session");
 
-      expect(exec).toHaveBeenCalledOnce();
-      expect(exec.mock.calls[0]![0]).toBe(
-        "tmux kill-session -t 'r01-dev'\"'\"'s session'"
-      );
+      expect(exec.mock.calls.map((call) => call[0])).toEqual([
+        "tmux detach-client -s '=r01-dev'\"'\"'s session'",
+        "tmux kill-session -t '=r01-dev'\"'\"'s session'",
+      ]);
     });
   });
 
@@ -508,7 +574,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux set-option -t 'organic-session' '@rigged_node_id' 'node-abc123'"
+        "tmux set-option -t '=organic-session:' '@rigged_node_id' 'node-abc123'"
       );
     });
 
@@ -598,7 +664,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux show-option -v -t 'organic-session' '@rigged_node_id'"
+        "tmux show-option -v -t '=organic-session:' '@rigged_node_id'"
       );
       expect(val).toBe("node-abc123");
     });
@@ -625,7 +691,7 @@ describe("TmuxAdapter", () => {
       // createSession with canonical name
       await adapter.createSession("dev-impl@auth-feats", "/home/user/code");
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux new-session -d -s 'dev-impl@auth-feats' -c '/home/user/code'"
+        "tmux new-session -d -s 'dev-impl@auth-feats' -c '/home/user/code' -e 'OPENRIG_TRANSCRIPTS_LINES=' -e 'OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS='"
       );
 
       // sendKeys targeting canonical name
@@ -732,7 +798,7 @@ describe("TmuxAdapter", () => {
 
       // The command is: tmux pipe-pane -t <quoted session> <quoted 'cat >> <quoted path>'>
       const cmd = (exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(cmd).toContain("tmux pipe-pane -t 'dev-impl@my-rig'");
+      expect(cmd).toContain("tmux pipe-pane -t '=dev-impl@my-rig:'");
       expect(cmd).toContain("cat >>");
       expect(cmd).toContain("dev-impl@my-rig.log");
     });
@@ -744,7 +810,7 @@ describe("TmuxAdapter", () => {
       await adapter.startPipePane("dev@rig", "/path/with spaces/transcript.log");
 
       const cmd = (exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(cmd).toContain("tmux pipe-pane -t 'dev@rig'");
+      expect(cmd).toContain("tmux pipe-pane -t '=dev@rig:'");
       expect(cmd).toContain("cat >>");
       expect(cmd).toContain("with spaces");
     });
@@ -756,7 +822,7 @@ describe("TmuxAdapter", () => {
       await adapter.startPipePane("dev@rig", "/path/it's/transcript.log");
 
       const cmd = (exec as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(cmd).toContain("tmux pipe-pane -t 'dev@rig'");
+      expect(cmd).toContain("tmux pipe-pane -t '=dev@rig:'");
       // The apostrophe should be escaped, not left raw
       expect(cmd).not.toContain("it's/");
     });
@@ -777,7 +843,7 @@ describe("TmuxAdapter", () => {
 
       await adapter.stopPipePane("dev-impl@my-rig");
 
-      expect(exec).toHaveBeenCalledWith("tmux pipe-pane -t 'dev-impl@my-rig'");
+      expect(exec).toHaveBeenCalledWith("tmux pipe-pane -t '=dev-impl@my-rig:'");
     });
   });
 
@@ -790,7 +856,7 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        "tmux display-message -p -t 'dev@rig' '#{window_activity}'",
+        "tmux display-message -p -t '=dev@rig:' '#{window_activity}'",
       );
     });
 
@@ -858,7 +924,7 @@ describe("TmuxAdapter", () => {
 
       expect(result).toEqual({ ok: true });
       // The raw payload is written to disk via fs, NOT embedded in a shell command.
-      expect(writeFile).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt", BIG);
+      expect(writeFile).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt", BIG, { mode: 0o600, flag: "wx" });
       const cmds = exec.mock.calls.map((c) => c[0] as string);
       expect(cmds).toEqual([
         "tmux load-buffer -b 'openrig_FIXED' '/tmp/openrig-tmux-send-FIXED.txt'",
@@ -883,7 +949,7 @@ describe("TmuxAdapter", () => {
       const result: TmuxResult = await adapter.sendText("dev@rig", MID);
 
       expect(result).toEqual({ ok: true });
-      expect(writeFile).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt", MID);
+      expect(writeFile).toHaveBeenCalledWith("/tmp/openrig-tmux-send-FIXED.txt", MID, { mode: 0o600, flag: "wx" });
       for (const cmd of exec.mock.calls.map((c) => c[0] as string)) expect(cmd).not.toContain(MID);
     });
 
@@ -923,6 +989,20 @@ describe("TmuxAdapter", () => {
       expect(loadCmds).toHaveLength(2);
       expect(loadCmds[0]).not.toBe(loadCmds[1]);
     });
+
+    it("does not unlink the file if this call failed to create it (e.g. file already exists)", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("");
+      const { ops, writeFile, unlink } = fixedFileOps();
+      const existErr = new Error("EEXIST: file already exists, open '/tmp/openrig-tmux-send-FIXED.txt'");
+      (existErr as unknown as { code: string }).code = "EEXIST";
+      writeFile.mockRejectedValueOnce(existErr);
+      const adapter = new TmuxAdapter(exec, ops);
+
+      const result = await adapter.sendText("dev@rig", BIG);
+
+      expect(result.ok).toBe(false);
+      expect(unlink).not.toHaveBeenCalled();
+    });
   });
 
   // OPR.0.4.0.38 - net-new live-seed primitives lifted from the FR-4 seed work
@@ -941,13 +1021,13 @@ describe("TmuxAdapter", () => {
       expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '%0'");
     });
 
-    it("shell-quotes a session-name target safely", async () => {
+    it("shell-quotes a session-name target safely, as an exact target", async () => {
       const exec = vi.fn<ExecFn>().mockResolvedValue("x");
       const adapter = new TmuxAdapter(exec);
 
       await adapter.capturePaneScreen("dev-impl@my-rig");
 
-      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t 'dev-impl@my-rig'");
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '=dev-impl@my-rig:'");
     });
 
     it("returns null on error (pane gone)", async () => {
@@ -963,10 +1043,10 @@ describe("TmuxAdapter", () => {
 
   describe("getPaneCursorPosition", () => {
     const EXPECTED_CMD =
-      `tmux display-message -p -t '%0' "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}"`;
+      `tmux display-message -p -t '%0' "#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}"`;
 
-    it("constructs the tab-delimited display-message command and parses {x,y,width,height}", async () => {
-      const exec = vi.fn<ExecFn>().mockResolvedValue("4\t7\t120\t40\n");
+    it("constructs the printable-delimited display-message command and parses {x,y,width,height}", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("4|7|120|40\n");
       const adapter = new TmuxAdapter(exec);
 
       const pos = await adapter.getPaneCursorPosition("%0");
@@ -976,7 +1056,7 @@ describe("TmuxAdapter", () => {
     });
 
     it("accepts a zero cursor origin (x=0,y=0 valid)", async () => {
-      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "0\t0\t80\t24\n" } }));
+      const adapter = new TmuxAdapter(mockExec({ "display-message": { stdout: "0|0|80|24\n" } }));
       expect(await adapter.getPaneCursorPosition("%0")).toEqual({ x: 0, y: 0, width: 80, height: 24 });
     });
 
@@ -993,9 +1073,9 @@ describe("TmuxAdapter", () => {
     });
 
     it("returns null on out-of-range geometry (width<1 / negative coords)", async () => {
-      const zeroWidth = new TmuxAdapter(mockExec({ "display-message": { stdout: "1\t1\t0\t40\n" } }));
+      const zeroWidth = new TmuxAdapter(mockExec({ "display-message": { stdout: "1|1|0|40\n" } }));
       expect(await zeroWidth.getPaneCursorPosition("%0")).toBeNull();
-      const negX = new TmuxAdapter(mockExec({ "display-message": { stdout: "-1\t1\t80\t24\n" } }));
+      const negX = new TmuxAdapter(mockExec({ "display-message": { stdout: "-1|1|80|24\n" } }));
       expect(await negX.getPaneCursorPosition("%0")).toBeNull();
     });
   });
@@ -1011,14 +1091,14 @@ describe("TmuxAdapter", () => {
 
       expect(exec).toHaveBeenCalledOnce();
       expect(exec.mock.calls[0]![0]).toBe(
-        'tmux list-clients -F "#{client_name}\t#{client_session}"'
+        'tmux list-clients -F "#{client_name}|#{client_session}"'
       );
     });
 
     it("parses output into typed TmuxClient objects (name + session)", async () => {
       const output = [
-        "/dev/ttys003\tdev-impl@my-rig",
-        "/dev/ttys007\tother-session",
+        "/dev/ttys003|dev-impl@my-rig",
+        "/dev/ttys007|other-session",
       ].join("\n");
 
       const adapter = new TmuxAdapter(mockExec({ "list-clients": { stdout: output } }));
@@ -1027,6 +1107,14 @@ describe("TmuxAdapter", () => {
       expect(clients).toHaveLength(2);
       expect(clients[0]).toEqual({ name: "/dev/ttys003", session: "dev-impl@my-rig" });
       expect(clients[1]).toEqual({ name: "/dev/ttys007", session: "other-session" });
+    });
+
+    it("preserves separators inside client session names", async () => {
+      const adapter = new TmuxAdapter(
+        mockExec({ "list-clients": { stdout: "/dev/ttys009|rig|view" } })
+      );
+
+      expect(await adapter.listClients()).toEqual([{ name: "/dev/ttys009", session: "rig|view" }]);
     });
 
     it("returns empty array on 'no server running' error (no attachable client)", async () => {
@@ -1049,7 +1137,7 @@ describe("TmuxAdapter", () => {
     });
 
     it("skips malformed (single-field) lines", async () => {
-      const output = ["garbage-no-tab", "/dev/ttys003\tdev-impl@my-rig", ""].join("\n");
+      const output = ["garbage-no-separator", "/dev/ttys003|dev-impl@my-rig", ""].join("\n");
       const adapter = new TmuxAdapter(mockExec({ "list-clients": { stdout: output } }));
       const clients = await adapter.listClients();
       expect(clients).toEqual([{ name: "/dev/ttys003", session: "dev-impl@my-rig" }]);

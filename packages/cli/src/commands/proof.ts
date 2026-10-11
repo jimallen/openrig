@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { Command } from "commander";
 import YAML from "yaml";
 import { DaemonClient } from "../client.js";
@@ -35,6 +36,11 @@ export const C1_VERDICTS = ["CLEAR", "BLOCKING", "CONCERNING", "PASS", "NOT-CLEA
 
 /** Video extensions for the C8 UX advisory (screencast evidence). */
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv"]);
+const BINARY_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".pdf",
+  ".mp3", ".wav", ".ogg", ".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv",
+  ".zip", ".gz", ".7z", ".exe",
+]);
 
 export interface C1Header {
   slice: string;
@@ -183,7 +189,8 @@ checkboxes do not accept an item under the selected proof policy.
     .option("--slice-id <dot-id>", "C1 slice dot-ID (defaults to the slice frontmatter id)")
     .option("--file <path>", "Artifact body from a file (mutually exclusive with --body)")
     .option("--body <text>", "Artifact body inline (mutually exclusive with --file)")
-    .option("--name <filename>", "Artifact filename in proof/ (defaults to the --file basename, else <artifact-type>-<verdict>-<UTC>.md)")
+    .option("--name <filename>", "Markdown artifact filename in proof/ (defaults to the --file stem plus .md, else <artifact-type>-<verdict>-<UTC>.md)")
+    .option("--replace", "Explicitly replace an existing Markdown artifact")
     .option("--evidences <refs>", "D2 attestation: comma-separated proof-contract item refs this artifact covers (item text or 1-based index)")
     .option("--self-check <text>", "D2 attestation: the agent's assertion that it LOOKED at the evidence and confirmed it shows the claim")
     .option("--media <refs>", "Corrective §3.4: comma-separated media refs (relative to the slice proof/ dir) this drop stands behind — appended to the artifact body as markdown refs so the composer curates them into delivered.items[].proof")
@@ -198,6 +205,7 @@ checkboxes do not accept an item under the selected proof policy.
       file?: string;
       body?: string;
       name?: string;
+      replace?: boolean;
       evidences?: string;
       selfCheck?: string;
       media?: string;
@@ -228,7 +236,23 @@ checkboxes do not accept an item under the selected proof policy.
               action: "Point --file at the evidence file, or use --body.",
             });
           }
-          body = fs.readFileSync(opts.file, "utf8");
+          const input = fs.readFileSync(opts.file);
+          if (BINARY_EXTENSIONS.has(path.extname(opts.file).toLowerCase()) || input.includes(0)) {
+            throw new ScopeCliError({
+              fact: `--file ${opts.file} is binary, not an artifact body.`,
+              consequence: "The artifact was NOT dropped and the source file was not changed.",
+              action: "Attach screenshots and other binary evidence with --media instead.",
+            });
+          }
+          try {
+            body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(input);
+          } catch {
+            throw new ScopeCliError({
+              fact: `--file ${opts.file} is not valid UTF-8 text.`,
+              consequence: "The artifact was NOT dropped and the source file was not changed.",
+              action: "Use a UTF-8 text file for --file, or attach binary evidence with --media.",
+            });
+          }
         } else if (opts.body) {
           body = opts.body;
         }
@@ -402,7 +426,7 @@ checkboxes do not accept an item under the selected proof policy.
         // Write the artifact: YAML frontmatter + body into proof/.
         const proofDir = path.join(slice.absPath, "proof");
         const defaultName = `${opts.artifactType}-${opts.verdict}-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
-        const fileName = opts.name ?? (opts.file ? path.basename(opts.file) : defaultName);
+        const fileName = opts.name ?? (opts.file ? `${path.parse(opts.file).name}.md` : defaultName);
         // rev1-r2 BLOCKING fix (a7dedd93 review): --name is a FILENAME, never
         // a path. Reject separators / dot-dot / absolute shapes BEFORE any
         // filesystem effect, so the drop can only land inside proof/ (the
@@ -413,6 +437,13 @@ checkboxes do not accept an item under the selected proof policy.
             fact: `--name '${fileName}' is not a plain filename (path separators, '..', and absolute paths are rejected).`,
             consequence: "The artifact was NOT dropped — proof drops land inside the slice proof/ dir only (FR-8).",
             action: "Pass a bare filename like qa-clear.md; the drop path owns the directory.",
+          });
+        }
+        if (!fileName.toLowerCase().endsWith(".md")) {
+          throw new ScopeCliError({
+            fact: `--name '${fileName}' is not a Markdown artifact filename.`,
+            consequence: "The artifact was NOT dropped; proof media cannot be replaced by a Markdown body.",
+            action: "Use a .md name for the artifact and attach binary files with --media.",
           });
         }
         const target = path.resolve(proofDir, fileName);
@@ -428,7 +459,18 @@ checkboxes do not accept an item under the selected proof policy.
         }
         fs.mkdirSync(proofDir, { recursive: true });
         const frontmatter = YAML.stringify(header).trimEnd();
-        fs.writeFileSync(target, `---\n${frontmatter}\n---\n\n${body}`, "utf8");
+        const content = `---\n${frontmatter}\n---\n\n${body}`;
+        try {
+          if (opts.replace) replaceArtifactFile(target, content);
+          else fs.writeFileSync(target, content, { encoding: "utf8", flag: "wx" });
+        } catch (err) {
+          if (opts.replace || (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+          throw new ScopeCliError({
+            fact: `Proof artifact '${fileName}' already exists.`,
+            consequence: "The existing artifact was not changed.",
+            action: "Choose another --name, or pass --replace to deliberately update this Markdown artifact.",
+          });
+        }
 
         // Echo the parsed header — the seat sees what the composer will see.
         const echo = {
@@ -466,4 +508,39 @@ checkboxes do not accept an item under the selected proof policy.
     });
 
   return cmd;
+}
+
+/** Explicit --replace swaps the artifact's directory entry; it never writes through it. A symlink or hard
+ *  link at the artifact name therefore keeps its other path's bytes. The staging file is created
+ *  exclusively under a unique name, so cleanup only ever removes a file this call created, and a failed
+ *  write, close or rename leaves the target as it was. An existing regular artifact's permission bits carry
+ *  over, so a replacement never broadens access; a symlinked or new name gets default permissions. The
+ *  first failure is the one reported. There is no fsync: this is a same-directory swap, not a
+ *  crash-durability guarantee. */
+export function replaceArtifactFile(target: string, content: string, stagingId: string = randomUUID()): void {
+  const staging = path.join(path.dirname(target), `.${path.basename(target)}.${stagingId}.replace-tmp`);
+  const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+  const keepMode = existing?.isFile() ? existing.mode & 0o777 : undefined;
+  const fd = fs.openSync(staging, "wx", keepMode ?? 0o666); // never created wider than the artifact it replaces
+  let failure: unknown;
+  try {
+    if (keepMode !== undefined) fs.fchmodSync(fd, keepMode);
+    fs.writeFileSync(fd, content, "utf8");
+  } catch (err) {
+    failure = err;
+  }
+  try {
+    fs.closeSync(fd);
+  } catch (closeErr) {
+    if (failure === undefined) failure = closeErr;
+    else console.error(`warning: closing staging file ${staging} also failed: ${(closeErr as Error).message}`);
+  }
+  try {
+    if (failure !== undefined) throw failure;
+    fs.renameSync(staging, target);
+  } catch (err) {
+    try { fs.rmSync(staging, { force: true }); }
+    catch (cleanupErr) { console.error(`warning: could not remove staging file ${staging}: ${(cleanupErr as Error).message}`); }
+    throw err;
+  }
 }

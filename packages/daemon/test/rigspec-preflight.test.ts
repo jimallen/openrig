@@ -140,12 +140,28 @@ describe("RigSpecPreflight", () => {
     expect(codexCall![0]).toBe("codex --version");
   });
 
+  it("probes OMP independently of Pi for an OMP-only legacy rig", async () => {
+    const exec = vi.fn<ExecFn>().mockResolvedValue("");
+    const pf = createPreflight({ exec });
+    const result = await pf.check(validSpec({ nodes: [{ id: "worker", runtime: "omp", cwd: "/" }] }));
+    expect(result.ready).toBe(true);
+    expect(exec).toHaveBeenCalledWith("omp --version");
+    expect(exec).not.toHaveBeenCalledWith("pi --version");
+  });
+
   it("runtime not available -> error", async () => {
     const exec = vi.fn<ExecFn>().mockRejectedValue(new Error("not found"));
     const pf = createPreflight({ exec });
     const result = await pf.check(validSpec());
     expect(result.ready).toBe(false);
     expect(result.errors.some((e) => e.includes("claude-code"))).toBe(true);
+  });
+
+  it("reports old Pi versions in legacy preflight without blocking", async () => {
+    const pf = createPreflight({ exec: async () => "0.73.1" });
+    const result = await pf.check(validSpec({ nodes: [{ id: "worker", runtime: "pi", cwd: "/" }] }));
+    expect(result.ready).toBe(true);
+    expect(result.warnings.join("\n")).toContain("older than OpenRig's tested baseline");
   });
 
   it("cwd points to a file -> error", async () => {

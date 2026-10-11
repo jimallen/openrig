@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const skillRoot = path.resolve(new URL("..", import.meta.url).pathname);
+const skillRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const restoreScript = path.join(skillRoot, "scripts", "restore-from-jsonl.mjs");
 // P6(C) injectable output-root: the packet base defaults to the shared
 // /tmp/claude-compaction-restore (production), but becomes per-run isolated when the
@@ -124,6 +125,8 @@ function writeExpectedSentinel(input) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, `${JSON.stringify({
     version: 1,
+    managedRefocusPending: typeof input.custom_instructions === "string"
+      && input.custom_instructions.trimStart().startsWith("OpenRig managed compaction; wait for the restore request."),
     sessionName: process.env.OPENRIG_SESSION_NAME || process.env.RIGGED_SESSION_NAME || null,
     sessionId: input.session_id || input.sessionId || null,
     transcriptPath: input.transcript_path || null,
@@ -136,6 +139,8 @@ function writePendingRestoreMarker(input, parsed, restoreInstruction, customMess
   fs.mkdirSync(path.dirname(markerPath), { recursive: true });
   const payload = {
     version: 1,
+    managedRefocusPending: typeof input.custom_instructions === "string"
+      && input.custom_instructions.trimStart().startsWith("OpenRig managed compaction; wait for the restore request."),
     createdAt: nowIso(),
     sessionName: process.env.OPENRIG_SESSION_NAME || process.env.RIGGED_SESSION_NAME || null,
     sessionId: input.session_id || input.sessionId || null,

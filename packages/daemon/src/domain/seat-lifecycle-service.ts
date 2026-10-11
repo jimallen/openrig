@@ -13,6 +13,7 @@ import type { RuntimeAdapter, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
 import type { StartupAction } from "./types.js";
 import { resolveStartupProof } from "./startup-resolver.js";
+import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { observeSolePane } from "./pane-binding-observation.js";
@@ -118,14 +119,17 @@ export type LaunchFreshResult =
       sessionId: string;
       generation: string;
       model: string | null;
+      effort?: string | null;
       startupPolicyHash: string;
       supersededSessionIds: string[];
+      warnings?: string[];
     }
   | (SeatRefusal & {
       status?: "attention_required" | "failed";
       sessionName?: string;
       sessionId?: string;
       generation?: string;
+      warnings?: string[];
     });
 
 interface LatestSessionRow {
@@ -423,7 +427,7 @@ export class SeatLifecycleService {
       || !this.startupOrchestrator.canContinueFresh(node.id, session.id)) return { ok: false as const, code: "continuation_unavailable", message: "Startup changed during the readiness check. Refresh." };
     const result = await this.startupOrchestrator.startNode({
       rigId: seat.rigId, nodeId: node.id, sessionId: session.id,
-      binding: { ...binding, cwd: node.cwd ?? ".", model: node.model ?? undefined, codexConfigProfile: node.codexConfigProfile ?? undefined },
+      binding: { ...binding, cwd: node.cwd ?? ".", model: node.model ?? undefined, effort: node.effort ?? undefined, codexConfigProfile: node.codexConfigProfile ?? undefined },
       adapter, plan: startup.context.plan, resolvedStartupFiles: startup.context.resolvedStartupFiles,
       startupActions: startup.context.startupActions, isRestore: false,
       sessionName: session.session_name, skipHarnessLaunch: true, continueFreshStartup: true, includeDurableObligations: true, allowFreshFallback: false,
@@ -500,10 +504,41 @@ export class SeatLifecycleService {
     ).all(node.id) as Array<{ id: string }>).map((row) => row.id);
     const retiringGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
 
-    const canonicalProbe = await this.probeLiveness(
+    let canonicalProbe = await this.probeLiveness(
       canonicalSessionName,
       "fresh launch refuses rather than overwrite a possibly-live canonical session",
     );
+    // `rig seat stop` persists an exited row after killing its managed session.
+    // When that was the last tmux session, tmux exits too, so the next classified
+    // probe sees unavailable transport instead of positive absence. Reopen an
+    // empty server only when the persisted state proves this seat's managed
+    // occupant was deliberately stopped and no other managed row remains live.
+    // The probe below still decides absence; a recreated session or failed
+    // transport remains a refusal.
+    if ("code" in canonicalProbe) {
+      const latest = this.latestSession(node.id);
+      const hasCurrentBinding = this.sessionRegistry.getBindingForNode(node.id) !== null;
+      const stoppedManagedOccupant = latest !== null
+        && latest.session_name === canonicalSessionName
+        && latest.status === "exited"
+        && latest.origin !== "claimed"
+        && !hasCurrentBinding
+        && this.nonTerminalSessions(node.id).length === 0;
+      if (stoppedManagedOccupant) {
+        try {
+          const restored = await this.tmuxAdapter.startServer();
+          if (restored.ok) {
+            canonicalProbe = await this.probeLiveness(
+              canonicalSessionName,
+              "fresh launch refuses rather than overwrite a possibly-live canonical session",
+            );
+          }
+        } catch {
+          // Keep the original classified refusal when the transport cannot be
+          // restored; never translate a failed start into absence.
+        }
+      }
+    }
     if ("code" in canonicalProbe) return canonicalProbe;
     if (canonicalProbe.state === "present") {
       const currentSession = this.latestSession(node.id);
@@ -550,6 +585,11 @@ export class SeatLifecycleService {
         input.operator,
       );
       if (!stopped.ok) return stopped;
+      // Stopping the server's last session ends tmux's server, and every probe
+      // below would then be transport_unavailable, never absence. Restore an
+      // empty server (no session is invented; a no-op while the server is up)
+      // so they get a positive answer. The classified probes still decide.
+      await this.tmuxAdapter.startServer();
     }
 
     // Reuse clean's exhaustive, positive-absence gate for stale/history rows.
@@ -608,6 +648,7 @@ export class SeatLifecycleService {
         newGeneration: null,
         startupPolicyHash: startup.context.hash,
         model: node.model,
+        effort: node.effort ?? null,
         reason: input.reason,
         operator: input.operator,
         errors: ["new occupant generation was not persisted"],
@@ -629,6 +670,7 @@ export class SeatLifecycleService {
         ...launch.binding,
         cwd: node.cwd ?? ".",
         model: node.model ?? undefined,
+        effort: node.effort ?? undefined,
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,
       },
@@ -651,6 +693,7 @@ export class SeatLifecycleService {
         newGeneration: generation,
         startupPolicyHash: startup.context.hash,
         model: node.model,
+        effort: node.effort ?? null,
         reason: input.reason,
         operator: input.operator,
         errors: startupResult.errors,
@@ -661,12 +704,14 @@ export class SeatLifecycleService {
             code: "startup_failed",
             status: "failed",
             message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupResult.errors.join("; ")}`,
+            warnings: startupResult.warnings,
           }
         : {
             ok: false,
             code: "attention_required",
             status: "attention_required",
             message: `Fresh startup failed and the new process could not be confirmed stopped; the seat requires attention: ${startupResult.errors.join("; ")}`,
+            warnings: startupResult.warnings,
             sessionName: canonicalSessionName,
             sessionId: launch.session.id,
             generation,
@@ -711,6 +756,7 @@ export class SeatLifecycleService {
         nativeSessionId,
         ...(nativeSessionId ? {} : { nativeSessionIdReason: "scrape_miss" }),
         model: node.model,
+        effort: node.effort ?? null,
         startupPolicyHash: startup.context.hash,
         reason: input.reason.trim(),
         operator: input.operator ?? null,
@@ -731,6 +777,7 @@ export class SeatLifecycleService {
         sessionName: canonicalSessionName,
         sessionId: launch.session.id,
         generation,
+        warnings: startupResult.warnings,
       };
     }
 
@@ -742,8 +789,10 @@ export class SeatLifecycleService {
       sessionId: launch.session.id,
       generation,
       model: node.model,
+      effort: node.effort ?? undefined,
       startupPolicyHash: startup.context.hash,
       supersededSessionIds,
+      warnings: startupResult.warnings,
     };
   }
 
@@ -842,7 +891,8 @@ export class SeatLifecycleService {
       // S04 owns the live ambient skill set. Replaying the older catalog
       // selection here could reinstall a skill that work-install removed.
       if (raw["category"] === "skill") continue;
-      entries.push({
+      // #261: shipped-spec resources follow the running install.
+      entries.push(reanchorShippedProjectionEntry({
         category: raw["category"],
         effectiveId: raw["effectiveId"],
         sourceSpec: raw["sourceSpec"],
@@ -854,7 +904,7 @@ export class SeatLifecycleService {
         ...(typeof raw["mergeStrategy"] === "string" ? { mergeStrategy: raw["mergeStrategy"] as ProjectionEntry["mergeStrategy"] } : {}),
         ...(typeof raw["target"] === "string" ? { target: raw["target"] } : {}),
         ...(typeof raw["pluginType"] === "string" ? { pluginType: raw["pluginType"] as ProjectionEntry["pluginType"] } : {}),
-      });
+      }));
     }
 
     const resolvedStartupFiles: ResolvedStartupFile[] = [];
@@ -867,7 +917,8 @@ export class SeatLifecycleService {
         || !isOptionalOneOf(raw["kind"], ["file"] as const)) {
         return this.malformedStartupContext(nodeId, "resolved_files_json contains an invalid entry");
       }
-      resolvedStartupFiles.push({
+      // #261: recognized built-in startup files follow the running install.
+      resolvedStartupFiles.push(reanchorBuiltinStartupFile({
         path: raw["path"],
         absolutePath: raw["absolutePath"],
         ownerRoot: raw["ownerRoot"],
@@ -875,7 +926,7 @@ export class SeatLifecycleService {
         required: raw["required"],
         appliesOn: raw["appliesOn"],
         ...(raw["kind"] === "file" ? { kind: "file" as const } : {}),
-      });
+      }));
     }
 
     const startupActions: StartupAction[] = [];
@@ -949,6 +1000,7 @@ export class SeatLifecycleService {
     newGeneration: string | null;
     startupPolicyHash: string;
     model: string | null;
+    effort?: string | null;
     reason: string;
     operator?: string | null;
     errors: string[];
@@ -983,6 +1035,7 @@ export class SeatLifecycleService {
         retiringGeneration: input.retiringGeneration,
         newGeneration: input.newGeneration,
         model: input.model,
+        effort: input.effort ?? null,
         startupPolicyHash: input.startupPolicyHash,
         reason: input.reason.trim(),
         operator: input.operator ?? null,
@@ -1064,18 +1117,10 @@ export class SeatLifecycleService {
     }
 
     let matches = this.findMatches(ref);
-    if (matches.length > 1) {
+    // Same-name rig history only: matches across differently named rigs stay ambiguous.
+    if (matches.length > 1 && new Set(matches.map((m) => m.rigName)).size === 1) {
       const running = matches.filter((m) => m.sessionStatus === "running");
-      if (running.length === 1) {
-        matches = running;
-      } else if (running.length === 0) {
-        // History stacking: nothing live anywhere; the newest generation is the
-        // next launch target. Two LIVE matches still refuse loudly (#141).
-        const newest = matches[matches.length - 1]!;
-        const newestRig = newest.rigId;
-        const inNewest = matches.filter((m) => m.rigId === newestRig);
-        if (inNewest.length === 1) matches = inNewest;
-      }
+      if (running.length === 1) matches = running;
     }
     if (matches.length === 0) {
       return {
@@ -1113,7 +1158,7 @@ export class SeatLifecycleService {
     const parsed = parseSessionName(ref);
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
-      const rigs = this.rigRepo.findRigsByName(parsed.rig);
+      const rigs = this.rigRepo.findUnarchivedRigsByName(parsed.rig);
       return rigs.flatMap((rig) => getNodeInventory(this.db, rig.id).filter((entry) =>
         entry.canonicalSessionName === ref
         || deriveCanonicalFromEntry(entry) === ref

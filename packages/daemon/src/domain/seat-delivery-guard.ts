@@ -217,11 +217,15 @@ export class SeatDeliveryGuard {
 /** Current binding, never a latest historical session-name guess. Unbound seats
  * resolve by node/canonical address for preferences and lifecycle preflight.
  *
+ * #174: an archived rig can keep a binding to the same session name as a live
+ * seat, so unarchived matches win; archived ones count only when nothing else
+ * matches, and then exactly one match is required.
+ *
  * Fork note (identity-era regression, observed 2026-09-30): same-name relaunches
  * leave stale rows behind — a stopped rig kept its binding, and clause-5 catches
  * every old unbound node of the same name. The strict ambiguity refusal must not
- * change for pane-duplicates or same-rig collisions (see #141 tests); the narrow
- * fix: exclude archived rigs, and when a SESSION NAME matches bound rows across
+ * change for pane-duplicates or same-rig collisions (see #141 tests); among
+ * unarchived rows, when a SESSION NAME or pane matches bound rows across
  * DIFFERENT rigs (history stacking), resolve to the binding whose session is
  * running — never to the dead row. */
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
@@ -229,19 +233,24 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
       b.tmux_pane AS pane,
       s.id AS liveSessionId,
-      (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant
+      (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant,
+      r.archived_at AS archivedAt
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
     LEFT JOIN sessions s ON s.node_id=n.id AND s.status='running'
-    WHERE r.archived_at IS NULL
-      AND (n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
-      OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?))
+    WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
+      OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)
     ORDER BY (CASE WHEN b.tmux_session = ? AND s.id IS NOT NULL THEN 0 ELSE 1 END),
              (b.tmux_session IS NOT NULL) DESC, r.created_at DESC`)
-    .all(name, name, name, name, name, name) as Array<GuardTarget & { rigId: string; liveSessionId: string | null }>;
-  if (rows.length === 0) return null;
-  if (rows.length === 1) return rows[0]!;
-  const boundBySession = rows.filter((r) => r.session === name);
-  const boundByPane = rows.filter((r) => r.pane === name);
+    .all(name, name, name, name, name, name) as Array<GuardTarget & { rigId: string; liveSessionId: string | null; archivedAt: string | null }>;
+  const strip = (row: (typeof rows)[number]): GuardTarget => {
+    const { archivedAt: _archivedAt, liveSessionId: _liveSessionId, rigId: _rigId, ...target } = row;
+    return target;
+  };
+  const unarchived = rows.filter((row) => row.archivedAt === null);
+  if (unarchived.length === 0) return rows.length === 1 ? strip(rows[0]!) : null;
+  if (unarchived.length === 1) return strip(unarchived[0]!);
+  const boundBySession = unarchived.filter((r) => r.session === name);
+  const boundByPane = unarchived.filter((r) => r.pane === name);
   // Same-rig duplicates stay refused (#141). Cross-rig history stacking — pane
   // ids like %42 recycle across servers/restarts, so a dead rig's pane binding
   // may numerically equal the live one's — disambiguates to the running session.
@@ -251,9 +260,9 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
     if (rigsForSet.size === 1) return null;
     const live = set.filter((r) => r.liveSessionId !== null);
     const distinctLiveRigs = new Set(live.map((r) => r.rigId));
-    if (distinctLiveRigs.size === 1) return live[0]!;
+    if (distinctLiveRigs.size === 1) return strip(live[0]!);
     if (distinctLiveRigs.size > 1) return null;
   }
-  // no live session anywhere: a launch in progress is the newest rig's row.
-  return rows[0]!;
+  // nothing live disambiguates: exactly one match is still required (#174).
+  return null;
 }

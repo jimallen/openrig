@@ -19,6 +19,7 @@ import type { ContextUsageStore } from "./context-usage-store.js";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import { queryUsageSeries } from "./usage-series.js";
+import { parseSqliteUtcMs } from "./sqlite-time.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -83,8 +84,34 @@ export type HealthDetectorObservation =
       criticalPercent?: number;
     });
 
+/** How much of its input a source actually evaluated on its latest read. Omitted
+ * items were not evaluated; their absence from the findings is not a healthy verdict. */
+export type HealthSourceCoverage = {
+  source: string;
+  evaluatedAt: string;
+  status: "unavailable";
+  partial: true;
+  reason: string;
+} | {
+  status?: "available";
+  source: string;
+  evaluatedAt: string;
+  unit: string;
+  limit: number;
+  total: number;
+  evaluated: number;
+  omitted: number;
+  partial: boolean;
+  order: string;
+};
+
 export interface HealthObservationSource {
+  readonly name?: string;
+  /** All detectors this reader can supply. Skip the read when all are disabled. */
+  readonly detectors?: readonly string[];
   read(): readonly HealthDetectorObservation[];
+  /** Coverage of the latest read(), when the source bounds its input. */
+  coverage?(): readonly HealthSourceCoverage[];
 }
 
 export interface HealthListQuery {
@@ -102,10 +129,16 @@ export interface HealthListProjection {
   limit: number;
   truncated: boolean;
   records: HealthRecord[];
+  /** Present when a source bounded its input; see HealthSourceCoverage. */
+  coverage?: HealthSourceCoverage[];
 }
 
 export function evaluateHealthDetectors(observations: readonly HealthDetectorObservation[], policy: HealthPolicy = DEFAULT_HEALTH_POLICY): HealthRecord[] {
   const records = observations.flatMap((o) => evaluateObservation(o, policy)).filter((r) => !policy.disabledDetectors.includes(r.detector));
+  return deduplicateHealthRecords(records);
+}
+
+function deduplicateHealthRecords(records: readonly HealthRecord[]): HealthRecord[] {
   const episodes = new Map<string, HealthRecord>();
   for (const record of records) {
     const previous = episodes.get(record.id);
@@ -120,16 +153,42 @@ export function canonicalDetectorJson(records: readonly HealthRecord[]): string 
 }
 
 export class HealthProjectionService {
-  constructor(private readonly source: HealthObservationSource, private readonly policy?: () => EffectiveHealthPolicy,
+  private lastCoverage: HealthSourceCoverage[] = [];
+
+  constructor(private readonly source: HealthObservationSource | readonly HealthObservationSource[], private readonly policy?: () => EffectiveHealthPolicy,
     private readonly operatingPosture?: (record: HealthRecord) => NonNullable<HealthRecord["operatingPosture"]>) {}
 
   records(): HealthRecord[] {
+    this.lastCoverage = [];
+    // Policy failure still fails the query: there is no trustworthy enable/disable decision.
     const policy = this.policy?.();
-    return evaluateHealthDetectors(this.source.read(), policy?.policy).map((record) => ({
-      ...record,
-      ...(policy ? { policyVersion: policy.version } : {}),
-      ...(this.operatingPosture ? { operatingPosture: this.operatingPosture(record) } : {}),
-    }));
+    const disabled = policy?.policy.disabledDetectors ?? [];
+    const sources: readonly HealthObservationSource[] = Array.isArray(this.source) ? this.source : [this.source as HealthObservationSource];
+    const records: HealthRecord[] = [];
+    for (const source of sources) {
+      if (source.detectors?.length && source.detectors.every((detector) => disabled.includes(detector))) continue;
+      try {
+        const observations = source.read();
+        const coverage = source.coverage?.() ?? [];
+        const evaluated = evaluateHealthDetectors(observations, policy?.policy).map((record) => ({
+          ...record,
+          ...(policy ? { policyVersion: policy.version } : {}),
+          ...(this.operatingPosture ? { operatingPosture: this.operatingPosture(record) } : {}),
+        }));
+        records.push(...evaluated);
+        this.lastCoverage.push(...coverage);
+      } catch (error) {
+        // Discard this source's incomplete read and any earlier census. A limit or
+        // genuine failure remains named; it is never fabricated as a zero count.
+        this.lastCoverage.push({ source: source.name ?? "health-source", evaluatedAt: new Date().toISOString(),
+          status: "unavailable", partial: true, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return deduplicateHealthRecords(records);
+  }
+
+  coverage(): HealthSourceCoverage[] {
+    return [...this.lastCoverage];
   }
 
   list(query: HealthListQuery = {}): HealthListProjection {
@@ -138,6 +197,7 @@ export class HealthProjectionService {
       throw new Error("limit must be an integer from 1 to 200");
     }
     const evaluated = this.records();
+    const coverage = this.coverage();
     const filtered = evaluated.filter((record) =>
       (query.scopeType === undefined || record.scope.type === query.scopeType)
       && (query.scopeId === undefined || healthScopeId(record.scope) === query.scopeId)
@@ -153,6 +213,7 @@ export class HealthProjectionService {
       limit,
       truncated: filtered.length > limit,
       records: filtered.slice(0, limit),
+      ...(coverage.length ? { coverage } : {}),
     };
   }
 
@@ -165,6 +226,8 @@ export class HealthProjectionService {
  * detectors require structured product-change, directive, or admission facts that
  * current tables cannot express without inference. Replay sources can supply them. */
 export class LiveContextHealthSource implements HealthObservationSource {
+  readonly name = "live-context";
+  readonly detectors = ["context.pressure"];
   constructor(private readonly deps: {
     db: Database.Database;
     rigRepo: RigRepository;
@@ -213,7 +276,7 @@ export class LiveContextHealthSource implements HealthObservationSource {
               })
                 .filter((sample) => sample.nodeId === node.id
                   && sample.sampledAt !== null
-                  && Date.parse(sample.sampledAt) >= sqliteTimestampMs(tenureStartedAt)
+                  && Date.parse(sample.sampledAt) >= parseSqliteUtcMs(tenureStartedAt)
                   && Date.parse(sample.sampledAt) <= Date.parse(usage.sampledAt!))
                 .map((sample, sourceOrder): HealthEvidenceReference => ({
                   type: "context-usage",
@@ -290,10 +353,6 @@ function selectContextEpisodeEvidence(
   return [...new Set([samples[episodeStart]!, peak, latest])]
     .sort((a, b) => a.observedAt!.localeCompare(b.observedAt!, "en-US"))
     .map((item, sourceOrder) => ({ ...item, sourceOrder }));
-}
-
-function sqliteTimestampMs(value: string): number {
-  return Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
 }
 
 export function healthScopeId(scope: HealthScope): string {

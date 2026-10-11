@@ -343,8 +343,8 @@ resources:
     expect(result.errors[0]).toMatch(/duplicate id "foo"/);
   });
 
-  // T11: profile uses — unqualified missing fails, qualified accepted
-  it("profile uses: unqualified missing ref fails, qualified ref accepted", () => {
+  // Skills can be discovered later; other undeclared local resources still fail.
+  it("profile uses: defers skill lookup but rejects missing guidance", () => {
     const raw = parseAgentSpec(`
 name: test
 version: "1.0"
@@ -356,11 +356,12 @@ profiles:
   main:
     uses:
       skills: [missing-skill, imported-ns:remote-skill]
+      guidance: [missing-guidance]
 `);
     const result = validateAgentSpec(raw);
     expect(result.valid).toBe(false);
-    // Unqualified "missing-skill" should fail
-    expect(result.errors.some((e) => e.includes('"missing-skill" not found'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('"missing-guidance" not found'))).toBe(true);
+    expect(result.errors.some((e) => e.includes("missing-skill"))).toBe(false);
     // Qualified "imported-ns:remote-skill" should NOT produce an error
     expect(result.errors.some((e) => e.includes("imported-ns:remote-skill"))).toBe(false);
   });
@@ -648,5 +649,88 @@ profiles:
     const result = validateAgentSpec(parseAgentSpec(specWithMechanic("operator-agent")));
     expect(result.valid).toBe(false);
     expect(result.errors.join(" ")).toMatch(/lifecycle\.mechanic.*canonical.*seat@rig/i);
+  });
+});
+
+// ─── Effort advisory — defaults + profile preferences (mirrors member-level) ─
+describe("effort advisory — non-string value in defaults and profile preferences", () => {
+  it("defaults.effort: non-string value produces advisory and spec remains valid", () => {
+    const raw = parseAgentSpec(`
+version: "0.2"
+name: effort-advisory-fixture
+defaults:
+  runtime: claude-code
+  effort: 42
+profiles:
+  default: {}
+`);
+    const result = validateAgentSpec(raw);
+    expect(result.valid).toBe(true);
+    expect(result.advisories).toBeDefined();
+    expect(result.advisories!.join(" ")).toMatch(/defaults\.effort.*non-string.*42.*ignored/);
+  });
+
+  it("defaults.effort: empty string produces advisory", () => {
+    const raw = parseAgentSpec(`
+version: "0.2"
+name: effort-advisory-fixture
+defaults:
+  runtime: claude-code
+  effort: ""
+profiles:
+  default: {}
+`);
+    const result = validateAgentSpec(raw);
+    expect(result.valid).toBe(true);
+    expect(result.advisories).toBeDefined();
+    expect(result.advisories!.join(" ")).toMatch(/defaults\.effort.*non-string.*ignored/);
+  });
+
+  it("defaults.effort: valid string value produces no advisory", () => {
+    const raw = parseAgentSpec(`
+version: "0.2"
+name: effort-advisory-fixture
+defaults:
+  runtime: claude-code
+  effort: high
+profiles:
+  default: {}
+`);
+    const result = validateAgentSpec(raw);
+    expect(result.valid).toBe(true);
+    expect((result.advisories ?? []).some((a) => a.includes("defaults.effort"))).toBe(false);
+  });
+
+  it("profiles.<name>.preferences.effort: non-string value produces advisory and spec remains valid", () => {
+    const raw = parseAgentSpec(`
+version: "0.2"
+name: effort-advisory-fixture
+defaults:
+  runtime: claude-code
+profiles:
+  heavy:
+    preferences:
+      effort: true
+`);
+    const result = validateAgentSpec(raw);
+    expect(result.valid).toBe(true);
+    expect(result.advisories).toBeDefined();
+    expect(result.advisories!.join(" ")).toMatch(/profiles\.heavy\.preferences\.effort.*non-string.*ignored/);
+  });
+
+  it("profiles.<name>.preferences.effort: valid string value produces no advisory", () => {
+    const raw = parseAgentSpec(`
+version: "0.2"
+name: effort-advisory-fixture
+defaults:
+  runtime: claude-code
+profiles:
+  heavy:
+    preferences:
+      effort: high
+`);
+    const result = validateAgentSpec(raw);
+    expect(result.valid).toBe(true);
+    expect((result.advisories ?? []).some((a) => a.includes("preferences.effort"))).toBe(false);
   });
 });

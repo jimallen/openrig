@@ -48,10 +48,11 @@ describe("shipped Slack app manifest — canonical sources", () => {
     }
   });
 
-  it("is a Socket Mode app with no request URL, interactivity or org-wide deploy", () => {
+  it("is a Socket Mode app with interactivity (button clicks, #193) but no request URL or org-wide deploy", () => {
     const s = bundle.manifest.settings;
     expect(s.socket_mode_enabled).toBe(true);
-    expect(s.interactivity.is_enabled).toBe(false);
+    // In Socket Mode, block_actions arrive over the socket: interactivity needs no request URL.
+    expect(s.interactivity.is_enabled).toBe(true);
     expect(s.org_deploy_enabled).toBe(false);
     expect(JSON.stringify(bundle.manifest)).not.toMatch(/request_url|redirect_url/);
   });
@@ -74,8 +75,8 @@ describe("shipped Slack app manifest — canonical sources", () => {
 
 describe("shipped Slack app manifest — mutation controls", () => {
   it("refuses an admitted payload type that has no subscription mapping", () => {
-    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, admittedEventTypes: ["message", "app_mention", "reaction_added"] }))
-      .toThrow(/"reaction_added" has no subscription mapping/);
+    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, admittedEventTypes: ["message", "app_mention", "member_joined_channel"] }))
+      .toThrow(/"member_joined_channel" has no subscription mapping/);
   });
 
   it("refuses a subscribed event whose scope is not requested", () => {
@@ -84,14 +85,21 @@ describe("shipped Slack app manifest — mutation controls", () => {
   });
 
   it("changes the scope set when a feature scope is dropped (the equality test would fail)", () => {
-    const narrowed = buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:write", "app_mentions:read"] });
+    const narrowed = buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:write", "app_mentions:read", "reactions:read"] });
     expect(setOf(narrowed.scopes)).not.toEqual(setOf(buildSlackAppManifest().scopes));
   });
 
   it("would detect the inbound gate admitting a type the manifest does not subscribe to", () => {
     // Behavior-level check: a probe type the gate rejects today must stay out of the manifest.
-    expect(admits("reaction_added")).toBe(false);
-    expect(buildSlackAppManifest().events).not.toContain("reaction_added");
+    expect(admits("member_joined_channel")).toBe(false);
+    expect(buildSlackAppManifest().events).not.toContain("member_joined_channel");
+  });
+
+  it("subscribes to reactions through an optional feature scope, so verify does not require it (#899)", () => {
+    expect(buildSlackAppManifest().events).toContain("reaction_added");
+    expect(FEATURE_SCOPES.map((f) => f.scope)).toContain("reactions:read");
+    expect(BASELINE_REQUIRED_SCOPES).not.toContain("reactions:read");
+    expect(DEFAULT_CONFIG.requiredScopes).not.toContain("reactions:read");
   });
 });
 

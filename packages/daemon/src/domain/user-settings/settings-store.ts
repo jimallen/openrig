@@ -15,7 +15,8 @@
 // resolveWorkspacePaths) project the raw strings into structured data
 // the daemon's UEP routes + Slice Story View consume.
 
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync, lstatSync, readlinkSync, statSync, chmodSync, chownSync, openSync, closeSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as os from "node:os";
 
@@ -106,6 +107,7 @@ export const SETTINGS_VALID_KEYS = [
   "context.system_world",
   "skills.root",
   "onboarding.default_pack.enabled",
+  "launch.non_interruptive",
   "health.context_pressure.warning_percent",
   "health.context_pressure.critical_percent",
   "files.allowlist",
@@ -114,6 +116,8 @@ export const SETTINGS_VALID_KEYS = [
   "ui.preview.max_pins",
   "ui.preview.default_lines",
   "ui.timezone",
+  // The web UI and its terminal WebSocket are off unless this is true (read at daemon start).
+  "ui.enabled",
   // OPR.0.4.0.1 — global cap on simultaneously-live terminals (default 2).
   "ui.terminal.max_live_terminals",
   "recovery.auto_drive_provider_prompts",
@@ -143,6 +147,7 @@ export const SETTINGS_VALID_KEYS = [
   // Codex runtime. When false, operator is managing Codex config
   // independently — daemon does NOT mutate.
   "runtime.codex.hooks_enabled",
+  "runtime.readiness_timeout_seconds",
   // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10:
   // 7 keys (lockstep with cli/src/config-store.ts VALID_KEYS).
   // Opt-in default-off; daemon ContextMonitor reads `enabled` +
@@ -203,6 +208,10 @@ export const SETTINGS_VALID_KEYS = [
   "queue.wake_retry_cap",
   "queue.wake_unconfirmed_window_minutes",
   "queue.wake_swap_grace_seconds",
+  // #811 — whether the operator rung posts agent-to-agent escalations to a person.
+  // Under explicit-only, an ask that needs a person must be addressed to the person;
+  // without a human registry, explicit-only posts everything, as always does.
+  "queue.wake_human_rung",
 ] as const;
 
 export type SettingsValidKey = typeof SETTINGS_VALID_KEYS[number];
@@ -228,6 +237,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "context.system_world": { primary: "OPENRIG_CONTEXT_SYSTEM_WORLD" },
   "skills.root": { primary: "OPENRIG_SKILLS_ROOT" },
   "onboarding.default_pack.enabled": { primary: "OPENRIG_ONBOARDING_DEFAULT_PACK_ENABLED" },
+  "launch.non_interruptive": { primary: "OPENRIG_LAUNCH_NON_INTERRUPTIVE" },
   "health.context_pressure.warning_percent": { primary: "OPENRIG_HEALTH_CONTEXT_PRESSURE_WARNING_PERCENT" },
   "health.context_pressure.critical_percent": { primary: "OPENRIG_HEALTH_CONTEXT_PRESSURE_CRITICAL_PERCENT" },
   "files.allowlist": { primary: "OPENRIG_FILES_ALLOWLIST" },
@@ -235,6 +245,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "ui.preview.refresh_interval_seconds": { primary: "OPENRIG_UI_PREVIEW_REFRESH_INTERVAL_SECONDS" },
   "ui.preview.max_pins": { primary: "OPENRIG_UI_PREVIEW_MAX_PINS" },
   "ui.timezone": { primary: "OPENRIG_UI_TIMEZONE" },
+  "ui.enabled": { primary: "OPENRIG_UI_ENABLED" },
   "ui.preview.default_lines": { primary: "OPENRIG_UI_PREVIEW_DEFAULT_LINES" },
   "ui.terminal.max_live_terminals": { primary: "OPENRIG_UI_TERMINAL_MAX_LIVE_TERMINALS" },
   "recovery.auto_drive_provider_prompts": { primary: "OPENRIG_RECOVERY_AUTO_DRIVE_PROVIDER_PROMPTS" },
@@ -255,6 +266,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   // OPENRIG_X primary only per the post-rename 5-key boundary doctrine
   // (no RIGGED_X legacy on net-new keys).
   "runtime.codex.hooks_enabled": { primary: "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED" },
+  "runtime.readiness_timeout_seconds": { primary: "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS" },
   // Slice 27 — Claude auto-compaction policy. Net-new keys; OPENRIG_X
   // primary only.
   "policies.claude_compaction.enabled": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED" },
@@ -287,6 +299,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "queue.wake_retry_interval_seconds": { primary: "OPENRIG_QUEUE_WAKE_RETRY_INTERVAL_SECONDS" },
   "queue.wake_retry_cap": { primary: "OPENRIG_QUEUE_WAKE_RETRY_CAP" },
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
+  "queue.wake_human_rung": { primary: "OPENRIG_QUEUE_WAKE_HUMAN_RUNG" },
   "queue.wake_swap_grace_seconds": { primary: "OPENRIG_QUEUE_WAKE_SWAP_GRACE_SECONDS" },
 };
 
@@ -309,6 +322,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "context.system_world": ["context", "systemWorld"],
   "skills.root": ["skills", "root"],
   "onboarding.default_pack.enabled": ["onboarding", "defaultPack", "enabled"],
+  "launch.non_interruptive": ["launch", "nonInterruptive"],
   "health.context_pressure.warning_percent": ["health", "contextPressure", "warningPercent"],
   "health.context_pressure.critical_percent": ["health", "contextPressure", "criticalPercent"],
   "files.allowlist": ["files", "allowlist"],
@@ -316,6 +330,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "ui.preview.refresh_interval_seconds": ["ui", "preview", "refreshIntervalSeconds"],
   "ui.preview.max_pins": ["ui", "preview", "maxPins"],
   "ui.timezone": ["ui", "timezone"],
+  "ui.enabled": ["ui", "enabled"],
   "ui.preview.default_lines": ["ui", "preview", "defaultLines"],
   "ui.terminal.max_live_terminals": ["ui", "terminal", "maxLiveTerminals"],
   "recovery.auto_drive_provider_prompts": ["recovery", "autoDriveProviderPrompts"],
@@ -332,6 +347,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "feed.subscriptions.progress": ["feed", "subscriptions", "progress"],
   "feed.subscriptions.audit_log": ["feed", "subscriptions", "auditLog"],
   "runtime.codex.hooks_enabled": ["runtime", "codex", "hooksEnabled"],
+  "runtime.readiness_timeout_seconds": ["runtime", "readinessTimeoutSeconds"],
   "policies.claude_compaction.enabled": ["policies", "claudeCompaction", "enabled"],
   "policies.claude_compaction.threshold_percent": ["policies", "claudeCompaction", "thresholdPercent"],
   "policies.claude_compaction.pre_compact_instruction": ["policies", "claudeCompaction", "preCompactInstruction"],
@@ -359,6 +375,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "queue.wake_retry_interval_seconds": ["queue", "wakeRetryIntervalSeconds"],
   "queue.wake_retry_cap": ["queue", "wakeRetryCap"],
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
+  "queue.wake_human_rung": ["queue", "wakeHumanRung"],
   "queue.wake_swap_grace_seconds": ["queue", "wakeSwapGraceSeconds"],
 };
 
@@ -565,6 +582,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "context.system_world": return "default";
     case "skills.root": return DEFAULT_SKILLS_ROOT;
     case "onboarding.default_pack.enabled": return true;
+    case "launch.non_interruptive": return false;
     case "health.context_pressure.warning_percent": return 95;
     case "health.context_pressure.critical_percent": return 99;
     // Preview Terminal v0 (PL-018) defaults — match cli/src/config-store.ts.
@@ -572,11 +590,12 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "ui.preview.max_pins": return 4;
     case "ui.preview.default_lines": return 50;
     case "ui.timezone": return "America/Los_Angeles";
+    case "ui.enabled": return false;
     case "recovery.auto_drive_provider_prompts": return false;
     case "recovery.provider_auth_env_allowlist": return "";
     // V1 Phase 4 — Advisor default per universal-shell.md L83;
     // Operator default empty per L84 ("not configured").
-    case "agents.advisor_session": return "advisor-lead@openrig-velocity";
+    case "agents.advisor_session": return "advisor-lead@kernel";
     case "agents.operator_session": return "";
     // V1 Phase 5 P5-3 — For You feed subscription defaults per
     // for-you-feed.md L144–L151. action_required is forced ON in the UI
@@ -592,6 +611,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     // Daemon ensures `codex_hooks = true` in ~/.codex/config.toml on
     // launch unless operator explicitly sets to false.
     case "runtime.codex.hooks_enabled": return true;
+    case "runtime.readiness_timeout_seconds": return 30;
     // Slice 27 — Claude auto-compaction policy defaults. Opt-in
     // default-off; threshold 80% per spec. Pre/post defaults point at
     // the canonical restore skill; compact_instruction is intentionally
@@ -632,6 +652,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "queue.wake_retry_cap": return 3;
     case "queue.wake_unconfirmed_window_minutes": return 30;
     case "queue.wake_swap_grace_seconds": return 180;
+    case "queue.wake_human_rung": return "always";
     default: return "";
   }
 }
@@ -663,6 +684,12 @@ function positiveIntegerConstraint(key: string) {
   };
 }
 
+function wakeHumanRungConstraint(raw: string): void {
+  if (raw !== "always" && raw !== "explicit-only") {
+    throw new Error(`Invalid value for queue.wake_human_rung: must be "always" or "explicit-only", got "${raw}"`);
+  }
+}
+
 function percentageConstraint(key: string) {
   return (raw: string, coerced: string | number | boolean): void => {
     if (!/^\d+$/.test((raw ?? "").trim())
@@ -676,6 +703,21 @@ function percentageConstraint(key: string) {
 }
 
 const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: string | number | boolean) => void>> = {
+  "transcripts.lines": (raw, value) => {
+    if (!/^\d+$/.test(raw.trim()) || typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 1_000_000) {
+      throw new Error("Invalid transcripts.lines: must be an integer in [1, 1000000]");
+    }
+  },
+  "transcripts.poll_interval_seconds": (raw, value) => {
+    if (!/^\d+$/.test(raw.trim()) || typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 3600) {
+      throw new Error("Invalid transcripts.poll_interval_seconds: must be an integer in [1, 3600]");
+    }
+  },
+  "runtime.readiness_timeout_seconds": (raw, coerced) => {
+    if (!/^\d+$/.test(raw.trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 1 || coerced > 600) {
+      throw new Error(`Invalid value for runtime.readiness_timeout_seconds: must be an integer in [1, 600], got "${raw}"`);
+    }
+  },
   "ui.timezone": (_raw, value) => {
     try {
       if (typeof value !== "string" || !value || /^[+-]/.test(value)) throw new Error();
@@ -776,6 +818,7 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
   "queue.wake_retry_cap": positiveIntegerConstraint("queue.wake_retry_cap"),
   "queue.wake_unconfirmed_window_minutes": positiveIntegerConstraint("queue.wake_unconfirmed_window_minutes"),
   "queue.wake_swap_grace_seconds": positiveIntegerConstraint("queue.wake_swap_grace_seconds"),
+  "queue.wake_human_rung": wakeHumanRungConstraint,
 };
 
 function validateKeyConstraints(key: SettingsValidKey, raw: string, coerced: string | number | boolean): void {
@@ -991,6 +1034,60 @@ export class SettingsStore {
   // the write silently did not take, so REFUSE loudly rather than report a phantom success
   // (config-set-success-without-persist). The daemon already writes canonical (DEFAULT_CONFIG_PATH),
   // so this is the defense-in-depth half of the paired fix.
+  /** Publish a complete config without truncating the previous usable file. */
+  private writeConfig(content: string): void {
+    let target = this.configPath;
+    // Follow config-file links just as writeFileSync did; rename the target,
+    // never the link. A dangling final target is still created normally.
+    for (let depth = 0; ; depth++) {
+      const entry = lstatSync(target, { throwIfNoEntry: false });
+      if (!entry?.isSymbolicLink()) break;
+      if (depth >= 40) throw Object.assign(new Error("Too many config symlinks"), { code: "ELOOP" });
+      target = path.resolve(path.dirname(target), readlinkSync(target));
+    }
+    const existing = statSync(target, { throwIfNoEntry: false });
+    // Match direct writes: a writable directory must not bypass a read-only
+    // target. Opening without truncation also checks native ACL permissions.
+    if (existing) closeSync(openSync(target, "r+"));
+    const temporary = `${target}.tmp-${randomUUID()}`;
+    let owned = false;
+    let canFallBack = true;
+    try {
+      // Atomic replacement requires directory create/rename permission. Keep
+      // staged bytes private until the original ownership and mode are restored.
+      const fd = openSync(temporary, "wx", 0o600);
+      owned = true;
+      // A failed data write must never retry against the original file.
+      canFallBack = false;
+      try { writeFileSync(fd, content, "utf-8"); } finally { closeSync(fd); }
+      canFallBack = true;
+      if (existing && process.platform !== "win32") {
+        const staged = statSync(temporary);
+        if (staged.uid !== existing.uid || staged.gid !== existing.gid) {
+          try { chownSync(temporary, existing.uid, existing.gid); }
+          catch (error) {
+            throw Object.assign(new Error(`Cannot preserve config ownership at ${target}: ${(error as Error).message}`),
+              { code: (error as NodeJS.ErrnoException).code });
+          }
+        }
+      }
+      // chown may clear permission bits, so apply the final mode afterward.
+      chmodSync(temporary, existing ? existing.mode & 0o777 : 0o666 & ~process.umask());
+      renameSync(temporary, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (canFallBack && (code === "EACCES" || code === "EPERM" || code === "EBUSY")) {
+        // Preserve setups that permit writing the file but not replacing it,
+        // such as an unwritable parent or a single-file bind mount.
+        writeFileSync(target, content, "utf-8");
+        return;
+      }
+      throw error;
+    } finally {
+      if (owned) try { unlinkSync(temporary); } catch { /* Renamed or already removed. */ }
+    }
+  }
+
   private verifyPersisted(keyPath: string[], expected: unknown): void {
     let reread: Record<string, unknown>;
     try {
@@ -1020,7 +1117,7 @@ export class SettingsStore {
       const fcDyn = this.readConfigFile();
       setNestedValue(fcDyn, ["feed", "subscriptions", feedHost.hostId, "enabled"], coercedDyn);
       mkdirSync(path.dirname(this.configPath), { recursive: true });
-      writeFileSync(this.configPath, JSON.stringify(fcDyn, null, 2) + "\n", "utf-8");
+      this.writeConfig(JSON.stringify(fcDyn, null, 2) + "\n");
       this.verifyPersisted(["feed", "subscriptions", feedHost.hostId, "enabled"], coercedDyn);
       return;
     }
@@ -1041,7 +1138,7 @@ export class SettingsStore {
       }
     }
     mkdirSync(path.dirname(this.configPath), { recursive: true });
-    writeFileSync(this.configPath, JSON.stringify(fc, null, 2) + "\n", "utf-8");
+    this.writeConfig(JSON.stringify(fc, null, 2) + "\n");
     this.verifyPersisted(KEY_TO_PATH[key], coerced);
   }
 
@@ -1087,7 +1184,9 @@ export class SettingsStore {
 
   reset(key?: string): void {
     if (key === undefined) {
-      try { unlinkSync(this.configPath); } catch { /* missing is fine */ }
+      try { unlinkSync(this.configPath); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       return;
     }
     const removedMessage = removedContextSettingMessage(key);
@@ -1100,7 +1199,7 @@ export class SettingsStore {
       const fcDyn = this.readConfigFile();
       const parent = getNestedValue(fcDyn, ["feed", "subscriptions"]) as Record<string, unknown> | undefined;
       if (parent && feedHost.hostId in parent) delete parent[feedHost.hostId];
-      writeFileSync(this.configPath, JSON.stringify(fcDyn, null, 2) + "\n", "utf-8");
+      this.writeConfig(JSON.stringify(fcDyn, null, 2) + "\n");
       return;
     }
     if (!isSettingsValidKey(key)) {
@@ -1123,7 +1222,7 @@ export class SettingsStore {
         }
       }
     }
-    writeFileSync(this.configPath, JSON.stringify(fc, null, 2) + "\n", "utf-8");
+    this.writeConfig(JSON.stringify(fc, null, 2) + "\n");
   }
 
   private resolveWorkspaceRootRaw(fileConfig: Record<string, unknown>): string {

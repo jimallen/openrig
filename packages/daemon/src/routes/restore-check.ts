@@ -1,12 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
+import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
+import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
 import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-store.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SnapshotRepository } from "../domain/snapshot-repository.js";
+import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 
 function getDeps(c: { get(key: never): unknown }): {
   rigRepo: RigRepository;
@@ -84,6 +87,13 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
         evidence: `Persisted startup context field projection_entries_json is not an array for node ${nodeId}`,
       };
     }
+    if (projectionEntries.value.some((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
+      const candidate = entry as Record<string, unknown>;
+      return typeof candidate["absolutePath"] !== "string" || candidate["absolutePath"].trim() === "";
+    })) {
+      return { status: "malformed", evidence: `Persisted startup context field projection_entries_json contains an invalid selection member for node ${nodeId}` };
+    }
 
     const startupActions = parseStartupContextJsonField<unknown[]>(row.startup_actions_json, "startup_actions_json", nodeId);
     if (!startupActions.ok) {
@@ -108,6 +118,7 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
           required: candidate["required"] !== false,
           path: typeof candidate["path"] === "string" ? candidate["path"] : null,
           deliveryHint: typeof candidate["deliveryHint"] === "string" ? candidate["deliveryHint"] : null,
+          ownerRoot: typeof candidate["ownerRoot"] === "string" ? candidate["ownerRoot"] : null,
         }];
       }),
       projectionEntries: projectionEntries.value.flatMap((entry) => {
@@ -118,6 +129,8 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
           absolutePath: candidate["absolutePath"].trim(),
           effectiveId: typeof candidate["effectiveId"] === "string" ? candidate["effectiveId"] : null,
           category: typeof candidate["category"] === "string" ? candidate["category"] : null,
+          sourcePath: typeof candidate["sourcePath"] === "string" ? candidate["sourcePath"] : null,
+          resourceType: typeof candidate["resourceType"] === "string" ? candidate["resourceType"] : null,
         }];
       }),
     };
@@ -140,7 +153,25 @@ export function createRestoreCheckService(
   snapshotRepo: SnapshotRepository,
 ): RestoreCheckService {
   const serviceDeps: RestoreCheckDeps = {
+    stateDir: OPENRIG_HOME,
     substrateRoot: dirname(resolveLegacyTopologyRigsRoot()),
+    probeQueueStore: () => {
+      try {
+        // The durable queue is the daemon's SQLite table. Empty is a valid
+        // state; restore-check only proves the store can be queried.
+        rigRepo.db.prepare("SELECT qitem_id FROM queue_items LIMIT 0").all();
+        return { available: true, evidence: "Daemon SQLite queue_items store is queryable; an empty queue is valid" };
+      } catch (err) {
+        return {
+          available: false,
+          evidence: `Daemon SQLite queue_items store could not be queried: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    },
+    getClaudeActivityHookEvents: () => deriveRelayEvents(
+      { exists: existsSync, readFile: (path) => readFileSync(path, "utf-8") },
+      resolve(import.meta.dirname, "../../assets/plugins/openrig-core/hooks/claude.json"),
+    ).map(({ event }) => event),
     listRigs: () => {
       const rigs = rigRepo.listRigs();
       return rigs.map((r) => ({ rigId: r.id, name: r.name }));
@@ -161,6 +192,18 @@ export function createRestoreCheckService(
     getLatestSnapshot: (rigId: string) => {
       const snapshot = snapshotRepo.getLatestSnapshot(rigId);
       return snapshot ? { id: snapshot.id, kind: snapshot.kind } : null;
+    },
+    getRestoreInputs: (rigId: string) => {
+      const rig = rigRepo.getRig(rigId);
+      if (!rig) return { unavailable: `Rig ${rigId} no longer exists` };
+      const selected = snapshotRepo.selectRestoreUsable(rigId);
+      if (!selected.ok || !snapshotMatchesCurrentOccupants(snapshotRepo.db, rig, selected.snapshot)) {
+        return {
+          currentStateRehydrate: assessCurrentStateRehydrateEligibility(snapshotRepo.db, rig),
+          reason: selected.ok ? "Selected snapshot names an older occupant" : selected.message,
+        };
+      }
+      return { snapshot: selected.snapshot, servicesRecord: rigRepo.getServicesRecord(rigId) };
     },
     probeDaemonHealth: () => {
       // We're inside the daemon — if this route is responding, daemon is healthy

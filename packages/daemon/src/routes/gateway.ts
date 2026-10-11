@@ -10,11 +10,13 @@
 import { connectionsProjection } from "../domain/gateway/connections-projection.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import path from "node:path";
 import type { QueueRepository } from "../domain/queue-repository.js";
 import { loadConfig, saveConfig } from "../domain/gateway/slack/config.js";
 import { SeenStore } from "../domain/gateway/slack/state-store.js";
 import { makeQueuePorts, seedBacklogAsHistory } from "../domain/gateway/slack/queue-access.js";
+import { DispatchBuffer } from "../domain/gateway/dispatch-buffer.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { loadHumanRegistry } from "../domain/gateway/human-registry.js";
 import { resolveSecret } from "../domain/gateway/slack/secrets.js";
@@ -26,6 +28,7 @@ import { buildSlackAppManifest } from "../domain/gateway/slack/manifest.js";
 interface SubsystemHandle {
   restart: () => void;
   status: () => Record<string, unknown>;
+  connectorStatus?: () => Record<string, unknown>;
 }
 
 export function gatewayRoutes(opts: {
@@ -44,6 +47,12 @@ export function gatewayRoutes(opts: {
   });
 
   // OPR.0.6.0.5 — read-only: the same manifest `rig slack manifest` prints. No config, no secrets.
+  app.get("/slack/status", (c) => {
+    const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
+    const snapshot = subsystem?.connectorStatus?.();
+    return c.json({ observedAt: new Date().toISOString(), ...(snapshot ?? { state: "unavailable", connector: null }) });
+  });
+
   app.get("/slack/manifest", (c) => c.json(buildSlackAppManifest()));
 
   app.get("/human/:entityId/readiness", async (c) => {
@@ -89,11 +98,16 @@ export function gatewayRoutes(opts: {
           if (cfg.enabled === enabled) return { value, after: state(), effect: "no-op" };
           if (enabled) {
             const registry = loadHumanRegistry(home);
-            if (!registry.ok) throw new Error(`Cannot seed the existing delivery backlog: ${registry.error}`);
+            if (!registry.ok) throw new HTTPException(503, { res: c.json({
+              error: "human_registry_unavailable",
+              message: `Cannot seed the existing delivery backlog: ${registry.error}. ` +
+                "Register a human with rig gateway human add, or repair and re-project the existing human registry before enabling delivery.",
+            }, 503) });
             const seen = new SeenStore(path.join(home, "state", "slack-outbound-seen.jsonl"));
             value = await seedBacklogAsHistory({
               queue: makeQueuePorts(queueRepo!, { loadHumanRegistry: () => registry }), seen,
               filter: { minimumLevel: cfg.minimumLevelThatPosts },
+              buffer: new DispatchBuffer(home),
             });
           } else value.onlineStatus = "slack connector disabled";
           saveConfig({ ...cfg, enabled }, home);

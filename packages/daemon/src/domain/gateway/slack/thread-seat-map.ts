@@ -8,8 +8,17 @@
 // (`slack-posted thread_ts=… message_ts=… channel=… human=… seat=…` — see stampFormat/parse
 // below). rebuildFromStamps() re-derives the table from those stamps, so the map is a cache of
 // queue-row truth, not a second source that can silently diverge.
+//
+// #899 — every message OpenRig posts into a thread for an ask lives in thread_part_map with its own
+// ask and seat (the thread's root may belong to another ask), so a reaction on it can find its ask. Its
+// stamp names its own message_ts and the thread's thread_ts; the root queries below never see these.
 
 import type Database from "better-sqlite3";
+
+// Newest root = Slack's own post time (thread_ts), never opened_at: a rebuild re-stamps
+// opened_at with rebuild time, so an older root re-read later would look newer, and roots
+// rebuilt in one burst tie. thread_ts is unique, so the text tie-break settles equal floats.
+const NEWEST_ROOT_FIRST = "CAST(thread_ts AS REAL) DESC, thread_ts DESC";
 
 export interface ThreadMapping {
   threadTs: string;
@@ -76,7 +85,7 @@ export class ThreadSeatMap {
   /** Outbound thread reuse: the OPEN conversation for (human, seat), newest first. */
   resolveOpenForPair(human: string, seat: string): ThreadMapping | null {
     const row = this.db
-      .prepare(`SELECT * FROM thread_seat_map WHERE human = ? AND seat = ? AND state = 'open' ORDER BY opened_at DESC LIMIT 1`)
+      .prepare(`SELECT * FROM thread_seat_map WHERE human = ? AND seat = ? AND state = 'open' ORDER BY ${NEWEST_ROOT_FIRST} LIMIT 1`)
       .get(human, seat) as Record<string, unknown> | undefined;
     return row ? project(row) : null;
   }
@@ -89,10 +98,34 @@ export class ThreadSeatMap {
       .prepare(
         `SELECT * FROM thread_seat_map
           WHERE human = ? AND seat = ? AND conversation_id = ? AND state = 'open'
-          ORDER BY opened_at DESC LIMIT 1`,
+          ORDER BY ${NEWEST_ROOT_FIRST} LIMIT 1`,
       )
       .get(human, seat, conversationId) as Record<string, unknown> | undefined;
     return row ? project(row) : null;
+  }
+
+  /** #96: the root a conversation opened, open OR closed (the caller decides whether a
+   *  closed root may be reused), newest first; null = the conversation never posted a root. */
+  resolveByConversation(conversationId: string): ThreadMapping | null {
+    const row = this.db
+      .prepare(`SELECT * FROM thread_seat_map WHERE conversation_id = ? ORDER BY ${NEWEST_ROOT_FIRST} LIMIT 1`)
+      .get(conversationId) as Record<string, unknown> | undefined;
+    return row ? project(row) : null;
+  }
+
+  /** #899 — record a message OpenRig posted into a thread for an ask, with that ask and its seat (idempotent). */
+  recordPart(m: { messageTs: string; channel: string; threadTs: string; seat: string; conversationId: string }): void {
+    this.db
+      .prepare(`INSERT INTO thread_part_map (message_ts, channel, thread_ts, seat, conversation_id) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(channel, message_ts) DO NOTHING`)
+      .run(m.messageTs, m.channel, m.threadTs, m.seat, m.conversationId);
+  }
+
+  /** #899 — the ask and seat of a message OpenRig posted into a thread in this channel; null for any other message. */
+  partOf(messageTs: string, channel: string): { threadTs: string; seat: string; conversationId: string } | null {
+    const row = this.db.prepare(`SELECT thread_ts, seat, conversation_id FROM thread_part_map WHERE message_ts = ? AND channel = ?`)
+      .get(messageTs, channel) as { thread_ts: string; seat: string; conversation_id: string } | undefined;
+    return row ? { threadTs: row.thread_ts, seat: row.seat, conversationId: row.conversation_id } : null;
   }
 
   close(threadTs: string): void {
@@ -109,6 +142,13 @@ export class ThreadSeatMap {
     for (const note of stamps) {
       const m = parsePostedStamp(note);
       if (!m) { skipped++; continue; }
+      if (m.messageTs !== m.threadTs) {
+        // #899 — a reply's stamp maps the message to its own ask and seat; it never opens a thread.
+        if (this.partOf(m.messageTs, m.channel)) { skipped++; continue; }
+        this.recordPart({ messageTs: m.messageTs, channel: m.channel, threadTs: m.threadTs, seat: m.seat, conversationId: m.conversationId });
+        inserted++;
+        continue;
+      }
       const before = this.db.prepare(`SELECT 1 FROM thread_seat_map WHERE thread_ts = ?`).get(m.threadTs);
       if (before) { skipped++; continue; }
       this.open({ threadTs: m.threadTs, channel: m.channel, human: m.human, seat: m.seat, conversationId: m.conversationId });

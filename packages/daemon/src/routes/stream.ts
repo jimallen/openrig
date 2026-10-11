@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import type { EventBus } from "../domain/event-bus.js";
 import type { StreamStore } from "../domain/stream-store.js";
 import { requireSenderIdentity, resolveRecordedProvenance } from "./require-sender-identity.js";
+import { queryLimit } from "./query-limit.js";
 
 const ISO_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
@@ -89,7 +90,9 @@ export function streamRoutes(): Hono {
 
   // GET /list — paginated list with filters
   app.get("/list", (c) => {
-    const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
+    const parsed = queryLimit(c);
+    if (!parsed.ok) return parsed.response;
+    const limit = parsed.limit;
     const afterSortKey = c.req.query("afterSortKey") || undefined;
     const direction = c.req.query("direction");
     if (direction && direction !== "chronological" && direction !== "latest") {
@@ -167,22 +170,24 @@ export function streamRoutes(): Hono {
         }
       });
 
-      const initial = store.list({ limit: 50 });
-      const sentIds = new Set<string>();
-      for (const item of initial) {
-        await stream.writeSSE({ id: item.streamItemId, data: JSON.stringify(item) });
-        sentIds.add(item.streamItemId);
-      }
-
-      initialDone.value = true;
-      for (const p of pending) {
-        if (!sentIds.has(p.id)) await stream.writeSSE(p);
-      }
+      const aborted = new Promise<void>((resolve) => {
+        stream.onAbort(() => resolve());
+      });
 
       try {
-        await new Promise<void>((resolve) => {
-          stream.onAbort(() => resolve());
-        });
+        const initial = store.list({ limit: 50 });
+        const sentIds = new Set<string>();
+        for (const item of initial) {
+          await stream.writeSSE({ id: item.streamItemId, data: JSON.stringify(item) });
+          sentIds.add(item.streamItemId);
+        }
+
+        initialDone.value = true;
+        for (const p of pending) {
+          if (!sentIds.has(p.id)) await stream.writeSSE(p);
+        }
+
+        await aborted;
       } finally {
         unsubscribe();
       }

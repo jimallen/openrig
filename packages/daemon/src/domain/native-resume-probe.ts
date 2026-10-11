@@ -10,6 +10,10 @@ export interface NativeResumeProbeInput {
   runtime: string | null;
   paneCommand: string | null;
   paneContent: string | null;
+  /** Only the managed adapter supplies this after exact, stable native-process proof. */
+  claudeAutoIdentityVerified?: boolean;
+  /** Only an exact --resume process-lineage proof may use the visible composer as readiness. */
+  claudeResumeIdentityVerified?: boolean;
 }
 
 export interface NativeResumeProbeResult {
@@ -50,7 +54,7 @@ export function buildCodexResumeCore(
   // OPR.0.4.8.3 Seam B: optional resolved posture — LAUNCH callers thread the seat's
   // persisted/bound posture; the shared non-launch consumers (node inventory,
   // resume-metadata) omit it and keep byte-identical behavior.
-  resolvedPosture?: "floor" | "full_bypass",
+  resolvedPosture?: "floor" | "full_bypass" | "auto",
   // 0.5.2-07: the seat's SPEC-pinned model. LAUNCH callers (legacy restore) thread it so the
   // resumed seat boots on the spec model, not the runtime default; the non-launch consumers
   // (node inventory, resume-metadata) omit it and stay byte-identical.
@@ -59,6 +63,8 @@ export function buildCodexResumeCore(
   precomputedPostureArg?: string,
   /** #69: launch callers pass true when the installed Codex supports `--no-daemon`. Absent → byte-identical. */
   daemonOptOut?: boolean,
+  /** #75: optional reasoning effort for the seat. Emitted as -c 'model_reasoning_effort="<level>"'. */
+  effort?: string | null,
 ): string {
   // OPR.0.4.8.2: the RESUME path uses the SAME posture decision (codexPostureArg) as fresh/fork.
   // YOLO forces -s danger-full-access (overriding even a named profile); otherwise a named profile
@@ -68,10 +74,11 @@ export function buildCodexResumeCore(
   // 0.5.2-07: -m is a top-level codex flag (matches the fresh-launch adapter), emitted before the
   // resume subcommand.
   const modelArg = model ? ` -m ${shellQuote(model)}` : "";
+  const effortArg = effort ? ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}` : "";
   const middle = extraArgs ? `${extraArgs} ` : "";
   const tokenArg = useLast ? "--last" : shellQuote(resumeToken);
   const daemonArg = daemonOptOut ? " --no-daemon" : "";
-  return `codex${daemonArg}${profileOrPosture}${modelArg} resume ${middle}${tokenArg}`;
+  return `codex${daemonArg}${profileOrPosture}${modelArg}${effortArg} resume ${middle}${tokenArg}`;
 }
 
 export function assessNativeResumeProbe(
@@ -82,6 +89,13 @@ export function assessNativeResumeProbe(
   const paneContent = input.paneContent ?? "";
 
   if (runtime === "claude-code") {
+    if (looksLikeClaudeBypassConsentPrompt(paneContent)) {
+      return {
+        status: "attention_required",
+        code: "bypass_consent_gate",
+        detail: "Claude is waiting for you to review its bypass-permissions warning and choose whether to accept. Startup context has not been sent.",
+      };
+    }
     if (paneContent.includes("No conversation found")) {
       return {
         status: "failed",
@@ -124,12 +138,25 @@ export function assessNativeResumeProbe(
         detail: "Claude is running with an active interactive TUI in the probe pane.",
       };
     }
-    if (paneCommand === "claude") {
+    if (input.claudeResumeIdentityVerified && hasClaudeComposerPrompt(paneContent)) {
+      return {
+        status: "resumed",
+        code: "verified_native_identity",
+        detail: "Claude is at its interactive prompt and the exact managed resume process was verified.",
+      };
+    }
+    if (paneCommand === "claude" && input.claudeResumeIdentityVerified !== false) {
       return {
         status: "resumed",
         code: "active_runtime",
         detail: "Claude is the active foreground process in the probe pane.",
       };
+    }
+    if (/(^|\n)\s*❯/.test(paneContent)
+      && /^[ \t]*⏵⏵ auto mode on \(shift\+tab to cycle\)(?:[ \t]+·[^\r\n]*)?[ \t]*$/m.test(paneContent)) {
+      return input.claudeAutoIdentityVerified
+        ? { status: "resumed", code: "active_runtime", detail: "Claude auto-mode TUI and the exact managed native identity were verified." }
+        : { status: "inconclusive", code: "claude_auto_identity_required", detail: "Auto-mode screen text requires proof of the launched Claude identity." };
     }
     if (SHELL_COMMANDS.has(paneCommand)) {
       return {
@@ -196,7 +223,7 @@ export function assessNativeResumeProbe(
         detail: "Codex is waiting for workspace trust approval before the session can become interactive.",
       };
     }
-    if (paneContent.includes("Update available!") || paneContent.includes("Updating Codex")) {
+    if (hasCodexUpdateHeader(paneContent) || paneContent.includes("Updating Codex")) {
       return {
         status: "inconclusive",
         code: "update_gate",
@@ -231,13 +258,28 @@ export function isProbeShellReady(input: ProbeShellReadyInput): boolean {
 }
 
 function looksLikeClaudeTui(paneContent: string): boolean {
-  const hasPrompt = /(^|\n)\s*❯/.test(paneContent);
+  const hasPrompt = hasClaudeComposerPrompt(paneContent);
   if (!hasPrompt) return false;
 
   return (
     paneContent.includes("Claude Code v")
     || paneContent.includes("accept edits on")
   );
+}
+
+function hasClaudeComposerPrompt(paneContent: string): boolean {
+  return /(^|\n)\s*❯/.test(paneContent);
+}
+
+function looksLikeClaudeBypassConsentPrompt(paneContent: string): boolean {
+  // Plain capture of Claude's current consent menu. Labels in prose or a menu
+  // followed by a new composer are not evidence of an active dialog.
+  const lines = paneContent.trimEnd().split(/\r?\n/).filter(line => line.trim()).slice(-16);
+  if (lines.at(-1)?.trim() !== "Enter to confirm · Esc to cancel") return false;
+  const choices = lines.slice(-3, -1).map(line => line.trim());
+  if (!(choices[0] === "❯ No, exit" && choices[1] === "Yes, I accept")
+    && !(choices[0] === "No, exit" && choices[1] === "❯ Yes, I accept")) return false;
+  return /\b(?:in|running in) Bypass Permissions mode\./.test(lines.slice(0, -3).join(" ").replace(/\s+/g, " "));
 }
 
 function looksLikeClaudeTrustPrompt(paneContent: string): boolean {
@@ -294,22 +336,35 @@ function looksLikeClaudeMcpApprovalPrompt(paneContent: string): boolean {
     && paneContent.includes("Enter to confirm");
 }
 
-function looksLikeCodexTui(paneContent: string): boolean {
-  const current = paneContent.slice(Math.max(0, paneContent.lastIndexOf("OpenAI Codex (v")));
-  if (/model:\s*loading\b/i.test(current)) return false;
-  const recentLines = current.trimEnd().split("\n").slice(-20).join("\n");
-  const hasPromptLine = recentLines.split("\n").some((line) => {
+/** Header formats observed before and since Codex 0.160.0. */
+export function hasCodexUpdateHeader(paneContent: string): boolean {
+  // Preserve legacy-header behavior. A current-format header may instead be
+  // quoted output above a later live composer. A footer alone does not end it.
+  if (paneContent.includes("Update available!")) return true;
+  const header = [...paneContent.matchAll(/^[ \t]*Update available · \S+ → \S+[ \t]*$/gm)].at(-1);
+  return !!header && !hasCodexComposer(paneContent.slice(header.index! + header[0].length));
+}
+
+function hasCodexComposer(paneContent: string): boolean {
+  return paneContent.split("\n").some((line) => {
     const text = line.trimStart();
     const hasPrompt = text.startsWith("›") || text.startsWith("»");
     return hasPrompt && !/^\d+\.\s/.test(text.slice(1).trimStart());
   });
+}
+
+function looksLikeCodexTui(paneContent: string): boolean {
+  const current = paneContent.slice(Math.max(0, paneContent.lastIndexOf("OpenAI Codex (v")));
+  if (/model:\s*loading\b/i.test(current)) return false;
+  const recentLines = current.trimEnd().split("\n").slice(-20).join("\n");
+  const hasPromptLine = hasCodexComposer(recentLines);
   const hasModelFooter = /(^|\n)\s{2,}gpt-[^\n]+ · [^\n]+(?:\n|$)/.test(recentLines);
   // Custom status lines can put the model's display name in any field. Keep
   // corroboration structural: an indented status row and a whole model field,
   // not a model mentioned somewhere in conversation prose.
   // A custom row must not make an unresolved trust/update panel disappear.
   const hasCustomModelFooter = !looksLikeCodexTrustPrompt(current)
-    && !current.includes("Update available!") && !current.includes("Updating Codex")
+    && !hasCodexUpdateHeader(current) && !current.includes("Updating Codex")
     && recentLines.split("\n").some((line) => {
       const fields = line.trim().split(" · ");
       return /^[ \t]{2,}\S/.test(line) && fields.length > 1

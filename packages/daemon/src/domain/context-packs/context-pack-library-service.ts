@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -102,6 +103,9 @@ export class ContextPackLibraryService {
       }
       for (const dirent of dirents) {
         if (!dirent.isDirectory()) continue;
+        // Installer staging stays on the library filesystem for atomic rename.
+        // This reserved prefix cannot be a valid pack ref; never scan its partial tree.
+        if (dirent.name.startsWith(".tmp-add-")) continue;
         const child = join(dir, dirent.name);
         if (existsSync(join(child, "manifest.yaml"))) {
           found.push({ packDir: child, ref: relative(rootPath, child).split(sep).join("/") });
@@ -125,7 +129,13 @@ export class ContextPackLibraryService {
         // Overlapping roots share one address space. The first configured root
         // owns each physical pack, so a nested root cannot give that pack a
         // second ref or shadow a different pack already using that ref.
-        const physicalPackDir = resolve(packDir);
+        let physicalPackDir = resolve(packDir);
+        try {
+          physicalPackDir = realpathSync(packDir);
+        } catch {
+          // Keep the ordinary read/error path below if a discovered pack
+          // disappears or becomes unreadable while this scan is running.
+        }
         if (claimedPackDirs.has(physicalPackDir)) continue;
         claimedPackDirs.add(physicalPackDir);
         // DISCOVERY trust boundary (Atom 2): every discovered ref passes the

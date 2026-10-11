@@ -14,6 +14,7 @@ import type { ClassificationAttemptLedger } from "../domain/classification-attem
 import { ClassificationAttemptError } from "../domain/classification-attempts.js";
 
 import { requireSenderIdentity, resolveRecordedProvenance } from "./require-sender-identity.js";
+import { queryLimit } from "./query-limit.js";
 
 /**
  * Coordination L2 — Project (Classifier) HTTP routes (PL-004 Phase B).
@@ -113,13 +114,15 @@ export function projectsRoutes(): Hono {
     return c.json(capture?.status() ?? {enabled: false, error: c.get("shadowCaptureError" as never) ?? null});
   });
   app.post("/shadow/drain", async c => {
-    const actor = sender(c, undefined); if (!actor.ok) return actor.response;
+    const body = await c.req.json<{ actor?: unknown }>().catch(() => ({} as never));
+    const actor = sender(c, body.actor, "actor"); if (!actor.ok) return actor.response;
     const capture = c.get("shadowCapture" as never) as ShadowCapture | undefined;
     if (!capture) return c.json({enabled: false, error: c.get("shadowCaptureError" as never) ?? null}, 409);
     return c.json(await capture.drain());
   });
   app.post("/shadow/stop", async c => {
-    const actor = sender(c, undefined); if (!actor.ok) return actor.response;
+    const body = await c.req.json<{ actor?: unknown }>().catch(() => ({} as never));
+    const actor = sender(c, body.actor, "actor"); if (!actor.ok) return actor.response;
     const capture = c.get("shadowCapture" as never) as ShadowCapture | undefined;
     return c.json(capture ? await capture.stop() : {enabled: false, error: c.get("shadowCaptureError" as never) ?? null});
   });
@@ -328,7 +331,9 @@ export function projectsRoutes(): Hono {
       return c.json({ error: "needsHuman filter must be true, false or unknown" }, 400);
     }
     const needsHuman = needsHumanRaw as "true" | "false" | "unknown" | undefined;
-    const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
+    const parsed = queryLimit(c);
+    if (!parsed.ok) return parsed.response;
+    const limit = parsed.limit;
     const items = getClassifier(c).list({ classifierSession, classificationDestination, area, scopeRef, needsHuman, limit });
     return c.json(items);
   });

@@ -65,10 +65,11 @@ describe("resolveGuardTarget — stale-generation disambiguation", () => {
     expect(target!.nodeId).toBe(cur.node.id);
   });
 
-  it("archived rigs never resolve (pathology C)", () => {
+  it("an archived rig resolves only as the sole match (#174)", () => {
     const old = seedRigWithBoundCos("jims-team", { sessionStatus: "running", pane: "%1", archive: true });
+    expect(resolveGuardTarget(db, "exec-cos@jims-team")?.nodeId).toBe(old.node.id);
+    seedRigWithBoundCos("jims-team", { sessionStatus: "running", pane: "%2", archive: true });
     expect(resolveGuardTarget(db, "exec-cos@jims-team")).toBeNull();
-    void old;
   });
 
   it("recycled pane ids across rigs do not starve the live binding (pathology D: pane %N reuse)", () => {

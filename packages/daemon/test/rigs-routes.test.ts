@@ -7,6 +7,7 @@ import type { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 
 function insertStartupContextRow(db: Database.Database, nodeId: string) {
   db.prepare(
@@ -158,6 +159,61 @@ describe("Rig CRUD routes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("archives a mixed healthy-plus-missing rig without force, as on main", async () => {
+    const rig = repo.createRig("mixed-archive");
+    const healthy = repo.addNode(rig.id, "dev.healthy", { runtime: "codex" });
+    const missing = repo.addNode(rig.id, "dev.missing", { runtime: "codex" });
+    const healthySession = sessionRegistry.registerSession(healthy.id, "dev-healthy@mixed-archive");
+    const missingSession = sessionRegistry.registerSession(missing.id, "dev-missing@mixed-archive");
+    for (const session of [healthySession, missingSession]) sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateBinding(missing.id, {
+      tmuxSession: missingSession.sessionName, tmuxPane: "%1", attachmentType: "tmux",
+    });
+    new SeatIdentityStore(db).upsert({
+      nodeId: missing.id,
+      sessionName: missingSession.sessionName,
+      verdict: "pane_missing",
+      evidenceSource: "tmux_session",
+      reason: "session_missing",
+      evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+      observedAt: new Date(Date.now() + 1).toISOString(),
+    });
+
+    const res = await app.request(`/api/rigs/${rig.id}/archive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(repo.getRigSummaries({ archivedOnly: true }).map((entry) => entry.id)).toContain(rig.id);
+  });
+
+  it("requires force for a live seat plus stored-detached missing seat", async () => {
+    const rig = repo.createRig("stored-detached-archive");
+    const healthy = repo.addNode(rig.id, "dev.healthy", { runtime: "codex" });
+    const missing = repo.addNode(rig.id, "dev.missing", { runtime: "codex" });
+    const healthySession = sessionRegistry.registerSession(healthy.id, "dev-healthy@stored-detached-archive");
+    const missingSession = sessionRegistry.registerSession(missing.id, "dev-missing@stored-detached-archive");
+    sessionRegistry.updateStatus(healthySession.id, "running");
+    sessionRegistry.updateStatus(missingSession.id, "detached");
+    sessionRegistry.updateBinding(missing.id, {
+      tmuxSession: missingSession.sessionName, tmuxPane: "%1", attachmentType: "tmux",
+    });
+    new SeatIdentityStore(db).upsert({
+      nodeId: missing.id, sessionName: missingSession.sessionName,
+      verdict: "pane_missing", evidenceSource: "tmux_session", reason: "session_missing",
+      evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+      observedAt: new Date(Date.now() + 1).toISOString(),
+    });
+
+    const archive = (force: boolean) => app.request(`/api/rigs/${rig.id}/archive`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force }),
+    });
+    expect((await archive(false)).status).toBe(409);
+    expect((await archive(true)).status).toBe(200);
+  });
+
   it("POST /api/rigs/:id/attach-self binds an external_cli agent to an existing node", async () => {
     const rig = repo.createRig("rigged-buildout");
     const node = repo.addNode(rig.id, "orch1.lead", { runtime: "claude-code" });
@@ -179,6 +235,25 @@ describe("Rig CRUD routes", () => {
     expect(body.attachmentType).toBe("external_cli");
     expect(body.env.OPENRIG_NODE_ID).toBe(node.id);
     expect(body.env.OPENRIG_SESSION_NAME).toBe("orch1-lead@rigged-buildout");
+  });
+
+  it.each(["claude-code", "codex"])("attach-self checks the optional existing-node runtime guard %s", async (runtime) => {
+    const rig = repo.createRig("runtime-guard");
+    const node = repo.addNode(rig.id, "dev.worker", { runtime: "claude-code" });
+    const res = await app.request(`/api/rigs/${rig.id}/attach-self`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ logicalId: "dev.worker", runtime, displayName: "worker@runtime-guard" }),
+    });
+    if (runtime === "claude-code") {
+      expect(res.status).toBe(201);
+      expect((await res.json()).nodeId).toBe(node.id);
+      expect(sessionRegistry.getBindingForNode(node.id)).toBeTruthy();
+    } else {
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe("runtime_mismatch");
+      expect(sessionRegistry.getBindingForNode(node.id)).toBeFalsy();
+    }
   });
 
   it("POST /api/rigs/:id/attach-self can self-attach a tmux-backed shell without discovery", async () => {
@@ -257,6 +332,18 @@ describe("Rig CRUD routes", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain("either logicalId");
+  });
+
+  it("attach-self still requires a runtime when creating a pod member", async () => {
+    const rig = repo.createRig("missing-pod-runtime");
+    db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES (?, ?, ?, ?)").run("guard-pod", rig.id, "dev", "Dev");
+    const res = await app.request(`/api/rigs/${rig.id}/attach-self`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ podNamespace: "dev", memberName: "worker" }),
+    });
+    expect(res.status).toBe(400);
+    expect(repo.getRig(rig.id)?.nodes).toHaveLength(0);
   });
 
   it("POST /api/rigs/:id/attach-self returns 409 when the target node is already bound", async () => {

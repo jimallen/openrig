@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -14,6 +14,7 @@ import { i3IdentityProvenanceSchema } from "../src/db/migrations/067_i3_identity
 import { EventBus } from "../src/domain/event-bus.js";
 import { StreamStore } from "../src/domain/stream-store.js";
 import { streamRoutes } from "../src/routes/stream.js";
+import { expectLimitParsing } from "./helpers/limit-query-cases.js";
 
 function buildApp(opts: { eventBus: EventBus; streamStore: StreamStore }): Hono {
   const app = new Hono();
@@ -125,6 +126,11 @@ describe("stream routes", () => {
       .get(streamItemId) as { source_session: string; identity_provenance: string | null } | undefined;
     expect(row?.source_session).toBe("alice@rig");
     expect(row?.identity_provenance).toBe("transport:v1");
+  });
+
+  it("GET /api/stream/list refuses only a non-numeric or unbindable limit (#586)", async () => {
+    for (const body of ["1", "2", "3"]) store.emit({ sourceSession: "alice@rig", body, hintDestination: "bob@rig" });
+    await expectLimitParsing(app, "/api/stream/list");
   });
 
   it("GET /api/stream/list returns chronological items with filters", async () => {
@@ -256,6 +262,38 @@ describe("stream routes", () => {
     } finally {
       await res.body?.cancel();
     }
+  });
+
+  it.each(["sse", "watch"])("GET /api/stream/%s sends backfill and live items without replay duplicates", async (route) => {
+    store.emit({ sourceSession: "alice@rig", body: "history" });
+    const list = store.list.bind(store);
+    const duringReplay = vi.spyOn(store, "list").mockImplementationOnce((opts) => {
+      store.emit({ sourceSession: "alice@rig", body: "during replay" });
+      return list(opts);
+    });
+    const res = await app.request(`/api/stream/${route}`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      const first = decoder.decode((await reader.read()).value);
+      const second = decoder.decode((await reader.read()).value);
+      expect(first).toContain('"body":"history"');
+      expect(second).toContain('"body":"during replay"');
+      store.emit({ sourceSession: "alice@rig", body: "live" });
+      expect(decoder.decode((await reader.read()).value)).toContain('"body":"live"');
+    } finally {
+      duringReplay.mockRestore();
+      await reader.cancel();
+    }
+    await vi.waitFor(() => expect(bus.subscriberCount).toBe(0));
+  });
+
+  it.each(["sse", "watch"])("GET /api/stream/%s releases its subscription when cancelled during backfill", async (route) => {
+    store.emit({ sourceSession: "alice@rig", body: "existing history" });
+    const res = await app.request(`/api/stream/${route}`);
+    expect(bus.subscriberCount).toBe(1);
+    await res.body?.cancel();
+    await vi.waitFor(() => expect(bus.subscriberCount).toBe(0), { timeout: 1000 });
   });
 
   it("GET /api/stream/sse does NOT return stream-item-not-found (route-order regression guard)", async () => {

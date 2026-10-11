@@ -17,12 +17,15 @@
 // rather than "daemon failed to start".
 
 import nodePath from "node:path";
-import { existsSync } from "node:fs";
+import os from "node:os";
+import { existsSync, readFileSync } from "node:fs";
+import { parse as parseToml } from "smol-toml";
 import type { RigRepository } from "./rig-repository.js";
 import type { BootstrapOrchestrator } from "./bootstrap-orchestrator.js";
 import type { EventBus } from "./event-bus.js";
 import type { SessionRegistry } from "./session-registry.js";
 import { KernelBootTracker } from "./kernel-boot-tracker.js";
+import { RigSpecCodec } from "./rigspec-codec.js";
 
 export type RuntimeAuthStatus = "ok" | "unavailable";
 
@@ -126,8 +129,29 @@ export async function bootKernelIfNeeded(deps: KernelBootDeps): Promise<KernelBo
     autoApprove: true,
     cwdOverride: deps.cwdOverride,
   });
-  tracker.startBooting(variant, bootstrapPromise);
+  tracker.startBooting(variant, bootstrapPromise, expectedKernelSeats(specPath));
   return tracker;
+}
+
+/** The seats the selected kernel spec declares, as `pod.member` logical IDs, so a boot failure is treated as
+ *  recovered only when every one of them is ready. null when the spec can't be read as pods with members: the
+ *  tracker then keeps a failure current, because an unknown roster must never read as ready. */
+export function expectedKernelSeats(specPath: string): string[] | null {
+  try {
+    const raw = RigSpecCodec.parse(readFileSync(specPath, "utf-8")) as { pods?: unknown } | null;
+    if (!raw || !Array.isArray(raw.pods)) return null;
+    const seats: string[] = [];
+    for (const pod of raw.pods as Array<{ id?: unknown; members?: unknown } | null>) {
+      if (typeof pod?.id !== "string" || !Array.isArray(pod.members)) return null;
+      for (const member of pod.members as Array<{ id?: unknown } | null>) {
+        if (typeof member?.id !== "string") return null;
+        seats.push(`${pod.id}.${member.id}`);
+      }
+    }
+    return seats.length > 0 ? seats : null;
+  } catch {
+    return null;
+  }
 }
 
 /** True when a rig named `kernel` already exists in the DB. */
@@ -168,12 +192,70 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
     }
   }
 
+  const codexHome = process.env.CODEX_HOME || nodePath.join(os.homedir(), ".codex");
   const [claudeCode, codex] = await Promise.all([
     tryProbe("claude auth status"),
-    tryProbe("codex login status"),
+    probeCodexReadiness({
+      run: tryProbe,
+      readConfig: () => {
+        try { return readFileSync(nodePath.join(codexHome, "config.toml"), "utf-8"); } catch { return null; }
+      },
+      env: process.env,
+    }),
   ]);
 
   return { claudeCode, codex };
+}
+
+/** Issue #194 — how the Codex provider selected in `$CODEX_HOME/config.toml`
+ *  authenticates. Only an explicit provider entry with
+ *  `requires_openai_auth = false` and an `env_key` uses its credential
+ *  variable. Everything else (no file, a parse error, a legacy top-level
+ *  `profile`, a built-in or undeclared provider) keeps the OpenAI login check,
+ *  so an unresolved config does not take the env-key shortcut; readiness still follows the login result. Other Codex config layers
+ *  (project, system or managed config, requirements, `-c`, `--profile`) are not
+ *  resolved here. The CLI's `rig setup` carries the same rule. */
+export type CodexProviderAuth =
+  | { kind: "openai-login"; unresolved?: string }
+  | { kind: "env-key"; providerId: string; envKey: string };
+
+export function selectCodexProviderAuth(configToml: string | null): CodexProviderAuth {
+  if (configToml === null) return { kind: "openai-login" };
+  let config: Record<string, unknown>;
+  try {
+    config = parseToml(configToml) as Record<string, unknown>;
+  } catch {
+    return { kind: "openai-login", unresolved: "config.toml could not be parsed" };
+  }
+  if (Object.hasOwn(config, "profile")) {
+    return { kind: "openai-login", unresolved: "config.toml selects a legacy profile, which is not resolved here" };
+  }
+  const providerId = config["model_provider"];
+  const providers = config["model_providers"];
+  if (typeof providerId !== "string" || !providers || typeof providers !== "object" || !Object.hasOwn(providers, providerId)) {
+    return { kind: "openai-login" };
+  }
+  const entry = (providers as Record<string, unknown>)[providerId];
+  if (!entry || typeof entry !== "object") return { kind: "openai-login" };
+  const { requires_openai_auth: requiresOpenAiAuth, env_key: envKey } = entry as Record<string, unknown>;
+  if (requiresOpenAiAuth !== false || typeof envKey !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(envKey)) {
+    return { kind: "openai-login" };
+  }
+  return { kind: "env-key", providerId, envKey };
+}
+
+/** Codex half of the kernel runtime probe. An env-key provider is ready when
+ *  its variable is nonblank and the executable answers; this is local
+ *  credential availability, not a remote authentication or inference check. */
+export async function probeCodexReadiness(deps: {
+  run: (cmd: string) => Promise<RuntimeAuthStatus>;
+  readConfig: () => string | null;
+  env: Record<string, string | undefined>;
+}): Promise<RuntimeAuthStatus> {
+  const auth = selectCodexProviderAuth(deps.readConfig());
+  if (auth.kind === "openai-login") return deps.run("codex login status");
+  if (!deps.env[auth.envKey]?.trim()) return "unavailable";
+  return deps.run("codex --version");
 }
 
 /** Honest 3-part-error message for the auth-block path. Per IMPL-PRD

@@ -15,7 +15,7 @@ import { agentspecRebootSchema } from "../src/db/migrations/014_agentspec_reboot
 import { externalCliAttachmentSchema } from "../src/db/migrations/019_external_cli_attachment.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { classifyPaneActivity, SessionTransport } from "../src/domain/session-transport.js";
+import { classifyPaneActivity, classifyStyledFrame, probeSessionActivity, promptTextIsFaint, SessionTransport } from "../src/domain/session-transport.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
@@ -65,6 +65,132 @@ describe("agent pane activity classifier", () => {
 
     expect(result.state).toBe("agent_idle");
     expect(result.reason).toBe("idle_status_bar");
+  });
+
+  // Codex 0.157 (measured on 0.157.1): empty composer shows a fixed placeholder and the footer
+  // is the same idle and mid-turn; the Working/esc-to-interrupt row tells them apart when shown
+  // (Codex hides it while streaming — the send path guards that case, see send-prompt-guard tests).
+  it("classifies an idle Codex 0.157 composer placeholder as agent_idle", () => {
+    const result = classifyPaneActivity([
+      "  Tip: You can resume a previous conversation by running codex resume",
+      "› Ask Codex to do anything",
+      "  GPT-5.5 medium · ~/code/projects/openrig · Verify assigned outcome",
+      "  ← for agents · ? for shortcuts                       ⚠ 1 warning · f2 to view",
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_idle");
+    expect(result.reason).toBe("idle_prompt");
+  });
+
+  it("keeps a working Codex 0.157 pane with the same placeholder and footer as agent_active", () => {
+    const result = classifyPaneActivity([
+      "◦ Working (11s • esc to interrupt) · 1 background terminal running · /ps to view",
+      "› Ask Codex to do anything",
+      "  GPT-5.5 medium · ~/code/projects/openrig · Verify assigned outcome",
+      "  ← for agents · ? for shortcuts                       ⚠ 1 warning · f2 to view",
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.reason).toBe("mid_work_pattern");
+  });
+
+  // Codex 0.158 (redacted live pane tails): same placeholder, footer is a status line plus
+  // `? for shortcuts`. Its Working row can sit well above the composer, past the 8-line window,
+  // when queued or incoming message blocks come in between.
+  const CODEX_0158_FOOTER = [
+    "› Ask Codex to do anything",
+    "",
+    "  gpt-6-sol high · ~/code/projects/openrig · Read the task",
+    "  ? for shortcuts                                     ⚠ 3 warnings · f2 to view",
+  ];
+
+  it("classifies an idle Codex 0.158 composer placeholder as agent_idle", () => {
+    const result = classifyPaneActivity([
+      "• Done. The change is committed and the tests pass.",
+      "",
+      "  5:47 PM",
+      "",
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_idle");
+    expect(result.reason).toBe("idle_prompt");
+  });
+
+  it("keeps a working Codex 0.158 pane as agent_active", () => {
+    const result = classifyPaneActivity([
+      "• Working (1h 09m 39s • esc to interrupt)",
+      "  └ Tip: Use /title to choose what appears in your terminal's title.",
+      "",
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.reason).toBe("mid_work_pattern");
+  });
+
+  it("reads the Codex placeholder as active when its Working row sits more than 8 lines above it", () => {
+    const result = classifyPaneActivity([
+      "• Working (1h 09m 39s • esc to interrupt)",
+      "  └ Tip: Use /title to choose what appears in your terminal's title.",
+      "",
+      ...Array.from({ length: 10 }, (_, i) => `  incoming message line ${i + 1}`),
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.reason).toBe("mid_work_pattern");
+    expect(result.evidence).toBe("• Working (1h 09m 39s • esc to interrupt)");
+  });
+
+  it("keeps completed Working prose more than 8 lines above the placeholder as history: idle", () => {
+    for (const prose of ["• Working directory: /tmp/project", "• Working tree is clean."]) {
+      const result = classifyPaneActivity([
+        prose,
+        ...Array.from({ length: 10 }, (_, i) => `  output line ${i + 1}`),
+        "",
+        ...CODEX_0158_FOOTER,
+      ].join("\n"));
+
+      expect(result.state, prose).toBe("agent_idle");
+      expect(result.reason, prose).toBe("idle_prompt");
+    }
+  });
+
+  it("reads a far turn-status row with a reasoning-summary header as active", () => {
+    const result = classifyPaneActivity([
+      "• Exploring the test fixtures (2m 03s • esc to interrupt)",
+      ...Array.from({ length: 10 }, (_, i) => `  incoming message line ${i + 1}`),
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.evidence).toBe("• Exploring the test fixtures (2m 03s • esc to interrupt)");
+  });
+
+  it("still reads a bare prompt with stale Working text beyond the 8-line window as idle", () => {
+    const result = classifyPaneActivity([
+      "◦ Working (9m 26s • esc to interrupt)",
+      ...Array.from({ length: 10 }, (_, i) => `  output line ${i + 1}`),
+      "❯ ",
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_idle");
+    expect(result.reason).toBe("idle_prompt");
+  });
+
+  it("does not treat typed Codex 0.157 composer text as the idle placeholder", () => {
+    const result = classifyPaneActivity([
+      "› run the test suite and report",
+      "  GPT-5.5 medium · ~/code/projects/openrig · Verify assigned outcome",
+      "  ← for agents · ? for shortcuts",
+    ].join("\n"));
+
+    expect(result.state).not.toBe("agent_idle");
   });
 
   it("classifies idle Claude edit-accept footer at the bottom as agent_idle", () => {
@@ -258,8 +384,8 @@ describe("SessionTransport", () => {
     return { rig, node, session };
   }
 
-  // Test 1: send calls sendText -> delay -> sendKeys C-m
-  it("send calls sendText then sendKeys C-m with delay", async () => {
+  // Test 1: send calls sendText -> delay -> sendKeys Enter
+  it("send calls sendText then sendKeys Enter with delay", async () => {
     seedCanonicalRig();
     const callOrder: string[] = [];
     const tmux = mockTmux({
@@ -270,7 +396,7 @@ describe("SessionTransport", () => {
 
     const result = await transport.send("dev-impl@my-rig", "hello");
     expect(result.ok).toBe(true);
-    expect(callOrder).toEqual(["sendText", "sendKeys:C-m"]);
+    expect(callOrder).toEqual(["sendText", "sendKeys:Enter"]);
   });
 
   // Test 2: send to canonical session name resolves correctly
@@ -309,8 +435,8 @@ describe("SessionTransport", () => {
     expect(result.error).toContain("rig ps");
   });
 
-  // Test 5: send where sendKeys C-m fails returns "text visible but not submitted"
-  it("send where C-m fails returns submit_failed with guidance", async () => {
+  // Test 5: send where sendKeys Enter fails returns "text visible but not submitted"
+  it("send where Enter fails returns submit_failed with guidance", async () => {
     seedCanonicalRig();
     const tmux = mockTmux({
       sendKeys: async () => ({ ok: false, code: "session_not_found", message: "session died" }),
@@ -554,50 +680,80 @@ describe("SessionTransport", () => {
     expect(callOrder).toEqual(["capture", "capture", "sendText", "sendKeys"]);
   });
 
-  it("send with wait-for-idle times out on running activity without sending text", async () => {
+  it.each([0, 5])("send with wait-for-idle times out on running activity without sending text (capture cost %ims)", async (captureCostMs) => {
     seedCanonicalRig();
-    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
-    const tmux = mockTmux({
-      capturePaneContent: async () => "Working on task...\n⠋ Processing files\nesc to interrupt",
-      sendText: sendTextSpy,
-    });
-    const transport = createTransport(tmux, { waitForIdlePollMs: 1 });
+    // These cases test expiry AFTER a running observation, not classification speed.
+    // Freeze both the deadline clock and its race timer; advance only at the poll.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({
+        capturePaneContent: async () => {
+          const end = performance.now() + captureCostMs;
+          while (performance.now() < end) { /* controlled classification CPU cost */ }
+          return "Working on task...\n⠋ Processing files\nesc to interrupt";
+        },
+        sendText: sendTextSpy,
+      });
+      const sleep = vi.fn(async (ms: number) => { await vi.advanceTimersByTimeAsync(ms); });
+      const transport = createTransport(tmux, { sleep, waitForIdlePollMs: 1 });
 
-    const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 1 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 1 });
 
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("wait_for_idle_timeout");
-    expect(result.sent).toBe(false);
-    expect(result.activity?.state).toBe("running");
-    expect(sendTextSpy).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe("wait_for_idle_timeout");
+      expect(result.sent).toBe(false);
+      expect(result.activity?.state).toBe("running");
+      expect(sendTextSpy).not.toHaveBeenCalled();
+      expect(result.attempts).toBe(2);
+      expect(result.waitedMs).toBe(1);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("send with wait-for-idle times out on persistent Claude thinking evidence without sending text", async () => {
+  it.each([0, 5])("send with wait-for-idle times out on persistent Claude thinking evidence without sending text (capture cost %ims)", async (captureCostMs) => {
     seedCanonicalRig();
-    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
-    const tmux = mockTmux({
-      capturePaneContent: async () => [
-        "⏺ Skill(openrig-user)",
-        "  ⎿  Initializing…",
-        "",
-        "✢ Reviewing... (3s · ↓ 107 tokens · thinking)",
-        "",
-        "──────────────────────────────────────── dev-impl@implementation-pair-slice19 ──",
-        "❯ ",
-        "────────────────────────────────────────────────────────────────────────────────",
-        "  paste again to expand                                      ◉ xhigh · /effort",
-      ].join("\n"),
-      sendText: sendTextSpy,
-    });
-    const transport = createTransport(tmux, { waitForIdlePollMs: 1 });
+    // These cases test expiry AFTER a running observation, not classification speed.
+    // Freeze both the deadline clock and its race timer; advance only at the poll.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({
+        capturePaneContent: async () => {
+          const end = performance.now() + captureCostMs;
+          while (performance.now() < end) { /* controlled classification CPU cost */ }
+          return [
+            "⏺ Skill(openrig-user)",
+            "  ⎿  Initializing…",
+            "",
+            "✢ Reviewing... (3s · ↓ 107 tokens · thinking)",
+            "",
+            "──────────────────────────────────────── dev-impl@implementation-pair-slice19 ──",
+            "❯ ",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "  paste again to expand                                      ◉ xhigh · /effort",
+          ].join("\n");
+        },
+        sendText: sendTextSpy,
+      });
+      const sleep = vi.fn(async (ms: number) => { await vi.advanceTimersByTimeAsync(ms); });
+      const transport = createTransport(tmux, { sleep, waitForIdlePollMs: 1 });
 
-    const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 1 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 1 });
 
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("wait_for_idle_timeout");
-    expect(result.sent).toBe(false);
-    expect(result.activity?.state).toBe("running");
-    expect(sendTextSpy).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe("wait_for_idle_timeout");
+      expect(result.sent).toBe(false);
+      expect(result.activity?.state).toBe("running");
+      expect(sendTextSpy).not.toHaveBeenCalled();
+      expect(result.attempts).toBe(2);
+      expect(result.waitedMs).toBe(1);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("send with wait-for-idle hard-stops on attention prompts without sending text", async () => {
@@ -630,26 +786,300 @@ describe("SessionTransport", () => {
     expect(sendTextSpy).not.toHaveBeenCalled();
   });
 
-  it("send with wait-for-idle hard-stops on unknown capture evidence without sending text", async () => {
+  // D2: an UNKNOWN observation is retried within the caller's ONE deadline and never
+  // authorizes the send. The wait loop reads Date.now(); a stepped clock makes the
+  // deadline and the attempt count exact.
+  function steppedClock() {
+    let t = 1_000_000;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    const slept: number[] = [];
+    return { sleep: async (ms: number) => { slept.push(ms); t += ms; }, slept, restore: () => spy.mockRestore() };
+  }
+  const IDLE_PANE = "› Use /skills to list available skills\n\n  gpt-5.5 high · Context [████ ] · ~/code/projects/openrig";
+  const BUSY_PANE = "Working on task...\n⠋ Processing files\nesc to interrupt";
+  const MENU_PANE = ["Codex update available.", "", "› 1. Update now", "  2. Skip this version", "",
+    "  gpt-5.5 high · Context [████ ] · ~/code/projects/openrig"].join("\n");
+  const UNREADABLE = Symbol("unreadable");
+  function scriptedPanes(script: Array<string | typeof UNREADABLE>) {
+    let i = 0;
+    return async () => {
+      const step = script[Math.min(i++, script.length - 1)]!;
+      if (step === UNREADABLE) throw new Error("capture failed");
+      return step;
+    };
+  }
+
+  it("send with wait-for-idle retries an unknown observation and sends once explicit idle arrives", async () => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE, IDLE_PANE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: true, sent: true, attempts: 2, activity: { state: "idle" } });
+      expect(clock.slept[0]).toBe(10); // one poll interval; the later sleep is the paste→Enter delay
+      expect(sendTextSpy).toHaveBeenCalledTimes(1);
+    } finally { clock.restore(); }
+  });
+
+  it("send with wait-for-idle still refuses a positive prompt that appears after an unknown observation", async () => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE, MENU_PANE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: false, reason: "target_needs_input", sent: false, attempts: 2, activity: { state: "needs_input" } });
+      expect(sendTextSpy).not.toHaveBeenCalled();
+    } finally { clock.restore(); }
+  });
+
+  it("send with wait-for-idle on perpetual unknown keeps ONE deadline and reports the last unknown observation", async () => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: false, reason: "target_activity_unknown", sent: false, attempts: 6, waitedMs: 50,
+        activity: { state: "unknown", reason: "capture_failed" } });
+      expect(result.error).toBe("Target activity could not be determined (capture_failed) when the 50ms wait ended (6 observations). No text was sent.");
+      // The deadline is never renewed: total sleep equals the caller's timeout.
+      expect(clock.slept.reduce((a, b) => a + b, 0)).toBe(50);
+      expect(sendTextSpy).not.toHaveBeenCalled();
+    } finally { clock.restore(); }
+  });
+
+  it.each([
+    ["busy then unknown", [BUSY_PANE, BUSY_PANE, BUSY_PANE, BUSY_PANE, BUSY_PANE, UNREADABLE], "target_activity_unknown", "unknown", /could not be determined \(capture_failed\) when the 50ms wait ended \(6 observations\)/],
+    ["unknown then busy", [UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, BUSY_PANE], "wait_for_idle_timeout", "running", /still busy \(.+\) when the 50ms wait ended \(6 observations\)/],
+  ] as const)("send with wait-for-idle at the deadline names the LAST observation (%s)", async (_label, script, reason, state, message) => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([...script]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: false, reason, sent: false, attempts: 6, activity: { state } });
+      expect(result.error).toMatch(message);
+      expect(sendTextSpy).not.toHaveBeenCalled();
+    } finally { clock.restore(); }
+  });
+
+  it("send with wait-for-idle refuses when the recipient binding changes during an unknown retry", async () => {
+    const { node } = seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE, IDLE_PANE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, {
+        sleep: async (ms) => { await clock.sleep(ms); sessionRegistry.updateBinding(node.id, { tmuxPane: "%rebound" }); },
+        waitForIdlePollMs: 10,
+      });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: false, reason: "target_runtime_conflict", sent: false });
+      expect(sendTextSpy).not.toHaveBeenCalled();
+    } finally { clock.restore(); }
+  });
+
+  // review-r1's controls on #603 (bbf35f0a), kept verbatim in substance.
+  it("R1-a: a deadline shorter than one poll still keeps ONE deadline (2 observations, total sleep = deadline)", async () => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 5 });
+      expect(result).toMatchObject({ ok: false, reason: "target_activity_unknown", sent: false, attempts: 2, waitedMs: 5 });
+      expect(clock.slept).toEqual([5]);
+      expect(sendTextSpy).not.toHaveBeenCalled();
+    } finally { clock.restore(); }
+  });
+
+  it("R1-b: unknown up to the deadline, then explicit idle AT the deadline observation, sends exactly once", async () => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, IDLE_PANE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: true, sent: true, attempts: 6, activity: { state: "idle" } });
+      expect(clock.slept.slice(0, 5).reduce((a, b) => a + b, 0)).toBe(50);
+      expect(sendTextSpy).toHaveBeenCalledTimes(1);
+    } finally { clock.restore(); }
+  });
+
+  it("R1-c: a positive prompt AT the deadline observation still refuses as needs-input, not as a timeout", async () => {
+    seedCanonicalRig();
+    const clock = steppedClock();
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, MENU_PANE]), sendText: sendTextSpy });
+      const transport = createTransport(tmux, { sleep: clock.sleep, waitForIdlePollMs: 10 });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: false, reason: "target_needs_input", sent: false, attempts: 6 });
+      expect(sendTextSpy).not.toHaveBeenCalled();
+    } finally { clock.restore(); }
+  });
+
+  it("R1-d: REAL timers: perpetual unknown never sends and returns within the deadline plus scheduling slack", async () => {
     seedCanonicalRig();
     const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
-    const tmux = mockTmux({
-      capturePaneContent: async () => { throw new Error("capture failed"); },
-      sendText: sendTextSpy,
-    });
-    const transport = createTransport(tmux, {
-      sleep: async () => undefined,
-      waitForIdlePollMs: 1,
-    });
-
-    const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("target_activity_unknown");
-    expect(result.sent).toBe(false);
-    expect(result.activity?.state).toBe("unknown");
-    expect(result.activity?.reason).toBe("capture_failed");
+    const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE]), sendText: sendTextSpy });
+    const transport = createTransport(tmux, { waitForIdlePollMs: 10 });
+    const t0 = performance.now();
+    const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 60 });
+    const wall = performance.now() - t0;
+    expect(result).toMatchObject({ ok: false, reason: "target_activity_unknown", sent: false });
+    expect(result.waitedMs!).toBeGreaterThanOrEqual(60);
+    expect(result.attempts!).toBeGreaterThanOrEqual(2);
+    expect(wall).toBeLessThan(60 + 250);
     expect(sendTextSpy).not.toHaveBeenCalled();
+  });
+
+  it("R1-e: a non-positive or non-finite wait is still refused before any observation (no infinite loop)", async () => {
+    seedCanonicalRig();
+    const capture = vi.fn(async () => { throw new Error("capture failed"); });
+    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    const transport = createTransport(mockTmux({ capturePaneContent: capture, sendText: sendTextSpy }), { sleep: async () => undefined, waitForIdlePollMs: 10 });
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: bad });
+      expect(result.ok).toBe(false);
+      expect(result.sent).toBe(false);
+    }
+    expect(sendTextSpy).not.toHaveBeenCalled();
+  });
+
+  // dev50-qa's deadline controls on #603 (ca840761): an observation that completes, or a poll
+  // that wakes, after the deadline must never lead to paste or Enter. The capture "costs" time by
+  // advancing the stepped clock; the sleep can oversleep.
+  it.each([
+    ["an overslept poll after an unknown", [UNREADABLE, IDLE_PANE], 0, 60],
+    ["a slow idle capture after an unknown", [UNREADABLE, IDLE_PANE], 80, 0],
+    ["a slow unreadable capture after an unknown", [UNREADABLE, UNREADABLE], 80, 0],
+  ] as const)("QA603: %s never pastes or presses Enter after the 50ms deadline", async (_label, script, cost, oversleep) => {
+    seedCanonicalRig();
+    let t = 1_000_000;
+    let captures = 0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    try {
+      const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+      const sendKeysSpy = vi.fn(async () => ({ ok: true as const }));
+      const tmux = mockTmux({
+        sendText: sendTextSpy, sendKeys: sendKeysSpy,
+        capturePaneContent: async () => {
+          const n = captures++;
+          if (n > 0) t += cost;
+          const step = script[Math.min(n, script.length - 1)]!;
+          if (step === UNREADABLE) throw new Error("controlled unreadable pane");
+          return step;
+        },
+      });
+      const transport = createTransport(tmux, { waitForIdlePollMs: 10, sleep: async (ms) => { t += oversleep || ms; } });
+      const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 });
+      expect(result).toMatchObject({ ok: false, sent: false, reason: "target_activity_unknown", activity: { state: "unknown" } });
+      expect(result.waitedMs).toBeLessThanOrEqual(50);
+      expect(sendTextSpy).not.toHaveBeenCalled();
+      expect(sendKeysSpy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("QA603_ASYNC: an unresolved retry observation cannot outlive the 50ms wait and later authorize input", async () => {
+    seedCanonicalRig();
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      let captures = 0;
+      const sentAt: number[] = [];
+      const tmux = mockTmux({
+        capturePaneContent: async () => {
+          if (captures++ === 0) throw new Error("first controlled unknown");
+          await new Promise<void>((resolve) => setTimeout(resolve, 80));
+          return IDLE_PANE;
+        },
+        sendText: async () => { sentAt.push(Date.now() - 1_000_000); return { ok: true as const }; },
+      });
+      const transport = createTransport(tmux, { sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), waitForIdlePollMs: 10 });
+      let result: Awaited<ReturnType<typeof transport.send>> | null = null;
+      const pending = transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 50 }).then((r) => { result = r; });
+      await vi.advanceTimersByTimeAsync(51);
+      expect(result).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(300);
+      await pending;
+      expect(sentAt).toEqual([]);
+      expect(result).toMatchObject({ ok: false, sent: false, reason: "target_activity_unknown", waitedMs: 50, attempts: 2 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("D1 cancellation before waiting starts no observation or input", async () => {
+    seedCanonicalRig();
+    const controller = new AbortController();
+    controller.abort();
+    const capture = vi.fn(async () => IDLE_PANE);
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const sendKeys = vi.fn(async () => ({ ok: true as const }));
+    const transport = createTransport(mockTmux({ capturePaneContent: capture, sendText, sendKeys }));
+    const result = await transport.waitUntilIdle("dev-impl@my-rig", 50, controller.signal);
+    expect(result).toMatchObject({ ok: false, reason: "preparation_cancelled", attempts: 0 });
+    expect(capture).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("D1 cancellation during an in-flight observation discards idle and never observes again", async () => {
+    seedCanonicalRig();
+    const controller = new AbortController();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: (text: string) => void;
+    const captured = new Promise<string>((resolve) => { release = resolve; });
+    const capture = vi.fn(async () => { entered(); return captured; });
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const sendKeys = vi.fn(async () => ({ ok: true as const }));
+    const transport = createTransport(mockTmux({ capturePaneContent: capture, sendText, sendKeys }));
+    const pending = transport.waitUntilIdle("dev-impl@my-rig", 1000, controller.signal);
+    await started;
+    controller.abort();
+    release(IDLE_PANE);
+    const result = await pending;
+    expect(result).toMatchObject({ ok: false, reason: "preparation_cancelled", attempts: 1 });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("D1 cancellation between retries starts no second observation", async () => {
+    seedCanonicalRig();
+    const controller = new AbortController();
+    const capture = vi.fn(async () => { throw new Error("controlled unreadable pane"); });
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const sendKeys = vi.fn(async () => ({ ok: true as const }));
+    const transport = createTransport(mockTmux({ capturePaneContent: capture, sendText, sendKeys }), {
+      waitForIdlePollMs: 10, sleep: async () => { controller.abort(); },
+    });
+    const result = await transport.waitUntilIdle("dev-impl@my-rig", 1000, controller.signal);
+    expect(result).toMatchObject({ ok: false, reason: "preparation_cancelled", attempts: 1 });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("an ordinary send (no wait) is unchanged: one unknown observation proceeds with an advisory, no retry loop", async () => {
+    seedCanonicalRig();
+    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    const tmux = mockTmux({ capturePaneContent: async () => { throw new Error("capture failed"); }, sendText: sendTextSpy });
+    const transport = createTransport(tmux, { sleep: async () => undefined, waitForIdlePollMs: 10 });
+    const result = await transport.send("dev-impl@my-rig", "hello");
+    expect(result.ok).toBe(true);
+    expect(result.warning).toBeDefined();
+    expect(result.attempts).toBeUndefined();
+    expect(sendTextSpy).toHaveBeenCalledTimes(1);
   });
 
   it("send with wait-for-idle prefers fresh hook activity and waits for hook idle", async () => {
@@ -1403,5 +1833,95 @@ describe("SessionTransport", () => {
     const transport = createTransport(tmux, { now: () => new Date("2026-08-06T17:42:12Z") });
     await transport.send("dev-impl@my-rig", H_ENVELOPE, { stampISO: "2026-08-06T17:42:09Z" });
     expect(sendTextSpy.mock.calls[0]![1]).not.toContain(" · delivered ");
+  });
+});
+
+// Claude renders its prompt suggestion faint (SGR 2) in the composer. The shape follows a real Claude
+// 2.1.282 capture: `❯` and a no-break space, then the faint text. A plain capture drops the styling.
+describe("a Claude prompt suggestion is not a person's draft", () => {
+  const BORDER = "─".repeat(60);
+  const SUGGESTION = "yes run the tests and open the PR";
+  const plainPrompt = `❯\u00a0${SUGGESTION}`;
+  const faintPrompt = `\x1b[39m❯\u00a0\x1b[2m${SUGGESTION}\x1b[0m`;
+  const PASTE = "❯\u00a0[Pasted text #2 +29 lines]";
+  // The observed layout: a framed composer, a blank row, then the mode bar.
+  const framedLayout = (prompt: string, history = "● Done.") => [history, "", "✻ Baked for 1m 18s", "", `${"─".repeat(40)} dev-build@starter ─`, prompt, BORDER, "",
+    "  ⏵⏵ accept edits on (shift+tab to cycle)", ""].join("\n");
+  // A warning row under the mode bar, as when Claude can't auto-update into a read-only npm prefix.
+  const warningLayout = (prompt: string, status = "✻ Crunched for 2s", history = "● Ready.") => [history, "", status, "", BORDER, prompt, BORDER,
+    "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents", "  ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor", ""].join("\n");
+  // An unframed prompt directly above the mode bar.
+  const unframedLayout = (prompt: string) => ["● Ready.", "", prompt, "  ⏵⏵ accept edits on (shift+tab to cycle)", ""].join("\n");
+  const probe = (plain: string, styled: string, runtime = "claude-code") => probeSessionActivity({
+    sessionName: "dev-build@starter", runtime, attachmentType: "tmux",
+    tmuxAdapter: mockTmux({ capturePaneContent: async (_pane: string, _lines?: number, opts?: { escapeSequences?: boolean }) =>
+      opts?.escapeSequences ? styled : plain }),
+  });
+
+  it("from a plain capture: the framed layout reads idle; the warning-row and unframed layouts read a suggestion as a draft", () => {
+    expect(classifyPaneActivity(framedLayout(plainPrompt))).toMatchObject({ state: "agent_idle" });
+    expect(classifyPaneActivity(warningLayout(plainPrompt))).toMatchObject({ state: "attention", reason: "prompt_draft" });
+    expect(classifyPaneActivity(unframedLayout(plainPrompt))).toMatchObject({ state: "attention", reason: "prompt_draft" });
+  });
+
+  it("promptTextIsFaint is true only when the last prompt line has text and all of it is faint", () => {
+    expect(promptTextIsFaint(framedLayout(faintPrompt))).toBe(true);
+    expect(promptTextIsFaint(framedLayout(plainPrompt))).toBe(false); // no styling never proves faint
+    expect(promptTextIsFaint(framedLayout(PASTE))).toBe(false); // a pasted placeholder
+    expect(promptTextIsFaint(framedLayout("❯\u00a0owned\x1b[2m ghost suffix\x1b[22m"))).toBe(false); // typed text, then a suggestion
+    expect(promptTextIsFaint(framedLayout("❯\u00a0\x1b[2mghost\x1b[22m typed"))).toBe(false); // a reset mid-line
+    expect(promptTextIsFaint(framedLayout(`❯\u00a0\x1b[38;5;2m${SUGGESTION}\x1b[39m`))).toBe(false); // a 256-colour value of 2
+    expect(promptTextIsFaint(framedLayout(`❯\u00a0\x1b[38;2;2;2;2m${SUGGESTION}\x1b[39m`))).toBe(false); // an RGB colour of 2;2;2
+    expect(promptTextIsFaint(framedLayout("❯\u00a0"))).toBe(false); // an empty composer
+    expect(promptTextIsFaint(framedLayout("❯\u00a0", faintPrompt))).toBe(false); // an empty composer below an older faint prompt
+  });
+
+  it("classifyStyledFrame finds a suggestion only in its own frame's current composer", () => {
+    expect(classifyStyledFrame(warningLayout(faintPrompt)).suggestion).toMatchObject({ state: "agent_idle" });
+    // A faint prompt in scrollback above a typed composer proves nothing about the composer.
+    expect(classifyStyledFrame(warningLayout("❯\u00a0typed by hand", undefined, faintPrompt)).suggestion).toBeNull();
+    expect(classifyStyledFrame(warningLayout("❯\u00a0typed by hand")).suggestion).toBeNull();
+    // An empty composer below an older faint prompt: the composer decides, not the scrollback line.
+    expect(classifyStyledFrame(warningLayout("❯\u00a0", undefined, faintPrompt)).suggestion).toBeNull();
+    expect(classifyStyledFrame(warningLayout(PASTE)).suggestion).toBeNull();
+  });
+
+  it.each([["warning-row", warningLayout], ["unframed", unframedLayout]] as const)(
+    "the %s layout: a faint suggestion reads idle; typed text and a pasted placeholder still need input", async (_label, layout) => {
+      expect(await probe(layout(plainPrompt), layout(faintPrompt))).toMatchObject({ state: "idle" });
+      expect(await probe(layout(plainPrompt), layout(plainPrompt))).toMatchObject({ state: "needs_input", reason: "prompt_draft" });
+      expect(await probe(layout(PASTE), layout(PASTE))).toMatchObject({ state: "needs_input", reason: "prompt_draft" });
+    });
+
+  it("between the two captures: a stable suggestion reads idle, a changed one stays a draft, newer attention or work is kept", async () => {
+    expect(await probe(warningLayout(plainPrompt), warningLayout(faintPrompt))).toMatchObject({ state: "idle" });
+    // The suggestion changed: the first capture's draft text isn't what the styled frame shows.
+    expect(await probe(warningLayout(plainPrompt), warningLayout("\x1b[39m❯\u00a0\x1b[2mshow me the diff\x1b[0m")))
+      .toMatchObject({ state: "needs_input", reason: "prompt_draft" });
+    // Evidence is compacted and truncated, so the full composer text is what must match: drafts that
+    // differ only in internal spacing, or share their first 240 characters, are different text.
+    expect(await probe(warningLayout("❯\u00a0yes run  the tests and open the PR"), warningLayout(faintPrompt)))
+      .toMatchObject({ state: "needs_input", reason: "prompt_draft" });
+    const long = "word ".repeat(60);
+    expect(await probe(warningLayout(`❯\u00a0${long}first`), warningLayout(`\x1b[39m❯\u00a0\x1b[2m${long}second\x1b[0m`)))
+      .toMatchObject({ state: "needs_input", reason: "prompt_draft" });
+    // Typed text in the styled frame.
+    expect(await probe(warningLayout(plainPrompt), warningLayout(plainPrompt))).toMatchObject({ state: "needs_input", reason: "prompt_draft" });
+    // The seat started work: its live status row in the styled frame is kept.
+    expect(await probe(warningLayout(plainPrompt), warningLayout(faintPrompt, "✻ Onioning… (2m 38s · ↓ 10.9k tokens · thought for 8s)")))
+      .toMatchObject({ state: "running" });
+    // A permission prompt appeared: the styled frame's attention is kept.
+    expect(await probe(warningLayout(plainPrompt), warningLayout(faintPrompt, "Do you want to proceed?")))
+      .toMatchObject({ state: "needs_input", reason: "permission_prompt" });
+  });
+
+  it("only a Claude seat gets the styled check", async () => {
+    const captures: Array<boolean> = [];
+    await probeSessionActivity({
+      sessionName: "dev-build@starter", runtime: "codex", attachmentType: "tmux",
+      tmuxAdapter: mockTmux({ capturePaneContent: async (_pane: string, _lines?: number, opts?: { escapeSequences?: boolean }) => {
+        captures.push(opts?.escapeSequences === true); return unframedLayout(plainPrompt); } }),
+    });
+    expect(captures).toEqual([false]);
   });
 });

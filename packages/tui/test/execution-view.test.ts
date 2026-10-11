@@ -129,6 +129,39 @@ function executionKeys(lines: ReturnType<typeof executionContentLines>): string[
 }
 
 describe("mission execution story — readable rows over the shipped projections", () => {
+  it("keeps project daemon N/A out of lineage gaps and the SCOPES progress strip", () => {
+    const fixture = executionFixture(1);
+    fixture.q1_lanes = [];
+    fixture.q4_ladder[0] = {
+      slice_id: "OPR.0.5.8.1", dir: "01-slice",
+      locked: { value: true }, built: { candidate_sha: "abcdef123" },
+      reviewed: { value: true }, folded: { value: true },
+      adopted: { value: "NOT_APPLICABLE", basis: "selected project has no daemon-source binding" },
+    };
+    for (const width of [58, 120]) {
+      const detail = text(executionContentLines(fixture, executionScopes(1), [], "slice:OPR.0.5.8.1", width));
+      expect(detail).toContain("N/A");
+      expect(detail).toContain("daemon");
+      const gap = text(executionContentLines(fixture, executionScopes(1), [], "evidence", width));
+      expect(gap).not.toContain("live unconfirmed");
+      const strip = text(executionSliceStripLines(fixture, "OPR.0.5.8.1", "01-slice", width));
+      expect(strip).toContain("merged");
+      expect(strip).not.toContain("live");
+      expect(strip).not.toContain("unconfirmed");
+      const project = { id: "demo", root: "/projects/demo", name: "Demo", sourcePath: null, missionsRoot: "/projects/demo/missions" };
+      const snap: FleetSnapshot = { ...demoSnapshot(), execution: fixture, scopes: executionScopes(1),
+        projects: { catalogPath: "/projects/workspace.yaml", projects: [project] }, projectRead: project };
+      const view = createViewState({ instanceId: "projects", getSnapshot: () => snap });
+      view.dispatch(parseCommand("projects"));
+      view.dispatch({ type: "project-select", id: project.id });
+      view.dispatch({ type: "scopes-mission-open", mission: fixture.mission! });
+      view.dispatch({ type: "scopes-open", mission: fixture.mission!, slice: "01-slice" });
+      const screen = renderScreen(view.get(), snap, { cols: width + 32, rows: 220 }).lines.join("\n");
+      expect(screen).toContain("N/A");
+      expect(screen).not.toMatch(/live.*undetermined/);
+    }
+  });
+
   it("shows authored admission and partial acceptance with provenance on mission, wave and slice pages at narrow widths", () => {
     const fixture = executionFixture();
     fixture.planning_guidance = [
@@ -232,6 +265,21 @@ describe("mission execution story — readable rows over the shipped projections
     expect(body).toContain("○ declared done");
     expect(body).not.toMatch(GLYPH_BLOB);
     expect(executionKeys(lines).filter((key) => key.startsWith("slice:"))).toHaveLength(4);
+  });
+
+  it("distinguishes retired and deferred slices from planned in fallback state", () => {
+    const fixture = executionFixture();
+    fixture.q1_lanes = [];
+    const scopes = executionScopes(4, (index) => (index === 0 ? "active" : index === 1 ? "blocked" : "done"));
+    // Slice 2 has stage "retired"
+    scopes[0]!.slices[1]!.stage = "retired";
+    // Slice 3 has status "deferred"
+    scopes[0]!.slices[2]!.status = "closed-deferred";
+
+    const overview = text(executionContentLines(fixture, scopes, [], null, 160));
+    expect(overview).toContain("○ retired");
+    expect(overview).toContain("○ deferred");
+    expect(overview).not.toContain("2 planned");
   });
 
   it("qualifies slice completion while a release workflow is still waiting", () => {
@@ -582,5 +630,24 @@ describe("attributed proof provenance in the ordinary execution path", () => {
     expect(page).toContain("UNKNOWN");
     delete execution.readiness;
     expect(text(executionContentLines(execution, undefined, [], "evidence", 100))).toContain("built unconfirmed");
+  });
+});
+
+
+describe("slice source provenance", () => {
+  it("reports the authoritative arrangement when it supersedes the legacy wave map", () => {
+    const fixture = executionFixture();
+    fixture.sources.wave_map = { row_id: "INDETERMINATE", superseded_by: "/work/mission.yaml + referenced slice.yaml files" };
+    const body = text(executionContentLines(fixture, executionScopes(), [], "slice:OPR.0.5.8.1", 160));
+    expect(body).toContain("wave map:     superseded by /work/mission.yaml");
+    expect(body).not.toContain("wave map:     INDETERMINATE");
+  });
+
+  it("preserves the legacy row when no superseding source is served", () => {
+    const fixture = executionFixture();
+    fixture.q2_sequencing[0]!.source = { wave_map_row: "qitem-wave-map" };
+    const body = text(executionContentLines(fixture, executionScopes(), [], "slice:OPR.0.5.8.1", 160));
+    expect(body).toContain("wave map:     qitem-wave-map");
+    expect(body).not.toContain("superseded by");
   });
 });

@@ -85,6 +85,29 @@ describe("parseMarkdownSections — code-fence-protected header tree", () => {
       "reference/commands-flags",
     ]);
   });
+  it.each(["```", "~~~"])("keeps a %s fence open when a marker line has trailing text", (marker) => {
+    const text = [
+      "## Actual", `${marker}text`, `${marker} not a closing fence`,
+      "## Example heading", marker, "## Next", "real prose",
+    ].join("\n");
+    expect(parseMarkdownSections(text).map((section) => section.headerPath)).toEqual([["actual"], ["next"]]);
+    expect(resolveAddress(text, ["actual"]).text).toContain("## Example heading");
+    expect(() => resolveAddress(text, ["example-heading"])).toThrow(AddressResolutionError);
+    expect(resolveAddress(text, ["next"]).text).toContain("real prose");
+    expect(validateMarkdownAddressability(text)).toEqual([]);
+  });
+
+  it.each(["```", "~~~"])("preserves %s info strings, marker matching, length and CRLF whitespace closers", (marker) => {
+    const other = marker === "```" ? "~~~" : "```";
+    const text = [
+      "## Actual", `${marker}${marker[0]}language`, marker, "## Too short", other,
+      "## Different marker", `${marker}${marker[0]}${marker[0]} \t`, "## Next", "prose",
+    ].join("\r\n");
+    expect(parseMarkdownSections(text).map((section) => section.headerPath)).toEqual([["actual"], ["next"]]);
+    expect(resolveAddress(text, ["actual"]).text).toContain("## Different marker");
+    expect(validateMarkdownAddressability(text)).toEqual([]);
+  });
+
   it("spans terminate at the next SAME-OR-HIGHER header (Q1), own text at ANY header", () => {
     const sections = parseMarkdownSections(CORPUS);
     const gettingStarted = sections.find((s) => s.headerPath.join("/") === "getting-started")!;
@@ -181,5 +204,32 @@ describe("validateMarkdownAddressability — the compose gate", () => {
     // Parent AND child are both named: the child's path carries an empty segment,
     // so no legal address can reach it — silence here would be silent content loss.
     expect(findings.filter((f) => f.kind === "unaddressable-header").length).toBe(2);
+  });
+});
+
+
+describe("Markdown block boundaries in context addresses", () => {
+  it("keeps inline backtick spans from swallowing later sections", () => {
+    const text = "## Setup\n```literal ` backticks```\n## Deploy\ndeploy instructions\n";
+    expect(resolveAddress(text, ["deploy"]).text).toBe("## Deploy\ndeploy instructions\n");
+    expect(validateMarkdownAddressability(text)).toEqual([]);
+    expect(resolveAddress(text, ["setup"]).text).toContain("```literal ` backticks```");
+  });
+
+  it.each(["##", "## ", "##\t"])("keeps the empty heading %j as a span and scope boundary", (heading) => {
+    const text = `## Setup\nsetup instructions\n${heading}\nother section\n### Child\nchild instructions\n`;
+    expect(resolveAddress(text, ["setup"]).text).toBe("## Setup\nsetup instructions");
+    expect(() => resolveAddress(text, ["setup", "child"])).toThrow(AddressResolutionError);
+    expect(parseMarkdownSections(text).find((section) => section.title === "Child")?.headerPath).toEqual(["", "child"]);
+    expect(validateMarkdownAddressability(text)).toEqual([]);
+  });
+
+  it("keeps children of an empty H1 unaddressable and terminates an H3 at an empty H4", () => {
+    const text = "## Setup\n### Child\nchild instructions\n####\nother subsection\n#\n### Independent\nindependent instructions";
+    expect(resolveAddress(text, ["setup", "child"]).ownText).toBe("### Child\nchild instructions");
+    expect(parseMarkdownSections(text).find((section) => section.title === "Independent")?.headerPath).toEqual(["", "independent"]);
+    expect(() => resolveAddress(text, ["independent"])).toThrow(AddressResolutionError);
+    expect(validateMarkdownAddressability(text)).toEqual([]);
+    expect(resolveAddress(text.replace("\n#\n", "\n# Named\n"), ["independent"]).text).toContain("independent instructions");
   });
 });

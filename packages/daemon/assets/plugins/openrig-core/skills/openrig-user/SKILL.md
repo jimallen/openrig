@@ -301,7 +301,10 @@ OpenRig v0.3.0 adds `rig agent-image`, `rig context-pack`, `rig workspace`, and
 `rig config init-workspace`. *(0.5.0: the `rig context-pack` alias is retired — the store + compose library is the single `rig context` noun; see "Context packs and paced delivery (0.5.0)".)* It also shifts fresh-user starter guidance toward
 `product-team` for human-directed work and `conveyor` for workflow-oriented
 work. Treat `demo` as legacy/test content unless a task specifically asks for
-the old demo spec.
+the old demo spec. *(0.6.6: the built-in teams are `starter` and `factory`, plus the
+specialist teams `code-review`, `research` and `pm`. `product-team`, `conveyor` and
+`demo` are gone, and `first-project` is starter's old name. `workshop` is a rig
+bundle.)*
 
 OpenRig v0.3.1 adds public package/source surfaces for Plugin Primitive v0,
 Claude Auto-Compaction Policy, migration `040_workflow_specs_diagnostic`,
@@ -327,7 +330,9 @@ before relying on a policy or its default.
 
 Compatibility checks:
 - `rig down` accepts a rig name or id. An ambiguous name matching more than one
-  active rig is refused with matching ids; use the intended id.
+  active rig is refused with matching ids; use the intended id. It ends every
+  agent's session and any work in progress, so check `rig ps --nodes --rig <rig>`
+  and that the person asked; `rig up <rig> --existing` restores it.
 - For queue/view JSON or limit differences, compare the installed command's help,
   the running daemon version and the actual response. A wrapper mismatch is not
   by itself a daemon-health failure, and historical workarounds are not current
@@ -357,8 +362,8 @@ rig start --json             # JSON output for agents
 ```
 
 Framing: `rig start` is the RECOVERY entry point, not the getting-started
-hero. The fresh-user boot hero remains `rig up <starter>` (typically
-`rig up product-team`). Reach for `rig start` after a host reboot, daemon
+hero. The fresh-user boot hero remains `rig up <team>` (typically
+`rig up starter` for a first change, or `rig up factory`). Reach for `rig start` after a host reboot, daemon
 restart, or any "bring my rigs back" moment.
 
 ### `rig reconcile-session` — no-launch adopt of a hand-resumed session
@@ -410,8 +415,23 @@ rig seat clear-attention <session> --reason "operator attested: the operator re-
 rig seat clear-attention <session> --json
 ```
 
-`--reason <text>` is the operator-attestation override path; without it the
-command runs the evidence gate. Either way the action is audited.
+`--reason <text>` can acknowledge startup-status and subset-restore attention.
+It does not bypass full-restore continuity checks or an active pane-identity
+mismatch/missing-pane check; those run first. Successful identity re-verification
+can also clear coexisting startup or subset-restore attention. If neither earlier
+path clears attention, omitting `--reason` requires activity or send evidence.
+Startup and restore clears write their corresponding audit events; an identity-only
+clear updates the current binding and identity verdict without a clear event.
+Acknowledgment or responsiveness alone does not prove that the original
+conversation resumed.
+
+A 422 response names the uncleared class and its failed check. If the recorded
+native token needs correction and you know the actual token, use
+`rig seat set-resume-token <session> --token-stdin --reason <explanation>`, then
+rerun `rig seat clear-attention <session>` to check the live evidence. The token
+update records operator provenance; it does not itself prove continuity.
+Stopping/relaunching a working seat is a separate disruptive operation, not a
+required cleanup or proof of resumed lineage.
 
 ### Periodic snapshots — crash-insurance floor
 
@@ -541,7 +561,7 @@ rig scope mission progress <mission> --add "<line>"   # append a progress line; 
 rig scope slice progress <slice-path> --add "<line>"  # same flags: --add / --set, --section <heading>, --status active|done|blocked
 ```
 
-Replaces hand-editing `PROGRESS.md` with markdown. Writes the canonical structure the OpenRig PROGRESS UI page reads. `rig scope mission create` + `rig scope slice create` now scaffold `PROGRESS.md` automatically per `conventions/scope-and-versioning/README.md`.
+Replaces hand-editing `PROGRESS.md` with markdown. Writes the canonical structure the OpenRig PROGRESS UI page reads. `rig scope mission create` + `rig scope slice create` now scaffold `PROGRESS.md` automatically.
 
 ### `rig scope mission|slice stage / verified / repair` — deterministic maturity vocabulary
 
@@ -560,7 +580,7 @@ rig scope slice show <slice>                          # derives read-time effect
                                                       # — stale-`verified` `canonical` reported as effectively `provisional`
 ```
 
-Composes with the `progress` command + scaffolding to make `rig scope` the **deterministic enforcer** of `conventions/scope-and-versioning` §1 (dot-IDs) + §2 (maturity vocabulary). Agents update `stage` / `verified` / `id` through commands rather than hand-editing markdown and drifting. The `--against` MANDATORY rule on `verified` is the anti-stale keystone: bare timestamps are rejected because a bare timestamp is exactly what lets stale trackers lie while looking fresh. **STOP hand-editing the `stage` / `verified` / `id` fields in scope frontmatter; use the new verbs.** Existing missions / slices with `id:null` ghosts or missing `PROGRESS.md` are repaired idempotently via `repair`.
+Composes with the `progress` command + scaffolding to update scope IDs and maturity vocabulary through `rig scope`. Agents update `stage` / `verified` / `id` through commands rather than hand-editing markdown and drifting. The `--against` MANDATORY rule on `verified` is the anti-stale keystone: bare timestamps are rejected because a bare timestamp is exactly what lets stale trackers lie while looking fresh. **STOP hand-editing the `stage` / `verified` / `id` fields in scope frontmatter; use the new verbs.** Existing missions / slices with `id:null` ghosts or missing `PROGRESS.md` are repaired idempotently via `repair`.
 
 ### `rig skill audit` — skill cascade provenance
 
@@ -575,7 +595,17 @@ Read-only audit of the skill cascade. Detects `missing` / `stale` / `self-refere
 
 ### `rig seat clear-attention` — extended to derived projection staleness
 
-v0.3.4 shipped `clear-attention` gating on `session.startupStatus` only. v0.4.0 extends the verb to also reach **restoreOutcome-derived** attention (seat is `startupStatus=ready` + `sessionStatus=running` but carries `restoreOutcome=failed` / `continuityOutcome=failed`). Same evidence-gated audit row applies; the `--reason <text>` operator-attestation override carries the runtime / cwd-uncertainty disclosure honestly.
+`clear-attention` also reaches restore-derived attention even when
+`startupStatus=ready` and `sessionStatus=running`. Full-restore attention requires
+the restore reconciler's exact native-token and usable-pane checks; `--reason`
+cannot replace them. Subset-restore attention can reach the attestation path
+when no active pane-identity class takes precedence. That path records
+`operator_recovered` with `runtimeCwdVerified:false`; it is an acknowledgment,
+not proof of resumed lineage. Without an explicit stored continuity outcome,
+inventory leaves continuity null (`unverified` in `rig seat status`) unless the
+same restore attempt has a matching receipt and reconciliation with strict
+native-token and usable-pane proof. Explicit stored outcomes remain historical
+facts; acknowledgment or responsiveness alone cannot infer `resumed`.
 
 ### Native Codex session id capture
 
@@ -877,8 +907,6 @@ narration — a good observation beats ten noisy ones. It's a passing thought yo
 6. Monitor: `rig chatroom wait my-rig --timeout 120`
 7. Close: `rig chatroom topic my-rig "ROUND CLOSED"`
 
-See `docs/planning/roadmaps/chatroom-roundtable-protocol.md` for the full protocol.
-
 ### `rig ask`
 
 ```bash
@@ -918,7 +946,7 @@ rig auth seats … --runtime codex         # seat -> profile registry (metadata 
 
 ### `rig context` — the store + compose library (never delivers)
 
-Manage and compose context (any text/markdown) into reusable **packs**. Every piece and pack has a stable, **path-like ref** — you address context the way you address files (`packs/compaction-restore`, `as-built/queue-internals`).
+Manage and compose context (any text/markdown) into reusable **packs**. Every piece and pack has a stable, **path-like ref** — you address context the way you address files (`skills/claude-compaction-restore`, `reference/rig-spec.md`).
 
 ```bash
 rig context list                     # what's in the library
@@ -955,12 +983,12 @@ Walk a seat *through* a pack: each piece is sent into the pane, spaced by `--pac
 - **`--body-context` snapshot rule:** a qitem built from a ref stores the **resolved content** in its body **plus the ref for provenance** — the handoff carries what was actually sent, and a later library edit never silently rewrites a past handoff's history.
 - **The orchestrator habit — assign work *with* its context attached:**
   ```bash
-  rig context compose --out packs/qitem-brief --from as-built/queue.md conventions/c1-proof.md
+  rig context compose --out packs/qitem-brief --from <brief-file> <proof-file>
   rig queue create --destination dev-driver@build --body-context packs/qitem-brief --summary "…"
   ```
-  The assignee never greps for the as-built; the curated context rides the durable handoff, survives compaction, and is auditable.
+  Replace `<brief-file>` and `<proof-file>` with your existing local files. The curated context rides the durable handoff, survives compaction, and is auditable.
 
-**Skills tier vs context tier:** skills are the HOT tier (ambient, finite, always-visible front-matter); context packs are the COLD tier (unbounded, fetched on instruction — "walk yourself through `packs/tui-onboarding`"). Don't overrun the skill layer by using skills as context packs — that's what this primitive is for.
+**Skills tier vs context tier:** skills are the HOT tier (ambient, finite, always-visible front-matter); context packs are the COLD tier (unbounded, fetched on instruction — "read `rig context get onboarding-width`"). Don't overrun the skill layer by using skills as context packs — that's what this primitive is for.
 
 ## Lifecycle
 
@@ -1250,6 +1278,7 @@ This lets ordinary agents ask the manager for OpenRig help instead of every agen
 ### Add/remove running topology parts
 
 ```bash
+rig grow <rig-id> <member...> [--pod <pod> | --new-pod <pod>] [--runtime <runtime>] [--cwd <path>] [--json]
 rig expand <rig-id> <pod-fragment-path> [--rig-root <path>] [--json]
 rig launch <rigId> <nodeRef> [--json]
 rig launch <rigId> --seats <a,b,c> [--hold-reason <text>] [--json]
@@ -1257,6 +1286,12 @@ rig remove <rigId> <nodeRef> [--json]
 rig shrink <rigId> <podRef> [--json]
 rig unclaim <sessionRef> [--json]
 ```
+
+`rig grow` is the simplest way to add seats: no YAML, the default agent spec, and one
+runtime and working directory for the named seats (`--new-pod` creates a pod for them).
+Check `rig grow --help` on your installed version. Use a fragment with `rig expand` (a pod)
+or `rig add` (one member) when a seat needs an explicit model, a permission policy, a
+different agent spec or role profile, per-seat runtime or cwd, or startup files.
 
 Node-granular managed partial restore (v0.3.4+):
 - `rig launch <rigId> <nodeRef>` relaunches a single seat by logical id or node id through orchestration.
@@ -1267,15 +1302,19 @@ Node-granular managed partial restore (v0.3.4+):
 ### Add a member to an existing pod — v0.3.3+
 
 ```bash
-rig add <rig> <member-fragment-path> [--json]
-rig add-member <rig> <member-fragment-path> [--json]
+rig add <rig> <pod-namespace> <member-fragment-path> [--json]
 ```
 
-`rig add` (alias `rig add-member`) is the top-level verb for the `add_member`
-converge op. It adds a single member to an existing pod from a YAML/JSON member
-fragment file. The fragment must declare the target pod; the daemon resolves
-the pod by that declared identity, validates the member, runs preflight, and
+`rig add` is the top-level verb for the `add_member` converge op. It adds a
+single member to an existing pod from a YAML/JSON member fragment file. The
+daemon resolves the named pod, validates the member, runs preflight, and
 launches the member in place.
+
+`<rig>` is the rig id or its exact name (the `rigName` that `rig whoami --json`
+reports). A name shared by more than one rig is refused before anything is
+added, with the matching ids listed (`rig_ambiguous` under `--json`). `rig add`
+always targets the local daemon: while a remote host is selected it refuses to
+resolve a name (`remote_host_selected`); an exact local id still works.
 
 HTTP outcomes:
 - `201` — member added; per-node launch state included in the response.
@@ -1360,8 +1399,6 @@ Do not mass-kill:
 - `tmux attach ...`
 - `codex ...`
 - `claude ...`
-
-For deeper host/runtime triage, use the companion `openrig-operator` skill if it is available in your seat.
 
 ## JSON and Error Posture
 

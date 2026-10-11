@@ -20,8 +20,6 @@ metadata:
     stage: factory-approved
     sibling_skills:
       - openrig-user
-      - openrig-operator
-      - openrig-builder
       - openrig-architect
       - openrig-upgrade
       - agent-operated-workflows
@@ -91,7 +89,10 @@ you should know which pillar you're operating in:
 OpenRig manages topology and exposes public context through `rig context`.
 Project-authored sources supply project-specific knowledge; transcripts retain
 recorded work. These sources already coexist. Discover the configured library
-and selected task context rather than assuming a particular private corpus.
+and selected task context rather than assuming a particular private corpus:
+`rig context list` shows the configured packs, and `rig context work-install`
+lists what the current project declares (intent, context files, skills), so you
+read only the pieces a task needs.
 
 ---
 
@@ -175,7 +176,7 @@ cost when you reach for one.
 |---|---|
 | `<rig-cwd>/.claude/skills/`, `<rig-cwd>/.agents/skills/` | Where the harness actually loads from. Populated by `rig up`. |
 | `~/.claude/skills/`, `~/.agents/skills/` | User-level harness skill directories. Inspect the current projection and harness configuration to determine which skills are installed and where they came from. |
-| `openrig/packages/daemon/{specs/agents/shared/skills,assets/plugins/*/skills}/` | Product skills that ship with OpenRig — the spec pool + the bundled plugin assets (openrig-user, openrig-operator, openrig-architect, forming-an-openrig-mental-model, queue-handoff, claude-compaction-restore, …). |
+| `packages/daemon/{specs/agents/shared/skills,assets/plugins/*/skills}/` (source checkout) | Product skills that ship with OpenRig — the spec pool + the bundled plugin assets (openrig-user, openrig-architect, forming-an-openrig-mental-model, queue-handoff, claude-compaction-restore, …). |
 | the skills authoring workspace | Skill authoring source (not runtime-loaded). |
 
 The product already discovers its installed shared skill pool and serves
@@ -195,7 +196,7 @@ rig whoami --json         # know who you are
 rig send <session> "msg"  # talk to a peer
 rig capture <session>     # see a peer's terminal
 rig transcript <session>  # read a peer's history
-rig down <rigId>          # snapshot and tear down
+rig down <rigId>          # snapshot and stop every agent; check rig ps first, only when asked
 rig up <rig-name>         # restore from snapshot
 ```
 
@@ -258,12 +259,12 @@ For real depth, these are the load-bearing canonical docs:
 
 | Reference | What it covers |
 |---|---|
-| `openrig/docs/as-built/README.md` | As-built map of territory — daemon architecture, system overview, package boundaries; routes to the 13 `architecture/` + 4 `ui/` modules via `codemap.md` |
-| `openrig/docs/as-built/cli-reference.md` | The full `rig` CLI surface with all subcommands and flags |
-| `openrig/docs/reference/rig-spec.md` | The RigSpec YAML format — pods, members, edges, all fields |
-| `openrig/docs/reference/agent-spec.md` | The AgentSpec YAML format — resources, profiles, imports |
-| `openrig/docs/reference/agent-startup-guide.md` | The 7-layer startup layering model; delivery hints |
-| the product taxonomy | Canonical vocabulary (read literally) |
+| `docs/as-built/README.md` (source checkout) | As-built map of territory — daemon architecture, system overview, package boundaries; routes to architecture and UI modules via `codemap.md` |
+| `rig --help`, then `rig <command> --help` | The installed CLI surface, subcommands and flags |
+| `rig context get reference/rig-spec.md` | The RigSpec YAML format — pods, members, edges, all fields |
+| `docs/reference/agent-spec.md` (source checkout) | The AgentSpec YAML format — resources, profiles, imports |
+| `docs/reference/agent-startup-guide.md` (source checkout) | The 7-layer startup layering model; delivery hints |
+| [Core vocabulary above](#the-core-vocabulary-read-these-terms-literally) | Vocabulary used in this skill (read literally) |
 | `openrig-operating-model` skill | Placement and operating-model guidance — topology and work trees, context altitude |
 | `openrig-architect` skill | Rig and topology authoring |
 | `https://agentskills.io/specification` | The cross-runtime skill standard |
@@ -281,7 +282,6 @@ touching YAML.
   CULTURE.md. Read those.
 - **Authoring a new rig.** Use the `openrig-architect` skill for that.
 - **Day-to-day OpenRig operation.** Use `openrig-user` for that.
-- **Administering an OpenRig install.** Use `openrig-operator`.
 
 This skill exists to **form your initial mental model of OpenRig as a
 system**. Once oriented, reach for the role-specific or task-specific skills

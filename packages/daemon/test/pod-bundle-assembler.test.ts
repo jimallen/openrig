@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import nodePath from "node:path";
+import * as nodeFs from "node:fs";
+import { tmpdir } from "node:os";
 import { PodBundleAssembler, type PodAssemblerFsOps } from "../src/domain/pod-bundle-assembler.js";
 import { validatePodBundleManifest, parsePodBundleManifest, serializePodBundleManifest, type PodBundleManifest } from "../src/domain/bundle-types.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
@@ -7,31 +9,45 @@ import type { RigSpec } from "../src/domain/types.js";
 
 // -- Mock filesystem --
 
-function mockFs(files: Record<string, string>): PodAssemblerFsOps {
-  const written: Record<string, string> = {};
+function mockFs(files: Record<string, string | Uint8Array>, modes: Record<string, number> = {}): PodAssemblerFsOps {
+  const written: Record<string, string | Uint8Array> = {};
+  const writtenModes: Record<string, number> = {};
   const dirs = new Set<string>();
+  const read = (p: string): string | Uint8Array => {
+    if (p in files) return files[p]!;
+    if (p in written) return written[p]!;
+    throw new Error(`File not found: ${p}`);
+  };
 
   return {
     readFile: (p: string) => {
-      if (p in files) return files[p]!;
-      if (p in written) return written[p]!;
-      throw new Error(`File not found: ${p}`);
+      const v = read(p);
+      return typeof v === "string" ? v : Buffer.from(v).toString("utf8");
     },
+    readFileBuffer: (p: string) => {
+      const v = read(p);
+      return typeof v === "string" ? Buffer.from(v, "utf8") : v;
+    },
+    fileMode: (p: string) => modes[p] ?? 0o644,
+    realpath: (p: string) => nodePath.resolve(p),
     exists: (p: string) => p in files || p in written,
     mkdirp: (p: string) => { dirs.add(p); },
-    writeFile: (p: string, content: string) => { written[p] = content; },
+    writeFile: (p: string, content: string | Uint8Array, mode?: number) => {
+      written[p] = content;
+      if (mode !== undefined) writtenModes[p] = mode;
+    },
     copyDir: () => {},
     listFiles: (dirPath: string) => {
       const result: string[] = [];
       for (const key of Object.keys(files)) {
-        if (key.startsWith(dirPath + "/")) {
-          result.push(key.slice(dirPath.length + 1));
-        }
+        const relative = nodePath.relative(dirPath, key);
+        if (relative && !relative.startsWith("..") && !nodePath.isAbsolute(relative)) result.push(relative);
       }
       return result;
     },
     _written: written, // for test inspection
-  } as PodAssemblerFsOps & { _written: Record<string, string> };
+    _writtenModes: writtenModes,
+  } as PodAssemblerFsOps & { _written: Record<string, string | Uint8Array>; _writtenModes: Record<string, number> };
 }
 
 // -- Helpers --
@@ -133,6 +149,29 @@ describe("PodBundleAssembler", () => {
     });
 
     expect(result.manifest.agents).toHaveLength(1);
+  });
+
+  it.each([0o700, 0o750, 0o755, 0o600])("preserves mode %i while vendoring agent package files", (mode) => {
+    const rigRoot = nodePath.resolve(RIG_ROOT);
+    const scriptPath = nodePath.join(rigRoot, "agents", "impl", "bin", "hello.sh");
+    const fs = mockFs({
+      [nodePath.join(rigRoot, "rig.yaml")]: rigSpecYaml(makeRigSpec()),
+      [nodePath.join(rigRoot, "agents", "impl", "agent.yaml")]: validAgentYaml("impl"),
+      [scriptPath]: "#!/bin/sh\necho hello\n",
+    }, { [scriptPath]: mode });
+    const assembler = new PodBundleAssembler({ fsOps: fs });
+
+    assembler.assemble({
+      rigRoot,
+      rigSpecPath: nodePath.join(rigRoot, "rig.yaml"),
+      outputDir: "/tmp/bundle-staging-executable",
+      bundleName: "test-bundle",
+      bundleVersion: "1.0.0",
+    });
+
+    expect((fs as unknown as { _writtenModes: Record<string, number> })._writtenModes[
+      nodePath.join("/tmp/bundle-staging-executable", "agents", "impl", "bin", "hello.sh")
+    ]).toBe(mode);
   });
 
   it("preserves builtin terminal members without trying to vendor them", () => {
@@ -310,6 +349,85 @@ describe("PodBundleAssembler", () => {
     })).toThrow(/traversal|escape/i);
   });
 
+  it("rejects a sibling-prefix traversal at schema validation", () => {
+    const spec = makeRigSpec({ cultureFile: "../rig-sibling/context.md" });
+    const fs = mockFs({ [`${RIG_ROOT}/rig.yaml`]: rigSpecYaml(spec) });
+    const realpath = vi.spyOn(fs, "realpath");
+    expect(() => new PodBundleAssembler({ fsOps: fs }).assemble({
+      rigRoot: RIG_ROOT, rigSpecPath: `${RIG_ROOT}/rig.yaml`,
+      outputDir: "/tmp/staging", bundleName: "test", bundleVersion: "1.0",
+    })).toThrow('Invalid rig spec: culture_file: path traversal (..) is not allowed (got "../rig-sibling/context.md")');
+    expect(realpath).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "outside.md",
+    "outside-dir/context.md",
+  ])("rejects a rig file resolving into a sibling-prefix directory: %s", (path) => {
+    const root = nodeFs.mkdtempSync(nodePath.join(tmpdir(), "pod-containment-"));
+    try {
+      const rigRoot = nodePath.join(root, "rig");
+      const sibling = nodePath.join(root, "rig-sibling");
+      nodeFs.mkdirSync(rigRoot);
+      nodeFs.mkdirSync(sibling);
+      nodeFs.writeFileSync(nodePath.join(sibling, "context.md"), "# Sibling context");
+      nodeFs.symlinkSync(nodePath.join(sibling, "context.md"), nodePath.join(rigRoot, "outside.md"));
+      nodeFs.symlinkSync(sibling, nodePath.join(rigRoot, "outside-dir"));
+      const spec = makeRigSpec({ cultureFile: path });
+      const fs = mockFs({
+        [`${rigRoot}/rig.yaml`]: rigSpecYaml(spec),
+        [`${rigRoot}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+      });
+      // Exercise real path resolution; refuse before reading or writing file bytes.
+      Object.assign(fs, { realpath: nodeFs.realpathSync });
+      const exists = fs.exists;
+      const readFileBuffer = fs.readFileBuffer;
+      fs.exists = (p) => exists(p) || nodeFs.existsSync(p);
+      fs.readFileBuffer = (p) => nodeFs.existsSync(p) ? nodeFs.readFileSync(p) : readFileBuffer(p);
+      expect(() => new PodBundleAssembler({ fsOps: fs }).assemble({
+        rigRoot, rigSpecPath: `${rigRoot}/rig.yaml`, outputDir: `${root}/staging`,
+        bundleName: "test", bundleVersion: "1.0",
+      })).toThrow(`"${path}" resolves outside the rig root through a symlink; copy the file into the rig to bundle it`);
+      expect((fs as typeof fs & { _written: object })._written).toEqual({});
+    } finally {
+      nodeFs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("keeps in-root symlinks with a symlinked rig root: %s", (aliasRoot) => {
+    const root = nodeFs.mkdtempSync(nodePath.join(tmpdir(), "pod-containment-"));
+    try {
+      const actualRoot = nodePath.join(root, "rig");
+      nodeFs.mkdirSync(actualRoot);
+      nodeFs.writeFileSync(nodePath.join(actualRoot, "context.md"), "# Local context");
+      nodeFs.symlinkSync("context.md", nodePath.join(actualRoot, "inside.md"));
+      nodeFs.symlinkSync(actualRoot, nodePath.join(root, "alias"));
+      const rigRoot = aliasRoot ? nodePath.join(root, "alias") : actualRoot;
+      const spec = makeRigSpec({ cultureFile: "inside.md" });
+      const fs = mockFs({
+        [`${rigRoot}/rig.yaml`]: rigSpecYaml(spec),
+        [`${rigRoot}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+        [`${rigRoot}/inside.md`]: "# Local context",
+      });
+      Object.assign(fs, { realpath: nodeFs.realpathSync });
+      const readFileBuffer = fs.readFileBuffer;
+      const read = vi.spyOn(fs, "readFileBuffer").mockImplementation((p) =>
+        nodeFs.existsSync(p) ? nodeFs.readFileSync(p) : readFileBuffer(p));
+      const mode = vi.spyOn(fs, "fileMode");
+      const result = new PodBundleAssembler({ fsOps: fs }).assemble({
+        rigRoot, rigSpecPath: `${rigRoot}/rig.yaml`, outputDir: `${root}/staging`,
+        bundleName: "test", bundleVersion: "1.0",
+      });
+      expect(result.collectedFiles).toContain("inside.md");
+      const written = (fs as typeof fs & { _written: Record<string, Uint8Array> })._written;
+      expect(Buffer.from(written[`${root}/staging/inside.md`]!).toString()).toBe("# Local context");
+      expect(read).toHaveBeenCalledWith(nodePath.join(actualRoot, "context.md"));
+      expect(mode).toHaveBeenCalledWith(nodePath.join(actualRoot, "context.md"));
+    } finally {
+      nodeFs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // T8b: path: absolute agent_ref outside rig root included and ref is rewritten
   it("path: absolute agent_ref outside rig root is vendored with rewritten ref", () => {
     const spec = makeRigSpec({
@@ -463,6 +581,33 @@ describe("PodBundleAssembler", () => {
   });
 
   // T11: integration: assemble -> verify manifest + file contents
+  it("copies agent-package and rig files as bytes, never decoding them", () => {
+    const spec = makeRigSpec({
+      cultureFile: "culture.md",
+      startup: { files: [{ path: "startup/blob.bin", deliveryHint: "auto", required: true, appliesOn: ["fresh_start", "restore"] }], actions: [] },
+    });
+    const binary = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x80, 0x00, 0xc3, 0x28, 0xff]);
+    const culture = Uint8Array.from([0x23, 0x20, 0xa0, 0xa1, 0x0a]);
+    const startup = Uint8Array.from([0xfe, 0xed, 0x00, 0xc0]);
+    const files: Record<string, string | Uint8Array> = {
+      [`${RIG_ROOT}/rig.yaml`]: rigSpecYaml(spec),
+      [`${RIG_ROOT}/culture.md`]: culture,
+      [`${RIG_ROOT}/startup/blob.bin`]: startup,
+      [`${RIG_ROOT}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+      [`${RIG_ROOT}/agents/impl/assets/logo.png`]: binary,
+    };
+    const fs = mockFs(files);
+    new PodBundleAssembler({ fsOps: fs }).assemble({
+      rigRoot: RIG_ROOT, rigSpecPath: `${RIG_ROOT}/rig.yaml`,
+      outputDir: "/tmp/staging", bundleName: "bytes", bundleVersion: "1.0.0",
+    });
+
+    const written = (fs as unknown as { _written: Record<string, string | Uint8Array> })._written;
+    expect(Buffer.from(written["/tmp/staging/agents/impl/assets/logo.png"]!).equals(Buffer.from(binary))).toBe(true);
+    expect(Buffer.from(written["/tmp/staging/culture.md"]!).equals(Buffer.from(culture))).toBe(true);
+    expect(Buffer.from(written["/tmp/staging/startup/blob.bin"]!).equals(Buffer.from(startup))).toBe(true);
+  });
+
   it("integration: assembled bundle has correct manifest and files", () => {
     const spec = makeRigSpec({
       cultureFile: "culture.md",
@@ -492,7 +637,7 @@ describe("PodBundleAssembler", () => {
     // Verify written files exist
     const written = (fs as unknown as { _written: Record<string, string> })._written;
     expect(written["/tmp/staging/rig.yaml"]).toBeDefined();
-    expect(written["/tmp/staging/culture.md"]).toBe("# Culture doc");
+    expect(Buffer.from(written["/tmp/staging/culture.md"]!).toString("utf8")).toBe("# Culture doc");
     expect(written["/tmp/staging/bundle.yaml"]).toBeDefined();
   });
 

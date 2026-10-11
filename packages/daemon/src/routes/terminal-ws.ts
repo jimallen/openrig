@@ -11,31 +11,9 @@ import {
 const MAX_EARLY_TERMINAL_FRAMES = 32;
 const MAX_EARLY_TERMINAL_FRAME_BYTES = 256 * 1024;
 
-export function registerTerminalWs(
-  app: Hono,
-  upgradeWebSocket: Parameters<typeof import("@hono/node-ws").createNodeWebSocket>[0] extends { app: infer _A } ? never : never,
-  opts: { bearerToken: string | null },
-): void;
-export function registerTerminalWs(
-  app: Hono,
-  upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
-  opts: { bearerToken: string | null; livenessIntervalMs?: number },
-): void {
-  const terminalAuthMiddleware = async (c: { req: { header(name: string): string | undefined; query(name: string): string | undefined }; json(data: unknown, status: number): unknown }, next: () => Promise<void>) => {
-    const upgrade = c.req.header("Upgrade");
-    if (upgrade?.toLowerCase() === "websocket") {
-      const origin = c.req.header("Origin");
-      if (origin) {
-        try {
-          const originHost = new URL(origin).hostname;
-          const requestHost = c.req.header("Host")?.split(":")[0] ?? "";
-          const allowed = originHost === requestHost || originHost === "localhost" || originHost === "127.0.0.1";
-          if (!allowed) return c.json({ error: "origin_rejected", hint: `Origin ${origin} does not match host` }, 403);
-        } catch {
-          return c.json({ error: "origin_rejected", hint: "Malformed Origin header" }, 403);
-        }
-      }
-    }
+/** Terminal bearer authentication; server.ts applies the shared browser boundary before this route. */
+export function terminalAuthMiddleware(opts: { bearerToken: string | null }) {
+  return async (c: { req: { header(name: string): string | undefined; query(name: string): string | undefined }; json(data: unknown, status: number): unknown }, next: () => Promise<void>) => {
     const token = opts.bearerToken;
     if (!token) { await next(); return; }
     const header = c.req.header("Authorization") ?? c.req.header("authorization");
@@ -47,6 +25,26 @@ export function registerTerminalWs(
     if (queryToken && constantTimeEqual(queryToken.trim(), token)) { await next(); return; }
     return c.json({ error: "unauthorized", hint: "Pass terminal token via Authorization header or ?token= query" }, 401);
   };
+}
+
+/** With the web UI off the WebSocket is not registered, but this same guard still runs in front of the HTTP
+ *  terminal routes it matched before (GET /api/terminal/views, /preview, /status), so their behaviour is unchanged. */
+export function registerTerminalAuthOnly(app: Hono, opts: { bearerToken: string | null }): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any).get("/api/terminal/:sessionName", terminalAuthMiddleware(opts));
+}
+
+export function registerTerminalWs(
+  app: Hono,
+  upgradeWebSocket: Parameters<typeof import("@hono/node-ws").createNodeWebSocket>[0] extends { app: infer _A } ? never : never,
+  opts: { bearerToken: string | null },
+): void;
+export function registerTerminalWs(
+  app: Hono,
+  upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
+  opts: { bearerToken: string | null; livenessIntervalMs?: number },
+): void {
+  const terminalAuth = terminalAuthMiddleware(opts);
 
   // One daemon-owned broker registry shared across every WebSocket connection,
   // created lazily from the first connection's tmux adapter (a daemon
@@ -63,10 +61,10 @@ export function registerTerminalWs(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any).get(
     "/api/terminal/:sessionName",
-    terminalAuthMiddleware,
+    terminalAuth,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (upgradeWebSocket as any)((c: any) => {
-      const sessionName = decodeURIComponent(c.req.param("sessionName")!);
+      const sessionName = c.req.param("sessionName")!;
       let broker: TerminalSessionBroker | null = null;
       let subscriber: TerminalSubscriber | null = null;
       // The WebSocket can close DURING the async attach (before the broker
@@ -113,7 +111,19 @@ export function registerTerminalWs(
             close: (code: number, reason: string) => { try { ws.close(code, reason); } catch { /* already closed */ } },
           };
           subscriber = sub;
-          const b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+          let b: TerminalSessionBroker;
+          try {
+            b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+          } catch {
+            // The WebSocket adapter does not await onOpen. Contain attach failures
+            // here; the registry disposes the failed broker before rejecting.
+            closed = true;
+            earlyFrames.length = 0;
+            earlyFrameBytes = 0;
+            subscriber = null;
+            sub.close(1011, "terminal attach failed");
+            return;
+          }
           broker = b;
           // If the socket closed while attach was in flight, detach now so the
           // broker does not retain a dead subscriber (detach is idempotent).

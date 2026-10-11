@@ -37,11 +37,11 @@ describe("seat verbs with same-name rig history", () => {
     expect(out.ok).toBe(true);
   });
 
-  it("all generations stopped: newest generation answers (dead-seat verbs need a target)", () => {
+  it("all generations stopped: unarchived duplicates stay ambiguous until the stale one is archived", () => {
     rigWithCos("history-rig", "stopped");
     rigWithCos("history-rig", "stopped");
     const svc = new SeatStatusService({ rigRepo });
     const out = svc.getStatus("exec-cos@history-rig");
-    expect(out.ok).toBe(true);
+    expect(out).toMatchObject({ ok: false, code: "seat_ambiguous" });
   });
 });

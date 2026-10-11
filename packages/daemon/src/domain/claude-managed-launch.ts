@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import { publicSeatEnvironment } from "./seat-launch-environment.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { claudeClassicRendererEnvPrefix } from "../adapters/yolo-mode.js";
 import { parseClaudePermissionModes } from "./permission-drift.js";
@@ -43,14 +44,39 @@ export class ClaudeManagedLaunch {
     return row;
   }
 
+  /** Bootstrap shares prepare's stored-node cwd when the binding omits it. */
+  boundCwd(nodeId: string): string {
+    return this.target(nodeId).cwd!;
+  }
+
+  /** Bootstrap and the launched child must use the same native selection.
+   * Unset config uses HOME/.claude.json; even an explicit default-looking
+   * directory selects <configDir>/.claude.json instead (#154/#225).
+   */
+  configPaths(cwd: string): { configDir: string; statePath: string } {
+    const { HOME, CLAUDE_CONFIG_DIR } = this.sessionEnv;
+    if (!HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: absolute HOME is required.");
+    const configDir = path.resolve(cwd, CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude"));
+    return { configDir, statePath: path.join(CLAUDE_CONFIG_DIR === undefined ? HOME : configDir, ".claude.json") };
+  }
+
+  /** The state file under the daemon's own non-empty CLAUDE_CONFIG_DIR, or undefined when the daemon
+   * selects none. Classic bootstrap provisions it in addition to HOME/.claude.json. */
+  selectedStatePath(cwd: string): string | undefined {
+    return this.sessionEnv.CLAUDE_CONFIG_DIR ? this.configPaths(cwd).statePath : undefined;
+  }
+
   private context(cwd: string) {
     const { PATH, HOME, CLAUDE_CONFIG_DIR } = this.sessionEnv;
     if (!PATH || !HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: managed PATH and absolute HOME are required.");
     // Relative/empty PATH entries are interpreted at the intended seat cwd,
     // including for /usr/bin/env shebangs inside the selected executable.
     const search = PATH.split(path.delimiter).map(p => path.resolve(cwd, p));
-    const env: Record<string, string> = { PATH: search.join(path.delimiter), HOME,
-      CLAUDE_CONFIG_DIR: path.resolve(cwd, CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude")) };
+    const { configDir } = this.configPaths(cwd);
+    const env: Record<string, string> = { PATH: search.join(path.delimiter), HOME };
+    // Session storage needs a directory, but exporting the default changes
+    // Claude's global config selection. Preserve an unset native selection.
+    if (CLAUDE_CONFIG_DIR !== undefined) env.CLAUDE_CONFIG_DIR = configDir;
     if (claudeClassicRendererEnvPrefix(this.rendererEnv)) env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
     let executable: string | undefined;
     for (const dir of search) {
@@ -64,12 +90,12 @@ export class ClaudeManagedLaunch {
       const s = statSync(file);
       return [realpathSync(file), s.dev, s.ino, s.mode, s.size, s.mtimeMs, s.ctimeMs];
     };
-    return Object.freeze({ env: Object.freeze(env), executable,
+    return Object.freeze({ env: Object.freeze(env), configDir, executable,
       fileIdentity: Object.freeze(identity(executable)), cwdIdentity: Object.freeze(identity(cwd).slice(0, 3)) });
   }
 
   async prepare(request: ClaudeLaunchTarget, mode: string): Promise<{
-    assertCurrent: () => void; command: (args: readonly string[]) => string; configDir: string;
+    assertCurrent: () => void; command: (args: readonly string[], launchEnv?: Readonly<Record<string, string>>) => string; configDir: string; executable: string;
   }> {
     const target = Object.freeze({ ...request });
     const before = this.target(target.nodeId);
@@ -97,7 +123,7 @@ export class ClaudeManagedLaunch {
       }
     };
     const help = await new Promise<string>((resolve, reject) => {
-      execFile(context.executable, ["--help"], { cwd, env: context.env, encoding: "utf8", timeout: 1000, maxBuffer: 1024 * 1024 },
+      execFile(context.executable, ["--help"], { cwd, env: context.env, encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 },
         (error, stdout) => error ? reject(new Error("Claude managed capability query failed; no fallback was selected.")) : resolve(stdout));
     });
     assertCurrent();
@@ -106,11 +132,18 @@ export class ClaudeManagedLaunch {
     const identity: Record<string, string> = { OPENRIG_NODE_ID: target.nodeId, OPENRIG_RUNTIME: "claude-code",
       ...(before.session ? { OPENRIG_SESSION_NAME: before.session } : {}),
       ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}) };
-    const assignments = Object.entries({ ...context.env, ...identity }).map(([key, value]) => shellQuote(`${key}=${value}`));
-    const forwarded = inherited.filter(key => !(key in identity)).map(key => `"${key}=\${${key}-}"`);
-    return Object.freeze({ assertCurrent, configDir: context.env.CLAUDE_CONFIG_DIR!, command: (args: readonly string[]) => {
+    const publicEnv = publicSeatEnvironment(this.sessionEnv);
+    const assignments = Object.entries({ ...context.env, ...publicEnv, ...identity }).map(([key, value]) => shellQuote(`${key}=${value}`));
+    const forwarded = inherited.filter(key => !(key in identity) && !(key in publicEnv)).map(key => `"${key}=\${${key}-}"`);
+    // Expand in the target pane shell, whose terminal can differ from the daemon.
+    // Empty and absent values remain absent after env -i.
+    const terminal = ["TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+      "LC_COLLATE", "LC_NUMERIC", "LC_TIME", "LC_MONETARY"]
+      .map(key => `\${${key}:+"${key}=$${key}"}`);
+    return Object.freeze({ assertCurrent, configDir: context.configDir, executable: context.executable, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
       assertCurrent();
-      return `cd ${shellQuote(cwd)} && /usr/bin/env -i ${[...assignments, ...forwarded, shellQuote(context.executable), ...args.map(shellQuote)].join(" ")}`;
+      const launch = Object.entries(launchEnv).map(([key, value]) => shellQuote(`${key}=${value}`));
+      return `cd ${shellQuote(cwd)} && /usr/bin/env -i ${[...assignments, ...forwarded, ...terminal, ...launch, shellQuote(context.executable), ...args.map(shellQuote)].join(" ")}`;
     } });
   }
 }

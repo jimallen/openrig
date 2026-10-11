@@ -56,6 +56,14 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
       return;
     }
 
+    if (status.state === "unverified") {
+      console.log(statusGuardMessage(status).fact);
+      if (status.siblingHint) {
+        console.log(`  note: OPENRIG_HOME may be wrong — resolved ${status.siblingHint.resolvedHome}, live sibling ${status.siblingHint.siblingHome}`);
+      }
+      return;
+    }
+
     // state === "running"
     if (status.healthy === false) {
       console.log(`Daemon running (pid ${status.pid}) but unhealthy — healthz failed`);
@@ -68,7 +76,11 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
     const [summaryRes, cmuxRes, kernelRes] = await Promise.all([
       client.get<Array<{ id: string; name: string; nodeCount: number; latestSnapshotAt: string | null; latestSnapshotId: string | null }>>("/api/rigs/summary"),
       client.get<{ available: boolean }>("/api/adapters/cmux/status").catch(() => null),
-      client.get<{ kernel_state?: string; error?: string }>("/api/kernel/status").catch(() => null),
+      client.get<{
+        kernel_state?: string;
+        error?: string;
+        last_boot_failure?: { state: string; detail: string | null; at: string | null } | null;
+      }>("/api/kernel/status").catch(() => null),
     ]);
 
     console.log(`Daemon running on port ${status.port}`);
@@ -80,6 +92,11 @@ export function statusCommand(depsOverride?: StatusDeps): Command {
     // agents are healthy.
     if (kernelRes && kernelRes.status === 200 && kernelRes.data?.kernel_state) {
       console.log(`Kernel: ${kernelRes.data.kernel_state} (boots on daemon-start; distinct from daemon health)`);
+      // #1042: a boot failure every kernel seat has since recovered from is history, shown apart from the state.
+      const failure = kernelRes.data.last_boot_failure;
+      if (failure) {
+        console.log(`  Recovered from an earlier boot failure (${failure.state}${failure.at ? ` at ${failure.at}` : ""}): ${failure.detail ?? "no detail recorded"}`);
+      }
     } else if (kernelRes && kernelRes.status === 503) {
       console.log("Kernel: not tracked (no kernel-boot tracker wired)");
     } else {

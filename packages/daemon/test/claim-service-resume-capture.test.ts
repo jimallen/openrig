@@ -19,7 +19,15 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 
 
-type SidecarResult = { ok: true; data: { session_id?: string } } | { ok: false; reason: string };
+type SidecarResult = { ok: true; data: { session_id?: string; sampled_at?: string } } | { ok: false; reason: string };
+
+// `ps -o lstart` text (C locale, local time) for a Date, as the process observer reports it.
+function lstart(d: Date): string {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${days[d.getDay()]} ${months[d.getMonth()]} ${String(d.getDate()).padStart(2, " ")} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`;
+}
 
 describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
   let db: Database.Database;
@@ -30,8 +38,10 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
   let mockTmux: TmuxAdapter;
   let readSidecar: ReturnType<typeof vi.fn>;
   let captureCodexThreadId: ReturnType<typeof vi.fn>;
+  let claudeProcessStartedAt: ((sessionName: string) => Promise<string | null>) | undefined;
 
   beforeEach(() => {
+    claudeProcessStartedAt = undefined;
     db = createDb();
     migrate(db, ALL_MIGRATIONS);
     rigRepo = new RigRepository(db);
@@ -59,6 +69,7 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
       db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter: mockTmux,
       contextUsageStore: { readSidecar: readSidecar as unknown as (n: string) => SidecarResult },
       resumeTokenCapturer: { captureCodexThreadId: captureCodexThreadId as unknown as (n: string) => Promise<string | undefined> },
+      ...(claudeProcessStartedAt ? { claudeProcessStartedAt } : {}),
     });
   }
 
@@ -124,6 +135,28 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     expect(captureCodexThreadId).toHaveBeenCalledWith("dev-qa@test-rig");
   });
 
+  it("bind captures only an OMP seat's own runner session file", async () => {
+    const rig = rigRepo.createRig("test-rig");
+    const node = rigRepo.addNode(rig.id, "dev.omp", { runtime: "omp", cwd: "/projects/app" });
+    const discovered = seedDiscovery({ runtimeHint: "omp", tmuxSession: "dev-omp@test-rig" });
+    const sessionFile = "/openrig/state/omp/dev-omp@test-rig/sessions/live.jsonl";
+    const ompRead = vi.fn((name: string) => {
+      expect(name).toBe("dev-omp@test-rig");
+      return { ok: true as const, sessionFile };
+    });
+    const piRead = vi.fn(() => { throw new Error("Pi state must not be read for OMP"); });
+    const service = new ClaimService({
+      db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter: mockTmux,
+      ompRunnerStateStore: { readSessionFile: ompRead },
+      piRunnerStateStore: { readSessionFile: piRead },
+    });
+
+    expect((await service.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "dev.omp" })).ok).toBe(true);
+    expect(tokenRow(node.id)).toMatchObject({ resume_type: "omp_session_file", resume_token: sessionFile, resume_provenance: "adoption" });
+    expect(ompRead).toHaveBeenCalledOnce();
+    expect(piRead).not.toHaveBeenCalled();
+  });
+
   it("bind honest-skips when the Claude sidecar is missing (no token persisted, skip event with reason)", async () => {
     readSidecar.mockReturnValue({ ok: false, reason: "missing_sidecar" });
     const rig = rigRepo.createRig("test-rig");
@@ -138,6 +171,48 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     expect(ev?.type).toBe("session.resume_token_captured");
     expect(ev?.payload.outcome).toBe("skipped");
     expect(ev?.payload.reason).toBe("missing_sidecar");
+  });
+
+  // #421: a sidecar can outlive the Claude process that wrote it (a seat that keeps a user's own
+  // status line never refreshes it). A sample taken before the pane's current Claude process
+  // started can only come from an earlier process.
+  describe("sidecar older than the pane's Claude process", () => {
+    const processStart = new Date(2026, 9, 2, 11, 0, 0);
+
+    async function bindClaude(sidecar: SidecarResult) {
+      readSidecar.mockReturnValue(sidecar);
+      const rig = rigRepo.createRig("test-rig");
+      const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
+      const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
+      expect((await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" })).ok).toBe(true);
+      return { row: tokenRow(node.id), event: latestEvent() };
+    }
+
+    it("skips a sidecar sampled before the process started (reason=stale_sidecar)", async () => {
+      const startedAt = vi.fn(async () => lstart(processStart));
+      claudeProcessStartedAt = startedAt;
+      const { row, event } = await bindClaude({ ok: true, data: { session_id: "claude-earlier-process", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() } });
+      expect(row.resume_token).toBeNull();
+      expect(event?.payload).toMatchObject({ outcome: "skipped", reason: "stale_sidecar" });
+      expect(startedAt).toHaveBeenCalledWith("orch-lead@test-rig");
+    });
+
+    it("captures a long-running session's own sample taken after its process started (re-adoption)", async () => {
+      claudeProcessStartedAt = async () => lstart(new Date(2026, 8, 28, 9, 0, 0));
+      const { row } = await bindClaude({ ok: true, data: { session_id: "claude-current-process", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() } });
+      expect(row.resume_token).toBe("claude-current-process");
+    });
+
+    it.each([
+      ["no sampled_at", { session_id: "claude-unknown" }, async () => lstart(processStart)],
+      ["no locatable process", { session_id: "claude-unknown", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() }, async () => null],
+      ["an unreadable start time", { session_id: "claude-unknown", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() }, async () => "not a date"],
+      ["a failed process read", { session_id: "claude-unknown", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() }, async () => { throw new Error("ps failed"); }],
+    ])("captures as before when staleness is unknown: %s", async (_label, data, startedAt) => {
+      claudeProcessStartedAt = startedAt as (sessionName: string) => Promise<string | null>;
+      const { row } = await bindClaude({ ok: true, data });
+      expect(row.resume_token).toBe("claude-unknown");
+    });
   });
 
   it("bind honest-skips when the Codex probe times out (undefined → reason=probe_timeout)", async () => {

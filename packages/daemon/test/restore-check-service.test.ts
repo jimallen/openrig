@@ -2,17 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { getNodeInventory } from "../src/domain/node-inventory.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import {
   RestoreCheckService,
   type RestoreCheckDeps,
   type NodeInventoryEntry,
-  // OPR.0.3.2.14 — these used to be copy-pasted in 7+ test files;
-  // exported from source now so any future scrub/refactor only
-  // touches one place. See restore-check-service.ts L204-224.
-  CLAUDE_HOOKS_ROOT,
-  CLAUDE_SESSION_START_COMPACT_COMMAND as REQUIRED_SESSION_START_COMPACT_COMMAND,
-  CLAUDE_USER_PROMPT_SUBMIT_COMMAND as REQUIRED_USER_PROMPT_SUBMIT_COMMAND,
 } from "../src/domain/restore-check-service.js";
+
+const RELAY_PATH = "/custom-instance/state/claude-activity-hooks/activity-relay.cjs";
 
 const VALID_HOST_INFRA_DECLARATION = JSON.stringify({
   schemaVersion: 1,
@@ -55,51 +54,6 @@ function v2HostInfraDeclaration(overrides?: {
   });
 }
 
-function claudeSettings(options?: {
-  sessionStartCommand?: string | null;
-  sessionStartMatcher?: string;
-  userPromptSubmitCommand?: string | null;
-  wrongEventCommand?: string | null;
-}): string {
-  const sessionStartHooks = [];
-  if (options?.sessionStartCommand !== null) {
-    sessionStartHooks.push({
-      type: "command",
-      command: options?.sessionStartCommand ?? REQUIRED_SESSION_START_COMPACT_COMMAND,
-    });
-  }
-
-  const userPromptSubmitHooks = [];
-  if (options?.userPromptSubmitCommand !== null) {
-    userPromptSubmitHooks.push({
-      type: "command",
-      command: options?.userPromptSubmitCommand ?? REQUIRED_USER_PROMPT_SUBMIT_COMMAND,
-    });
-  }
-
-  return JSON.stringify({
-    hooks: {
-      SessionStart: [
-        {
-          matcher: options?.sessionStartMatcher ?? "compact",
-          hooks: sessionStartHooks,
-        },
-        ...(options?.wrongEventCommand
-          ? [{
-              matcher: "wrong-event",
-              hooks: [{ type: "command", command: options.wrongEventCommand }],
-            }]
-          : []),
-      ],
-      UserPromptSubmit: [
-        {
-          hooks: userPromptSubmitHooks,
-        },
-      ],
-    },
-  });
-}
-
 function claudeNode(overrides?: Partial<NodeInventoryEntry> & { cwd?: string | null }): NodeInventoryEntry {
   return {
     nodeId: "node-1",
@@ -117,8 +71,8 @@ function claudeNode(overrides?: Partial<NodeInventoryEntry> & { cwd?: string | n
 function startupContextProbe(options?: {
   status?: "ok" | "missing" | "malformed" | "probe_error";
   evidence?: string;
-  resolvedStartupFiles?: Array<{ absolutePath: string; required: boolean; path?: string; deliveryHint?: string }>;
-  projectionEntries?: Array<{ absolutePath: string; effectiveId?: string; category?: string }>;
+  resolvedStartupFiles?: Array<{ absolutePath: string; required: boolean; path?: string; deliveryHint?: string; ownerRoot?: string }>;
+  projectionEntries?: Array<{ absolutePath: string; effectiveId?: string; category?: string; sourcePath?: string; resourceType?: string }>;
   runtime?: string;
 }) {
   if (options?.status && options.status !== "ok") {
@@ -136,37 +90,11 @@ function startupContextProbe(options?: {
   };
 }
 
-function settingsDeps(input: {
-  settings: Record<string, string>;
-  nodes?: NodeInventoryEntry[];
-  hostInfraDeclared?: boolean;
-}): { deps: RestoreCheckDeps; readPaths: string[] } {
-  const readPaths: string[] = [];
-  const settingsPaths = new Set(Object.keys(input.settings));
-  return {
-    readPaths,
-    deps: mockDeps({
-      getNodeInventory: () => input.nodes ?? [claudeNode()],
-      exists: (p) => {
-        if (p.endsWith("host-infra.json")) return input.hostInfraDeclared ?? true;
-        if (p.includes(`${path.sep}.claude${path.sep}settings`)) return settingsPaths.has(p);
-        return true;
-      },
-      readFile: (p) => {
-        readPaths.push(p);
-        if (p.endsWith("host-infra.json")) return VALID_HOST_INFRA_DECLARATION;
-        const value = input.settings[p];
-        if (value === undefined) throw new Error(`unexpected read: ${p}`);
-        return value;
-      },
-    }),
-  };
-}
-
 function mockDeps(overrides?: Partial<RestoreCheckDeps & {
   getStartupContext: (nodeId: string) => unknown;
 }>): RestoreCheckDeps {
   return {
+    stateDir: "/custom-instance",
     listRigs: () => [{ rigId: "rig-1", name: "test-rig" }],
     getNodeInventory: () => [
       {
@@ -181,16 +109,75 @@ function mockDeps(overrides?: Partial<RestoreCheckDeps & {
       } as NodeInventoryEntry,
     ],
     hasSnapshot: () => true,
+    // Independent fixture for the newly shared snapshot pre-validation.
+    getRestoreInputs: (rigId) => ({
+      snapshot: { id: "snap-1", kind: "full", data: {
+        rig: { id: rigId, name: "test-rig", createdAt: "", updatedAt: "" },
+        nodes: [], sessions: [], edges: [], checkpoints: {},
+      } },
+      servicesRecord: null,
+    }),
     getLatestSnapshot: () => null,
     probeDaemonHealth: () => ({ healthy: true, evidence: "Daemon running on port 7433" }),
     exists: () => true,
     readFile: () => VALID_HOST_INFRA_DECLARATION,
     getStartupContext: () => startupContextProbe(),
+    probeQueueStore: () => ({ available: true, evidence: "SQLite queue store is available" }),
+    getClaudeActivityHookEvents: () => ["SessionStart", "UserPromptSubmit"],
     ...overrides,
   };
 }
 
 describe("RestoreCheckService", () => {
+  it.each(["ready", "failed", "attention_required"])("identity projection advice preserves the stored %s outcome", stored => {
+    const db = createFullTestDb();
+    try {
+      db.prepare("INSERT INTO rigs (id, name) VALUES ('rig-1', 'test-rig')").run();
+      db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES ('node-1','rig-1','dev.impl','claude-code')").run();
+      db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, created_at) VALUES ('session-1','node-1','dev-impl@test-rig','running',?,'2026-07-01 00:00:00')").run(stored);
+      db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_pane) VALUES ('binding-1','node-1','tmux','dev-impl@test-rig','%1')").run();
+      new SeatIdentityStore(db).upsert({
+        nodeId: "node-1", verdict: "mismatch", evidenceSource: "pane_process", reason: "process_identity_ambiguous",
+        evidence: { registeredPane: "%1", observedPid: 123, observedCommand: "node", matchedLayer: null },
+        sessionName: "dev-impl@test-rig", observedAt: "2026-07-02T12:00:00.000Z",
+      });
+      const service = new RestoreCheckService(mockDeps({ getNodeInventory: rigId => getNodeInventory(db, rigId) }));
+      const result = service.check({ noQueue: true, noHooks: true }) as any;
+      const check = result.checks.find((entry: { check: string }) => entry.check === "seat.dev-impl@test-rig.readiness");
+      expect(check.status).toBe("red");
+      expect(check.remediationSafe).toBe(false);
+      if (stored === "ready") {
+        expect(check.evidence).toContain("verdict=mismatch reason=process_identity_ambiguous");
+        expect(check.remediation).toContain("Verify the current pane identity");
+        expect(check.remediation).toContain("rig seat clear-attention");
+        expect(check.remediation).not.toMatch(/relaunch/i);
+      } else {
+        expect(check.remediation).toContain("Restore or relaunch");
+      }
+    } finally { db.close(); }
+  });
+
+  it("missing-session identity advice offers recovery and conditional pane rebinding", () => {
+    const node = claudeNode({
+      storedStartupStatus: "ready", startupStatus: "attention_required",
+      identityVerdict: {
+        nodeId: "node-1", verdict: "pane_missing", evidenceSource: "tmux_session", reason: "session_missing",
+        evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+        sessionName: "dev-impl@test-rig", observedAt: "2026-07-02T12:00:00.000Z",
+      },
+    });
+    const result = new RestoreCheckService(mockDeps({ getNodeInventory: () => [node] }))
+      .check({ noQueue: true, noHooks: true }) as any;
+    const check = result.checks.find((entry: { check: string }) => entry.check === "seat.dev-impl@test-rig.readiness");
+    expect(check.status).toBe("red");
+    expect(check.remediationSafe).toBe(false);
+    expect(check.evidence).toContain("verdict=pane_missing reason=session_missing");
+    expect(check.remediation).toContain("restore or relaunch");
+    expect(check.remediation).toContain("another pane of its session");
+    expect(check.remediation).toContain("rig seat clear-attention");
+    expect(check.remediation).toContain("rerun rig restore-check");
+  });
+
   let previousOpenRigHome: string | undefined;
   let testOpenRigHome: string | null;
 
@@ -572,6 +559,33 @@ describe("RestoreCheckService", () => {
     }
   });
 
+  it("accepts real OPENRIG_HOME evidence inside a literal dot-prefixed directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "restore-dot-prefix-"));
+    const evidence = path.join(root, "..cache", "launchd.plist");
+    const declaration = path.join(root, "host-infra.json");
+    const previous = process.env["OPENRIG_HOME"];
+    process.env["OPENRIG_HOME"] = root;
+    fs.mkdirSync(path.dirname(evidence));
+    fs.writeFileSync(evidence, "synthetic local launch evidence");
+    fs.writeFileSync(declaration, v2HostInfraDeclaration({
+      daemonEvidencePaths: ["${OPENRIG_HOME}/..cache/launchd.plist"], supportingInfra: [],
+    }));
+    try {
+      const service = new RestoreCheckService(mockDeps({
+        listRigs: () => [], exists: fs.existsSync,
+        readFile: (candidate) => fs.readFileSync(candidate, "utf8"),
+      }));
+      const result = service.check({ noQueue: true, noHooks: true });
+      const check = result.checks.find((entry) => entry.check === "host.bootstrap-autostart.declaration");
+      expect(check?.status).toBe("green");
+      expect(check?.evidence).toContain(evidence);
+    } finally {
+      if (previous === undefined) delete process.env["OPENRIG_HOME"];
+      else process.env["OPENRIG_HOME"] = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("schemaVersion 2 missing daemon evidence path is yellow with exact path", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-host-infra-v2-missing-daemon-"));
     const declarationPath = path.join(tmpDir, "host-infra.json");
@@ -828,14 +842,20 @@ describe("RestoreCheckService", () => {
 
   // --- Rig spec/root checks ---
 
-  it("missing rig root produces spec-present red", () => {
+  it("missing rig root is a not-checked caveat, not a blocker (#130: rigs launch from specs elsewhere)", () => {
     const service = new RestoreCheckService(mockDeps({
-      exists: (p) => !p.includes("rigs/test-rig"),
+      substrateRoot: "/shared-docs",
+      exists: (p) => !p.includes(path.join("rigs", "test-rig")),
     }));
-    const result = service.check({});
+    const result = service.check({ noHooks: true });
     const spec = result.checks.find((c) => c.check === "rig.test-rig.spec-present");
-    expect(spec?.status).toBe("red");
-    expect(spec?.evidence).toContain("Rig root missing");
+    expect(spec?.status).toBe("yellow");
+    expect(spec?.evidence).toContain("Not checked: no launch spec location could be established");
+    expect(spec?.evidence).toContain(path.join("/shared-docs", "rigs", "test-rig", "rig.yaml"));
+    expect(spec?.remediationSafe).toBe(true);
+    expect(result.counts.red).toBe(0);
+    expect(result.verdict).toBe("restorable_with_caveats");
+    expect(result.rigs[0]).toEqual(expect.objectContaining({ status: "ready_with_caveats", blockingChecks: [] }));
   });
 
   it("rig root exists but rig.yaml missing produces spec-present yellow", () => {
@@ -893,20 +913,29 @@ describe("RestoreCheckService", () => {
     expect(transcript?.evidence).toContain("exempt");
   });
 
-  it("missing queue file produces yellow", () => {
+  it("unavailable SQLite queue store produces yellow", () => {
     const service = new RestoreCheckService(mockDeps({
-      exists: (p) => !p.includes("queue.md"),
+      probeQueueStore: () => ({ available: false, evidence: "queue_items table is unavailable" }),
     }));
     const result = service.check({});
-    const queue = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.queue-file");
+    const queue = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.queue-store");
     expect(queue?.status).toBe("yellow");
-    expect(queue?.evidence).toContain("missing");
+    expect(queue?.evidence).toContain("unavailable");
   });
 
-  it("--no-queue skips queue file checks", () => {
+  it("SQLite queue-store probe errors remain a readable caveat", () => {
+    const service = new RestoreCheckService(mockDeps({
+      probeQueueStore: () => { throw new Error("database closed"); },
+    }));
+    const queue = service.check({}).checks.find((c) => c.check === "seat.dev-impl@test-rig.queue-store");
+    expect(queue?.status).toBe("yellow");
+    expect(queue?.evidence).toContain("database closed");
+  });
+
+  it("--no-queue skips SQLite queue-store checks", () => {
     const service = new RestoreCheckService(mockDeps());
     const result = service.check({ noQueue: true });
-    const queueChecks = result.checks.filter((c) => c.check.includes("queue-file"));
+    const queueChecks = result.checks.filter((c) => c.check.includes("queue-store"));
     expect(queueChecks).toHaveLength(0);
   });
 
@@ -917,165 +946,133 @@ describe("RestoreCheckService", () => {
     expect(hookChecks).toHaveLength(0);
   });
 
-  it("Claude hook check is green when project-local settings contain both required hooks", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-cwd-"));
+  it.each([undefined, "*", "startup|resume", "startup, resume", "^(startup|resume)$"])("checks usable selected activity-hook matcher %s", (matcher) => {
+    const cwd = path.join(os.tmpdir(), "restore-check-activity-seat");
     const settingsPath = path.join(cwd, ".claude", "settings.local.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
+    const relayPath = RELAY_PATH;
+    const events = ["SessionStart", "UserPromptSubmit"];
+    const settings = JSON.stringify({ hooks: Object.fromEntries(events.map((event) => [event, [{ matcher, hooks: [
+      { type: "command", command: `node '${relayPath}'` },
+    ] }]])) });
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => startupContextProbe({ projectionEntries: [{
+        absolutePath: "/source/openrig-core", effectiveId: "shared:openrig-core",
+        category: "runtime_resource", resourceType: "claude_activity_hooks",
+      }] }),
+      getClaudeActivityHookEvents: () => events,
+      exists: (candidate) => candidate === settingsPath || candidate === relayPath || candidate.endsWith("host-infra.json"),
+      readFile: (candidate) => candidate === settingsPath ? settings : VALID_HOST_INFRA_DECLARATION,
+    }));
 
-    try {
-      const { deps } = settingsDeps({
-        settings: { [settingsPath]: claudeSettings() },
-        nodes: [claudeNode({ cwd })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-
-      expect(hook?.status).toBe("green");
-      expect(hook?.evidence).toContain(settingsPath);
-      expect(hook?.evidence).toContain("configuration present, not hook-execution verified");
-      expect(hook?.evidence).not.toContain("not yet implemented");
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
+    const hook = service.check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe("green");
+    expect(hook?.evidence).toContain("activity hooks are projected");
+    expect(hook?.evidence).toContain(relayPath);
   });
 
-  it("Claude hook check is green from host-global settings when cwd is unavailable", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-global-home-"));
-    const settingsPath = path.join(home, ".claude", "settings.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
-
-    try {
-      const { deps } = settingsDeps({
-        settings: { [settingsPath]: claudeSettings() },
-        nodes: [claudeNode({ cwd: null })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-
-      expect(hook?.status).toBe("green");
-      expect(hook?.evidence).toContain(settingsPath);
-      expect(hook?.evidence).toContain("configuration present, not hook-execution verified");
-      expect(hook?.evidence).not.toContain("cwd unavailable");
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-    }
+  it.each(["disabled", "compact-only", "prompt-handler", "invalid-matcher", "substring-matcher"])("keeps %s selected activity hooks as a caveat", (kind) => {
+    const cwd = path.join(os.tmpdir(), "restore-check-activity-seat-unusable");
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const relayPath = RELAY_PATH;
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => startupContextProbe({ projectionEntries: [{
+        absolutePath: "/source/openrig-core", category: "runtime_resource", resourceType: "claude_activity_hooks",
+      }] }),
+      getClaudeActivityHookEvents: () => ["SessionStart"],
+      exists: (candidate) => candidate === settingsPath || candidate === relayPath || candidate.endsWith("host-infra.json"),
+      readFile: (candidate) => candidate === settingsPath ? JSON.stringify({
+        disableAllHooks: kind === "disabled",
+        hooks: { SessionStart: [{
+          ...(kind === "compact-only" ? { matcher: "compact" } : {}),
+          ...(kind === "invalid-matcher" ? { matcher: "[" } : {}),
+          ...(kind === "substring-matcher" ? { matcher: "start|sum" } : {}),
+          hooks: [{ type: kind === "prompt-handler" ? "prompt" : "command", command: `node '${relayPath}'` }],
+        }] },
+      }) : VALID_HOST_INFRA_DECLARATION,
+    }));
+    const hook = service.check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe("yellow");
+    expect(hook?.remediationSafe).toBe(false);
+    expect(hook?.evidence).toContain(kind === "disabled" ? "disabled" : "SessionStart");
   });
 
-  it("Claude hook check is green when required hooks are split across host-global and project-local settings", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-merged-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-merged-cwd-"));
-    const hostSettingsPath = path.join(home, ".claude", "settings.json");
-    const localSettingsPath = path.join(cwd, ".claude", "settings.local.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
+  it("does not accept a similarly named command as the projected Claude activity hook", () => {
+    const cwd = path.join(os.tmpdir(), "restore-check-activity-seat-lookalike");
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const relayPath = RELAY_PATH;
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => startupContextProbe({ projectionEntries: [{
+        absolutePath: "/source/openrig-core", effectiveId: "shared:openrig-core",
+        category: "runtime_resource", resourceType: "claude_activity_hooks",
+      }] }),
+      getClaudeActivityHookEvents: () => ["SessionStart"],
+      exists: (candidate) => candidate === settingsPath || candidate === relayPath || candidate.endsWith("host-infra.json"),
+      readFile: (candidate) => candidate === settingsPath
+        ? JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `node '${relayPath}.backup'` }] }] } })
+        : VALID_HOST_INFRA_DECLARATION,
+    }));
 
-    try {
-      const { deps } = settingsDeps({
-        settings: {
-          [hostSettingsPath]: claudeSettings({ userPromptSubmitCommand: null }),
-          [localSettingsPath]: claudeSettings({ sessionStartCommand: null }),
-        },
-        nodes: [claudeNode({ cwd })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-
-      expect(hook?.status).toBe("green");
-      expect(hook?.evidence).toContain("configuration present, not hook-execution verified");
-      expect(hook?.evidence).toContain(hostSettingsPath);
-      expect(hook?.evidence).toContain(localSettingsPath);
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
+    const hook = service.check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe("yellow");
+    expect(hook?.evidence).toContain("SessionStart");
   });
 
-  it("Claude hook check is yellow when only one required hook is configured", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-partial-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-partial-cwd-"));
-    const settingsPath = path.join(cwd, ".claude", "settings.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
+  it("warns when a selected Claude activity hook event is not projected", () => {
+    const cwd = path.join(os.tmpdir(), "restore-check-activity-seat-partial");
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const relayPath = RELAY_PATH;
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => startupContextProbe({ projectionEntries: [{
+        absolutePath: "/source/openrig-core", effectiveId: "shared:openrig-core",
+        category: "runtime_resource", resourceType: "claude_activity_hooks",
+      }] }),
+      getClaudeActivityHookEvents: () => ["SessionStart", "UserPromptSubmit"],
+      exists: (candidate) => candidate === settingsPath || candidate === relayPath || candidate.endsWith("host-infra.json"),
+      readFile: (candidate) => candidate === settingsPath
+        ? JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `node '${relayPath}'` }] }] } })
+        : VALID_HOST_INFRA_DECLARATION,
+    }));
 
-    try {
-      const { deps } = settingsDeps({
-        settings: {
-          [settingsPath]: claudeSettings({ userPromptSubmitCommand: null }),
-        },
-        nodes: [claudeNode({ cwd })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-      const repair = result.repairPacket?.find((step) => step.rationale.includes("UserPromptSubmit"));
-
-      expect(hook?.status).toBe("yellow");
-      expect(hook?.evidence).toContain("UserPromptSubmit");
-      expect(hook?.evidence).toContain(REQUIRED_USER_PROMPT_SUBMIT_COMMAND);
-      expect(repair).toEqual(expect.objectContaining({
-        safe: false,
-        blocking: false,
-      }));
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
+    const hook = service.check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe("yellow");
+    expect(hook?.evidence).toContain("UserPromptSubmit");
   });
 
-  it("malformed applicable Claude settings keep hook check yellow even when another scope has hooks", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-malformed-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-malformed-cwd-"));
-    const hostSettingsPath = path.join(home, ".claude", "settings.json");
-    const localSettingsPath = path.join(cwd, ".claude", "settings.local.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
+  it("does not count stale project-local commands as delivered instance hooks", () => {
+    const cwd = "/project";
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const legacy = path.join(cwd, ".openrig", "hooks", "scripts", "activity-relay.cjs");
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => startupContextProbe({ projectionEntries: [{
+        absolutePath: "/source/openrig-core", category: "runtime_resource", resourceType: "claude_activity_hooks",
+      }] }),
+      getClaudeActivityHookEvents: () => ["Stop"],
+      exists: () => true,
+      readFile: candidate => candidate === settingsPath
+        ? JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `node '${legacy}'` }] }] } })
+        : VALID_HOST_INFRA_DECLARATION,
+    }));
+    const hook = service.check({}).checks.find(entry => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe("yellow");
+    expect(hook?.evidence).toContain("missing relay entries for: Stop");
+  });
 
-    try {
-      const { deps } = settingsDeps({
-        settings: {
-          [hostSettingsPath]: "{ not json",
-          [localSettingsPath]: claudeSettings(),
-        },
-        nodes: [claudeNode({ cwd })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-
-      expect(hook?.status).toBe("yellow");
-      expect(hook?.evidence).toContain(hostSettingsPath);
-      expect(hook?.evidence).toContain("configuration could not be trusted");
-      expect(result.repairPacket?.find((step) => step.rationale.includes(hostSettingsPath))).toEqual(expect.objectContaining({
-        safe: false,
-        blocking: false,
-      }));
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
+  it("treats deliberately unselected Claude activity hooks as not applicable", () => {
+    const hook = new RestoreCheckService(mockDeps()).check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hook?.status).toBe("green");
+    expect(hook?.evidence).toContain("not selected");
   });
 
   it("Codex and infrastructure hook checks are green not-applicable without hook repair steps", () => {
     const service = new RestoreCheckService(mockDeps({
       getNodeInventory: () => [
         {
+          nodeId: "node-1",
           rigId: "rig-1", rigName: "test-rig", logicalId: "dev.qa",
           podId: "dev", podNamespace: "dev",
           canonicalSessionName: "dev-qa@test-rig",
@@ -1105,106 +1102,6 @@ describe("RestoreCheckService", () => {
       expect(hook.remediation).toBe("");
     }
     expect(result.repairPacket?.some((step) => step.rationale.includes("Claude Code hook")) ?? false).toBe(false);
-  });
-
-  it("Claude hook check with missing cwd is yellow only when host-global settings do not satisfy hooks", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-no-cwd-home-"));
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
-
-    try {
-      const { deps } = settingsDeps({
-        settings: {},
-        nodes: [claudeNode({ cwd: null })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-
-      expect(hook?.status).toBe("yellow");
-      expect(hook?.evidence).toContain("project settings were not inspected because cwd is unavailable");
-      expect(hook?.evidence).toContain(path.join(home, ".claude", "settings.json"));
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("Claude hook matching is event-local and exact", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-event-local-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-event-local-cwd-"));
-    const settingsPath = path.join(cwd, ".claude", "settings.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
-
-    try {
-      const { deps } = settingsDeps({
-        settings: {
-          [settingsPath]: claudeSettings({
-            sessionStartCommand: "./session-start-compact-context.sh",
-            wrongEventCommand: REQUIRED_SESSION_START_COMPACT_COMMAND,
-          }),
-        },
-        nodes: [claudeNode({ cwd })],
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-      const hook = result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks");
-
-      expect(hook?.status).toBe("yellow");
-      expect(hook?.evidence).toContain("SessionStart matcher compact");
-      expect(hook?.evidence).toContain(REQUIRED_SESSION_START_COMPACT_COMMAND);
-      expect(hook?.evidence).not.toContain("configuration present");
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("Claude hook inspection reads only existing settings files", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-readonly-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restore-check-hooks-readonly-cwd-"));
-    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
-    const previousHome = process.env["HOME"];
-    process.env["HOME"] = home;
-    fs.utimesSync(cwd, new Date(946684800000), new Date(946684800000));
-    const before = fs.statSync(cwd).mtimeMs;
-
-    try {
-      const { deps, readPaths } = settingsDeps({
-        settings: { [settingsPath]: claudeSettings() },
-        nodes: [claudeNode({ cwd })],
-        hostInfraDeclared: false,
-      });
-      const service = new RestoreCheckService(deps);
-      const result = service.check({});
-
-      expect(result.checks.find((c) => c.check === "seat.dev-impl@test-rig.hooks")?.status).toBe("green");
-      expect(readPaths).toEqual([settingsPath]);
-      expect(readPaths).not.toContain(REQUIRED_SESSION_START_COMPACT_COMMAND);
-      expect(readPaths).not.toContain(REQUIRED_USER_PROMPT_SUBMIT_COMMAND);
-      expect(fs.statSync(cwd).mtimeMs).toBe(before);
-    } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("Claude hooks without configuration are yellow without the old placeholder", () => {
-    const service = new RestoreCheckService(mockDeps());
-    const result = service.check({});
-    const hookChecks = result.checks.filter((c) => c.check.includes("hooks"));
-    expect(hookChecks.length).toBeGreaterThan(0);
-    for (const hook of hookChecks) {
-      expect(hook.status).toBe("yellow");
-      expect(hook.evidence).toContain("Claude Code hook configuration missing");
-      expect(hook.evidence).not.toContain("not yet implemented");
-    }
   });
 
   // --- Verdict aggregation ---
@@ -1478,6 +1375,87 @@ describe("RestoreCheckService", () => {
     }));
   });
 
+  // #261: restore-check inspects and REPORTS the paths replay will use. A stale old-install built-in or
+  // shipped-spec resource is judged at the running install; red/yellow semantics are unchanged.
+  describe("#261 stale old-install paths are judged at the running install", () => {
+    const OLD = "/old-openrig/lib/node_modules/@openrig/cli/daemon";
+    const RUN_ASSETS = path.resolve(import.meta.dirname, "../assets");
+    const RUN_SPECS = path.resolve(import.meta.dirname, "../specs");
+    const files = [{ path: "CULTURE-default.md", absolutePath: `${OLD}/assets/guidance/CULTURE-default.md`, ownerRoot: `${OLD}/assets`, required: true }];
+    const entries = [{ absolutePath: `${OLD}/specs/agents/shared/runtime/claude-settings.fragment.json`, sourcePath: `${OLD}/specs/agents/shared`, effectiveId: "shared:claude-default-settings", category: "runtime_resource" }];
+    const stoppedNode = () => claudeNode({ sessionStatus: "stopped", startupStatus: "failed", latestError: "seat crashed" });
+
+    it("old install removed, current present: green, and evidence names only the running paths", () => {
+      const service = new RestoreCheckService(mockDeps({
+        getNodeInventory: () => [stoppedNode()],
+        getStartupContext: () => startupContextProbe({ resolvedStartupFiles: files, projectionEntries: entries }) as never,
+        getLatestSnapshot: () => ({ id: "snap-261", kind: "auto-pre-down" }),
+        exists: (p) => !p.startsWith("/old-openrig"),
+      }));
+      const startup = (service.check({ noQueue: true, noHooks: true }) as any).checks.find((c: { check: string }) => c.check === "seat.dev-impl@test-rig.startup-context");
+      expect(startup.status).toBe("green");
+      expect(startup.evidence).toContain(path.join(RUN_ASSETS, "guidance", "CULTURE-default.md"));
+      expect(startup.evidence).toContain(path.join(RUN_SPECS, "agents", "shared", "runtime", "claude-settings.fragment.json"));
+      expect(startup.evidence).not.toContain("/old-openrig");
+    });
+
+    it("current built-in genuinely missing on a non-ready seat: still red, reporting the running path", () => {
+      const runningCulture = path.join(RUN_ASSETS, "guidance", "CULTURE-default.md");
+      const service = new RestoreCheckService(mockDeps({
+        getNodeInventory: () => [stoppedNode()],
+        getStartupContext: () => startupContextProbe({ resolvedStartupFiles: files }) as never,
+        getLatestSnapshot: () => ({ id: "snap-261", kind: "auto-pre-down" }),
+        exists: (p) => !p.startsWith("/old-openrig") && p !== runningCulture,
+      }));
+      const startup = (service.check({ noQueue: true, noHooks: true }) as any).checks.find((c: { check: string }) => c.check === "seat.dev-impl@test-rig.startup-context");
+      expect(startup.status).toBe("red");
+      expect(startup.evidence).toContain(runningCulture);
+      expect(startup.remediation).toContain(runningCulture);
+      expect(startup.evidence).not.toContain("/old-openrig");
+    });
+
+    it("shipped-spec rig culture: stale old path is judged at the running specs (green when present, red naming it when missing)", () => {
+      const culture = [{ path: "culture/CULTURE.md", absolutePath: `${OLD}/specs/rigs/launch/kernel/culture/CULTURE.md`, ownerRoot: `${OLD}/specs/rigs/launch/kernel`, required: true }];
+      const runningCulture = path.join(RUN_SPECS, "rigs", "launch", "kernel", "culture", "CULTURE.md");
+      const check = (exists: (p: string) => boolean) => (new RestoreCheckService(mockDeps({
+        getNodeInventory: () => [stoppedNode()],
+        getStartupContext: () => startupContextProbe({ resolvedStartupFiles: culture }) as never,
+        getLatestSnapshot: () => ({ id: "snap-261", kind: "auto-pre-down" }),
+        exists,
+      })).check({ noQueue: true, noHooks: true }) as any).checks.find((c: { check: string }) => c.check === "seat.dev-impl@test-rig.startup-context");
+      const present = check((p) => !p.startsWith("/old-openrig"));
+      expect(present.status).toBe("green");
+      expect(present.evidence).toContain(runningCulture);
+      const missing = check((p) => !p.startsWith("/old-openrig") && p !== runningCulture);
+      expect(missing.status).toBe("red");
+      expect(missing.evidence).toContain(runningCulture);
+      expect(missing.evidence).not.toContain("/old-openrig");
+    });
+
+    it("current built-in missing on a running/ready seat stays yellow (red/yellow rule unchanged)", () => {
+      const runningCulture = path.join(RUN_ASSETS, "guidance", "CULTURE-default.md");
+      const service = new RestoreCheckService(mockDeps({
+        getStartupContext: () => startupContextProbe({ resolvedStartupFiles: files }) as never,
+        exists: (p) => !p.startsWith("/old-openrig") && p !== runningCulture,
+      }));
+      const startup = (service.check({ noQueue: true, noHooks: true }) as any).checks.find((c: { check: string }) => c.check === "seat.dev-impl@test-rig.startup-context");
+      expect(startup.status).toBe("yellow");
+    });
+
+    it("a missing custom file with a built-in basename is reported as stored, still red on a non-ready seat", () => {
+      const custom = [{ path: "CULTURE-default.md", absolutePath: "/user-rig/CULTURE-default.md", ownerRoot: "/user-rig", required: true }];
+      const service = new RestoreCheckService(mockDeps({
+        getNodeInventory: () => [stoppedNode()],
+        getStartupContext: () => startupContextProbe({ resolvedStartupFiles: custom }) as never,
+        getLatestSnapshot: () => ({ id: "snap-261", kind: "auto-pre-down" }),
+        exists: (p) => p !== "/user-rig/CULTURE-default.md",
+      }));
+      const startup = (service.check({ noQueue: true, noHooks: true }) as any).checks.find((c: { check: string }) => c.check === "seat.dev-impl@test-rig.startup-context");
+      expect(startup.status).toBe("red");
+      expect(startup.evidence).toContain("/user-rig/CULTURE-default.md");
+    });
+  });
+
   it("running/ready node with missing required startup file is a yellow caveat", () => {
     const requiredPath = path.join(os.tmpdir(), "restore-check-startup-required-ready-missing.md");
     const service = new RestoreCheckService(mockDeps({
@@ -1537,7 +1515,7 @@ describe("RestoreCheckService", () => {
     expect(result.recovery.status).toBe("not_needed");
   });
 
-  it("stopped rig without latest snapshot is actionable when durable current state is present", () => {
+  it("stopped rig without a usable snapshot is unknown because auto-rehydrate is not inspected", () => {
     const service = new RestoreCheckService(mockDeps({
       hasSnapshot: () => false,
       getNodeInventory: () => [claudeNode({
@@ -1547,25 +1525,27 @@ describe("RestoreCheckService", () => {
         tmuxAttachCommand: null,
       })],
       getLatestSnapshot: () => null,
+      getRestoreInputs: () => ({ unavailable: "No usable snapshot; current-state auto-rehydrate is not inspected" }),
     }));
 
     const result = service.check({ noHooks: true }) as any;
 
+    // The stopped-seat red still wins the aggregate; the input unknown stays named.
     expect(result.readiness.status).toBe("not_ready");
+    expect(result.rigs[0].status).toBe("unknown");
     expect(result.recovery).toEqual({
-      status: "actionable",
-      summary: expect.stringContaining("1 rig can be recovered"),
-      actions: [
+      status: "unknown",
+      summary: expect.stringContaining("1 unknown"),
+      actions: [],
+      unknown: [
         expect.objectContaining({
           scope: "rig",
           rigId: "rig-1",
           rigName: "test-rig",
-          command: "rig up --existing test-rig",
-          reason: expect.stringContaining("current DB state"),
+          reason: expect.stringContaining("auto-rehydrate is not inspected"),
         }),
       ],
       blocked: [],
-      unknown: [],
     });
   });
 

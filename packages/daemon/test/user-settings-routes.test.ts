@@ -23,6 +23,7 @@ function clearEnv(): () => void {
     "OPENRIG_WORKSPACE_ROOT", "OPENRIG_DOGFOOD_EVIDENCE_ROOT",
     "OPENRIG_WORKSPACE_PROJECTS_ROOT", "OPENRIG_WORKSPACE_CATALOG_PATH",
     "OPENRIG_CONTEXT_ROOT", "OPENRIG_CONTEXT_PACKS_ROOT",
+    "OPENRIG_LAUNCH_NON_INTERRUPTIVE",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_PRE_COMPACT_INSTRUCTION",
@@ -105,7 +106,13 @@ describe("config routes (User Settings v0)", () => {
     // + 1 OPR.0.5.9.5 (context.system_world)
     // + 2 OPR.0.5.10.7 context-pressure policy thresholds → 68 total.
     // + 1 S07 local-time preference.
-    expect(Object.keys(body.settings).length).toBe(69);
+    // + 1 ui.enabled (web UI and its terminal WebSocket; default off).
+    // + 1 launch.non_interruptive (new-rig launch default; default off).
+    // + 1 queue.wake_human_rung (#811; default "always").
+    expect(Object.keys(body.settings).length).toBe(73);
+    expect(body.settings["launch.non_interruptive"]).toMatchObject({ value: false, source: "default" });
+    expect(body.settings["runtime.readiness_timeout_seconds"]).toMatchObject({ value: 30, source: "default" });
+    expect(body.settings["ui.enabled"]).toMatchObject({ value: false, source: "default" });
     expect(body.settings["ui.timezone"]).toMatchObject({ value: "America/Los_Angeles", source: "default" });
     expect(body.settings["daemon.port"]?.source).toBe("default");
     expect(body.settings["health.context_pressure.warning_percent"]).toMatchObject({

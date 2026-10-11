@@ -8,6 +8,8 @@ import type { AppliedLaunchObservation } from "./permission-drift.js";
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
+import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
+import { SettingsStore } from "./user-settings/settings-store.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -44,13 +46,18 @@ export interface SuccessorNode {
   /** OPR.0.4.8.3 Seam B: the departing seat's PERSISTED resolved launch posture —
    *  the successor is a CONTINUITY edge of the same seat, so its policy posture
    *  carries (populated by the caller from node provenance; absent = env decision). */
-  launchPosture?: "floor" | "full_bypass";
+  launchPosture?: "floor" | "full_bypass" | "auto";
+  nonInterruptive?: boolean;
+  kernelAuthority?: boolean;
+  teamPermissionDefault?: boolean;
   permissionMode?: string;
   /** 0.5.2-07 model fidelity: the seat's SPEC-pinned model (nodes.model). The successor is a continuity
    *  edge of the same seat, so its launch must READ THE SPEC — a launch path that drops it makes the
    *  running topology drift from the founder-designed one. Populated by the caller from node provenance;
    *  absent → the adapter emits no model flag (unchanged for legacy/unpinned seats). */
   model?: string | null;
+  /** #75: the seat's configured effort (nodes.effort). Carried to successor launch. */
+  effort?: string | null;
   /** 0.5.2-07 A4-profile: the seat's SPEC-pinned codex config profile (nodes.codex_config_profile).
    *  Same continuity rationale as model — populated by the caller from node provenance; absent → the
    *  adapter emits no -p flag (unchanged for legacy/unpinned seats). */
@@ -87,9 +94,11 @@ export class SuccessorSessionLauncher {
   private tmuxAdapter: TmuxAdapter;
   private discoveryRepo: DiscoveryRepository;
   private sessionEnv: Record<string, string | undefined>;
+  private runtimeSessionEnv: Record<string, Record<string, string | undefined>>;
   private newId: () => string;
   private runtimeAdapters: Record<string, RuntimeAdapter>;
-  private readinessTimeoutMs: number;
+  private readinessTimeoutMs: number | undefined;
+  private readinessSettings: Pick<SettingsStore, "resolveOne">;
   private sleep: (ms: number) => Promise<void>;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
   private exitPollMs: number;
@@ -100,12 +109,15 @@ export class SuccessorSessionLauncher {
     discoveryRepo: DiscoveryRepository,
     opts: {
       sessionEnv?: Record<string, string | undefined>;
+      /** Extra env for one runtime only, merged over sessionEnv (see NodeLauncher). */
+      runtimeSessionEnv?: Record<string, Record<string, string | undefined>>;
       newId?: () => string;
       /** Runtime adapters keyed by runtime, used to launch + ready-probe the
        *  successor agent. Absent → a fresh successor cannot be launched. */
       runtimeAdapters?: Record<string, RuntimeAdapter>;
-      /** Readiness timeout in ms (default 30000, mirrors StartupOrchestrator). */
+      /** Explicit readiness timeout in ms; otherwise use the runtime setting. */
       readinessTimeoutMs?: number;
+      readinessSettings?: Pick<SettingsStore, "resolveOne">;
       /** Injectable sleep (tests). */
       sleep?: (ms: number) => Promise<void>;
       /**
@@ -123,9 +135,11 @@ export class SuccessorSessionLauncher {
     this.tmuxAdapter = tmuxAdapter;
     this.discoveryRepo = discoveryRepo;
     this.sessionEnv = opts.sessionEnv ?? {};
+    this.runtimeSessionEnv = opts.runtimeSessionEnv ?? {};
     this.newId = opts.newId ?? ulid;
     this.runtimeAdapters = opts.runtimeAdapters ?? {};
-    this.readinessTimeoutMs = opts.readinessTimeoutMs ?? 30_000;
+    this.readinessTimeoutMs = opts.readinessTimeoutMs;
+    this.readinessSettings = opts.readinessSettings ?? new SettingsStore();
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.tmuxOptionDefaults = opts.tmuxOptionDefaults ?? null;
     this.exitPollMs = opts.exitPollMs ?? 100;
@@ -166,6 +180,7 @@ export class SuccessorSessionLauncher {
       OPENRIG_SESSION_NAME: departingSession,
       OPENRIG_RUNTIME: input.node.runtime ?? undefined,
       ...this.sessionEnv,
+      ...(input.node.runtime ? this.runtimeSessionEnv[input.node.runtime] : undefined),
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
     });
     // Same per-seat codex home as fresh launches (see codex-seat-home.ts):
@@ -333,11 +348,16 @@ export class SuccessorSessionLauncher {
       updatedAt: "",
       cwd: cwd ?? "",
       launchGeneration: launchGeneration ?? undefined,
+      nonInterruptive: node.nonInterruptive,
+      kernelAuthority: node.kernelAuthority,
+      teamPermissionDefault: node.teamPermissionDefault,
       // Seam B: continuity — the successor launches at the departing seat's posture.
       ...(node.launchPosture ? { launchPosture: node.launchPosture } : {}),
       ...(node.permissionMode ? { permissionMode: node.permissionMode } : {}),
       // 0.5.2-07: the successor reads the seat's SPEC-pinned model (adapter emits -m/--model).
       model: node.model ?? undefined,
+      // #75: the successor reads the seat's configured effort.
+      effort: node.effort ?? undefined,
       // 0.5.2-07 A4-profile: the successor reads the seat's SPEC-pinned codex config profile (adapter emits -p).
       codexConfigProfile: node.codexConfigProfile ?? undefined,
     };
@@ -392,9 +412,10 @@ export class SuccessorSessionLauncher {
 
   /**
    * Wait for harness readiness with exponential backoff (1s→2s→…→16s cap,
-   * 30s default timeout) — mirrors StartupOrchestrator.waitForReady.
+   * configured timeout (30s by default) — mirrors StartupOrchestrator.waitForReady.
    */
   private async waitForReady(adapter: RuntimeAdapter, binding: NodeBinding): Promise<ReadinessResult> {
+    const timeoutMs = resolveReadinessTimeoutMs(this.readinessTimeoutMs, this.readinessSettings);
     const startTime = Date.now();
     let delay = 1000;
     const maxDelay = 16_000;
@@ -404,14 +425,12 @@ export class SuccessorSessionLauncher {
       if (result.ready) return result;
       if (isAttentionRequiredReadinessCode(result.code)) return result;
 
-      const elapsed = Date.now() - startTime;
-      if (elapsed + delay > this.readinessTimeoutMs) {
-        const finalResult = await adapter.checkReady(binding);
-        if (finalResult.ready) return finalResult;
-        return { ready: false, reason: result.reason ?? "readiness timeout" };
+      const remaining = timeoutMs - (Date.now() - startTime);
+      if (remaining <= 0) {
+        return { ready: false, reason: `readiness timeout after ${timeoutMs / 1000}s: ${result.reason ?? "harness did not become interactive"}` };
       }
 
-      await this.sleep(delay);
+      await this.sleep(Math.min(delay, remaining));
       delay = Math.min(delay * 2, maxDelay);
     }
   }

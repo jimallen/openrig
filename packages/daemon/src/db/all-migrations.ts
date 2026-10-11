@@ -1,4 +1,4 @@
-// The canonical ordered migration list (001 → 089). SINGLE SOURCE: the daemon boot path
+// The canonical ordered migration list. SINGLE SOURCE: the daemon boot path
 // (startup.ts) and any test/tool that needs a schema-faithful DB both migrate from THIS array,
 // so a reader DB is never seeded from a stale hand-copied subset (the perf-fixture-migration-parity
 // trap). Append new migrations to the END, in order.
@@ -92,9 +92,21 @@ import { scopedOperatingPostureSchema } from "./migrations/080_scoped_operating_
 import { seatDeliveryGuardSchema } from "./migrations/087_seat_delivery_guard.js";
 import { nodePermissionSelectionsSchema } from "./migrations/088_node_permission_selections.js";
 import { classificationIdentityProvenanceSchema } from "./migrations/089_classification_identity_provenance.js";
+import { humanReplyToSchema } from "./migrations/090_human_reply_to.js";
+import { humanQuestionsSchema } from "./migrations/091_human_questions.js";
+import { nodeEffortSchema } from "./migrations/092_node_effort.js";
+import { usageSamplesLatestIndexesSchema } from "./migrations/094_usage_samples_latest_indexes.js";
 import type { Migration } from "./migrate.js";
 
-/** Ordered 001→089 (S02 086/089, S09 087, S03 088). */
+import { rigNonInterruptiveSchema } from "./migrations/095_rig_non_interruptive.js";
+import { rigInstallRootSchema } from "./migrations/096_rig_install_root.js";
+import { threadPartMapSchema } from "./migrations/097_thread_part_map.js";
+import { queueTransitionsQitemIdOrderSchema } from "./migrations/098_queue_transitions_qitem_id_order.js";
+import { queueItemsRecoveryTagsSchema } from "./migrations/099_queue_items_recovery_tags.js";
+import { resumeRotationSchema } from "./migrations/101_claude_resume_rotation.js";
+
+/** Ordered migrations; numbers may be reserved by independent changes. */
+
 export const ALL_MIGRATIONS: Migration[] = [
   coreSchema,
   bindingsSessionsSchema,
@@ -185,4 +197,14 @@ export const ALL_MIGRATIONS: Migration[] = [
   seatDeliveryGuardSchema,
   nodePermissionSelectionsSchema,
   classificationIdentityProvenanceSchema,
+  humanReplyToSchema,
+  humanQuestionsSchema,
+  nodeEffortSchema,
+  usageSamplesLatestIndexesSchema,
+  rigNonInterruptiveSchema,
+  rigInstallRootSchema,
+  threadPartMapSchema,
+  queueTransitionsQitemIdOrderSchema,
+  queueItemsRecoveryTagsSchema,
+  resumeRotationSchema,
 ];

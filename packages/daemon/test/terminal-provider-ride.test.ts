@@ -94,13 +94,13 @@ describe("view-composer partition vectors", () => {
 
   it("ssh host → ssh '<user@target>' tmux attach -t (destination shell-quoted); read-only adds -r", () => {
     const rw = composeView("v", [member({ seat: "s@r", host: "vm1", tmuxSession: "s@r" })], ctxWith([SSH_HOST]));
-    expect(rw.opened[0]!.paneCommand).toBe("ssh 'admin@vm1.local' tmux attach -t 's@r'");
+    expect(rw.opened[0]!.paneCommand).toBe("ssh 'admin@vm1.local' 'tmux attach -t '\"'\"'s@r'\"'\"''");
 
     const ro = composeView("v", [member({ seat: "s@r", host: "vm1", readOnly: true })], ctxWith([SSH_HOST]));
-    expect(ro.opened[0]!.paneCommand).toBe("ssh 'admin@vm1.local' tmux attach -r -t 's@r'");
+    expect(ro.opened[0]!.paneCommand).toBe("ssh 'admin@vm1.local' 'tmux attach -r -t '\"'\"'s@r'\"'\"''");
 
     const nouser = composeView("v", [member({ seat: "s@r", host: "vm2" })], ctxWith([SSH_HOST_NO_USER]));
-    expect(nouser.opened[0]!.paneCommand).toBe("ssh '10.0.0.9' tmux attach -t 's@r'");
+    expect(nouser.opened[0]!.paneCommand).toBe("ssh '10.0.0.9' 'tmux attach -t '\"'\"'s@r'\"'\"''");
   });
 
   // Guard G1 — the ssh destination is STRUCTURED registry data injected into a
@@ -111,7 +111,7 @@ describe("view-composer partition vectors", () => {
     const v = composeView("v", [member({ seat: "s@r", host: "evil", tmuxSession: "s@r" })], ctxWith([NASTY]));
     expect(v.opened).toHaveLength(1);
     // single-quoted, embedded quote POSIX-escaped ('\'') — metacharacters are literal.
-    expect(v.opened[0]!.paneCommand).toBe(`ssh 'u'"'"'x@a b; rm -rf /' tmux attach -t 's@r'`);
+    expect(v.opened[0]!.paneCommand).toBe("ssh 'u'\"'\"'x@a b; rm -rf /' 'tmux attach -t '\"'\"'s@r'\"'\"''");
     // the dangerous run never becomes its own shell word:
     expect(v.opened[0]!.paneCommand).not.toContain("; rm -rf / tmux");
   });
@@ -414,6 +414,22 @@ describe("herdr layout plan — fresh-tab-on-relaunch (BR-5) + equal auto-grid r
       "openrig:acme-build#l9/2",
     ]);
   });
+
+  it("kernel geometry uses the composed three columns for the herdr open plan", () => {
+    const panes = ["TUI", "advisor", "operator"].map(label => ({ seat: label, label, paneCommand: `attach ${label}`, readOnly: false }));
+    const grid = buildGridRoot(panes, 3);
+    expect(grid).toMatchObject({ columns: 3, rows: 1, blanks: 0 });
+    expect(grid.root).toMatchObject({
+      type: "split", direction: "right", ratio: 1 / 3, first: { type: "pane", label: "TUI" },
+      second: { type: "split", direction: "right", ratio: 1 / 2,
+        first: { type: "pane", label: "advisor" }, second: { type: "pane", label: "operator" } },
+    });
+    const plan = planHerdrLayout({ id: "kernel", opened: panes, pages: [panes], absent: [], degraded: [], columns: 3 }, "fixed");
+    expect(plan.pages[0]!.root).toEqual(grid.root);
+    expect(plan.pages[0]!.blanks).toBe(0);
+    expect(buildGridRoot(panes)).toMatchObject({ columns: 2, rows: 2, blanks: 1 });
+    expect(buildGridRoot(panes.slice(0, 2), 3)).toMatchObject({ columns: 2, rows: 1, blanks: 0 });
+  });
 });
 
 describe("herdr adapter — socket ping probe + workspace.create → layout.apply (FB4)", () => {
@@ -481,9 +497,11 @@ describe("herdr adapter — socket ping probe + workspace.create → layout.appl
     expect(res.pages).toBe(1);
     // OPR.0.6.0.8: after the page is applied, its tab is focused (no blank-tab close here:
     // this create reply carries no default tab id).
-    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "layout.apply", "tab.focus"]);
+    // #707: the applied page is followed by one pane.list read (this fake's reply has no panes, so nothing changes).
+    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "layout.apply", "pane.list", "tab.focus"]);
     expect(requests[0]!.params).toEqual({ focus: false, label: "v" });
-    expect(requests[2]!.params).toEqual({ tab_id: "wG:t2" });
+    expect(requests[2]!.params).toEqual({ workspace_id: "wG" });
+    expect(requests[3]!.params).toEqual({ tab_id: "wG:t2" });
     expect(requests[1]!.params).toEqual({
       workspace_id: "wG",
       tab_label: "openrig:v#tok",
@@ -505,7 +523,7 @@ describe("herdr adapter — socket ping probe + workspace.create → layout.appl
       expect(r.method).not.toContain("--help");
       expect(r.method).not.toContain(" ");
     }
-    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "layout.apply", "tab.focus"]);
+    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "layout.apply", "pane.list", "tab.focus"]);
   });
 
   it("a labeled workspace.create failure falls back ONCE to a bare create (uncaptured-param defense)", async () => {
@@ -730,6 +748,18 @@ describe("cmux provider — ONE gridded workspace per page (never a window per s
     expect(res.degraded).toEqual([
       { seat: "c@r", host: "local", reason: "cmux: cmux daemon not ready" },
     ]);
+  });
+
+  it("kernel geometry passes three columns to cmux while ordinary views keep auto-grid", async () => {
+    const panes = ["TUI", "advisor", "operator"].map(label => ({ seat: label, label, paneCommand: `attach ${label}`, readOnly: false }));
+    const { layoutService, builds } = fakeLayoutService();
+    const adapter = new CmuxProviderAdapter({ cmuxAdapter: fakeCmuxAdapter(true), layoutService, newLaunchToken: () => "fixed" });
+    const composed: ComposedView = { id: "kernel", opened: panes, pages: [panes], absent: [], degraded: [] };
+    expect((await adapter.openView({ ...composed, columns: 3 })).opened).toEqual(["TUI", "advisor", "operator"]);
+    expect(builds[0]!.cols).toBe(3);
+    expect(builds[0]!.commands).toEqual(["attach TUI", "attach advisor", "attach operator"]);
+    await adapter.openView(composed);
+    expect(builds[1]!.cols).toBe(2);
   });
 
   it("cmux not connected → honest refuse cmux_unavailable; nothing is built", async () => {

@@ -98,6 +98,30 @@ describe("RigSpec schema (pod-aware)", () => {
     expect(normalized.pods[0]!.members[1]!.codexConfigProfile).toBe("sysadmin");
   });
 
+  it("allows effort for pod members and normalizes it", () => {
+    const rig = structuredClone(VALID_RIG);
+    (rig.pods[0]!.members[0] as Record<string, unknown>)["effort"] = "high";
+
+    const result = RigSpecSchema.validate(rig);
+    expect(result.valid).toBe(true);
+
+    const normalized = RigSpecSchema.normalize(rig);
+    expect(normalized.pods[0]!.members[0]!.effort).toBe("high");
+  });
+
+  it("handles non-text or empty effort with an advisory and drops it during normalization", () => {
+    const rig = structuredClone(VALID_RIG);
+    (rig.pods[0]!.members[0] as Record<string, unknown>)["effort"] = 42;
+
+    const result = RigSpecSchema.validate(rig);
+    expect(result.valid).toBe(true);
+    expect(result.advisories).toBeDefined();
+    expect(result.advisories![0]).toMatch(/pods\[0\]\.members\[0\]\.effort: non-string value "42" ignored/);
+
+    const normalized = RigSpecSchema.normalize(rig);
+    expect(normalized.pods[0]!.members[0]!.effort).toBeUndefined();
+  });
+
   it("rejects codex_config_profile on non-Codex members", () => {
     const rig = structuredClone(VALID_RIG);
     (rig.pods[0]!.members[0] as Record<string, unknown>)["codex_config_profile"] = "sysadmin";
@@ -515,5 +539,54 @@ describe("member mechanic — live ingestion (S20 A7/A8)", () => {
     const result = RigSpecSchema.validate(rig);
     expect(result.valid).toBe(false);
     expect(result.errors.join(" ")).toMatch(/members\[0\].*mechanic.*canonical.*seat@rig/i);
+  });
+});
+
+
+describe("malformed topology stays a validation result", () => {
+  it("rejects an array at the topology root", () => {
+    expect(RigSpecSchema.validate([])).toEqual({ valid: false, errors: ["rig spec must be an object"] });
+  });
+  it("does not coerce a malformed pod id while collecting member addresses", () => {
+    const spec = structuredClone(VALID_RIG);
+    (spec.pods[0] as Record<string, unknown>)["id"] = { toString: null, valueOf: null };
+    const result = RigSpecSchema.validate(spec);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("pods[0].id: required non-empty string");
+  });
+
+  it.each([null, 42, "wrong", []])("rejects a non-mapping pod: %j", value => {
+    const result = RigSpecSchema.validate({ ...VALID_RIG, pods: [value] });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("pods[0]: must be an object");
+  });
+  it.each([null, 42, "wrong", []])("rejects a non-mapping member: %j", value => {
+    const spec = structuredClone(VALID_RIG);
+    (spec.pods[0]!.members as unknown[]) = [value];
+    const result = RigSpecSchema.validate(spec);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("pods[0].members[0]: must be an object");
+  });
+  it.each([null, 42, "wrong", []])("rejects a non-mapping local edge: %j", value => {
+    const spec = structuredClone(VALID_RIG);
+    (spec.pods[0]!.edges as unknown[]) = [value];
+    const result = RigSpecSchema.validate(spec);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("pods[0].edges[0]: must be an object");
+  });
+  it.each([null, 42, "wrong", []])("rejects a non-mapping cross-pod edge: %j", value => {
+    const result = RigSpecSchema.validate({ ...VALID_RIG, edges: [value] });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("edges[0]: must be an object");
+  });
+  it.each([true, 42, [], {}])("reports non-string cross-pod endpoints: %j", value => {
+    const result = RigSpecSchema.validate({ ...VALID_RIG, edges: [{ kind: "escalates_to", from: value, to: "arch.reviewer" }] });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("edges[0].from: required string");
+  });
+  it("still collects later well-formed topology errors after a bad pod", () => {
+    const result = RigSpecSchema.validate({ ...VALID_RIG, pods: [null, VALID_RIG.pods[1]], edges: [{kind:"escalates_to",from:"absent.worker",to:"arch.reviewer"}] });
+    expect(result.errors).toContain("pods[0]: must be an object");
+    expect(result.errors).toContain('edges[0].from: "absent.worker" does not resolve to a pod member');
   });
 });

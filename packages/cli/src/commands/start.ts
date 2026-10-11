@@ -212,8 +212,6 @@ Examples:
             db: resolvedConfig.db.path,
             transcriptsEnabled: resolvedConfig.transcripts.enabled,
             transcriptsPath: resolvedConfig.transcripts.path,
-            transcriptsLines: resolvedConfig.transcripts.lines,
-            transcriptsPollIntervalSeconds: resolvedConfig.transcripts.pollIntervalSeconds,
             workspaceRoot: resolvedConfig.workspace.root,
             contextRoot: resolvedConfig.context.root,
             skillsRoot: resolvedConfig.skills.root,
@@ -241,9 +239,14 @@ Examples:
       const kernelResult = await waitForKernelReady(baseUrl, KERNEL_WAIT_MS);
       if (!kernelResult.ok) {
         if (kernelResult.kernelState === "skipped") {
-          if (!opts.json) console.log("Kernel auto-boot skipped (--no-kernel or test mode).");
+          // The daemon also skips its boot when a kernel rig already exists (kernel-boot.ts).
+          // That rig need not be running, after a reboot it is not, and this command does not restore it.
+          if (!opts.json) console.log(kernelResult.detail === "kernel rig already managed"
+            ? "Kernel auto-boot skipped (kernel rig already managed). If its seats are not running, for example after a reboot, bring it back with: rig up kernel --existing"
+            : "Kernel auto-boot skipped (--no-kernel or test mode), including the operator that helps you start a team. To start it later, run rig, set up or select kernel, then start its operator seat.");
         } else {
-          console.error(`Kernel failed to start: state=${kernelResult.kernelState ?? "unknown"}, detail=${kernelResult.detail ?? "none"}`);
+          const terminalFailure = ["auth_blocked", "spec_missing", "bootstrap_failed", "degraded"].includes(kernelResult.kernelState ?? "");
+          console.error(`${terminalFailure ? "Kernel failed to start" : "Kernel did not report ready before the deadline"}: state=${kernelResult.kernelState ?? "unknown"}, detail=${kernelResult.detail ?? "none"}`);
           console.error("Cannot proceed to rig restore without a working kernel.");
           console.error("Fix: resolve the kernel issue, then rerun: rig start");
           process.exitCode = 1;
@@ -269,9 +272,10 @@ Examples:
       let allSummaries: RigSummary[];
       try {
         const res = await client.get<RigSummary[]>("/api/rigs/summary");
+        if (res.status !== 200) throw new Error(`Daemon returned HTTP ${res.status}`);
         allSummaries = res.data ?? [];
-      } catch {
-        console.error("Failed to list rigs. Daemon may not be ready.");
+      } catch (err) {
+        console.error(`Failed to list rigs: ${err instanceof Error ? err.message : String(err)}. Daemon may not be ready.`);
         process.exitCode = 1;
         return;
       }

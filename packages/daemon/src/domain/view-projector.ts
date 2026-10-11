@@ -48,6 +48,13 @@ export interface ViewQueryResult {
   rowCount: number;
 }
 
+interface ViewShowOptions {
+  rig?: string;
+  limit?: number;
+  mission?: string;
+  project?: ProjectRead | null;
+}
+
 export interface CustomView {
   viewId: string;
   viewName: string;
@@ -64,6 +71,10 @@ interface CustomViewRow {
   registered_by_session: string;
   registered_at: string;
   last_evaluated_at: string | null;
+}
+
+function customDefinitionHasLimit(definition: string): boolean {
+  return definition.toLowerCase().includes("limit");
 }
 
 export class ViewProjectorError extends Error {
@@ -116,8 +127,12 @@ export class ViewProjector {
   /**
    * Run a view by name. Built-in names (BUILT_IN_VIEW_NAMES) dispatch to
    * hardcoded SQL; other names dispatch to custom-view lookup.
+   * Only execution is asynchronous; SQL views retain their synchronous API.
    */
-  show(viewName: string, opts?: { rig?: string; limit?: number; mission?: string; project?: ProjectRead | null }): ViewQueryResult {
+  show(viewName: "execution", opts?: ViewShowOptions): Promise<ViewQueryResult>;
+  show(viewName: Exclude<BuiltInViewName, "execution">, opts?: ViewShowOptions): ViewQueryResult;
+  show(viewName: string, opts?: ViewShowOptions): ViewQueryResult | Promise<ViewQueryResult>;
+  show(viewName: string, opts?: ViewShowOptions): ViewQueryResult | Promise<ViewQueryResult> {
     const limit = Math.max(1, Math.min(opts?.limit ?? 100, 1000));
     // S27 — the execution view is document-shaped (rows = [one JSON document])
     // and derives from fs/git/build-info legs beyond this class's SQL, so it
@@ -129,8 +144,8 @@ export class ViewProjector {
           "execution view deps are not wired on this daemon (setExecutionDeps was never called)",
         );
       }
-      const doc = buildExecutionView(opts?.project ? { ...this.executionDeps, slicesRoot: () => opts.project!.missionsRoot } : this.executionDeps, { mission: opts?.mission, rig: opts?.rig, project: opts?.project?.id });
-      return { viewName: "execution", generatedAt: this.now().toISOString(), rows: [doc], rowCount: 1 };
+      return buildExecutionView(opts?.project ? { ...this.executionDeps, slicesRoot: () => opts.project!.missionsRoot } : this.executionDeps, { mission: opts?.mission, rig: opts?.rig, project: opts?.project?.id })
+        .then(doc => ({ viewName: "execution", generatedAt: this.now().toISOString(), rows: [doc], rowCount: 1 }));
     }
     if ((BUILT_IN_VIEW_NAMES as readonly string[]).includes(viewName)) {
       return this.runBuiltIn(viewName as BuiltInViewName, opts?.rig, limit);
@@ -140,6 +155,16 @@ export class ViewProjector {
       throw new ViewProjectorError("view_not_found", `view '${viewName}' is not registered (built-in or custom)`);
     }
     return this.runCustom(custom, limit);
+  }
+
+  /** #586: whether showing this view binds `limit` into SQL. The execution view
+   *  never reads it, a custom view with its own LIMIT keeps that one, and an
+   *  unregistered name is refused before any SQL runs. */
+  bindsLimit(viewName: string): boolean {
+    if (viewName === "execution") return false;
+    if ((BUILT_IN_VIEW_NAMES as readonly string[]).includes(viewName)) return true;
+    const custom = this.getCustomView(viewName);
+    return custom !== null && !customDefinitionHasLimit(custom.definition);
   }
 
   list(): { builtIn: BuiltInViewName[]; custom: CustomView[] } {
@@ -317,7 +342,7 @@ export class ViewProjector {
     // Custom view definitions are operator-supplied SQL. Append LIMIT if
     // the operator's SQL does not already include one. We do not parse SQL;
     // operators are responsible for the definition's correctness.
-    const sql = view.definition.toLowerCase().includes("limit")
+    const sql = customDefinitionHasLimit(view.definition)
       ? view.definition
       : `${view.definition.trim().replace(/;$/, "")} LIMIT ${limit}`;
     let rows: Record<string, unknown>[];

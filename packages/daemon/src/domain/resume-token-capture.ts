@@ -20,8 +20,10 @@ import { resumeTypeForRuntime, validateResumeToken, type ResumeType } from "./re
 
 export interface ResumeTokenCaptureDeps {
   contextUsageStore?: {
-    readSidecar(sessionName: string): { ok: true; data: { session_id?: string } } | { ok: false; reason: string };
+    readSidecar(sessionName: string): { ok: true; data: { session_id?: string; sampled_at?: string } } | { ok: false; reason: string };
   } | null;
+  /** Start time (`ps` lstart) of the Claude process now in the seat's pane, or null when unknown. */
+  claudeProcessStartedAt?: ((sessionName: string) => Promise<string | null>) | null;
   resumeTokenCapturer?: {
     captureCodexThreadId(sessionName: string): Promise<string | undefined>;
   } | null;
@@ -29,6 +31,10 @@ export interface ResumeTokenCaptureDeps {
    *  runner persists sessionFile/sessionId from RPC get_state; a file read,
    *  same posture as the claude-code status-line sidecar). */
   piRunnerStateStore?: {
+    readSessionFile(sessionName: string): { ok: true; sessionFile: string } | { ok: false; reason: string };
+  } | null;
+  /** Reads the separately rooted OMP runner sidecar; never reads Pi seat state. */
+  ompRunnerStateStore?: {
     readSessionFile(sessionName: string): { ok: true; sessionFile: string } | { ok: false; reason: string };
   } | null;
 }
@@ -41,13 +47,35 @@ export type ResumeTokenDeriveResult =
   /** A live token was derived + format-validated. The caller persists it. */
   | { outcome: "captured"; resumeType: ResumeType; token: string }
   /** Derivation ran but produced no usable token — the caller emits a skip event. */
-  | { outcome: "skipped"; reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token" };
+  | { outcome: "skipped"; reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token" | "stale_sidecar" };
+
+/**
+ * A Claude sidecar outlives the process that wrote it (#421: a seat that keeps a user's own status
+ * line never refreshes it). A sample taken before the pane's current Claude process started can
+ * only come from an earlier process, so its session id is not this process's. True only when both
+ * times are known; unknown never reads as stale.
+ */
+export async function isClaudeSidecarFromEarlierProcess(
+  sampledAt: unknown,
+  sessionName: string,
+  claudeProcessStartedAt: ResumeTokenCaptureDeps["claudeProcessStartedAt"],
+): Promise<boolean> {
+  if (typeof sampledAt !== "string" || !claudeProcessStartedAt) return false;
+  const sampled = Date.parse(sampledAt);
+  if (Number.isNaN(sampled)) return false;
+  let startedAt: string | null;
+  try { startedAt = await claudeProcessStartedAt(sessionName); } catch { return false; }
+  // `ps` lstart is local time to the second, so a sample from the current process is never earlier.
+  const started = startedAt ? Date.parse(startedAt) : Number.NaN;
+  return !Number.isNaN(started) && sampled < started;
+}
 
 /**
  * Derive a runtime's resume token from live, read-only sources:
  *   claude-code → the status-line sidecar's session_id (a file read)
  *   codex       → the thread id derived from live pid-keyed logs
  *   pi          → the pi-runner state sidecar's sessionFile (a file read)
+ *   omp         → the OMP runner state sidecar's sessionFile (separate root)
  * Returns a structured outcome; never throws for a missing/invalid token
  * (those are honest skips). ANY unexpected throw from a dependency is the
  * caller's to swallow (capture must never fail or block its lifecycle op).
@@ -59,7 +87,7 @@ export async function deriveResumeToken(
   const resumeType = resumeTypeForRuntime(input.runtime);
   if (!resumeType) return { outcome: "exempt" }; // terminal / unknown — exempt, not a failure
 
-  const runtime = input.runtime as string; // non-null: resumeType is set only for claude-code / codex / pi
+  const runtime = input.runtime as string; // non-null: resumeType resolves only for supported runtimes
 
   let token: string | undefined;
   if (runtime === "claude-code") {
@@ -71,13 +99,17 @@ export async function deriveResumeToken(
     const sid = sidecar.data.session_id;
     if (typeof sid === "string" && sid.trim().length > 0) token = sid.trim();
     else return { outcome: "skipped", reason: "missing_sidecar" };
+    if (await isClaudeSidecarFromEarlierProcess(sidecar.data.sampled_at, input.sessionName, deps.claudeProcessStartedAt)) {
+      return { outcome: "skipped", reason: "stale_sidecar" };
+    }
   } else if (runtime === "codex") {
     if (!deps.resumeTokenCapturer) return { outcome: "noop" }; // dep absent — silent no-op
     token = await deps.resumeTokenCapturer.captureCodexThreadId(input.sessionName);
     if (!token) return { outcome: "skipped", reason: "probe_timeout" };
-  } else if (runtime === "pi") {
-    if (!deps.piRunnerStateStore) return { outcome: "noop" }; // dep absent — silent no-op
-    const state = deps.piRunnerStateStore.readSessionFile(input.sessionName);
+  } else if (runtime === "pi" || runtime === "omp") {
+    const stateStore = runtime === "pi" ? deps.piRunnerStateStore : deps.ompRunnerStateStore;
+    if (!stateStore) return { outcome: "noop" }; // dep absent — silent no-op
+    const state = stateStore.readSessionFile(input.sessionName);
     if (!state.ok) {
       return { outcome: "skipped", reason: state.reason === "parse_error" ? "parse_error" : "missing_sidecar" };
     }

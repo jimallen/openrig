@@ -1,4 +1,5 @@
 import type { DaemonClient } from "../client.js";
+import { fetchWithTimeout } from "../fetch-with-timeout.js";
 
 /**
  * OPR.0.4.6.WF3 FR-1 — the shared follow engine behind `rig workflow
@@ -18,14 +19,14 @@ import type { DaemonClient } from "../client.js";
  *
  * Exit codes (arch n1 — outcome codes DISTINCT from error codes):
  *   0 = workflow completed
- *   3 = workflow FAILED (the outcome-as-exit-code kubectl default —
+ *   3 = workflow FAILED or aborted (the outcome-as-exit-code kubectl default —
  *       a workflow that fails is a command that fails; never collides
  *       with the shipped 1=4xx / 2=5xx transport codes)
  */
 export const EXIT_WORKFLOW_FAILED = 3;
 
 /** Terminal statuses a follow run resolves on. */
-const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted"]);
 
 export interface FollowInstanceView {
   instanceId: string;
@@ -85,6 +86,8 @@ export interface FollowOptions {
   io?: FollowIo;
   /** SSE reconnect attempts before degrading to the poll fallback. */
   maxReconnects?: number;
+  /** Deadline for opening SSE response headers; streamed bodies remain unbounded. */
+  streamConnectTimeoutMs?: number;
   /** Poll fallback interval (ms). */
   pollIntervalMs?: number;
 }
@@ -92,6 +95,7 @@ export interface FollowOptions {
 const STATUS_GLYPH: Record<string, string> = {
   completed: "✔",
   failed: "✖",
+  aborted: "✖",
   active: "●",
   waiting: "◐",
 };
@@ -127,7 +131,7 @@ function renderEvent(event: WorkflowEvent): string | null {
 
 /** Outcome → process exit code, per the FR-1 contract. */
 export function outcomeExitCode(status: string): number {
-  if (status === "failed") return EXIT_WORKFLOW_FAILED;
+  if (status === "failed" || status === "aborted") return EXIT_WORKFLOW_FAILED;
   return 0;
 }
 
@@ -178,6 +182,7 @@ export async function followInstance(
   const io = opts.io ?? realFollowIo();
   const maxReconnects = opts.maxReconnects ?? 3;
   const pollIntervalMs = opts.pollIntervalMs ?? 3000;
+  const streamConnectTimeoutMs = opts.streamConnectTimeoutMs ?? 5000;
 
   // Walk-caught (VM iteration 2): without aborting the SSE connection
   // on return, the open socket keeps the node event loop alive and the
@@ -192,10 +197,10 @@ export async function followInstance(
     const sseUrl = `${client.baseUrl}/api/workflow/sse`;
     let streamRes: Response | null = null;
     try {
-      streamRes = await io.fetchImpl(sseUrl, {
+      streamRes = await fetchWithTimeout(io.fetchImpl, sseUrl, {
         headers: { Accept: "text/event-stream" },
         signal: aborter.signal,
-      });
+      }, { timeoutMs: streamConnectTimeoutMs, timeoutMessage: "Workflow stream connection timed out." });
       if (!streamRes.ok || !streamRes.body) streamRes = null;
     } catch {
       streamRes = null;
@@ -229,10 +234,10 @@ export async function followInstance(
         reconnectsLeft -= 1;
         io.err(`stream dropped — reconnecting (${maxReconnects - reconnectsLeft}/${maxReconnects})`);
         try {
-          const retry = await io.fetchImpl(sseUrl, {
+          const retry = await fetchWithTimeout(io.fetchImpl, sseUrl, {
             headers: { Accept: "text/event-stream" },
             signal: aborter.signal,
-          });
+          }, { timeoutMs: streamConnectTimeoutMs, timeoutMessage: "Workflow stream connection timed out." });
           if (retry.ok && retry.body) {
             streamRes = retry;
             continue;

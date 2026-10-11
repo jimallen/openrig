@@ -1,7 +1,9 @@
+import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
+import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
@@ -11,9 +13,11 @@ import type {
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
+import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
+import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
 import { shellQuote } from "./shell-quote.js";
-import { validateClaudeActivityHookDelivery } from "../domain/claude-activity-hooks.js";
+import { validateClaudeActivityHookDelivery, claudeActivityRelayPath, CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH } from "../domain/claude-activity-hooks.js";
 import { observeClaudePermission } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
@@ -52,12 +56,15 @@ const FORK_POLL_DELAY_MS = 500;
 export class ClaudeCodeAdapter implements RuntimeAdapter {
   readonly runtime = "claude-code";
   private tmux: TmuxAdapter;
+  private seatLaunchEnvironment?: SeatLaunchEnvironment;
   private fs: ClaudeAdapterFsOps;
   private sessionIdFactory: () => string;
   private sleep: (ms: number) => Promise<void>;
   private stateDir: string | null;
   private collectorAssetPath: string | null;
   private autoDriveProviderPrompts: boolean;
+  private listProcesses?: NativeProcessLister;
+  private autoLaunches = new Map<string, { binding: NodeBinding; token: string; executable?: string; fingerprint?: string; process?: ClaudeLaunchedProcess }>();
   readonly claudeManagedLaunch?: ClaudeManagedLaunch;
   private activityRelayPath: string | null;
   private claudeHooksManifestPath: string | null;
@@ -67,12 +74,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
   constructor(deps: {
     tmux: TmuxAdapter;
+    seatLaunchEnvironment?: SeatLaunchEnvironment;
     fsOps: ClaudeAdapterFsOps;
     sessionIdFactory?: () => string;
     sleep?: (ms: number) => Promise<void>;
     stateDir?: string;
     collectorAssetPath?: string;
     autoDriveProviderPrompts?: boolean;
+    listProcesses?: NativeProcessLister;
     claudeManagedLaunch?: ClaudeManagedLaunch;
     /** DI source of the activity-relay.cjs asset (parity with the Codex adapter). */
     activityRelayPath?: string;
@@ -84,12 +93,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     recordProjection?: (targetPath: string, content: string) => void;
   }) {
     this.tmux = deps.tmux;
+    this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
     this.sessionIdFactory = deps.sessionIdFactory ?? randomUUID;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.stateDir = deps.stateDir ?? null;
     this.collectorAssetPath = deps.collectorAssetPath ?? null;
     this.autoDriveProviderPrompts = deps.autoDriveProviderPrompts ?? false;
+    this.listProcesses = deps.listProcesses;
     this.claudeManagedLaunch = deps.claudeManagedLaunch;
     this.activityRelayPath = deps.activityRelayPath ?? null;
     this.claudeHooksManifestPath = deps.claudeHooksManifestPath ?? null;
@@ -109,6 +120,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
   async project(plan: ProjectionPlan, binding: NodeBinding): Promise<ProjectionResult> {
     const projected: string[] = [];
+    const warnings: string[] = [];
     const skipped: string[] = [];
     const failed: Array<{ effectiveId: string; error: string }> = [];
 
@@ -119,7 +131,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
 
       try {
-        const didProject = this.projectEntry(entry, binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE);
+        const didProject = this.projectEntry(entry, binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, warnings);
         if (didProject) {
           projected.push(entry.effectiveId);
         } else {
@@ -155,10 +167,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { projected, skipped, failed };
+    return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
-  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding): Promise<StartupDeliveryResult> {
+  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
     try { this.ensureManagedBootstrap(binding); } catch (err) {
       console.error(`[openrig] claude bootstrap warning: ${(err as Error).message}`);
     }
@@ -169,6 +181,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       console.error(`[openrig] context collector provisioning warning: ${(err as Error).message}`);
     }
 
+    const warnings: string[] = [];
     let delivered = 0;
     const failed: Array<{ path: string; error: string }> = [];
 
@@ -180,7 +193,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         switch (hint) {
           case "guidance_merge": {
             const targetPath = nodePath.join(binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE);
-            const merged = this.mergeGuidance(targetPath, file.path, content);
+            const merged = this.mergeGuidance(targetPath, file.path, content, warnings);
             if (!merged) continue; // rig-role skip: do not count as delivered
             break;
           }
@@ -196,10 +209,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           }
           case "send_text": {
             if (binding.tmuxSession) {
+              if (sendInteractiveText) {
+                await sendInteractiveText(content);
+                break;
+              }
               const textResult = await this.tmux.sendText(binding.tmuxSession, content);
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
-              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["C-m"]);
+              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
               if (!submitResult.ok) throw new Error(submitResult.message);
             }
             break;
@@ -213,7 +230,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { delivered, failed };
+    return { delivered, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
   async launchHarness(
@@ -221,6 +238,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     opts: { name: string; resumeToken?: string; forkSource?: import("../domain/runtime-adapter.js").ForkSource },
   ): Promise<HarnessLaunchResult> {
     binding = { ...binding };
+    this.autoLaunches.delete(binding.nodeId);
     opts = { ...opts, ...(opts.forkSource ? { forkSource: { ...opts.forkSource } } : {}) };
     if (!binding.tmuxSession) {
       return { ok: false, error: "No tmux session bound — cannot launch Claude Code harness" };
@@ -241,8 +259,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           session: binding.tmuxSession, pane: binding.tmuxPane, generation: binding.launchGeneration }, binding.permissionMode);
       } catch (error) { return { ok: false, error: (error as Error).message }; }
     }
-    const permissionMode = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
-    const appliedLaunch = observeClaudePermission(permissionMode);
+    const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
+    const appliedLaunch = observeClaudePermission(posture);
+    const permissionMode = posture + operationalLaunchArg(this.runtime, binding);
     // OPR.0.5.3.1: classic-renderer env prefix (default on) → native scrollback for every
     // managed launch path (fresh/resume/fork). "" when overridden off → byte-identical command.
     const rendererPrefix = claudeClassicRendererEnvPrefix(process.env);
@@ -255,6 +274,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // resume-cmd builder are the named A2 restore-parity follow-on, not this atom.
     const model = binding.model?.trim();
     const modelArg = model ? ` --model ${shellQuote(model)}` : "";
+    const effort = binding.effort?.trim();
+    const effortArg = effort ? ` --effort ${shellQuote(effort)}` : "";
 
     // Fork branch: build `claude --resume <parent> --fork-session --name <seat>`
     // and capture the NEW post-fork session id. The parent token is NEVER
@@ -270,15 +291,20 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       if (!parentId) {
         return { ok: false, error: "claude-code fork: forkSource.value is required (parent native_id)" };
       }
-      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...(model ? ["--model", model] : []),
+      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
         "--resume", parentId, "--fork-session", "--name", opts.name])
-        : `${rendererPrefix}claude ${permissionMode}${modelArg} --resume ${parentId} --fork-session --name ${opts.name}`;
+        // The non-managed command text is parsed by the pane shell, so the
+        // parent id needs the same quoting as --model/--effort above (and as
+        // the codex fork path) — a hostile id must not leave --resume.
+        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(parentId)} --fork-session --name ${opts.name}`;
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
-        : await this.tmux.sendText(binding.tmuxSession, cmd);
+        : this.seatLaunchEnvironment
+          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
+          : await this.tmux.sendText(binding.tmuxSession, cmd);
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
       }
-      const enterResult = managed ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
+      const enterResult = managed || this.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
       if (!enterResult.ok) {
         return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
       }
@@ -298,35 +324,43 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
 
     const generatedSessionId = opts.resumeToken ? null : this.sessionIdFactory();
-    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...(model ? ["--model", model] : []),
-      ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), "--name", opts.name]) : opts.resumeToken
-      ? `${rendererPrefix}claude ${permissionMode}${modelArg} --resume ${opts.resumeToken} --name ${opts.name}`
-      : `${rendererPrefix}claude ${permissionMode}${modelArg} --session-id ${generatedSessionId} --name ${opts.name}`;
+    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
+      ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), "--name", opts.name],
+      opts.resumeToken ? claudeResumeLaunchEnv(opts.resumeToken) : undefined) : opts.resumeToken
+      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(opts.resumeToken)} --name ${opts.name}`
+      : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --session-id ${generatedSessionId} --name ${opts.name}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
-      : await this.tmux.sendText(binding.tmuxSession, cmd);
+      : this.seatLaunchEnvironment
+          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
+          : await this.tmux.sendText(binding.tmuxSession, cmd);
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
     }
     // Send Enter to execute
-    const enterResult = managed ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
+    const enterResult = managed || this.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
     if (!enterResult.ok) {
       return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
     }
 
+    const launch = { binding, token: opts.resumeToken ?? generatedSessionId!, executable: managed?.executable } as
+      { binding: NodeBinding; token: string; executable?: string; fingerprint?: string; process?: ClaudeLaunchedProcess };
+    this.autoLaunches.set(binding.nodeId, launch);
     if (opts.resumeToken) {
-      const verification = await this.verifyResumeLaunch(binding.tmuxSession);
-      if (!verification.ok) return verification;
-      return { ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id", appliedLaunch };
+      const verification = await this.verifyResumeLaunch(binding);
+      // The process readiness pinned first, if it observed one: the caller records it, not a later read.
+      const launchedProcess = launch.process ? { launchedProcess: { ...launch.process } } : {};
+      if (!verification.ok) return { ...verification, ...launchedProcess };
+      return { ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id", appliedLaunch, ...launchedProcess };
     }
 
-    // Belt-and-suspenders: prefer an immediately discoverable persisted session,
-    // but fall back to the UUID we assigned explicitly at launch time.
-    const token = this.captureResumeToken(opts.name, managed?.configDir);
-    return { ok: true, resumeToken: token ?? generatedSessionId ?? undefined, resumeType: "claude_id", appliedLaunch };
+    // Fresh launches already have an explicit --session-id. A same-name file
+    // can belong to another seat sharing the Claude config directory.
+    return { ok: true, resumeToken: generatedSessionId!, resumeType: "claude_id", appliedLaunch };
   }
 
   async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
+    binding = { ...binding };
     if (!binding.tmuxSession) {
       return { ready: false, reason: "No tmux session bound" };
     }
@@ -337,11 +371,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     const paneCommand = await this.tmux.getPaneCommand(binding.tmuxSession);
     const paneContent = (await this.tmux.capturePaneContent(binding.tmuxSession, 40)) ?? "";
-    const probe = assessNativeResumeProbe({
-      runtime: "claude-code",
-      paneCommand,
-      paneContent,
-    });
+    const probe = await this.assessManagedProbe(binding, paneCommand, paneContent);
 
     if (probe.status === "resumed") return { ready: true };
     return { ready: false, reason: probe.detail, code: probe.code };
@@ -353,23 +383,58 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   /** Best-effort public seam for user-scope Claude bootstrap used by managed sessions. */
-  ensureManagedBootstrap(binding: { cwd?: string | null; tmuxSession?: string | null }): void {
+  ensureManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
     this.provisionManagedBootstrap(binding);
   }
 
   // -- Private helpers --
 
-  private async verifyResumeLaunch(tmuxSession: string): Promise<HarnessLaunchResult> {
+  private async assessManagedProbe(binding: NodeBinding, paneCommand: string | null, paneContent: string) {
+    const input = { runtime: "claude-code", paneCommand, paneContent };
+    const probe = assessNativeResumeProbe(input);
+    // Headerless managed launches (including bypass mode) use the same readiness
+    // precedence as resume. This candidate result is returned only after the
+    // exact launch identity below is proved; screen text alone is insufficient.
+    const verifiedProbe = assessNativeResumeProbe({ ...input,
+      claudeAutoIdentityVerified: true, claudeResumeIdentityVerified: true });
+    if (probe.status === "resumed" || verifiedProbe.status !== "resumed") return probe;
+    const launch = this.autoLaunches.get(binding.nodeId);
+    if (!launch || !binding.tmuxPane || !binding.tmuxSession
+      || launch.binding.id !== binding.id || launch.binding.tmuxPane !== binding.tmuxPane
+      || launch.binding.tmuxSession !== binding.tmuxSession
+      || launch.binding.launchGeneration !== binding.launchGeneration) return probe;
+    try {
+      const panes = await this.tmux.listPanes(binding.tmuxSession);
+      if (panes.length !== 1 || panes[0]?.id !== binding.tmuxPane) return probe;
+      const observation = { target: binding.tmuxPane, tmux: this.tmux,
+        listProcesses: this.listProcesses, expectedToken: launch.token, selectedExecutable: launch.executable };
+      const first = await observeClaudePaneProcess(observation);
+      if (!first) return probe;
+      // Pin the first exact process for this launch; retries cannot adopt a replacement. It is also
+      // the launch's record of the process it started (#1077).
+      if (!launch.fingerprint) {
+        launch.fingerprint = first.fingerprint;
+        if (first.process.startedAt) launch.process = { pid: first.process.pid, startedAt: first.process.startedAt };
+      }
+      if (first.fingerprint !== launch.fingerprint) return probe;
+      const native = await observeClaudePaneProcess(observation);
+      if (native?.fingerprint !== launch.fingerprint) return probe;
+      const currentPanes = await this.tmux.listPanes(binding.tmuxSession);
+      if (this.autoLaunches.get(binding.nodeId) !== launch || currentPanes.length !== 1
+        || currentPanes[0]?.id !== binding.tmuxPane
+        || await this.tmux.getPanePid(binding.tmuxSession) !== native.panePid) return probe;
+      return verifiedProbe;
+    } catch { return probe; }
+  }
+
+  private async verifyResumeLaunch(binding: NodeBinding): Promise<HarnessLaunchResult> {
+    const tmuxSession = binding.tmuxSession!;
     const attempts = 16;
 
     for (let attempt = 0; attempt < attempts; attempt++) {
       const paneCommand = await this.tmux.getPaneCommand(tmuxSession);
       const paneContent = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
-      const probe = assessNativeResumeProbe({
-        runtime: "claude-code",
-        paneCommand,
-        paneContent,
-      });
+      const probe = await this.assessManagedProbe(binding, paneCommand, paneContent);
 
       if (probe.code === "no_conversation_found") {
         return {
@@ -411,17 +476,13 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     const finalCommand = await this.tmux.getPaneCommand(tmuxSession);
     const finalContent = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
-    const finalProbe = assessNativeResumeProbe({
-      runtime: "claude-code",
-      paneCommand: finalCommand,
-      paneContent: finalContent,
-    });
+    const finalProbe = await this.assessManagedProbe(binding, finalCommand, finalContent);
 
     if (finalProbe.status === "resumed") {
       return { ok: true };
     }
 
-    if (finalProbe.status === "attention_required") {
+    if (finalProbe.status === "attention_required" || finalProbe.code === "claude_auto_identity_required") {
       return {
         ok: false,
         error: finalProbe.detail,
@@ -441,7 +502,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return { ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" };
   }
 
-  private projectEntry(entry: ProjectionEntry, cwd: string, managedBlockFile: ClaudeManagedBlockFile): boolean {
+  private projectEntry(entry: ProjectionEntry, cwd: string, managedBlockFile: ClaudeManagedBlockFile, warnings: string[]): boolean {
     if (entry.category === "runtime_resource" && this.applyRuntimeResource(entry, cwd)) {
       return true;
     }
@@ -449,7 +510,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
       const targetPath = nodePath.join(cwd, managedBlockFile);
       const content = this.fs.readFile(entry.absolutePath);
-      return this.mergeGuidance(targetPath, entry.effectiveId, content);
+      return this.mergeGuidance(targetPath, entry.effectiveId, content, warnings);
     }
 
     // HG-1.3 plugin runtime applicability filter (per DESIGN.md §5.1):
@@ -464,7 +525,16 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     if (!targetDir) return true;
 
     this.fs.mkdirp(targetDir);
-    const isDir = this.fs.listFiles ? this.fs.listFiles(entry.absolutePath).length > 0 : false;
+    let isDir = false;
+    if (this.fs.listFiles) {
+      try {
+        isDir = this.fs.listFiles(entry.absolutePath).length > 0;
+      } catch {
+        // File-shaped sources make the production listFiles (recursive
+        // fs.readdirSync walk) throw ENOTDIR — treat the entry as file-shaped.
+        isDir = false;
+      }
+    }
 
     if (isDir && this.fs.listFiles) {
       // Directory-shaped: recursive copy
@@ -561,7 +631,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
    * ProjectionResult and StartupDeliveryResult report honest counts instead
    * of claiming a merge that never landed.
    */
-  private mergeGuidance(targetPath: string, blockId: string, content: string): boolean {
+  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
     // The `rig-role` managed block is authored per seat but delivered through a
     // projection path that pairs (target-file × spec) without seat correlation,
     // so multiple pod-mates' role bodies collide into one CLAUDE.md. The fix
@@ -575,6 +645,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return false;
     }
     mergeManagedBlock(this.fs, targetPath, blockId, content, {
+      warnings,
       replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],
     });
     return true;
@@ -633,11 +704,73 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return resolveConcreteHint(path, content);
   }
 
-  private provisionManagedBootstrap(binding: { cwd?: string | null; tmuxSession?: string | null }): void {
+  private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
     // OPR.0.4.8.2 agnostic rip-out: provisionRigPermissions (C2) removed — OpenRig no longer
     // authors any config-file permission policy. Trust/onboarding (C3/C4) are neutral plumbing, kept.
-    this.provisionWorkspaceTrust(binding.cwd ?? null);
-    this.provisionOnboardingState();
+    const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
+    // Match launchHarness: an explicit permission mode exports the selected home to the child, so
+    // only that home is provisioned.
+    const managed = binding.permissionMode !== undefined ? this.claudeManagedLaunch : undefined;
+    const cwd = binding.cwd === undefined && managed && binding.nodeId
+      ? managed.boundCwd(binding.nodeId) : binding.cwd;
+    const statePaths: string[] = [];
+    const failures: string[] = [];
+    if (managed) {
+      if (cwd) statePaths.push(managed.configPaths(cwd).statePath);
+    } else {
+      if (home) statePaths.push(nodePath.join(home, ".claude.json"));
+      // A classic seat types `claude` into its pane's shell, which inherits the tmux server's
+      // environment, not the daemon's, so the bootstrap cannot see which home that child reads.
+      // When the daemon selects CLAUDE_CONFIG_DIR, provision that home too. This deliberately
+      // replaces #565's rule that classic bootstrap writes exactly one file and leaves the
+      // selected home untouched: a child that inherits the daemon's selection read neither.
+      try {
+        const selectedCwd = cwd ?? (binding.nodeId ? this.claudeManagedLaunch?.boundCwd(binding.nodeId) : undefined);
+        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd) : undefined;
+        if (selected && !statePaths.includes(selected)) statePaths.push(selected);
+      } catch (err) {
+        failures.push((err as Error).message);
+      }
+    }
+    // Each file is merged on its own: unmergeable state in one is preserved and reported,
+    // and never stops the other from being provisioned.
+    for (const statePath of statePaths) {
+      try {
+        this.provisionClaudeState(statePath, cwd);
+      } catch (err) {
+        failures.push(`${statePath}: ${(err as Error).message}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }
+
+  private provisionClaudeState(statePath: string, cwd: string | null | undefined): void {
+    // Preserve every existing field. Unreadable/malformed/non-object state is
+    // left untouched and reported through the caller's best-effort bootstrap boundary.
+    const state = this.fs.exists(statePath) ? this.readJsonObjectStrict(statePath) : {};
+    // Running Claude processes read and write this file, so it is rewritten only when a flag is
+    // missing: an already-provisioned file (every relaunch, resume and post-launch delivery) is left alone.
+    let changed = false;
+    if (cwd) {
+      const projects = this.readJsonObjectField(state, "projects");
+      if (Object.hasOwn(state, "projects") && projects !== state["projects"]) throw new Error("Claude bootstrap projects must be a JSON object; existing state preserved.");
+      for (const trustKey of this.workspaceTrustKeys(cwd)) {
+        const projectState = this.readJsonObjectField(projects, trustKey);
+        if (Object.hasOwn(projects, trustKey) && projectState !== projects[trustKey]) throw new Error("Claude bootstrap project state must be a JSON object; existing state preserved.");
+        if (projectState["hasTrustDialogAccepted"] === true) continue;
+        projectState["hasTrustDialogAccepted"] = true;
+        projects[trustKey] = projectState;
+        changed = true;
+      }
+      state["projects"] = projects;
+    }
+    if (state["hasCompletedOnboarding"] !== true) {
+      state["hasCompletedOnboarding"] = true;
+      changed = true;
+    }
+    if (!changed) return;
+    this.fs.mkdirp(nodePath.dirname(statePath));
+    this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
   }
 
   // OPR.0.4.8.2 agnostic rip-out: the CONVENIENCE_BASELINE (global `Bash(rig:*)` allow) and its
@@ -645,35 +778,6 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   // `_openrig_provenance` marker) are DELETED. OpenRig no longer authors any config-file permission
   // policy; the harness-native permission surface is the control surface. Existing provenance-marked
   // user files are NOT retro-scrubbed — the new code simply never touches settings.json.
-
-  private provisionWorkspaceTrust(cwd: string | null): void {
-    if (!cwd) return;
-    const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
-    if (!home) return;
-
-    const statePath = nodePath.join(home, ".claude.json");
-    const state = this.readJsonObject(statePath);
-    const projects = this.readJsonObjectField(state, "projects");
-
-    for (const trustKey of this.workspaceTrustKeys(cwd)) {
-      const projectState = this.readJsonObjectField(projects, trustKey);
-      projectState["hasTrustDialogAccepted"] = true;
-      projects[trustKey] = projectState;
-    }
-
-    state["projects"] = projects;
-    this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
-  }
-
-  private provisionOnboardingState(): void {
-    const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
-    if (!home) return;
-
-    const statePath = nodePath.join(home, ".claude.json");
-    const state = this.readJsonObject(statePath);
-    state["hasCompletedOnboarding"] = true;
-    this.fs.writeFile(statePath, JSON.stringify(state, null, 2));
-  }
 
   private workspaceTrustKeys(cwd: string): string[] {
     const keys = new Set<string>([nodePath.resolve(cwd)]);
@@ -717,7 +821,17 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   /**
    * Best-effort: provision the OpenRig context collector for managed Claude sessions.
    * Writes a collector script and merges status line config into .claude/settings.local.json.
-   * Idempotent: safe to call multiple times (merge preserves existing settings).
+   * Idempotent: safe to call multiple times (merge preserves existing settings). A user's own
+   * status line command (anything but the exact command written below), or a file that does not
+   * parse, is left as it is. The collector then never runs for that seat. While a valid sidecar
+   * from an earlier collector is retained, context usage (shown as stale once it ages) and Claude
+   * resume-token capture keep using it. That sidecar's session id may belong to an earlier Claude
+   * session, so capture can record an older session id for such a seat. Once none exists:
+   * - context usage reads unknown (`missing_sidecar`);
+   * - resume-token capture at adoption or handover is skipped (`missing_sidecar`);
+   * - its provider-usage row is an explicit unknown (`no_statusline_cache_yet`) unless an earlier
+   *   cache for that seat is retained.
+   * The read-modify-write below is not safe against a concurrent writer of the same file.
    */
   private provisionContextCollector(binding: { cwd?: string | null; tmuxSession?: string | null }): void {
     if (!this.stateDir || !this.collectorAssetPath || !binding.cwd) return;
@@ -735,14 +849,29 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const settingsPath = nodePath.join(binding.cwd, ".claude", "settings.local.json");
     this.fs.mkdirp(nodePath.dirname(settingsPath));
 
-    const existing = this.readJsonObject(settingsPath);
+    // The seat cwd can be a shared repo whose project-local settings other sessions read (#421).
+    // Like the activity hooks, never clobber text we cannot parse. An empty file holds no settings
+    // and is treated as `{}`. Valid JSON that is not an object (for example `[]`) is still
+    // replaced, as before.
+    let existing: Record<string, unknown> = {};
+    if (this.fs.exists(settingsPath)) {
+      const text = this.fs.readFile(settingsPath);
+      if (text.trim() !== "") {
+        let parsed: unknown;
+        try { parsed = JSON.parse(text); } catch { return; }
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) existing = parsed as Record<string, unknown>;
+      }
+    }
+    const statusLine = typeof existing["statusLine"] === "object" && existing["statusLine"] !== null
+      ? existing["statusLine"] as Record<string, unknown> : {};
+    // A user's own status line command wins; only OpenRig's collector command is installed or refreshed.
+    // If this command's shape changes, keep the old shape recognised in isOwnedCollectorCommand, or
+    // seats holding it will never be refreshed.
+    const collectorCmd = `node ${shellQuote(collectorDest)} ${shellQuote(contextDir)} ${shellQuote(providerUsageDir)}`;
+    const current = statusLine["command"];
+    if (typeof current === "string" && current.trim() !== "" && current !== collectorCmd && !isOwnedCollectorCommand(current)) return;
 
-    const collectorCmd = `node ${collectorDest} ${contextDir} ${providerUsageDir}`;
-    existing["statusLine"] = {
-      ...(typeof existing["statusLine"] === "object" && existing["statusLine"] !== null ? existing["statusLine"] as Record<string, unknown> : {}),
-      type: "command",
-      command: collectorCmd,
-    };
+    existing["statusLine"] = { ...statusLine, type: "command", command: collectorCmd };
 
     this.fs.writeFile(settingsPath, JSON.stringify(existing, null, 2));
   }
@@ -752,7 +881,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
    * to the desired `enabled` state, driven ONCE from the always-run `project()` seam.
    *
    * ENABLE (only when the relay SOURCE is readable): deliver `activity-relay.cjs` →
-   * `<cwd>/.openrig/hooks/scripts/` (mode preserved, 0755 from the source asset) and upsert
+   * the configured instance state directory (mode preserved, 0755 from the source asset) and upsert
    * the owned command for each relay event DERIVED from the canonical claude.json manifest
    * (compaction hooks excluded). If the source is missing, deliver NOTHING (no dangling
    * commands) and report `sourceMissing` so the caller can surface a warning + not claim
@@ -764,7 +893,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
    * untouched. Not `mergeJsonFragment` (additive union-by-key can't strip on disable).
    */
   private reconcileClaudeActivityHooks(cwd: string, enabled: boolean): ActivityHookOutcome {
-    const relayDest = nodePath.join(cwd, ".openrig", "hooks", "scripts", "activity-relay.cjs");
+    const relayDest = claudeActivityRelayPath(this.stateDir ?? undefined);
     const ownedCmd = `node ${shellQuote(relayDest)}`;
     const settingsPath = nodePath.join(cwd, ".claude", "settings.local.json");
 
@@ -821,7 +950,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     //    PREVALIDATED relay event (derived from the canonical manifest above).
     if (deliverable) {
       this.fs.mkdirp(nodePath.dirname(relayDest));
-      this.fs.copyFile(this.activityRelayPath!, relayDest);
+      // Sibling seats share this relay. Do not truncate identical bytes while a hook reads it.
+      if (!this.fs.exists(relayDest) || this.fs.readFile(relayDest) !== this.fs.readFile(this.activityRelayPath!)) {
+        this.fs.copyFile(this.activityRelayPath!, relayDest);
+      }
       this.preserveMode(this.activityRelayPath!, relayDest);
       for (const { event, timeout } of derivedEvents) {
         const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
@@ -861,10 +993,30 @@ interface ActivityHookOutcome {
 // OpenRig-owned relay path suffix. Ownership is the EXACT `node <arg>` command whose single
 // argument ends with this path — a changed prefix still matches (replace, not duplicate); a
 // user command that merely contains the path (echo, or node with extra args) does NOT.
-const OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
+const LEGACY_OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
 
 function hookCommand(hook: unknown): string | undefined {
   return isPlainObject(hook) && typeof hook["command"] === "string" ? (hook["command"] as string) : undefined;
+}
+
+// OpenRig-owned collectors use canonical POSIX-quoted paths. Recognise older unquoted
+// three/four-token commands too, but preserve commands composed with shell operators or
+// extra arguments. Old unquoted paths containing spaces cannot be identified unambiguously.
+const OWNED_COLLECTOR_SUFFIX = nodePath.sep + nodePath.join(".openrig", "context-collector.cjs");
+
+function isOwnedCollectorCommand(cmd: string): boolean {
+  if (/[\r\n]/.test(cmd)) return false;
+  const quoted = /^node ('(?:[^']|'"'"')*') ('(?:[^']|'"'"')*')(?: ('(?:[^']|'"'"')*'))?$/.exec(cmd.trim());
+  if (quoted) {
+    const tokens = quoted.slice(1).filter((token): token is string => token !== undefined);
+    const decoded = tokens.map(unquoteSingleShellToken);
+    if (decoded.some((value, index) => value === null || shellQuote(value) !== tokens[index])) return false;
+    return decoded[0]!.endsWith(OWNED_COLLECTOR_SUFFIX);
+  }
+  const tokens = cmd.trim().split(/\s+/);
+  if ((tokens.length !== 3 && tokens.length !== 4) || tokens[0] !== "node") return false;
+  if (tokens.some((token) => /[;&|<>`$()'"\\]/.test(token))) return false;
+  return tokens[1]!.endsWith(OWNED_COLLECTOR_SUFFIX);
 }
 
 function isOwnedRelayCommand(cmd: string | undefined): boolean {
@@ -881,7 +1033,8 @@ function isOwnedRelayCommand(cmd: string | undefined): boolean {
   // args merely concatenate to text ending in the relay suffix (e.g. `node 'x' '<relay>'`), which
   // must never be recognised as owned and deleted.
   if (shellQuote(decoded) !== arg) return false;
-  return decoded.endsWith(OWNED_RELAY_SUFFIX);
+  return decoded.endsWith(LEGACY_OWNED_RELAY_SUFFIX)
+    || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`);
 }
 
 /** Decode ONE POSIX single-quoted shell token as produced by shellQuote (outer `'…'` with an

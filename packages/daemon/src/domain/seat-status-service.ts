@@ -1,8 +1,8 @@
 import type { RigRepository } from "./rig-repository.js";
-import { getNodeInventory } from "./node-inventory.js";
+import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js";
 import { parseSessionName } from "./session-name.js";
-import type { NodeInventoryEntry } from "./types.js";
-import { NativePermissionStore, type StoredNativePermissionSelection } from "./native-permission-store.js";
+import type { NodeInventoryEntry, SeatIdentityVerdict } from "./types.js";
+import { NativePermissionStore, type StoredNativePermissionSelection, type ResolvedSeatPermission } from "./native-permission-store.js";
 import { AppliedLaunchObservationStore, type StoredAppliedLaunchObservation } from "./applied-launch-observation-store.js";
 
 const SEAT_LOOKUP_GUIDANCE = "List seats with: rig ps --nodes";
@@ -17,6 +17,7 @@ export interface SeatStatus {
   runtime: string | null;
   current_occupant: string | null;
   session_status: string | null;
+  session_reason: SeatIdentityVerdict["reason"];
   startup_status: NodeInventoryEntry["startupStatus"];
   occupant_lifecycle: NodeInventoryEntry["occupantLifecycle"];
   continuity_outcome: NodeInventoryEntry["continuityOutcome"];
@@ -30,6 +31,7 @@ export interface SeatStatus {
     lastLaunchArguments: StoredAppliedLaunchObservation | null;
     nativeEffect: "unverified";
     error?: string;
+    effective?: ResolvedSeatPermission;
   };
 }
 
@@ -58,15 +60,11 @@ export class SeatStatusService {
     let matches = this.findMatches(ref);
     // Same-name rig history (per-dir relaunches) must not make every seat verb
     // refuse forever: if exactly one match belongs to a currently-running rig,
-    // that is the answer. SeatLifecycleService.resolveSeat mirrors this rule.
-    const running = matches.filter((m) => m.entry.sessionStatus === "running");
-    if (running.length === 1) {
-      matches = running;
-    } else if (running.length === 0 && matches.length > 1) {
-      // Dead-seat verbs (launch/clean) need the newest generation, not a refusal.
-      const newest = matches[matches.length - 1]!;
-      const inNewest = matches.filter((m) => m.entry.rigId === newest.entry.rigId);
-      if (inNewest.length === 1) matches = inNewest;
+    // that is the answer. Differently named rigs stay ambiguous.
+    // SeatLifecycleService.resolveSeat mirrors this rule.
+    if (new Set(matches.map((m) => m.entry.rigName)).size === 1) {
+      const running = matches.filter((m) => m.entry.sessionStatus === "running");
+      if (running.length === 1) matches = running;
     }
     if (matches.length === 0) {
       return { ok: false, code: "seat_not_found", message: `Seat "${ref}" not found`, guidance: SEAT_LOOKUP_GUIDANCE };
@@ -94,9 +92,11 @@ export class SeatStatusService {
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
       const rigName = parsed.rig;
-      const rigs = this.rigRepo.findRigsByName(rigName);
+      const rigs = this.rigRepo.findUnarchivedRigsByName(rigName);
       return rigs.flatMap((rig) => this.entriesForRig(rig.id).filter((entry) =>
-        entry.canonicalSessionName === ref || entry.logicalId === localRef
+        entry.canonicalSessionName === ref
+        || deriveCanonicalFromEntry(entry) === ref
+        || entry.logicalId === localRef
       ).map((entry) => ({ entry })));
     }
 
@@ -122,6 +122,7 @@ export class SeatStatusService {
       runtime: entry.runtime,
       current_occupant: entry.canonicalSessionName,
       session_status: entry.sessionStatus,
+      session_reason: entry.identityVerdict?.reason ?? null,
       startup_status: entry.startupStatus,
       occupant_lifecycle: entry.occupantLifecycle,
       continuity_outcome: entry.continuityOutcome,
@@ -129,15 +130,17 @@ export class SeatStatusService {
       previous_occupant: entry.previousOccupant,
       handover_at: entry.handoverAt,
       restore_outcome: entry.restoreOutcome,
-      permissions: this.permissionStatus(entry.nodeId),
+      permissions: this.permissionStatus(entry.nodeId, entry.runtime),
     };
   }
 
-  private permissionStatus(nodeId: string): SeatStatus["permissions"] {
+  private permissionStatus(nodeId: string, runtime?: string | null): SeatStatus["permissions"] {
     const lastLaunchArguments = new AppliedLaunchObservationStore(this.rigRepo.db).readCurrent(nodeId);
     try {
-      const desired = new NativePermissionStore(this.rigRepo.db).read(nodeId);
-      return { selectionState: desired ? "explicit" : "inherit", desired, lastLaunchArguments, nativeEffect: "unverified" };
+      const store = new NativePermissionStore(this.rigRepo.db);
+      const desired = store.read(nodeId);
+      const effective = runtime ? store.resolve(nodeId, runtime) : undefined;
+      return { selectionState: desired ? "explicit" : "inherit", desired, lastLaunchArguments, nativeEffect: "unverified", ...(effective ? { effective } : {}) };
     } catch (error) {
       return { selectionState: "unknown", desired: null, lastLaunchArguments, nativeEffect: "unverified", error: (error as Error).message };
     }

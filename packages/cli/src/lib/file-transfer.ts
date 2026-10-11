@@ -39,6 +39,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { spawn as nodeSpawn } from "node:child_process";
 import { loadHostRegistry, resolveHost, type SshHostEntry } from "./../host-registry.js";
 import { looksLikePermissionGate } from "./../cross-host-executor.js";
@@ -53,13 +54,14 @@ export type ParsedFileArg =
 export type FileArgParse = { ok: true; arg: ParsedFileArg } | { ok: false; error: string };
 
 const HOST_ID_SHAPE = /^[A-Za-z0-9_-]+$/;
+const DOTTED_HOST_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SSH_USER_SHAPE = /^[A-Za-z0-9._-]+$/;
 export const REMOTE_PATH_CHARSET = /^[A-Za-z0-9._/-]+$/;
 
 /** The FR-4 short closed named deny list (dot-directory segments). */
 export const DENIED_SEGMENTS = [".openrig", ".ssh", ".codex", ".claude"] as const;
 
-export function parseFilePathArg(raw: string): FileArgParse {
+export function parseFilePathArg(raw: string, isRegisteredHost: (id: string) => boolean = () => false): FileArgParse {
   if (raw === "") return { ok: false, error: "empty path operand" };
   if (raw.startsWith("-")) {
     // G18-P1 belt: a flag-shaped operand is refused outright; the ./ escape
@@ -77,7 +79,10 @@ export function parseFilePathArg(raw: string): FileArgParse {
   if (colon >= 0) {
     const prefix = raw.slice(0, colon);
     const rest = raw.slice(colon + 1);
-    if (HOST_ID_SHAPE.test(prefix)) {
+    // Dotted prefixes have always been valid local filenames. Only a positive
+    // registry match selects their remote meaning; undotted grammar stays lexical.
+    const registeredDottedHost = prefix.includes(".") && DOTTED_HOST_ID_SHAPE.test(prefix) && isRegisteredHost(prefix);
+    if (HOST_ID_SHAPE.test(prefix) || registeredDottedHost) {
       // Id-shaped prefix: this IS a host qualifier — it must resolve or the
       // command fails loudly (fail-closed; never a silent local fallback).
       if (rest === "") return { ok: false, error: `remote path missing after '${prefix}:' — expected ${prefix}:<absolute-path>` };
@@ -131,7 +136,10 @@ export function checkLocalPath(raw: string): PathCheck {
       error: `refused: '${raw}' resolves into the active OPENRIG_HOME (${activeOpenRigHome}) — live OpenRig state is not a copy source/target in v0 (crash-safety). This is the FR-4 default-deny wall (a short closed list; extension requires a ruling).`,
     };
   }
-  return { ok: true, normalizedPath: resolved };
+  // rsync distinguishes a directory from its contents by the source's trailing separator.
+  const normalizedPath = raw.endsWith(path.sep) && !resolved.endsWith(path.sep)
+    ? resolved + path.sep : resolved;
+  return { ok: true, normalizedPath };
 }
 
 /** Remote side: posix-normalize, then the wall — absolute-only (arch Q5),
@@ -217,9 +225,17 @@ function resolveRemoteSide(hostId: string, rawPath: string, deps: PlanDeps): { o
 /** Validate the whole invocation — EVERY rejection here happens before any
  *  spawn (the fail-closed set; spawn-spy-asserted in tests). */
 export function planFileCopy(rawSrc: string, rawDst: string, opts: { dryRun?: boolean } & PlanDeps = {}): PlanResult {
-  const srcParse = parseFilePathArg(rawSrc);
+  // Use one registry snapshot for both classification and validation. A remote
+  // choice must never turn into a local copy after a later resolution error.
+  let registry: ReturnType<typeof loadHostRegistry> | undefined;
+  const registryLoader = () => registry ??= (opts.registryLoader ?? loadHostRegistry)();
+  const isRegisteredHost = (id: string) => {
+    const loaded = registryLoader();
+    return loaded.ok && resolveHost(loaded.registry, id).ok;
+  };
+  const srcParse = parseFilePathArg(rawSrc, isRegisteredHost);
   if (!srcParse.ok) return { ok: false, error: srcParse.error, code: "bad_operand" };
-  const dstParse = parseFilePathArg(rawDst);
+  const dstParse = parseFilePathArg(rawDst, isRegisteredHost);
   if (!dstParse.ok) return { ok: false, error: dstParse.error, code: "bad_operand" };
 
   if (srcParse.arg.kind === "remote" && dstParse.arg.kind === "remote") {
@@ -229,7 +245,7 @@ export function planFileCopy(rawSrc: string, rawDst: string, opts: { dryRun?: bo
   const sides: CopySide[] = [];
   for (const parsed of [srcParse.arg, dstParse.arg]) {
     if (parsed.kind === "remote") {
-      const side = resolveRemoteSide(parsed.hostId, parsed.path, opts);
+      const side = resolveRemoteSide(parsed.hostId, parsed.path, { registryLoader });
       if (!side.ok) return { ok: false, error: side.error, code: side.code };
       sides.push(side.side);
     } else {
@@ -328,12 +344,14 @@ export async function runFileCopy(plan: CopyPlan, deps: { spawn?: SpawnFn } = {}
 
   let stdout = "";
   let stderr = "";
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
   let spawnFailed: NodeJS.ErrnoException | null = null;
   child.stdout?.on("data", (chunk: Buffer | string) => {
-    stdout += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    stdout += typeof chunk === "string" ? chunk : stdoutDecoder.write(chunk);
   });
   child.stderr?.on("data", (chunk: Buffer | string) => {
-    stderr += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    stderr += typeof chunk === "string" ? chunk : stderrDecoder.write(chunk);
   });
 
   const exitCode: number | null = await new Promise((resolve) => {
@@ -344,6 +362,8 @@ export async function runFileCopy(plan: CopyPlan, deps: { spawn?: SpawnFn } = {}
     child.on("close", (code: number | null) => resolve(code));
   });
 
+  stdout += stdoutDecoder.end();
+  stderr += stderrDecoder.end();
   if (spawnFailed !== null && (spawnFailed as NodeJS.ErrnoException).code === "ENOENT") {
     return {
       ok: false,

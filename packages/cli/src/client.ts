@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigStore } from "./config-store.js";
-import { readOpenRigEnv } from "./openrig-compat.js";
+import { getOpenRigHome, readOpenRigEnv } from "./openrig-compat.js";
 import { fetchWithTimeout, FetchTimeoutError } from "./fetch-with-timeout.js";
 import { readLocalOrigin } from "./local-origin.js";
 
@@ -57,10 +57,24 @@ function resolveTerminalToken(): string | null {
   }
 }
 
+/** The OS code behind a failed connection (`EPERM`, `ECONNREFUSED`, …) when Node exposes one.
+ *  `fetch` reports every connection failure as "fetch failed" and keeps the code on `cause`. */
+export function connectionErrorCode(err: unknown): string | undefined {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null | undefined;
+  const code = e?.cause?.code ?? e?.code;
+  return typeof code === "string" && code ? code : undefined;
+}
+
 export class DaemonConnectionError extends Error {
-  constructor(message: string) {
+  /** A write caller cannot infer nondelivery from losing the response. */
+  writeOutcome?: "unknown";
+  /** #275: the OS cause, so a connection this machine blocked is not rendered as a stopped daemon. */
+  causeCode?: string;
+
+  constructor(message: string, causeCode?: string) {
     super(message);
     this.name = "DaemonConnectionError";
+    if (causeCode) this.causeCode = causeCode;
   }
 }
 
@@ -77,7 +91,7 @@ export class DaemonTimeoutError extends DaemonConnectionError {
 }
 
 /**
- * Bad-response: the daemon replied, but the body could not be read as JSON
+ * Bad-response: the daemon replied, but the body could not be read or parsed as JSON
  * (truncated / unparseable / non-JSON — a real symptom under daemon saturation).
  * DISTINCT from a stopped or unreachable daemon: the request WAS delivered and
  * the outcome is unknown, so this must never render as daemon-not-running.
@@ -98,8 +112,21 @@ export interface DaemonResponse<T = unknown> {
   data: T;
 }
 
+/**
+ * Issue #425: wrap bare IPv6 literals in brackets for URL hosts. `::1` must
+ * render as `[::1]` — `http://::1:7433` never parses in fetch. Hostnames,
+ * IPv4, and already-bracketed literals pass through unchanged.
+ */
+export function formatDaemonHostForUrl(host: string): string {
+  const trimmed = host.trim();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) return trimmed;
+  return trimmed.includes(":") ? `[${trimmed}]` : trimmed;
+}
+
 interface DaemonRequestOptions {
   timeoutMs?: number;
+  /** Caller cancellation applies to the request and its finite response body. */
+  signal?: AbortSignal;
   /** Per-call header overrides (e.g., `Authorization: Bearer ...`). */
   headers?: Record<string, string>;
 }
@@ -107,6 +134,22 @@ interface DaemonRequestOptions {
 interface DaemonClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+}
+
+/** Routing state published by daemon start, not a health check or sibling-home discovery. */
+function localDaemonUrl(): string | undefined {
+  try {
+    // Resolve at construction time: embedders may change OPENRIG_HOME after import.
+    const state = JSON.parse(fs.readFileSync(path.join(getOpenRigHome(), "daemon.json"), "utf-8"));
+    if (!state || !Number.isSafeInteger(state.pid) || state.pid <= 0
+      || !Number.isInteger(state.port) || state.port < 1 || state.port > 65535
+      || (state.host !== undefined && (typeof state.host !== "string" || !state.host.trim()))) return undefined;
+    // A stale PID must not redirect reads or writes to another configured daemon.
+    // Keep the recorded endpoint; the request decides reachability, even after exit.
+    return `http://${formatDaemonHostForUrl(state.host ?? "127.0.0.1")}:${state.port}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export class DaemonClient {
@@ -157,9 +200,15 @@ export class DaemonClient {
       if (envUrl) {
         this.baseUrl = envUrl;
       } else {
-        // Resolve from config (env > file > defaults)
-        const config = new ConfigStore().resolve();
-        this.baseUrl = `http://${config.daemon.host}:${config.daemon.port}`;
+        // --port/--host can differ from configured startup defaults. Match the
+        // lifecycle-aware commands by preferring this home's recorded endpoint.
+        const localUrl = localDaemonUrl();
+        if (localUrl) {
+          this.baseUrl = localUrl;
+        } else {
+          const config = new ConfigStore().resolve(); // env > file > defaults
+          this.baseUrl = `http://${formatDaemonHostForUrl(config.daemon.host)}:${config.daemon.port}`;
+        }
       }
     }
 
@@ -216,8 +265,9 @@ export class DaemonClient {
     }, options);
   }
 
-  private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions): Promise<Response> {
+  private async fetch(path: string, init: RequestInit, options?: DaemonRequestOptions, consumeResponse?: (response: Response) => Promise<void>): Promise<Response> {
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
+    if (options?.signal) init = { ...init, signal: options.signal };
     if (options?.headers) {
       init = { ...init, headers: { ...(init.headers as Record<string, string> ?? {}), ...options.headers } };
     }
@@ -226,6 +276,7 @@ export class DaemonClient {
     // Known remote or unproved direct endpoints carry origin; proven local requests remain bare.
     this.identity ??= this.identityHeaders();
     init = { ...init, headers: { ...(init.headers as Record<string, string> ?? {}), ...await this.identity } };
+    let responseStatus: number | undefined;
     try {
       const response = await fetchWithTimeout(
         this.fetchImpl,
@@ -233,6 +284,10 @@ export class DaemonClient {
         init,
         {
           timeoutMs,
+          consumeResponse: consumeResponse ? async (response) => {
+            responseStatus = response.status;
+            await consumeResponse(response);
+          } : undefined,
           timeoutMessage: `Request to ${this.baseUrl}${path} timed out after ${timeoutMs}ms`,
         },
       );
@@ -249,18 +304,25 @@ export class DaemonClient {
       if (err instanceof FetchTimeoutError) {
         throw new DaemonTimeoutError(`The OpenRig daemon at ${this.baseUrl} did not respond in time: ${msg}`);
       }
-      throw new DaemonConnectionError(`Cannot connect to the OpenRig daemon at ${this.baseUrl}: ${msg}`);
+      // Headers prove that the daemon received the request, but not that a write
+      // finished. A dropped body must preserve unknown-outcome guidance.
+      if (responseStatus !== undefined) throw new DaemonResponseError(responseStatus, "");
+      const causeCode = connectionErrorCode(err);
+      throw new DaemonConnectionError(
+        `Cannot connect to the OpenRig daemon at ${this.baseUrl}: ${msg}${causeCode && !msg.includes(causeCode) ? ` (${causeCode})` : ""}`,
+        causeCode,
+      );
     }
   }
 
   private async requestJson<T>(path: string, init: RequestInit, options?: DaemonRequestOptions): Promise<DaemonResponse<T>> {
-    const res = await this.fetch(path, init, options);
+    let text = "";
+    const res = await this.fetch(path, init, options, async (response) => { text = await response.text(); });
     // Read the raw body once, THEN parse — so a truncated / unparseable response
     // (a real symptom under daemon saturation) surfaces as a typed
     // DaemonResponseError carrying the status + a bounded snippet, instead of a
     // raw SyntaxError bubbling to a cryptic (json) or silent (human) CLI exit.
     // A well-formed non-2xx body still parses and returns {status,data}; 204 has none.
-    const text = await res.text();
     if (res.status === 204) return { status: res.status, data: undefined as T };
     try {
       return { status: res.status, data: JSON.parse(text) as T };
@@ -270,8 +332,8 @@ export class DaemonClient {
   }
 
   private async requestText(path: string, init: RequestInit, options?: DaemonRequestOptions): Promise<DaemonResponse<string>> {
-    const res = await this.fetch(path, init, options);
-    const data = await res.text();
+    let data = "";
+    const res = await this.fetch(path, init, options, async (response) => { data = await response.text(); });
     return { status: res.status, data };
   }
 }

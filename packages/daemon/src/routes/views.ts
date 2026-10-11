@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import type { EventBus } from "../domain/event-bus.js";
 import type { ViewProjector } from "../domain/view-projector.js";
 import { ViewProjectorError } from "../domain/view-projector.js";
+import { queryLimit } from "./query-limit.js";
 
 /**
  * Coordination L5 — View HTTP routes (PL-004 Phase B).
@@ -109,10 +110,14 @@ export function viewsRoutes(): Hono {
 
   // GET /:viewName — run a view (built-in or custom).
   // Comes LAST so /list, /sse, /watch, /:viewName/sse all win.
-  app.get("/:viewName", (c) => {
+  app.get("/:viewName", async (c) => {
     const viewName = c.req.param("viewName");
     const rig = c.req.query("rig") || undefined;
-    const limit = c.req.query("limit") ? Number.parseInt(c.req.query("limit")!, 10) : undefined;
+    // The projector clamps the limit to 1-1000 itself, so only NaN fails, and
+    // only on a view that binds it.
+    const parsed = queryLimit(c, { boundIntoSql: false, used: getProjector(c).bindsLimit(viewName) });
+    if (!parsed.ok) return parsed.response;
+    const limit = parsed.limit;
     // S27 — the execution view scopes by mission (release-scoped default derived
     // in the module; --mission widens/narrows).
     const mission = c.req.query("mission") || undefined;
@@ -122,7 +127,7 @@ export function viewsRoutes(): Hono {
         project = viewName === "execution" ? selectedProject(c) : null;
         if (project && mission) projectMission(project, mission);
       } catch (err) { return projectReadResponse(err); }
-      const result = getProjector(c).show(viewName, { rig, limit, mission, project });
+      const result = await getProjector(c).show(viewName, { rig, limit, mission, project });
       return c.json(result);
     } catch (err) {
       return errorResponse(c, err);
