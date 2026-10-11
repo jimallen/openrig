@@ -259,6 +259,20 @@ describe("mission execution story — readable rows over the shipped projections
     expect(body).toContain("○ planned");
   });
 
+  it("declared done never outranks live work or accepted outcomes, stays dim, and is never NEXT", () => {
+    const live = text(executionContentLines(executionFixture(), executionScopes(4, () => "closed"), [], null, 160));
+    expect(live).toContain("PROGRESS  0/4 outcomes complete · 1 working · 1 waiting · 2 declared done");
+    const lines = executionContentLines(executionFixture(), executionScopes(4, () => "closed"), [], null, 160);
+    const marks = lines.flatMap(line => line.segs ?? []).filter(seg => seg.text.includes("declared done") && seg.text.includes("○"));
+    expect(marks.length).toBeGreaterThan(0);
+    for (const seg of marks) expect(seg.token).toBe("dim");
+    const { execution } = installedStateFixture(3);
+    const settled = text(executionContentLines(execution, executionScopes(3, (index: number) => ["complete", "open", "deferred"][index]!), [], null, 160));
+    expect(settled).toContain("NEXT      OPR.0.5.8.2");
+    const allDeclared = text(executionContentLines(execution, executionScopes(3, () => "complete"), [], null, 160));
+    expect(allDeclared).not.toMatch(/NEXT\s+OPR\./);
+  });
+
   it("shows each slice once, in wave order, as ordinary words with real assignment, evidence, proof, and next", () => {
     const lines = executionContentLines(executionFixture(), executionScopes(), [], null, 160);
     const body = text(lines);
@@ -630,6 +644,12 @@ describe("attributed proof provenance in the ordinary execution path", () => {
     expect(body).toContain("receipt-1");
     expect(body).not.toContain("ACCEPTED");
     if (state === "unknown") expect(body).toContain("Evidence missing or changed");
+  });
+
+  it("an accepted outcome declared closed counts as an outcome, not as declared done", () => {
+    const body = text(executionContentLines(judged(), executionScopes(1, () => "closed"), [], null, 100));
+    expect(body).toContain("1/1 outcomes complete");
+    expect(body).not.toMatch(/\d+ declared done/);
   });
 
   it("keeps configured missing judgments, invalid journals and legacy code gaps visible", () => {

@@ -454,7 +454,9 @@ function overviewLines(execution: ExecutionViewSnap, scopes: readonly MissionSco
   const attributed = slices.some(slice => slice.readiness?.configured);
   const done = slices.filter(outcomeComplete).length;
   const allComplete = slices.length > 0 && done === slices.length;
-  const next = slices.find(slice => nextText(slice) === "ready to start") ?? slices.find(slice => !outcomeComplete(slice) && !slice.work.length);
+  const settled = new Set(["declared done", "deferred", "retired"]);
+  const next = slices.find(slice => nextText(slice) === "ready to start")
+    ?? slices.find(slice => !outcomeComplete(slice) && !slice.work.length && !settled.has(stateWord(slice)));
   const unknown = slices.filter(slice => !slice.readiness?.configured).length;
   const missionState = allComplete ? "OUTCOMES COMPLETE" : "OUTCOMES OPEN";
   const missionToken: Token = problems ? "warn" : allComplete ? "ok" : "dim";
@@ -831,7 +833,7 @@ export function executionSliceStripLines(
   const evidence = `${evidenceText(slice.cells, slice.rank)}${unconfirmed.length ? ` · ${unconfirmed.join(" / ")} unconfirmed (${slice.cells[RUNGS.find((rung) => slice.cells[rung].state === "undetermined")!].basis})` : ""}`;
   const liveWord = slice.lane ? str(activity["activity"], "claimed") : "no claimed lane";
   const declaredWord = declared?.trim().toLowerCase() || "no declared status";
-  const next = (declaredWord === "done" || declaredWord === "retired" || declaredWord === "deferred" || declaredWord === "closed-deferred") && !slice.lane
+  const next = (DECLARED_DONE.has(declaredWord) || declaredWord === "retired" || declaredWord === "deferred" || declaredWord === "closed-deferred") && !slice.lane
     ? `none — declared ${declaredWord}`
     : nextText(slice) ?? (slice.lane ? "in progress on the lane above" : "nothing the projection can sequence");
   return [
