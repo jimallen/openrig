@@ -201,7 +201,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // — without a blanket native trust keystroke. If native identity/hash semantics
     // change, the remaining review is surfaced for a decision. Idempotent
     // + non-clobbering; only touches our 4 keys. See applyCodexActivityHookTrust for the RTFM.
-    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay);
+    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath);
     if (trusted !== withHooks) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, trusted);
@@ -210,15 +210,17 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
   /**
    * OPR.0.4.3.33 — compute + splice Codex's `[hooks.state."<key>"] trusted_hash` for our 4
-   * authored activity hooks into `content`. `key_source` is the canonicalized config path
-   * (Codex keys trust by `std::fs::canonicalize(config.toml).display()`); we best-effort
+   * authored activity hooks into `content`. `key_source` is the config path under the CODEX_HOME
+   * the reading Codex loaded. Measured on Codex 0.162.1: a seat whose CODEX_HOME/config.toml is a
+   * symlink to this file gets trust keyed under the SEAT path, so the symlinked file itself is not
+   * followed (per-seat keys are mirrored by codex-seat-home). For the shared home we best-effort
    * `realpathSync` the config path to match — on a miss (file not yet on real disk, or a mock
    * fs in tests) we fall back to the plain absolute path, and any resulting key mismatch just
    * degrades to the launch-time trust gate (Layer-2 floor), never a broken run. The command
    * string is the value Codex deserializes from our TOML literal `'node "<relay>"'` — i.e.
    * `node "<relay>"` WITHOUT the outer TOML quote delimiters. Timeout=5, matcher/status None.
    */
-  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string): string {
+  private applyCodexActivityHookTrust(content: string, configPath: string): string {
     let keySource = configPath;
     try {
       keySource = fs.realpathSync.native(configPath);
@@ -226,14 +228,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       // config.toml not on the real filesystem (first write / unit-test mock fs) — the plain
       // absolute path is the honest best guess; a canonicalization delta is fail-safe (gate reappears).
     }
-    const command = `node "${relay}"`;
     let next = content;
-    for (const event of OPENRIG_ACTIVITY_HOOK_EVENTS) {
-      // Positional: a user's own hook for the same event ahead of our block shifts our group.
-      // Writing 0:0 then would overwrite the user's trust for THEIR hook and leave ours untrusted.
-      const groupIndex = codexManagedHookGroupIndex(content, event);
-      if (groupIndex === null) continue;
-      const { key, hash } = computeCodexHookTrust(event, { keySource, command, timeoutSec: 5, groupIndex });
+    for (const { key, hash } of codexActivityHookTrustRecords(content, keySource)) {
       next = upsertCodexHookTrust(next, key, hash);
     }
     return next;
@@ -980,13 +976,15 @@ function upsertCodexProjectTrust(content: string, projectPath: string): string {
 //
 // KEY — codex-rs/hooks/src/lib.rs `hook_key`:
 //   `{key_source}:{event_label}:{group_index}:{handler_index}`
-//   - key_source: `std::fs::canonicalize(~/.codex/config.toml).display()` (the config source
-//     layer identity; confirmed by codex-rs/app-server/tests/suite/v2/hooks_list.rs which keys
-//     `{canonicalize(config.toml).display()}:pre_tool_use:0:0`).
+//   - key_source: the config source layer identity, `<CODEX_HOME>/config.toml` as loaded
+//     (codex-rs/app-server/tests/suite/v2/hooks_list.rs keys `{canonicalize(config.toml)}`, but
+//     measured live on 0.162.1 a symlinked seat config.toml is keyed under the SEAT path — the
+//     symlink is not resolved — so each per-seat CODEX_HOME is its own key source).
 //   - event_label: `hook_event_key_label()` — SessionStart→session_start,
 //     UserPromptSubmit→user_prompt_submit, Stop→stop, PermissionRequest→permission_request.
 //   - group_index/handler_index: positional. Our managed block writes exactly one
-//     `[[hooks.<Ev>]]` group (0) with one `[[hooks.<Ev>.hooks]]` handler (0) per event ⇒ 0:0.
+//     `[[hooks.<Ev>]]` group with one `[[hooks.<Ev>.hooks]]` handler (0) per event; the group
+//     index counts any user `[[hooks.<Ev>]]` groups ahead of the block (codexManagedHookGroupIndex).
 //     (Positional keying is a known upstream fragility (#23259); if a user pre-authored hooks
 //     for the same event in the same layer our index would shift → gate reappears → fail-safe.)
 //
@@ -1030,7 +1028,7 @@ const CODEX_HOOK_EVENT_KEY_LABEL: Record<(typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[n
 };
 
 export interface CodexHookTrustInput {
-  /** Codex hook_key source identity: canonicalized `~/.codex/config.toml` path. */
+  /** Codex hook_key source identity: the config.toml path as the reading Codex loaded it. */
   keySource: string;
   /** The command as Codex DESERIALIZES it — `node "<relay>"` (no outer TOML quote delimiters). */
   command: string;
@@ -1087,8 +1085,31 @@ export function codexManagedHookGroupIndex(
 ): number | null {
   const begin = content.indexOf(OPENRIG_ACTIVITY_HOOKS_BEGIN);
   if (begin === -1) return null;
-  const header = `[[hooks.${event}]]`;
-  return content.slice(0, begin).split("\n").filter((line) => line.trim() === header).length;
+  // Any TOML spelling of the header: inner whitespace, a quoted key, a trailing comment.
+  const header = new RegExp(`^\\[\\[\\s*hooks\\s*\\.\\s*(?:${event}|"${event}"|'${event}')\\s*\\]\\](?:\\s*#.*)?$`);
+  return content.slice(0, begin).split("\n").filter((line) => header.test(line.trim())).length;
+}
+
+/**
+ * Codex's trust records for OUR managed hooks as they sit in `content`, keyed under
+ * `keySource` (the config path the reading Codex loaded). The command is read back from the
+ * managed block, so the records always match the block on disk. Empty when there is no block.
+ */
+export function codexActivityHookTrustRecords(content: string, keySource: string): Array<{ key: string; hash: string }> {
+  const begin = content.indexOf(OPENRIG_ACTIVITY_HOOKS_BEGIN);
+  const end = content.indexOf(OPENRIG_ACTIVITY_HOOKS_END, begin);
+  if (begin === -1 || end === -1) return [];
+  const literal = /^command = '([^']*)'$/m.exec(content.slice(begin, end));
+  if (!literal) return [];
+  const records: Array<{ key: string; hash: string }> = [];
+  for (const event of OPENRIG_ACTIVITY_HOOK_EVENTS) {
+    // Positional: a user's own hook for the same event ahead of our block shifts our group.
+    // Writing 0:0 then would overwrite the user's trust for THEIR hook and leave ours untrusted.
+    const groupIndex = codexManagedHookGroupIndex(content, event);
+    if (groupIndex === null) continue;
+    records.push(computeCodexHookTrust(event, { keySource, command: literal[1]!, timeoutSec: 5, groupIndex }));
+  }
+  return records;
 }
 
 /**

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
+import { codexActivityHookTrustRecords, upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
  * OPR-fork: codex seats must NOT share one ~/.codex app-server environment.
@@ -82,27 +82,40 @@ export function codexSeatHomePath(openrigHome: string, sessionName: string): str
 /**
  * Codex keys hook trust by the config path it loaded, so a seat reading the shared
  * config.toml through its own CODEX_HOME symlink is a different trust key from the
- * shared path. Mirror every `[hooks.state."<shared>:<suffix>"]` record to
- * `<seat>:<suffix>` with the SAME hash: the file behind both keys is one file, so this
- * carries over trust already given, never invents any. A hook that changed since keeps a
- * stale hash and Codex re-asks (fail-safe).
+ * shared path (measured: Codex 0.162.1 writes seat-path keys).
+ *
+ * - Every `[hooks.state."<shared>:<suffix>"]` record is copied to `<seat>:<suffix>` with the
+ *   SAME hash, but only when the seat has no record there yet: trust given inside the seat
+ *   (a newer hash) is never rolled back to the shared one. The file behind both keys is one
+ *   file, so this carries over trust already given and never invents any.
+ * - OpenRig's own managed hooks are computed for the seat key directly, so they follow a
+ *   relay change after an upgrade.
  */
 export function mirrorCodexHookTrust(content: string, sharedKeySource: string, seatKeySource: string): string {
   if (sharedKeySource === seatKeySource) return content;
   const prefix = `[hooks.state.${JSON.stringify(sharedKeySource).slice(0, -1)}:`;
   const lines = content.split("\n");
+  const has = (key: string) => lines.some((line) => line.trim() === `[hooks.state.${JSON.stringify(key)}]`);
   let next = content;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim();
     if (!line.startsWith(prefix) || !line.endsWith(`"]`)) continue;
     const suffix = (JSON.parse(line.slice("[hooks.state.".length, -1)) as string).slice(sharedKeySource.length);
+    if (has(`${seatKeySource}${suffix}`)) continue;
     for (let j = i + 1; j < lines.length && !lines[j]!.trim().startsWith("["); j++) {
       const m = /^\s*trusted_hash\s*=\s*"([^"]+)"\s*$/.exec(lines[j]!);
       if (m) { next = upsertCodexHookTrust(next, `${seatKeySource}${suffix}`, m[1]!); break; }
     }
   }
+  for (const { key, hash } of codexActivityHookTrustRecords(next, seatKeySource)) {
+    next = upsertCodexHookTrust(next, key, hash);
+  }
   return next;
 }
+
+// One writer per config file in this process; the write itself is temp + rename so a Codex
+// starting in another seat never reads a truncated file.
+const configWrites = new Map<string, Promise<unknown>>();
 
 async function syncSeatHookTrust(home: string): Promise<boolean> {
   const seatConfig = path.join(home, "config.toml");
@@ -110,11 +123,18 @@ async function syncSeatHookTrust(home: string): Promise<boolean> {
   if (!stat?.isSymbolicLink()) return false; // a seat-owned config carries its own trust
   const sharedKeySource = await fs.realpath(seatConfig);
   const seatKeySource = path.join(await fs.realpath(home), "config.toml");
-  const content = await fs.readFile(sharedKeySource, "utf-8");
-  const next = mirrorCodexHookTrust(content, sharedKeySource, seatKeySource);
-  if (next === content) return false;
-  await fs.writeFile(sharedKeySource, next);
-  return true;
+  const run = (configWrites.get(sharedKeySource) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+    const content = await fs.readFile(sharedKeySource, "utf-8");
+    const next = mirrorCodexHookTrust(content, sharedKeySource, seatKeySource);
+    if (next === content) return false;
+    const { mode } = await fs.stat(sharedKeySource);
+    const tmp = `${sharedKeySource}.openrig-${process.pid}-${createHash("sha256").update(seatKeySource).digest("hex").slice(0, 8)}`;
+    await fs.writeFile(tmp, next, { mode });
+    await fs.rename(tmp, sharedKeySource);
+    return true;
+  });
+  configWrites.set(sharedKeySource, run);
+  return run;
 }
 
 async function linkIfMissing(source: string, dest: string): Promise<boolean> {

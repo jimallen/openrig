@@ -247,3 +247,15 @@ describe("hook trust keys follow the managed block's real position", () => {
     expect(codexManagedHookGroupIndex(USER_SESSION_START, "SessionStart")).toBeNull();
   });
 });
+
+describe("managed group index counts every TOML spelling of a preceding header", () => {
+  const block = "# BEGIN OPENRIG MANAGED ACTIVITY HOOKS\n[[hooks.SessionStart]]\n# END OPENRIG MANAGED ACTIVITY HOOKS\n";
+  for (const spelling of ["[[hooks.SessionStart]] # mine", "[[ hooks.SessionStart ]]", '[[hooks."SessionStart"]]', "[[hooks.SessionStart]]\r"]) {
+    it(`counts ${JSON.stringify(spelling)}`, () => {
+      expect(codexManagedHookGroupIndex(`${spelling}\n${block}`, "SessionStart")).toBe(1);
+    });
+  }
+  it("does not count a different event or a commented-out header", () => {
+    expect(codexManagedHookGroupIndex(`[[hooks.Stop]]\n# [[hooks.SessionStart]]\n${block}`, "SessionStart")).toBe(0);
+  });
+});

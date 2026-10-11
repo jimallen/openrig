@@ -8,6 +8,7 @@ import {
   mirrorCodexHookTrust,
   sanitizeSessionForPath,
 } from "../src/domain/codex-seat-home.js";
+import { computeCodexHookTrust } from "../src/adapters/codex-runtime-adapter.js";
 
 let tmp: string;
 let openrigHome: string;
@@ -148,8 +149,35 @@ describe("seat hook trust follows the shared config's trust", () => {
     expect(await fs.readFile(path.join(home, "config.toml"), "utf-8")).toBe("");
   });
 
-  it("mirrorCodexHookTrust is a no-op when both keys are the same path", () => {
-    const c = entry("/a/config.toml:stop:0:0", "sha256:x");
-    expect(mirrorCodexHookTrust(c, "/a/config.toml", "/a/config.toml")).toBe(c);
+  it("never rolls back newer trust given inside the seat to the shared hash", () => {
+    const c = entry("/s/config.toml:session_start:0:0", "sha256:old") + entry("/seat/config.toml:session_start:0:0", "sha256:new");
+    expect(mirrorCodexHookTrust(c, "/s/config.toml", "/seat/config.toml")).toBe(c);
+  });
+
+  it("OpenRig's own hooks follow the managed block for the seat key, replacing a stale seat hash", () => {
+    const relay = "/new/relay.cjs";
+    const block = `# BEGIN OPENRIG MANAGED ACTIVITY HOOKS\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = 'node "${relay}"'\ntimeout = 5\n# END OPENRIG MANAGED ACTIVITY HOOKS\n`;
+    const c = block + entry("/seat/config.toml:stop:0:0", "sha256:stale-old-relay");
+    const out = mirrorCodexHookTrust(c, "/s/config.toml", "/seat/config.toml");
+    const want = computeCodexHookTrust("Stop", { keySource: "/seat/config.toml", command: `node "${relay}"`, timeoutSec: 5 });
+    expect(out).toContain(entry(want.key, want.hash).trimEnd());
+    expect(out).not.toContain("sha256:stale-old-relay");
+  });
+
+  it("mirrors only records of the shared path itself, not of a path it prefixes", () => {
+    const c = entry("/s/config.toml.bak:stop:0:0", "sha256:bak");
+    expect(mirrorCodexHookTrust(c, "/s/config.toml", "/seat/config.toml")).toBe(c);
+  });
+
+  it("concurrent seat launches lose no records and leave no temp files", async () => {
+    const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
+    await fs.writeFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:s"));
+    await fs.chmod(sharedConfig, 0o600);
+    const seats = Array.from({ length: 8 }, (_, i) => `s${i}@r`);
+    const homes = await Promise.all(seats.map((s) => ensureCodexSeatHome(s, { openrigHome, sharedCodexHome: shared })));
+    const after = await fs.readFile(sharedConfig, "utf-8");
+    for (const h of homes) expect(after).toContain(`${path.join(await fs.realpath(h.path), "config.toml")}:stop:0:0`);
+    expect((await fs.readdir(shared)).filter((f) => f.includes(".openrig-"))).toEqual([]);
+    expect((await fs.stat(sharedConfig)).mode & 0o777).toBe(0o600);
   });
 });
