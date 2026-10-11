@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
  * OPR-fork: codex seats must NOT share one ~/.codex app-server environment.
@@ -76,6 +77,44 @@ export function sanitizeSessionForPath(sessionName: string): string {
 
 export function codexSeatHomePath(openrigHome: string, sessionName: string): string {
   return path.join(openrigHome, "codex-seats", sanitizeSessionForPath(sessionName));
+}
+
+/**
+ * Codex keys hook trust by the config path it loaded, so a seat reading the shared
+ * config.toml through its own CODEX_HOME symlink is a different trust key from the
+ * shared path. Mirror every `[hooks.state."<shared>:<suffix>"]` record to
+ * `<seat>:<suffix>` with the SAME hash: the file behind both keys is one file, so this
+ * carries over trust already given, never invents any. A hook that changed since keeps a
+ * stale hash and Codex re-asks (fail-safe).
+ */
+export function mirrorCodexHookTrust(content: string, sharedKeySource: string, seatKeySource: string): string {
+  if (sharedKeySource === seatKeySource) return content;
+  const prefix = `[hooks.state.${JSON.stringify(sharedKeySource).slice(0, -1)}:`;
+  const lines = content.split("\n");
+  let next = content;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith(prefix) || !line.endsWith(`"]`)) continue;
+    const suffix = (JSON.parse(line.slice("[hooks.state.".length, -1)) as string).slice(sharedKeySource.length);
+    for (let j = i + 1; j < lines.length && !lines[j]!.trim().startsWith("["); j++) {
+      const m = /^\s*trusted_hash\s*=\s*"([^"]+)"\s*$/.exec(lines[j]!);
+      if (m) { next = upsertCodexHookTrust(next, `${seatKeySource}${suffix}`, m[1]!); break; }
+    }
+  }
+  return next;
+}
+
+async function syncSeatHookTrust(home: string): Promise<boolean> {
+  const seatConfig = path.join(home, "config.toml");
+  const stat = await fs.lstat(seatConfig).catch(() => null);
+  if (!stat?.isSymbolicLink()) return false; // a seat-owned config carries its own trust
+  const sharedKeySource = await fs.realpath(seatConfig);
+  const seatKeySource = path.join(await fs.realpath(home), "config.toml");
+  const content = await fs.readFile(sharedKeySource, "utf-8");
+  const next = mirrorCodexHookTrust(content, sharedKeySource, seatKeySource);
+  if (next === content) return false;
+  await fs.writeFile(sharedKeySource, next);
+  return true;
 }
 
 async function linkIfMissing(source: string, dest: string): Promise<boolean> {
@@ -186,6 +225,8 @@ export async function ensureCodexSeatHome(
     if (await linkIfMissing(source, dest)) linked.push(entry);
   }
   linked.push(...(await seedSeatPackages(home, shared)));
+  // Every launch, not only on creation: trust given after the home was made carries over too.
+  await syncSeatHookTrust(home).catch(() => false);
 
   // Profile fragments are COPIED (see module doc): per-seat canonical path,
   // per-seat identity edits stay seat-local.

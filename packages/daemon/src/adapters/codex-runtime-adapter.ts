@@ -229,7 +229,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const command = `node "${relay}"`;
     let next = content;
     for (const event of OPENRIG_ACTIVITY_HOOK_EVENTS) {
-      const { key, hash } = computeCodexHookTrust(event, { keySource, command, timeoutSec: 5 });
+      // Positional: a user's own hook for the same event ahead of our block shifts our group.
+      // Writing 0:0 then would overwrite the user's trust for THEIR hook and leave ours untrusted.
+      const groupIndex = codexManagedHookGroupIndex(content, event);
+      if (groupIndex === null) continue;
+      const { key, hash } = computeCodexHookTrust(event, { keySource, command, timeoutSec: 5, groupIndex });
       next = upsertCodexHookTrust(next, key, hash);
     }
     return next;
@@ -1070,6 +1074,21 @@ export function computeCodexHookTrust(
   const serialized = JSON.stringify(canonicalizeJsonValue(identity));
   const hex = createHash("sha256").update(serialized, "utf8").digest("hex");
   return { key, hash: `sha256:${hex}` };
+}
+
+/**
+ * Positional group index Codex assigns to OUR managed `[[hooks.<event>]]` group: the number of
+ * `[[hooks.<event>]]` array-of-tables headers that precede the managed block in the same file.
+ * Null when the managed block is absent (nothing of ours to trust).
+ */
+export function codexManagedHookGroupIndex(
+  content: string,
+  event: (typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number],
+): number | null {
+  const begin = content.indexOf(OPENRIG_ACTIVITY_HOOKS_BEGIN);
+  if (begin === -1) return null;
+  const header = `[[hooks.${event}]]`;
+  return content.slice(0, begin).split("\n").filter((line) => line.trim() === header).length;
 }
 
 /**

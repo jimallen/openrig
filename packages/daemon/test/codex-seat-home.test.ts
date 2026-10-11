@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
   ensureCodexSeatHome,
   codexSeatHomePath,
+  mirrorCodexHookTrust,
   sanitizeSessionForPath,
 } from "../src/domain/codex-seat-home.js";
 
@@ -102,5 +103,53 @@ describe("codex-seat-home", () => {
     expect(stat.isDirectory()).toBe(true);
     expect(home.linked).toHaveLength(0);
     expect(home.copiedProfiles).toHaveLength(0);
+  });
+});
+
+describe("seat hook trust follows the shared config's trust", () => {
+  const entry = (key: string, hash: string) => `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(hash)}\n`;
+
+  it("mirrors each shared-path trust record to the seat's config path with the same hash", async () => {
+    const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
+    await fs.writeFile(sharedConfig,
+      entry(`${sharedConfig}:session_start:0:0`, "sha256:user") +
+      entry(`${sharedConfig}:session_start:1:0`, "sha256:relay") +
+      entry("/elsewhere/.codex/hooks.json:stop:0:0", "sha256:other"));
+    const home = await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    const seatKey = path.join(await fs.realpath(home.path), "config.toml");
+    const after = await fs.readFile(sharedConfig, "utf-8");
+    expect(after).toContain(entry(`${seatKey}:session_start:0:0`, "sha256:user").trimEnd());
+    expect(after).toContain(entry(`${seatKey}:session_start:1:0`, "sha256:relay").trimEnd());
+    expect(after).not.toContain(`${seatKey}:stop:0:0`); // another file's trust is not this file's
+    expect(after.match(/sha256:other/g)?.length).toBe(1);
+
+    await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    expect(await fs.readFile(sharedConfig, "utf-8")).toBe(after); // idempotent
+  });
+
+  it("carries over trust given after the seat home already existed", async () => {
+    const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
+    const home = await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    await fs.appendFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:later"));
+    await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
+    const seatKey = path.join(await fs.realpath(home.path), "config.toml");
+    expect(await fs.readFile(sharedConfig, "utf-8")).toContain(entry(`${seatKey}:stop:0:0`, "sha256:later").trimEnd());
+  });
+
+  it("leaves a seat-owned (non-symlinked) config alone", async () => {
+    const home = codexSeatHomePath(openrigHome, "own@r");
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, "config.toml"), "");
+    const sharedConfig = path.join(shared, "config.toml");
+    await fs.writeFile(sharedConfig, entry(`${await fs.realpath(sharedConfig)}:stop:0:0`, "sha256:x"));
+    const before = await fs.readFile(sharedConfig, "utf-8");
+    await ensureCodexSeatHome("own@r", { openrigHome, sharedCodexHome: shared });
+    expect(await fs.readFile(sharedConfig, "utf-8")).toBe(before);
+    expect(await fs.readFile(path.join(home, "config.toml"), "utf-8")).toBe("");
+  });
+
+  it("mirrorCodexHookTrust is a no-op when both keys are the same path", () => {
+    const c = entry("/a/config.toml:stop:0:0", "sha256:x");
+    expect(mirrorCodexHookTrust(c, "/a/config.toml", "/a/config.toml")).toBe(c);
   });
 });

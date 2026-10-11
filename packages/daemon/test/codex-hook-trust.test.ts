@@ -15,6 +15,7 @@ import { describe, it, expect, vi } from "vitest";
 import nodeFs from "node:fs";
 import {
   CodexRuntimeAdapter,
+  codexManagedHookGroupIndex,
   computeCodexHookTrust,
   upsertCodexHookTrust,
   type CodexAdapterFsOps,
@@ -215,5 +216,34 @@ describe("OPR.0.4.3.33 — provisioning-seam coupling (ensureCodexActivityHooks 
     expect(cfg).toContain('trust_level = "trusted"');
     expect(cfg).toContain("# BEGIN OPENRIG MANAGED ACTIVITY HOOKS");
     expect(cfg.match(/^\[hooks\.state\./gm)?.length).toBe(4);
+  });
+});
+
+describe("hook trust keys follow the managed block's real position", () => {
+  const USER_SESSION_START =
+    '[[hooks.SessionStart]]\nmatcher = "startup"\n\n[[hooks.SessionStart.hooks]]\ntype = "command"\ncommand = \'echo user\'\n';
+  const USER_TRUST = `[hooks.state.${JSON.stringify(`${CONFIG}:session_start:0:0`)}]\ntrusted_hash = "sha256:user-hook"\n`;
+
+  it("a user's SessionStart hook ahead of ours puts ours at group 1; other events stay at 0", () => {
+    const fs = mockCodexFs({ [RELAY]: "// relay", [CONFIG]: USER_SESSION_START });
+    new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
+    const cfg = fs._store[CONFIG]!;
+    expect(codexManagedHookGroupIndex(cfg, "SessionStart")).toBe(1);
+    expect(codexManagedHookGroupIndex(cfg, "Stop")).toBe(0);
+    const ours = computeCodexHookTrust("SessionStart", { keySource: CONFIG, command: COMMAND, timeoutSec: 5, groupIndex: 1 });
+    expect(cfg).toContain(`[hooks.state.${JSON.stringify(ours.key)}]\ntrusted_hash = ${JSON.stringify(ours.hash)}`);
+    expect(cfg).not.toContain(`[hooks.state.${JSON.stringify(`${CONFIG}:session_start:0:0`)}]`);
+  });
+
+  it("never overwrites the trust a user gave their own hook at the shifted position", () => {
+    const fs = mockCodexFs({ [RELAY]: "// relay", [CONFIG]: `${USER_SESSION_START}\n${USER_TRUST}` });
+    new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
+    const cfg = fs._store[CONFIG]!;
+    expect(cfg).toContain(USER_TRUST.trimEnd());
+    expect(cfg.match(/sha256:user-hook/g)?.length).toBe(1);
+  });
+
+  it("no managed block means no group index (nothing of ours to trust)", () => {
+    expect(codexManagedHookGroupIndex(USER_SESSION_START, "SessionStart")).toBeNull();
   });
 });
