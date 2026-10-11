@@ -247,6 +247,18 @@ describe("mission execution story — readable rows over the shipped projections
     expect(page.filter((line) => line.action?.type === "execution-open" && (line.action as { key: string }).key.startsWith("slice:")).length).toBe(20);
   });
 
+  it("counts tracker-style finished words as declared done, separately from accepted outcomes", () => {
+    const words = ["complete", "closed", "open", "completed", "deferred"];
+    const { execution } = installedStateFixture(5);
+    const scopes = executionScopes(5, (index: number) => words[index]!);
+    const body = text(executionContentLines(execution, scopes, [], null, 160));
+    expect(body).toContain("PROGRESS  0/5 outcomes complete · 0 working · 3 declared done");
+    expect(body).toContain("○ deferred");
+    expect(body).toContain("OUTCOMES OPEN");
+    expect(body.split("○ declared done").length - 1).toBe(3);
+    expect(body).toContain("○ planned");
+  });
+
   it("shows each slice once, in wave order, as ordinary words with real assignment, evidence, proof, and next", () => {
     const lines = executionContentLines(executionFixture(), executionScopes(), [], null, 160);
     const body = text(lines);

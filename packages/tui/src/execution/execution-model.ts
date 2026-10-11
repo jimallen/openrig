@@ -240,6 +240,10 @@ function problemText(slice: SliceFacts): string | null {
   return null;
 }
 
+/** Declared finished words (a slice file's own status, e.g. projected from an issue
+ *  tracker). Shown as "declared done" — never as an accepted outcome. */
+const DECLARED_DONE = new Set(["done", "complete", "completed", "closed"]);
+
 /** Outcome acceptance, live work and authored intent are separate inputs. */
 function outcomeComplete(slice: SliceFacts): boolean {
   const r = slice.readiness;
@@ -255,7 +259,7 @@ function stateWord(slice: SliceFacts): string {
   if (slice.readiness?.configured) return "outcomes pending";
   if (stageText(slice) === "retired" || declaredText(slice) === "retired") return "retired";
   if (declaredText(slice) === "deferred" || declaredText(slice) === "closed-deferred") return "deferred";
-  return declaredText(slice) === "done" ? "declared done" : "planned";
+  return DECLARED_DONE.has(declaredText(slice)) ? "declared done" : "planned";
 }
 
 function proofText(scope: SliceScopeSnap | null): string | null {
@@ -459,7 +463,8 @@ function overviewLines(execution: ExecutionViewSnap, scopes: readonly MissionSco
     : allComplete ? "outcomes complete; release decision separate"
     : active.length ? "await current work; outcomes remain open"
     : "next eligibility unknown";
-  const progress = `${done}/${slices.length} outcomes complete · ${live} working${problems ? ` · ${problems} waiting` : ""}${unknown ? ` · ${unknown} proof unknown` : ""}`;
+  const declared = slices.filter(slice => stateWord(slice) === "declared done").length;
+  const progress = `${done}/${slices.length} outcomes complete · ${live} working${problems ? ` · ${problems} waiting` : ""}${declared ? ` · ${declared} declared done` : ""}${unknown ? ` · ${unknown} proof unknown` : ""}`;
   const fact = (label: string, value: string, token: Token): ContentLine => semantic([
     { text: `  ${label.padEnd(10)}`, token: "dim", bold: true },
     { text: value, token },
