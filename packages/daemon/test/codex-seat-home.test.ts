@@ -169,6 +169,16 @@ describe("seat hook trust follows the shared config's trust", () => {
     expect(mirrorCodexHookTrust(c, "/s/config.toml", "/seat/config.toml")).toBe(c);
   });
 
+  it("one failed sync does not stop later syncs of the same config", async () => {
+    const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
+    await fs.writeFile(sharedConfig, `[hooks.state."${sharedConfig}:\\U0001F600"]\ntrusted_hash = "sha256:x"\n`);
+    await ensureCodexSeatHome("a@r", { openrigHome, sharedCodexHome: shared }); // mirror throws, swallowed
+    await fs.writeFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:ok"));
+    const home = await ensureCodexSeatHome("b@r", { openrigHome, sharedCodexHome: shared });
+    const seatKey = path.join(await fs.realpath(home.path), "config.toml");
+    expect(await fs.readFile(sharedConfig, "utf-8")).toContain(`${seatKey}:stop:0:0`);
+  });
+
   it("concurrent seat launches lose no records and leave no temp files", async () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
     await fs.writeFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:s"));
