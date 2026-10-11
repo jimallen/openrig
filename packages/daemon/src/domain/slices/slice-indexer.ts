@@ -256,6 +256,7 @@ const STATUS_TO_BUCKET: Record<string, SliceStatus> = {
   // Same word the mission status table already treats as finished
   // (complete→shipped); without it a `complete` slice fell through to active.
   complete: "done",
+  completed: "done",
   blocked: "blocked",
   "parked-with-evidence": "blocked",
 };

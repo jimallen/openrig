@@ -202,6 +202,7 @@ describe("PL-slice-story-view-v0 SliceIndexer", () => {
       writeSlice(slicesRoot, "s4", { "README.md": "---\nstatus: draft-pending-orch-ratification\n---\n" });
       writeSlice(slicesRoot, "s5", { "README.md": "---\n---\n" }); // no status
       writeSlice(slicesRoot, "s6", { "README.md": "---\nstatus: complete\n---\n" });
+      writeSlice(slicesRoot, "s7", { "README.md": "---\nstatus: completed\n---\n" });
       const indexer = new SliceIndexer({ slicesRoot, dogfoodEvidenceRoot: null, db });
       const byName = new Map(indexer.list().map((e) => [e.name, e.status]));
       expect(byName.get("s1")).toBe("active");
@@ -210,6 +211,7 @@ describe("PL-slice-story-view-v0 SliceIndexer", () => {
       expect(byName.get("s4")).toBe("draft");
       expect(byName.get("s5")).toBe("draft");
       expect(byName.get("s6")).toBe("done");
+      expect(byName.get("s7")).toBe("done");
     });
 
     it("uses PROGRESS.md status as the current slice cursor over stale README dispatch status", () => {

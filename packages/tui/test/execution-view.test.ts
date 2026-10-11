@@ -262,15 +262,17 @@ describe("mission execution story — readable rows over the shipped projections
   it("declared done never outranks live work or accepted outcomes, stays dim, and is never NEXT", () => {
     const live = text(executionContentLines(executionFixture(), executionScopes(4, () => "closed"), [], null, 160));
     expect(live).toContain("PROGRESS  0/4 outcomes complete · 1 working · 1 waiting · 2 declared done");
+    expect(live).toContain("NEXT      await current work; outcomes remain open");
     const lines = executionContentLines(executionFixture(), executionScopes(4, () => "closed"), [], null, 160);
     const marks = lines.flatMap(line => line.segs ?? []).filter(seg => seg.text.includes("declared done") && seg.text.includes("○"));
     expect(marks.length).toBeGreaterThan(0);
     for (const seg of marks) expect(seg.token).toBe("dim");
     const { execution } = installedStateFixture(3);
-    const settled = text(executionContentLines(execution, executionScopes(3, (index: number) => ["complete", "open", "deferred"][index]!), [], null, 160));
-    expect(settled).toContain("NEXT      OPR.0.5.8.2");
+    const { execution: four } = installedStateFixture(4);
+    const settled = text(executionContentLines(four, executionScopes(4, (index: number) => ["complete", "deferred", "retired", "open"][index]!), [], null, 160));
+    expect(settled).toContain("NEXT      OPR.0.5.8.4");
     const allDeclared = text(executionContentLines(execution, executionScopes(3, () => "complete"), [], null, 160));
-    expect(allDeclared).not.toMatch(/NEXT\s+OPR\./);
+    expect(allDeclared).toContain("NEXT      none open — every slice declared settled; outcomes remain open");
   });
 
   it("shows each slice once, in wave order, as ordinary words with real assignment, evidence, proof, and next", () => {
@@ -550,6 +552,7 @@ describe("execution drill — one page from source, esc back", () => {
     expect(strip).toContain("assignment  none — no claimed lane");
     expect(strip).toContain("next        none — declared done");
     expect(strip).not.toMatch(/WAITING|[○✓?]{5}/);
+    expect(text(executionSliceStripLines(execution, "OPR.0.5.8.1", "01-slice", 200, "closed"))).toContain("next        none — declared closed");
     const live = text(executionSliceStripLines(executionFixture(), "OPR.0.5.8.1", "01-slice", 120, "active"));
     expect(live).toContain("EXECUTION · working · wave active-parallel");
     expect(live).toContain("assignment  dev-1@rig · working (self-report)");

@@ -455,8 +455,9 @@ function overviewLines(execution: ExecutionViewSnap, scopes: readonly MissionSco
   const done = slices.filter(outcomeComplete).length;
   const allComplete = slices.length > 0 && done === slices.length;
   const settled = new Set(["declared done", "deferred", "retired"]);
-  const next = slices.find(slice => nextText(slice) === "ready to start")
-    ?? slices.find(slice => !outcomeComplete(slice) && !slice.work.length && !settled.has(stateWord(slice)));
+  const openSlices = slices.filter(slice => !settled.has(stateWord(slice)));
+  const next = openSlices.find(slice => nextText(slice) === "ready to start")
+    ?? openSlices.find(slice => !outcomeComplete(slice) && !slice.work.length);
   const unknown = slices.filter(slice => !slice.readiness?.configured).length;
   const missionState = allComplete ? "OUTCOMES COMPLETE" : "OUTCOMES OPEN";
   const missionToken: Token = problems ? "warn" : allComplete ? "ok" : "dim";
@@ -464,6 +465,7 @@ function overviewLines(execution: ExecutionViewSnap, scopes: readonly MissionSco
   const nextValue = next ? `${next.id} · ${nextText(next) ?? "dependency eligibility unknown"}`
     : allComplete ? "outcomes complete; release decision separate"
     : active.length ? "await current work; outcomes remain open"
+    : slices.length > 0 && openSlices.length === 0 ? "none open — every slice declared settled; outcomes remain open"
     : "next eligibility unknown";
   const declared = slices.filter(slice => stateWord(slice) === "declared done").length;
   const progress = `${done}/${slices.length} outcomes complete · ${live} working${problems ? ` · ${problems} waiting` : ""}${declared ? ` · ${declared} declared done` : ""}${unknown ? ` · ${unknown} proof unknown` : ""}`;
