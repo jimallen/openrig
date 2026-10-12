@@ -33,6 +33,7 @@ describe("applyProjectRig", () => {
   it("leaves a spec without project_rig untouched", () => {
     expect(applyProjectRig(SPEC.replace("project_rig: true\n", ""), "/p/x")).toEqual({ kind: "not_project_rig" });
     expect(applyProjectRig(SPEC.replace("project_rig: true", "project_rig: false"), "/p/x")).toEqual({ kind: "not_project_rig" });
+    expect(applyProjectRig(SPEC.replace("project_rig: true", 'project_rig: "yes"'), "/p/x")).toEqual({ kind: "not_project_rig" });
   });
 
   it("refuses a launch without a project folder", () => {
@@ -87,6 +88,10 @@ describe("applyProjectRig", () => {
     for (const bad of ['"a/b"', '"a b"', '"."']) {
       const r = applyProjectRig(SPEC.replace("- id: impl", `- id: ${bad}`), "/p/eztrack");
       expect(r.kind, bad).toBe("error");
+    }
+    for (const bad of ['"../.."', '"a/b"', '".."']) {
+      const r = applyProjectRig(SPEC.replace("- id: build", `- id: ${bad}`), "/p/eztrack");
+      expect(r.kind, `pod ${bad}`).toBe("error");
     }
   });
 
@@ -147,5 +152,6 @@ describe("unprojectedProjectRigError", () => {
     expect(unprojectedProjectRigError({ name: "team", project_rig: true })).toBe("team is a project rig: launch it with rig up <spec> --cwd <project folder>.");
     expect(unprojectedProjectRigError({ name: "team", project_rig: false })).toBeNull();
     expect(unprojectedProjectRigError({ name: "team" })).toBeNull();
+    expect(unprojectedProjectRigError({ name: "team", project_rig: "yes" })).toBeNull();
   });
 });
