@@ -1,6 +1,6 @@
 import { RigRepository } from "./rig-repository.js";
 import { makeRunningSessionCounter } from "./running-name-guard.js";
-import { applyProjectRig, prepareProjectRigWorkspaces } from "./project-rig.js";
+import { applyProjectRig, prepareProjectRigWorkspaces, PROJECT_RIG_WORKSPACES } from "./project-rig.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import nodePath from "node:path";
@@ -671,12 +671,37 @@ export class BootstrapOrchestrator {
     if (projectRig.kind === "project_rig") {
       rigSpecYaml = projectRig.rigSpecYaml;
       opts = { ...opts, cwdOverride: undefined };
-      if (mode === "apply" && opts.onExisting !== "fresh") {
-        // Only stopped rigs: a running one meets the instantiator's running-name refusal.
-        const countRunning = makeRunningSessionCounter(this.deps.db);
-        const existing = new RigRepository(this.deps.db).findUnarchivedRigsByName(projectRig.rigName);
-        if (existing.length > 0 && existing.every((rig) => countRunning(rig.id) === 0)) {
-          const msg = `The project ${projectRig.projectRoot} already has a stopped rig named "${projectRig.rigName}". `
+      // Only stopped rigs: a running one meets the instantiator's running-name refusal.
+      const repo = new RigRepository(this.deps.db);
+      const countRunning = makeRunningSessionCounter(this.deps.db);
+      const existing = repo.findUnarchivedRigsByName(projectRig.rigName);
+      if (existing.length > 0 && existing.every((rig) => countRunning(rig.id) === 0)) {
+        // A same-named rig whose seats work elsewhere belongs to another project: neither
+        // resume nor fresh may touch it from here.
+        // Real path of the nearest existing ancestor, so a missing seat folder still compares
+        // in the same spelling as its project (macOS /var vs /private/var).
+        const real = (p: string): string => {
+          const abs = nodePath.resolve(p);
+          try { return fs.realpathSync.native(abs); } catch {
+            const parent = nodePath.dirname(abs);
+            return parent === abs ? abs : nodePath.join(real(parent), nodePath.basename(abs));
+          }
+        };
+        const ownRoot = nodePath.join(real(projectRig.projectRoot), PROJECT_RIG_WORKSPACES) + nodePath.sep;
+        const foreign = existing.flatMap((rig) => (repo.getRig(rig.id)?.nodes ?? [])
+          .filter((node) => node.cwd && !(real(node.cwd) + nodePath.sep).startsWith(ownRoot))
+          .map((node) => ({ rigId: rig.id, cwd: node.cwd as string })));
+        if (foreign.length > 0) {
+          const msg = `A stopped rig named "${projectRig.rigName}" belongs to another folder (${foreign[0]!.cwd}), not to ${projectRig.projectRoot}; this launch will not resume or replace it. `
+            + `Rename this project folder, or archive that rig first: rig archive ${foreign[0]!.rigId}.`;
+          stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_foreign", rigName: projectRig.rigName, rigIds: [...new Set(foreign.map((f) => f.rigId))], error: msg } });
+          this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+          return { runId: run.id, status: "failed", stages, errors: [msg], warnings };
+        }
+        if (mode === "plan") {
+          warnings.push(`A stopped rig named "${projectRig.rigName}" exists for this project; the launch will ask whether to resume it or start fresh.`);
+        } else if (opts.onExisting !== "fresh") {
+          const msg = `This project already has a stopped rig named "${projectRig.rigName}". `
             + `Resume it with: rig up ${projectRig.rigName} --existing. `
             + `Or start fresh (archives it): add --on-existing fresh.`;
           stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_exists", rigName: projectRig.rigName, rigIds: existing.map((rig) => rig.id), error: msg } });

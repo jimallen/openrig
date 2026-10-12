@@ -41,12 +41,15 @@ async function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; e
   return { logs, exitCode };
 }
 
-const EXISTS_MESSAGE = 'The project /p/eztrack already has a stopped rig named "eztrack". Resume it with: rig up eztrack --existing. Or start fresh (archives it): add --on-existing fresh.';
+const FOREIGN_MESSAGE = 'A stopped rig named "eztrack" belongs to another folder (/q/eztrack/.workspaces/exec-cos), not to /p/foreign; this launch will not resume or replace it. Rename this project folder, or archive that rig first: rig archive old.';
+const EXISTS_MESSAGE = 'This project already has a stopped rig named "eztrack". Resume it with: rig up eztrack --existing. Or start fresh (archives it): add --on-existing fresh.';
 
 describe("rig up — project rig with an existing stopped rig", () => {
   let server: http.Server;
   let port: number;
   let bodies: Array<Record<string, unknown>> = [];
+  let ambiguous = false;
+  let awaiting = false;
   let tmp: string;
   let spec: string;
 
@@ -58,7 +61,17 @@ describe("rig up — project rig with an existing stopped rig", () => {
         if (req.method === "POST" && req.url === "/api/up") {
           const body = JSON.parse(raw || "{}") as Record<string, unknown>;
           bodies.push(body);
-          if (body.cwdOverride === undefined && body.sourceRef !== "eztrack") {
+          if (body.cwdOverride === "/p/foreign") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ runId: "rf", status: "failed", code: "project_rig_foreign", errors: [FOREIGN_MESSAGE], warnings: [],
+              stages: [{ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_foreign" } }] }));
+          } else if (body.sourceRef === "eztrack" && ambiguous) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: 'Multiple rigs named "eztrack" found (IDs: rig-a, rig-b). Use rig restore --rig <rigId> with a specific rig ID.', code: "ambiguous_name" }));
+          } else if (body.sourceRef === "eztrack" && awaiting && !Array.isArray(body.freshLogicalIds)) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ status: "restored", rigId: "old-rig", rigName: "eztrack", rigResult: "partially_restored", nodes: [{ logicalId: "exec.cos", status: "awaiting-decision", error: "unresumable" }], warnings: [] }));
+          } else if (body.cwdOverride === undefined && body.sourceRef !== "eztrack") {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ runId: "r0", status: "failed", code: "project_rig", errors: ["team is a project rig: launch it into a project with --cwd <project folder>."], warnings: [],
               stages: [{ stage: "resolve_spec", status: "failed", detail: { code: "project_rig" } }] }));
@@ -88,12 +101,14 @@ describe("rig up — project rig with an existing stopped rig", () => {
 
   beforeEach(() => {
     bodies = [];
+    ambiguous = false;
+    awaiting = false;
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "up-project-rig-"));
     spec = path.join(tmp, "rig.yaml");
     fs.writeFileSync(spec, "version: \"0.2\"\nname: team\nproject_rig: true\npods: []\nedges: []\n");
   });
 
-  function makeCmd(promptProjectRigChoice?: (q: string) => Promise<"resume" | "fresh" | null>): Command {
+  function makeCmd(promptProjectRigChoice?: (q: string) => Promise<"resume" | "fresh" | null>, promptYesNo?: (q: string) => Promise<boolean>): Command {
     const prog = new Command();
     prog.exitOverride();
     prog.addCommand(upCommand({
@@ -106,6 +121,7 @@ describe("rig up — project rig with an existing stopped rig", () => {
       },
       clientFactory: (url: string) => new DaemonClient(url),
       promptProjectRigChoice,
+      promptYesNo,
     }));
     return prog;
   }
@@ -172,5 +188,39 @@ describe("rig up — project rig with an existing stopped rig", () => {
     expect(logs).toContain("team is a project rig: launch it into a project with --cwd <project folder>.");
     expect(logs.join("\n")).not.toContain("Up failed:");
     expect(exitCode).toBe(2);
+  });
+
+  it("--json never asks, even with a prompt available; it prints the daemon's answer and exits 1", async () => {
+    const ask = vi.fn(async () => "fresh" as const);
+    const { logs, exitCode } = await up(makeCmd(ask), "--json");
+    expect(ask).not.toHaveBeenCalled();
+    expect(JSON.parse(logs[0]!).code).toBe("project_rig_exists");
+    expect(bodies).toHaveLength(1);
+    expect(exitCode).toBe(1);
+  });
+
+  it("after a resume, a seat's fresh start goes to the resumed rig, not the spec", async () => {
+    awaiting = true;
+    await up(makeCmd(async () => "resume", async () => true));
+    expect(bodies.map((b) => b.sourceRef)).toEqual([spec, "eztrack", "eztrack"]);
+    expect(bodies[2]!.freshLogicalIds).toEqual(["exec.cos"]);
+  });
+
+  it("a same-named rig of another folder is explained as is, with nothing asked", async () => {
+    const ask = vi.fn(async () => "fresh" as const);
+    const { logs, exitCode } = await captureLogs(() => makeCmd(ask).parseAsync(["node", "rig", "up", spec, "--cwd", "/p/foreign"]).then(() => undefined));
+    expect(ask).not.toHaveBeenCalled();
+    expect(logs).toContain(FOREIGN_MESSAGE);
+    expect(logs.join("\n")).not.toContain("Up failed:");
+    expect(exitCode).toBe(2);
+  });
+
+  it("a resume that finds several rigs of the name says so without spec-validation advice", async () => {
+    ambiguous = true;
+    const { logs, exitCode } = await up(makeCmd(async () => "resume"));
+    const out = logs.join("\n");
+    expect(out).toContain('Multiple rigs named "eztrack" found');
+    expect(out).not.toContain("rig spec validate");
+    expect(exitCode).toBe(1);
   });
 });

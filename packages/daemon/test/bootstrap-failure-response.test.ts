@@ -19,4 +19,23 @@ describe("bootstrapFailureResponse — project rig with an existing stopped rig"
     expect(status).toBe(400);
     expect(body.code).toBe("project_rig");
   });
+
+  it("plan mode: a project_rig or project_rig_foreign refusal is a 400", () => {
+    for (const code of ["project_rig", "project_rig_foreign"]) {
+      const { status } = bootstrapFailureResponse({
+        runId: "r", status: "failed", errors: ["x"], warnings: [],
+        stages: [{ stage: "resolve_spec", status: "failed", detail: { code } }],
+      }, "plan");
+      expect(status, code).toBe(400);
+    }
+  });
+
+  it("apply mode: a foreign same-named rig is a 400, not the resume/fresh conflict", () => {
+    const { status, body } = bootstrapFailureResponse({
+      runId: "r", status: "failed", errors: ["x"], warnings: [],
+      stages: [{ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_foreign" } }],
+    }, "apply");
+    expect(status).toBe(400);
+    expect(body.code).toBe("project_rig_foreign");
+  });
 });

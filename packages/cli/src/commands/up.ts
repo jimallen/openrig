@@ -552,7 +552,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         } else if (code === "validation_failed") {
           const errors = (res.data["errors"] as string[]) ?? [];
           console.error(`Rig spec validation failed:\n${errors.map((e) => `  ${e}`).join("\n")}\nFix: update your rig spec and retry.`);
-        } else if (code === "project_rig") {
+        } else if (code === "project_rig" || code === "project_rig_foreign") {
           for (const e of (res.data["errors"] as string[]) ?? []) console.error(e);
         } else if (code === "preflight_failed") {
           const errors = (res.data["errors"] as string[]) ?? [];
@@ -562,6 +562,8 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         } else if (code === "invalid_topology_manifest") {
           const errors = (res.data["errors"] as string[]) ?? [];
           console.error(`Topology manifest invalid:\n${errors.map((e) => `  ${e}`).join("\n")}\nFix: the manifest key set is CLOSED — rigs[]{source, host?} plus optional concurrency.`);
+        } else if (code === "ambiguous_name") {
+          console.error(String(res.data["error"] ?? "More than one rig has this name."));
         } else if (code === "rig_name_running" || code === "generation_unconfirmed" || code === "compose_project_conflict") {
           // S5b final-fix F1 (OPR.0.5.4.11): the guard's teaching refusal is
           // self-describing (running rig identity, what was checked,

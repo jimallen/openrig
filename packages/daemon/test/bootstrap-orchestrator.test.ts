@@ -255,10 +255,49 @@ describe("BootstrapOrchestrator", () => {
       fs.mkdirSync(project);
       const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
       expect(result.status).toBe("failed");
-      expect(result.errors).toEqual([`The project ${project} already has a stopped rig named "asked". Resume it with: rig up asked --existing. Or start fresh (archives it): add --on-existing fresh.`]);
+      expect(result.errors).toEqual(['This project already has a stopped rig named "asked". Resume it with: rig up asked --existing. Or start fresh (archives it): add --on-existing fresh.']);
       expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_exists", rigName: "asked" });
       expect(instantiate).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+    });
+
+    it("refuses to resume or replace a same-named stopped rig whose seats work in another folder", async () => {
+      const repo = new RigRepository(db);
+      const other = repo.createRig("shared");
+      repo.addNode(other.id, "dev.shell", { cwd: path.join(tmpDir, "elsewhere", "shared", ".workspaces", "dev-shell") });
+      const instantiate = vi.fn();
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      const project = path.join(tmpDir, "shared");
+      fs.mkdirSync(project);
+      for (const onExisting of [undefined, "fresh"] as const) {
+        const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project, onExisting });
+        expect(result.status).toBe("failed");
+        expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_foreign", rigIds: [other.id] });
+        expect(result.errors[0]).toContain(`rig archive ${other.id}`);
+      }
+      expect(instantiate).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+    });
+
+    it("asks about a stopped rig whose seats work in this project's .workspaces", async () => {
+      const repo = new RigRepository(db);
+      const project = path.join(tmpDir, "mine");
+      fs.mkdirSync(project);
+      const own = repo.createRig("mine");
+      repo.addNode(own.id, "dev.shell", { cwd: path.join(project, ".workspaces", "dev-shell") });
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate: vi.fn() } });
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_exists", rigName: "mine" });
+    });
+
+    it("plan mode warns that the launch will ask, and does not fail on it", async () => {
+      new RigRepository(db).createRig("plannedask");
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate: vi.fn() } });
+      const project = path.join(tmpDir, "plannedask");
+      fs.mkdirSync(project);
+      const result = await orch.bootstrap({ mode: "plan", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).not.toMatchObject({ code: "project_rig_exists" });
+      expect(result.warnings).toContain('A stopped rig named "plannedask" exists for this project; the launch will ask whether to resume it or start fresh.');
     });
 
     it("onExisting fresh launches past a stopped rig of the project's name", async () => {
