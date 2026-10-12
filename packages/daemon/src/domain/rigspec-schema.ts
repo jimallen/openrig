@@ -46,7 +46,7 @@ const VALID_WORKSPACE_KINDS = new Set<string>(WORKSPACE_KINDS as readonly string
 
 const RIG_KEYS = new Set([
   "version", "name", "summary", "culture_file", "permission_policy", "managed_blocks", "docs",
-  "startup", "services", "workspace", "pods", "edges", "non_interruptive",
+  "startup", "services", "workspace", "pods", "edges", "non_interruptive", "project_rig",
 ]);
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
 const MEMBER_KEYS = new Set([
@@ -178,6 +178,9 @@ export class RigSpecSchema {
 
     if (obj["non_interruptive"] !== undefined && typeof obj["non_interruptive"] !== "boolean") {
       errors.push("non_interruptive: must be a boolean");
+    }
+    if (obj["project_rig"] !== undefined && typeof obj["project_rig"] !== "boolean") {
+      errors.push("project_rig: must be a boolean");
     }
 
     // #25: optional per-runtime managed-block destination. Only claude-code is

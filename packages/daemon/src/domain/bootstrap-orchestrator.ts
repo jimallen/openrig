@@ -1,3 +1,4 @@
+import { applyProjectRig, prepareProjectRigWorkspaces } from "./project-rig.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import nodePath from "node:path";
@@ -654,6 +655,28 @@ export class BootstrapOrchestrator {
     const { mode } = opts;
     const podInstantiator = this.deps.podInstantiator!;
     const rigRoot = specDir;
+
+    // A project rig runs inside the --cwd project: named after it, one folder per member.
+    const projectRig = applyProjectRig(rigSpecYaml, opts.cwdOverride);
+    if (projectRig.kind === "error") {
+      stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig", error: projectRig.error } });
+      this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+      return { runId: run.id, status: "failed", stages, errors: [projectRig.error], warnings };
+    }
+    if (projectRig.kind === "project_rig") {
+      rigSpecYaml = projectRig.rigSpecYaml;
+      opts = { ...opts, cwdOverride: undefined };
+      if (mode === "apply") {
+        try {
+          prepareProjectRigWorkspaces(projectRig.projectRoot, projectRig.workspaceDirs);
+        } catch (err) {
+          const msg = `Could not prepare the project rig's workspace folders in ${projectRig.projectRoot}: ${(err as Error).message}`;
+          stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig", error: msg } });
+          this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+          return { runId: run.id, status: "failed", stages, errors: [msg], warnings };
+        }
+      }
+    }
 
     if (mode === "plan") {
       // Plan mode: validate + preflight only

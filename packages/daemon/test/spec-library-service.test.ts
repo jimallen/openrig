@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SpecLibraryService } from "../src/domain/spec-library-service.js";
@@ -74,6 +74,60 @@ describe("SpecLibraryService", () => {
     expect(entries[0]!.name).toBe("test-rig");
     expect(entries[0]!.sourceType).toBe("user_file");
     expect(entries[0]!.sourcePath).toContain("my-rig.yaml");
+  });
+
+  describe("linked specs", () => {
+    let outside: string;
+    beforeEach(() => { outside = mkdtempSync(join(tmpdir(), "spec-lib-outside-")); });
+    afterEach(() => { rmSync(outside, { recursive: true, force: true }); });
+
+    it("lists a spec reached through a symlinked folder or file", () => {
+      mkdirSync(join(outside, "team"));
+      writeFileSync(join(outside, "team", "rig.yaml"), VALID_RIG_YAML);
+      writeFileSync(join(outside, "agent.yaml"), VALID_AGENT_YAML);
+      symlinkSync(join(outside, "team"), join(tmpDir, "team"));
+      symlinkSync(join(outside, "agent.yaml"), join(tmpDir, "linked-agent.yaml"));
+      const lib = createLibrary();
+      lib.scan();
+      const entries = lib.list().map((e) => [e.kind, e.name, e.sourcePath]).sort();
+      expect(entries).toEqual([
+        ["agent", "test-agent", join(tmpDir, "linked-agent.yaml")],
+        ["rig", "test-rig", join(tmpDir, "team", "rig.yaml")],
+      ]);
+    });
+
+    it("survives a link cycle and a broken link", () => {
+      writeFileSync(join(tmpDir, "rig.yaml"), VALID_RIG_YAML);
+      symlinkSync(tmpDir, join(tmpDir, "loop"));
+      symlinkSync(join(outside, "missing"), join(tmpDir, "broken"));
+      const lib = createLibrary();
+      lib.scan();
+      expect(lib.list().map((e) => e.sourcePath)).toEqual([join(tmpDir, "rig.yaml")]);
+    });
+
+    it("refuses to remove or rename a linked spec, leaving its real file untouched", () => {
+      mkdirSync(join(outside, "team"));
+      writeFileSync(join(outside, "team", "rig.yaml"), VALID_RIG_YAML);
+      symlinkSync(join(outside, "team"), join(tmpDir, "team"));
+      const lib = createLibrary();
+      lib.scan();
+      const id = lib.list()[0]!.id;
+      const removed = lib.remove(id);
+      expect(removed.ok).toBe(false);
+      expect(removed.ok === false && removed.code).toBe("read_only");
+      const renamed = lib.rename(id, "other");
+      expect(renamed.ok === false && renamed.code).toBe("read_only");
+      expect(readFileSync(join(outside, "team", "rig.yaml"), "utf-8")).toBe(VALID_RIG_YAML);
+      expect(existsSync(join(tmpDir, "team", "other.yaml"))).toBe(false);
+    });
+
+    it("still removes a spec the library owns", () => {
+      writeFileSync(join(tmpDir, "rig.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      expect(lib.remove(lib.list()[0]!.id).ok).toBe(true);
+      expect(existsSync(join(tmpDir, "rig.yaml"))).toBe(false);
+    });
   });
 
   it("scan discovers agent specs validated by SpecReviewService", () => {

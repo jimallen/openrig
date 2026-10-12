@@ -227,6 +227,60 @@ describe("BootstrapOrchestrator", () => {
     expect(instantiate).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ nonInterruptive: expected }));
   });
 
+  describe("project_rig", () => {
+    const projectSpec = (flag = "project_rig: true\n") => `version: "0.2"\nname: team\n${flag}pods: [{id: dev, label: Dev, members: [{id: shell, agent_ref: "builtin:terminal", runtime: terminal, profile: none, cwd: .}, {id: two, agent_ref: "builtin:terminal", runtime: terminal, profile: none, cwd: .}], edges: []}]\nedges: []\n`;
+
+    it("launches into the --cwd project, named after it, one workspace folder per member", async () => {
+      const instantiate = vi.fn(async () => ({ ok: true as const, result: { rigId: "p-rig", specName: "eztrack", specVersion: "0.2", nodes: [] } }));
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      const project = path.join(tmpDir, "eztrack");
+      fs.mkdirSync(project);
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      const [yaml, , launchOpts] = instantiate.mock.calls[0] as unknown as [string, string, { cwdOverride?: string }];
+      expect(launchOpts.cwdOverride).toBeUndefined();
+      expect(yaml).toContain("name: eztrack");
+      expect(yaml).toContain(`cwd: ${path.join(project, ".workspaces", "dev-shell")}`);
+      expect(yaml).toContain(`cwd: ${path.join(project, ".workspaces", "dev-two")}`);
+      expect(fs.statSync(path.join(project, ".workspaces", "dev-shell")).isDirectory()).toBe(true);
+      expect(fs.statSync(path.join(project, ".workspaces", "dev-two")).isDirectory()).toBe(true);
+    });
+
+    it("refuses a project rig launched without --cwd, before anything is created", async () => {
+      const instantiate = vi.fn();
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      for (const mode of ["apply", "plan"] as const) {
+        const result = await orch.bootstrap({ mode, sourceRef: writeSpec(projectSpec()) });
+        expect(result.status).toBe("failed");
+        expect(result.errors).toEqual(["team is a project rig: launch it into a project with --cwd <project folder>."]);
+      }
+      expect(instantiate).not.toHaveBeenCalled();
+    });
+
+    it("plan mode plans the project rig but creates no workspace folders", async () => {
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate: vi.fn() } });
+      const project = path.join(tmpDir, "planned");
+      fs.mkdirSync(project);
+      const result = await orch.bootstrap({ mode: "plan", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      // Positive control: the plan resolved the project-rig spec (named after the project).
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ specName: "planned" });
+      expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+    });
+
+    it("an ordinary spec keeps --cwd for every member", async () => {
+      const instantiate = vi.fn(async () => ({ ok: true as const, result: { rigId: "o-rig", specName: "team", specVersion: "0.2", nodes: [] } }));
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      const project = path.join(tmpDir, "plain");
+      fs.mkdirSync(project);
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec("")), cwdOverride: project });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      const [yaml, , launchOpts] = instantiate.mock.calls[0] as unknown as [string, string, { cwdOverride?: string }];
+      expect(launchOpts.cwdOverride).toBe(project);
+      expect(yaml).toContain("name: team");
+      expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+    });
+  });
+
   // T1: Plan mode returns plan, 0 bootstrap_actions rows
   it("plan mode returns plan with zero bootstrap_actions rows", async () => {
     const specPath = writeSpec(SIMPLE_SPEC_YAML);

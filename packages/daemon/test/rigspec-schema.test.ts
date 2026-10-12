@@ -37,6 +37,12 @@ const VALID_RIG = {
 };
 
 describe("RigSpec schema (pod-aware)", () => {
+  it("accepts a boolean project_rig and rejects any other value", () => {
+    expect(RigSpecSchema.validate({ ...VALID_RIG, project_rig: true }).errors).toEqual([]);
+    expect(RigSpecSchema.validate({ ...VALID_RIG, project_rig: false }).errors).toEqual([]);
+    expect(RigSpecSchema.validate({ ...VALID_RIG, project_rig: "yes" }).errors).toContain("project_rig: must be a boolean");
+  });
+
   // T1: valid rig with embedded pods passes validation
   it("valid rig with embedded pods passes validation", () => {
     const result = RigSpecSchema.validate(VALID_RIG);

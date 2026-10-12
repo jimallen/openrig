@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, relative, dirname, extname } from "node:path";
+import { readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, relative, dirname, extname, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { SpecReviewService } from "./spec-review-service.js";
@@ -70,9 +70,19 @@ const SKIP_DIRS = new Set([
 function walkYamlFiles(rootPath: string): string[] {
   const files: string[] = [];
   const stack = [rootPath];
+  // Symlinked folders and files are followed (a spec kept in its own repo can be linked
+  // into the library); real paths already walked are skipped, so a link cycle ends.
+  const visited = new Set<string>();
 
   while (stack.length > 0) {
     const current = stack.pop()!;
+    try {
+      const real = realpathSync(current);
+      if (visited.has(real)) continue;
+      visited.add(real);
+    } catch {
+      continue;
+    }
     let entries: Array<import("node:fs").Dirent>;
     try {
       entries = readdirSync(current, { withFileTypes: true });
@@ -82,12 +92,23 @@ function walkYamlFiles(rootPath: string): string[] {
 
     for (const entry of entries) {
       const absPath = join(current, entry.name);
-      if (entry.isDirectory()) {
+      let isDirectory = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = statSync(absPath);
+          isDirectory = target.isDirectory();
+          isFile = target.isFile();
+        } catch {
+          continue; // broken link
+        }
+      }
+      if (isDirectory) {
         if (SKIP_DIRS.has(entry.name)) continue;
         stack.push(absPath);
         continue;
       }
-      if (entry.isFile() && isYamlFile(entry.name)) {
+      if (isFile && isYamlFile(entry.name)) {
         files.push(absPath);
       }
     }
@@ -202,6 +223,19 @@ export class SpecLibraryService {
     }
   }
 
+  /** True when a library path reaches its file through a symlink, so a library edit
+   *  would change a file the library does not own. */
+  private isLinked(sourcePath: string): boolean {
+    try {
+      const root = this.roots.find((r) => sourcePath === r.path || sourcePath.startsWith(r.path + sep));
+      if (!root) return true;
+      const expected = join(realpathSync(root.path), relative(root.path, sourcePath));
+      return realpathSync(sourcePath) !== expected;
+    } catch {
+      return true;
+    }
+  }
+
   remove(id: string): SpecLibraryMutationResult {
     const entry = this.entries.get(id);
     if (!entry) {
@@ -209,6 +243,9 @@ export class SpecLibraryService {
     }
     if (entry.sourceType !== "user_file") {
       return { ok: false, code: "read_only", error: `Spec '${entry.name}' is built in and cannot be removed.` };
+    }
+    if (this.isLinked(entry.sourcePath)) {
+      return { ok: false, code: "read_only", error: `Spec '${entry.name}' is linked into the library from ${realpathSync(entry.sourcePath)}; change it there.` };
     }
 
     unlinkSync(entry.sourcePath);
@@ -223,6 +260,9 @@ export class SpecLibraryService {
     }
     if (entry.sourceType !== "user_file") {
       return { ok: false, code: "read_only", error: `Spec '${entry.name}' is built in and cannot be renamed.` };
+    }
+    if (this.isLinked(entry.sourcePath)) {
+      return { ok: false, code: "read_only", error: `Spec '${entry.name}' is linked into the library from ${realpathSync(entry.sourcePath)}; change it there.` };
     }
 
     const trimmedName = newName.trim();
