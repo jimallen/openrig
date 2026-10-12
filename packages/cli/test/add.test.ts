@@ -192,6 +192,31 @@ describe("rig add", () => {
     return prog;
   }
 
+  // The rig record does not store the rig's culture file, so a seat added to a running rig only gets the
+  // rig's own CULTURE.md when the operator names it.
+  it("--culture <path> sends cultureFile in the request body, exactly as typed (the daemon resolves it)", async () => {
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "CULTURE.md", "--rig-root", "/rigs/mine"]);
+    });
+    expect(capturedBody).toMatchObject({ cultureFile: "CULTURE.md", rigRoot: "/rigs/mine" });
+  });
+
+  it("without --culture the body carries no cultureFile key (request unchanged)", async () => {
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);
+    });
+    expect(capturedBody).not.toBeNull();
+    expect("cultureFile" in capturedBody!).toBe(false);
+  });
+
+  it("an ambiguous-name refusal's suggested re-run keeps --culture", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "add", "dupe", "infra", fragmentPath, "--culture", "my culture.md"]);
+    });
+    expect(capturedUrl).toBeNull();
+    expect(logs.join("\n")).toContain(`rig add ${DUPE_ID_1} infra ${fragmentPath} --culture 'my culture.md'`);
+  });
+
   it("parses rig-id, pod-namespace, and member-fragment-path", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath]);

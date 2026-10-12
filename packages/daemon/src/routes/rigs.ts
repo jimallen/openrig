@@ -820,10 +820,17 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
     ? (rawEdges as Array<{ from: string; to: string; kind: string }>)
     : undefined;
 
+  // Optional rig culture file for the added seat (`rig add --culture`). A PRESENT value that is not a
+  // non-empty string is rejected, never silently treated as absent.
+  const rawCulture = body["cultureFile"];
+  if (rawCulture !== undefined && (typeof rawCulture !== "string" || rawCulture.trim() === "")) {
+    return c.json({ ok: false, code: "validation_failed", errors: ["cultureFile: must be a non-empty string (a path to the rig's culture file)"] }, 400);
+  }
+
   const converged = await convergeOp(
     { instantiator: podInstantiator },
     rigId,
-    { kind: "add_member", pod: podNamespace, member: member as Record<string, unknown>, edges },
+    { kind: "add_member", pod: podNamespace, member: member as Record<string, unknown>, edges, ...(rawCulture !== undefined ? { cultureFile: rawCulture } : {}) },
     rigRoot,
   );
   // This route is the add_member sugar over the converge interface.

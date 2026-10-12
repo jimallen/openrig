@@ -974,7 +974,7 @@ export class PodRigInstantiator {
     podNamespace: string,
     memberFragment: Record<string, unknown>,
     rigRoot: string,
-    opts?: { cwdOverride?: string; edges?: Array<{ from: string; to: string; kind: string }> },
+    opts?: { cwdOverride?: string; edges?: Array<{ from: string; to: string; kind: string }>; cultureFile?: string },
   ): Promise<AddMemberOutcome> {
     // 1. Resolve the rig.
     const rig = this.deps.rigRepo.getRig(rigId);
@@ -996,6 +996,24 @@ export class PodRigInstantiator {
       };
     }
 
+    // 2b. The rig's own culture file. The rig record does not store it and the synthetic spec below is
+    // not the rig's spec, so without this an added seat gets the OpenRig culture floor but never the rig's
+    // CULTURE.md. The operator names it explicitly (`rig add --culture`); absent changes nothing. It is
+    // resolved exactly as a launch resolves it (path.resolve(rigRoot, file): relative to the rig root, or
+    // absolute) and must exist, so a typo fails here, before any seat is created, instead of surfacing as
+    // a required startup file that fails after the seat exists.
+    let cultureFile: string | undefined;
+    if (opts?.cultureFile !== undefined) {
+      if (typeof opts.cultureFile !== "string" || opts.cultureFile.trim() === "") {
+        return { ok: false, code: "validation_failed", errors: ["cultureFile: must be a non-empty string (a path to the rig's culture file)"] };
+      }
+      cultureFile = opts.cultureFile;
+      const resolvedCulture = nodePath.resolve(rigRoot, cultureFile);
+      if (!this.deps.fsOps.exists(resolvedCulture)) {
+        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" not found (looked at ${resolvedCulture}); pass a path relative to the rig root (--rig-root) or an absolute path`] };
+      }
+    }
+
     // 3. Build a minimal one-pod-one-member raw spec around the EXISTING pod so
     // the new member runs the SAME validate + preflight the materialize front
     // does — without a whole-rig spec or a YAML round-trip. The member fragment
@@ -1007,6 +1025,11 @@ export class PodRigInstantiator {
       pods: [{ id: podNamespace, label: pod.label, members: [memberFragment], edges: [] }],
       edges: [],
     };
+    // A relative culture path rides the spec's own culture_file, so the schema's safe-path rule (no
+    // traversal) applies. An absolute one is not a legal culture_file in a spec (specs are portable), so it
+    // is set on the normalized spec below; it was existence-checked above and resolves as a launch does.
+    const absoluteCulture = cultureFile !== undefined && nodePath.isAbsolute(cultureFile);
+    if (cultureFile !== undefined && !absoluteCulture) rawSpec["culture_file"] = cultureFile;
 
     // 4. Validate + normalize. externalQualifiedIds is the existing rig's node
     // set (matches the materialize front; used for cross-pod edge resolution).
@@ -1017,6 +1040,7 @@ export class PodRigInstantiator {
       return { ok: false, code: "validation_failed", errors: validation.errors };
     }
     const rigSpec = PodRigSpecSchema.normalize(rawSpec);
+    if (absoluteCulture) rigSpec.cultureFile = cultureFile;
     const member = rigSpec.pods[0]!.members[0]!;
     const qualifiedId = `${podNamespace}.${member.id}`;
 

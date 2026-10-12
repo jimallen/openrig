@@ -36,6 +36,7 @@ matches more than one rig is refused; use one of the listed ids instead.
 
 Examples:
   rig add my-rig dev ./reviewer.member.yaml
+  rig add my-rig dev ./manager.member.yaml --rig-root ./my-rig --culture CULTURE.md
   rig add 01KXYZ... dev ./reviewer.member.yaml --json`);
   const getDeps = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
@@ -45,7 +46,8 @@ Examples:
     .argument("<member-fragment-path>", "Path to YAML/JSON member fragment file (spec snake_case fields)")
     .option("--json", "JSON output for agents")
     .option("--rig-root <path>", "Root directory for agent resolution")
-    .action(async (rigHandle: string, podNamespace: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string }) => {
+    .option("--culture <path>", "The rig's culture file, relative to --rig-root or absolute. The rig does not remember it, so name it to give the added seat the rig's own culture")
+    .action(async (rigHandle: string, podNamespace: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string; culture?: string }) => {
       const deps = getDeps();
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (!daemonStatusGuard(status)) return;
@@ -93,6 +95,7 @@ Examples:
       const body: Record<string, unknown> = { member };
       if (Array.isArray(edges)) body["edges"] = edges;
       if (opts.rigRoot) body["rigRoot"] = opts.rigRoot;
+      if (opts.culture !== undefined) body["cultureFile"] = opts.culture;
 
       const client = deps.clientFactory(getDaemonUrl(status));
 
@@ -121,7 +124,7 @@ Examples:
       }
 
       if (resolution.kind === "ambiguous") {
-        const rigRoot = opts.rigRoot ? ` --rig-root ${shellArg(opts.rigRoot)}` : "";
+        const rigRoot = (opts.rigRoot ? ` --rig-root ${shellArg(opts.rigRoot)}` : "") + (opts.culture !== undefined ? ` --culture ${shellArg(opts.culture)}` : "");
         const suggestions = resolution.ids.map((id) => `rig add ${id} ${shellArg(podNamespace)} ${shellArg(fragmentPath)}${rigRoot}`);
         refuse({
           code: "rig_ambiguous",

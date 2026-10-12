@@ -20,7 +20,9 @@ import type { ClaimService, ReconcileSessionOutcome } from "./claim-service.js";
 
 /** The complete topology-mutation op-kind set. */
 export type TopologyOp =
-  | { kind: "add_member"; pod: string; member: Record<string, unknown>; edges?: Array<{ from: string; to: string; kind: string }> }
+  | { kind: "add_member"; pod: string; member: Record<string, unknown>; edges?: Array<{ from: string; to: string; kind: string }>;
+      /** The rig's culture file (relative to rigRoot, or absolute), delivered to the added seat like a launch would. */
+      cultureFile?: string }
   // OPR.0.3.4.3 — adopt a live hand-resumed canonical session back into its
   // persisted node WITHOUT launch/kill/input (the no-launch reconcile path).
   // An imperative REPAIR op: not derivable from a declarative membership diff
@@ -133,6 +135,7 @@ export async function convergeOp(
       const outcome = await deps.instantiator.addMemberToPod(rigId, op.pod, op.member, rigRoot, {
         cwdOverride: opts?.cwdOverride,
         edges: op.edges,
+        ...(op.cultureFile !== undefined ? { cultureFile: op.cultureFile } : {}),
       });
       return { kind: "add_member", supported: true, outcome };
     }
