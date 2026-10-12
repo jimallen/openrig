@@ -194,11 +194,59 @@ describe("rig add", () => {
 
   // The rig record does not store the rig's culture file, so a seat added to a running rig only gets the
   // rig's own CULTURE.md when the operator names it.
-  it("--culture <path> sends cultureFile in the request body, exactly as typed (the daemon resolves it)", async () => {
-    await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "CULTURE.md", "--rig-root", "/rigs/mine"]);
+  // The daemon resolves a relative rigRoot / culture path against ITS OWN cwd (the live daemon's is the
+  // OpenRig checkout), not the operator's. rig add always targets the local daemon (it has no --host), so
+  // the CLI resolves both against the caller's cwd before sending: what the operator typed means what a
+  // shell would mean by it.
+  describe("paths are resolved against the caller's cwd before sending", () => {
+    const CALLER_CWD = "/work/caller/dir";
+    let cwdSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => { cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(CALLER_CWD); });
+    afterEach(() => { cwdSpy.mockRestore(); });
+
+    it("a relative --culture and a relative --rig-root are sent absolute", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "CULTURE.md", "--rig-root", "rigs/mine"]);
+      });
+      expect(capturedBody).toMatchObject({ cultureFile: "/work/caller/dir/CULTURE.md", rigRoot: "/work/caller/dir/rigs/mine" });
     });
-    expect(capturedBody).toMatchObject({ cultureFile: "CULTURE.md", rigRoot: "/rigs/mine" });
+
+    it("`..` and `.` segments are collapsed against the caller's cwd", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "../shared/./CULTURE.md", "--rig-root", "."]);
+      });
+      expect(capturedBody).toMatchObject({ cultureFile: "/work/caller/shared/CULTURE.md", rigRoot: "/work/caller/dir" });
+    });
+
+    it("absolute paths are sent unchanged", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "/rigs/mine/CULTURE.md", "--rig-root", "/rigs/mine"]);
+      });
+      expect(capturedBody).toMatchObject({ cultureFile: "/rigs/mine/CULTURE.md", rigRoot: "/rigs/mine" });
+    });
+
+    it("--culture alone sends an absolute cultureFile and still no rigRoot key (agent resolution is unchanged)", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", "CULTURE.md"]);
+      });
+      expect(capturedBody).toMatchObject({ cultureFile: "/work/caller/dir/CULTURE.md" });
+      expect("rigRoot" in capturedBody!).toBe(false);
+    });
+
+    it("an empty --culture is sent as typed, so the daemon refuses it (resolving it would turn a mistake into the cwd)", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--culture", ""]);
+      });
+      expect(capturedBody).toMatchObject({ cultureFile: "" });
+    });
+
+    it("--rig-root alone is sent absolute, with no cultureFile key", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "add", "rig-123", "infra", fragmentPath, "--rig-root", "rigs/mine"]);
+      });
+      expect(capturedBody).toMatchObject({ rigRoot: "/work/caller/dir/rigs/mine" });
+      expect("cultureFile" in capturedBody!).toBe(false);
+    });
   });
 
   it("without --culture the body carries no cultureFile key (request unchanged)", async () => {

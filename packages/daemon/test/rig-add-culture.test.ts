@@ -174,7 +174,7 @@ describe("rig add: the add fragment carries remote_control", () => {
     const sent = (f.tmux.sendText as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1] as string).filter((t) => t.includes("claude "));
     const cmd = sent.find((t) => t.includes("--remote-control"));
     expect(cmd, `commands sent: ${sent.join(" | ")}`).toBeDefined();
-    const [, name] = /--remote-control '([^']+)'/.exec(cmd!)!;
+    const [, name] = /'--remote-control=([^']+)'/.exec(cmd!)!;
     expect(cmd).toContain(`--name ${name}`);
     // The sibling seat added by the spec (no remote_control) launched without it.
     expect(sent.filter((t) => t.includes("--remote-control"))).toHaveLength(1);

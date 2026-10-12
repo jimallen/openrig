@@ -32,7 +32,7 @@ describe("restore re-applies --remote-control (pod-aware down/up, real teardown 
   afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
 
   it.each([
-    ["declared", true, " --remote-control exec-cos@restore-test"],
+    ["declared", true, " --remote-control=exec-cos@restore-test"],
     ["not declared", false, ""],
   ])("seat %s -> the restored launch command is exact", async (_label, remoteControl, flag) => {
     const db = createFullTestDb(); dbs.push(db);
@@ -159,6 +159,14 @@ describe("enumeration guard: every claude seat-launch builder threads remote_con
     expect(src.match(/\.\.\.claudeRemoteControlArgs\(remoteControl, tmuxSessionName\)/g)).toHaveLength(1);
   });
 
+  it("the helper emits ONLY the `=` form (a separate-argument name starting with `-` is parsed as an unknown option)", () => {
+    const helper = read("adapters/claude-remote-control.ts");
+    expect(helper).toContain('["--remote-control=" + sessionName.trim()]');
+    expect(helper).toContain("shellQuote(`--remote-control=${sessionName.trim()}`)");
+    expect(helper).not.toMatch(/"--remote-control",/);
+    expect(helper).not.toMatch(/--remote-control \$\{/);
+  });
+
   it("handover: lookupNode SELECTs remote_control AND the successor binding carries it (same fence as model/effort)", () => {
     const handover = read("domain/seat-handover-service.ts");
     expect(handover).toMatch(/SELECT id, runtime, cwd, model, codex_config_profile, effort, remote_control FROM nodes/);
@@ -168,15 +176,23 @@ describe("enumeration guard: every claude seat-launch builder threads remote_con
     expect(launcher).toMatch(/node\.remoteControl \? \{ remoteControl: true \}/);
   });
 
-  it("no OTHER source file builds a claude launch command (positive control: the two builders above are found)", () => {
-    const launchers = allSrcFiles(SRC).filter(f => /\bclaude \$\{|`claude |"claude",\s*\[|--session-id|--fork-session/.test(readFileSync(f, "utf-8"))
-      && /(?:permission-mode|\$\{permissionMode\})/.test(readFileSync(f, "utf-8")))
+  it("exactly these source files build or spawn a `claude` command (positive control: both builders are found)", () => {
+    // A claude launch template or spawn array in NON-comment code. It does not depend on what flags the
+    // template carries: a new launcher that omits --permission-mode is still caught.
+    const LAUNCH = /`[^`]*\bclaude (?:\$\{|--)[^`]*`|"claude",\s*\[|\bclaude\s*\$\{/;
+    const code = (text: string) => text.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    const launchers = allSrcFiles(SRC).filter(f => code(readFileSync(f, "utf-8")).split("\n").some(l => LAUNCH.test(l)))
       .map(f => nodePath.relative(SRC, f)).sort();
-    expect(launchers).toContain("adapters/claude-code-adapter.ts");
-    expect(launchers).toContain("adapters/claude-resume.ts");
-    // Named non-builders: yolo-mode.ts defines the posture FLAG text; permission-drift.ts parses
-    // `claude --help`; native-process-lineage.ts PARSES a running claude's argv (it already skips a
-    // `--remote-control [name]` pair, so a remote seat's process is still identified).
-    expect(launchers.filter(f => !["adapters/claude-code-adapter.ts", "adapters/claude-resume.ts", "adapters/yolo-mode.ts", "domain/permission-drift.ts", "domain/native-process-lineage.ts"].includes(f))).toEqual([]);
+    // The two seat-launch builders (every emission site is pinned above), plus two named non-launchers:
+    // native-resume-probe.ts builds the operator-facing `claude --resume` text and the resume-metadata
+    // probe's throwaway command (deliberately WITHOUT the flag: a probe would register a second remote
+    // session), and permission-drift-observer.ts runs `claude --help`. native-process-lineage.ts only
+    // PARSES a running claude's argv (it skips `--remote-control[=name]`), so it is not a builder.
+    expect(launchers).toEqual([
+      "adapters/claude-code-adapter.ts",
+      "adapters/claude-resume.ts",
+      "domain/native-resume-probe.ts",
+      "domain/permission-drift-observer.ts",
+    ]);
   });
 });

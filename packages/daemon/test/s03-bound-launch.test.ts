@@ -263,21 +263,22 @@ describe("S03 bound launch across existing paths", () => {
     expect(f.calls).toHaveLength(1);
     return f.calls[0]!;
   };
-  it.each(["fresh", "resume", "fork", "legacy"])("managed %s launch carries '--remote-control' '<seat name>' after --model and before the session argument", async kind => {
+  it.each(["fresh", "resume", "fork", "legacy"])("managed %s launch carries '--remote-control=<seat name>' as ONE argument after --model and before the session argument", async kind => {
     const cmd = await rcLaunch(kind, true);
-    const flag = `'--remote-control' '${rcName(kind)}'`;
+    const flag = `'--remote-control=${rcName(kind)}'`;
     expect(cmd).toContain(` ${flag} `);
     const at = cmd.indexOf(flag);
     expect(at).toBeGreaterThan(cmd.indexOf("'--model'"));
     expect(at).toBeLessThan(cmd.indexOf(kind === "fresh" ? "'--session-id'" : "'--resume'"));
-    expect(cmd.split("'--remote-control'")).toHaveLength(2);
+    expect(cmd.split("'--remote-control=")).toHaveLength(2);
+    expect(cmd).not.toMatch(/'--remote-control' /); // never the separate-argument spelling
   });
   it.each(["fresh", "resume", "fork", "legacy"])("managed %s launch without the declaration is byte-identical (no --remote-control)", async kind => {
     for (const flag of [undefined, false]) expect(await rcLaunch(kind, flag)).not.toContain("remote-control");
     // The only delta from declaring it is the additive two-argument fragment.
     const plain = await rcLaunch(kind, undefined), declared = await rcLaunch(kind, true);
     const sameRoot = (cmd: string) => cmd.replace(/s03-bound-[A-Za-z0-9]+/g, "s03-bound-ROOT"); // each fixture() mints its own temp root
-    expect(sameRoot(declared).replace(` '--remote-control' '${rcName(kind)}'`, "")).toBe(sameRoot(plain));
+    expect(sameRoot(declared).replace(` '--remote-control=${rcName(kind)}'`, "")).toBe(sameRoot(plain));
   });
   it("rechecks later-generation support rather than reusing successful selection evidence", async () => {
     const f = fixture(); expect(await f.service.setPermissions(input)).toMatchObject({ ok: true });

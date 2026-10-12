@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { DaemonClient } from "../client.js";
 import { shellQuote } from "../cross-host-executor.js";
 import { readSelectedHost } from "../host-selection.js";
@@ -36,7 +37,7 @@ matches more than one rig is refused; use one of the listed ids instead.
 
 Examples:
   rig add my-rig dev ./reviewer.member.yaml
-  rig add my-rig dev ./manager.member.yaml --rig-root ./my-rig --culture CULTURE.md
+  rig add my-rig dev ./manager.member.yaml --rig-root ./my-rig --culture ./my-rig/CULTURE.md
   rig add 01KXYZ... dev ./reviewer.member.yaml --json`);
   const getDeps = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
@@ -45,8 +46,8 @@ Examples:
     .argument("<pod-namespace>", "Namespace of the existing pod to add the member to")
     .argument("<member-fragment-path>", "Path to YAML/JSON member fragment file (spec snake_case fields)")
     .option("--json", "JSON output for agents")
-    .option("--rig-root <path>", "Root directory for agent resolution")
-    .option("--culture <path>", "The rig's culture file, relative to --rig-root or absolute. The rig does not remember it, so name it to give the added seat the rig's own culture")
+    .option("--rig-root <path>", "Root directory for agent resolution (a relative path is taken from the current directory)")
+    .option("--culture <path>", "The rig's culture file (a relative path is taken from the current directory). The rig does not remember it, so name it to give the added seat the rig's own culture")
     .action(async (rigHandle: string, podNamespace: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string; culture?: string }) => {
       const deps = getDeps();
       const status = await getDaemonStatus(deps.lifecycleDeps);
@@ -94,8 +95,11 @@ Examples:
       }
       const body: Record<string, unknown> = { member };
       if (Array.isArray(edges)) body["edges"] = edges;
-      if (opts.rigRoot) body["rigRoot"] = opts.rigRoot;
-      if (opts.culture !== undefined) body["cultureFile"] = opts.culture;
+      // rig add always talks to the LOCAL daemon (it has no --host), and the daemon resolves a relative
+      // path against its own cwd, not the operator's. Resolve both against the caller's cwd here so the
+      // path means what a shell would mean by it.
+      if (opts.rigRoot) body["rigRoot"] = resolvePath(process.cwd(), opts.rigRoot);
+      if (opts.culture !== undefined) body["cultureFile"] = opts.culture === "" ? opts.culture : resolvePath(process.cwd(), opts.culture);
 
       const client = deps.clientFactory(getDaemonUrl(status));
 

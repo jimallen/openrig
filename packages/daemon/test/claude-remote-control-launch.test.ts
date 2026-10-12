@@ -6,9 +6,10 @@ import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
 // Claude Code Remote Control: a member that declares `remote_control: true` has EVERY claude launch of
-// its seat carry `--remote-control <session name>` (claude 2.1.296: `--remote-control [name]` takes an
-// optional value, so the name is always passed explicitly and the optional value can never swallow the
-// flag that follows). The expected strings below restate the recipe literally -- flag spelling, single
+// its seat carry `--remote-control=<session name>` (claude 2.1.296: `--remote-control [name]` takes an
+// optional value, so the name is always passed explicitly, in the `=` form: a separate-argument name that
+// starts with `-` (legal: pod ids only reject dots) is not read as the value, and commander then reports
+// the name as an unknown option). The expected strings below restate the recipe literally -- flag spelling, single
 // quoting, placement after --model/--effort and before --resume/--session-id -- and do not import it.
 //
 // The posture / renderer segments are the fixed defaults of a clean environment (acceptEdits floor,
@@ -53,13 +54,13 @@ describe("launchHarness: remote_control reaches every claude launch of the seat"
   it("FRESH launch emits --remote-control <session name>, before --session-id", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc(), { name: SEAT });
-    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} --remote-control '${SEAT}' --session-id sess-1 --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --session-id sess-1 --name ${SEAT}`);
   });
 
   it("RESUME launch emits --remote-control <session name>, before --resume", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc(), { name: SEAT, resumeToken: "tok-1" });
-    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --remote-control '${SEAT}' --resume 'tok-1' --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'tok-1' --name ${SEAT}`);
   });
 
   it("FORK launch emits --remote-control <session name>, before --resume ... --fork-session", async () => {
@@ -67,19 +68,27 @@ describe("launchHarness: remote_control reaches every claude launch of the seat"
     const adapter = adapterWith(tmux);
     vi.spyOn(adapter as unknown as { pollForResumeToken: () => Promise<string> }, "pollForResumeToken").mockResolvedValue("forked");
     await adapter.launchHarness(rc(), { name: SEAT, forkSource: { kind: "native_id", value: "parent-1" } });
-    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} --remote-control '${SEAT}' --resume 'parent-1' --fork-session --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'parent-1' --fork-session --name ${SEAT}`);
   });
 
   it("sits after --model and --effort, so the optional value never precedes or swallows another flag", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc({ model: "opus", effort: "high" }), { name: SEAT, resumeToken: "tok-1" });
-    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --model 'opus' --effort 'high' --remote-control '${SEAT}' --resume 'tok-1' --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --model 'opus' --effort 'high' '--remote-control=${SEAT}' --resume 'tok-1' --name ${SEAT}`);
   });
 
   it("the name is the seat's session name (the same one --name carries), quoted so it is one argument", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc(), { name: "a b'c" });
-    expect(sent(tmux)).toContain(` --remote-control 'a b'"'"'c' `);
+    expect(sent(tmux)).toContain(` '--remote-control=a b'"'"'c' `);
+  });
+
+  it("a session name that starts with `-` stays inside the one `--remote-control=<name>` token (shell form)", async () => {
+    const tmux = mockTmux();
+    await adapterWith(tmux).launchHarness(rc(), { name: "-seat" });
+    expect(sent(tmux)).toContain(" '--remote-control=-seat' ");
+    // the separate-argument spelling is the one that breaks the optional-value parse
+    expect(sent(tmux)).not.toMatch(/--remote-control\s/);
   });
 
   it("an empty session name refuses the launch rather than silently dropping the declared flag", async () => {
@@ -106,10 +115,10 @@ describe("launchHarness: remote_control reaches every claude launch of the seat"
     expect(sent(resumeBytes)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --resume 'tok-1' --name ${SEAT}`);
   });
 
-  it("the ONLY delta from declaring it is the additive ` --remote-control '<name>'`", async () => {
+  it("the ONLY delta from declaring it is the additive ` '--remote-control=<name>'`", async () => {
     const without = mockTmux(); await adapterWith(without).launchHarness(binding({ model: "opus", effort: "high" }), { name: SEAT, resumeToken: "T" });
     const withRc = mockTmux(); await adapterWith(withRc).launchHarness(rc({ model: "opus", effort: "high" }), { name: SEAT, resumeToken: "T" });
-    expect(sent(withRc).replace(` --remote-control '${SEAT}'`, "")).toBe(sent(without));
+    expect(sent(withRc).replace(` '--remote-control=${SEAT}'`, "")).toBe(sent(without));
   });
 });
 
@@ -120,15 +129,23 @@ describe("ClaudeResumeAdapter.resume (the restore path): remote_control is appli
     const tmux = mockTmux();
     await new ClaudeResumeAdapter(tmux).resume(SEAT, "claude_id", "tok-1", "/repo", undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
     expect((tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(
-      `OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --remote-control '${SEAT}' --resume 'tok-1'`,
+      `OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'tok-1'`,
     );
+  });
+
+  it("restore: a session name that starts with `-` stays inside the one `--remote-control=<name>` token", async () => {
+    const tmux = mockTmux();
+    await new ClaudeResumeAdapter(tmux).resume("-seat", "claude_id", "tok-1", "/repo", undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
+    const cmd = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(cmd).toContain(" '--remote-control=-seat' ");
+    expect(cmd).not.toMatch(/--remote-control\s/);
   });
 
   it("restore keeps model and effort ahead of it", async () => {
     const tmux = mockTmux();
     await new ClaudeResumeAdapter(tmux).resume(SEAT, "claude_id", "tok-1", "/repo", undefined, "opus", undefined, undefined, "high", undefined, undefined, undefined, true);
     expect((tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(
-      `OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --model 'opus' --effort 'high' --remote-control '${SEAT}' --resume 'tok-1'`,
+      `OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --model 'opus' --effort 'high' '--remote-control=${SEAT}' --resume 'tok-1'`,
     );
   });
 
