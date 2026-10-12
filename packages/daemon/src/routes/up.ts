@@ -208,6 +208,7 @@ upRoutes.post("/", async (c) => {
   const nonInterruptive = typeof body["nonInterruptive"] === "boolean" ? body["nonInterruptive"] : undefined;
   const cwdOverride = typeof body["cwdOverride"] === "string" ? body["cwdOverride"] : undefined;
   const targetRoot = typeof body["targetRoot"] === "string" ? body["targetRoot"] : undefined;
+  const onExisting = body["onExisting"] === "fresh" ? "fresh" as const : undefined;
 
   if (!sourceRef) {
     return c.json({ error: "sourceRef is required" }, 400);
@@ -379,6 +380,7 @@ upRoutes.post("/", async (c) => {
         nonInterruptive,
         cwdOverride,
         targetRoot,
+        onExisting,
         runId: run.id,
       });
 

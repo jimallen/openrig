@@ -7,6 +7,7 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { BootstrapOrchestrator } from "../src/domain/bootstrap-orchestrator.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
 import { BootstrapRepository } from "../src/domain/bootstrap-repository.js";
 import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
 import { RequirementsProbeRegistry } from "../src/domain/requirements-probe.js";
@@ -244,6 +245,31 @@ describe("BootstrapOrchestrator", () => {
       expect(yaml).toContain(`cwd: ${path.join(project, ".workspaces", "dev-two")}`);
       expect(fs.statSync(path.join(project, ".workspaces", "dev-shell")).isDirectory()).toBe(true);
       expect(fs.statSync(path.join(project, ".workspaces", "dev-two")).isDirectory()).toBe(true);
+    });
+
+    it("stops and asks when the project already has a stopped rig, changing nothing", async () => {
+      new RigRepository(db).createRig("asked");
+      const instantiate = vi.fn();
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      const project = path.join(tmpDir, "asked");
+      fs.mkdirSync(project);
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      expect(result.status).toBe("failed");
+      expect(result.errors).toEqual([`The project ${project} already has a stopped rig named "asked". Resume it with: rig up asked --existing. Or start fresh (archives it): add --on-existing fresh.`]);
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig_exists", rigName: "asked" });
+      expect(instantiate).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+    });
+
+    it("onExisting fresh launches past a stopped rig of the project's name", async () => {
+      new RigRepository(db).createRig("again");
+      const instantiate = vi.fn(async () => ({ ok: true as const, result: { rigId: "a-rig", specName: "again", specVersion: "0.2", nodes: [] } }));
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });
+      const project = path.join(tmpDir, "again");
+      fs.mkdirSync(project);
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(projectSpec()), cwdOverride: project, onExisting: "fresh" });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      expect(instantiate).toHaveBeenCalledTimes(1);
     });
 
     it("refuses a project rig launched without --cwd, before anything is created", async () => {

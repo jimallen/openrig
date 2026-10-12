@@ -29,6 +29,20 @@ async function defaultPromptYesNo(question: string): Promise<boolean> {
   });
 }
 
+/** Project rig whose project already has a stopped rig: ask resume / fresh / cancel.
+ *  TTY only; tests inject promptProjectRigChoice. Default answer: cancel. */
+async function defaultPromptProjectRigChoice(question: string): Promise<"resume" | "fresh" | null> {
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      resolve(a === "r" || a === "resume" ? "resume" : a === "f" || a === "fresh" ? "fresh" : null);
+    });
+  });
+}
+
 // OPR.0.3.2.22 Bug 3 helper — mirrors cwd-resolution.isPathInsideRoot in
 // the daemon so the CLI can decide whether a path-form sourceRef lives
 // inside the daemon install root without importing the daemon package.
@@ -67,6 +81,8 @@ export function upCommand(
     /** OPR.0.3.4.2 — injectable [y/N] prompt for the awaiting-decision ASK
      *  (tests drive it; default = readline on stdin, offered on TTY only). */
     promptYesNo?: (question: string) => Promise<boolean>;
+    /** Resume-or-fresh ASK for a project rig whose project already has a stopped rig. */
+    promptProjectRigChoice?: (question: string) => Promise<"resume" | "fresh" | null>;
   },
 ): Command {
   const cmd = new Command("up")
@@ -96,10 +112,11 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
     .option("--preset <name>", "For a GitHub bundle link, choose a declared configuration")
     .option("--seat <member=runtime>", "For a GitHub bundle link, choose a declared seat runtime; repeatable", (v: string, all: string[]) => [...all, v], [] as string[])
     .option("--existing", "Treat <source> as an existing rig name; bypass library-spec name resolution")
+    .option("--on-existing <choice>", "For a project rig whose project already has a stopped rig: resume (bring that rig back) or fresh (archive it and start a new one). Without it, rig up asks on a terminal")
     .option("--fresh <seats...>", "Deliberately fresh-prime the named seats (logical ids) instead of resuming their original sessions (operation B; reported as fresh-primed)")
     .option("--json", "JSON output for agents")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
-    .action(async (source: string, opts: { nonInterruptive?: boolean; plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string; preset?: string; seat?: string[] }) => {
+    .action(async (source: string, opts: { nonInterruptive?: boolean; plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string; preset?: string; seat?: string[]; onExisting?: string }) => {
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no
       // selection = today exactly. Topology
@@ -421,6 +438,11 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
       const behaviour = isRigBundle ? await showBundleBehaviourBeforeAction(() => client.post<Record<string, unknown>>(
         "/api/bundles/inspect", { bundlePath: sourceRef },
       )) : undefined;
+      if (opts.onExisting !== undefined && opts.onExisting !== "resume" && opts.onExisting !== "fresh") {
+        console.error(`--on-existing takes resume or fresh (got "${opts.onExisting}").`);
+        process.exitCode = 1;
+        return;
+      }
       let res: { status: number; data: Record<string, unknown> };
       try {
         res = await client.post<Record<string, unknown>>("/api/up", {
@@ -431,7 +453,53 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           targetRoot,
           // OPR.0.3.4.2 — operation B opt-in seats (deliberate fresh-prime).
           freshLogicalIds: opts.fresh,
+          ...(opts.onExisting === "fresh" ? { onExisting: "fresh" } : {}),
         }, opts.plan ? undefined : { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+
+        // A project rig whose project already has a stopped rig: resume it or start fresh,
+        // as chosen by --on-existing or asked on a terminal, then run that choice.
+        if (res.status === 409 && res.data["code"] === "project_rig_exists") {
+          const stage = ((res.data["stages"] as Array<{ stage: string; detail?: { rigName?: string } }>) ?? [])
+            .find((st) => st.stage === "resolve_spec");
+          const rigName = stage?.detail?.rigName;
+          const explanation = ((res.data["errors"] as string[]) ?? [])[0] ?? "This project already has a stopped rig.";
+          const interactive = !opts.json && (Boolean(process.stdin.isTTY && process.stdout.isTTY) || Boolean(deps.promptProjectRigChoice));
+          let choice: "resume" | "fresh" | null = opts.onExisting === "resume" ? "resume" : null;
+          if (!choice && interactive && rigName) {
+            const ask = deps.promptProjectRigChoice ?? defaultPromptProjectRigChoice;
+            choice = await ask(`This project already has a stopped rig "${rigName}". [r]esume it, start [f]resh (archives it), or anything else to cancel: `);
+          }
+          if (!choice || !rigName) {
+            if (opts.json) {
+              console.log(JSON.stringify(res.data));
+            } else {
+              console.error(explanation);
+              if (interactive) console.error("Cancelled; nothing was changed.");
+            }
+            process.exitCode = 1;
+            return;
+          }
+          if (choice === "resume") {
+            if (!opts.json) console.log(`Resuming rig "${rigName}"...`);
+            sourceRef = rigName;
+            res = await client.post<Record<string, unknown>>("/api/up", {
+              sourceRef: rigName,
+              plan: false,
+              autoApprove: opts.yes ?? false, nonInterruptive: opts.nonInterruptive,
+            }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+          } else {
+            if (!opts.json) console.log(`Archiving the stopped rig "${rigName}" and starting fresh...`);
+            res = await client.post<Record<string, unknown>>("/api/up", {
+              sourceRef,
+              plan: false,
+              autoApprove: opts.yes ?? false, nonInterruptive: opts.nonInterruptive,
+              cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
+              targetRoot,
+              freshLogicalIds: opts.fresh,
+              onExisting: "fresh",
+            }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
+          }
+        }
       } catch (err) {
         if (err instanceof DaemonConnectionError && !opts.plan) {
           printHonestTimeout(err);
@@ -484,6 +552,8 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         } else if (code === "validation_failed") {
           const errors = (res.data["errors"] as string[]) ?? [];
           console.error(`Rig spec validation failed:\n${errors.map((e) => `  ${e}`).join("\n")}\nFix: update your rig spec and retry.`);
+        } else if (code === "project_rig") {
+          for (const e of (res.data["errors"] as string[]) ?? []) console.error(e);
         } else if (code === "preflight_failed") {
           const errors = (res.data["errors"] as string[]) ?? [];
           console.error(`Preflight check failed:\n${errors.map((e) => `  ${e}`).join("\n")}\nFix: resolve the issues above and retry.`);

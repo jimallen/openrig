@@ -1087,6 +1087,46 @@ edges: []
   // partial+blocked+attention result; it fails red if up.ts returns
   // 200 (normal partial path) or 201 (completed path) instead of
   // 409 with a 3-part body.
+  describe("project rig resume-or-fresh (route-level)", () => {
+    it.each([[{ onExisting: "fresh" }, "fresh"], [{ onExisting: "resume" }, undefined], [{}, undefined]] as const)(
+      "forwards only onExisting fresh to the orchestrator: %j", async (extra, expected) => {
+        db.close();
+        const freshDb = createFullTestDb();
+        const setup = createTestApp(freshDb, {
+          upRouterFsOps: {
+            exists: (p: string) => fs.existsSync(p),
+            readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+            readHead: (p: string, n: number) => {
+              const fd = fs.openSync(p, "r");
+              try { const buf = Buffer.alloc(n); return buf.subarray(0, fs.readSync(fd, buf, 0, n, 0)); } finally { fs.closeSync(fd); }
+            },
+          },
+        });
+        const specPath = path.join(tmpDir, "project-rig-route-spec.yaml");
+        fs.writeFileSync(specPath, `version: "0.2"\nname: team\nproject_rig: true\npods: [{id: dev, label: Dev, members: [{id: shell, agent_ref: "builtin:terminal", runtime: terminal, profile: none, cwd: .}], edges: []}]\nedges: []\n`);
+        const seen: Array<Record<string, unknown>> = [];
+        const orch = setup.bootstrapOrchestrator;
+        orch.bootstrap = (async (opts: Record<string, unknown>) => {
+          seen.push(opts);
+          return { runId: "r", status: "failed", stages: [{ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_exists", rigName: "eztrack" } }], errors: ["exists"], warnings: [] };
+        }) as unknown as typeof orch.bootstrap;
+        orch.release = (() => undefined) as typeof orch.release;
+        try {
+          const res = await setup.app.request("/api/up", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sourceRef: specPath, cwdOverride: "/p/eztrack", ...extra }),
+          });
+          expect(res.status).toBe(409);
+          expect((await res.json()).code).toBe("project_rig_exists");
+          expect(seen).toHaveLength(1);
+          expect(seen[0]!.onExisting).toBe(expected);
+        } finally {
+          freshDb.close();
+          db = { close: () => undefined } as unknown as Database.Database;
+        }
+      });
+  });
+
   describe("OPR.0.3.2.CT BLOCKER-2 (route-level): POST /api/up surfaces 409 with 3-part body on attention_required partial", () => {
     it("attention_required partial → 409 with error.fact / error.consequence / error.action / attentionNodes", async () => {
       // Build a fresh app instance so we can monkey-patch the

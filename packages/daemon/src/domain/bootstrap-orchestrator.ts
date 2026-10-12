@@ -1,3 +1,5 @@
+import { RigRepository } from "./rig-repository.js";
+import { makeRunningSessionCounter } from "./running-name-guard.js";
 import { applyProjectRig, prepareProjectRigWorkspaces } from "./project-rig.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -46,6 +48,9 @@ export interface BootstrapOptions {
   runId?: string;
   /** Override install target root (required for bundle install apply) */
   targetRoot?: string;
+  /** A project rig whose project already has a stopped rig: "fresh" archives it and
+   *  starts a new one; absent, the launch stops and asks (code project_rig_exists). */
+  onExisting?: "fresh";
 }
 
 /** Stage result */
@@ -666,6 +671,19 @@ export class BootstrapOrchestrator {
     if (projectRig.kind === "project_rig") {
       rigSpecYaml = projectRig.rigSpecYaml;
       opts = { ...opts, cwdOverride: undefined };
+      if (mode === "apply" && opts.onExisting !== "fresh") {
+        // Only stopped rigs: a running one meets the instantiator's running-name refusal.
+        const countRunning = makeRunningSessionCounter(this.deps.db);
+        const existing = new RigRepository(this.deps.db).findUnarchivedRigsByName(projectRig.rigName);
+        if (existing.length > 0 && existing.every((rig) => countRunning(rig.id) === 0)) {
+          const msg = `The project ${projectRig.projectRoot} already has a stopped rig named "${projectRig.rigName}". `
+            + `Resume it with: rig up ${projectRig.rigName} --existing. `
+            + `Or start fresh (archives it): add --on-existing fresh.`;
+          stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_exists", rigName: projectRig.rigName, rigIds: existing.map((rig) => rig.id), error: msg } });
+          this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+          return { runId: run.id, status: "failed", stages, errors: [msg], warnings };
+        }
+      }
       if (mode === "apply") {
         try {
           prepareProjectRigWorkspaces(projectRig.projectRoot, projectRig.workspaceDirs);
