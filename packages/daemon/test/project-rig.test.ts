@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
-import { applyProjectRig, prepareProjectRigWorkspaces, projectRigSlug } from "../src/domain/project-rig.js";
+import { applyProjectRig, prepareProjectRigWorkspaces, projectRigSlug, unprojectedProjectRigError } from "../src/domain/project-rig.js";
 
 const SPEC = `version: "0.2"
 name: team
@@ -79,6 +79,22 @@ describe("applyProjectRig", () => {
     expect(r).toEqual({ kind: "error", error: "team is a project rig, and members exec.x-impl and exec-x.impl would share the workspace folder .workspaces/exec-x-impl; rename one of them." });
   });
 
+  it("refuses ids that would leave the workspaces folder or nest inside it", () => {
+    const traversal = SPEC.replace("- id: exec", '- id: ".."').replace("- id: cos", '- id: "/../../escaped"');
+    const r1 = applyProjectRig(traversal, "/p/eztrack");
+    expect(r1.kind).toBe("error");
+    expect((r1 as { error: string }).error).toContain("is not a usable workspace folder name");
+    for (const bad of ['"a/b"', '"a b"', '"."']) {
+      const r = applyProjectRig(SPEC.replace("- id: impl", `- id: ${bad}`), "/p/eztrack");
+      expect(r.kind, bad).toBe("error");
+    }
+  });
+
+  it("refuses a member or pod without an id instead of skipping it", () => {
+    expect(applyProjectRig(SPEC.replace("- id: impl", "- label: none"), "/p/eztrack")).toEqual({ kind: "error", error: "team is a project rig, and a member of pod build has no id." });
+    expect(applyProjectRig(SPEC.replace("- id: build\n    label: Build", "- label: Build"), "/p/eztrack")).toEqual({ kind: "error", error: "team is a project rig, and a pod has no usable id or members." });
+  });
+
   it("slug matches rig-here's rule", () => {
     expect(projectRigSlug("/a/eztrack")).toBe("eztrack");
     expect(projectRigSlug("/a/-Foo_Bar-")).toBe("foo-bar");
@@ -91,6 +107,11 @@ describe("prepareProjectRigWorkspaces", () => {
   afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
   const git = (...args: string[]) => execFileSync("git", args, { cwd: tmp, encoding: "utf-8" });
+
+  it("fails when a folder cannot be created", () => {
+    fs.writeFileSync(path.join(tmp, ".workspaces"), "a file, not a folder");
+    expect(() => prepareProjectRigWorkspaces(tmp, [path.join(tmp, ".workspaces", "a-b")])).toThrow();
+  });
 
   it("creates the folders without git", () => {
     const dirs = [path.join(tmp, ".workspaces", "a-b")];
@@ -118,5 +139,13 @@ describe("prepareProjectRigWorkspaces", () => {
     fs.writeFileSync(path.join(tmp, ".git", "info", "exclude"), "# existing");
     prepareProjectRigWorkspaces(tmp, [path.join(tmp, ".workspaces", "x-y")]);
     expect(fs.readFileSync(path.join(tmp, ".git", "info", "exclude"), "utf-8")).toBe("# existing\n/.workspaces/\n");
+  });
+});
+
+describe("unprojectedProjectRigError", () => {
+  it("names a spec that still carries project_rig, and nothing else", () => {
+    expect(unprojectedProjectRigError({ name: "team", project_rig: true })).toBe("team is a project rig: launch it with rig up <spec> --cwd <project folder>.");
+    expect(unprojectedProjectRigError({ name: "team", project_rig: false })).toBeNull();
+    expect(unprojectedProjectRigError({ name: "team" })).toBeNull();
   });
 });

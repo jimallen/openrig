@@ -22,6 +22,17 @@ export type ProjectRigResult =
   | { kind: "error"; error: string }
   | { kind: "project_rig"; rigSpecYaml: string; rigName: string; projectRoot: string; workspaceDirs: string[] };
 
+const PROJECT_RIG_ID = /^[A-Za-z0-9_-]+$/;
+
+/** A spec still carrying `project_rig: true` reached a launch path that does not
+ *  project it (`rig up <spec> --cwd` is the one that does); refuse rather than run
+ *  every member in one shared folder under the spec's own name. */
+export function unprojectedProjectRigError(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || (raw as Record<string, unknown>)["project_rig"] !== true) return null;
+  const name = (raw as Record<string, unknown>)["name"];
+  return `${typeof name === "string" ? name : "this rig"} is a project rig: launch it with rig up <spec> --cwd <project folder>.`;
+}
+
 export function projectRigSlug(projectRoot: string): string {
   return nodePath.basename(projectRoot).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
 }
@@ -58,11 +69,18 @@ export function applyProjectRig(rigSpecYaml: string, cwdOverride: string | null 
     if (!pod || typeof pod !== "object") continue;
     const podId = (pod as Record<string, unknown>)["id"];
     const members = (pod as Record<string, unknown>)["members"];
-    if (typeof podId !== "string" || !Array.isArray(members)) continue;
+    if (typeof podId !== "string" || !Array.isArray(members)) {
+      return { kind: "error", error: `${specName} is a project rig, and a pod has no usable id or members.` };
+    }
     for (const member of members) {
       if (!member || typeof member !== "object") continue;
       const memberId = (member as Record<string, unknown>)["id"];
-      if (typeof memberId !== "string") continue;
+      if (typeof memberId !== "string") {
+        return { kind: "error", error: `${specName} is a project rig, and a member of pod ${podId} has no id.` };
+      }
+      if (!PROJECT_RIG_ID.test(podId) || !PROJECT_RIG_ID.test(memberId)) {
+        return { kind: "error", error: `${specName} is a project rig, and ${JSON.stringify(podId)}.${JSON.stringify(memberId)} is not a usable workspace folder name; pod and member ids may use only letters, digits, '-' and '_'.` };
+      }
       const folder = `${podId}-${memberId}`;
       const owner = `${podId}.${memberId}`;
       const prior = owners.get(folder);
@@ -71,6 +89,9 @@ export function applyProjectRig(rigSpecYaml: string, cwdOverride: string | null 
       }
       owners.set(folder, owner);
       const dir = nodePath.join(projectRoot, PROJECT_RIG_WORKSPACES, folder);
+      if (nodePath.dirname(dir) !== nodePath.join(projectRoot, PROJECT_RIG_WORKSPACES)) {
+        return { kind: "error", error: `${specName} is a project rig, and member ${owner} would work outside ${PROJECT_RIG_WORKSPACES}.` };
+      }
       (member as Record<string, unknown>)["cwd"] = dir;
       workspaceDirs.push(dir);
     }

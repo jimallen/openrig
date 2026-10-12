@@ -1,3 +1,4 @@
+import { unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
 import type Database from "better-sqlite3";
 import {
@@ -521,6 +522,8 @@ export class PodRigInstantiator {
     } catch (err) {
       return { ok: false, code: "validation_failed", errors: [(err as Error).message] };
     }
+    const unprojected = unprojectedProjectRigError(raw);
+    if (unprojected) return { ok: false, code: "validation_failed", errors: [unprojected] };
 
     const targetRig = opts?.targetRigId ? this.deps.rigRepo.getRig(opts.targetRigId) : null;
     if (opts?.targetRigId && !targetRig) {
@@ -575,6 +578,8 @@ export class PodRigInstantiator {
     rigRoot: string,
     opts?: { targetRigId?: string; suppressSummaryEvent?: boolean; cwdOverride?: string },
   ): Promise<MaterializeOutcome> {
+    const unprojected = unprojectedProjectRigError(raw);
+    if (unprojected) return { ok: false, code: "validation_failed", errors: [unprojected] };
     const targetRig = opts?.targetRigId ? this.deps.rigRepo.getRig(opts.targetRigId) : null;
     if (opts?.targetRigId && !targetRig) {
       return { ok: false, code: "target_rig_not_found", message: `Rig "${opts.targetRigId}" not found` };
@@ -853,6 +858,8 @@ export class PodRigInstantiator {
     } catch (err) {
       return { ok: false, code: "validation_failed", errors: [(err as Error).message] };
     }
+    const unprojected = unprojectedProjectRigError(raw);
+    if (unprojected) return { ok: false, code: "validation_failed", errors: [unprojected] };
 
     const targetRig = this.deps.rigRepo.getRig(targetRigId);
     if (!targetRig) {
@@ -1266,6 +1273,8 @@ export class PodRigInstantiator {
       if (!validation.valid) {
         return { ok: false, code: "validation_failed", errors: validation.errors };
       }
+      const unprojected = unprojectedProjectRigError(raw);
+      if (unprojected) return { ok: false, code: "validation_failed", errors: [unprojected] };
       rigSpec = PodRigSpecSchema.normalize(raw as Record<string, unknown>);
     } catch (err) {
       return { ok: false, code: "validation_failed", errors: [(err as Error).message] };

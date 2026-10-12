@@ -259,7 +259,7 @@ export class SpecLibraryService {
       return { ok: false, code: "read_only", error: `Spec '${entry.name}' is built in and cannot be removed.` };
     }
     if (this.isLinked(entry.sourcePath)) {
-      return { ok: false, code: "read_only", error: `Spec '${entry.name}' is linked into the library from ${realpathSync(entry.sourcePath)}; change it there.` };
+      return { ok: false, code: "read_only", error: `Spec '${entry.name}' is linked into the library from ${entry.sourcePath}; change it there.` };
     }
 
     unlinkSync(entry.sourcePath);
@@ -276,7 +276,7 @@ export class SpecLibraryService {
       return { ok: false, code: "read_only", error: `Spec '${entry.name}' is built in and cannot be renamed.` };
     }
     if (this.isLinked(entry.sourcePath)) {
-      return { ok: false, code: "read_only", error: `Spec '${entry.name}' is linked into the library from ${realpathSync(entry.sourcePath)}; change it there.` };
+      return { ok: false, code: "read_only", error: `Spec '${entry.name}' is linked into the library from ${entry.sourcePath}; change it there.` };
     }
 
     const trimmedName = newName.trim();

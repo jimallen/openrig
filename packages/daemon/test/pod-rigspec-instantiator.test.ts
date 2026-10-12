@@ -118,6 +118,23 @@ describe("PodRigInstantiator", () => {
     db.close();
   });
 
+  it("refuses a project rig on every path that does not project it, creating no rig", async () => {
+    const { db, rigRepo, inst } = setup();
+    const yaml = RigSpecCodec.serialize(makeRigSpec()).replace("name: test-rig", "name: test-rig\nproject_rig: true");
+    const message = "test-rig is a project rig: launch it with rig up <spec> --cwd <project folder>.";
+    const instantiated = await inst.instantiate(yaml, RIG_ROOT);
+    expect(instantiated).toMatchObject({ ok: false, code: "validation_failed", errors: [message] });
+    const materialized = await inst.materialize(yaml, RIG_ROOT);
+    expect(materialized).toMatchObject({ ok: false, code: "validation_failed", errors: [message] });
+    const structured = await inst.materializeStructured(RigSpecCodec.parse(yaml), RIG_ROOT);
+    expect(structured).toMatchObject({ ok: false, code: "validation_failed", errors: [message] });
+    const target = rigRepo.createRig("existing");
+    const launched = await inst.launchMaterialized(yaml, RIG_ROOT, target.id);
+    expect(launched).toMatchObject({ ok: false, code: "validation_failed", errors: [message] });
+    expect(rigRepo.listRigs().map((r) => r.name)).toEqual(["existing"]);
+    db.close();
+  });
+
   // T2: resolved spec identity persisted
   it("persists resolved spec identity on node", async () => {
     const { db, rigRepo, inst } = setup();
