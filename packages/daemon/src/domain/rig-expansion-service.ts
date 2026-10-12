@@ -151,6 +151,9 @@ export class RigExpansionService {
             ...("permissionPolicy" in member && member.permissionPolicy !== undefined
               ? { permission_policy: member.permissionPolicy }
               : {}),
+            // remote_control: PRESENCE-preserving like permission_policy -- a present-invalid value
+            // reaches the canonical validator and rejects there; only an absent key is omitted.
+            ...("remoteControl" in member && member.remoteControl !== undefined ? { remote_control: member.remoteControl } : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
             // OPR.0.4.6.FAC1: role rides the fragment→spec map (a

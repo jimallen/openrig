@@ -129,7 +129,7 @@ describe("0.5.2-07 A2-3 — model-fidelity enumeration guard", () => {
     const handover = read("domain/seat-handover-service.ts");
     // The lookupNode query must SELECT the column (mirrors the A2-1 model SELECT, one field over).
     expect(handover, "seat-handover-service lookupNode must SELECT codex_config_profile").toMatch(
-      /SELECT id, runtime, cwd, model, codex_config_profile(?:, effort)? FROM nodes/,
+      /SELECT id, runtime, cwd, model, codex_config_profile(?:, effort)?(?:, remote_control)? FROM nodes/,
     );
     // The NodeRow shape must carry it, and createSuccessor must forward it onto the successor node.
     expect(handover, "NodeRow must carry codex_config_profile").toMatch(/codex_config_profile: string \| null/);
@@ -147,7 +147,7 @@ describe("0.5.2-07 A2-3 — model-fidelity enumeration guard", () => {
   it("#75: handover threads effort: lookupNode SELECTs it AND the successor binding carries it", () => {
     const handover = read("domain/seat-handover-service.ts");
     expect(handover, "seat-handover-service lookupNode must SELECT effort").toMatch(
-      /SELECT id, runtime, cwd, model, codex_config_profile, effort FROM nodes/,
+      /SELECT id, runtime, cwd, model, codex_config_profile, effort(?:, remote_control)? FROM nodes/,
     );
     expect(handover, "NodeRow must carry effort").toMatch(/effort: string \| null/);
     expect(handover, "createSuccessor must forward effort onto the successor node").toMatch(

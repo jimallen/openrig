@@ -34,6 +34,8 @@ export interface Node {
   runtime: string | null;
   model: string | null;
   effort?: string | null;
+  /** The seat declared `remote_control: true`; persisted so restore and successor launches know it. */
+  remoteControl?: boolean;
   codexConfigProfile?: string | null;
   /** OPR.0.4.8.3 Seam B: attached permission_policy REF (builtin:<name> or spec-relative custom
    *  path), or null when none is attached (= the floor). */
@@ -1091,6 +1093,12 @@ export interface RigSpecPodMember {
   model?: string;
   effort?: string;
   /**
+   * Start Claude Code Remote Control for this seat: every claude launch (fresh, resume, restore, fork)
+   * carries `--remote-control <session name>`. claude-code only (validated); absent/false = no flag.
+   * Settings cannot do this: claude ignores `remoteControlAtStartup` from project/local scope.
+   */
+  remoteControl?: boolean;
+  /**
    * OPR.0.4.6.FAC1: optional seat-side role declaration (writes the
    * existing `nodes.role` column via createMemberNode → addNode). The
    * workflow binding layer resolves workflow roles to seats by this
@@ -1376,6 +1384,10 @@ export interface ExpansionPodFragment {
      *  invalid shapes — so the ONE canonical RigSpec validator rejects present-invalid
      *  values; the normalizer must never erase presence into absence/floor. */
     permissionPolicy?: unknown;
+    /** `remote_control` (Claude Code Remote Control). Typed UNKNOWN for the same reason as
+     *  permissionPolicy: the ingress preserves RAW presence so the canonical validator rejects a
+     *  non-boolean or a non-claude `true`, rather than the ingress erasing it into absence. */
+    remoteControl?: unknown;
     restorePolicy?: string;
     label?: string;
     /**

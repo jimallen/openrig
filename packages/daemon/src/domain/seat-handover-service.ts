@@ -103,6 +103,8 @@ interface NodeRow {
   codex_config_profile: string | null;
   // #75: the seat's configured reasoning effort (nodes.effort), threaded onto successor binding.
   effort: string | null;
+  // The seat's declared remote_control (nodes.remote_control, 1/NULL), threaded onto the successor binding.
+  remote_control: number | null;
 }
 
 interface SessionRow {
@@ -458,7 +460,7 @@ export class SeatHandoverService {
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: node.effort ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: node.effort ?? undefined, ...(node.remote_control === 1 ? { remoteControl: true } : {}), codexConfigProfile: node.codex_config_profile ?? undefined },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
@@ -903,7 +905,7 @@ export class SeatHandoverService {
 
   private lookupNode(status: SeatStatus): NodeRow {
     return this.db.prepare(
-      "SELECT id, runtime, cwd, model, codex_config_profile, effort FROM nodes WHERE rig_id = ? AND logical_id = ?"
+      "SELECT id, runtime, cwd, model, codex_config_profile, effort, remote_control FROM nodes WHERE rig_id = ? AND logical_id = ?"
     ).get(status.rig_id, status.logical_id) as NodeRow;
   }
 

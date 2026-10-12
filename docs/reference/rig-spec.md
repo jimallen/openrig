@@ -401,6 +401,7 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `label` | string | no | — | Human-readable member name. Shown in UI when present. |
 | `model` | string | no | — | Model override. Runtime-specific (e.g., `claude-opus-4-6` for Claude Code). |
 | `effort` | string | no | — | Reasoning effort override, trimmed. A non-string value is ignored with an advisory. |
+| `remote_control` | boolean | no | `false` | Claude Code only. `true` starts Claude Code Remote Control for the seat: every Claude launch of it (fresh, resume, restore after `rig down`, fork, handover successor) carries `--remote-control <the seat's session name>`, the same name `--name` uses. `true` on any other runtime is a validation error; a non-boolean is an error. Absent or `false` leaves the launch command unchanged. The flag is persisted on the seat, so a restore after a daemon restart still applies it. A settings fragment cannot do this: Claude ignores `remoteControlAtStartup` from project and local settings. |
 | `permission_policy` | string | no | — | Member-level permission policy; overrides the rig's. Not valid on terminal members. |
 | `role` | string | no | — | The seat's role, letters, digits, `_`, `.` and `-`. Not valid on terminal members. |
 | `restore_policy` | string | no | the AgentSpec's | Restore behavior. One of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`. The default comes from the AgentSpec's `defaults.lifecycle` (else `resume_if_possible`) as narrowed by its profile; a member value may only narrow it further, in that order. |

@@ -122,9 +122,9 @@ describe("SeatHandoverService", () => {
     });
   }
 
-  function seedSeat(opts?: { rigName?: string; runtime?: string; withSession?: boolean; model?: string; codexConfigProfile?: string; effort?: string }) {
+  function seedSeat(opts?: { rigName?: string; runtime?: string; withSession?: boolean; model?: string; codexConfigProfile?: string; effort?: string; remoteControl?: boolean }) {
     const rig = rigRepo.createRig(opts?.rigName ?? "seat-rig");
-    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: opts?.runtime ?? "codex", cwd: "/project", model: opts?.model, codexConfigProfile: opts?.codexConfigProfile, effort: opts?.effort });
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: opts?.runtime ?? "codex", cwd: "/project", model: opts?.model, codexConfigProfile: opts?.codexConfigProfile, effort: opts?.effort, ...(opts?.remoteControl ? { remoteControl: true } : {}) });
     let sessionId: string | null = null;
     if (opts?.withSession !== false) {
       const session = sessionRegistry.registerSession(node.id, `dev-impl@${rig.name}`);
@@ -1292,5 +1292,21 @@ describe("SeatHandoverService", () => {
     expect(launchHarness).toHaveBeenCalledTimes(1);
     const successorBinding = launchHarness.mock.calls[0]![0] as { effort?: string };
     expect(successorBinding.effort).toBe("high");
+  });
+
+  it.each([[true], [false]])("a remote_control seat's handover launches the successor with the declaration (%s): the REAL lookupNode, createSuccessor, launchHarness path", async (remoteControl) => {
+    // codex runtime like the effort pin above: the binding field is runtime-independent plumbing; only the Claude adapter reads it.
+    seedSeat({ runtime: "codex", remoteControl });
+    const result = await service.handover({
+      seatRef: "dev-impl@seat-rig",
+      reason: "context-wall",
+      source: "fresh",
+      operator: "orch-lead@seat-rig",
+    });
+    expect(result.ok).toBe(true);
+    expect(launchHarness).toHaveBeenCalledTimes(1);
+    const successorBinding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
+    if (remoteControl) expect(successorBinding.remoteControl).toBe(true);
+    else expect("remoteControl" in successorBinding).toBe(false);
   });
 });

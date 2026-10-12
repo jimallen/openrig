@@ -51,7 +51,7 @@ const RIG_KEYS = new Set([
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
 const MEMBER_KEYS = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
-  "model", "effort", "role", "permission_policy", "cwd", "restore_policy",
+  "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref",
 ]);
 const EDGE_KEYS = new Set(["kind", "from", "to"]);
@@ -494,6 +494,17 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
   if (member["effort"] !== undefined) {
     if (typeof member["effort"] !== "string" || !member["effort"].trim()) {
       advisories.push(`${prefix}.effort: non-string value "${member["effort"]}" ignored; effort must be a text value`);
+    }
+  }
+  // Claude Code Remote Control: `remote_control: true` makes every claude launch of this seat carry
+  // `--remote-control <session name>`. A non-boolean is an error (never silently dropped: the operator
+  // asked for a remote seat). `true` on any other runtime is an error too -- only claude has the flag, and
+  // accepting it elsewhere would be a declaration that does nothing. `false` is legal on any runtime.
+  if (member["remote_control"] !== undefined) {
+    if (typeof member["remote_control"] !== "boolean") {
+      errors.push(`${prefix}.remote_control: must be a boolean (true or false)`);
+    } else if (member["remote_control"] === true && member["runtime"] !== "claude-code") {
+      errors.push(`${prefix}.remote_control: only valid when runtime is "claude-code"`);
     }
   }
   if (!member["cwd"] || typeof member["cwd"] !== "string") {
@@ -1148,6 +1159,8 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     codexConfigProfile: m["codex_config_profile"] as string | undefined,
     model: m["model"] as string | undefined,
     effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
+    // Only a validated `true` survives; false/absent normalize to undefined (the launch is unchanged).
+    remoteControl: m["remote_control"] === true ? true : undefined,
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
     cwd: m["cwd"] as string,

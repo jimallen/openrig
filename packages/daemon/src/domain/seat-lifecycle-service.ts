@@ -671,6 +671,7 @@ export class SeatLifecycleService {
         cwd: node.cwd ?? ".",
         model: node.model ?? undefined,
         effort: node.effort ?? undefined,
+        ...(node.remoteControl ? { remoteControl: true } : {}),
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,
       },

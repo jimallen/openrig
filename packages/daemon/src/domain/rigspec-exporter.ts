@@ -160,6 +160,8 @@ export class RigSpecExporter {
         if (node.codexConfigProfile) member.codexConfigProfile = node.codexConfigProfile;
         if (node.model) member.model = node.model;
         if (node.effort) member.effort = node.effort;
+        // The seat's remote_control declaration round-trips export -> import.
+        if (node.remoteControl) member.remoteControl = true;
         // OPR.0.4.6.FAC1: a declared seat role exports with the pod
         // member (round-trip fidelity — export→import keeps the role).
         if (node.role) member.role = node.role;

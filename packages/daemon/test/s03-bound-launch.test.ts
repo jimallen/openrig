@@ -244,6 +244,41 @@ describe("S03 bound launch across existing paths", () => {
     if (kind !== "fresh") expect(cmd).toContain("'history'\"'\"'s id; literal'");
     expect(f.tmux.sendText).not.toHaveBeenCalled(); expect(f.tmux.sendKeys).not.toHaveBeenCalled(); expect(execFile).toHaveBeenCalledOnce();
   });
+  // Remote Control on the MANAGED argv builders (managed.command([...])): fresh, resume, fork and the
+  // legacy restore resume. Each argument is shell-quoted separately, so the seat name is one argument.
+  // The legacy restore names the seat by its bound tmux session ("seat"); launchHarness takes opts.name.
+  const rcName = (kind: string) => kind === "legacy" ? "seat" : "seat; literal";
+  const rcLaunch = async (kind: string, remoteControl: boolean | undefined) => {
+    const f = fixture(); vi.spyOn(f.adapter as any, "pollForResumeToken").mockResolvedValue("fork-id");
+    vi.spyOn(f.adapter as any, "verifyResumeLaunch").mockResolvedValue({ ok: true });
+    const resume = new ClaudeResumeAdapter(f.tmux, { claudeManagedLaunch: f.managed });
+    vi.spyOn(resume as any, "verifyResume").mockResolvedValue({ ok: true });
+    const token = "history-id";
+    const result = kind === "legacy"
+      ? await resume.resume("seat", "claude_id", token, f.cwd, "floor", f.binding.model, "auto", "node", undefined, undefined, undefined, undefined, remoteControl)
+      : await f.adapter.launchHarness({ ...f.binding, ...(remoteControl === undefined ? {} : { remoteControl }) }, { name: "seat; literal",
+        ...(kind === "resume" ? { resumeToken: token } : {}),
+        ...(kind === "fork" ? { forkSource: { kind: "native_id" as const, value: token } } : {}) });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(f.calls).toHaveLength(1);
+    return f.calls[0]!;
+  };
+  it.each(["fresh", "resume", "fork", "legacy"])("managed %s launch carries '--remote-control' '<seat name>' after --model and before the session argument", async kind => {
+    const cmd = await rcLaunch(kind, true);
+    const flag = `'--remote-control' '${rcName(kind)}'`;
+    expect(cmd).toContain(` ${flag} `);
+    const at = cmd.indexOf(flag);
+    expect(at).toBeGreaterThan(cmd.indexOf("'--model'"));
+    expect(at).toBeLessThan(cmd.indexOf(kind === "fresh" ? "'--session-id'" : "'--resume'"));
+    expect(cmd.split("'--remote-control'")).toHaveLength(2);
+  });
+  it.each(["fresh", "resume", "fork", "legacy"])("managed %s launch without the declaration is byte-identical (no --remote-control)", async kind => {
+    for (const flag of [undefined, false]) expect(await rcLaunch(kind, flag)).not.toContain("remote-control");
+    // The only delta from declaring it is the additive two-argument fragment.
+    const plain = await rcLaunch(kind, undefined), declared = await rcLaunch(kind, true);
+    const sameRoot = (cmd: string) => cmd.replace(/s03-bound-[A-Za-z0-9]+/g, "s03-bound-ROOT"); // each fixture() mints its own temp root
+    expect(sameRoot(declared).replace(` '--remote-control' '${rcName(kind)}'`, "")).toBe(sameRoot(plain));
+  });
   it("rechecks later-generation support rather than reusing successful selection evidence", async () => {
     const f = fixture(); expect(await f.service.setPermissions(input)).toMatchObject({ ok: true });
     f.db.exec("INSERT INTO occupant_tenures VALUES ('node','generation-2',2)");

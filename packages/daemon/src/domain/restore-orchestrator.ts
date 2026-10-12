@@ -1160,7 +1160,7 @@ export class RestoreOrchestrator {
             this.sessionRegistry.recordResumeLaunch(launchedSessionId, resumeToken);
           } catch { /* best-effort: without it a rotation stays unproved, as before */ }
         }
-        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), node.effort, warnings);
+        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), node.effort, warnings, node.remoteControl === true);
         if (resumeOutcome.kind === "resumed") {
           baseStatus = "resumed";
           if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) {
@@ -1339,6 +1339,9 @@ export class RestoreOrchestrator {
             // their -m/--model on restore the same way.
             model: node.model ?? undefined,
             effort: node.effort ?? undefined,
+            // The seat's persisted remote_control declaration: restore (`rig up --existing`, rig-here)
+            // must start Claude Code Remote Control again, exactly as the first launch did.
+            ...(node.remoteControl ? { remoteControl: true } : {}),
           };
 
           try {
@@ -1622,6 +1625,7 @@ export class RestoreOrchestrator {
     resolvedPosture?: "floor" | "full_bypass" | "auto",
     effort?: string | null,
     warnings?: string[],
+    remoteControl?: boolean,
   ): Promise<
     | { kind: "resumed"; launchedProcess?: ClaudeLaunchedProcess }
     | { kind: "retry_fresh" }
@@ -1647,7 +1651,12 @@ export class RestoreOrchestrator {
       ? [effort, nonInterruptive, false, true] : kernelAuthority
       ? [effort, nonInterruptive, true] : nonInterruptive ? [effort, true] : effort !== undefined ? [effort] : [];
     if (this.claudeResume.canResume(resumeType, resumeToken)) {
-      const result = await this.claudeResume.resume(sessionName, resumeType, resumeToken, cwd, resolvedPosture, model, permissionMode, nodeId, ...launchTail);
+      // The variable-length launchTail cannot take a trailing positional, so a declared remote_control
+      // gets the full five-slot tail; an undeclared seat keeps today's exact call shape.
+      const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, teamPermissionDefault?: boolean, remoteControl?: boolean] = remoteControl
+        ? [effort, nonInterruptive, kernelAuthority, teamPermissionDefault, true] // launchOverride makes kernelAuthority and teamPermissionDefault mutually exclusive, so this equals launchTail's precedence
+        : launchTail;
+      const result = await this.claudeResume.resume(sessionName, resumeType, resumeToken, cwd, resolvedPosture, model, permissionMode, nodeId, ...claudeTail);
       if (result.ok) {
         const notice = nonInterruptiveNotice("claude-code", { nonInterruptive, launchPosture: resolvedPosture, permissionMode });
         if (notice) warnings?.push(`${sessionName}: ${notice}`);

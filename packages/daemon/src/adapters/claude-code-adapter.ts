@@ -16,6 +16,7 @@ import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
 import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
+import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNameMissing } from "./claude-remote-control.js";
 import { shellQuote } from "./shell-quote.js";
 import { validateClaudeActivityHookDelivery, claudeActivityRelayPath, CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH } from "../domain/claude-activity-hooks.js";
 import { observeClaudePermission } from "../domain/permission-drift.js";
@@ -248,6 +249,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return { ok: false, error: "resumeToken and forkSource are mutually exclusive — pick one" };
     }
 
+    if (claudeRemoteControlNameMissing(binding.remoteControl, opts.name)) {
+      return { ok: false, error: "claude-code remote_control: the seat has no session name to pass to --remote-control" };
+    }
+
     // OPR.0.4.8.2: the acceptEdits floor by default; YOLO (opt-in) swaps in the full-bypass flag.
     // The SAME decision (claudePostureFlag) is used on the restore path (claude-resume.ts).
     // OPR.0.4.8.3 Seam B: a per-seat resolved policy posture (binding.launchPosture) overrides env.
@@ -276,6 +281,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const modelArg = model ? ` --model ${shellQuote(model)}` : "";
     const effort = binding.effort?.trim();
     const effortArg = effort ? ` --effort ${shellQuote(effort)}` : "";
+    // Remote Control: a member that declared `remote_control: true` (resolved onto binding.remoteControl,
+    // persisted on the node so restore and successor launches know it) starts every launch with
+    // `--remote-control <session name>`. Absent/false → empty → the command is byte-identical.
+    const remoteControlArgv = claudeRemoteControlArgs(binding.remoteControl, opts.name);
+    const remoteControlArg = claudeRemoteControlArg(binding.remoteControl, opts.name);
 
     // Fork branch: build `claude --resume <parent> --fork-session --name <seat>`
     // and capture the NEW post-fork session id. The parent token is NEVER
@@ -291,12 +301,12 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       if (!parentId) {
         return { ok: false, error: "claude-code fork: forkSource.value is required (parent native_id)" };
       }
-      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
+      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
         "--resume", parentId, "--fork-session", "--name", opts.name])
         // The non-managed command text is parsed by the pane shell, so the
         // parent id needs the same quoting as --model/--effort above (and as
         // the codex fork path) — a hostile id must not leave --resume.
-        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(parentId)} --fork-session --name ${opts.name}`;
+        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(parentId)} --fork-session --name ${opts.name}`;
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
         : this.seatLaunchEnvironment
           ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
@@ -324,11 +334,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
 
     const generatedSessionId = opts.resumeToken ? null : this.sessionIdFactory();
-    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
+    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
       ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), "--name", opts.name],
       opts.resumeToken ? claudeResumeLaunchEnv(opts.resumeToken) : undefined) : opts.resumeToken
-      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(opts.resumeToken)} --name ${opts.name}`
-      : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --session-id ${generatedSessionId} --name ${opts.name}`;
+      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(opts.resumeToken)} --name ${opts.name}`
+      : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --session-id ${generatedSessionId} --name ${opts.name}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
       : this.seatLaunchEnvironment

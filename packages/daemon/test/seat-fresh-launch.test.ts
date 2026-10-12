@@ -274,13 +274,14 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(deriveRehydrateSessionIdByNode(history, [seat.node.id], readFreshOccupantRelations(db, seat.rig.id))[seat.node.id]).toBeNull();
   });
 
-  function seedSeat(opts?: { clean?: boolean; adopted?: boolean; model?: string; withContext?: boolean; runtime?: "claude-code" | "codex" }) {
+  function seedSeat(opts?: { clean?: boolean; adopted?: boolean; model?: string; withContext?: boolean; runtime?: "claude-code" | "codex"; remoteControl?: boolean }) {
     const runtime = opts?.runtime ?? "claude-code";
     const rig = rigRepo.createRig("fresh-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", {
       runtime,
       cwd: "/project",
       model: opts?.model ?? "claude-current",
+      ...(opts?.remoteControl ? { remoteControl: true } : {}),
     });
     const sessionName = "dev-impl@fresh-rig";
     let session: ReturnType<SessionRegistry["registerSession"]> | null = null;
@@ -633,6 +634,14 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(launchOpts).toEqual({ name: seat.sessionName, resumeToken: undefined });
     const event = db.prepare("SELECT payload FROM events WHERE type = 'seat.fresh_launched' ORDER BY seq DESC LIMIT 1").get() as { payload: string };
     expect(JSON.parse(event.payload)).toMatchObject({ nativeSessionId: "codex-fresh-uuid" });
+  });
+
+  it.each([[true], [false]])("a fresh launch binds the seat's persisted remote_control declaration (%s) onto the launch binding", async (remoteControl) => {
+    seedSeat({ clean: true, remoteControl });
+    const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "blank restart of a remote seat" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (remoteControl) expect(launchBinding).toMatchObject({ remoteControl: true });
+    else expect(launchBinding).not.toHaveProperty("remoteControl");
   });
 
   it("supersedes historically ambiguous dead rows without selecting a continuity source", async () => {

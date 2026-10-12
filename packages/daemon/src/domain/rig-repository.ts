@@ -122,6 +122,8 @@ interface NodeOptions {
   runtime?: string;
   model?: string;
   effort?: string;
+  /** `remote_control: true` on the member: persisted so restore and successor launches know it. */
+  remoteControl?: boolean;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -460,6 +462,10 @@ export class RigRepository {
         .run(opts.effort, id);
     }
 
+    if (opts?.remoteControl && this.hasNodeColumn("remote_control")) {
+      this.db.prepare("UPDATE nodes SET remote_control = 1 WHERE id = ?").run(id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -480,6 +486,16 @@ export class RigRepository {
     const result = this.db
       .prepare("UPDATE nodes SET effort = ? WHERE id = ?")
       .run(effort, nodeId);
+    return result.changes > 0;
+  }
+
+  /** Declare (true) or withdraw (false) the seat's Claude Code Remote Control. A relaunch from the spec
+   *  writes the member's current declaration, so a spec change takes effect on the next launch. */
+  setNodeRemoteControl(nodeId: string, remoteControl: boolean): boolean {
+    if (!this.hasNodeColumn("remote_control")) return false;
+    const result = this.db
+      .prepare("UPDATE nodes SET remote_control = ? WHERE id = ?")
+      .run(remoteControl ? 1 : null, nodeId);
     return result.changes > 0;
   }
 
@@ -733,6 +749,8 @@ export class RigRepository {
       runtime: row.runtime,
       model: row.model,
       effort: row.effort ?? null,
+      // Present only when declared, so nodes (and the snapshots serialized from them) that never declared it are unchanged.
+      ...(row.remote_control === 1 ? { remoteControl: true } : {}),
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
       cwd: row.cwd,
@@ -822,6 +840,7 @@ interface NodeRow {
   runtime: string | null;
   model: string | null;
   effort?: string | null;
+  remote_control?: number | null;
   codex_config_profile?: string | null;
   permission_policy?: string | null;
   cwd: string | null;

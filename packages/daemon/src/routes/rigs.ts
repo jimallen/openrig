@@ -171,6 +171,13 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
           : "permission_policy" in m
             ? { permissionPolicy: m["permission_policy"] }
             : {}),
+        // remote_control: raw presence is preserved (like permissionPolicy above); the canonical
+        // RigSpec validator owns the boolean / claude-code-only check.
+        ...("remoteControl" in m
+          ? { remoteControl: m["remoteControl"] }
+          : "remote_control" in m
+            ? { remoteControl: m["remote_control"] }
+            : {}),
         restorePolicy:
           typeof m["restorePolicy"] === "string"
             ? m["restorePolicy"]

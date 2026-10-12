@@ -4,6 +4,7 @@ import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
+import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNameMissing } from "./claude-remote-control.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
 import { verifyClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
@@ -65,9 +66,16 @@ export class ClaudeResumeAdapter {
     nonInterruptive?: boolean,
     kernelAuthority?: boolean,
     teamPermissionDefault?: boolean,
+    // The seat's declared `remote_control` (nodes.remote_control): restore must start Claude Code
+    // Remote Control again, named by the seat's tmux session name. TRAILING for the same reason as the
+    // params above; absent/false → the command is byte-identical.
+    remoteControl?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };
+    }
+    if (claudeRemoteControlNameMissing(remoteControl, tmuxSessionName)) {
+      return { ok: false, code: "resume_failed", message: "claude-code remote_control: the seat has no session name to pass to --remote-control" };
     }
 
     // OPR.0.4.8.2: the RESTORE path uses the SAME launch-posture decision as fresh launch (the
@@ -86,8 +94,8 @@ export class ClaudeResumeAdapter {
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
     const appliedLaunch = observeClaudePermission(posture);
     const permissionMode = posture + operationalLaunchArg("claude-code", choice);
-    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), "--resume", resumeToken!], claudeResumeLaunchEnv(resumeToken!))
-      : `${claudeResumeLaunchPrefix(resumeToken!)}${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(resumeToken!)}`;
+    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...claudeRemoteControlArgs(remoteControl, tmuxSessionName), "--resume", resumeToken!], claudeResumeLaunchEnv(resumeToken!))
+      : `${claudeResumeLaunchPrefix(resumeToken!)}${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg}${claudeRemoteControlArg(remoteControl, tmuxSessionName)} --resume ${shellQuote(resumeToken!)}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent)
       : this.options.seatLaunchEnvironment

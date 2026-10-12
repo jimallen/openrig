@@ -30,7 +30,7 @@ async function failedAdd(memberOverrides?: Record<string, unknown>) {
   };
   const tmux = mockTmuxAdapter();
   const setup = createTestApp(db, {
-    tmux, adapters: { pi: adapter },
+    tmux, adapters: { pi: adapter, "claude-code": adapter },
     podInstantiatorFsOps: { exists: path => path in files, readFile: path => { if (!(path in files)) throw new Error(`Missing ${path}`); return files[path]!; } },
   });
   const rig = setup.rigRepo.createRig("first-start");
@@ -106,6 +106,37 @@ describe("explicit first-start retry after projection failure", () => {
     expect(nodeAfter.effort).toBe("high");
     expect(f.adapter.launchHarness).toHaveBeenCalledTimes(1);
     expect(f.adapter.deliverStartup).toHaveBeenCalled();
+  });
+
+  // remote_control: the retry relaunches the seat from the supplied member, and the launch re-writes the
+  // persisted declaration from it -- so a retry that dropped (or added) the flag must be refused, or it
+  // would silently rewrite what restore later reads.
+  describe("remote_control", () => {
+    const rcMember = { runtime: "claude-code", remote_control: true };
+
+    it("a first-start-failed remote seat keeps the declaration on the node and relaunches with it on the binding", async () => {
+      const f = await failedAdd(rcMember);
+      expect(f.rigRepo.getRig(f.rig.id)!.nodes.find(n => n.id === f.node.id)!.remoteControl).toBe(true);
+      const res = await f.request();
+      const body = await res.json();
+      expect({ status: res.status, body }, JSON.stringify(body)).toMatchObject({ status: 201, body: { ok: true, status: "launched" } });
+      expect(f.adapter.launchHarness).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(f.adapter.launchHarness).mock.calls[0]![0]).toMatchObject({ nodeId: f.node.id, remoteControl: true });
+      expect(f.rigRepo.getRig(f.rig.id)!.nodes.find(n => n.id === f.node.id)!.remoteControl).toBe(true);
+    });
+
+    it.each([
+      ["drops it", { ...member, runtime: "claude-code" }, rcMember],
+      ["adds it", { ...member, runtime: "claude-code", remote_control: true }, { runtime: "claude-code" }],
+    ])("refuses a retry member that %s, without projection or launch", async (_label, retryMember, seatOverrides) => {
+      const f = await failedAdd(seatOverrides);
+      const changes = f.db.prepare("SELECT total_changes() AS n").get();
+      const res = await f.request(retryMember);
+      expect(res.status).toBe(409);
+      expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+      expect(f.adapter.launchHarness).not.toHaveBeenCalled();
+      expect(f.adapter.project).toHaveBeenCalledTimes(1);
+    });
   });
 
   it.each(["present", "unknown"])("refuses %s liveness without effects", async state => {
