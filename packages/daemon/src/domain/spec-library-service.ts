@@ -118,6 +118,17 @@ function walkYamlFiles(rootPath: string): string[] {
   return files;
 }
 
+/** The real path of a file reached through a symlink below `rootPath`; otherwise the
+ *  path as walked (a root that is itself a link keeps its own spelling). */
+function realPathIfLinked(rootPath: string, absPath: string): string {
+  try {
+    const real = realpathSync(absPath);
+    return real === join(realpathSync(rootPath), relative(rootPath, absPath)) ? absPath : real;
+  } catch {
+    return absPath;
+  }
+}
+
 function shouldIndexRelativePath(sourceType: "builtin" | "user_file", relPath: string): boolean {
   if (sourceType !== "builtin") {
     return true;
@@ -171,7 +182,10 @@ export class SpecLibraryService {
           continue;
         }
 
-        const entry = this.classifySpec(yaml, root.sourceType, absPath, relPath, stat.mtimeMs);
+        // A spec reached through a link is launched from where its file really lives, so
+        // its relative refs (local:, culture_file) resolve beside the real file.
+        const sourcePath = realPathIfLinked(root.path, absPath);
+        const entry = this.classifySpec(yaml, root.sourceType, sourcePath, relPath, stat.mtimeMs);
         if (entry) {
           newEntries.set(entry.id, entry);
         }

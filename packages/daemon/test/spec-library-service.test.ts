@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SpecLibraryService } from "../src/domain/spec-library-service.js";
@@ -90,10 +90,20 @@ describe("SpecLibraryService", () => {
       const lib = createLibrary();
       lib.scan();
       const entries = lib.list().map((e) => [e.kind, e.name, e.sourcePath]).sort();
+      // A linked spec launches from where its file really lives, so relative refs resolve there.
       expect(entries).toEqual([
-        ["agent", "test-agent", join(tmpDir, "linked-agent.yaml")],
-        ["rig", "test-rig", join(tmpDir, "team", "rig.yaml")],
+        ["agent", "test-agent", realpathSync(join(outside, "agent.yaml"))],
+        ["rig", "test-rig", realpathSync(join(outside, "team", "rig.yaml"))],
       ]);
+    });
+
+    it("keeps the walked path for a spec that is not linked, even under a linked root", () => {
+      writeFileSync(join(outside, "rig.yaml"), VALID_RIG_YAML);
+      const linkedRoot = join(tmpDir, "root-link");
+      symlinkSync(outside, linkedRoot);
+      const lib = createLibrary([{ path: linkedRoot, sourceType: "user_file" }]);
+      lib.scan();
+      expect(lib.list().map((e) => e.sourcePath)).toEqual([join(linkedRoot, "rig.yaml")]);
     });
 
     it("survives a link cycle and a broken link", () => {
