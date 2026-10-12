@@ -688,9 +688,15 @@ export class BootstrapOrchestrator {
           }
         };
         const ownRoot = nodePath.join(real(projectRig.projectRoot), PROJECT_RIG_WORKSPACES) + nodePath.sep;
-        const foreign = existing.flatMap((rig) => (repo.getRig(rig.id)?.nodes ?? [])
-          .filter((node) => node.cwd && !(real(node.cwd) + nodePath.sep).startsWith(ownRoot))
-          .map((node) => ({ rigId: rig.id, cwd: node.cwd as string })));
+        // A rig counts as this project's only when it has seats and every seat records a
+        // folder in this project's .workspaces; no seats, or a seat with no folder, is unknown.
+        const foreign = existing.flatMap((rig) => {
+          const nodes = repo.getRig(rig.id)?.nodes ?? [];
+          if (nodes.length === 0) return [{ rigId: rig.id, cwd: "no seats recorded" }];
+          return nodes
+            .filter((node) => !node.cwd || !(real(node.cwd) + nodePath.sep).startsWith(ownRoot))
+            .map((node) => ({ rigId: rig.id, cwd: node.cwd ?? "no folder recorded" }));
+        });
         if (foreign.length > 0) {
           const msg = `A stopped rig named "${projectRig.rigName}" belongs to another folder (${foreign[0]!.cwd}), not to ${projectRig.projectRoot}; this launch will not resume or replace it. `
             + `Rename this project folder, or archive that rig first: rig archive ${foreign[0]!.rigId}.`;
