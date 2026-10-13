@@ -42,6 +42,9 @@ interface PsEntry {
 }
 
 interface NodeEntry {
+  /** The nodes-table row id the daemon serves beside `logicalId` (the pod.member
+   *  address, e.g. "exec.em"). Optional: a daemon older than this field omits it. */
+  nodeId?: string;
   rigId: string;
   rigName: string;
   logicalId: string;
@@ -190,6 +193,7 @@ const ALLOWED_RIG_FIELDS = new Set([
   "latestSnapshot",
 ]);
 const ALLOWED_NODE_FIELDS = new Set([
+  "nodeId",
   "rigId",
   "rigName",
   "logicalId",
@@ -627,6 +631,10 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       rigId: n.rigId,
       rigName: n.rigName,
       logicalId: n.logicalId,
+      // The node row id (what `rig whoami --node-id`, `rig telemetry --node`/`tenures` and
+      // OPENRIG_NODE_ID take), JSON-only: the human tables do not show it.
+      // null (not absent) when the daemon predates the field.
+      nodeId: n.nodeId ?? null,
       canonicalSessionName: n.canonicalSessionName,
       // Slice 13 fix 2 — host attribution rides the compact projection too; a
       // projected roster must stay attributable or partial reads as authoritative.
@@ -816,7 +824,7 @@ contextUsage.percent, contextUsage.state. Other keys are rejected.
 --fields accepts (rig-level): rigId, name, rigName, nodeCount, runningCount,
 activeCount, hasWorkCount, attentionCount, status, lifecycleState, uptime,
 latestSnapshot.
---fields accepts (node-level, with --nodes): rigId, rigName, logicalId, podId,
+--fields accepts (node-level, with --nodes): nodeId, rigId, rigName, logicalId, podId,
 podNamespace, hostSelfId, canonicalSessionName, nodeKind, runtime, model, sessionStatus,
 startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
 resumeCommand, latestError, terminalActive, hasAssignedWork,
