@@ -277,6 +277,143 @@ describe("POST /api/rigs/:rigId/expand", () => {
     expect(stored?.restore_policy).toBe("checkpoint_only");
   });
 
+  // A seat's `effort` is a launch setting (`rig up` keeps it). Expansion dropped it at the
+  // ingress normalizer, the fragment type and the fragment->spec map, so a seat added through
+  // `rig expand` silently launched at the runtime default effort instead of the declared one.
+  it("member effort survives the expand ingress to the materialized spec (and none is invented when absent)", async () => {
+    const rig = seedRig("effort-rig");
+    const materializeSpy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: {
+          id: "eff",
+          label: "Effort",
+          members: [
+            { id: "high", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "xhigh" },
+            { id: "low", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "low" },
+            { id: "unset", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp" },
+          ],
+          edges: [],
+        },
+      }),
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(materializeSpy).toHaveBeenCalled();
+    const specObject = materializeSpy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [high, low, unset] = specObject.pods[0]!.members;
+    // two distinct values: the carry is derived from the member, not a constant
+    expect(high!["effort"]).toBe("xhigh");
+    expect(low!["effort"]).toBe("low");
+    // absent stays absent: no effort key is invented for a seat that declared none
+    expect("effort" in unset!).toBe(false);
+    materializeSpy.mockRestore();
+  });
+
+  it("member effort is persisted on the node a seat added through expand (parity with rig up)", async () => {
+    const rig = seedRig("effort-persist-rig");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: {
+          id: "effp",
+          label: "EffortPersist",
+          members: [
+            { id: "seat", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp", effort: "xhigh" },
+          ],
+          edges: [],
+        },
+      }),
+    });
+    expect(res.status).toBe(201);
+    const stored = db
+      .prepare("SELECT effort FROM nodes WHERE rig_id = ? AND logical_id = ?")
+      .get(rig.id, "effp.seat") as { effort: string | null } | undefined;
+    expect(stored?.effort).toBe("xhigh");
+  });
+
+  // `role` and `starter_ref` were declared on the fragment type and mapped by the fragment->spec
+  // builder (both with "never silently dropped" comments), but the ingress normalizer never read
+  // them, so a seat added through `rig expand` lost its workflow role and its starter.
+  it("member role and starter_ref (either spelling) survive the expand ingress to the materialized spec; none invented when absent", async () => {
+    const rig = seedRig("role-starter-rig");
+    const materializeSpy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: {
+          id: "rs",
+          label: "RoleStarter",
+          members: [
+            { id: "a", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", role: "reviewer", starter_ref: { name: "starter-alpha" } },
+            { id: "b", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp", role: "driver", starterRef: { name: "starter-beta" } },
+            { id: "unset", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp" },
+          ],
+          edges: [],
+        },
+      }),
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(materializeSpy).toHaveBeenCalled();
+    const specObject = materializeSpy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [a, b, unset] = specObject.pods[0]!.members;
+    // two distinct values per field: the carry is derived from the member, not a constant
+    expect(a!["role"]).toBe("reviewer");
+    expect(b!["role"]).toBe("driver");
+    expect(a!["starter_ref"]).toEqual({ name: "starter-alpha" });
+    expect(b!["starter_ref"]).toEqual({ name: "starter-beta" });
+    expect("role" in unset!).toBe(false);
+    expect("starter_ref" in unset!).toBe(false);
+    materializeSpy.mockRestore();
+  });
+
+  it("member role is persisted on the node a seat added through expand (nodes.role)", async () => {
+    // role is not valid on terminal members (schema), so this needs a resolvable agent seat.
+    const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+    const roleDb = createFullTestDb();
+    const roleSetup = createTestApp(roleDb, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+    try {
+      const rig = roleSetup.rigRepo.createRig("role-persist-rig");
+      const res = await roleSetup.app.request(`/api/rigs/${rig.id}/expand`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rigRoot: "/project/rigs/role-rig",
+          pod: {
+            id: "rp",
+            label: "RolePersist",
+            members: [
+              { id: "one", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: ".", role: "reviewer" },
+              { id: "two", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: ".", role: "driver" },
+              { id: "none", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." },
+            ],
+            edges: [],
+          },
+        }),
+      });
+      expect(res.status).toBeLessThan(500);
+      const role = (id: string) => (roleDb
+        .prepare("SELECT role FROM nodes WHERE rig_id = ? AND logical_id = ?")
+        .get(rig.id, id) as { role: string | null } | undefined);
+      expect(role("rp.one")?.role).toBe("reviewer");
+      expect(role("rp.two")?.role).toBe("driver");
+      expect(role("rp.none")?.role).toBeNull();
+    } finally {
+      roleDb.close();
+    }
+  });
+
   // OPR.0.5.6.3 repair (wave-1 R2 HOLD): the route normalizer recognized only
   // fork/rebuild and silently dropped the entire agent_image session source
   // BEFORE the service mapper could preserve ref.version — the landed S03
@@ -460,5 +597,87 @@ describe("POST /api/rigs/:rigId/expand", () => {
         `${podId} must persist nothing`,
       ).toMatchObject({ c: 0 });
     }
+  });
+});
+
+// Presence invariant for role / starter_ref (the R2 rule already applied to permission_policy,
+// remote_control and session_source): a present-INVALID value must reach the ONE canonical RigSpec
+// validator and be rejected exactly as `rig up` rejects it. Before this, the ingress erased invalid
+// shapes to absent, so expand returned 201 and created a seat WITHOUT its role / starter where up
+// refused the same input.
+describe("POST /api/rigs/:rigId/expand - present-invalid role / starter_ref reject exactly as rig up does", () => {
+  const RIG_ROOT = "/project/rigs/role-rig";
+  const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+  });
+
+  afterEach(() => { db.close(); });
+
+  const base = { runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." };
+  // [label, member overrides]. starter_ref rows use the spec spelling (what `rig up` accepts); the
+  // camelCase rows exercise the expand-only spelling, compared against the equivalent snake_case up input.
+  const rows: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['role ""', { role: "" }, { role: "" }],
+    ["role 7", { role: 7 }, { role: 7 }],
+    ["role null", { role: null }, { role: null }],
+    ['role "  "', { role: "  " }, { role: "  " }],
+    ['role "qa reviewer!" (charset)', { role: "qa reviewer!" }, { role: "qa reviewer!" }],
+    ["starter_ref {}", { starter_ref: {} }, { starter_ref: {} }],
+    ['starter_ref {name:""}', { starter_ref: { name: "" } }, { starter_ref: { name: "" } }],
+    ["starter_ref {name:3}", { starter_ref: { name: 3 } }, { starter_ref: { name: 3 } }],
+    ['starter_ref "st" (string)', { starter_ref: "st" }, { starter_ref: "st" }],
+    ["starter_ref null", { starter_ref: null }, { starter_ref: null }],
+    ["starter_ref [] (array)", { starter_ref: [] }, { starter_ref: [] }],
+    ["starterRef null (camelCase)", { starterRef: null }, { starter_ref: null }],
+    ['starterRef "st" (camelCase)', { starterRef: "st" }, { starter_ref: "st" }],
+  ];
+
+  it.each(rows)("%s: expand rejects with the same errors as rig up and persists nothing", async (_label, expandOverrides, upOverrides) => {
+    // rig up (the canonical path): same member through PodRigInstantiator.instantiate.
+    const upSpec = { version: "0.2", name: "parity-up", pods: [{ id: "rp", label: "RP", members: [{ id: "seat", ...base, ...upOverrides }], edges: [] }], edges: [] };
+    const up = await setup.podInstantiator.instantiate(JSON.stringify(upSpec), RIG_ROOT);
+    expect(up.ok, "rig up must reject this input (otherwise the row proves nothing)").toBe(false);
+    const upErrors = (up as { errors?: string[] }).errors ?? [];
+    expect(upErrors.length).toBeGreaterThan(0);
+
+    const rig = setup.rigRepo.createRig("parity-expand");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "rp", label: "RP", members: [{ id: "seat", ...base, ...expandOverrides }], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; code?: string; error?: string };
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("validation_failed");
+    expect(body.error).toBe(upErrors.join("; "));
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'rp.%'").get(rig.id)).toMatchObject({ c: 0 });
+  });
+
+  it("control: a valid role and starter_ref in either spelling are still accepted by expand (no validation 400)", async () => {
+    const rig = setup.rigRepo.createRig("parity-valid");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "rp", label: "RP", members: [
+        { id: "a", ...base, role: "reviewer", starter_ref: { name: "st-a" } },
+        { id: "b", ...base, role: "driver", starterRef: { name: "st-b" } },
+      ], edges: [] } }),
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(res.status).not.toBe(400);
   });
 });

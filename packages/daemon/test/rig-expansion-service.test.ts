@@ -425,4 +425,31 @@ describe("RigExpansionService", () => {
     expect(sessionSource).toEqual({ mode: "fork", ref: { kind: "native_id", value: "sess-abc" } });
     materializeSpy.mockRestore();
   });
+
+  // Fragment->spec map in isolation (no HTTP ingress): a declared effort must reach the
+  // materialized spec exactly as `rig up` carries it, and an absent one must stay absent.
+  it("carries member effort into the structured materialize spec and invents none when absent", async () => {
+    const rig = seedRig();
+    const materializeSpy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    await service.expand({
+      rigId: rig.id,
+      pod: {
+        id: "eff",
+        label: "Effort",
+        members: [
+          { id: "high", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "xhigh" },
+          { id: "low", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "low" },
+          { id: "unset", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp" },
+        ],
+        edges: [],
+      },
+    });
+    const specObject = materializeSpy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [high, low, unset] = specObject.pods[0]!.members;
+    // two distinct values: the carry is derived from the member, not a constant
+    expect(high!["effort"]).toBe("xhigh");
+    expect(low!["effort"]).toBe("low");
+    expect("effort" in unset!).toBe(false);
+    materializeSpy.mockRestore();
+  });
 });

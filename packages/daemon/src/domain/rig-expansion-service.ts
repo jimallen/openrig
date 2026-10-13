@@ -156,9 +156,11 @@ export class RigExpansionService {
             ...("remoteControl" in member && member.remoteControl !== undefined ? { remote_control: member.remoteControl } : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
+            ...(member.effort ? { effort: member.effort } : {}),
             // OPR.0.4.6.FAC1: role rides the fragment→spec map (a
             // provided role must never be silently dropped here).
-            ...(member.role ? { role: member.role } : {}),
+            // PRESENCE, not truthiness: role "" / null must reach the canonical validator.
+            ...("role" in member && member.role !== undefined ? { role: member.role } : {}),
             ...(member.restorePolicy ? { restore_policy: member.restorePolicy } : {}),
             ...(member.label ? { label: member.label } : {}),
             // OPR.0.5.6.3 repair amendment: session_source is carried FAITHFULLY —
@@ -171,9 +173,9 @@ export class RigExpansionService {
             // KEY PRESENCE, never truthiness, governs emission: null/false/
             // primitive raw values must not vanish before canonical validation.
             ...("sessionSource" in member ? { session_source: member.sessionSource } : {}),
-            ...(member.starterRef ? {
-              starter_ref: { name: member.starterRef.name },
-            } : {}),
+            // Faithful carry (presence, like session_source): a malformed starter_ref rides RAW to the
+            // canonical validator; a valid one is re-normalized by the schema to { name }.
+            ...("starterRef" in member && member.starterRef !== undefined ? { starter_ref: member.starterRef } : {}),
           })),
           edges: pod.edges.map((edge) => ({
             kind: edge.kind,

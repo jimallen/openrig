@@ -1377,6 +1377,7 @@ export interface ExpansionPodFragment {
     profile?: string;
     cwd?: string;
     model?: string;
+    effort?: string;
     codexConfigProfile?: string;
     /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF — threaded through the
      *  expansion ingress exactly like role (never silently dropped). Typed UNKNOWN
@@ -1394,17 +1395,19 @@ export interface ExpansionPodFragment {
      * OPR.0.4.6.FAC1: optional seat-side role; threaded through
      * buildExpansionSpecObject → the pod-member schema → nodes.role
      * (a provided role is never silently dropped — the sibling-layer
-     * rule).
+     * rule). Typed UNKNOWN like permissionPolicy: the ingress preserves RAW presence so the
+     * canonical validator rejects a present-invalid role as `rig up` does.
      */
-    role?: string;
+    role?: unknown;
     /** Optional session source declaration; threaded through to launch. */
     sessionSource?: SessionSourceSpec;
     /**
      * Optional reference to a named starter registry entry; threaded
      * through expansion → buildSyntheticSpec → daemon instantiation,
-     * matching the pass-through shape of `sessionSource`.
+     * matching the pass-through shape of `sessionSource`. Typed UNKNOWN: raw presence is
+     * preserved so the canonical validator rejects malformed shapes as `rig up` does.
      */
-    starterRef?: StarterRefSpec;
+    starterRef?: unknown;
   }>;
   edges: Array<{ from: string; to: string; kind: string }>;
 }
