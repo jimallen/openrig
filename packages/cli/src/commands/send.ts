@@ -824,9 +824,11 @@ async function runCrossHostSend(
     return;
   }
 
-  // Reconstruct argv for the remote `rig send` invocation. Order is positional
-  // first so the remote Commander parses it the same way local does.
-  const argv: string[] = ["rig", "send", session, text];
+  // Reconstruct argv for the remote `rig send` invocation. Options come first and the positionals
+  // follow a `--` end-of-options sentinel, so message text that starts with `-` (`---`, `- bullet`,
+  // a bare `--raw`, `--context=x`) is delivered as text on the remote instead of being parsed by the
+  // remote Commander as an option. Everything after `--` is positional, so no option may follow it.
+  const argv: string[] = ["rig", "send"];
   if (opts.verify) argv.push("--verify");
   if (opts.force) argv.push("--force");
   if (opts.waitForIdle !== undefined) argv.push("--wait-for-idle", opts.waitForIdle);
@@ -853,6 +855,7 @@ async function runCrossHostSend(
       : originSender;
   if (originTriple) argv.push("--from", originTriple);
   if (opts.json) argv.push("--json");
+  argv.push("--", session, text);
 
   // A2 (P23): ADDITIVELY set OPENRIG_SESSION_NAME=<origin triple> on the remote command line so the
   // remote's rig derives the ORIGIN identity from its env (the shipped derivation path), not its own

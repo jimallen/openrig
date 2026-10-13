@@ -163,6 +163,17 @@ describe("runCrossHostCommand", () => {
     ]);
   });
 
+  // sf6c: `--` before the positionals survives the two quoting layers as its own argv element, so the
+  // remote Commander ends option parsing there and a text like `---\nx` is a positional, not an option.
+  it("quotes the `--` end-of-options sentinel as its own remote argv element ahead of dash-leading text", async () => {
+    const capture: { command?: string; args?: readonly string[] } = {};
+    const spawn = mockSpawnFor({ exitCode: 0, stdout: "ok\n", capture });
+    await runCrossHostCommand(HOST, ["rig", "send", "--verify", "--", "dev-impl@rig", "---\nx"], { spawn });
+    expect(capture.args?.[3]).toBe(
+      "sh -lc ''\\''rig'\\'' '\\''send'\\'' '\\''--verify'\\'' '\\''--'\\'' '\\''dev-impl@rig'\\'' '\\''---\nx'\\'''",
+    );
+  });
+
   // A2 — P23: the SSH relay re-runs `rig` in a NON-login shell that resolves ITS OWN seat identity,
   // degrading the origin. Prefix OPENRIG_SESSION_NAME=<origin triple> INSIDE the sh -lc line so the
   // remote's DaemonClient stamps the ORIGIN identity (matching A4's HTTP header). Byte-exact via the

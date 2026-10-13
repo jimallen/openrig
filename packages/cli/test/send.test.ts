@@ -1126,7 +1126,49 @@ describe("Send CLI", () => {
       await captureLogs(async () => {
         await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--host", "vm-test", "--raw"]);
       });
-      expect((captured as unknown as string[])[3]).toBe(HOSTILE);
+      expect((captured as unknown as string[]).at(-1)).toBe(HOSTILE);
+    });
+
+    // sf6c: ssh relays re-run `rig send` remotely, where the text was a bare positional: a body starting
+    // with `-` was parsed as a remote OPTION (`---` -> unknown option, `--raw` -> a flag, delivering
+    // nothing). The remote argv now ends `-- <session> <text>`. Round-trip: parse the captured argv with
+    // the real send command as the REMOTE would, and assert the text is delivered as text.
+    it.each([
+      ["---\nx", "leading dashes"],
+      ["--raw", "text that is itself an option"],
+      ["- a", "markdown bullet"],
+    ])("--host over ssh delivers text %j (%s) as TEXT: argv puts `--` before the positionals and the remote parse sends it", async (text) => {
+      let captured: readonly string[] | null = null;
+      const deps: SendDeps = {
+        ...runningDeps(port),
+        hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
+        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+      };
+      const file = writeTmp("dash.md", text);
+      await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--host", "vm-test", "--verify"]);
+      });
+      const argv = captured as unknown as string[];
+      expect(argv.slice(0, 3)).toEqual(["rig", "send", "--verify"]);
+      expect(argv.slice(-3)).toEqual(["--", "dev-impl@my-rig", text]);
+      expect(argv.indexOf("--")).toBe(argv.length - 3);
+      // remote side: parse exactly what ssh would run
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", ...argv]);
+      });
+      expect(logs.join("\n")).not.toContain("unknown option");
+      expect(exitCode).toBeUndefined();
+      expect(String(lastSendBody?.text)).toContain(`\n---\n${text}\n---\n`);
+    });
+
+    it("a whitespace-only file with --context is refused before the context is fetched (the early check is the only guard here)", async () => {
+      const file = writeTmp("ws.md", " \n\t\n");
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--context", "packs/x"]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("is empty or whitespace-only; nothing was sent");
+      expect(lastSendBody).toBeNull();
     });
 
     it("--help teaches --file - with a quoted heredoc", () => {

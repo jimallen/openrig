@@ -86,7 +86,7 @@ describe("send --host (cross-host short-circuit)", () => {
     // P18: with a resolved origin seat (stubbed above) the reconstruction deterministically appends
     // `--from <derived origin>` from the seat env (never a caller override) — the P23-D1 skew-compat shim
     // for pre-I4 remotes, not a boundary guard. An env-less origin would omit `--from`.
-    expect(captureCalls.argv).toEqual(["rig", "send", "dev-impl@my-rig", "hello world", "--verify", "--from", "origin@rig-a"]);
+    expect(captureCalls.argv).toEqual(["rig", "send", "--verify", "--from", "origin@rig-a", "--", "dev-impl@my-rig", "hello world"]);
     expect(captured.stdoutLines[0]).toBe("[via host=vm-a (vm-a.local)]");
     const stdoutText = captured.stdoutWrites.join("");
     expect(stdoutText).toContain("Verified: yes");
