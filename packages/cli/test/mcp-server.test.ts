@@ -115,6 +115,42 @@ describe("MCP Server", () => {
     await cleanup();
   });
 
+  // `rig add --culture` parity: a seat added to a running rig gets the rig's own culture file.
+  it("rig_add forwards an absolute cultureFile as the request body's cultureFile", async () => {
+    const postFn = vi.fn(async () => ({
+      status: 201,
+      data: { ok: true, result: { podId: "pod-1", podNamespace: "infra", node: { logicalId: "infra.server2", nodeId: "n2", status: "launched" } } },
+    }));
+    await setup({ post: postFn });
+
+    const member = { id: "server2", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp" };
+    const result = await mcpClient.callTool({
+      name: "rig_add",
+      arguments: { rigId: "rig-1", podNamespace: "infra", member, cultureFile: "/srv/my-rig/CULTURE.md" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(postFn).toHaveBeenCalledWith("/api/rigs/rig-1/pods/infra/members", { member, cultureFile: "/srv/my-rig/CULTURE.md" });
+    await cleanup();
+  });
+
+  it("rig_add refuses a relative cultureFile before any request, since an MCP caller has no cwd the daemon shares", async () => {
+    const postFn = vi.fn(async () => ({ status: 201, data: { ok: true } }));
+    await setup({ post: postFn });
+
+    for (const cultureFile of ["CULTURE.md", "./my-rig/CULTURE.md", ""]) {
+      const result = await mcpClient.callTool({
+        name: "rig_add",
+        arguments: { rigId: "rig-1", podNamespace: "infra", member: { id: "server2" }, cultureFile },
+      });
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0].text).toContain("cultureFile must be an absolute path");
+    }
+    expect(postFn).not.toHaveBeenCalled();
+    await cleanup();
+  });
+
   it("rig_add surfaces a member_conflict (HTTP 409) as isError", async () => {
     const postFn = vi.fn(async () => ({
       status: 409,

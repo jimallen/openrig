@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type { DaemonClient, DaemonResponse } from "./client.js";
 import { CLI_VERSION } from "./version.js";
@@ -436,12 +437,17 @@ export function createMcpServer(client: DaemonClient): McpServer {
       member: z.record(z.string(), z.unknown()).describe("Member fragment with spec snake_case fields: id, runtime, agent_ref, profile, cwd (and optional model, codex_config_profile, restore_policy, label)"),
       edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.string() })).optional().describe("Optional pod-local edges (from/to are member ids within the pod; resolved against the new member + existing pod-mates)"),
       rigRoot: z.string().optional().describe("Root directory for agent resolution"),
+      cultureFile: z.string().optional().describe("Absolute path to the rig's own culture file (CULTURE.md); the rig does not remember it, so name it to give the added seat the rig's culture. Same as `rig add --culture`, but must be absolute: an MCP caller shares no working directory with the daemon"),
     },
-    async ({ rigId, podNamespace, member, edges, rigRoot }) => {
+    async ({ rigId, podNamespace, member, edges, rigRoot, cultureFile }) => {
       try {
+        if (cultureFile !== undefined && !isAbsolute(cultureFile)) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, code: "validation_failed", error: `cultureFile must be an absolute path (got ${JSON.stringify(cultureFile)}). Nothing was added.` }) }], isError: true as const };
+        }
         const body: Record<string, unknown> = { member };
         if (edges) body["edges"] = edges;
         if (rigRoot) body["rigRoot"] = rigRoot;
+        if (cultureFile !== undefined) body["cultureFile"] = cultureFile;
         const res = await client.post(
           `/api/rigs/${encodeURIComponent(rigId)}/pods/${encodeURIComponent(podNamespace)}/members`,
           body,
