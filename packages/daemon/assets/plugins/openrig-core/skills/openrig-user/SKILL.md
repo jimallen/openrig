@@ -718,7 +718,7 @@ rig ps --nodes --json       # compact JSON node inventory (add --full for the fu
 ```
 
 **v0.4.0 flipped these to compact-by-default — see the `rig ps` compact-defaults section above; STOP using bare `rig ps --nodes --json` as a fleet-wide firehose (scope and detail are separate choices).** The compact `rig ps --nodes` node inventory (add `--full` only when you need the complete record, `-A` for cross-rig breadth) carries, per node:
-- session name, plus the seat address `logicalId` (e.g. `exec.em`) and its stable row id `nodeId` (`null` from a daemon that predates it) — so a session maps to its graph node without a second command
+- session name; in `--json` and `--fields` only (not the human table), also the seat address `logicalId` (e.g. `exec.em`) and the node row id `nodeId` — the id that `rig whoami --node-id`, `rig telemetry --node` / `tenures` and `OPENRIG_NODE_ID` use (`null` from a daemon that predates it)
 - runtime
 - session/startup status
 - restore outcome (compact: `resumeTokenPresent` boolean; the token VALUE is in `--full`)

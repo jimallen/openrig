@@ -381,7 +381,7 @@ describe("rig ps --all-hosts fan-out", () => {
     const client = mockClient({
       "/api/ps": { status: 200, data: [{ rigId: "rig-1", name: "remote-rig", rigName: "remote-rig" }] },
       "/api/rigs/rig-1/nodes": { status: 200, data: [
-        { rigId: "rig-1", rigName: "remote-rig", logicalId: "dev.impl", sessionStatus: "running", resumeToken: "SECRET" },
+        { nodeId: "01NODEIDX", rigId: "rig-1", rigName: "remote-rig", logicalId: "dev.impl", sessionStatus: "running", resumeToken: "SECRET" },
       ] },
     });
     const deps: PsDeps = {
@@ -399,6 +399,8 @@ describe("rig ps --all-hosts fan-out", () => {
     expect(parsed.items).toHaveLength(1);
     expect(parsed.items[0].hostId).toBe("host-b");
     expect(parsed.items[0].logicalId).toBe("dev.impl");
+    // the fan-out map rebuilds rows from the projection; nodeId must survive it
+    expect(parsed.items[0].nodeId).toBe("01NODEIDX");
     // projected rows: resumeTokenPresent boolean, never the token value
     expect(parsed.items[0].resumeTokenPresent).toBe(true);
     expect(JSON.stringify(parsed)).not.toContain("SECRET");

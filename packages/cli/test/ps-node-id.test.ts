@@ -1,4 +1,4 @@
-// rig ps --nodes must let an operator map a session name to its graph node.
+// rig ps --nodes --json must show each seat's node row id (the id whoami --node-id and telemetry --node take).
 //
 // The daemon's node inventory serves BOTH `logicalId` (the pod.member address,
 // e.g. "exec.em") and `nodeId` (the nodes-table row id). The compact --json
@@ -143,7 +143,8 @@ describe("rig ps --nodes — nodeId", () => {
       "hasAssignedWork", "assignedWorkCount", "pendingWorkCount", "resumeType", "resumeTokenPresent",
       "lastActivity",
     ]);
-    expect(Object.keys(row)).toContain("nodeId");
+    // placement: nodeId sits directly after logicalId, in the identity block
+    expect(Object.keys(row).slice(0, 4)).toEqual(["rigId", "rigName", "logicalId", "nodeId"]);
   });
 
   it("an older daemon that serves no nodeId yields null, not a fabricated id", async () => {

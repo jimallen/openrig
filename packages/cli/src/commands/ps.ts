@@ -631,8 +631,9 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       rigId: n.rigId,
       rigName: n.rigName,
       logicalId: n.logicalId,
-      // The stable row id, so a session name maps to its graph node without a second
-      // command. null (not absent) when the daemon predates the field.
+      // The node row id (what `rig whoami --node-id`, `rig telemetry --node`/`tenures` and
+      // OPENRIG_NODE_ID take), JSON-only: the human tables do not show it.
+      // null (not absent) when the daemon predates the field.
       nodeId: n.nodeId ?? null,
       canonicalSessionName: n.canonicalSessionName,
       // Slice 13 fix 2 — host attribution rides the compact projection too; a
