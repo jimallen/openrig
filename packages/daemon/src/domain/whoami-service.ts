@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { TranscriptStore } from "./transcript-store.js";
+import { findSessionNameMatches } from "./session-name-matches.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
 
 export interface WhoamiResult {
@@ -165,31 +166,14 @@ export class WhoamiService {
       resolvedBy = "node_id";
       currentSessionName = this.getCurrentSessionName(nodeRow.id, nodeRow.rig_id);
     } else if (query.sessionName) {
-      // Find sessions matching this name — check for ambiguity across rigs.
-      // An archived rig keeps its session rows, so a restarted rig (same seat names) would
-      // otherwise collide with its own archived predecessor. Live rigs win; archived rigs only
-      // answer when no live rig has the name.
-      const allRows = this.db
-        .prepare(`
-          SELECT s.*, r.archived_at AS rig_archived_at
-          FROM sessions s
-          JOIN nodes n ON n.id = s.node_id
-          JOIN rigs r ON r.id = n.rig_id
-          WHERE s.session_name = ?
-          ORDER BY s.id DESC
-        `)
-        .all(query.sessionName) as Array<SessionRow & { rig_archived_at: string | null }>;
+      // Find sessions matching this name — check for ambiguity across rigs. Live rigs answer
+      // before archived ones (findSessionNameMatches).
+      const sessionRows = findSessionNameMatches(this.db, query.sessionName);
 
-      if (allRows.length === 0) return null;
-      const liveRows = allRows.filter((row) => row.rig_archived_at === null);
-      const sessionRows = liveRows.length > 0 ? liveRows : allRows;
+      if (sessionRows.length === 0) return null;
 
       // Check distinct rigs
-      const rigIds = new Set<string>();
-      for (const sess of sessionRows) {
-        const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(sess.node_id) as { rig_id: string } | undefined;
-        if (node) rigIds.add(node.rig_id);
-      }
+      const rigIds = new Set<string>(sessionRows.map((sess) => sess.rig_id));
 
       if (rigIds.size > 1) {
         throw new WhoamiAmbiguousError(
