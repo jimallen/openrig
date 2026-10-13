@@ -599,3 +599,85 @@ describe("POST /api/rigs/:rigId/expand", () => {
     }
   });
 });
+
+// Presence invariant for role / starter_ref (the R2 rule already applied to permission_policy,
+// remote_control and session_source): a present-INVALID value must reach the ONE canonical RigSpec
+// validator and be rejected exactly as `rig up` rejects it. Before this, the ingress erased invalid
+// shapes to absent, so expand returned 201 and created a seat WITHOUT its role / starter where up
+// refused the same input.
+describe("POST /api/rigs/:rigId/expand - present-invalid role / starter_ref reject exactly as rig up does", () => {
+  const RIG_ROOT = "/project/rigs/role-rig";
+  const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+  });
+
+  afterEach(() => { db.close(); });
+
+  const base = { runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." };
+  // [label, member overrides]. starter_ref rows use the spec spelling (what `rig up` accepts); the
+  // camelCase rows exercise the expand-only spelling, compared against the equivalent snake_case up input.
+  const rows: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['role ""', { role: "" }, { role: "" }],
+    ["role 7", { role: 7 }, { role: 7 }],
+    ["role null", { role: null }, { role: null }],
+    ['role "  "', { role: "  " }, { role: "  " }],
+    ['role "qa reviewer!" (charset)', { role: "qa reviewer!" }, { role: "qa reviewer!" }],
+    ["starter_ref {}", { starter_ref: {} }, { starter_ref: {} }],
+    ['starter_ref {name:""}', { starter_ref: { name: "" } }, { starter_ref: { name: "" } }],
+    ["starter_ref {name:3}", { starter_ref: { name: 3 } }, { starter_ref: { name: 3 } }],
+    ['starter_ref "st" (string)', { starter_ref: "st" }, { starter_ref: "st" }],
+    ["starter_ref null", { starter_ref: null }, { starter_ref: null }],
+    ["starter_ref [] (array)", { starter_ref: [] }, { starter_ref: [] }],
+    ["starterRef null (camelCase)", { starterRef: null }, { starter_ref: null }],
+    ['starterRef "st" (camelCase)', { starterRef: "st" }, { starter_ref: "st" }],
+  ];
+
+  it.each(rows)("%s: expand rejects with the same errors as rig up and persists nothing", async (_label, expandOverrides, upOverrides) => {
+    // rig up (the canonical path): same member through PodRigInstantiator.instantiate.
+    const upSpec = { version: "0.2", name: "parity-up", pods: [{ id: "rp", label: "RP", members: [{ id: "seat", ...base, ...upOverrides }], edges: [] }], edges: [] };
+    const up = await setup.podInstantiator.instantiate(JSON.stringify(upSpec), RIG_ROOT);
+    expect(up.ok, "rig up must reject this input (otherwise the row proves nothing)").toBe(false);
+    const upErrors = (up as { errors?: string[] }).errors ?? [];
+    expect(upErrors.length).toBeGreaterThan(0);
+
+    const rig = setup.rigRepo.createRig("parity-expand");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "rp", label: "RP", members: [{ id: "seat", ...base, ...expandOverrides }], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; code?: string; error?: string };
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("validation_failed");
+    expect(body.error).toBe(upErrors.join("; "));
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'rp.%'").get(rig.id)).toMatchObject({ c: 0 });
+  });
+
+  it("control: a valid role and starter_ref in either spelling are still accepted by expand (no validation 400)", async () => {
+    const rig = setup.rigRepo.createRig("parity-valid");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "rp", label: "RP", members: [
+        { id: "a", ...base, role: "reviewer", starter_ref: { name: "st-a" } },
+        { id: "b", ...base, role: "driver", starterRef: { name: "st-b" } },
+      ], edges: [] } }),
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(res.status).not.toBe(400);
+  });
+});
