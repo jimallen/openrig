@@ -509,4 +509,45 @@ describe("transcript routes: archived rigs do not compete with a live rig for a 
 
     expect(res.status).toBe(409);
   });
+
+  // A session row whose node or rig row is gone belongs to no rig, so it neither answers for the
+  // name nor counts toward ambiguity. Its id sorts newest so ordering cannot hide it.
+  it.each(["node", "rig"] as const)("ignores a session whose %s row is gone beside an archived rig", async (gone) => {
+    seatIn("eztrack-old", true, "archived words\n");
+    const ghostRig = rigRepo.createRig("ghost");
+    const ghostNode = rigRepo.addNode(ghostRig.id, "exec-ghost", { role: "orchestrator", runtime: "claude-code" });
+    db.pragma("foreign_keys = OFF");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)").run("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", ghostNode.id, NAME);
+    if (gone === "node") db.prepare("DELETE FROM nodes WHERE id = ?").run(ghostNode.id);
+    else db.prepare("DELETE FROM rigs WHERE id = ?").run(ghostRig.id);
+    db.pragma("foreign_keys = ON");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).content).toBe("archived words\n");
+  });
+
+  // Within one rig two nodes can carry the name (a replaced seat): the newest session row decides,
+  // observed as the runtime of the node the route resolved. Ids are written explicitly: ulid() is
+  // not ordered within a millisecond.
+  it.each([
+    ["the later-created node holds the newest session row", true],
+    ["the earlier-created node holds the newest session row", false],
+  ] as const)("resolves the node of the newest session row when %s", async (_label, laterIsNewest) => {
+    const rig = rigRepo.createRig("eztrack");
+    const first = rigRepo.addNode(rig.id, "exec-cos-a", { role: "orchestrator", runtime: "claude-code" });
+    const second = rigRepo.addNode(rig.id, "exec-cos-b", { role: "orchestrator", runtime: "codex" });
+    const [older, newer] = laterIsNewest ? [first, second] : [second, first];
+    const insert = db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, 'running')");
+    insert.run("00000000000000000000000001", older.id, NAME);
+    insert.run("00000000000000000000000002", newer.id, NAME);
+    store.ensureTranscriptDir("eztrack");
+    writeFileSync(store.getTranscriptPath("eztrack", NAME), "words\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).ingestHealth.runtime).toBe(newer.id === first.id ? "claude-code" : "codex");
+  });
 });

@@ -1763,6 +1763,23 @@ describe("SessionTransport", () => {
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.code).toBe("ambiguous");
     });
+
+    // A session row whose node or rig row is gone belongs to no rig, so it neither answers for
+    // the name nor counts toward ambiguity. Its id sorts newest so ordering cannot hide it.
+    it.each(["node", "rig"] as const)("ignores a session whose %s row is gone beside an archived rig", async (gone) => {
+      seatIn("eztrack-old", true);
+      const ghostRig = rigRepo.createRig("ghost");
+      const ghostNode = rigRepo.addNode(ghostRig.id, "exec.ghost", { role: "orchestrator", runtime: "claude-code" });
+      db.pragma("foreign_keys = OFF");
+      db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)").run("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", ghostNode.id, NAME);
+      if (gone === "node") db.prepare("DELETE FROM nodes WHERE id = ?").run(ghostNode.id);
+      else db.prepare("DELETE FROM rigs WHERE id = ?").run(ghostRig.id);
+      db.pragma("foreign_keys = ON");
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack-old", nodeLogicalId: "exec.cos" }] });
+    });
   });
 
   // Test 11: resolveSessions by rig returns running sessions
