@@ -48,6 +48,21 @@ Example:
 rig send dev-reviewer@example-project "The import report is ready; the durable handoff names its evidence." --verify
 ```
 
+**Any text with shell metacharacters goes through `--file -` and a QUOTED heredoc.** A
+double-quoted positional is expanded by your shell before `rig` sees it: `$(...)` and
+backticks inside it EXECUTE (this has leaked credentials into a note and re-run a
+terminate command), and a body starting with `---` is parsed as an option. Multi-line
+reports and anything you did not write yourself belong here:
+
+```bash
+rig send dev-reviewer@example-project --file - <<'EOF'
+Report: `make test` passed; $(not run) and --- stay literal.
+EOF
+```
+
+The quoted `<<'EOF'` stops the shell from expanding the body; `--file -` reads it from
+stdin, byte for byte. `--file ./report.md` reads a file instead.
+
 ### `rig queue create --destination <Y> --tags <...> --body-file <path>` — durable work item
 
 Use for any substantive work that must not fall through chat — slice handoffs,
@@ -783,6 +798,10 @@ rig send <session> "message" --raw
 rig send <session> "message" --dangerously-interact --reason "<why>"
 rig send <session> "message" --host <id>
 rig send <session> "message" --json
+rig send <session> --file - <<'EOF'   # safe for $(...), backticks, leading ---, multi-line
+...text...
+EOF
+rig send <session> --file ./report.md
 ```
 
 **The send-guard (v0.4.0) — the default is SAFE.** A default `rig send` is guarded: it will NOT submit into an interactive prompt / permission block on the target pane. Flags:
@@ -793,6 +812,7 @@ rig send <session> "message" --json
 - `--dangerously-interact --reason "<why>"` — the ONLY override of the prompt/permission guard: deliberately drive an interactive prompt/permission block (implies `--raw`, requires `--reason`, audit-logged).
 - `--host <id>` — send on a remote host declared in `~/.openrig/hosts.yaml` (ssh hosts shell out; http hosts go CLI-direct to the remote daemon).
 - `--from <session>` — deprecated and ignored; it does not select the sender. Sender identity comes from the current seat and transport provenance; cross-host envelopes use the durable local origin, not the supplied flag or a relay identity.
+- `--file <path>` — read the message text from a file (UTF-8; `-` reads stdin) instead of a positional, so the shell never interprets it. Use it with a quoted heredoc (`<<'EOF'`) for any text with `$(...)`, backticks, or a leading `---`. Giving both a positional and `--file` is an error; an empty or missing file sends nothing. Works with `--to`/`--pod`/`--rig`, `--raw`, `--host`. The file is sent byte for byte, including its trailing newline (a heredoc ends in one, so the envelope shows a blank line before its closing `---`).
 - `--context <ref>` **(0.5.0)** — attach a composed context pack/piece by ref (see "Context packs and paced delivery"). Small piece → `send --context`; a real pack → `rig walk`. The noun `rig context` composes the ref; the verb delivers it.
 
 > **Durable work goes to the QUEUE, not `send`.** `rig send` is an *ephemeral* message to a pane — it can be missed, and its delivery status is pane-render, not receipt. If you are **assigning work, or the message is important enough that losing it would be a real bummer**, use `rig queue` (below): it's durable, owned, tracked, and survives compaction and restart. Reach for `send` for a quick conversational nudge; reach for the **queue** for anything that must not get lost. Do not default to `send` for work — that's the most common mistake.

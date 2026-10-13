@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { resolveEffectiveHost } from "../host-selection.js";
 import { DaemonClient, DaemonConnectionError, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
@@ -202,7 +203,28 @@ function collectSessions(value: string, previous: string[]): string[] {
   return previous.concat(parts);
 }
 
+/**
+ * Read the message text for `--file <path>` (`-` = stdin). UTF-8, decoded strictly (invalid bytes
+ * are an error, never silently replaced) with the BOM kept, so the text is the file's bytes exactly:
+ * a trailing newline is preserved, as it is for a positional that carries one. Nothing is
+ * interpreted — the bytes never pass through a shell.
+ */
+async function readMessageSource(source: string, deps: SendDeps): Promise<string> {
+  const decode = (buf: Uint8Array): string => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buf);
+  if (source === "-") {
+    if (deps.readStdin) return deps.readStdin();
+    if (process.stdin.isTTY) throw new Error("stdin is a terminal. Pipe the text in or use a heredoc: rig send <session> --file - <<'EOF'");
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    return decode(Buffer.concat(chunks));
+  }
+  return deps.readTextFile ? deps.readTextFile(source) : decode(readFileSync(source));
+}
+
 export interface SendDeps extends StatusDeps {
+  /** Test seams for `--file`: default to the real filesystem / process stdin. */
+  readTextFile?: (path: string) => string;
+  readStdin?: () => Promise<string>;
   /**
    * Cross-host hooks. Both default to the production loaders/executors; tests
    * inject in-package mocks so no real ssh / no real ~/.ssh / no real network
@@ -241,9 +263,14 @@ export function sendCommand(depsOverride?: SendDeps): Command {
     .option("--host <id>", "Send on a remote host declared in ~/.openrig/hosts.yaml (ssh hosts shell out; http hosts go CLI-direct to the remote daemon)")
     .option("--from <session>", "DEPRECATED + IGNORED (P21 I4). The rendered From:/actor now DERIVES from the transport identity ($OPENRIG_SESSION_NAME, stamped as X-OpenRig-Session) — never a caller-supplied string, which was specimen-5's forgeable surface. Cross-host origin is carried by the relay re-stamping from its authenticated context.")
     .option("--context <ref>", "Deliver a context pack by its path-like ref (e.g. packs/compaction-restore). The resolved content is sent; an oversized ref is flagged as 'walk-sized'.")
+    .option("--file <path>", "Read the message text from a file (UTF-8; '-' reads stdin) instead of a positional argument. Bytes are sent exactly, never shell-interpreted: use it with a quoted heredoc for any text containing $(...), backticks, or a leading '---'.")
     .option("--json", "JSON output for agents")
     .addHelpText("after", `
 Examples:
+  rig send dev-impl@my-rig --file - <<'EOF'
+  Report with \`backticks\`, $(subshells), and ---dashes pass through literally.
+  EOF
+  rig send dev-impl@my-rig --file ./report.md
   rig send dev-impl@my-rig "Context update: QA approved. Proceed."
   rig send dev-impl@my-rig "message" --verify
   rig send --to dev-impl@my-rig,dev-qa@my-rig "message to two seats"
@@ -254,6 +281,16 @@ Examples:
   rig send dev-impl@my-rig "message" --json
   rig send --host remote-dev dev-impl@my-rig "remote message" --verify
   rig send dev-impl@my-rig@vps-b "host-qualified target sugar (suffix must be a registered host id)"
+
+SAFE TEXT: a double-quoted positional is expanded by the SHELL before rig sees it, so
+$(...) and backticks inside it EXECUTE (and a body starting with "---" is parsed as an
+option). For any text with shell metacharacters, multi-line reports, or content you did
+not write yourself, pass it with --file - and a QUOTED heredoc (<<'EOF'), or --file <path>.
+--file replaces the positional text (giving both is an error), works with every mode
+(single seat, --to, --pod, --rig, --raw, --dangerously-interact, --host), and an empty or
+unreadable file sends nothing. The file's bytes are sent exactly: a trailing newline is
+kept, as it is for a positional that carries one (a heredoc ends in one, so the envelope
+shows a blank line before its closing ---).
 
 Targeting: a bare seat (single send), OR one of --to / --pod / --rig (fan-out).
 Fan-out reports per-recipient results + an "N/M delivered" summary; one recipient's
@@ -291,7 +328,7 @@ result and verify verdict are the REMOTE's, verbatim. A target of the form
 agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
 (explicit --host > target sugar > persisted selection; a conflict between
 --host and the sugar is an error).`)
-    .action(async (session: string | undefined, text: string | undefined, opts: { to?: string[]; pod?: string; rig?: string; verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; host?: string; from?: string; context?: string; json?: boolean }) => {
+    .action(async (session: string | undefined, text: string | undefined, opts: { to?: string[]; pod?: string; rig?: string; verify?: boolean; force?: boolean; waitForIdle?: string; raw?: boolean; dangerouslyInteract?: boolean; reason?: string; host?: string; from?: string; context?: string; file?: string; json?: boolean }) => {
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no
       // selection = today exactly. OPR.0.4.6.MH4 §4: the raw flag is kept
@@ -344,6 +381,40 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
 
       const deps = getDeps();
 
+      // --file: the message text comes from a file/stdin instead of a positional, so the shell never
+      // interprets it. Resolved BEFORE any transport call: every error here sends nothing. In fan-out the
+      // first positional is the message; single-seat it is the second.
+      let fileText: string | undefined;
+      if (opts.file !== undefined) {
+        const positionalText = isFanOut ? (session ?? text) : text;
+        if (positionalText !== undefined) {
+          console.error("Give the message text EITHER as a positional argument OR with --file, not both.");
+          process.exitCode = 1;
+          return;
+        }
+        if (opts.file.length === 0) {
+          console.error("--file requires a path (or '-' for stdin).");
+          process.exitCode = 1;
+          return;
+        }
+        // Single-seat without a session falls through to the usage error below; do not consume stdin first.
+        if (isFanOut || session !== undefined) {
+          try {
+            fileText = await readMessageSource(opts.file, deps);
+          } catch (err) {
+            console.error(`Cannot read message from ${opts.file === "-" ? "stdin" : `--file ${opts.file}`}: ${(err as Error).message}`);
+            process.exitCode = 1;
+            return;
+          }
+          if (fileText.trim().length === 0) {
+            console.error(`--file ${opts.file === "-" ? "- (stdin)" : opts.file} is empty or whitespace-only; nothing was sent.`);
+            process.exitCode = 1;
+            return;
+          }
+        }
+      }
+      if (fileText !== undefined && !isFanOut) text = fileText;
+
       // P18 DELIVER-AND-LABEL — the seat boundary no longer refuses. Resolve the sender from the seat env
       // (OPENRIG_SESSION_NAME/RIGGED_SESSION_NAME; --from is deprecated + ignored); when it is unresolvable
       // the dispatch STILL proceeds carrying the honest `<unknown sender>` marker and a NULL actorSession —
@@ -360,7 +431,7 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
           process.exitCode = 1;
           return;
         }
-        const message = session;
+        const message = fileText ?? session;
         if (message === undefined) {
           console.error("Provide a message to send.");
           process.exitCode = 1;
@@ -753,9 +824,11 @@ async function runCrossHostSend(
     return;
   }
 
-  // Reconstruct argv for the remote `rig send` invocation. Order is positional
-  // first so the remote Commander parses it the same way local does.
-  const argv: string[] = ["rig", "send", session, text];
+  // Reconstruct argv for the remote `rig send` invocation. Options come first and the positionals
+  // follow a `--` end-of-options sentinel, so message text that starts with `-` (`---`, `- bullet`,
+  // a bare `--raw`, `--context=x`) is delivered as text on the remote instead of being parsed by the
+  // remote Commander as an option. Everything after `--` is positional, so no option may follow it.
+  const argv: string[] = ["rig", "send"];
   if (opts.verify) argv.push("--verify");
   if (opts.force) argv.push("--force");
   if (opts.waitForIdle !== undefined) argv.push("--wait-for-idle", opts.waitForIdle);
@@ -782,6 +855,7 @@ async function runCrossHostSend(
       : originSender;
   if (originTriple) argv.push("--from", originTriple);
   if (opts.json) argv.push("--json");
+  argv.push("--", session, text);
 
   // A2 (P23): ADDITIVELY set OPENRIG_SESSION_NAME=<origin triple> on the remote command line so the
   // remote's rig derives the ORIGIN identity from its env (the shipped derivation path), not its own

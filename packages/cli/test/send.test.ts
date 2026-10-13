@@ -939,6 +939,250 @@ describe("Send CLI", () => {
   });
 
   // -------------------------------------------------------------------------
+  // --file: message text from a file/stdin so the SHELL never interprets it. Live incidents: a
+  // double-quoted `$(env)` wrote credential values into a note; a quoted `devicectl terminate`
+  // re-ran. These tests pin that the text reaches the daemon payload byte for byte.
+  // -------------------------------------------------------------------------
+  describe("--file / stdin message text", () => {
+    const HOSTILE = "report\n$(echo PWNED)\n`echo PWNED`\n---\nnot an option\n";
+    let tmpDir: string;
+    beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rig-send-file-")); });
+    afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+    function writeTmp(name: string, content: string | Buffer): string {
+      const p = path.join(tmpDir, name);
+      fs.writeFileSync(p, content);
+      return p;
+    }
+
+    it("MEASURE: a positional trailing newline is sent verbatim (the CLI never strips) — --file matches by preserving", async () => {
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "body\n", "--raw"]);
+      });
+      expect(lastSendBody?.text).toBe("body\n");
+    });
+
+    it("reads a real file (no seam): hostile text passes byte for byte, trailing newline kept, no shell involved", async () => {
+      const file = writeTmp("report.md", HOSTILE);
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--raw"]);
+      });
+      expect(lastSendBody?.text).toBe(HOSTILE);
+    });
+
+    it("the default envelope wraps the file text unmodified; a leading --- body is not an option and renders literally", async () => {
+      const file = writeTmp("dashes.md", "---\nbody starts with dashes");
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file]);
+      });
+      expect(String(lastSendBody?.text)).toContain("\n---\n---\nbody starts with dashes\n---\n↩ Reply");
+    });
+
+    it("--file - reads stdin: hostile text passes literally, trailing newline kept", async () => {
+      const deps: SendDeps = { ...runningDeps(port), readStdin: async () => HOSTILE };
+      await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", "-", "--raw"]);
+      });
+      expect(lastSendBody?.text).toBe(HOSTILE);
+    });
+
+    it("preserves non-ASCII UTF-8 and CRLF exactly", async () => {
+      const text = "naïve — ✓ 日本語\r\nsecond line\r\n";
+      const file = writeTmp("u.txt", Buffer.from(text, "utf8"));
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--raw"]);
+      });
+      expect(lastSendBody?.text).toBe(text);
+    });
+
+    it("preserves a leading UTF-8 BOM (bytes in, bytes out)", async () => {
+      const text = "\uFEFFhello";
+      const file = writeTmp("bom.txt", Buffer.from(text, "utf8"));
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--raw"]);
+      });
+      expect(lastSendBody?.text).toBe(text);
+    });
+
+    it("rejects a file that is not valid UTF-8 and sends nothing", async () => {
+      const file = writeTmp("bad.bin", Buffer.from([0x68, 0x69, 0xff, 0xfe]));
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("Cannot read message");
+      expect(lastSendBody).toBeNull();
+    });
+
+    it("positional text AND --file is an error naming both, nothing sent (single seat)", async () => {
+      const file = writeTmp("a.md", "from file");
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "positional", "--file", file]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("EITHER as a positional argument OR with --file");
+      expect(lastSendBody).toBeNull();
+    });
+
+    it("positional message AND --file is an error on fan-out too, nothing broadcast", async () => {
+      const file = writeTmp("a.md", "from file");
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "--to", "a,b", "positional", "--file", file]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("EITHER as a positional argument OR with --file");
+      expect(lastBroadcastBody).toBeNull();
+    });
+
+    it("an empty file is an error and nothing is sent", async () => {
+      const file = writeTmp("empty.md", "");
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("is empty or whitespace-only; nothing was sent");
+      expect(lastSendBody).toBeNull();
+    });
+
+    it("a whitespace-only file and empty stdin are errors and nothing is sent", async () => {
+      const file = writeTmp("ws.md", " \n\t\n");
+      const first = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file]);
+      });
+      expect(first.exitCode).toBe(1);
+      const deps: SendDeps = { ...runningDeps(port), readStdin: async () => "" };
+      const second = await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", "-"]);
+      });
+      expect(second.exitCode).toBe(1);
+      expect(second.logs.join("\n")).toContain("(stdin)");
+      expect(lastSendBody).toBeNull();
+    });
+
+    it("a missing file is an error naming the path and nothing is sent", async () => {
+      const missing = path.join(tmpDir, "nope.md");
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", missing]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain(`Cannot read message from --file ${missing}`);
+      expect(lastSendBody).toBeNull();
+    });
+
+    it("an empty fan-out file broadcasts nothing", async () => {
+      const file = writeTmp("empty.md", "");
+      const { exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "--to", "a,b", "--file", file]);
+      });
+      expect(exitCode).toBe(1);
+      expect(lastBroadcastBody).toBeNull();
+    });
+
+    it("--to a,b with --file broadcasts the exact file text to both recipients", async () => {
+      const file = writeTmp("fan.md", HOSTILE);
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "--to", "a@my-rig,b@my-rig", "--file", file, "--raw"]);
+      });
+      expect(lastBroadcastBody?.text).toBe(HOSTILE);
+      expect(lastBroadcastBody?.sessions).toEqual(["a@my-rig", "b@my-rig"]);
+    });
+
+    it("--pod and --rig with --file (stdin) broadcast the exact file text", async () => {
+      const deps: SendDeps = { ...runningDeps(port), readStdin: async () => HOSTILE };
+      await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "--pod", "dev", "--file", "-", "--raw"]);
+      });
+      expect(lastBroadcastBody?.text).toBe(HOSTILE);
+      expect(lastBroadcastBody?.pod).toBe("dev");
+      lastBroadcastBody = null;
+      await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "--rig", "my-rig", "--file", "-", "--raw"]);
+      });
+      expect(lastBroadcastBody?.text).toBe(HOSTILE);
+      expect(lastBroadcastBody?.rig).toBe("my-rig");
+    });
+
+    it("--dangerously-interact takes its keystrokes from --file as well (same text path, still requires --reason)", async () => {
+      const file = writeTmp("keys.txt", "1");
+      await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--dangerously-interact", "--reason", "unblock"]);
+      });
+      expect(lastSendBody?.text).toBe("1");
+      expect(lastSendBody?.dangerouslyInteract).toBe(true);
+      const { exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--dangerously-interact"]);
+      });
+      expect(exitCode).toBe(1);
+    });
+
+    it("--host forwards the file text as the remote text argument (ssh argv)", async () => {
+      let captured: readonly string[] | null = null;
+      const deps: SendDeps = {
+        ...runningDeps(port),
+        hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
+        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+      };
+      const file = writeTmp("remote.md", HOSTILE);
+      await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--host", "vm-test", "--raw"]);
+      });
+      expect((captured as unknown as string[]).at(-1)).toBe(HOSTILE);
+    });
+
+    // sf6c: ssh relays re-run `rig send` remotely, where the text was a bare positional: a body starting
+    // with `-` was parsed as a remote OPTION (`---` -> unknown option, `--raw` -> a flag, delivering
+    // nothing). The remote argv now ends `-- <session> <text>`. Round-trip: parse the captured argv with
+    // the real send command as the REMOTE would, and assert the text is delivered as text.
+    it.each([
+      ["---\nx", "leading dashes"],
+      ["--raw", "text that is itself an option"],
+      ["- a", "markdown bullet"],
+    ])("--host over ssh delivers text %j (%s) as TEXT: argv puts `--` before the positionals and the remote parse sends it", async (text) => {
+      let captured: readonly string[] | null = null;
+      const deps: SendDeps = {
+        ...runningDeps(port),
+        hostRegistryLoader: () => ({ ok: true, registry: { hosts: [{ id: "vm-test", transport: "ssh", target: "vm.local" }] } }),
+        crossHostRun: async (_host, argv) => { captured = argv; return { ok: true, stdout: "", stderr: "" }; },
+      };
+      const file = writeTmp("dash.md", text);
+      await captureLogs(async () => {
+        await makeCmd(deps).parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--host", "vm-test", "--verify"]);
+      });
+      const argv = captured as unknown as string[];
+      expect(argv.slice(0, 3)).toEqual(["rig", "send", "--verify"]);
+      expect(argv.slice(-3)).toEqual(["--", "dev-impl@my-rig", text]);
+      expect(argv.indexOf("--")).toBe(argv.length - 3);
+      // remote side: parse exactly what ssh would run
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", ...argv]);
+      });
+      expect(logs.join("\n")).not.toContain("unknown option");
+      expect(exitCode).toBeUndefined();
+      expect(String(lastSendBody?.text)).toContain(`\n---\n${text}\n---\n`);
+    });
+
+    it("a whitespace-only file with --context is refused before the context is fetched (the early check is the only guard here)", async () => {
+      const file = writeTmp("ws.md", " \n\t\n");
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "send", "dev-impl@my-rig", "--file", file, "--context", "packs/x"]);
+      });
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("is empty or whitespace-only; nothing was sent");
+      expect(lastSendBody).toBeNull();
+    });
+
+    it("--help teaches --file - with a quoted heredoc", () => {
+      const cmd = sendCommand(runningDeps(port));
+      let helpText = "";
+      cmd.configureOutput({ writeOut: (t) => { helpText += t; }, writeErr: (t) => { helpText += t; } });
+      cmd.exitOverride();
+      try { cmd.parse(["node", "send", "--help"]); } catch { /* exitOverride throws on --help */ }
+      expect(helpText).toContain("--file <path>");
+      expect(helpText).toContain("--file - <<'EOF'");
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // qitem-c113bd41 — local-send honesty: the ACTUAL transport is
   // authoritative. Preflight (getDaemonStatus) may inform target fallback but
   // never refuses a send by itself: a busy/wedged daemon (probe timeout or
