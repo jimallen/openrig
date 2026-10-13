@@ -70,6 +70,12 @@ per-seat runtime or working directory, or startup files. Use
 `rig add <rig> <pod-namespace> <member-fragment-path>` to add one member to an
 existing pod (`<rig>` is the rig id or its exact unique name).
 
+A seat added with `rig add` does not inherit the rig's own culture file (the rig
+does not store it). Pass `--culture <path>` (a relative path is taken from your
+current directory) to give the new seat the rig's `CULTURE.md`; the path must
+exist or nothing is added. The `rig_add` MCP tool takes the same thing as
+`cultureFile`, which must be an absolute path.
+
 ## Don't use this when
 
 - The rig is being created fresh from scratch — use `rig up` (lifecycle, not mutation)

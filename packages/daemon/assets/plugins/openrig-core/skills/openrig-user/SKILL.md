@@ -1302,7 +1302,7 @@ Node-granular managed partial restore (v0.3.4+):
 ### Add a member to an existing pod — v0.3.3+
 
 ```bash
-rig add <rig> <pod-namespace> <member-fragment-path> [--json]
+rig add <rig> <pod-namespace> <member-fragment-path> [--rig-root <path>] [--culture <path>] [--json]
 ```
 
 `rig add` is the top-level verb for the `add_member` converge op. It adds a
@@ -1315,6 +1315,13 @@ reports). A name shared by more than one rig is refused before anything is
 added, with the matching ids listed (`rig_ambiguous` under `--json`). `rig add`
 always targets the local daemon: while a remote host is selected it refuses to
 resolve a name (`remote_host_selected`); an exact local id still works.
+
+`--culture <path>` gives the added seat the rig's own culture file. The rig does
+not remember its `CULTURE.md`, so without the flag a seat added to a running rig
+gets the OpenRig culture floor but not the rig's culture. A relative `--culture`
+(and `--rig-root`) path is taken from your current directory; the culture file
+must exist or nothing is added (`validation_failed`). The `rig_add` MCP tool
+takes the same file as `cultureFile`, which must be an absolute path.
 
 HTTP outcomes:
 - `201` — member added; per-node launch state included in the response.
