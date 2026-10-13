@@ -162,6 +162,98 @@ describe("WhoamiService", () => {
     expect(() => svc.resolve({ sessionName: "dev-impl@shared" })).toThrow(/ambiguous/i);
   });
 
+  describe("archived rigs do not compete with a live rig for a session name", () => {
+    const NAME = "exec-cos@eztrack";
+
+    function seatIn(rigName: string, archive: boolean) {
+      const rig = rigRepo.createRig(rigName);
+      const node = rigRepo.addNode(rig.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(node.id, NAME);
+      if (archive) expect(rigRepo.archiveRig(rig.id)).toBe(true);
+      return { rig, node };
+    }
+
+    it("resolves to the live rig when an older archived rig has the same session name", () => {
+      const archived = seatIn("eztrack-old", true);
+      const live = seatIn("eztrack", false);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(live.node.id);
+      expect(result!.identity.rigId).toBe(live.rig.id);
+      expect(result!.identity.nodeId).not.toBe(archived.node.id);
+    });
+
+    it("resolves to the live rig when the archived rig's session row is the newest", () => {
+      const live = seatIn("eztrack", false);
+      const archived = seatIn("eztrack-old", true);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(live.node.id);
+      expect(result!.identity.nodeId).not.toBe(archived.node.id);
+    });
+
+    it("still reports ambiguity when two live rigs share the name alongside an archived one", () => {
+      seatIn("eztrack-old", true);
+      seatIn("eztrack-a", false);
+      seatIn("eztrack-b", false);
+
+      expect(() => svc.resolve({ sessionName: NAME })).toThrow(/ambiguous — found in 2 rigs/);
+    });
+
+    it("keeps resolving the archived seat when it is the only match", () => {
+      const archived = seatIn("eztrack-old", true);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(archived.node.id);
+    });
+
+    it("keeps reporting ambiguity when the only matches are in two archived rigs", () => {
+      seatIn("eztrack-old-1", true);
+      seatIn("eztrack-old-2", true);
+
+      expect(() => svc.resolve({ sessionName: NAME })).toThrow(/ambiguous — found in 2 rigs/);
+    });
+
+    // A session row whose node or rig row is gone belongs to no rig, so it neither answers for
+    // the name nor counts toward ambiguity. Its id sorts newest so ordering cannot hide it.
+    it.each(["node", "rig"] as const)("ignores a session whose %s row is gone beside an archived rig", (gone) => {
+      const archived = seatIn("eztrack-old", true);
+      const ghostRig = rigRepo.createRig("ghost");
+      const ghostNode = rigRepo.addNode(ghostRig.id, "exec.ghost", { role: "orchestrator", runtime: "claude-code" });
+      db.pragma("foreign_keys = OFF");
+      db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)").run("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", ghostNode.id, NAME);
+      if (gone === "node") db.prepare("DELETE FROM nodes WHERE id = ?").run(ghostNode.id);
+      else db.prepare("DELETE FROM rigs WHERE id = ?").run(ghostRig.id);
+      db.pragma("foreign_keys = ON");
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(archived.node.id);
+    });
+
+    // Within one rig two nodes can carry the name (a replaced seat): the newest session row decides.
+    // Ids are written explicitly: ulid() is not ordered within a millisecond.
+    it.each([
+      ["the later-created node holds the newest session row", true],
+      ["the earlier-created node holds the newest session row", false],
+    ] as const)("resolves the node of the newest session row when %s", (_label, laterIsNewest) => {
+      const rig = rigRepo.createRig("eztrack");
+      const first = rigRepo.addNode(rig.id, "exec.cos-a", { role: "orchestrator", runtime: "claude-code" });
+      const second = rigRepo.addNode(rig.id, "exec.cos-b", { role: "orchestrator", runtime: "claude-code" });
+      const [older, newer] = laterIsNewest ? [first, second] : [second, first];
+      const insert = db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)");
+      insert.run("00000000000000000000000001", older.id, NAME);
+      insert.run("00000000000000000000000002", newer.id, NAME);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(newer.id);
+    });
+  });
+
   it("resolve surfaces external_cli attachment type and external session name", () => {
     const rig = rigRepo.createRig("rigged-buildout");
     const node = rigRepo.addNode(rig.id, "orch1.lead", { role: "orchestrator", runtime: "claude-code" });

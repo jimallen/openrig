@@ -4,6 +4,7 @@ export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
+import { findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
@@ -1052,9 +1053,8 @@ export class SessionTransport {
   }
 
   private resolveBySessionName(sessionName: string): ResolveResult {
-    const sessionRows = this.db
-      .prepare("SELECT node_id, session_name FROM sessions WHERE session_name = ? ORDER BY id DESC")
-      .all(sessionName) as SessionRow[];
+    // Live rigs answer before archived ones (findSessionNameMatches).
+    const sessionRows = findSessionNameMatches(this.db, sessionName);
 
     if (sessionRows.length === 0) {
       return {

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "../domain/rig-repository.js";
+import { findSessionNameMatches } from "../domain/session-name-matches.js";
 import type { TranscriptIngestHealth, TranscriptStore } from "../domain/transcript-store.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { startTmuxTranscriptCapture } from "../domain/transcript-capture.js";
@@ -27,10 +28,9 @@ function resolveSessionToRig(
   rigRepo: RigRepository,
   sessionName: string,
 ): { rigName: string; nodeId: string; runtime: string | null } | { error: string; status: number } {
-  // Find ALL sessions with this name to detect ambiguity
-  const sessionRows = db
-    .prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC")
-    .all(sessionName) as SessionRow[];
+  // Find ALL sessions with this name to detect ambiguity. Live rigs answer before archived
+  // ones (findSessionNameMatches).
+  const sessionRows = findSessionNameMatches(db, sessionName);
 
   if (sessionRows.length === 0) {
     return {

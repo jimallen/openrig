@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { TranscriptStore } from "./transcript-store.js";
+import { findSessionNameMatches } from "./session-name-matches.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
 
 export interface WhoamiResult {
@@ -165,19 +166,14 @@ export class WhoamiService {
       resolvedBy = "node_id";
       currentSessionName = this.getCurrentSessionName(nodeRow.id, nodeRow.rig_id);
     } else if (query.sessionName) {
-      // Find sessions matching this name — check for ambiguity across rigs
-      const sessionRows = this.db
-        .prepare("SELECT * FROM sessions WHERE session_name = ? ORDER BY id DESC")
-        .all(query.sessionName) as SessionRow[];
+      // Find sessions matching this name — check for ambiguity across rigs. Live rigs answer
+      // before archived ones (findSessionNameMatches).
+      const sessionRows = findSessionNameMatches(this.db, query.sessionName);
 
       if (sessionRows.length === 0) return null;
 
       // Check distinct rigs
-      const rigIds = new Set<string>();
-      for (const sess of sessionRows) {
-        const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(sess.node_id) as { rig_id: string } | undefined;
-        if (node) rigIds.add(node.rig_id);
-      }
+      const rigIds = new Set<string>(sessionRows.map((sess) => sess.rig_id));
 
       if (rigIds.size > 1) {
         throw new WhoamiAmbiguousError(

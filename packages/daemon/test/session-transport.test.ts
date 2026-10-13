@@ -1701,6 +1701,87 @@ describe("SessionTransport", () => {
     expect(hasSessionSpy).not.toHaveBeenCalled();
   });
 
+  describe("resolveSessions by session name: archived rigs do not compete with a live rig", () => {
+    const NAME = "exec-cos@eztrack";
+
+    function seatIn(rigName: string, archive: boolean) {
+      const rig = rigRepo.createRig(rigName);
+      const node = rigRepo.addNode(rig.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(node.id, NAME);
+      if (archive) expect(rigRepo.archiveRig(rig.id)).toBe(true);
+      return { rig, node };
+    }
+
+    it("resolves to the live rig when an older archived rig has the same session name", async () => {
+      seatIn("eztrack-old", true);
+      seatIn("eztrack", false);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack", nodeLogicalId: "exec.cos" }] });
+    });
+
+    it("resolves to the live rig when the archived rig's session row is the newest", async () => {
+      seatIn("eztrack", false);
+      seatIn("eztrack-old", true);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack", nodeLogicalId: "exec.cos" }] });
+    });
+
+    it("names only the live rigs when two live rigs and an archived rig share the name", async () => {
+      seatIn("eztrack-old", true);
+      seatIn("eztrack-a", false);
+      seatIn("eztrack-b", false);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("ambiguous");
+        expect(result.error).toContain("eztrack-a");
+        expect(result.error).toContain("eztrack-b");
+        expect(result.error).not.toContain("eztrack-old");
+      }
+    });
+
+    it("keeps resolving the archived seat when it is the only match", async () => {
+      seatIn("eztrack-old", true);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack-old", nodeLogicalId: "exec.cos" }] });
+    });
+
+    it("keeps reporting ambiguity when the only matches are in two archived rigs", async () => {
+      seatIn("eztrack-old-1", true);
+      seatIn("eztrack-old-2", true);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("ambiguous");
+    });
+
+    // A session row whose node or rig row is gone belongs to no rig, so it neither answers for
+    // the name nor counts toward ambiguity. Its id sorts newest so ordering cannot hide it.
+    it.each(["node", "rig"] as const)("ignores a session whose %s row is gone beside an archived rig", async (gone) => {
+      seatIn("eztrack-old", true);
+      const ghostRig = rigRepo.createRig("ghost");
+      const ghostNode = rigRepo.addNode(ghostRig.id, "exec.ghost", { role: "orchestrator", runtime: "claude-code" });
+      db.pragma("foreign_keys = OFF");
+      db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)").run("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", ghostNode.id, NAME);
+      if (gone === "node") db.prepare("DELETE FROM nodes WHERE id = ?").run(ghostNode.id);
+      else db.prepare("DELETE FROM rigs WHERE id = ?").run(ghostRig.id);
+      db.pragma("foreign_keys = ON");
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack-old", nodeLogicalId: "exec.cos" }] });
+    });
+  });
+
   // Test 11: resolveSessions by rig returns running sessions
   it("resolveSessions by rig returns running sessions", async () => {
     seedCanonicalRig();

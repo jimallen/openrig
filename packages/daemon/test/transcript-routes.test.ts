@@ -21,6 +21,7 @@ import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { transcriptRoutes } from "../src/routes/transcripts.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { vi } from "vitest";
+import { createFullTestDb } from "./helpers/test-app.js";
 
 function setupDb(): Database.Database {
   const db = createDb();
@@ -416,5 +417,137 @@ describe("transcript routes", () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toContain("ambiguous");
+  });
+});
+
+describe("transcript routes: archived rigs do not compete with a live rig for a session name", () => {
+  const NAME = "exec-cos@eztrack";
+  let db: Database.Database;
+  let rigRepo: RigRepository;
+  let sessionRegistry: SessionRegistry;
+  let tmpDir: string;
+  let store: TranscriptStore;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    rigRepo = new RigRepository(db);
+    sessionRegistry = new SessionRegistry(db);
+    tmpDir = mkdtempSync(join(tmpdir(), "transcript-routes-archived-"));
+    store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function seatIn(rigName: string, archive: boolean, transcript?: string) {
+    const rig = rigRepo.createRig(rigName);
+    const node = rigRepo.addNode(rig.id, "exec-cos", { role: "orchestrator", runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, NAME);
+    sessionRegistry.updateStatus(session.id, "running");
+    if (transcript !== undefined) {
+      store.ensureTranscriptDir(rigName);
+      writeFileSync(store.getTranscriptPath(rigName, NAME), transcript);
+    }
+    if (archive) expect(rigRepo.archiveRig(rig.id)).toBe(true);
+    return { rig, node };
+  }
+
+  function app() {
+    return createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
+  }
+
+  it("serves the live rig's transcript when an older archived rig has the same session name", async () => {
+    seatIn("eztrack-old", true, "archived words\n");
+    seatIn("eztrack", false, "live words\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).content).toBe("live words\n");
+  });
+
+  it("serves the live rig's transcript when the archived rig's session row is the newest", async () => {
+    seatIn("eztrack", false, "live words\n");
+    seatIn("eztrack-old", true, "archived words\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).content).toBe("live words\n");
+  });
+
+  it("names only the live rigs in a 409 when two live rigs and an archived rig share the name", async () => {
+    seatIn("eztrack-old", true, "archived words\n");
+    seatIn("eztrack-a", false, "a\n");
+    seatIn("eztrack-b", false, "b\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail`);
+
+    expect(res.status).toBe(409);
+    const error = (await res.json()).error as string;
+    expect(error).toContain("eztrack-a");
+    expect(error).toContain("eztrack-b");
+    expect(error).not.toContain("eztrack-old");
+  });
+
+  it("keeps serving the archived rig's transcript when it is the only match", async () => {
+    seatIn("eztrack-old", true, "archived words\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).content).toBe("archived words\n");
+  });
+
+  it("keeps answering 409 when the only matches are in two archived rigs", async () => {
+    seatIn("eztrack-old-1", true, "one\n");
+    seatIn("eztrack-old-2", true, "two\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail`);
+
+    expect(res.status).toBe(409);
+  });
+
+  // A session row whose node or rig row is gone belongs to no rig, so it neither answers for the
+  // name nor counts toward ambiguity. Its id sorts newest so ordering cannot hide it.
+  it.each(["node", "rig"] as const)("ignores a session whose %s row is gone beside an archived rig", async (gone) => {
+    seatIn("eztrack-old", true, "archived words\n");
+    const ghostRig = rigRepo.createRig("ghost");
+    const ghostNode = rigRepo.addNode(ghostRig.id, "exec-ghost", { role: "orchestrator", runtime: "claude-code" });
+    db.pragma("foreign_keys = OFF");
+    db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)").run("ZZZZZZZZZZZZZZZZZZZZZZZZZZ", ghostNode.id, NAME);
+    if (gone === "node") db.prepare("DELETE FROM nodes WHERE id = ?").run(ghostNode.id);
+    else db.prepare("DELETE FROM rigs WHERE id = ?").run(ghostRig.id);
+    db.pragma("foreign_keys = ON");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).content).toBe("archived words\n");
+  });
+
+  // Within one rig two nodes can carry the name (a replaced seat): the newest session row decides,
+  // observed as the runtime of the node the route resolved. Ids are written explicitly: ulid() is
+  // not ordered within a millisecond.
+  it.each([
+    ["the later-created node holds the newest session row", true],
+    ["the earlier-created node holds the newest session row", false],
+  ] as const)("resolves the node of the newest session row when %s", async (_label, laterIsNewest) => {
+    const rig = rigRepo.createRig("eztrack");
+    const first = rigRepo.addNode(rig.id, "exec-cos-a", { role: "orchestrator", runtime: "claude-code" });
+    const second = rigRepo.addNode(rig.id, "exec-cos-b", { role: "orchestrator", runtime: "codex" });
+    const [older, newer] = laterIsNewest ? [first, second] : [second, first];
+    const insert = db.prepare("INSERT INTO sessions (id, node_id, session_name, status) VALUES (?, ?, ?, 'running')");
+    insert.run("00000000000000000000000001", older.id, NAME);
+    insert.run("00000000000000000000000002", newer.id, NAME);
+    store.ensureTranscriptDir("eztrack");
+    writeFileSync(store.getTranscriptPath("eztrack", NAME), "words\n");
+
+    const res = await app().request(`/api/transcripts/${NAME}/tail?lines=10`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).ingestHealth.runtime).toBe(newer.id === first.id ? "claude-code" : "codex");
   });
 });
