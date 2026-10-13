@@ -79,6 +79,12 @@ export function loadCurrentQitemsForSessions(
   return out;
 }
 
+function normalizeExpansionStarterRef(raw: unknown): { name: string } | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const name = (raw as Record<string, unknown>)["name"];
+  return typeof name === "string" && name.trim() !== "" ? { name } : undefined;
+}
+
 function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionPodFragment | null {
   if (!raw || typeof raw !== "object") return null;
   const id = raw["id"];
@@ -188,6 +194,12 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
               ? m["restore_policy"]
               : undefined,
         label: typeof m["label"] === "string" ? m["label"] : undefined,
+        // role / starter_ref ride the ingress like model (the type and the fragment->spec map already
+        // carry them; this normalizer was the drop). Same shape rules as the canonical schema:
+        // role any string (its charset/terminal checks live in the validator), starter_ref an
+        // object with a non-empty string name.
+        role: typeof m["role"] === "string" ? m["role"] : undefined,
+        starterRef: normalizeExpansionStarterRef("starterRef" in m ? m["starterRef"] : m["starter_ref"]),
         // Presence-governed, never truthiness: null/false/primitive raw values
         // must survive to canonical validation, not vanish at a truthy check.
         ...(hasSessionSource ? { sessionSource } : {}),

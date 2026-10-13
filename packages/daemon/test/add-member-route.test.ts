@@ -43,6 +43,23 @@ describe("POST /api/rigs/:rigId/pods/:podNamespace/members", () => {
 
   const terminalMember = (id: string) => ({ id, runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp" });
 
+  // `rig add` does NOT use the expand ingress normalizer: the raw snake_case member is embedded in a
+  // one-member spec and normalized by the canonical schema. This pins that effort survives that path
+  // (green at 958590dc: the add path never had the expand drop; this is parity, not a fix). role on
+  // the add path is already pinned by rigspec-role-plumb.test.ts PATH 3.
+  it("effort on an added member is persisted on the node (add path keeps what expand dropped)", async () => {
+    const rig = await seedRigWithPod();
+    const res = await addMember(rig.id, "infra", { ...terminalMember("seat-a"), effort: "xhigh" });
+    expect(res.status).toBe(201);
+    const res2 = await addMember(rig.id, "infra", { ...terminalMember("seat-b"), effort: "low" });
+    expect(res2.status).toBe(201);
+    const row = (id: string) => db
+      .prepare("SELECT effort FROM nodes WHERE rig_id = ? AND logical_id = ?")
+      .get(rig.id, id) as { effort: string | null } | undefined;
+    expect(row("infra.seat-a")?.effort).toBe("xhigh");
+    expect(row("infra.seat-b")?.effort).toBe("low");
+  });
+
   it("returns 201 with the added node for a valid add", async () => {
     const rig = await seedRigWithPod();
     const res = await addMember(rig.id, "infra", terminalMember("server2"));

@@ -334,6 +334,86 @@ describe("POST /api/rigs/:rigId/expand", () => {
     expect(stored?.effort).toBe("xhigh");
   });
 
+  // `role` and `starter_ref` were declared on the fragment type and mapped by the fragment->spec
+  // builder (both with "never silently dropped" comments), but the ingress normalizer never read
+  // them, so a seat added through `rig expand` lost its workflow role and its starter.
+  it("member role and starter_ref (either spelling) survive the expand ingress to the materialized spec; none invented when absent", async () => {
+    const rig = seedRig("role-starter-rig");
+    const materializeSpy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: {
+          id: "rs",
+          label: "RoleStarter",
+          members: [
+            { id: "a", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", role: "reviewer", starter_ref: { name: "starter-alpha" } },
+            { id: "b", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp", role: "driver", starterRef: { name: "starter-beta" } },
+            { id: "unset", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp" },
+          ],
+          edges: [],
+        },
+      }),
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(materializeSpy).toHaveBeenCalled();
+    const specObject = materializeSpy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [a, b, unset] = specObject.pods[0]!.members;
+    // two distinct values per field: the carry is derived from the member, not a constant
+    expect(a!["role"]).toBe("reviewer");
+    expect(b!["role"]).toBe("driver");
+    expect(a!["starter_ref"]).toEqual({ name: "starter-alpha" });
+    expect(b!["starter_ref"]).toEqual({ name: "starter-beta" });
+    expect("role" in unset!).toBe(false);
+    expect("starter_ref" in unset!).toBe(false);
+    materializeSpy.mockRestore();
+  });
+
+  it("member role is persisted on the node a seat added through expand (nodes.role)", async () => {
+    // role is not valid on terminal members (schema), so this needs a resolvable agent seat.
+    const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+    const roleDb = createFullTestDb();
+    const roleSetup = createTestApp(roleDb, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+    try {
+      const rig = roleSetup.rigRepo.createRig("role-persist-rig");
+      const res = await roleSetup.app.request(`/api/rigs/${rig.id}/expand`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rigRoot: "/project/rigs/role-rig",
+          pod: {
+            id: "rp",
+            label: "RolePersist",
+            members: [
+              { id: "one", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: ".", role: "reviewer" },
+              { id: "two", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: ".", role: "driver" },
+              { id: "none", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." },
+            ],
+            edges: [],
+          },
+        }),
+      });
+      expect(res.status).toBeLessThan(500);
+      const role = (id: string) => (roleDb
+        .prepare("SELECT role FROM nodes WHERE rig_id = ? AND logical_id = ?")
+        .get(rig.id, id) as { role: string | null } | undefined);
+      expect(role("rp.one")?.role).toBe("reviewer");
+      expect(role("rp.two")?.role).toBe("driver");
+      expect(role("rp.none")?.role).toBeNull();
+    } finally {
+      roleDb.close();
+    }
+  });
+
   // OPR.0.5.6.3 repair (wave-1 R2 HOLD): the route normalizer recognized only
   // fork/rebuild and silently dropped the entire agent_image session source
   // BEFORE the service mapper could preserve ref.version — the landed S03
