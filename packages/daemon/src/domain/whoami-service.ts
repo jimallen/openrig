@@ -165,12 +165,24 @@ export class WhoamiService {
       resolvedBy = "node_id";
       currentSessionName = this.getCurrentSessionName(nodeRow.id, nodeRow.rig_id);
     } else if (query.sessionName) {
-      // Find sessions matching this name — check for ambiguity across rigs
-      const sessionRows = this.db
-        .prepare("SELECT * FROM sessions WHERE session_name = ? ORDER BY id DESC")
-        .all(query.sessionName) as SessionRow[];
+      // Find sessions matching this name — check for ambiguity across rigs.
+      // An archived rig keeps its session rows, so a restarted rig (same seat names) would
+      // otherwise collide with its own archived predecessor. Live rigs win; archived rigs only
+      // answer when no live rig has the name.
+      const allRows = this.db
+        .prepare(`
+          SELECT s.*, r.archived_at AS rig_archived_at
+          FROM sessions s
+          JOIN nodes n ON n.id = s.node_id
+          JOIN rigs r ON r.id = n.rig_id
+          WHERE s.session_name = ?
+          ORDER BY s.id DESC
+        `)
+        .all(query.sessionName) as Array<SessionRow & { rig_archived_at: string | null }>;
 
-      if (sessionRows.length === 0) return null;
+      if (allRows.length === 0) return null;
+      const liveRows = allRows.filter((row) => row.rig_archived_at === null);
+      const sessionRows = liveRows.length > 0 ? liveRows : allRows;
 
       // Check distinct rigs
       const rigIds = new Set<string>();

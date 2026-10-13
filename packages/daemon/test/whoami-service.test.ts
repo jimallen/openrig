@@ -162,6 +162,62 @@ describe("WhoamiService", () => {
     expect(() => svc.resolve({ sessionName: "dev-impl@shared" })).toThrow(/ambiguous/i);
   });
 
+  describe("archived rigs do not compete with a live rig for a session name", () => {
+    const NAME = "exec-cos@eztrack";
+
+    function seatIn(rigName: string, archive: boolean) {
+      const rig = rigRepo.createRig(rigName);
+      const node = rigRepo.addNode(rig.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(node.id, NAME);
+      if (archive) expect(rigRepo.archiveRig(rig.id)).toBe(true);
+      return { rig, node };
+    }
+
+    it("resolves to the live rig when an older archived rig has the same session name", () => {
+      const archived = seatIn("eztrack-old", true);
+      const live = seatIn("eztrack", false);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(live.node.id);
+      expect(result!.identity.rigId).toBe(live.rig.id);
+      expect(result!.identity.nodeId).not.toBe(archived.node.id);
+    });
+
+    it("resolves to the live rig when the archived rig's session row is the newest", () => {
+      const live = seatIn("eztrack", false);
+      const archived = seatIn("eztrack-old", true);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(live.node.id);
+      expect(result!.identity.nodeId).not.toBe(archived.node.id);
+    });
+
+    it("still reports ambiguity when two live rigs share the name alongside an archived one", () => {
+      seatIn("eztrack-old", true);
+      seatIn("eztrack-a", false);
+      seatIn("eztrack-b", false);
+
+      expect(() => svc.resolve({ sessionName: NAME })).toThrow(/ambiguous — found in 2 rigs/);
+    });
+
+    it("keeps resolving the archived seat when it is the only match", () => {
+      const archived = seatIn("eztrack-old", true);
+
+      const result = svc.resolve({ sessionName: NAME });
+
+      expect(result!.identity.nodeId).toBe(archived.node.id);
+    });
+
+    it("keeps reporting ambiguity when the only matches are in two archived rigs", () => {
+      seatIn("eztrack-old-1", true);
+      seatIn("eztrack-old-2", true);
+
+      expect(() => svc.resolve({ sessionName: NAME })).toThrow(/ambiguous — found in 2 rigs/);
+    });
+  });
+
   it("resolve surfaces external_cli attachment type and external session name", () => {
     const rig = rigRepo.createRig("rigged-buildout");
     const node = rigRepo.addNode(rig.id, "orch1.lead", { role: "orchestrator", runtime: "claude-code" });
