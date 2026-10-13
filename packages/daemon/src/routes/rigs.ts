@@ -163,6 +163,9 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
               : undefined,
         cwd: typeof m["cwd"] === "string" ? m["cwd"] : undefined,
         model: typeof m["model"] === "string" ? m["model"] : undefined,
+        // effort rides the ingress like model (a declared effort must never be silently dropped).
+        // Non-string values stay absent here; the canonical RigSpec schema owns the advisory.
+        effort: typeof m["effort"] === "string" ? m["effort"] : undefined,
         // R2 (4ac243c3): PRESERVE raw presence — a present-invalid value (null, number,
         // object, …) must reach the canonical RigSpec validator as-is and reject there;
         // only a truly ABSENT key stays absent. No route-local validation, no coercion.

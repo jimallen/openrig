@@ -277,6 +277,63 @@ describe("POST /api/rigs/:rigId/expand", () => {
     expect(stored?.restore_policy).toBe("checkpoint_only");
   });
 
+  // A seat's `effort` is a launch setting (`rig up` keeps it). Expansion dropped it at the
+  // ingress normalizer, the fragment type and the fragment->spec map, so a seat added through
+  // `rig expand` silently launched at the runtime default effort instead of the declared one.
+  it("member effort survives the expand ingress to the materialized spec (and none is invented when absent)", async () => {
+    const rig = seedRig("effort-rig");
+    const materializeSpy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: {
+          id: "eff",
+          label: "Effort",
+          members: [
+            { id: "high", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "xhigh" },
+            { id: "low", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "low" },
+            { id: "unset", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp" },
+          ],
+          edges: [],
+        },
+      }),
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(materializeSpy).toHaveBeenCalled();
+    const specObject = materializeSpy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [high, low, unset] = specObject.pods[0]!.members;
+    // two distinct values: the carry is derived from the member, not a constant
+    expect(high!["effort"]).toBe("xhigh");
+    expect(low!["effort"]).toBe("low");
+    // absent stays absent: no effort key is invented for a seat that declared none
+    expect("effort" in unset!).toBe(false);
+    materializeSpy.mockRestore();
+  });
+
+  it("member effort is persisted on the node a seat added through expand (parity with rig up)", async () => {
+    const rig = seedRig("effort-persist-rig");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: {
+          id: "effp",
+          label: "EffortPersist",
+          members: [
+            { id: "seat", runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", cwd: "/tmp", effort: "xhigh" },
+          ],
+          edges: [],
+        },
+      }),
+    });
+    expect(res.status).toBe(201);
+    const stored = db
+      .prepare("SELECT effort FROM nodes WHERE rig_id = ? AND logical_id = ?")
+      .get(rig.id, "effp.seat") as { effort: string | null } | undefined;
+    expect(stored?.effort).toBe("xhigh");
+  });
+
   // OPR.0.5.6.3 repair (wave-1 R2 HOLD): the route normalizer recognized only
   // fork/rebuild and silently dropped the entire agent_image session source
   // BEFORE the service mapper could preserve ref.version — the landed S03
