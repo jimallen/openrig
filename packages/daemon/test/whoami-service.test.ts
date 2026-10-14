@@ -230,6 +230,19 @@ describe("WhoamiService", () => {
       expect(peer.reachable).toBe(true);
     });
 
+    it("a peer is judged by its own node's session row, not by another node's newer row under the same name", () => {
+      const { rig, self } = seedSelfWithRig();
+      // Two nodes share one session name. The peer's own row is running; a later row of the same name on
+      // another node exited. Looking the name up without the node would read that other node's row.
+      const peer = seedPeer("dev.shared", rig.id, [{ name: "dev-shared@my-rig", status: "running" }], "dev-shared@my-rig");
+      seedPeer("dev.other", rig.id, [{ name: "dev-shared@my-rig", status: "exited" }]);
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(peer.id).not.toBe(self.id);
+      expect(result.peers.find((p) => p.logicalId === "dev.shared")!.reachable).toBe(true);
+    });
+
     it("a relaunched seat is judged by the session it now names, not by the exited one before it", () => {
       const { rig, self } = seedSelfWithRig();
       seedPeer("dev.back", rig.id, [

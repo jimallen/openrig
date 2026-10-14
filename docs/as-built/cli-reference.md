@@ -763,6 +763,8 @@ Root: `rig`; declared option: `-V, --version`.
 |---|---|---|
 | `rig grow <rig-id> <members...>` | — | `--pod <pod>`<br>`--new-pod <pod>`<br>`--runtime <runtime>`<br>`--cwd <path>`<br>`--agent-ref <ref>`<br>`--culture <path>`<br>`--json` |
 
+Relative paths differ by flag: `--culture` is taken from the directory the command runs in, while a `local:` `--agent-ref` is resolved from `--cwd` (the rig root sent to the daemon). `rig add` behaves the same way (`--culture` from the caller's directory, the fragment's `agent_ref` from `--rig-root`). `--culture` applies to existing-pod growth only; `--new-pod` with `--culture` is refused.
+
 ### reconcile-session
 
 | Invocation | Aliases | Declared options |

@@ -48,6 +48,11 @@ Each seat gets the shipped orchestrator agent unless --agent-ref names another. 
 added to a running rig does not get the rig's own culture file unless --culture names it
 (the rig does not remember it). --culture is for an existing pod; with --new-pod it is refused.
 
+Relative paths differ by flag: --culture is taken from the directory you run the command in,
+while a local: --agent-ref is resolved from --cwd (the rig root sent to the daemon). Use an
+absolute path or path: to avoid the difference. rig add behaves the same way (--culture from
+your directory, the fragment's agent_ref from --rig-root).
+
 Examples:
   rig grow my-rig worker qa --pod dev
   rig grow my-rig worker --pod dev --culture ./my-rig/CULTURE.md --agent-ref path:/agents/builder`);
@@ -63,7 +68,7 @@ Examples:
     .option("--new-pod <pod>", "Create a new pod for the seats")
     .option("--runtime <runtime>", "Agent runtime", "claude-code")
     .option("--cwd <path>", "Working directory for the seat", process.cwd())
-    .option("--agent-ref <ref>", "Agent spec for every named seat (for example path:/abs/dir or local:agents/name); default is the shipped orchestrator agent")
+    .option("--agent-ref <ref>", "Agent spec for every named seat (for example path:/abs/dir or local:agents/name; a local: ref is resolved from --cwd, not from the current directory); default is the shipped orchestrator agent")
     .option("--culture <path>", "The rig's culture file (a relative path is taken from the current directory). The rig does not remember it, so name it to give the added seats the rig's own culture. Not available with --new-pod")
     .option("--json", "JSON output for agents")
     .action(async (
