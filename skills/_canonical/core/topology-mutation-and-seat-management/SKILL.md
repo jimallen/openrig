@@ -54,17 +54,20 @@ static launch scripts.
 ## Adding seats: `rig grow` first, a fragment when you need more
 
 `rig grow <rig-id> <member...>` adds one or more seats to a running rig without
-writing YAML. Each seat gets the default agent spec and its `default` profile.
+writing YAML. Each seat gets the default agent spec and its `default` profile, unless
+`--agent-ref` names another.
 Check `rig grow --help` on your installed version; at the time of writing:
 
 - `--pod <pod>`: the target pod; inferred when the rig has one pod
 - `--new-pod <pod>`: create a new pod for the seats (not together with `--pod`)
 - `--runtime <runtime>`: one runtime for every named seat (default `claude-code`)
 - `--cwd <path>`: one working directory for every named seat (default: the current directory)
+- `--agent-ref <ref>`: one agent spec for every named seat, instead of the shipped orchestrator (for example `path:/abs/dir`)
+- `--culture <path>`: give every named seat the rig's own culture file (a relative path is taken from your current directory; the path must exist). The rig does not store it, so without this flag a grown seat gets only the OpenRig culture floor. Existing-pod growth only: `--new-pod` with `--culture` is refused (add the seats to a pod that already exists instead)
 - `--json`: output for agents
 
 Write a fragment instead when a seat needs something `rig grow` does not set: an
-explicit model, a permission policy, a different agent spec or role profile, a
+explicit model, a permission policy, a different agent spec per seat or a role profile, a
 per-seat runtime or working directory, or startup files. Use
 `rig expand <rig-id> <pod-fragment-path>` to add a pod, or
 `rig add <rig> <pod-namespace> <member-fragment-path>` to add one member to an
@@ -115,7 +118,7 @@ adding or removing a seat from replacing its occupant; use
 
 Per `cli-reference.md` v0.2.0:
 
-- `rig grow <rig-id> <member...> [--pod <pod> | --new-pod <pod>] [--runtime <runtime>] [--cwd <path>]` (added after v0.2.0; check `rig grow --help`)
+- `rig grow <rig-id> <member...> [--pod <pod> | --new-pod <pod>] [--runtime <runtime>] [--cwd <path>] [--agent-ref <ref>] [--culture <path>]` (added after v0.2.0; check `rig grow --help`)
 - `rig expand <rig-id> <pod-fragment-path>` (with optional `session_source`)
 - `rig shrink <rigId> <podRef>`
 - `rig launch <rigId> <nodeRef>`

@@ -761,7 +761,7 @@ Root: `rig`; declared option: `-V, --version`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig grow <rig-id> <members...>` | — | `--pod <pod>`<br>`--new-pod <pod>`<br>`--runtime <runtime>`<br>`--cwd <path>`<br>`--json` |
+| `rig grow <rig-id> <members...>` | — | `--pod <pod>`<br>`--new-pod <pod>`<br>`--runtime <runtime>`<br>`--cwd <path>`<br>`--agent-ref <ref>`<br>`--culture <path>`<br>`--json` |
 
 ### reconcile-session
 
