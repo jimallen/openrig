@@ -20,7 +20,7 @@ import {
   inferMissionDotId,
   nextEscapeBandOrdinal,
 } from "./dot-id.js";
-import { deriveMissionDependencyGraph, type MissionDependencyGraph } from "./scope-audit.js";
+import { deriveMissionDependencyGraph, sliceStatusIsActive, type MissionDependencyGraph } from "./scope-audit.js";
 
 const SLICE_DIRNAME_RE = /^(\d+)-(.+)$/;
 
@@ -314,7 +314,7 @@ export function listMissions(missionsRoot: string): MissionInfo[] {
     const frontmatter = readFrontmatter(readmePath);
     const slicesDir = path.join(absPath, "slices");
     const closedDir = path.join(absPath, "closed");
-    const activeSliceCount = countSliceDirs(slicesDir);
+    const activeSliceCount = countActiveSliceDirs(slicesDir);
     const closedSliceCount = countSliceDirs(closedDir);
     const id = pickIdFromFrontmatter(frontmatter);
     out.push({
@@ -336,6 +336,20 @@ function countSliceDirs(dir: string): number {
   if (!fs.existsSync(dir)) return 0;
   return fs.readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory() && SLICE_DIRNAME_RE.test(e.name))
+    .length;
+}
+
+/** Slice directories under `dir` whose status is still active (sliceStatusIsActive), the same
+ *  rule listSlices(..., "active") applies. */
+function countActiveSliceDirs(dir: string): number {
+  if (!fs.existsSync(dir)) return 0;
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && SLICE_DIRNAME_RE.test(e.name))
+    .filter((e) => {
+      const node = resolveNodeFile(path.join(dir, e.name));
+      const status = node ? readFrontmatter(node).status : undefined;
+      return sliceStatusIsActive(typeof status === "string" ? status : null);
+    })
     .length;
 }
 
@@ -381,7 +395,7 @@ function buildMissionInfo(missionsRoot: string, absPath: string): MissionInfo {
     readmePath,
     frontmatter,
     id: pickIdFromFrontmatter(frontmatter),
-    activeSliceCount: countSliceDirs(path.join(absPath, "slices")),
+    activeSliceCount: countActiveSliceDirs(path.join(absPath, "slices")),
     closedSliceCount: countSliceDirs(path.join(absPath, "closed")),
   };
 }
@@ -414,12 +428,8 @@ export function listSlices(
   }
   out.sort((a, b) => (a.nn ?? Number.MAX_SAFE_INTEGER) - (b.nn ?? Number.MAX_SAFE_INTEGER) || a.name.localeCompare(b.name));
   if (state === "active") {
-    // active = not in closed/, and not already delivered in-place. `complete`/`completed` are
-    // terminal here as they are for a mission (scope-audit missionIsActive).
-    return out.filter((s) => {
-      const st = (s.status ?? "").toLowerCase();
-      return st !== "done" && !st.startsWith("closed") && !st.startsWith("shipped") && !st.startsWith("complete");
-    });
+    // active = not in closed/, and not already delivered in-place (sliceStatusIsActive).
+    return out.filter((s) => sliceStatusIsActive(s.status));
   }
   if (state === "shipped") {
     return out.filter((s) => (s.status ?? "").toLowerCase().startsWith("shipped"));

@@ -330,6 +330,23 @@ describe("listMissions + listSlices + nextSliceNN", () => {
     expect(listSlices(mission, "active").map((s) => s.name).sort()).toEqual(["01-foo", "02-bar", "07-incomplete"]);
   });
 
+  it("activeSliceCount counts only slices listSlices(active) would list (done and complete* are terminal)", () => {
+    const base = path.join(missionsRoot, "release-0.3.2", "slices");
+    writeFile(path.join(base, "05-complete", "README.md"), "---\nid: OPR.0.3.2.5\nstatus: complete\n---\nbody\n");
+    writeFile(path.join(base, "06-completed", "README.md"), "---\nid: OPR.0.3.2.6\nstatus: Completed\n---\nbody\n");
+    writeFile(path.join(base, "07-done", "README.md"), "---\nid: OPR.0.3.2.7\nstatus: done\n---\nbody\n");
+    writeFile(path.join(base, "08-shipped", "README.md"), "---\nid: OPR.0.3.2.8\nstatus: shipped-x\n---\nbody\n");
+    writeFile(path.join(base, "09-nostatus", "README.md"), "---\nid: OPR.0.3.2.9\n---\nbody\n");
+    fs.mkdirSync(path.join(base, "10-nonode"), { recursive: true });
+    const expected = ["01-foo", "02-bar", "09-nostatus", "10-nonode"];
+    const mission = findMission(missionsRoot, "release-0.3.2");
+    expect(listSlices(mission, "active").map((s) => s.name).sort()).toEqual(expected);
+    expect(mission.activeSliceCount).toBe(expected.length);
+    expect(listMissions(missionsRoot).find((m) => m.name === "release-0.3.2")!.activeSliceCount).toBe(expected.length);
+    // closed/ is a different bucket and keeps counting every directory
+    expect(mission.closedSliceCount).toBe(1);
+  });
+
   it("nextSliceNN skips numbers already used in slices/ AND closed/ (HG-3)", () => {
     const missionAbs = path.join(missionsRoot, "release-0.3.2");
     // existing: 01, 02, 04 → next should be 5 (not 3 — numbers never reused).
