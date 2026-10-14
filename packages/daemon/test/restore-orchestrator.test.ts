@@ -2102,6 +2102,56 @@ describe("RestoreOrchestrator", () => {
     }
   });
 
+  // OPR.0.7.0.7: the pod-aware startup binding carries `effort: effortForRestore()`, which the runtime adapter turns
+  // into the seat's reasoning-effort flag. The decided rule is latest-wins (seat-effort.ts LATEST_WINS_EFFORT_PRECEDENCE):
+  // a seat's saved `rig seat set-effort` choice beats the older snapshot. If this binding sent the snapshot's authored
+  // value (or nothing), a restored seat would silently run at a reasoning level the operator did not choose.
+  // `launchHarness` is the boundary: the test reads the binding the adapter was handed. Each row's expected value is
+  // restated here from the rule, not computed from the module under test.
+  it.each([
+    // [label, authored(snapshot), choice at snapshot, choice set after the snapshot, resumable, effort sent, warning expected]
+    ["fresh, authored effort only", "high", undefined, undefined, false, "high", false],
+    ["fresh, no effort anywhere sends none", null, undefined, undefined, false, undefined, false],
+    ["fresh, choice made after the snapshot beats the snapshot's authored value", "medium", undefined, "xhigh", false, "xhigh", true],
+    ["fresh, choice held by the snapshot and still live", "medium", "xhigh", undefined, false, "xhigh", false],
+    ["fresh, choice cleared after the snapshot: the older choice does not come back", "medium", "xhigh", null, false, "medium", false],
+    ["fresh, choice replaced after the snapshot: the latest one wins", "medium", "xhigh", "low", false, "low", true],
+    ["resumed, choice made after the snapshot beats the snapshot's authored value", "medium", undefined, "xhigh", true, "xhigh", true],
+  ] as const)("pod-aware restore sends the decided effort to the adapter: %s", async (_label, authored, choiceAtSnapshot, choiceAfter, resumable, expected, warns) => {
+    const rig = rigRepo.createRig("effort-rig");
+    db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("effort-pod", rig.id, "Dev");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", podId: "effort-pod", ...(authored ? { effort: authored } : {}) });
+    if (choiceAtSnapshot) db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run(choiceAtSnapshot, node.id);
+    const session = sessionRegistry.registerSession(node.id, "dev-impl@effort-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    if (resumable) sessionRegistry.updateResumeToken(session.id, "claude_id", "resume-token-123");
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+    // The snapshot is now older than the live seat.
+    if (choiceAfter !== undefined) db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run(choiceAfter, node.id);
+
+    const launchSpy = vi.fn(async (_binding: unknown, _opts: unknown) => ({ ok: true as const, ...(resumable ? { resumeToken: "resume-token-123", resumeType: "claude_id" } : {}) }));
+    const adapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness: launchSpy,
+    };
+    const orch = createOrchestrator({ claude: mockClaudeResume(), ...(resumable ? { listProcesses: nativeLineage("claude-code", "resume-token-123") } : {}) });
+    const result = await orch.restore(snap.id, { adapters: { "claude-code": adapter }, ...(resumable ? {} : { freshLogicalIds: ["dev.impl"] }) });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.result.nodes[0]!.status).toBe(resumable ? "resumed" : "fresh-primed");
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect((launchSpy.mock.calls[0]![0] as { effort?: string }).effort).toBe(expected);
+    expect(result.result.warnings.some((w) => w.includes("Effort:"))).toBe(warns);
+  });
+
   it("pod-aware chooser attention preserves the attempted native token for no-input reconciliation", async () => {
     const rig = rigRepo.createRig("test-rig");
     db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-chooser", rig.id, "Dev");

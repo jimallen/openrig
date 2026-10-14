@@ -13,6 +13,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
@@ -120,11 +121,19 @@ export async function spawnScenarioDaemon(
   scaffold: HermeticScaffold,
   opts: SpawnScenarioDaemonOptions,
 ): Promise<ScenarioDaemon> {
+  const { rigBin, timeoutMs } = opts;
+  // `rigBin` is a node script run as `node <rigBin>`: when the CLI has not been built it is absent, and the
+  // only symptom would be a node "Cannot find module" buried inside "scenario-local daemon failed to start".
+  if (!existsSync(rigBin)) {
+    throw new Error(
+      `the rig CLI is not built: ${rigBin} does not exist. Build it first (npm run build -w packages/cli); the daemon scenario/integration tests spawn the real CLI.`,
+    );
+  }
+
   // Defense in depth: the scaffold env is already scrubbed, but never spawn
   // against a foreign target.
   assertNoForeignDaemon(scaffold.env);
 
-  const { rigBin, timeoutMs } = opts;
   const port = opts.port ?? (await findFreePort());
   const db = join(scaffold.stateDir, "scenario.db");
 

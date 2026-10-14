@@ -14,6 +14,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { codexSeatHomePath } from "../src/domain/codex-seat-home.js";
+import { shimDir } from "../src/domain/git-worktree-shim.js";
 import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaults.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { PersistedEvent } from "../src/domain/types.js";
@@ -634,6 +635,66 @@ describe("NodeLauncher", () => {
       expect(envArg).toBeDefined();
       expect(envArg!.OPENRIG_NODE_ID).toBe(node.id);
       expect(envArg!.OPENRIG_SESSION_NAME).toContain("dev1-impl");
+    });
+  });
+
+  // The fork's seat setup (worktree placement shim, per-seat CODEX_HOME) is fail-open: a failure must not
+  // stop the launch, but the operator is told through the launch result. Each failure is made real on disk
+  // (a regular file where the directory must go) so the production code, not a stub, raises it.
+  describe("fork seat-setup warnings reach the launch result", () => {
+    const SHIM_MARKER = "worktree shim materialization failed";
+    const CODEX_MARKER = "codex per-seat CODEX_HOME seeding failed";
+
+    async function homeWithBlockedDirs(blocks: { shim?: boolean; codex?: boolean }): Promise<string> {
+      const home = await fs.mkdtemp(path.join(fakeHomes, "warn-home-"));
+      if (blocks.shim) await fs.writeFile(shimDir(home), "not a directory");
+      if (blocks.codex) await fs.writeFile(path.join(home, "codex-seats"), "not a directory");
+      return home;
+    }
+
+    function launchWith(runtime: "codex" | "claude-code", home: string, createSession?: () => Promise<TmuxResult>) {
+      const rig = rigRepo.createRig(`warn-${runtime}`);
+      rigRepo.addNode(rig.id, "seat-a", { role: "worker", runtime });
+      const launcher = createLauncher(mockTmuxAdapter(createSession ? { createSession } : undefined), { OPENRIG_HOME: home });
+      return launcher.launchNode(rig.id, "seat-a");
+    }
+
+    it("a failed worktree shim is reported and the launch still succeeds", async () => {
+      const result = await launchWith("claude-code", await homeWithBlockedDirs({ shim: true }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.warnings?.filter((w) => w.includes(SHIM_MARKER))).toHaveLength(1);
+      expect(result.warnings?.some((w) => w.includes(CODEX_MARKER))).toBe(false);
+    });
+
+    it("a failed per-seat CODEX_HOME is reported and the launch still succeeds", async () => {
+      const result = await launchWith("codex", await homeWithBlockedDirs({ codex: true }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.warnings?.filter((w) => w.includes(CODEX_MARKER))).toHaveLength(1);
+      expect(result.warnings?.some((w) => w.includes(SHIM_MARKER))).toBe(false);
+    });
+
+    it("a healthy launch carries neither warning", async () => {
+      const result = await launchWith("codex", await homeWithBlockedDirs({}));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.warnings).toBeUndefined();
+    });
+
+    it("keeps the fork's warnings and upstream's tmux warnings together, fork first", async () => {
+      const result = await launchWith(
+        "codex",
+        await homeWithBlockedDirs({ shim: true, codex: true }),
+        async () => ({ ok: true as const, warnings: ["identity cleanup skipped: boom"] }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      const warnings = result.warnings ?? [];
+      expect(warnings).toHaveLength(3);
+      expect(warnings[0]).toContain(SHIM_MARKER);
+      expect(warnings[1]).toContain(CODEX_MARKER);
+      expect(warnings[2]).toBe("identity cleanup skipped: boom");
     });
   });
 
