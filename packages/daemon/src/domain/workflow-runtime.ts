@@ -1,4 +1,5 @@
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
+import { findLatestSessionNameMatch } from "./session-name-matches.js";
 import { exceptionConfigurationSource, inspectExceptionReadiness, type ExceptionReadiness } from "./workflow-exception-readiness.js";
 import { inspectGraph, recoverGraphOperation, reviseGraph } from "./workflow-reconciliation.js";
 import { lifecycleObligations, requiredLifecycleSteps, type LifecycleObligation } from "./lifecycle-obligations.js";
@@ -335,11 +336,10 @@ export class WorkflowRuntime {
     // EITHER way — report alive so no warning fires, and never let an advisory
     // path fail validate/instantiate.
     try {
-      const row = this.db
-        .prepare(
-          `SELECT s.status AS status FROM sessions s WHERE s.session_name = ? ORDER BY s.created_at DESC LIMIT 1`,
-        )
-        .get(sessionRef) as { status: string } | undefined;
+      const latest = findLatestSessionNameMatch(this.db, sessionRef);
+      const row = latest
+        ? this.db.prepare(`SELECT s.status AS status FROM sessions s WHERE s.id = ?`).get(latest.id) as { status: string } | undefined
+        : undefined;
       if (!row) return { alive: false, reason: "no_session_with_this_name" };
       return row.status === "running" ? { alive: true } : { alive: false, reason: `session_status_${row.status}` };
     } catch {

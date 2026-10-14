@@ -1,4 +1,5 @@
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
+import { findLatestSessionNameMatch } from "./session-name-matches.js";
 // PL-004 Phase D: workflow projector — transactional-scribe contract.
 //
 // LOAD-BEARING. The single most important Phase D contract.
@@ -132,14 +133,10 @@ export function workflowWaitWakeMessage(input: {
  * facade (instantiate-time static pin checks).
  */
 export function nodeRuntimeOf(db: Database.Database, session: string): string | null {
-  const row = db
-    .prepare(
-      `SELECT n.runtime FROM nodes n
-         JOIN sessions s ON s.node_id = n.id
-        WHERE s.session_name = ?
-        ORDER BY s.id DESC LIMIT 1`,
-    )
-    .get(session) as { runtime: string | null } | undefined;
+  const latest = findLatestSessionNameMatch(db, session);
+  const row = latest
+    ? db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(latest.node_id) as { runtime: string | null } | undefined
+    : undefined;
   return row?.runtime ?? null;
 }
 

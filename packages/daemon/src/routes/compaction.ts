@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { findLatestSessionNameMatch } from "../domain/session-name-matches.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import type Database from "better-sqlite3";
 import type { ClaudeCompactionEnforcer, ManualCompactionOutcome } from "../domain/claude-compaction-enforcer.js";
@@ -51,14 +52,12 @@ export function compactionRoutes(opts?: { bearerToken?: string | null }): Hono {
     }
 
     // Resolve the DB node id + runtime for the latest session row.
-    const row = db.prepare(`
+    const latest = findLatestSessionNameMatch(db, sessionName);
+    const row = latest ? db.prepare(`
       SELECT n.id AS node_id, n.runtime AS runtime, n.cwd AS cwd
-      FROM sessions s
-      JOIN nodes n ON s.node_id = n.id
-      WHERE s.session_name = ?
-      ORDER BY s.id DESC
-      LIMIT 1
-    `).get(sessionName) as { node_id: string; runtime: string | null; cwd: string | null } | undefined;
+      FROM nodes n
+      WHERE n.id = ?
+    `).get(latest.node_id) as { node_id: string; runtime: string | null; cwd: string | null } | undefined : undefined;
     if (!row) {
       return c.json({
         ok: false,

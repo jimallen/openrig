@@ -2,6 +2,7 @@
 // startup_status=attention_required. Managed writer + append-only audit.
 
 import type Database from "better-sqlite3";
+import { findLatestSessionNameMatch } from "./session-name-matches.js";
 import { CLAUDE_RESUME_ROTATION_COLUMNS, claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
@@ -555,15 +556,15 @@ export class SeatAttentionReconciler {
     bindingPane: string | null;
     latestError: string | null;
   } | null {
-    const row = this.deps.sessionRegistry.db.prepare(
+    const latest = findLatestSessionNameMatch(this.deps.sessionRegistry.db, sessionName);
+    const row = latest ? this.deps.sessionRegistry.db.prepare(
       `SELECT s.id, s.node_id, n.rig_id, n.runtime, s.resume_token, b.tmux_pane, s.startup_status, s.status,
               (SELECT e.payload FROM events e WHERE e.node_id = s.node_id AND e.type IN ('node.startup_attention_required','node.startup_failed') ORDER BY e.seq DESC LIMIT 1) as latest_error_payload
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id
        LEFT JOIN bindings b ON b.node_id = s.node_id
-       WHERE s.session_name = ?
-       ORDER BY s.created_at DESC, s.id DESC LIMIT 1`
-    ).get(sessionName) as {
+       WHERE s.id = ?`
+    ).get(latest.id) as {
       id: string;
       node_id: string;
       rig_id: string;
@@ -573,7 +574,7 @@ export class SeatAttentionReconciler {
       resume_token: string | null;
       tmux_pane: string | null;
       latest_error_payload: string | null;
-    } | undefined;
+    } | undefined : undefined;
 
     if (!row) return null;
 

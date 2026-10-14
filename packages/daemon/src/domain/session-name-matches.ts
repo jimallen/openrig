@@ -34,3 +34,14 @@ export function findSessionNameMatches(db: Database.Database, sessionName: strin
   const live = matchesWhere(archiveWhereClause("r.archived_at"));
   return live.length > 0 ? live : matchesWhere(archiveWhereClause("r.archived_at", { archivedOnly: true }));
 }
+
+/**
+ * The single session row that answers a session name: the newest row of a live rig, or, when no
+ * live rig has the name, the newest row of an archived one. Every name-keyed "latest row" pick
+ * (`ORDER BY id DESC LIMIT 1`) goes through this so a recreated rig with the same seat names can
+ * never resolve to its archived predecessor. Callers that need more columns than
+ * {@link SessionNameMatch} carries read them by `id`.
+ */
+export function findLatestSessionNameMatch(db: Database.Database, sessionName: string): SessionNameMatch | null {
+  return findSessionNameMatches(db, sessionName)[0] ?? null;
+}

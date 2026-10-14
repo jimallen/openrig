@@ -4,7 +4,7 @@ export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
-import { findSessionNameMatches } from "./session-name-matches.js";
+import { findLatestSessionNameMatch, findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
@@ -982,9 +982,10 @@ export class SessionTransport {
     runtime: string | null; attachmentType: string | null; nodeId: string | null; pane: string | null; occupant: string | null; resumeToken: string | null;
     rotation: ClaudeResumeRotation | null;
   } {
-    // One existing statement; P2 reads the binding columns it already joins plus the
-    // same current-occupant subselect the delivery guard uses. No extra query.
-    const row = this.db.prepare(`
+    // P2 reads the binding columns it already joins plus the same current-occupant subselect the
+    // delivery guard uses; the live-first row is chosen by findLatestSessionNameMatch.
+    const latest = findLatestSessionNameMatch(this.db, sessionName);
+    const row = latest ? this.db.prepare(`
       SELECT
         n.runtime AS runtime,
         b.attachment_type AS attachment_type,
@@ -1000,10 +1001,8 @@ export class SessionTransport {
       FROM sessions s
       JOIN nodes n ON s.node_id = n.id
       LEFT JOIN bindings b ON b.node_id = n.id
-      WHERE s.session_name = ?
-      ORDER BY s.id DESC
-      LIMIT 1
-    `).get(sessionName) as SessionMetaRow | undefined;
+      WHERE s.id = ?
+    `).get(latest.id) as SessionMetaRow | undefined : undefined;
 
     return {
       runtime: row?.runtime ?? null,

@@ -17,6 +17,7 @@
 // the token directly.
 
 import { Hono } from "hono";
+import { findLatestSessionNameMatch } from "../domain/session-name-matches.js";
 import { rmSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { AgentImageLibraryService } from "../domain/agent-images/agent-image-library-service.js";
@@ -79,15 +80,13 @@ interface ForkSourceShape {
   label: string | null;
 }
 
-function resolveForkSourceNode(db: Database.Database, sourceSession: string): ForkSourceShape | null {
+export function resolveForkSourceNode(db: Database.Database, sourceSession: string): ForkSourceShape | null {
   // SELECT n.* so an older DB missing codex_config_profile simply yields
   // undefined for that key rather than throwing.
-  const row = db
-    .prepare(
-      `SELECT n.* FROM sessions s JOIN nodes n ON n.id = s.node_id
-       WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1`,
-    )
-    .get(sourceSession) as Record<string, unknown> | undefined;
+  const latest = findLatestSessionNameMatch(db, sourceSession);
+  const row = latest
+    ? db.prepare("SELECT * FROM nodes WHERE id = ?").get(latest.node_id) as Record<string, unknown> | undefined
+    : undefined;
   if (!row) return null;
   return {
     runtime: (row["runtime"] as string | null) ?? null,

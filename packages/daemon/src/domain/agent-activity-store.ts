@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { findLatestSessionNameMatch } from "./session-name-matches.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, PersistedEvent } from "./types.js";
 
@@ -288,7 +289,7 @@ export class AgentActivityStore {
     // never receive this seat's resume token. Other runtimes keep main's lookup.
     const sessionRow = (row.runtime === "omp"
       ? this.db.prepare("SELECT id FROM sessions WHERE session_name = ? AND node_id = ? ORDER BY id DESC LIMIT 1").get(row.session_name, row.node_id)
-      : this.db.prepare("SELECT id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(row.session_name)) as { id: string } | undefined;
+      : findLatestSessionNameMatch(this.db, row.session_name)) as { id: string } | undefined | null;
     if (!sessionRow) return null;
     return { sessionId: sessionRow.id, rigId: row.rig_id, nodeId: row.node_id, sessionName: row.session_name, runtime: row.runtime };
   }
@@ -307,14 +308,14 @@ export class AgentActivityStore {
     }
 
     if (!input.sessionName) return null;
+    const latest = findLatestSessionNameMatch(this.db, input.sessionName);
+    if (!latest) return null;
     const row = this.db.prepare(`
       SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
       FROM sessions s
       JOIN nodes n ON n.id = s.node_id
-      WHERE s.session_name = ?
-      ORDER BY s.id DESC
-      LIMIT 1
-    `).get(input.sessionName) as SessionLookupRow | undefined;
+      WHERE s.id = ?
+    `).get(latest.id) as SessionLookupRow | undefined;
     return row ?? null;
   }
 }

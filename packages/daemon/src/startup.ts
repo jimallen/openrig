@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url";
+import { resolveSessionNodeId } from "./domain/queue-owner.js";
+import { listWakeSessionsBySeat } from "./domain/wake-resolve-service.js";
 import { discoverTailscaleSelfNames } from "./middleware/browser-boundary.js";
 import { configureShadowCapture } from "./domain/shadow-capture.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "./domain/seat-delivery-guard.js";
@@ -1327,15 +1329,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     watchdogJobsRepo: watchdogJobsRepoInstance,
     watchdogHistoryLog: watchdogHistoryLogInstance,
     wakeResolveService: new WakeResolveService({
-      listSessionsBySeat: (seat: string) =>
-        db
-          .prepare(
-            `SELECT s.id AS id, s.session_name AS sessionName, s.resume_token AS resumeToken,
-                    n.runtime AS runtime, s.created_at AS createdAt
-               FROM sessions s JOIN nodes n ON s.node_id = n.id
-              WHERE s.session_name = ? ORDER BY s.id DESC`,
-          )
-          .all(seat) as WakeSessionRow[],
+      listSessionsBySeat: (seat: string) => listWakeSessionsBySeat(db, seat),
     }),
     askService: (() => {
       // P19 A5 (finding graduated): inject seatActivity like the attention path
@@ -1995,8 +1989,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const sessionTransport = deps.sessionTransport;
   if (sessionTransport) {
     queueRepoInstance.attachActivityReader((session) => {
-      const node = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(session) as { node_id: string } | undefined;
-      return node ? seatActivityService.getSeatState(node.node_id) : null;
+      const nodeId = resolveSessionNodeId(db, session);
+      return nodeId ? seatActivityService.getSeatState(nodeId) : null;
     });
     const watchdogPolicyEngine = new WatchdogPolicyEngine({
       jobsRepo: watchdogJobsRepoInstance,

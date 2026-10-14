@@ -1,4 +1,5 @@
 import { OutboxHandler } from "./outbox-handler.js";
+import { findLatestSessionNameMatch } from "./session-name-matches.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -621,10 +622,7 @@ export class ClaimService {
       .prepare("SELECT node_id FROM bindings WHERE tmux_session = ?")
       .get(sessionName) as { node_id: string } | undefined;
     if (bound) return bound.node_id;
-    const recent = this.db
-      .prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY created_at DESC, id DESC LIMIT 1")
-      .get(sessionName) as { node_id: string } | undefined;
-    return recent?.node_id ?? null;
+    return findLatestSessionNameMatch(this.db, sessionName)?.node_id ?? null;
   }
 
   async createAndBindToPod(opts: CreateAndBindToPodOptions): Promise<ClaimResult> {

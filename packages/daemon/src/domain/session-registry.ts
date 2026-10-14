@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { findLatestSessionNameMatch } from "./session-name-matches.js";
 import { monotonicFactory } from "ulid";
 import { randomUUID } from "node:crypto";
 
@@ -307,9 +308,7 @@ export class SessionRegistry {
    *  enforcer's gen-scoped stage gate consumes. Never throws (a bad lookup returns null). */
   currentOccupantGenerationForSession(sessionName: string): string | null {
     try {
-      const row = this.db
-        .prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
-        .get(sessionName) as { node_id: string } | undefined;
+      const row = findLatestSessionNameMatch(this.db, sessionName);
       if (!row) return null;
       return this.currentOccupantTenure(row.node_id)?.generationUuid ?? null;
     } catch {
@@ -513,19 +512,19 @@ export class SessionRegistry {
     runtime: string | null;
     currentProvenance: string | null;
   } | null {
-    const row = this.db.prepare(
+    const latest = findLatestSessionNameMatch(this.db, sessionName);
+    const row = latest ? this.db.prepare(
       `SELECT s.id as session_id, s.node_id, n.rig_id, n.runtime, s.resume_provenance
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id
-       WHERE s.session_name = ?
-       ORDER BY s.created_at DESC, s.id DESC LIMIT 1`
-    ).get(sessionName) as {
+       WHERE s.id = ?`
+    ).get(latest.id) as {
       session_id: string;
       node_id: string;
       rig_id: string;
       runtime: string | null;
       resume_provenance: string | null;
-    } | undefined;
+    } | undefined : undefined;
     if (!row) return null;
     return {
       sessionId: row.session_id,
