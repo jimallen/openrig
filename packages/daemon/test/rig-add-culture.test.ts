@@ -165,6 +165,70 @@ describe("rig add: the rig's own culture reaches a seat added to a running rig",
   });
 });
 
+// A culture file that EXISTS but cannot be delivered (a directory, an unreadable file) used to pass the
+// existsSync-only check, then fail as a required startup file AFTER the seat was created. The check is
+// now: the path, followed through symlinks, is a regular file the daemon can read. Symlinks are FOLLOWED
+// (a CULTURE.md that is a link to a shared file is a normal setup); what the link points at is judged.
+describe("rig add: the culture file must be a readable regular file, checked before any seat exists", () => {
+  async function refused(f: Awaited<ReturnType<typeof runningRig>>, culture: string, message: RegExp) {
+    const nodesBefore = (f.db.prepare("SELECT COUNT(*) AS c FROM nodes").get() as { c: number }).c;
+    const sessionsBefore = (f.tmux.createSession as ReturnType<typeof vi.fn>).mock.calls.length;
+    const out = await f.inst.addMemberToPod(f.rigId, "dev", f.member(), f.rigRoot, { cultureFile: culture });
+    expect(out).toMatchObject({ ok: false, code: "validation_failed" });
+    expect(JSON.stringify(out)).toMatch(message);
+    expect((f.db.prepare("SELECT COUNT(*) AS c FROM nodes").get() as { c: number }).c).toBe(nodesBefore);
+    expect((f.tmux.createSession as ReturnType<typeof vi.fn>).mock.calls.length).toBe(sessionsBefore);
+    expect(f.read("CLAUDE.md")).toBeNull();
+  }
+
+  it("a directory (relative to the rig root) is refused as not a regular file", async () => {
+    const f = await runningRig();
+    await refused(f, "agents", /culture file .*agents.* is not a regular file/i);
+    f.db.close();
+  });
+
+  it("a directory (absolute) is refused as not a regular file", async () => {
+    const f = await runningRig();
+    await refused(f, f.rigRoot, /is not a regular file/i);
+    f.db.close();
+  });
+
+  it("a symlink to a directory is refused (the link is followed, the directory judged)", async () => {
+    const f = await runningRig();
+    fs.symlinkSync(nodePath.join(f.rigRoot, "agents"), nodePath.join(f.rigRoot, "culture-dir-link"));
+    await refused(f, "culture-dir-link", /is not a regular file/i);
+    f.db.close();
+  });
+
+  it("a dangling symlink is refused as not found", async () => {
+    const f = await runningRig();
+    fs.symlinkSync(nodePath.join(f.root, "gone.md"), nodePath.join(f.rigRoot, "dangling.md"));
+    await refused(f, "dangling.md", /not found/i);
+    f.db.close();
+  });
+
+  // chmod 000 only denies a non-root user; as root the file stays readable and the row cannot be set up.
+  it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)("an unreadable file is refused as not readable", async () => {
+    const f = await runningRig();
+    const locked = nodePath.join(f.rigRoot, "LOCKED.md");
+    fs.writeFileSync(locked, `# locked\n${MARKER}\n`);
+    fs.chmodSync(locked, 0o000);
+    try {
+      await refused(f, "LOCKED.md", /culture file .*LOCKED\.md.* is not readable/i);
+    } finally { fs.chmodSync(locked, 0o600); }
+    f.db.close();
+  });
+
+  it("a symlink to a regular file is followed and its content delivered", async () => {
+    const f = await runningRig();
+    fs.symlinkSync(nodePath.join(f.root, "elsewhere-culture.md"), nodePath.join(f.rigRoot, "LINKED.md"));
+    const out = await f.inst.addMemberToPod(f.rigId, "dev", f.member(), f.rigRoot, { cultureFile: "LINKED.md" });
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(f.read("CLAUDE.md")).toContain(`${MARKER}-ABS`);
+    f.db.close();
+  });
+});
+
 describe("rig add: the add fragment carries remote_control", () => {
   it("`remote_control: true` in the fragment persists on the new node and the real launch command carries --remote-control <session name>", async () => {
     const f = await runningRig();
