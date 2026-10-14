@@ -76,7 +76,14 @@ function within(root: string, target: string): boolean {
  * same real path, which catches a parent directory swapped for a symlink during the window.
  * `requested` is only for messages. Nothing here creates anything: a refusal is a pure return.
  */
-export function checkCultureFile(requested: string, resolvedPath: string, roots: ReadonlyArray<string>): CultureFileCheck {
+export function checkCultureFile(
+  requested: string,
+  resolvedPath: string,
+  roots: ReadonlyArray<string>,
+  /** Test seams only: run exactly in the race windows (after the containment check / after the read) so the
+   *  swap defences can be exercised deterministically. Production callers pass nothing. */
+  hooks?: { beforeOpen?: () => void; afterRead?: () => void },
+): CultureFileCheck {
   const expected = `inside one of: ${roots.length > 0 ? roots.join(", ") : "(no allowed roots)"} (the rig's own folders, the deployed ~/.agents-release, $OPENRIG_HOME/shared-docs/rigs, or OPENRIG_CULTURE_ROOTS)`;
   let realPath: string;
   try { realPath = realpathSync(resolvedPath); } catch {
@@ -89,6 +96,7 @@ export function checkCultureFile(requested: string, resolvedPath: string, roots:
   }
   let fd: number | undefined;
   try {
+    hooks?.beforeOpen?.();
     try { fd = openSync(realPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch {
       return { ok: false, reason: "unreadable", message: `culture file "${requested}" (${realPath}) is not readable by the daemon (it could not be opened; a symlink swapped in at the last moment is refused too); fix its permissions or pass another path` };
     }
@@ -109,6 +117,7 @@ export function checkCultureFile(requested: string, resolvedPath: string, roots:
         return { ok: false, reason: "too_large", message: `culture file "${requested}" (${realPath}) grew past the ${CULTURE_FILE_MAX_BYTES}-byte limit while being read` };
       }
     }
+    hooks?.afterRead?.();
     let again: string;
     let same = false;
     try { again = realpathSync(resolvedPath); const l = lstatSync(again); same = again === realPath && l.ino === st.ino && l.dev === st.dev; } catch { same = false; }

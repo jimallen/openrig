@@ -120,7 +120,7 @@ async function runningRig(standing: string[] = []) {
   return { outside, db, root, rigRoot, rigId, tmux, inst, member, read, addCwd, startupPaths };
 }
 
-import { CULTURE_FILE_MAX_BYTES, rigWorkRoots, standingCultureRoots } from "../src/domain/culture-file-guard.js";
+import { CULTURE_FILE_MAX_BYTES, checkCultureFile, rigWorkRoots, standingCultureRoots } from "../src/domain/culture-file-guard.js";
 
 // OF-15: a rig's culture file is injected into the new seat's startup context, so `rig add --culture` /
 // MCP rig_add cultureFile / spec culture_file must not name "any file the daemon can read" (~/.ssh/id_rsa).
@@ -252,6 +252,60 @@ describe("culture roots derivation", () => {
     expect(standingCultureRoots({ home: "/h", openrigHome: "/oh", extra: ["/a/b", "rel", "", "/c"].join(nodePath.delimiter) }))
       .toEqual(["/h/.agents-release", "/oh/shared-docs/rigs", "/a/b", "/c"]);
     expect(standingCultureRoots({ home: "/h", openrigHome: "/oh", extra: undefined })).toEqual(["/h/.agents-release", "/oh/shared-docs/rigs"]);
+  });
+});
+
+describe("checkCultureFile: swap races and path-shape edge cases (deterministic via the test seams)", () => {
+  const mk = () => {
+    const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-cfg-")));
+    const outside = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-cfg-out-")));
+    tmpDirs.push(root, outside);
+    return { root, outside };
+  };
+
+  it("CONTROL: a plain file inside the root is read, once, from the opened descriptor", () => {
+    const { root } = mk();
+    fs.writeFileSync(nodePath.join(root, "C.md"), "hello\n");
+    const out = checkCultureFile("C.md", nodePath.join(root, "C.md"), [root]);
+    expect(out).toMatchObject({ ok: true, bytes: 6, content: "hello\n" });
+  });
+
+  it("the leaf swapped for a symlink between the check and the open is refused (O_NOFOLLOW), not followed", () => {
+    const { root, outside } = mk();
+    const file = nodePath.join(root, "C.md");
+    fs.writeFileSync(file, "ok\n");
+    fs.writeFileSync(nodePath.join(outside, "secret"), "SECRET\n");
+    const out = checkCultureFile("C.md", file, [root], {
+      beforeOpen: () => { fs.unlinkSync(file); fs.symlinkSync(nodePath.join(outside, "secret"), file); },
+    });
+    expect(out).toMatchObject({ ok: false, reason: "unreadable" });
+    expect(JSON.stringify(out)).not.toContain("SECRET");
+  });
+
+  it("the file replaced by a different file after it was read is refused as changed (device+inode re-check)", () => {
+    const { root } = mk();
+    const file = nodePath.join(root, "C.md");
+    fs.writeFileSync(file, "ok\n");
+    const out = checkCultureFile("C.md", file, [root], {
+      afterRead: () => { fs.renameSync(file, `${file}.old`); fs.writeFileSync(file, "swapped\n"); },
+    });
+    expect(out).toMatchObject({ ok: false, reason: "changed" });
+  });
+
+  it("a directory named ..data inside the root is inside it (not mistaken for a parent escape)", () => {
+    const { root } = mk();
+    fs.mkdirSync(nodePath.join(root, "..data"));
+    fs.writeFileSync(nodePath.join(root, "..data", "C.md"), "x\n");
+    expect(checkCultureFile("C", nodePath.join(root, "..data", "C.md"), [root])).toMatchObject({ ok: true });
+  });
+
+  it("a sibling directory sharing the root's name as a prefix is outside it", () => {
+    const { root } = mk();
+    const sibling = `${root}-sibling`;
+    fs.mkdirSync(sibling);
+    tmpDirs.push(sibling);
+    fs.writeFileSync(nodePath.join(sibling, "C.md"), "x\n");
+    expect(checkCultureFile("C", nodePath.join(sibling, "C.md"), [root])).toMatchObject({ ok: false, reason: "outside_roots" });
   });
 });
 
