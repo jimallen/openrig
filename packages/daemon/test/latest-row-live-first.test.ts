@@ -10,9 +10,10 @@
 // live-first rule picks the live one. Live and archived nodes differ in runtime, cwd and resume token so
 // each site's answer names which rig it resolved.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
+import { findLatestSessionNameMatch } from "../src/domain/session-name-matches.js";
 import { resolveSessionNodeId } from "../src/domain/queue-owner.js";
 import { nodeRuntimeOf } from "../src/domain/workflow-projector.js";
 import { discoverResumeToken } from "../src/domain/agent-images/resume-token-discovery.js";
@@ -161,5 +162,14 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
     const svc = Object.create(OperatingPostureService.prototype) as unknown as { db: Database.Database; inferenceSignals(ctx: unknown, dest: string | null): { cwd: string | null } };
     svc.db = db;
     expect(svc.inferenceSignals({}, NAME).cwd).toBe("/live/cwd");
+  });
+
+  it("a partial schema without rigs/nodes still answers with the newest row (pre-topology fixtures)", () => {
+    const bare = new Database(":memory:");
+    bare.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, node_id TEXT, session_name TEXT)");
+    bare.prepare("INSERT INTO sessions VALUES ('01A', 'n1', 'x@y'), ('01B', 'n2', 'x@y')").run();
+    expect(findLatestSessionNameMatch(bare, "x@y")?.node_id).toBe("n2");
+    expect(findLatestSessionNameMatch(bare, "absent@y")).toBeNull();
+    bare.close();
   });
 });

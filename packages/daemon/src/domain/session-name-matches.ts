@@ -43,5 +43,12 @@ export function findSessionNameMatches(db: Database.Database, sessionName: strin
  * {@link SessionNameMatch} carries read them by `id`.
  */
 export function findLatestSessionNameMatch(db: Database.Database, sessionName: string): SessionNameMatch | null {
-  return findSessionNameMatches(db, sessionName)[0] ?? null;
+  const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('rigs', 'nodes')").all() as Array<{ name: string }>).map((t) => t.name));
+  if (tables.has("rigs") && tables.has("nodes")) return findSessionNameMatches(db, sessionName)[0] ?? null;
+  // A partial schema (no topology tables to carry an archive flag) has nothing to set aside: newest row wins,
+  // as these lookups behaved before they became archive-aware.
+  const row = db
+    .prepare("SELECT id, node_id, session_name FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
+    .get(sessionName) as { id: string; node_id: string; session_name: string } | undefined;
+  return row ? { ...row, rig_id: "" } : null;
 }
