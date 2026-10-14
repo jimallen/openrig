@@ -388,19 +388,25 @@ describe("launch-time culture_file (rig spec) is judged by the same guard", () =
       `    edges: []`, `edges: []`,
     ].join("\n") + "\n";
     const out = await f.inst.instantiate(yaml, specRoot);
+    // A refusal at PREFLIGHT launches nothing; a refusal that only happens at delivery has already created
+    // a tmux session for the seat (and rolls it back). Counting sessions beyond the seed rig's one is what tells
+    // the preflight guard apart from the delivery-time guard.
+    const sessions = (f.tmux.createSession as ReturnType<typeof vi.fn>).mock.calls.length - 1;
     f.db.close();
-    return out;
+    return Object.assign(out, { sessions });
   }
 
   it("an oversize CULTURE.md is refused at preflight", async () => {
     const out = await launch((specRoot) => fs.writeFileSync(nodePath.join(specRoot, "CULTURE.md"), "x".repeat(CULTURE_FILE_MAX_BYTES + 1)));
     expect(out.ok).toBe(false);
+    expect(out.sessions).toBe(0);
     expect(JSON.stringify(out)).toMatch(/over the 262144-byte limit/);
   });
 
   it("a FIFO CULTURE.md is refused at preflight without hanging", async () => {
     const out = await launch((specRoot) => { execFileSync("mkfifo", [nodePath.join(specRoot, "CULTURE.md")]); });
     expect(out.ok).toBe(false);
+    expect(out.sessions).toBe(0);
     expect(JSON.stringify(out)).toMatch(/is not a regular file/);
   }, 10000);
 
@@ -410,6 +416,7 @@ describe("launch-time culture_file (rig spec) is judged by the same guard", () =
       fs.linkSync(nodePath.join(outside, "other.md"), nodePath.join(specRoot, "CULTURE.md"));
     });
     expect(out.ok).toBe(false);
+    expect(out.sessions).toBe(0);
     expect(JSON.stringify(out)).toMatch(/has 2 hard links/);
   });
 
@@ -419,6 +426,7 @@ describe("launch-time culture_file (rig spec) is judged by the same guard", () =
       fs.symlinkSync(nodePath.join(outside, "pkg-culture.md"), nodePath.join(specRoot, "CULTURE.md"));
     });
     expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.sessions).toBe(1);
   });
 
   it("CONTROL: an ordinary CULTURE.md in the spec folder launches", async () => {
