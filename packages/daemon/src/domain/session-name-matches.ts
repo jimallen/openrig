@@ -45,17 +45,29 @@ export function distinctRigIds(matches: SessionNameMatch[]): string[] {
 
 /**
  * The text that names every candidate of an ambiguous session name: each rig's name, rig id and
- * node id(s). The ids are what tell two same-named rigs apart. `rig send` and transcripts have no
- * node-id selector, and `--rig` matches by name, so the way out is to archive the rig that should
- * not answer (reversible) - the message says so.
+ * node id(s), marking archived rigs. The ids are what tell two same-named rigs apart. `rig send`
+ * and transcripts have no node-id selector, and `--rig` matches by name, so the advice is about
+ * which rig keeps answering: all-live candidates -> stop then archive the unwanted one; all-archived
+ * candidates -> unarchive the wanted one (nothing is left to archive).
  */
 export function describeAmbiguousSessionName(db: Database.Database, sessionName: string, matches: SessionNameMatch[]): string {
-  const rigName = db.prepare("SELECT name FROM rigs WHERE id = ?");
+  const hasArchive = (db.prepare("PRAGMA table_info(rigs)").all() as Array<{ name: string }>)
+    .some((column) => column.name === "archived_at");
+  const rigRow = db.prepare(`SELECT name${hasArchive ? ", archived_at" : ""} FROM rigs WHERE id = ?`);
+  let archivedCount = 0;
   const candidates = distinctRigIds(matches).map((rigId) => {
-    const name = (rigName.get(rigId) as { name: string } | undefined)?.name ?? "?";
+    const row = rigRow.get(rigId) as { name: string; archived_at?: string | null } | undefined;
+    const archived = row?.archived_at != null;
+    if (archived) archivedCount++;
     const nodeIds = Array.from(new Set(matches.filter((match) => match.rig_id === rigId).map((match) => match.node_id)));
-    return `${name} (rig ${rigId}, node ${nodeIds.join(", ")})`;
+    return `${row?.name ?? "?"} (rig ${rigId}, node ${nodeIds.join(", ")}${archived ? ", archived" : ""})`;
   });
-  return `Session '${sessionName}' is ambiguous — found in rigs: ${candidates.join("; ")}. `
-    + "Rig names may be identical, so tell them apart by rig id; archive the one that should not answer with: rig archive <rigId>.";
+  // Live rigs answer before archived ones, so the candidates are all live or all archived.
+  const advice = archivedCount === candidates.length
+    ? "Rig names may be identical, so tell them apart by rig id. Every candidate is already archived; "
+      + "unarchive the one that should answer with: rig unarchive <rigId> (a live rig answers before archived ones)."
+    // `rig archive` refuses a running or degraded rig (409) unless --force (routes/rigs.ts).
+    : "Rig names may be identical, so tell them apart by rig id. To resolve it, stop the rig that should not answer with: "
+      + "rig down <rigId>, then archive it with: rig archive <rigId> (or archive a running rig directly with: rig archive <rigId> --force).";
+  return `Session '${sessionName}' is ambiguous — found in rigs: ${candidates.join("; ")}. ${advice}`;
 }

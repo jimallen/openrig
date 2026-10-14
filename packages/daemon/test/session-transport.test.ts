@@ -1804,6 +1804,48 @@ describe("SessionTransport", () => {
       }
     });
 
+    // `rig archive` refuses a running or degraded rig (409) unless --force (routes/rigs.ts), and the
+    // candidates here are live, so the advice must say to stop the rig first (or use --force).
+    it("advises stopping then archiving when the candidates are live, and marks none archived", async () => {
+      for (let i = 0; i < 2; i++) {
+        const rig = rigRepo.createRig("eztrack");
+        const node = rigRepo.addNode(rig.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+        sessionRegistry.registerSession(node.id, NAME);
+      }
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("rig down <rigId>");
+        // The stop-then-archive sequence, and the --force alternative, each on their own: a bare
+        // "rig archive <rigId>" is also a prefix of the --force text and would pin nothing.
+        expect(result.error).toContain("rig down <rigId>, then archive it with: rig archive <rigId> (");
+        expect(result.error).toContain("rig archive <rigId> --force");
+        expect(result.error).not.toContain("unarchive");
+        expect(result.error.split(", archived)").length - 1).toBe(0);
+      }
+    });
+
+    it("marks every archived candidate and advises unarchive, not archive, when all candidates are archived", async () => {
+      for (let i = 0; i < 2; i++) {
+        const rig = rigRepo.createRig("eztrack");
+        const node = rigRepo.addNode(rig.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+        sessionRegistry.registerSession(node.id, NAME);
+        expect(rigRepo.archiveRig(rig.id)).toBe(true);
+      }
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.split(", archived)").length - 1).toBe(2);
+        expect(result.error).toContain("rig unarchive <rigId>");
+        expect(result.error).not.toContain("rig down");
+        expect(result.error).not.toContain("rig archive");
+      }
+    });
+
     it("does not call a live rig and its archived same-named predecessor ambiguous", async () => {
       const old = rigRepo.createRig("eztrack");
       const oldNode = rigRepo.addNode(old.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
