@@ -96,10 +96,6 @@ function readMemberSpelling(
   return { present: false, value: undefined };
 }
 
-function asString(v: unknown): string | undefined {
-  return typeof v === "string" ? v : undefined;
-}
-
 function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionPodFragment | null {
   if (!raw || typeof raw !== "object") return null;
   const id = raw["id"];
@@ -166,6 +162,9 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       if (hasSessionSource && sessionSource === undefined) {
         sessionSource = rawSessionSource as import("../domain/types.js").SessionSourceSpec;
       }
+      const agentRef = readMemberSpelling(m, "agent_ref", "agentRef");
+      const codexConfigProfile = readMemberSpelling(m, "codex_config_profile", "codexConfigProfile");
+      const restorePolicy = readMemberSpelling(m, "restore_policy", "restorePolicy");
       const permissionPolicy = readMemberSpelling(m, "permission_policy", "permissionPolicy");
       const remoteControl = readMemberSpelling(m, "remote_control", "remoteControl");
       const starterRef = readMemberSpelling(m, "starter_ref", "starterRef");
@@ -175,9 +174,12 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
-        agentRef: asString(readMemberSpelling(m, "agent_ref", "agentRef").value),
+        // agent_ref / codex_config_profile / restore_policy: PRESENCE-preserving RAW carry like the other
+        // dual-spelling fields -- a non-string (5, null, ...) must reach the canonical validator and
+        // reject there as `rig up` does, never be erased to "absent" (the old string-only read).
+        ...(agentRef.present ? { agentRef: agentRef.value } : {}),
         profile: typeof m["profile"] === "string" ? m["profile"] : undefined,
-        codexConfigProfile: asString(readMemberSpelling(m, "codex_config_profile", "codexConfigProfile").value),
+        ...(codexConfigProfile.present ? { codexConfigProfile: codexConfigProfile.value } : {}),
         cwd: typeof m["cwd"] === "string" ? m["cwd"] : undefined,
         model: typeof m["model"] === "string" ? m["model"] : undefined,
         // effort rides the ingress like model (a declared effort must never be silently dropped).
@@ -190,7 +192,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         // remote_control: raw presence is preserved (like permissionPolicy above); the canonical
         // RigSpec validator owns the boolean / claude-code-only check.
         ...(remoteControl.present ? { remoteControl: remoteControl.value } : {}),
-        restorePolicy: asString(readMemberSpelling(m, "restore_policy", "restorePolicy").value),
+        ...(restorePolicy.present ? { restorePolicy: restorePolicy.value } : {}),
         label: typeof m["label"] === "string" ? m["label"] : undefined,
         // role / starter_ref: PRESENCE-preserving like permission_policy/remote_control above. A
         // present-invalid value (role "", 7, null; starter_ref {}, {name:""}, a string, null, []) must
