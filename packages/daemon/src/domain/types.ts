@@ -1383,12 +1383,12 @@ export interface ExpansionPodFragment {
   members: Array<{
     id: string;
     runtime: string;
-    agentRef?: string;
+    agentRef?: unknown;
     profile?: string;
     cwd?: string;
     model?: string;
     effort?: string;
-    codexConfigProfile?: string;
+    codexConfigProfile?: unknown;
     /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF — threaded through the
      *  expansion ingress exactly like role (never silently dropped). Typed UNKNOWN
      *  (R2 at 4ac243c3): the ingress preserves RAW presence — including null and other
@@ -1399,8 +1399,14 @@ export interface ExpansionPodFragment {
      *  permissionPolicy: the ingress preserves RAW presence so the canonical validator rejects a
      *  non-boolean or a non-claude `true`, rather than the ingress erasing it into absence. */
     remoteControl?: unknown;
-    restorePolicy?: string;
+    restorePolicy?: unknown;
     label?: string;
+    /** Member `compaction_strategy`. Typed UNKNOWN (RAW presence preserved; the canonical validator owns the vocabulary). */
+    compactionStrategy?: unknown;
+    /** Member `mechanic` (seat@rig address). Typed UNKNOWN: the canonical validator rejects non-canonical values. */
+    mechanic?: unknown;
+    /** Member `startup` block. Typed UNKNOWN: the canonical validateStartupBlock owns the shape. */
+    startup?: unknown;
     /**
      * OPR.0.4.6.FAC1: optional seat-side role; threaded through
      * buildExpansionSpecObject → the pod-member schema → nodes.role

@@ -49,7 +49,7 @@ const RIG_KEYS = new Set([
   "startup", "services", "workspace", "pods", "edges", "non_interruptive", "project_rig",
 ]);
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
-const MEMBER_KEYS = new Set([
+export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref",

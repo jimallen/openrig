@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { MEMBER_KEYS } from "../src/domain/rigspec-schema.js";
 
 describe("POST /api/rigs/:rigId/expand", () => {
   let db: Database.Database;
@@ -679,5 +680,243 @@ describe("POST /api/rigs/:rigId/expand - present-invalid role / starter_ref reje
     });
     expect(res.status).toBeLessThan(500);
     expect(res.status).not.toBe(400);
+  });
+});
+
+// compaction_strategy / mechanic / startup are accepted member fields of the RigSpec (`rig up`), but
+// the expand ingress normalizer, the ExpansionPodFragment member type and buildExpansionSpecObject
+// had no entry for them, so a seat added through `rig expand` silently lost its compaction
+// strategy, its continuity mechanic and its startup block. They ride RAW (presence-preserving) so
+// the ONE canonical RigSpec validator owns the checks and rejects exactly as `rig up` does.
+describe("POST /api/rigs/:rigId/expand - compaction_strategy / mechanic / startup", () => {
+  const RIG_ROOT = "/project/rigs/cms-rig";
+  const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+  });
+
+  afterEach(() => { db.close(); });
+
+  const base = { runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." };
+  const startupA = { actions: [{ type: "send_text", value: "hello-a", idempotent: true }] };
+  const startupB = { actions: [{ type: "send_text", value: "hello-b", idempotent: true }] };
+
+  it("valid values reach the materialized spec per seat (two distinct values; none invented when absent)", async () => {
+    const rig = setup.rigRepo.createRig("cms-carry");
+    const spy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "cms", label: "CMS", members: [
+        { id: "a", ...base, compaction_strategy: "harness_native", mechanic: "mech-a@some-rig", startup: startupA },
+        { id: "b", ...base, compaction_strategy: "pod_continuity", mechanic: "mech-b@some-rig", startup: startupB },
+        { id: "c", ...base },
+      ], edges: [] } }),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).not.toBe(400);
+    expect(res.status).toBeLessThan(500);
+    const spec = spy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [a, b, c] = spec.pods[0]!.members;
+    expect(a).toMatchObject({ compaction_strategy: "harness_native", mechanic: "mech-a@some-rig", startup: startupA });
+    expect(b).toMatchObject({ compaction_strategy: "pod_continuity", mechanic: "mech-b@some-rig", startup: startupB });
+    for (const k of ["compaction_strategy", "mechanic", "startup"]) expect(k in c!).toBe(false);
+    spy.mockRestore();
+  });
+
+  const shellAction = { actions: [{ type: "shell", value: "ls", idempotent: true }] };
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['compaction_strategy "bogus"', { compaction_strategy: "bogus" }],
+    ['compaction_strategy "custom_prompt"', { compaction_strategy: "custom_prompt" }],
+    ["compaction_strategy 7", { compaction_strategy: 7 }],
+    ["compaction_strategy null", { compaction_strategy: null }],
+    ['mechanic "not-canonical"', { mechanic: "not-canonical" }],
+    ["mechanic 7", { mechanic: 7 }],
+    ["mechanic null", { mechanic: null }],
+    ['startup "str" (primitive)', { startup: "str" }],
+    // falsy startup values are PRESENT-invalid: rig up rejects each; a truthiness gate would erase them
+    ["startup false", { startup: false }],
+    ["startup 0", { startup: 0 }],
+    ['startup ""', { startup: "" }],
+    ["startup {files:'x'}", { startup: { files: "x" } }],
+    ["startup shell action", { startup: shellAction }],
+  ];
+
+  it.each(rows)("%s: expand rejects with the same errors as rig up and persists nothing", async (_label, overrides) => {
+    const upSpec = { version: "0.2", name: "cms-up", pods: [{ id: "cms", label: "CMS", members: [{ id: "seat", ...base, ...overrides }], edges: [] }], edges: [] };
+    const up = await setup.podInstantiator.instantiate(JSON.stringify(upSpec), RIG_ROOT);
+    expect(up.ok, "rig up must reject this input (otherwise the row proves nothing)").toBe(false);
+    const upErrors = (up as { errors?: string[] }).errors ?? [];
+    expect(upErrors.length).toBeGreaterThan(0);
+
+    const rig = setup.rigRepo.createRig("cms-expand");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "cms", label: "CMS", members: [{ id: "seat", ...base, ...overrides }], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; code?: string; error?: string };
+    expect(body.code).toBe("validation_failed");
+    expect(body.error).toBe(upErrors.join("; "));
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'cms.%'").get(rig.id)).toMatchObject({ c: 0 });
+  });
+});
+
+// Dual-spelling rule. `rig up` reads ONLY the snake_case member keys (the canonical RigSpec schema
+// refuses a camelCase member key as unknown), so the snake_case value is the one that must be
+// validated. The expand ingress also accepts a camelCase alias for seven fields (agentRef,
+// codexConfigProfile, restorePolicy, permissionPolicy, remoteControl, sessionSource, starterRef).
+// When BOTH spellings were sent, a VALID camelCase value silently shadowed an INVALID snake_case
+// one and expand created the seat where `rig up` refuses the same snake_case value. Now the
+// snake_case value wins for all seven, so expand rejects exactly what `rig up` rejects.
+describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case value is never shadowed by a valid camelCase one", () => {
+  const RIG_ROOT = "/project/rigs/dual-rig";
+  const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+  });
+
+  afterEach(() => { db.close(); });
+
+  const base = { runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." };
+  async function expectRejectsLikeUp(member: Record<string, unknown>, upMember: Record<string, unknown>) {
+    const upSpec = { version: "0.2", name: "dual-up", pods: [{ id: "dp", label: "DP", members: [upMember], edges: [] }], edges: [] };
+    const up = await setup.podInstantiator.instantiate(JSON.stringify(upSpec), RIG_ROOT);
+    expect(up.ok, "rig up must reject the snake_case value (otherwise the row proves nothing)").toBe(false);
+    const upErrors = (up as { errors?: string[] }).errors ?? [];
+    expect(upErrors.length).toBeGreaterThan(0);
+    const rig = setup.rigRepo.createRig("dual-expand");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [member], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; code?: string; error?: string };
+    expect(body.code).toBe("validation_failed");
+    expect(body.error).toBe(upErrors.join("; "));
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'dp.%'").get(rig.id)).toMatchObject({ c: 0 });
+  }
+  // [snake key, INVALID snake value, camel key, VALID camel value]
+  const rows: Array<[string, unknown, string, unknown]> = [
+    ["agent_ref", 5, "agentRef", "local:agents/impl"],
+    ["compaction_strategy", "bogus", "compactionStrategy", "harness_native"],
+    // non-string snake_case values (the old string-only read erased these, so the camelCase twin or nothing won)
+    ["restore_policy", 7, "restorePolicy", "checkpoint_only"],
+    ["codex_config_profile", 5, "codexConfigProfile", "default"],
+    ["codex_config_profile", "bad name!", "codexConfigProfile", "default"],
+    ["restore_policy", "bogus", "restorePolicy", "checkpoint_only"],
+    ["permission_policy", 7, "permissionPolicy", "builtin:yolo"],
+    ["remote_control", "yes", "remoteControl", true],
+    ["session_source", "str", "sessionSource", { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } }],
+    ["starter_ref", "st", "starterRef", { name: "st-ok" }],
+  ];
+
+  // Census derived from the schema's own MEMBER_KEYS: every member key `rig up` accepts is classified
+  // here as either single-spelling or dual-spelling. A newly added key fails this test until it is
+  // classified (and, if dual, given a shadow row and a camel-only row).
+  const SINGLE_SPELLING = ["cwd", "effort", "id", "label", "mechanic", "model", "profile", "role", "runtime", "startup"];
+  it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
+    const dual = [...new Set(rows.map((r) => r[0]))].sort();
+    expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());
+    expect(dual).toHaveLength(8);
+  });
+
+  // Snake_case-only non-string / empty values: rig up rejects each; the old string-only read erased
+  // them to "absent" so expand created the seat. [snake key, value, runtime]
+  const snakeOnly: Array<[string, unknown, string]> = [
+    ["restore_policy", 7, "claude-code"],
+    ["restore_policy", "", "claude-code"],
+    ["codex_config_profile", 5, "codex"],
+    ["codex_config_profile", "", "codex"],
+    ["agent_ref", 5, "claude-code"],
+    ["agent_ref", null, "claude-code"],
+    // claude-code "" additionally earns the 'must start with "local:" or "path:"' error; a truthiness gate drops it
+    ["agent_ref", "", "claude-code"],
+    // terminal seats echo the value in their error ('(got "5")'), so erasing it to absent changes the text
+    ["agent_ref", 5, "terminal"],
+    ["agent_ref", null, "terminal"],
+    ["agent_ref", "", "terminal"],
+  ];
+  it.each(snakeOnly)("%s=%j alone: expand rejects with the same errors as rig up", async (snake, bad, runtime) => {
+    const member = { id: "seat", ...base, runtime, [snake]: bad };
+    await expectRejectsLikeUp(member, member);
+  });
+
+  // Each camelCase alias is really READ: the materialized spec carries the value under the snake_case key.
+  it("camelCase-only aliases are each read: the materialized spec carries every value", async () => {
+    const rig = setup.rigRepo.createRig("dual-camel");
+    const spy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [
+        { id: "cc", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl", permissionPolicy: "builtin:yolo",
+          remoteControl: true, restorePolicy: "checkpoint_only", compactionStrategy: "harness_native", starterRef: { name: "st-ok" } },
+        // session_source and starter_ref cannot compose (fork + starter is rejected in v0), so separate seats
+        { id: "ss", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl",
+          sessionSource: { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } } },
+        { id: "cx", runtime: "codex", profile: "default", cwd: ".", agentRef: "local:agents/impl", codexConfigProfile: "fast" },
+      ], edges: [] } }),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).not.toBe(400);
+    const spec = spy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [cc, ss, cx] = spec.pods[0]!.members;
+    expect(cc).toMatchObject({
+      agent_ref: "local:agents/impl",
+      permission_policy: "builtin:yolo",
+      remote_control: true,
+      restore_policy: "checkpoint_only",
+      compaction_strategy: "harness_native",
+      starter_ref: { name: "st-ok" },
+    });
+    expect(ss).toMatchObject({ session_source: { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } } });
+    expect(cx).toMatchObject({ agent_ref: "local:agents/impl", codex_config_profile: "fast" });
+    spy.mockRestore();
+  });
+
+  it.each(rows)("%s=%j shadowed by valid %s: expand rejects with the same errors as rig up on the snake_case value", async (snake, badSnake, camel, goodCamel) => {
+    // codex_config_profile is only legal on a codex seat, so its camelCase twin is valid only there.
+    const runtime = snake === "codex_config_profile" ? "codex" : "claude-code";
+    const upMember = { id: "seat", ...base, runtime, [snake]: badSnake };
+    await expectRejectsLikeUp({ ...upMember, [camel]: goodCamel }, upMember);
+  });
+
+  it("control: a valid snake_case value with its camelCase twin is accepted, and camelCase alone still works", async () => {
+    const rig = setup.rigRepo.createRig("dual-valid");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [
+        { id: "both", ...base, restore_policy: "checkpoint_only", restorePolicy: "checkpoint_only", remote_control: true, remoteControl: true },
+        { id: "camel", ...base, restorePolicy: "checkpoint_only", remoteControl: true },
+      ], edges: [] } }),
+    });
+    expect(res.status).not.toBe(400);
+    expect(res.status).toBeLessThan(500);
   });
 });

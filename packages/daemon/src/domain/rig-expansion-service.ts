@@ -142,9 +142,9 @@ export class RigExpansionService {
           members: pod.members.map((member) => ({
             id: member.id,
             runtime: member.runtime,
-            ...(member.agentRef ? { agent_ref: member.agentRef } : {}),
+            ...("agentRef" in member && member.agentRef !== undefined ? { agent_ref: member.agentRef } : {}),
             ...(member.profile ? { profile: member.profile } : {}),
-            ...(member.codexConfigProfile ? { codex_config_profile: member.codexConfigProfile } : {}),
+            ...("codexConfigProfile" in member && member.codexConfigProfile !== undefined ? { codex_config_profile: member.codexConfigProfile } : {}),
             // OPR.0.4.8.3 Seam B: permission_policy rides the fragment→spec map like role.
             // R2 (4ac243c3): PRESENCE-preserving — present-invalid values (null, …) flow
             // to the canonical validator; only a truly absent key is omitted.
@@ -161,8 +161,13 @@ export class RigExpansionService {
             // provided role must never be silently dropped here).
             // PRESENCE, not truthiness: role "" / null must reach the canonical validator.
             ...("role" in member && member.role !== undefined ? { role: member.role } : {}),
-            ...(member.restorePolicy ? { restore_policy: member.restorePolicy } : {}),
+            ...("restorePolicy" in member && member.restorePolicy !== undefined ? { restore_policy: member.restorePolicy } : {}),
             ...(member.label ? { label: member.label } : {}),
+            // compaction_strategy / mechanic / startup: PRESENCE-preserving RAW carry, like role and
+            // remote_control -- present-invalid values reach the canonical validator and reject there.
+            ...("compactionStrategy" in member && member.compactionStrategy !== undefined ? { compaction_strategy: member.compactionStrategy } : {}),
+            ...("mechanic" in member && member.mechanic !== undefined ? { mechanic: member.mechanic } : {}),
+            ...("startup" in member && member.startup !== undefined ? { startup: member.startup } : {}),
             // OPR.0.5.6.3 repair amendment: session_source is carried FAITHFULLY —
             // the route already normalizes valid shapes to the typed spec (whose
             // field names are identical in snake_case form), and a present-INVALID
