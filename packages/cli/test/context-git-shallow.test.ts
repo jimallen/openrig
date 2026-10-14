@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addGitContext, inspectGitContext, updateGitContext } from "../src/lib/context-git.js";
@@ -161,7 +161,9 @@ describe("Git context initial download", () => {
   it("leaves an explicitly supplied checkout and its history unchanged", () => {
     const f = fixture(); transport.calls = [];
     const added = addGitContext(f.upstream, { checkout: true }, f.root);
-    expect(added.selected.checkout).toBe(f.upstream);
+    // The product canonicalises the selected checkout (checkoutRoot -> realpathSync), so compare against the
+    // canonical path: on macOS tmpdir() is /var/folders/... while the real path is /private/var/folders/...
+    expect(added.selected.checkout).toBe(realpathSync(f.upstream));
     expect(git(f.upstream, "rev-parse", "--is-shallow-repository")).toBe("false");
     expect(git(f.upstream, "cat-file", "-t", f.oldBlob)).toBe("blob");
     expect(transport.calls.some(a => a.includes("fetch") || a.includes("clone"))).toBe(false);

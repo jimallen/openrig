@@ -1,6 +1,7 @@
 import { unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import {
   resolvePermissionPolicyAttachment,
@@ -1012,6 +1013,17 @@ export class PodRigInstantiator {
       const resolvedCulture = nodePath.resolve(rigRoot, cultureFile);
       if (!this.deps.fsOps.exists(resolvedCulture)) {
         return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" not found (looked at ${resolvedCulture}); pass a path relative to the rig root (--rig-root) or an absolute path`] };
+      }
+      // Existing is not enough: a directory, or a file this process cannot read, would pass exists() and
+      // then fail as a required startup file after the seat was created. Symlinks are followed (stat, not
+      // lstat): a link is judged by what it points at.
+      let cultureStat: ReturnType<typeof statSync> | undefined;
+      try { cultureStat = statSync(resolvedCulture); } catch { /* exists() said yes but stat failed: fall through to the readability refusal below */ }
+      if (cultureStat !== undefined && !cultureStat.isFile()) {
+        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" (${resolvedCulture}) is not a regular file; pass the path of the rig's culture file, not a directory`] };
+      }
+      try { accessSync(resolvedCulture, fsConstants.R_OK); } catch {
+        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" (${resolvedCulture}) is not readable by the daemon; fix its permissions or pass another path`] };
       }
     }
 
