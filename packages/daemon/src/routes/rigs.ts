@@ -79,6 +79,27 @@ export function loadCurrentQitemsForSessions(
   return out;
 }
 
+/**
+ * Dual-spelling read for an expansion member field. `rig up` reads ONLY the snake_case spelling
+ * (the canonical RigSpec schema rejects any camelCase member key as unknown), so when both
+ * spellings are present the snake_case value is the one that must reach the canonical validator:
+ * a valid camelCase value must never shadow an invalid snake_case one. camelCase is an
+ * expand-only alias consulted only when the snake_case key is absent.
+ */
+function readMemberSpelling(
+  m: Record<string, unknown>,
+  snake: string,
+  camel: string,
+): { present: boolean; value: unknown } {
+  if (snake in m) return { present: true, value: m[snake] };
+  if (camel in m) return { present: true, value: m[camel] };
+  return { present: false, value: undefined };
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
 function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionPodFragment | null {
   if (!raw || typeof raw !== "object") return null;
   const id = raw["id"];
@@ -97,8 +118,8 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       // ref:null, unknown mode, malformed ref fields) must reach the ONE
       // canonical validator; only a truly absent key stays absent (the
       // permission_policy R2 precedent, applied to session_source).
-      const hasSessionSource = "sessionSource" in m || "session_source" in m;
-      const rawSessionSource: unknown = "sessionSource" in m ? m["sessionSource"] : m["session_source"];
+      const hasSessionSource = readMemberSpelling(m, "session_source", "sessionSource").present;
+      const rawSessionSource: unknown = readMemberSpelling(m, "session_source", "sessionSource").value;
       let sessionSource: import("../domain/types.js").SessionSourceSpec | undefined;
       if (rawSessionSource !== undefined && rawSessionSource !== null && typeof rawSessionSource === "object") {
         const ss = rawSessionSource as Record<string, unknown>;
@@ -145,22 +166,18 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       if (hasSessionSource && sessionSource === undefined) {
         sessionSource = rawSessionSource as import("../domain/types.js").SessionSourceSpec;
       }
+      const permissionPolicy = readMemberSpelling(m, "permission_policy", "permissionPolicy");
+      const remoteControl = readMemberSpelling(m, "remote_control", "remoteControl");
+      const starterRef = readMemberSpelling(m, "starter_ref", "starterRef");
+      const compactionStrategy = readMemberSpelling(m, "compaction_strategy", "compactionStrategy");
+      const mechanic = readMemberSpelling(m, "mechanic", "mechanic");
+      const startup = readMemberSpelling(m, "startup", "startup");
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
-        agentRef:
-          typeof m["agentRef"] === "string"
-            ? m["agentRef"]
-            : typeof m["agent_ref"] === "string"
-              ? m["agent_ref"]
-              : undefined,
+        agentRef: asString(readMemberSpelling(m, "agent_ref", "agentRef").value),
         profile: typeof m["profile"] === "string" ? m["profile"] : undefined,
-        codexConfigProfile:
-          typeof m["codexConfigProfile"] === "string"
-            ? m["codexConfigProfile"]
-            : typeof m["codex_config_profile"] === "string"
-              ? m["codex_config_profile"]
-              : undefined,
+        codexConfigProfile: asString(readMemberSpelling(m, "codex_config_profile", "codexConfigProfile").value),
         cwd: typeof m["cwd"] === "string" ? m["cwd"] : undefined,
         model: typeof m["model"] === "string" ? m["model"] : undefined,
         // effort rides the ingress like model (a declared effort must never be silently dropped).
@@ -169,24 +186,11 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         // R2 (4ac243c3): PRESERVE raw presence — a present-invalid value (null, number,
         // object, …) must reach the canonical RigSpec validator as-is and reject there;
         // only a truly ABSENT key stays absent. No route-local validation, no coercion.
-        ...("permissionPolicy" in m
-          ? { permissionPolicy: m["permissionPolicy"] }
-          : "permission_policy" in m
-            ? { permissionPolicy: m["permission_policy"] }
-            : {}),
+        ...(permissionPolicy.present ? { permissionPolicy: permissionPolicy.value } : {}),
         // remote_control: raw presence is preserved (like permissionPolicy above); the canonical
         // RigSpec validator owns the boolean / claude-code-only check.
-        ...("remoteControl" in m
-          ? { remoteControl: m["remoteControl"] }
-          : "remote_control" in m
-            ? { remoteControl: m["remote_control"] }
-            : {}),
-        restorePolicy:
-          typeof m["restorePolicy"] === "string"
-            ? m["restorePolicy"]
-            : typeof m["restore_policy"] === "string"
-              ? m["restore_policy"]
-              : undefined,
+        ...(remoteControl.present ? { remoteControl: remoteControl.value } : {}),
+        restorePolicy: asString(readMemberSpelling(m, "restore_policy", "restorePolicy").value),
         label: typeof m["label"] === "string" ? m["label"] : undefined,
         // role / starter_ref: PRESENCE-preserving like permission_policy/remote_control above. A
         // present-invalid value (role "", 7, null; starter_ref {}, {name:""}, a string, null, []) must
@@ -194,22 +198,14 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         // truly absent key is omitted. No route-local validation or coercion. Both spellings of
         // starter_ref: camelCase wins, as for every other dual-spelling field in this normalizer.
         ...("role" in m ? { role: m["role"] } : {}),
-        ...("starterRef" in m
-          ? { starterRef: m["starterRef"] }
-          : "starter_ref" in m
-            ? { starterRef: m["starter_ref"] }
-            : {}),
+        ...(starterRef.present ? { starterRef: starterRef.value } : {}),
         // compaction_strategy / mechanic / startup: PRESENCE-preserving RAW carry (no route-local
         // validation). The canonical RigSpec validator owns the vocabulary, the canonical
         // seat@rig address shape and the startup-block shape, so a present-invalid value rejects
         // exactly as it does for `rig up`.
-        ...("compactionStrategy" in m
-          ? { compactionStrategy: m["compactionStrategy"] }
-          : "compaction_strategy" in m
-            ? { compactionStrategy: m["compaction_strategy"] }
-            : {}),
-        ...("mechanic" in m ? { mechanic: m["mechanic"] } : {}),
-        ...("startup" in m ? { startup: m["startup"] } : {}),
+        ...(compactionStrategy.present ? { compactionStrategy: compactionStrategy.value } : {}),
+        ...(mechanic.present ? { mechanic: mechanic.value } : {}),
+        ...(startup.present ? { startup: startup.value } : {}),
         // Presence-governed, never truthiness: null/false/primitive raw values
         // must survive to canonical validation, not vanish at a truthy check.
         ...(hasSessionSource ? { sessionSource } : {}),

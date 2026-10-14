@@ -768,3 +768,88 @@ describe("POST /api/rigs/:rigId/expand - compaction_strategy / mechanic / startu
     expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'cms.%'").get(rig.id)).toMatchObject({ c: 0 });
   });
 });
+
+// Dual-spelling rule. `rig up` reads ONLY the snake_case member keys (the canonical RigSpec schema
+// refuses a camelCase member key as unknown), so the snake_case value is the one that must be
+// validated. The expand ingress also accepts a camelCase alias for seven fields (agentRef,
+// codexConfigProfile, restorePolicy, permissionPolicy, remoteControl, sessionSource, starterRef).
+// When BOTH spellings were sent, a VALID camelCase value silently shadowed an INVALID snake_case
+// one and expand created the seat where `rig up` refuses the same snake_case value. Now the
+// snake_case value wins for all seven, so expand rejects exactly what `rig up` rejects.
+describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case value is never shadowed by a valid camelCase one", () => {
+  const RIG_ROOT = "/project/rigs/dual-rig";
+  const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+  });
+
+  afterEach(() => { db.close(); });
+
+  const base = { runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." };
+  // [snake key, INVALID snake value, camel key, VALID camel value]
+  const rows: Array<[string, unknown, string, unknown]> = [
+    ["agent_ref", 5, "agentRef", "local:agents/impl"],
+    ["codex_config_profile", "bad name!", "codexConfigProfile", "default"],
+    ["restore_policy", "bogus", "restorePolicy", "checkpoint_only"],
+    ["permission_policy", 7, "permissionPolicy", "builtin:yolo"],
+    ["remote_control", "yes", "remoteControl", true],
+    ["session_source", "str", "sessionSource", { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } }],
+    ["starter_ref", "st", "starterRef", { name: "st-ok" }],
+  ];
+
+  it("census: the rows cover exactly the seven dual-spelling fields", () => {
+    expect(rows.map((r) => r[0]).sort()).toEqual(
+      ["agent_ref", "codex_config_profile", "permission_policy", "remote_control", "restore_policy", "session_source", "starter_ref"],
+    );
+  });
+
+  it.each(rows)("%s=%j shadowed by valid %s: expand rejects with the same errors as rig up on the snake_case value", async (snake, badSnake, camel, goodCamel) => {
+    // rig up input: the snake_case member alone (up refuses the camelCase key as unknown on top of this).
+    // codex_config_profile is only legal on a codex seat, so its camelCase twin is valid only there.
+    const runtime = snake === "codex_config_profile" ? "codex" : "claude-code";
+    const upMember = { id: "seat", ...base, runtime, [snake]: badSnake };
+    const upSpec = { version: "0.2", name: "dual-up", pods: [{ id: "dp", label: "DP", members: [upMember], edges: [] }], edges: [] };
+    const up = await setup.podInstantiator.instantiate(JSON.stringify(upSpec), RIG_ROOT);
+    expect(up.ok, "rig up must reject the snake_case value (otherwise the row proves nothing)").toBe(false);
+    const upErrors = (up as { errors?: string[] }).errors ?? [];
+    expect(upErrors.length).toBeGreaterThan(0);
+
+    const rig = setup.rigRepo.createRig("dual-expand");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [{ ...upMember, [camel]: goodCamel }], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; code?: string; error?: string };
+    expect(body.code).toBe("validation_failed");
+    expect(body.error).toBe(upErrors.join("; "));
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'dp.%'").get(rig.id)).toMatchObject({ c: 0 });
+  });
+
+  it("control: a valid snake_case value with its camelCase twin is accepted, and camelCase alone still works", async () => {
+    const rig = setup.rigRepo.createRig("dual-valid");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "dp", label: "DP", members: [
+        { id: "both", ...base, restore_policy: "checkpoint_only", restorePolicy: "checkpoint_only", remote_control: true, remoteControl: true },
+        { id: "camel", ...base, restorePolicy: "checkpoint_only", remoteControl: true },
+      ], edges: [] } }),
+    });
+    expect(res.status).not.toBe(400);
+    expect(res.status).toBeLessThan(500);
+  });
+});
