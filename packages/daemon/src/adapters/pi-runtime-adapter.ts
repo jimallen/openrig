@@ -9,6 +9,7 @@
 // bus emission — never pane scraping (BR-1). TUI-native Pi is a SEPARATE
 // future contract, never a hidden mode here (BR-2).
 
+import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
@@ -156,7 +157,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
 
     for (const file of files) {
       try {
-        const content = this.fs.readFile(file.absolutePath);
+        const content = file.guardedRead ? readGuardedStartupFile(file) : this.fs.readFile(file.absolutePath);
         const hint = file.deliveryHint === "auto" ? resolveConcreteHint(file.path, content) : file.deliveryHint;
 
         switch (hint) {

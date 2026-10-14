@@ -1,4 +1,5 @@
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
+import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -188,7 +189,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     for (const file of files) {
       try {
-        const content = this.fs.readFile(file.absolutePath);
+        const content = file.guardedRead ? readGuardedStartupFile(file) : this.fs.readFile(file.absolutePath);
         const hint = file.deliveryHint === "auto" ? this.detectDeliveryHint(file.path, content) : file.deliveryHint;
 
         switch (hint) {

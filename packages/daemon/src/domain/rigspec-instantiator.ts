@@ -1,6 +1,6 @@
 import { unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
-import { checkCultureFile, rigWorkRoots, standingCultureRoots } from "./culture-file-guard.js";
+import { checkCultureFile, persistedCulturePath } from "./culture-file-guard.js";
 import type Database from "better-sqlite3";
 import {
   resolvePermissionPolicyAttachment,
@@ -351,9 +351,6 @@ interface PodInstantiatorDeps {
    *  preflight (defaults to daemon-shipped assets; tests inject fixtures). Restores main's proven
    *  threading, dropped when the restacked 4.8 instantiator won the warnings-site conflicts. */
   claudeActivityAssets?: { relayPath?: string; manifestPath?: string };
-  /** Roots that admit a culture file for every rig (deployed ~/.agents release, $OPENRIG_HOME/shared-docs/rigs,
-   *  OPENRIG_CULTURE_ROOTS). Defaults to standingCultureRoots(); tests inject. */
-  cultureStandingRoots?: () => string[];
   adapters: Record<string, RuntimeAdapter>;
   tmuxAdapter?: TmuxAdapter;
   /** PL-016 Item 4: optional agent-image library so AgentSpec
@@ -1007,7 +1004,6 @@ export class PodRigInstantiator {
     // absolute) and must exist, so a typo fails here, before any seat is created, instead of surfacing as
     // a required startup file that fails after the seat exists.
     let cultureFile: string | undefined;
-    let addCultureRoots: string[] | undefined;
     if (opts?.cultureFile !== undefined) {
       if (typeof opts.cultureFile !== "string" || opts.cultureFile.trim() === "") {
         return { ok: false, code: "validation_failed", errors: ["cultureFile: must be a non-empty string (a path to the rig's culture file)"] };
@@ -1018,19 +1014,13 @@ export class PodRigInstantiator {
         return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" not found (looked at ${resolvedCulture}); pass a path relative to the rig root (--rig-root) or an absolute path`] };
       }
       // Existing is not enough, and neither is readable: the file's content is injected into the new seat's
-      // startup context, so it must be a small regular file that resolves (symlinks followed) inside the
-      // rig's own folders or the deployed ~/.agents release (culture-file-guard.ts). Opened once, checked
-      // on that descriptor, before any seat exists. The rig's roots come from what the daemon persisted
-      // (seat cwds); the caller-supplied rigRoot is NOT a root, or `--rig-root /` would admit everything.
-      const cultureRoots = [
-        ...rigWorkRoots(rig.nodes.map((n) => n.cwd), [opts?.cwdOverride]),
-        ...(this.deps.cultureStandingRoots ?? standingCultureRoots)(),
-      ];
-      const checked = checkCultureFile(cultureFile, resolvedCulture, cultureRoots);
+      // startup context, so it must be a single-link regular file of bounded size that the daemon opened
+      // once (culture-file-guard.ts), refused here, before any seat exists. TRUST BOUNDARY: the API caller
+      // is trusted, there is no folder allowlist; this guards against accidents and swaps, not a hostile caller.
+      const checked = checkCultureFile(cultureFile, resolvedCulture);
       if (!checked.ok) {
         return { ok: false, code: "validation_failed", errors: [checked.message] };
       }
-      addCultureRoots = cultureRoots;
     }
 
     // 3. Build a minimal one-pod-one-member raw spec around the EXISTING pod so
@@ -1089,7 +1079,6 @@ export class PodRigInstantiator {
       rigNameOverride: rig.rig.name,
       inheritedPermissionPolicy: this.inheritedPermissionPolicy(rigId),
       exec: this.deps.exec,
-      ...(addCultureRoots !== undefined ? { cultureRoots: addCultureRoots } : {}),
     });
     if (!preflight.ready) {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };
@@ -2549,11 +2538,14 @@ export class PodRigInstantiator {
     if (rigSpec.cultureFile) {
       files.push({
         path: rigSpec.cultureFile,
-        absolutePath: nodePath.resolve(rigRoot, rigSpec.cultureFile),
+        // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through
+        // the shared guarded reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through.
+        absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, rigSpec.cultureFile)),
         ownerRoot: rigRoot,
         deliveryHint: "auto",
         required: true,
         appliesOn: ["fresh_start", "restore"],
+        guardedRead: true,
       });
     }
     // Layer 4: Rig startup
@@ -2605,11 +2597,14 @@ export class PodRigInstantiator {
     if (rigSpec.cultureFile) {
       files.push({
         path: rigSpec.cultureFile,
-        absolutePath: nodePath.resolve(rigRoot, rigSpec.cultureFile),
+        // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through
+        // the shared guarded reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through.
+        absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, rigSpec.cultureFile)),
         ownerRoot: rigRoot,
         deliveryHint: "auto",
         required: true,
         appliesOn: ["fresh_start", "restore"],
+        guardedRead: true,
       });
     }
     // 4. Rig startup

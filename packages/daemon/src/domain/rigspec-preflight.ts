@@ -137,7 +137,7 @@ import { resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig, type ResolutionContext } from "./profile-resolver.js";
 import { getOpenRigInstallCwdError, resolveLaunchCwd } from "./cwd-resolution.js";
 import nodePath from "node:path";
-import { checkCultureFile, standingCultureRoots } from "./culture-file-guard.js";
+import { checkCultureFile } from "./culture-file-guard.js";
 import { validateClaudeActivityHookDelivery, CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import {
   resolvePermissionPolicyAttachment,
@@ -197,9 +197,6 @@ export interface PreflightSpecContext {
    *  the daemon-shipped assets (same as the ClaudeCodeAdapter); tests inject fixtures. Validated
    *  via the SHARED delivery check so preflight + adapter cannot drift. */
   claudeActivityAssets?: { relayPath?: string; manifestPath?: string };
-  /** Roots a culture file must resolve into. Launch default: the spec's own folder (rigRoot) plus the
-   *  standing roots. `rig add` passes the roots it already enforced (its rigRoot is caller-supplied). */
-  cultureRoots?: string[];
 }
 
 /**
@@ -299,14 +296,14 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
     }
   }
 
-  // 2b. The spec's culture file is injected into every seat's startup context. culture_file is already a
-  // safe RELATIVE path (no traversal), but a symlink inside the spec folder can still point anywhere, so
-  // judge what it resolves to, as `rig add --culture` does. A file that does not exist is left to the
-  // existing required-startup-file failure (unchanged behaviour); only an existing file is judged.
+  // 2b. The spec's culture file is injected into every seat's startup context. Judge the file it resolves to
+  // (regular, single link, bounded, opened once), as `rig add --culture` does. TRUST BOUNDARY: the caller is
+  // trusted, there is no folder allowlist (culture_file may legitimately resolve through symlinks into the
+  // installed package, e.g. the kernel overlay). A file that does not exist is left to the existing
+  // required-startup-file failure (unchanged behaviour); only an existing file is judged.
   if (rigSpec.cultureFile) {
     const resolvedCulture = nodePath.resolve(preflightCtx.rigRoot, rigSpec.cultureFile);
-    const roots = preflightCtx.cultureRoots ?? [preflightCtx.rigRoot, ...standingCultureRoots()];
-    const checked = checkCultureFile(rigSpec.cultureFile, resolvedCulture, roots);
+    const checked = checkCultureFile(rigSpec.cultureFile, resolvedCulture);
     if (!checked.ok && checked.reason !== "not_found") errors.push(checked.message);
   }
 

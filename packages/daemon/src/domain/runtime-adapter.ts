@@ -45,6 +45,9 @@ export interface ResolvedStartupFile {
   appliesOn: ("fresh_start" | "restore")[];
   /** Optional discriminator; startup artifacts are files only. */
   kind?: "file";
+  /** Read this file through the shared guarded reader (culture-file-guard.ts readGuardedStartupFile):
+   *  regular file, one link, size cap, one descriptor. Set on the rig culture overlay. */
+  guardedRead?: boolean;
 }
 
 // -- Adapter result types --
