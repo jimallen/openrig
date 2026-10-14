@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { findLatestSessionNameMatch, isSessionNameRunning } from "../src/domain/latest-session-name-match.js";
+import { findBindingNodeLiveFirst, findLatestSessionNameMatch, isSessionNameRunning } from "../src/domain/latest-session-name-match.js";
 import { resolveSessionNodeId } from "../src/domain/queue-owner.js";
 import { nodeRuntimeOf } from "../src/domain/workflow-projector.js";
 import { discoverResumeToken } from "../src/domain/agent-images/resume-token-discovery.js";
@@ -192,16 +192,6 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
     expect(repo.hasTerminalTransport(NAME)).toBe(false);
   });
 
-  it("session-transport absence probe targets the live seat, not the archived one", () => {
-    registry.updateBinding(archived.nodeId, { tmuxSession: NAME, tmuxPane: "%9" });
-    registry.updateBinding(live.nodeId, { tmuxSession: NAME, tmuxPane: "%1" });
-    const svc = Object.create(SessionTransport.prototype) as unknown as { db: Database.Database; absenceProbeTarget(n: string): { node_id: string; tmux_pane: string | null } | undefined };
-    svc.db = db;
-    const target = svc.absenceProbeTarget(NAME);
-    expect(target?.node_id).toBe(live.nodeId);
-    expect(target?.tmux_pane).toBe("%1");
-  });
-
   it("with two live rigs holding the name, the NEWEST live row answers (not the oldest, not an archived one)", () => {
     const newerRig = rigRepo.createRig("alpha-2");
     const newerNode = rigRepo.addNode(newerRig.id, "dev.impl", { role: "worker", runtime: "codex", cwd: "/newer/cwd" });
@@ -245,6 +235,54 @@ describe("claim-service binding lookup is live-first (OF-2)", () => {
   it("the live binding wins when the archived rig's binding is the newer one", () => {
     const { db, liveNodeId } = seed(false);
     expect(resolve(db)).toBe(liveNodeId);
+    db.close();
+  });
+});
+
+describe("running-seat lookups by session name with the archived rig created FIRST (OF-2)", () => {
+  const BOUND = "dev-impl@alpha";
+  function seed() {
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const registry = new SessionRegistry(db);
+    const make = (rigName: string, archive: boolean, pane: string) => {
+      const rig = rigRepo.createRig(rigName);
+      const node = rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "codex" });
+      const session = registry.registerSession(node.id, BOUND);
+      db.prepare("UPDATE sessions SET status = 'running' WHERE id = ?").run(session.id);
+      registry.updateBinding(node.id, { tmuxSession: BOUND, tmuxPane: pane });
+      if (archive) expect(rigRepo.archiveRig(rig.id)).toBe(true);
+      return node.id;
+    };
+    const archivedNodeId = make("alpha-old", true, "%9");
+    const liveNodeId = make("alpha", false, "%1");
+    return { db, archivedNodeId, liveNodeId };
+  }
+
+  it("session-transport absence probe targets the live running seat, not the archived one", () => {
+    const { db, liveNodeId, archivedNodeId } = seed();
+    expect(liveNodeId).not.toBe(archivedNodeId);
+    const svc = Object.create(SessionTransport.prototype) as unknown as { db: Database.Database; absenceProbeTarget(n: string): { node_id: string; tmux_pane: string | null } | undefined };
+    svc.db = db;
+    const target = svc.absenceProbeTarget(BOUND);
+    expect(target?.node_id).toBe(liveNodeId);
+    expect(target?.tmux_pane).toBe("%1");
+    db.close();
+  });
+
+  it("with two live rigs bound to the name, the newest binding answers deterministically", () => {
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const registry = new SessionRegistry(db);
+    const bind = (rigName: string) => {
+      const node = rigRepo.addNode(rigRepo.createRig(rigName).id, "dev.impl", { role: "worker", runtime: "codex" });
+      registry.registerSession(node.id, BOUND);
+      registry.updateBinding(node.id, { tmuxSession: BOUND });
+      return node.id;
+    };
+    bind("alpha-a");
+    const newer = bind("alpha-b");
+    expect(findBindingNodeLiveFirst(db, BOUND)).toBe(newer);
     db.close();
   });
 });
