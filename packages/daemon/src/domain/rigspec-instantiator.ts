@@ -1,6 +1,6 @@
 import { unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { checkCultureFile, rigWorkRoots, standingCultureRoots } from "./culture-file-guard.js";
 import type Database from "better-sqlite3";
 import {
   resolvePermissionPolicyAttachment,
@@ -351,6 +351,9 @@ interface PodInstantiatorDeps {
    *  preflight (defaults to daemon-shipped assets; tests inject fixtures). Restores main's proven
    *  threading, dropped when the restacked 4.8 instantiator won the warnings-site conflicts. */
   claudeActivityAssets?: { relayPath?: string; manifestPath?: string };
+  /** Roots that admit a culture file for every rig (deployed ~/.agents release, $OPENRIG_HOME/shared-docs/rigs,
+   *  OPENRIG_CULTURE_ROOTS). Defaults to standingCultureRoots(); tests inject. */
+  cultureStandingRoots?: () => string[];
   adapters: Record<string, RuntimeAdapter>;
   tmuxAdapter?: TmuxAdapter;
   /** PL-016 Item 4: optional agent-image library so AgentSpec
@@ -1004,6 +1007,7 @@ export class PodRigInstantiator {
     // absolute) and must exist, so a typo fails here, before any seat is created, instead of surfacing as
     // a required startup file that fails after the seat exists.
     let cultureFile: string | undefined;
+    let addCultureRoots: string[] | undefined;
     if (opts?.cultureFile !== undefined) {
       if (typeof opts.cultureFile !== "string" || opts.cultureFile.trim() === "") {
         return { ok: false, code: "validation_failed", errors: ["cultureFile: must be a non-empty string (a path to the rig's culture file)"] };
@@ -1013,17 +1017,20 @@ export class PodRigInstantiator {
       if (!this.deps.fsOps.exists(resolvedCulture)) {
         return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" not found (looked at ${resolvedCulture}); pass a path relative to the rig root (--rig-root) or an absolute path`] };
       }
-      // Existing is not enough: a directory, or a file this process cannot read, would pass exists() and
-      // then fail as a required startup file after the seat was created. Symlinks are followed (stat, not
-      // lstat): a link is judged by what it points at.
-      let cultureStat: ReturnType<typeof statSync> | undefined;
-      try { cultureStat = statSync(resolvedCulture); } catch { /* exists() said yes but stat failed: fall through to the readability refusal below */ }
-      if (cultureStat !== undefined && !cultureStat.isFile()) {
-        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" (${resolvedCulture}) is not a regular file; pass the path of the rig's culture file, not a directory`] };
+      // Existing is not enough, and neither is readable: the file's content is injected into the new seat's
+      // startup context, so it must be a small regular file that resolves (symlinks followed) inside the
+      // rig's own folders or the deployed ~/.agents release (culture-file-guard.ts). Opened once, checked
+      // on that descriptor, before any seat exists. The rig's roots come from what the daemon persisted
+      // (seat cwds); the caller-supplied rigRoot is NOT a root, or `--rig-root /` would admit everything.
+      const cultureRoots = [
+        ...rigWorkRoots(rig.nodes.map((n) => n.cwd), [opts?.cwdOverride]),
+        ...(this.deps.cultureStandingRoots ?? standingCultureRoots)(),
+      ];
+      const checked = checkCultureFile(cultureFile, resolvedCulture, cultureRoots);
+      if (!checked.ok) {
+        return { ok: false, code: "validation_failed", errors: [checked.message] };
       }
-      try { accessSync(resolvedCulture, fsConstants.R_OK); } catch {
-        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" (${resolvedCulture}) is not readable by the daemon; fix its permissions or pass another path`] };
-      }
+      addCultureRoots = cultureRoots;
     }
 
     // 3. Build a minimal one-pod-one-member raw spec around the EXISTING pod so
@@ -1082,6 +1089,7 @@ export class PodRigInstantiator {
       rigNameOverride: rig.rig.name,
       inheritedPermissionPolicy: this.inheritedPermissionPolicy(rigId),
       exec: this.deps.exec,
+      ...(addCultureRoots !== undefined ? { cultureRoots: addCultureRoots } : {}),
     });
     if (!preflight.ready) {
       return { ok: false, code: "preflight_failed", errors: preflight.errors, warnings: preflight.warnings };

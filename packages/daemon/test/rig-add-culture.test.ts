@@ -73,10 +73,12 @@ async function runningRig() {
   const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-rigadd-culture-"));
   tmpDirs.push(root);
   const rigRoot = nodePath.join(root, "rig");
-  const implCwd = nodePath.join(root, "impl-repo");
+  // The running rig's seat works in `root`, so the rig's own folders (rig/, elsewhere-culture.md, ...) are inside its
+  // allowed culture roots; `outside` (a separate temp dir) is not.
+  const implCwd = root;
   const addCwd = nodePath.join(root, "added-repo");
   const home = nodePath.join(root, "home");
-  for (const d of [nodePath.join(rigRoot, "agents", "impl"), implCwd, addCwd, home]) fs.mkdirSync(d, { recursive: true });
+  for (const d of [nodePath.join(rigRoot, "agents", "impl"), nodePath.join(root, "impl-repo"), addCwd, home]) fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(nodePath.join(rigRoot, "agents", "impl", "agent.yaml"),
     `name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []\n`);
   fs.writeFileSync(nodePath.join(rigRoot, "CULTURE.md"), `# Rig culture\n\n${MARKER}\n`);
@@ -96,6 +98,7 @@ async function runningRig() {
   const inst = new PodRigInstantiator({
     db, rigRepo, podRepo, sessionRegistry, eventBus, nodeLauncher, startupOrchestrator, fsOps: resolverFs, tmuxAdapter: tmux,
     adapters: { "claude-code": claude, codex: noopAdapter("codex"), terminal: noopAdapter("terminal") },
+    cultureStandingRoots: () => [], // hermetic: no ~/.agents-release or shared-docs root from this machine
   } as never);
   // The "running rig": launched from a spec that HAS a culture_file.
   const up = await inst.instantiate(rigYaml(implCwd), rigRoot);
