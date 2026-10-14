@@ -386,7 +386,22 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(r.reason).toBe("target_needs_input");
     expect(r.activity).toMatchObject({ state: "needs_input", evidenceSource: "runtime_hook" });
     // The watchdog's parked-owner policy records this exact shape as an interactive refusal.
-    expect(r.error).toMatch(/^Refused: .* is at an interactive prompt \(permission_prompt; latest hook, pane unrecognized\)/);
+    expect(r.error).toMatch(/^Refused: .* is at an interactive prompt \(permission_prompt; latest hook, pane read as unknown \(no_activity_signal\)\)/);
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("a stale permission_prompt hook + an EMPTY pane refuses and names what was observed (empty_capture), not an unrecognized pane", async () => {
+    const fixedNow = new Date("2026-10-08T06:47:16.000Z");
+    seedPersonWaitingHook(fixedNow, 36_000);
+    expect(classifyPaneActivity("").reason).toBe("empty_capture");
+    const { sendText, sendKeys } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => "", sendText, sendKeys }), { now: () => fixedNow });
+    const r = await t.send("dev-impl@my-rig", "hi");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_needs_input");
+    expect(r.error).toContain("(permission_prompt; latest hook, pane read as unknown (empty_capture))");
+    expect(r.error).not.toContain("unrecognized");
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
   });

@@ -1976,7 +1976,7 @@ export class SessionTransport {
       return {
         ...hookActivity,
         state: "needs_input",
-        reason: `${hookActivity.rawSubtype ?? hookActivity.rawEvent ?? "needs_input"}; latest hook, pane unrecognized`,
+        reason: `${hookActivity.rawSubtype ?? hookActivity.rawEvent ?? "needs_input"}; latest hook, pane read as unknown (${probe.reason})`,
       };
     }
     return probe;
