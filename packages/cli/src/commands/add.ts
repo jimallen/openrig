@@ -47,7 +47,7 @@ Examples:
     .argument("<member-fragment-path>", "Path to YAML/JSON member fragment file (spec snake_case fields)")
     .option("--json", "JSON output for agents")
     .option("--rig-root <path>", "Root directory for agent resolution (a relative path is taken from the current directory)")
-    .option("--culture <path>", "The rig's culture file (a relative path is taken from the current directory). The rig does not remember it, so name it to give the added seat the rig's own culture")
+    .option("--culture <path>", "The rig's culture file (a relative path is taken from the current directory). The rig does not remember it, so name it to give the added seat the rig's own culture. The daemon only accepts a regular file of at most 256 KiB inside the rig's own folders (its seats' working directories), the deployed ~/.agents-release, $OPENRIG_HOME/shared-docs/rigs, or a directory listed in OPENRIG_CULTURE_ROOTS (a symlink is judged by where it points)")
     .action(async (rigHandle: string, podNamespace: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string; culture?: string }) => {
       const deps = getDeps();
       const status = await getDaemonStatus(deps.lifecycleDeps);

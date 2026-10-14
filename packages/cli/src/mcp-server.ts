@@ -437,7 +437,7 @@ export function createMcpServer(client: DaemonClient): McpServer {
       member: z.record(z.string(), z.unknown()).describe("Member fragment with spec snake_case fields: id, runtime, agent_ref, profile, cwd (and optional model, codex_config_profile, restore_policy, label)"),
       edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.string() })).optional().describe("Optional pod-local edges (from/to are member ids within the pod; resolved against the new member + existing pod-mates)"),
       rigRoot: z.string().optional().describe("Root directory for agent resolution"),
-      cultureFile: z.string().optional().describe("Absolute path to the rig's own culture file (CULTURE.md); the rig does not remember it, so name it to give the added seat the rig's culture. Same as `rig add --culture`, but must be absolute: an MCP caller shares no working directory with the daemon"),
+      cultureFile: z.string().optional().describe("Absolute path to the rig's own culture file (CULTURE.md); the rig does not remember it, so name it to give the added seat the rig's culture. Same as `rig add --culture`, but must be absolute: an MCP caller shares no working directory with the daemon. The daemon refuses a file that is not a regular file of at most 256 KiB inside the rig's own folders, the deployed ~/.agents-release, $OPENRIG_HOME/shared-docs/rigs, or OPENRIG_CULTURE_ROOTS"),
     },
     async ({ rigId, podNamespace, member, edges, rigRoot, cultureFile }) => {
       try {
