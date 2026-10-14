@@ -10,7 +10,7 @@ import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
 import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { rigPreflight } from "../domain/rigspec-preflight.js";
-import { unprojectedProjectRigError } from "../domain/project-rig.js";
+import { flatSpecProjectRigError, unprojectedProjectRigError } from "../domain/project-rig.js";
 import { RigNotFoundError } from "../domain/errors.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { runtimeVersionProbeCwd } from "../adapters/preflight-exec.js";
@@ -117,6 +117,8 @@ rigspecImportRoutes.post("/", async (c) => {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message, errors: [message] }, 400);
   }
+  const flatProjectRig = flatSpecProjectRigError(raw);
+  if (flatProjectRig) return c.json({ error: flatProjectRig, errors: [flatProjectRig] }, 400);
 
   const outcome = await instantiator.instantiate(spec);
   if (!outcome.ok) {
@@ -240,7 +242,11 @@ rigspecImportRoutes.post("/preflight", async (c) => {
   if (isPodAware) {
     const rigRoot = c.req.header("X-Rig-Root");
     if (!rigRoot) return c.json({ ready: false, errors: ["X-Rig-Root header required for pod-aware specs"], warnings: [] }, 400);
-    // Launch refuses a raw project_rig spec (only `rig up --cwd` projects it); preflight must not call it ready.
+    // Import reports validation errors before the project-rig refusal; preflight keeps that order so a
+    // user fixes everything in one round. It runs regardless of X-Cwd-Override: import does not project
+    // with it either (only `rig up --cwd` does), so no header makes a raw project_rig spec launchable.
+    const validation = RigSpecSchema.validate(raw);
+    if (!validation.valid) return c.json({ ready: false, errors: validation.errors, warnings: [] });
     const unprojected = unprojectedProjectRigError(raw);
     if (unprojected) return c.json({ ready: false, errors: [unprojected], warnings: [] });
     const cwdOverride = c.req.header("X-Cwd-Override") ?? undefined;
@@ -268,6 +274,8 @@ rigspecImportRoutes.post("/preflight", async (c) => {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ valid: false, errors: [message] }, 400);
   }
+  const flatProjectRig = flatSpecProjectRigError(raw);
+  if (flatProjectRig) return c.json({ ready: false, errors: [flatProjectRig], warnings: [] });
 
   const result = await preflight.check(spec);
   return c.json(result);

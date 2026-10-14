@@ -125,6 +125,16 @@ export interface PaneActivityClassification {
   evidence: string | null;
 }
 
+/** Probe reasons for which no pane content was read at all (the probe stopped before, or failed during, the
+ *  capture). Every other unknown reason (empty_capture, no_activity_signal) means the pane WAS read. */
+const PANE_NOT_READ_REASONS = new Set([
+  "no_session", "unsupported_attachment", "unsupported_runtime", "session_missing", "tmux_unavailable", "capture_failed",
+]);
+
+function paneReadClause(reason: string): string {
+  return PANE_NOT_READ_REASONS.has(reason) ? `pane not read (${reason})` : `pane read as unknown (${reason})`;
+}
+
 function trimPaneLines(paneContent: string): string[] {
   return paneContent
     .split("\n")
@@ -2388,7 +2398,7 @@ export class SessionTransport {
       return {
         ...hookActivity,
         state: "needs_input",
-        reason: `${hookActivity.rawSubtype ?? hookActivity.rawEvent ?? "needs_input"}; latest hook, pane read as unknown (${probe.reason})`,
+        reason: `${hookActivity.rawSubtype ?? hookActivity.rawEvent ?? "needs_input"}; latest hook, ${paneReadClause(probe.reason)}`,
       };
     }
     return probe;

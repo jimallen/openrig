@@ -420,6 +420,20 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(sendKeys).not.toHaveBeenCalled();
   });
 
+  it("a stale permission_prompt hook + a pane capture that throws refuses and says the pane not read (capture_failed), not that it was read", async () => {
+    const fixedNow = new Date("2026-10-08T06:47:16.000Z");
+    seedPersonWaitingHook(fixedNow, 36_000);
+    const { sendText, sendKeys } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => { throw new Error("capture boom"); }, sendText, sendKeys }), { now: () => fixedNow });
+    const r = await t.send("dev-impl@my-rig", "hi");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_needs_input");
+    expect(r.error).toContain("(permission_prompt; latest hook, pane not read (capture_failed))");
+    expect(r.error).not.toContain("read as unknown");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
   it("a stale permission_prompt hook + a recognized empty composer sends (no new refusal at an idle prompt)", async () => {
     const fixedNow = new Date("2026-10-08T06:47:16.000Z");
     seedPersonWaitingHook(fixedNow, 36_000);

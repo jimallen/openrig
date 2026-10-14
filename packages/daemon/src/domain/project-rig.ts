@@ -33,6 +33,15 @@ export function unprojectedProjectRigError(raw: unknown): string | null {
   return `${typeof name === "string" ? name : "this rig"} is a project rig: launch it with rig up <spec> --cwd <project folder>.`;
 }
 
+/** `project_rig` is a pod-format key: only the pod schema declares it and only `rig up --cwd` projects it.
+ *  A legacy flat spec carrying it would be launched unprojected (the flat path ignores the flag), so refuse
+ *  it and point to the pod format. */
+export function flatSpecProjectRigError(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || (raw as Record<string, unknown>)["project_rig"] !== true) return null;
+  const name = (raw as Record<string, unknown>)["name"];
+  return `${typeof name === "string" ? name : "this rig"} sets project_rig, which only a pod-format spec (version: "0.2", pods:) supports; convert it to the pod format and launch it with rig up <spec> --cwd <project folder>.`;
+}
+
 export function projectRigSlug(projectRoot: string): string {
   return nodePath.basename(projectRoot).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
 }
