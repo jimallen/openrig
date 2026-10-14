@@ -1,4 +1,5 @@
 import { nonInterruptiveNotice } from "../adapters/non-interruptive.js";
+import { readGuardedStartupFile } from "./culture-file-guard.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { SessionRegistry } from "./session-registry.js";
@@ -272,7 +273,7 @@ export class StartupOrchestrator {
     let postLaunchFiles: ResolvedStartupFile[] = [];
     for (const f of applicableFiles) {
       const hint = f.deliveryHint === "auto"
-        ? resolveConcreteHint(f.path, this.safeReadFile(f.absolutePath))
+        ? resolveConcreteHint(f.path, this.safeReadStartupFile(f))
         : f.deliveryHint;
       if (hint === "send_text") {
         postLaunchFiles.push(f);
@@ -621,8 +622,13 @@ export class StartupOrchestrator {
     }
   }
 
-  private safeReadFile(path: string): string {
-    try { return this.readFile(path); } catch { return ""; }
+  /** The rig culture overlay (guardedRead) is read through the shared guarded reader, never a plain read. */
+  private readStartupFile(file: ResolvedStartupFile): string {
+    return file.guardedRead ? readGuardedStartupFile(file) : this.readFile(file.absolutePath);
+  }
+
+  private safeReadStartupFile(file: ResolvedStartupFile): string {
+    try { return this.readStartupFile(file); } catch { return ""; }
   }
 
   private fail(
@@ -715,7 +721,7 @@ export class StartupOrchestrator {
     if (firstSendTextIndex !== -1) {
       const firstSendText = postLaunchFiles[firstSendTextIndex]!;
       try {
-        const content = this.readFile(firstSendText.absolutePath);
+        const content = this.readStartupFile(firstSendText);
         if (content.length > 0) {
           prompt = `${identityAction.value}\n\n${content}`;
           remainingFiles = postLaunchFiles.filter((_, index) => index !== firstSendTextIndex);
@@ -767,7 +773,7 @@ export class StartupOrchestrator {
     if (firstSendTextIndex !== -1) {
       const firstSendText = postLaunchFiles[firstSendTextIndex]!;
       try {
-        const content = this.readFile(firstSendText.absolutePath);
+        const content = this.readStartupFile(firstSendText);
         if (content.length > 0) {
           parts.push(content);
           remainingFiles = postLaunchFiles.filter((_, index) => index !== firstSendTextIndex);

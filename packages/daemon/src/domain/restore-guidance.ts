@@ -23,6 +23,7 @@ import {
   type ManagedBlockMergeFsOps,
 } from "./managed-blocks.js";
 import { resolveConcreteHint } from "./runtime-adapter.js";
+import { readGuardedStartupFile } from "./culture-file-guard.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import type { NodeStartupSnapshot } from "./types.js";
 
@@ -39,6 +40,11 @@ export interface GuidanceItem {
   /** An older "auto" startup file whose source can't be read, so it can't be classified. If its
    *  block isn't in the file, that's reported as a gap; nothing is written for it. */
   unresolved?: boolean;
+  /** Why an unresolved item could not be read (a guarded-read refusal names its reason). */
+  unresolvedReason?: string;
+  /** The rig culture overlay: its source is read through the shared guarded reader (regular file, one link,
+   *  size cap, one descriptor), never with a plain read. */
+  guardedRead?: boolean;
 }
 
 export interface SeatGuidance {
@@ -75,16 +81,19 @@ export function seatGuidance(
     let hint: string = f.deliveryHint;
     if (hint === "auto") {
       try {
-        hint = resolveConcreteHint(f.path, readFile(f.absolutePath));
-      } catch {
-        if (f.path.endsWith(".md") && !f.path.endsWith("SKILL.md")) {
+        hint = resolveConcreteHint(f.path, f.guardedRead ? readGuardedStartupFile(f) : readFile(f.absolutePath));
+      } catch (err) {
+        // A guarded culture overlay that is refused is always reported, whatever its name.
+        if (f.guardedRead) {
+          items.set(f.path, { blockId: f.path, sourcePath: f.absolutePath, unresolved: true, unresolvedReason: (err as Error).message, guardedRead: true });
+        } else if (f.path.endsWith(".md") && !f.path.endsWith("SKILL.md")) {
           items.set(f.path, { blockId: f.path, sourcePath: f.absolutePath, unresolved: true });
         }
         continue;
       }
     }
     if (hint !== "guidance_merge") continue;
-    items.set(f.path, { blockId: f.path, sourcePath: f.absolutePath });
+    items.set(f.path, { blockId: f.path, sourcePath: f.absolutePath, ...(f.guardedRead ? { guardedRead: true } : {}) });
   }
   for (const id of NEVER_MERGED) items.delete(id);
   return { targetPath: nodePath.join(cwd, fileName), items: [...items.values()] };
@@ -160,7 +169,9 @@ export function restoreMissingGuidance(guidance: SeatGuidance, fs: ManagedBlockM
       continue;
     }
     if (item.unresolved) {
-      repair.gaps.push(`${item.blockId}: its source ${item.sourcePath} can't be read, so this older startup file can't be classified or put back`);
+      repair.gaps.push(item.unresolvedReason
+        ? `${item.blockId}: ${item.unresolvedReason}`
+        : `${item.blockId}: its source ${item.sourcePath} can't be read, so this older startup file can't be classified or put back`);
       continue;
     }
     try {
@@ -168,7 +179,7 @@ export function restoreMissingGuidance(guidance: SeatGuidance, fs: ManagedBlockM
         repair.gaps.push(`${item.blockId}: its source ${item.sourcePath} no longer exists`);
         continue;
       }
-      toWrite.push({ blockId: item.blockId, content: fs.readFile(item.sourcePath) });
+      toWrite.push({ blockId: item.blockId, content: item.guardedRead ? readGuardedStartupFile({ path: item.blockId, absolutePath: item.sourcePath }) : fs.readFile(item.sourcePath) });
     } catch (err) {
       repair.gaps.push(`${item.blockId}: ${(err as Error).message}`);
     }

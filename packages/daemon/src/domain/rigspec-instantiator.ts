@@ -1,6 +1,6 @@
 import { unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
-import { checkCultureFile, persistedCulturePath } from "./culture-file-guard.js";
+import { checkCultureFile, persistedCulturePath, readGuardedStartupFile } from "./culture-file-guard.js";
 import type Database from "better-sqlite3";
 import {
   resolvePermissionPolicyAttachment,
@@ -2723,7 +2723,7 @@ export class PodRigInstantiator {
     return files.map((f) => {
       if (f.deliveryHint !== "auto") return f;
       try {
-        const content = this.deps.fsOps.readFile(f.absolutePath);
+        const content = f.guardedRead ? readGuardedStartupFile(f) : this.deps.fsOps.readFile(f.absolutePath);
         return { ...f, deliveryHint: resolveConcreteHint(f.path, content) };
       } catch {
         // If file can't be read, default to send_text (safest — delivered after harness ready)

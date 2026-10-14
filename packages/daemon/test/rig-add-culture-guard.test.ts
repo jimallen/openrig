@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
+import { execFileSync, spawn } from "node:child_process";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { migrationsForFullTestDb, createFullTestDb, createTestApp } from "./helpers/test-app.js";
@@ -94,7 +95,8 @@ async function runningRig() {
   const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const claude = new ClaudeCodeAdapter({ tmux, fsOps: realFs(home), sleep: async () => {}, sessionIdFactory: () => "sess-add" });
-  const resolverFs: AgentResolverFsOps = { readFile: (p) => fs.readFileSync(p, "utf-8"), exists: (p) => fs.existsSync(p) };
+  const readLog: string[] = [];
+  const resolverFs: AgentResolverFsOps = { readFile: (p) => { readLog.push(p); return fs.readFileSync(p, "utf-8"); }, exists: (p) => fs.existsSync(p) };
   const inst = new PodRigInstantiator({
     db, rigRepo, podRepo, sessionRegistry, eventBus, nodeLauncher, startupOrchestrator, fsOps: resolverFs, tmuxAdapter: tmux,
     adapters: { "claude-code": claude, codex: noopAdapter("codex"), terminal: noopAdapter("terminal") },
@@ -114,7 +116,7 @@ async function runningRig() {
   };
   const outside = fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-rigadd-outside-"));
   tmpDirs.push(outside);
-  return { outside, db, root, rigRoot, rigId, tmux, inst, member, read, addCwd, startupPaths };
+  return { readLog, outside, db, root, rigRoot, rigId, tmux, inst, member, read, addCwd, startupPaths };
 }
 
 import { CULTURE_FILE_MAX_BYTES, checkCultureFile, persistedCulturePath } from "../src/domain/culture-file-guard.js";
@@ -122,6 +124,8 @@ import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { PiRuntimeAdapter } from "../src/adapters/pi-runtime-adapter.js";
 import { StubRuntimeAdapter } from "../src/adapters/stub-runtime-adapter.js";
 import type { ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
+import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
+import { seatGuidance, restoreMissingGuidance } from "../src/domain/restore-guidance.js";
 
 // OF-15 (reworked). TRUST BOUNDARY: the daemon API caller is trusted -- whoever can call it can already start a
 // seat in any folder -- so there is NO folder allowlist, and these tests PIN that (an outside regular file is
@@ -432,5 +436,187 @@ describe("launch-time culture_file (rig spec) is judged by the same guard", () =
   it("CONTROL: an ordinary CULTURE.md in the spec folder launches", async () => {
     const out = await launch((specRoot) => fs.writeFileSync(nodePath.join(specRoot, "CULTURE.md"), `${MARKER}-OK\n`));
     expect(out.ok, JSON.stringify(out)).toBe(true);
+  });
+});
+
+// B3: the guard flag must hold on every path that reads the persisted culture file, not only the four adapters'
+// deliverStartup. These rows drive the REAL loader (SeatLifecycleService.readStartupContext), the REAL resume
+// guidance code (seatGuidance + restoreMissingGuidance, as restore-orchestrator calls them), the REAL
+// StartupOrchestrator reads and the REAL instantiator plan, against a culture file that was added legitimately
+// and then swapped.
+describe("the guard holds on the loader, resume-guidance, orchestrator and plan-time reads (not only the adapters)", () => {
+  const BIG = (head: string) => head + "x".repeat(CULTURE_FILE_MAX_BYTES + 10);
+
+  async function added(cultureName = "CULTURE.md", member: Record<string, unknown> = {}) {
+    const f = await runningRig();
+    const real = nodePath.join(f.outside, cultureName);
+    fs.writeFileSync(real, `# culture\n${MARKER}-ADDED\n`);
+    f.readLog.length = 0;
+    const out = await f.inst.addMemberToPod(f.rigId, "dev", f.member(member), f.rigRoot, { cultureFile: real });
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    const logical = `dev.${(f.member(member) as { id: string }).id}`;
+    const nodeId = (f.db.prepare("SELECT id FROM nodes WHERE logical_id = ?").get(logical) as { id: string }).id;
+    const row = f.db.prepare("SELECT projection_entries_json, resolved_files_json, startup_actions_json, runtime FROM node_startup_context WHERE node_id = ?").get(nodeId) as { projection_entries_json: string; resolved_files_json: string; startup_actions_json: string; runtime: string };
+    return { f, real: fs.realpathSync(real), nodeId, row };
+  }
+  const snapshot = (row: { projection_entries_json: string; resolved_files_json: string; startup_actions_json: string; runtime: string }) => ({
+    runtime: row.runtime, projectionEntries: JSON.parse(row.projection_entries_json), resolvedStartupFiles: JSON.parse(row.resolved_files_json), startupActions: JSON.parse(row.startup_actions_json),
+  });
+
+  it("plan time: the culture overlay is not read through the instantiator's plain fsOps (resolveAutoHints)", async () => {
+    const { f, real } = await added();
+    expect(f.readLog.filter((p) => p === real || p.endsWith("CULTURE.md"))).toEqual([]);
+    f.db.close();
+  });
+
+  it("LOADER: SeatLifecycleService.readStartupContext keeps guardedRead, so a relaunch refuses a swapped oversize file", async () => {
+    const { f, real, nodeId } = await added();
+    const svc = Object.create(SeatLifecycleService.prototype) as unknown as { db: unknown; readStartupContext: (id: string, cwd: string) => { ok: boolean; context: { resolvedStartupFiles: ResolvedStartupFile[] } } };
+    svc.db = f.db;
+    const loaded = svc.readStartupContext(nodeId, f.addCwd);
+    expect(loaded.ok).toBe(true);
+    const culture = loaded.context.resolvedStartupFiles.find((e) => e.path === real || e.absolutePath === real)!;
+    expect(culture.guardedRead).toBe(true);
+    // swap in an oversize file after rig add, then deliver exactly what the loader returned
+    fs.writeFileSync(real, BIG(`${MARKER}-SWAPPED\n`));
+    const claude = new ClaudeCodeAdapter({ tmux: mockTmux(), fsOps: realFs(f.addCwd), sleep: async () => {}, sessionIdFactory: () => "s" });
+    const out = await claude.deliverStartup([culture], { id: "b", nodeId, tmuxSession: "dev-mgr@r", cwd: f.addCwd, cwdBase: f.addCwd } as never);
+    expect(out.failed).toHaveLength(1);
+    expect(out.failed[0]!.error).toMatch(/over the 262144-byte limit/);
+    expect(out.failed[0]!.error).not.toContain(MARKER);
+    f.db.close();
+  });
+
+  describe("RESUME guidance (seatGuidance + restoreMissingGuidance, as restore-orchestrator wires them)", () => {
+    const realOps = (cwd: string) => ({
+      exists: (p: string) => fs.existsSync(p),
+      readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+      writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"),
+      mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }),
+      cwd,
+    });
+    const repair = (row: Parameters<typeof snapshot>[0], cwd: string) => {
+      fs.rmSync(nodePath.join(cwd, "CLAUDE.md"), { force: true }); // `rig down` strips the blocks; resume puts them back
+      const ops = realOps(cwd);
+      const guidance = seatGuidance(snapshot(row) as never, cwd, null, ops.exists, ops.readFile)!;
+      return { guidance, repaired: restoreMissingGuidance(guidance, ops) };
+    };
+
+    it("CONTROL: an unswapped culture file is put back, with the flag carried onto the item", async () => {
+      const { f, row } = await added();
+      const { guidance, repaired } = repair(row, f.addCwd);
+      expect(guidance.items.find((i) => i.blockId.endsWith("CULTURE.md"))?.guardedRead).toBe(true);
+      expect(repaired.restored.some((b) => b.endsWith("CULTURE.md")), JSON.stringify(repaired)).toBe(true);
+      expect(fs.readFileSync(nodePath.join(f.addCwd, "CLAUDE.md"), "utf-8")).toContain(`${MARKER}-ADDED`);
+      f.db.close();
+    });
+
+    it("an oversize, hard-linked file swapped in is NOT restored whole; the gap names the limit", async () => {
+      const { f, real, row } = await added();
+      fs.writeFileSync(real, BIG(`${MARKER}-SWAPPED\n`));
+      fs.linkSync(real, nodePath.join(f.outside, "alias.md"));
+      const { repaired } = repair(row, f.addCwd);
+      expect(repaired.restored.some((b) => b.endsWith("CULTURE.md"))).toBe(false);
+      expect(repaired.gaps.join("\n")).toMatch(/over the 262144-byte limit|hard links/);
+      expect(fs.existsSync(nodePath.join(f.addCwd, "CLAUDE.md")) ? fs.readFileSync(nodePath.join(f.addCwd, "CLAUDE.md"), "utf-8") : "").not.toContain(`${MARKER}-SWAPPED`);
+      f.db.close();
+    });
+
+    it("a FIFO swapped in is refused at resume and does not hang", async () => {
+      const { f, real, row } = await added();
+      fs.rmSync(real);
+      execFileSync("mkfifo", [real]);
+      const { repaired } = repair(row, f.addCwd);
+      expect(repaired.restored.some((b) => b.endsWith("CULTURE.md"))).toBe(false);
+      expect(repaired.gaps.join("\n")).toMatch(/is not a regular file/);
+      f.db.close();
+    }, 10000);
+
+    it("an 'auto' culture entry is classified through the guarded reader: a swapped FIFO is reported, never read plainly", async () => {
+      const { f, real, row } = await added();
+      const snap = snapshot(row);
+      snap.resolvedStartupFiles = snap.resolvedStartupFiles.map((e: ResolvedStartupFile) => (e.guardedRead ? { ...e, deliveryHint: "auto" } : e));
+      fs.rmSync(real);
+      execFileSync("mkfifo", [real]);
+      const ops = realOps(f.addCwd);
+      const guidance = seatGuidance(snap as never, f.addCwd, null, ops.exists, ops.readFile)!;
+      const item = guidance.items.find((i) => i.sourcePath === real)!;
+      expect(item.unresolved).toBe(true);
+      expect(item.unresolvedReason).toMatch(/is not a regular file/);
+      f.db.close();
+    }, 10000);
+  });
+
+  describe("RESUME guidance: auto classification of an oversize file", () => {
+    it("an 'auto' culture entry whose file was swapped for an oversize '# SKILL' file is reported unresolved, not classified from its content", async () => {
+      const { f, real, row } = await added();
+      const snap = snapshot(row);
+      snap.resolvedStartupFiles = snap.resolvedStartupFiles.map((e: ResolvedStartupFile) => (e.guardedRead ? { ...e, deliveryHint: "auto" } : e));
+      fs.writeFileSync(real, BIG("# SKILL\n"));
+      const guidance = seatGuidance(snap as never, f.addCwd, null, (p: string) => fs.existsSync(p), (p: string) => fs.readFileSync(p, "utf-8"))!;
+      const item = guidance.items.find((i) => i.sourcePath === real);
+      expect(item?.unresolved).toBe(true);
+      expect(item?.unresolvedReason).toMatch(/over the 262144-byte limit/);
+      f.db.close();
+    });
+  });
+
+  describe("ORCHESTRATOR reads", () => {
+    const makeOrch = (db: never) => {
+      const sessionRegistry = new SessionRegistry(db);
+      const orch = new StartupOrchestrator({ db, sessionRegistry, eventBus: new EventBus(db), tmuxAdapter: mockTmux(), readFile: (p: string) => fs.readFileSync(p, "utf-8"), sleep: async () => {} } as never);
+      const sent: string[] = [];
+      (orch as unknown as { sendInteractiveText: unknown }).sendInteractiveText = async (_i: unknown, text: string) => { sent.push(text); return null; };
+      return { orch: orch as unknown as Record<string, (...a: unknown[]) => Promise<{ ok: boolean; remainingFiles: ResolvedStartupFile[] }>>, sent };
+    };
+    const sendTextFile = (p: string, guardedRead: boolean): ResolvedStartupFile => ({ path: "culture.txt", absolutePath: p, ownerRoot: nodePath.dirname(p), deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"], ...(guardedRead ? { guardedRead } : {}) });
+
+    it("CONTROL: an ordinary send_text culture file is bundled into the identity prompt", async () => {
+      const { f, real } = await added("culture.txt");
+      const { orch, sent } = makeOrch(f.db as never);
+      const out = await orch["deliverInitialSessionPrompt"]!({ binding: { tmuxSession: "s" } }, { value: "IDENTITY" }, [sendTextFile(real, true)], null);
+      expect(out.ok).toBe(true);
+      expect(sent[0]).toContain(`${MARKER}-ADDED`);
+      expect(out.remainingFiles).toHaveLength(0);
+      f.db.close();
+    });
+
+    it("INITIAL prompt: an oversize send_text culture file swapped in is not bundled; it stays for the adapter's guarded delivery", async () => {
+      const { f, real } = await added("culture.txt");
+      fs.writeFileSync(real, BIG(`${MARKER}-SWAPPED\n`));
+      const { orch, sent } = makeOrch(f.db as never);
+      const out = await orch["deliverInitialSessionPrompt"]!({ binding: { tmuxSession: "s" } }, { value: "IDENTITY" }, [sendTextFile(real, true)], null);
+      expect(out.ok).toBe(true);
+      expect(sent.join("\n")).not.toContain(`${MARKER}-SWAPPED`);
+      expect(out.remainingFiles).toHaveLength(1);
+      f.db.close();
+    });
+
+    it("RESTORE preload: an oversize send_text culture file swapped in is not bundled", async () => {
+      const { f, real } = await added("culture.txt");
+      fs.writeFileSync(real, BIG(`${MARKER}-SWAPPED\n`));
+      const { orch, sent } = makeOrch(f.db as never);
+      const out = await orch["deliverRestorePreloadPrompt"]!({ binding: { tmuxSession: "s" } }, [{ value: "PRELOAD" }], [sendTextFile(real, true)]);
+      expect(out.ok).toBe(true);
+      expect(sent.join("\n")).not.toContain(`${MARKER}-SWAPPED`);
+      expect(out.remainingFiles).toHaveLength(1);
+      f.db.close();
+    });
+
+    it("CLASSIFICATION (startNode, auto hint): a swapped oversize culture file is not read to decide pre- vs post-launch", async () => {
+      const { f, real, nodeId } = await added("culture.txt");
+      // '# SKILL' content would classify the file as skill_install (pre-launch) if it were read plainly.
+      fs.writeFileSync(real, BIG("# SKILL\n"));
+      const sessionRegistry = new SessionRegistry(f.db as never);
+      const orch = new StartupOrchestrator({ db: f.db, sessionRegistry, eventBus: new EventBus(f.db), tmuxAdapter: mockTmux(), readFile: (p: string) => fs.readFileSync(p, "utf-8"), sleep: async () => {} } as never);
+      const preLaunch: string[][] = [];
+      const adapter = { ...noopAdapter("claude-code"), deliverStartup: vi.fn(async (files: ResolvedStartupFile[]) => { preLaunch.push(files.map((x) => x.path)); return { delivered: 0, failed: [] }; }) };
+      const file: ResolvedStartupFile = { ...sendTextFile(real, true), deliveryHint: "auto" };
+      const rigId = f.rigId;
+      await orch.startNode({ rigId, nodeId, sessionId: "none", binding: { id: "b", nodeId, tmuxSession: "dev-mgr@r", cwd: f.addCwd, cwdBase: f.addCwd } as never, adapter: adapter as never, plan: { entries: [], runtime: "claude-code" } as never, resolvedStartupFiles: [file], startupActions: [], isRestore: false, skipHarnessLaunch: true } as never).catch(() => undefined);
+      expect(preLaunch.length).toBeGreaterThan(0); // the pre-launch delivery ran (the classification happened)
+      expect(preLaunch[0]).not.toContain("culture.txt"); // refused read => "" => .txt => send_text => post-launch
+      f.db.close();
+    });
   });
 });
