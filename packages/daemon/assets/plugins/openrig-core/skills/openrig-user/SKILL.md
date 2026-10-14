@@ -723,6 +723,13 @@ human-formatted CLI output preserves the literal `Peers:` line prefix verbatim
 (parser/test compatibility) and surfaces the clarifier in-band beneath it; the
 JSON form exposes `peersNote` directly for programmatic consumers.
 
+Each `peers[]` entry also carries an additive `reachable` boolean. `false` means the
+peer has no session, or its session is registered but not running (still starting,
+exited, detached, superseded); `sessionName` can still hold that last known name, so
+check `reachable` before `rig send` / `rig capture`. The human output marks such a
+peer `(not running)`, and the `commands` examples only use reachable peers. A daemon
+older than this field omits it, which is not the same as `false`.
+
 ## Inventory and Monitoring
 
 ```bash
@@ -1299,7 +1306,7 @@ This lets ordinary agents ask the manager for OpenRig help instead of every agen
 ### Add/remove running topology parts
 
 ```bash
-rig grow <rig-id> <member...> [--pod <pod> | --new-pod <pod>] [--runtime <runtime>] [--cwd <path>] [--json]
+rig grow <rig-id> <member...> [--pod <pod> | --new-pod <pod>] [--runtime <runtime>] [--cwd <path>] [--agent-ref <ref>] [--culture <path>] [--json]
 rig expand <rig-id> <pod-fragment-path> [--rig-root <path>] [--json]
 rig launch <rigId> <nodeRef> [--json]
 rig launch <rigId> --seats <a,b,c> [--hold-reason <text>] [--json]
@@ -1310,9 +1317,12 @@ rig unclaim <sessionRef> [--json]
 
 `rig grow` is the simplest way to add seats: no YAML, the default agent spec, and one
 runtime and working directory for the named seats (`--new-pod` creates a pod for them).
+`--agent-ref <ref>` swaps the default agent for every named seat, and `--culture <path>` gives them the rig's
+own culture file (the rig does not store it; a relative path is taken from your current directory). `--culture`
+is for growing an existing pod: `--new-pod` with `--culture` is refused.
 Check `rig grow --help` on your installed version. Use a fragment with `rig expand` (a pod)
 or `rig add` (one member) when a seat needs an explicit model, a permission policy, a
-different agent spec or role profile, per-seat runtime or cwd, or startup files.
+a different agent spec per seat or role profile, per-seat runtime or cwd, or startup files.
 
 Node-granular managed partial restore (v0.3.4+):
 - `rig launch <rigId> <nodeRef>` relaunches a single seat by logical id or node id through orchestration.

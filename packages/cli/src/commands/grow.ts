@@ -42,7 +42,20 @@ interface ExpandResult {
 }
 
 export function growCommand(depsOverride?: StatusDeps): Command {
-  const cmd = new Command("grow").description("Add one or more seats to a running rig");
+  const cmd = new Command("grow").description("Add one or more seats to a running rig")
+    .addHelpText("after", `
+Each seat gets the shipped orchestrator agent unless --agent-ref names another. A seat
+added to a running rig does not get the rig's own culture file unless --culture names it
+(the rig does not remember it). --culture is for an existing pod; with --new-pod it is refused.
+
+Relative paths differ by flag: --culture is taken from the directory you run the command in,
+while a local: --agent-ref is resolved from --cwd (the rig root sent to the daemon). Use an
+absolute path or path: to avoid the difference. rig add behaves the same way (--culture from
+your directory, the fragment's agent_ref from --rig-root).
+
+Examples:
+  rig grow my-rig worker qa --pod dev
+  rig grow my-rig worker --pod dev --culture ./my-rig/CULTURE.md --agent-ref path:/agents/builder`);
   const getDeps = () => depsOverride ?? {
     lifecycleDeps: realDeps(),
     clientFactory: (url: string) => new DaemonClient(url),
@@ -55,14 +68,28 @@ export function growCommand(depsOverride?: StatusDeps): Command {
     .option("--new-pod <pod>", "Create a new pod for the seats")
     .option("--runtime <runtime>", "Agent runtime", "claude-code")
     .option("--cwd <path>", "Working directory for the seat", process.cwd())
+    .option("--agent-ref <ref>", "Agent spec for every named seat (for example path:/abs/dir or local:agents/name; a local: ref is resolved from --cwd, not from the current directory); default is the shipped orchestrator agent")
+    .option("--culture <path>", "The rig's culture file (a relative path is taken from the current directory). The rig does not remember it, so name it to give the added seats the rig's own culture. Not available with --new-pod")
     .option("--json", "JSON output for agents")
     .action(async (
       rigId: string,
       members: string[],
-      opts: { pod?: string; newPod?: string; runtime: string; cwd: string; json?: boolean },
+      opts: { pod?: string; newPod?: string; runtime: string; cwd: string; agentRef?: string; culture?: string; json?: boolean },
     ) => {
       if (opts.pod && opts.newPod) {
         console.error("Choose either --pod or --new-pod, not both.");
+        process.exitCode = 1;
+        return;
+      }
+      // The expand route a new pod goes through carries no culture file, so the seats would silently start
+      // without the culture the operator named. Refuse before any call rather than drop it.
+      if (opts.newPod && opts.culture !== undefined) {
+        console.error("--culture is not supported with --new-pod: creating a pod does not carry a culture file, so the new seats would start without it. Create the pod first, then add the seats to it with rig grow --pod <pod> --culture <path>.");
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.agentRef !== undefined && opts.agentRef.trim() === "") {
+        console.error("--agent-ref must be a non-empty agent reference.");
         process.exitCode = 1;
         return;
       }
@@ -105,14 +132,24 @@ export function growCommand(depsOverride?: StatusDeps): Command {
       }
 
       let agentRef: string;
-      try {
-        agentRef = await resolveDefaultAgentRef(client);
-      } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
-        process.exitCode = 1;
-        return;
+      if (opts.agentRef !== undefined) {
+        agentRef = opts.agentRef;
+      } else {
+        try {
+          agentRef = await resolveDefaultAgentRef(client);
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
+          return;
+        }
       }
       const cwd = resolvePath(opts.cwd);
+      // Same as rig add: the daemon resolves a relative path against its own cwd, not the operator's, so
+      // resolve against the caller's cwd here. An empty value is sent as typed so the daemon refuses it
+      // (resolving it would turn a mistake into the cwd).
+      const cultureFile = opts.culture === undefined
+        ? undefined
+        : opts.culture === "" ? opts.culture : resolvePath(process.cwd(), opts.culture);
       const memberSpecs = members.map((member) => ({
         id: member,
         agent_ref: agentRef,
@@ -159,7 +196,7 @@ export function growCommand(depsOverride?: StatusDeps): Command {
         for (const member of memberSpecs) {
           const res = await client.post<AddMemberResult>(
             `/api/rigs/${encodeURIComponent(rigId)}/pods/${encodeURIComponent(pod)}/members`,
-            { member, rigRoot: cwd },
+            { member, rigRoot: cwd, ...(cultureFile !== undefined ? { cultureFile } : {}) },
             { timeoutMs: 120_000 },
           );
           const responseDetail = res.data.errors?.join("; ")

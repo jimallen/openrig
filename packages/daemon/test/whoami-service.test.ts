@@ -122,8 +122,138 @@ describe("WhoamiService", () => {
     expect(result!.edges.incoming.find((e) => e.from.logicalId === "dev.unedged")).toBeUndefined();
     // Shape compat: the peer entry keys are unchanged (no rename/removal).
     expect(Object.keys(result!.peers[0]!).sort()).toEqual(
-      ["logicalId", "memberId", "podId", "podNamespace", "runtime", "sessionName"],
+      ["logicalId", "memberId", "podId", "podNamespace", "reachable", "runtime", "sessionName"],
     );
+  });
+
+  describe("a peer whose session is not running is not offered as reachable", () => {
+    // A peer mid-start (session row registered, never marked running), a peer whose session exited, and a
+    // peer whose binding still names an exited session all carry a session NAME. Handing that name to
+    // `rig send` / `rig capture` as a ready example points the agent at a seat that cannot answer.
+    function seedPeer(logicalId: string, rigId: string, rows: Array<{ name: string; status: string }>, bindTmux?: string) {
+      const node = rigRepo.addNode(rigId, logicalId, { role: "worker", runtime: "claude-code", podId: "pod-dev" });
+      for (const row of rows) {
+        const sess = sessionRegistry.registerSession(node.id, row.name);
+        sessionRegistry.updateStatus(sess.id, row.status);
+      }
+      if (bindTmux) sessionRegistry.updateBinding(node.id, { tmuxSession: bindTmux });
+      return node;
+    }
+
+    function seedSelfWithRig() {
+      const rig = rigRepo.createRig("my-rig");
+      db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES (?, ?, ?, ?)").run("pod-dev", rig.id, "dev", "Development");
+      const self = seedPeer("dev.impl", rig.id, [{ name: "dev-impl@my-rig", status: "running" }], "dev-impl@my-rig");
+      return { rig, self };
+    }
+
+    it("a peer registered but never started (status unknown) is flagged and kept out of the command examples", () => {
+      const { rig, self } = seedSelfWithRig();
+      seedPeer("dev.starting", rig.id, [{ name: "dev-starting@my-rig", status: "unknown" }]);
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(result.commands.sendExamples).toEqual([]);
+      expect(result.commands.captureExamples).toEqual([]);
+      const peer = result.peers.find((p) => p.logicalId === "dev.starting")!;
+      expect(peer.sessionName).toBe("dev-starting@my-rig");
+      expect(peer.reachable).toBe(false);
+    });
+
+    it("a peer whose newest session exited is flagged and kept out of the command examples", () => {
+      const { rig, self } = seedSelfWithRig();
+      seedPeer("dev.gone", rig.id, [{ name: "dev-gone@my-rig", status: "exited" }]);
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(result.commands.sendExamples).toEqual([]);
+      expect(result.commands.captureExamples).toEqual([]);
+      expect(result.peers.find((p) => p.logicalId === "dev.gone")!.reachable).toBe(false);
+    });
+
+    it("a peer whose binding still names a session that has exited is flagged and kept out of the command examples", () => {
+      const { rig, self } = seedSelfWithRig();
+      seedPeer("dev.stale", rig.id, [{ name: "dev-stale@my-rig", status: "exited" }], "dev-stale@my-rig");
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(result.commands.sendExamples).toEqual([]);
+      expect(result.peers.find((p) => p.logicalId === "dev.stale")!.reachable).toBe(false);
+    });
+
+    it("a running peer stays reachable and is the only one offered when others are not running", () => {
+      const { rig, self } = seedSelfWithRig();
+      seedPeer("dev.starting", rig.id, [{ name: "dev-starting@my-rig", status: "unknown" }]);
+      seedPeer("dev.live", rig.id, [{ name: "dev-live@my-rig", status: "running" }], "dev-live@my-rig");
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(result.peers.find((p) => p.logicalId === "dev.live")!.reachable).toBe(true);
+      expect(result.commands.sendExamples).toEqual(["rig send dev-live@my-rig 'message' --verify"]);
+      expect(result.commands.captureExamples).toEqual(["rig capture dev-live@my-rig"]);
+    });
+
+    it("a peer with no session at all is not reachable", () => {
+      const { rig, self } = seedSelfWithRig();
+      rigRepo.addNode(rig.id, "dev.unlaunched", { role: "worker", runtime: "claude-code", podId: "pod-dev" });
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      const peer = result.peers.find((p) => p.logicalId === "dev.unlaunched")!;
+      expect(peer.sessionName).toBeNull();
+      expect(peer.reachable).toBe(false);
+    });
+
+    it("a bound peer with no session row is not judged unreachable (no evidence it is down)", () => {
+      const { rig, self } = seedSelfWithRig();
+      const node = rigRepo.addNode(rig.id, "dev.adopted", { role: "worker", runtime: "claude-code", podId: "pod-dev" });
+      sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-adopted@my-rig" });
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(result.peers.find((p) => p.logicalId === "dev.adopted")!.reachable).toBe(true);
+      expect(result.commands.sendExamples).toEqual(["rig send dev-adopted@my-rig 'message' --verify"]);
+    });
+
+    it("a peer is judged by the session its binding names, not by a newer row of another name", () => {
+      const { rig, self } = seedSelfWithRig();
+      // Bound to a running session; a later row under a different name exited. The advertised name is live.
+      seedPeer("dev.renamed", rig.id, [
+        { name: "dev-renamed@my-rig", status: "running" },
+        { name: "dev-renamed-old@my-rig", status: "exited" },
+      ], "dev-renamed@my-rig");
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      const peer = result.peers.find((p) => p.logicalId === "dev.renamed")!;
+      expect(peer.sessionName).toBe("dev-renamed@my-rig");
+      expect(peer.reachable).toBe(true);
+    });
+
+    it("a peer is judged by its own node's session row, not by another node's newer row under the same name", () => {
+      const { rig, self } = seedSelfWithRig();
+      // Two nodes share one session name. The peer's own row is running; a later row of the same name on
+      // another node exited. Looking the name up without the node would read that other node's row.
+      const peer = seedPeer("dev.shared", rig.id, [{ name: "dev-shared@my-rig", status: "running" }], "dev-shared@my-rig");
+      seedPeer("dev.other", rig.id, [{ name: "dev-shared@my-rig", status: "exited" }]);
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(peer.id).not.toBe(self.id);
+      expect(result.peers.find((p) => p.logicalId === "dev.shared")!.reachable).toBe(true);
+    });
+
+    it("a relaunched seat is judged by the session it now names, not by the exited one before it", () => {
+      const { rig, self } = seedSelfWithRig();
+      seedPeer("dev.back", rig.id, [
+        { name: "dev-back@my-rig", status: "exited" },
+        { name: "dev-back@my-rig", status: "running" },
+      ]);
+
+      const result = svc.resolve({ nodeId: self.id })!;
+
+      expect(result.peers.find((p) => p.logicalId === "dev.back")!.reachable).toBe(true);
+    });
   });
 
   it("result carries the additive peersNote stating the corrected meaning", () => {

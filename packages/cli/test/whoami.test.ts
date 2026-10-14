@@ -63,6 +63,15 @@ const UNBOUND_WHOAMI_RESPONSE = {
   commands: { sendExamples: [], captureExamples: [] },
 };
 
+// A peer mid-start (session registered, not running) and a live one. `reachable` is the daemon's additive field.
+const MIXED_PEERS_WHOAMI_RESPONSE = {
+  ...WHOAMI_RESPONSE,
+  peers: [
+    { logicalId: "dev.live", sessionName: "dev-live@my-rig", runtime: "codex", podId: "pod-dev-123", podNamespace: "dev", memberId: "live", reachable: true },
+    { logicalId: "dev.starting", sessionName: "dev-starting@my-rig", runtime: "codex", podId: "pod-dev-123", podNamespace: "dev", memberId: "starting", reachable: false },
+  ],
+};
+
 describe("Whoami CLI", () => {
   let server: http.Server;
   let port: number;
@@ -74,6 +83,9 @@ describe("Whoami CLI", () => {
       if (url.includes("/api/whoami") && url.includes("nodeId=node-1")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(WHOAMI_RESPONSE));
+      } else if (url.includes("/api/whoami") && url.includes("nodeId=node-3")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(MIXED_PEERS_WHOAMI_RESPONSE));
       } else if (url.includes("/api/whoami") && url.includes("nodeId=node-2")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(UNBOUND_WHOAMI_RESPONSE));
@@ -418,6 +430,34 @@ describe("Whoami CLI", () => {
     // peers dropped their verbose sub-fields.
     expect(json.peers[0].podId).toBeUndefined();
     expect(json.peers[0].memberId).toBeUndefined();
+  });
+
+  it("compact --json keeps each peer's reachable flag, so a seat that is not running is not read as ready", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-3", "--json"]);
+    });
+    const json = JSON.parse(logs.join("")) as Record<string, any>;
+    expect(json.peers.map((p: any) => [p.logicalId, p.reachable])).toEqual([["dev.live", true], ["dev.starting", false]]);
+  });
+
+  it("human output marks a peer that is not running and leaves a running peer unmarked", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-3"]);
+    });
+    const lines = logs.join("\n").split("\n");
+    const starting = lines.find((l) => l.includes("dev.starting"))!;
+    const live = lines.find((l) => l.includes("dev.live"))!;
+    expect(starting).toContain("not running");
+    expect(live).not.toContain("not running");
+  });
+
+  it("human output does not mark a peer when the daemon predates the reachable field", async () => {
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "whoami", "--node-id", "node-1"]);
+    });
+    const qa = logs.join("\n").split("\n").find((l) => l.includes("dev.qa") && l.includes("codex"))!;
+    expect(qa).toBeDefined();
+    expect(qa).not.toContain("not running");
   });
 
   it("AC-2: --full --json reproduces the complete payload", async () => {
