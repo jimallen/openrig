@@ -10,7 +10,7 @@
 // than fabricating one (docs/as-built/architecture/adapters-and-runtimes.md § Resume honesty).
 
 import type Database from "better-sqlite3";
-import { findLatestSessionNameMatch } from "../session-name-matches.js";
+import { findLatestSessionNameMatch } from "../latest-session-name-match.js";
 
 export type DiscoveryRuntime = "claude-code" | "codex";
 

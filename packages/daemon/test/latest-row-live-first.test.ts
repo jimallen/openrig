@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { findLatestSessionNameMatch } from "../src/domain/session-name-matches.js";
+import { findLatestSessionNameMatch } from "../src/domain/latest-session-name-match.js";
 import { resolveSessionNodeId } from "../src/domain/queue-owner.js";
 import { nodeRuntimeOf } from "../src/domain/workflow-projector.js";
 import { discoverResumeToken } from "../src/domain/agent-images/resume-token-discovery.js";

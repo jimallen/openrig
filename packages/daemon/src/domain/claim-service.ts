@@ -1,5 +1,5 @@
 import { OutboxHandler } from "./outbox-handler.js";
-import { findLatestSessionNameMatch } from "./session-name-matches.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";

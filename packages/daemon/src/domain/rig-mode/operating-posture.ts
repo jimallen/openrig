@@ -1,5 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { findLatestSessionNameMatch } from "../session-name-matches.js";
+import { findLatestSessionNameMatch } from "../latest-session-name-match.js";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";

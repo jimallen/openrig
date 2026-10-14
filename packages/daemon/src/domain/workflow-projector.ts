@@ -1,5 +1,5 @@
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
-import { findLatestSessionNameMatch } from "./session-name-matches.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 // PL-004 Phase D: workflow projector — transactional-scribe contract.
 //
 // LOAD-BEARING. The single most important Phase D contract.

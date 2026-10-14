@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { findLatestSessionNameMatch } from "../domain/session-name-matches.js";
+import { findLatestSessionNameMatch } from "../domain/latest-session-name-match.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import type Database from "better-sqlite3";
 import type { ClaudeCompactionEnforcer, ManualCompactionOutcome } from "../domain/claude-compaction-enforcer.js";

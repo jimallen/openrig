@@ -2,7 +2,7 @@
 // startup_status=attention_required. Managed writer + append-only audit.
 
 import type Database from "better-sqlite3";
-import { findLatestSessionNameMatch } from "./session-name-matches.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import { CLAUDE_RESUME_ROTATION_COLUMNS, claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";

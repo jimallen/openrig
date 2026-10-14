@@ -17,7 +17,7 @@
 // the token directly.
 
 import { Hono } from "hono";
-import { findLatestSessionNameMatch } from "../domain/session-name-matches.js";
+import { findLatestSessionNameMatch } from "../domain/latest-session-name-match.js";
 import { rmSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { AgentImageLibraryService } from "../domain/agent-images/agent-image-library-service.js";

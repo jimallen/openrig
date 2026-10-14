@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { findLatestSessionNameMatch } from "./session-name-matches.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, PersistedEvent } from "./types.js";
 

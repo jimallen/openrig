@@ -1,5 +1,5 @@
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
-import { findLatestSessionNameMatch } from "./session-name-matches.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import { exceptionConfigurationSource, inspectExceptionReadiness, type ExceptionReadiness } from "./workflow-exception-readiness.js";
 import { inspectGraph, recoverGraphOperation, reviseGraph } from "./workflow-reconciliation.js";
 import { lifecycleObligations, requiredLifecycleSteps, type LifecycleObligation } from "./lifecycle-obligations.js";

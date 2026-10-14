@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { findLatestSessionNameMatch } from "./session-name-matches.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 
 /** The durable session→node binding (the session-registry precedent: latest sessions row
  *  for the canonical name). Canonical session names (dash form, `review-r2@rig`) and node
