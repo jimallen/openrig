@@ -560,6 +560,26 @@ describe("transport routes", () => {
     expect(sendTextSpy).not.toHaveBeenCalled();
   });
 
+  it("POST /send with one session name in two live rigs of the SAME name returns 409 and sends nothing", async () => {
+    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    for (let i = 0; i < 2; i++) {
+      const rig = rigRepo.createRig("eztrack");
+      const node = rigRepo.addNode(rig.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(node.id, "exec-cos@eztrack");
+    }
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: mockTmux({ sendText: sendTextSpy }) });
+    const app = createApp({ sessionTransport: transport });
+
+    const res = await app.request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "exec-cos@eztrack", text: "hello" }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("ambiguous");
+    expect(sendTextSpy).not.toHaveBeenCalled();
+  });
+
   it("POST /send with ambiguous session returns 409", async () => {
     // Create two rigs, both with same canonical session name
     const rig1 = rigRepo.createRig("rig-a");

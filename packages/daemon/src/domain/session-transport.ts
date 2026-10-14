@@ -19,7 +19,7 @@ export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
-import { findSessionNameMatches } from "./session-name-matches.js";
+import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
@@ -1196,41 +1196,31 @@ export class SessionTransport {
       };
     }
 
-    // Check for ambiguity: same session name across different rigs
-    const rigNames = new Map<string, { nodeLogicalId: string }>();
-    for (const row of sessionRows) {
-      const nodeRow = this.db
-        .prepare("SELECT rig_id, logical_id FROM nodes WHERE id = ?")
-        .get(row.node_id) as NodeRow | undefined;
-      if (nodeRow) {
-        const rig = this.rigRepo.getRig(nodeRow.rig_id);
-        if (rig) {
-          rigNames.set(rig.rig.name, { nodeLogicalId: nodeRow.logical_id });
-        }
-      }
+    // Ambiguity is counted over distinct rig IDS: two live rigs may share a rig NAME.
+    if (distinctRigIds(sessionRows).length > 1) {
+      return {
+        ok: false,
+        code: "ambiguous",
+        error: describeAmbiguousSessionName(this.db, sessionName, sessionRows),
+      };
     }
 
-    if (rigNames.size === 0) {
+    // The rows are newest first: the newest node holding the name answers, as in whoami.
+    const answer = sessionRows[0]!;
+    const nodeRow = this.db
+      .prepare("SELECT rig_id, logical_id FROM nodes WHERE id = ?")
+      .get(answer.node_id) as NodeRow | undefined;
+    const rig = nodeRow ? this.rigRepo.getRig(nodeRow.rig_id) : null;
+    if (!nodeRow || !rig) {
       return {
         ok: false,
         code: "not_found",
         error: `Session '${sessionName}' not found. Check session names with: rig ps --nodes`,
       };
     }
-
-    if (rigNames.size > 1) {
-      const names = Array.from(rigNames.keys()).join(", ");
-      return {
-        ok: false,
-        code: "ambiguous",
-        error: `Session '${sessionName}' is ambiguous — found in rigs: ${names}. Specify the rig explicitly.`,
-      };
-    }
-
-    const [rigName, meta] = Array.from(rigNames.entries())[0]!;
     return {
       ok: true,
-      sessions: [{ sessionName, rigName, nodeLogicalId: meta.nodeLogicalId }],
+      sessions: [{ sessionName, rigName: rig.rig.name, nodeLogicalId: nodeRow.logical_id }],
     };
   }
 

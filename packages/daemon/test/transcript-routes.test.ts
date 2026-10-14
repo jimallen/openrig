@@ -289,6 +289,28 @@ describe("transcript routes", () => {
     expect(body.error).toContain("ambiguous");
   });
 
+  it("GET /tail with one session name in two live rigs of the SAME name returns 409 naming rig and node ids", async () => {
+    const seats = [0, 1].map(() => {
+      const rig = rigRepo.createRig("my-rig");
+      const node = rigRepo.addNode(rig.id, "dev-impl", { role: "worker", runtime: "claude-code" });
+      sessionRegistry.registerSession(node.id, "dev-impl@my-rig");
+      return { rig, node };
+    });
+    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
+
+    for (const route of ["tail", "grep?pattern=x", "full"]) {
+      const res = await app.request(`/api/transcripts/dev-impl@my-rig/${route}`);
+      expect(res.status, route).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain("ambiguous");
+      for (const s of seats) {
+        expect(body.error).toContain(s.rig.id);
+        expect(body.error).toContain(s.node.id);
+      }
+    }
+  });
+
   it("GET /grep with invalid regex returns 400", async () => {
     const { store } = seedRigWithTranscript("content");
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });
