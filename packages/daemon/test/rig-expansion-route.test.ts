@@ -855,6 +855,12 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["codex_config_profile", "", "codex"],
     ["agent_ref", 5, "claude-code"],
     ["agent_ref", null, "claude-code"],
+    // claude-code "" additionally earns the 'must start with "local:" or "path:"' error; a truthiness gate drops it
+    ["agent_ref", "", "claude-code"],
+    // terminal seats echo the value in their error ('(got "5")'), so erasing it to absent changes the text
+    ["agent_ref", 5, "terminal"],
+    ["agent_ref", null, "terminal"],
+    ["agent_ref", "", "terminal"],
   ];
   it.each(snakeOnly)("%s=%j alone: expand rejects with the same errors as rig up", async (snake, bad, runtime) => {
     const member = { id: "seat", ...base, runtime, [snake]: bad };
