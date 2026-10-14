@@ -536,6 +536,30 @@ describe("Rigspec import routes (pod-aware dual-stack)", () => {
     expect(body.errors).toContain("X-Rig-Root header required for pod-aware specs");
   });
 
+  // A project rig is launched with `rig up <spec> --cwd <project>`; every other launch path refuses the
+  // raw spec (unprojectedProjectRigError). Preflight said ready:true for it, then launch refused.
+  const projectRigYaml = (flag: string) => `version: "0.2"\nname: team\n${flag}pods: [{id: dev, label: Dev, members: [{id: shell, agent_ref: "builtin:terminal", runtime: terminal, profile: none, cwd: .}], edges: []}]\nedges: []\n`;
+  const preflightProjectRig = (flag: string) => app.request("/api/rigs/import/preflight", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain", "X-Rig-Root": "/tmp" },
+    body: projectRigYaml(flag),
+  });
+
+  it("POST /api/rigs/import/preflight refuses an unprojected project_rig spec, as launch does", async () => {
+    const res = await preflightProjectRig("project_rig: true\n");
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ready).toBe(false);
+    expect(body.errors).toEqual(["team is a project rig: launch it with rig up <spec> --cwd <project folder>."]);
+  });
+
+  it("POST /api/rigs/import/preflight still passes the same spec without project_rig (control)", async () => {
+    const res = await preflightProjectRig("");
+    const body = await res.json();
+    expect(body.errors ?? []).toEqual([]);
+    expect(body.ready).toBe(true);
+  });
+
   // T9: legacy import still works through dual-stack
   it("POST /api/rigs/import with legacy YAML still creates rig", async () => {
     const res = await app.request("/api/rigs/import", {

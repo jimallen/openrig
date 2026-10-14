@@ -10,6 +10,7 @@ import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
 import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { rigPreflight } from "../domain/rigspec-preflight.js";
+import { unprojectedProjectRigError } from "../domain/project-rig.js";
 import { RigNotFoundError } from "../domain/errors.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { runtimeVersionProbeCwd } from "../adapters/preflight-exec.js";
@@ -239,6 +240,9 @@ rigspecImportRoutes.post("/preflight", async (c) => {
   if (isPodAware) {
     const rigRoot = c.req.header("X-Rig-Root");
     if (!rigRoot) return c.json({ ready: false, errors: ["X-Rig-Root header required for pod-aware specs"], warnings: [] }, 400);
+    // Launch refuses a raw project_rig spec (only `rig up --cwd` projects it); preflight must not call it ready.
+    const unprojected = unprojectedProjectRigError(raw);
+    if (unprojected) return c.json({ ready: false, errors: [unprojected], warnings: [] });
     const cwdOverride = c.req.header("X-Cwd-Override") ?? undefined;
     const fsOps = { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
     const { execSync } = await import("node:child_process");
