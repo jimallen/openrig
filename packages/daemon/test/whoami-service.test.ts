@@ -19,6 +19,8 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { WhoamiService } from "../src/domain/whoami-service.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
+import type { SeatIdentityVerdict } from "../src/domain/types.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -241,6 +243,65 @@ describe("WhoamiService", () => {
 
       expect(peer.id).not.toBe(self.id);
       expect(result.peers.find((p) => p.logicalId === "dev.shared")!.reachable).toBe(true);
+    });
+
+    describe("a running row whose tmux session is gone (killed out-of-band)", () => {
+      // The seat identity reconciler (5s poll, one `tmux list-sessions`) persists verdicts; whoami reads that
+      // table instead of shelling out to tmux. These rows seed the verdicts the reconciler would write.
+      function verdict(nodeId: string, sessionName: string, over: Partial<SeatIdentityVerdict>): SeatIdentityVerdict {
+        return {
+          nodeId, sessionName, verdict: "pane_missing", evidenceSource: "tmux_session", reason: "session_missing",
+          evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+          observedAt: "2026-10-14T00:00:00.000Z", ...over,
+        };
+      }
+
+      it("is not reachable and not offered in command examples when the reconciler confirmed session_missing", () => {
+        const { rig, self } = seedSelfWithRig();
+        const dead = seedPeer("dev.killed", rig.id, [{ name: "dev-killed@my-rig", status: "running" }], "dev-killed@my-rig");
+        seedPeer("dev.live", rig.id, [{ name: "dev-live@my-rig", status: "running" }], "dev-live@my-rig");
+        new SeatIdentityStore(db).upsert(verdict(dead.id, "dev-killed@my-rig", {}));
+
+        const result = svc.resolve({ nodeId: self.id })!;
+
+        expect(result.peers.find((p) => p.logicalId === "dev.killed")!.reachable).toBe(false);
+        expect(result.peers.find((p) => p.logicalId === "dev.live")!.reachable).toBe(true);
+        expect(result.commands.sendExamples).toEqual(["rig send dev-live@my-rig 'message' --verify"]);
+      });
+
+      it("stays reachable on verdicts that do not prove the session gone (verified, tmux_unavailable, mismatch)", () => {
+        const { rig, self } = seedSelfWithRig();
+        const kinds: Array<[string, Partial<SeatIdentityVerdict>]> = [
+          ["ok", { verdict: "verified", reason: null, evidenceSource: null }],
+          ["blip", { verdict: "tmux_unavailable", reason: "tmux_unavailable", evidenceSource: null }],
+          ["squat", { verdict: "mismatch", reason: "process_identity_mismatch", evidenceSource: "pane_process" }],
+        ];
+        for (const [name, over] of kinds) {
+          const node = seedPeer(`dev.${name}`, rig.id, [{ name: `dev-${name}@my-rig`, status: "running" }], `dev-${name}@my-rig`);
+          new SeatIdentityStore(db).upsert(verdict(node.id, `dev-${name}@my-rig`, over));
+        }
+
+        const result = svc.resolve({ nodeId: self.id })!;
+
+        for (const [name] of kinds) expect(result.peers.find((p) => p.logicalId === `dev.${name}`)!.reachable).toBe(true);
+      });
+
+      it("ignores a session_missing verdict recorded for a different session name than the one advertised", () => {
+        const { rig, self } = seedSelfWithRig();
+        const node = seedPeer("dev.relaunched", rig.id, [{ name: "dev-relaunched-2@my-rig", status: "running" }], "dev-relaunched-2@my-rig");
+        new SeatIdentityStore(db).upsert(verdict(node.id, "dev-relaunched-1@my-rig", {}));
+
+        const result = svc.resolve({ nodeId: self.id })!;
+
+        expect(result.peers.find((p) => p.logicalId === "dev.relaunched")!.reachable).toBe(true);
+      });
+
+      it("peersNote states that running-but-missing is judged from the reconciler's last verdict, not a live probe", () => {
+        const { self } = seedSelfWithRig();
+        const note = svc.resolve({ nodeId: self.id })!.peersNote;
+        expect(note).toContain("reachable");
+        expect(note).toContain("seat identity reconciler");
+      });
     });
 
     it("a relaunched seat is judged by the session it now names, not by the exited one before it", () => {

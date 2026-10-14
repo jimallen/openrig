@@ -205,6 +205,16 @@ describe("AskService", () => {
               podId: "pod-dev",
               podNamespace: "dev",
               memberId: "qa",
+              reachable: false,
+            },
+            {
+              logicalId: "dev.rev",
+              sessionName: "dev-rev@my-rig",
+              runtime: "claude-code",
+              podId: "pod-dev",
+              podNamespace: "dev",
+              memberId: "rev",
+              reachable: true,
             },
           ],
           edges: { outgoing: [], incoming: [] },
@@ -220,6 +230,9 @@ describe("AskService", () => {
     expect(result.evidence.backend).toBe("structured");
     expect(result.evidence.excerpts[0]).toContain("dev.qa");
     expect(result.evidence.excerpts[0]).toContain("dev-qa@my-rig");
+    expect(result.evidence.excerpts[0]).toContain("reachable=false");
+    expect(result.evidence.excerpts[1]).toContain("dev.rev");
+    expect(result.evidence.excerpts[1]).toContain("reachable=true");
     expect(result.evidence.excerpts.join("\n")).not.toContain("dev.impl");
     expect(result.insufficient).toBe(false);
     expect(searchSpy).not.toHaveBeenCalled();

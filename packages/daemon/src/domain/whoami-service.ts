@@ -3,6 +3,8 @@ import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { findSessionNameMatches } from "./session-name-matches.js";
+import { SeatIdentityStore } from "./seat-identity-store.js";
+import { identityVerdictConfirmsSessionMissing, type SeatIdentityVerdict } from "./types.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
 
 export interface WhoamiResult {
@@ -36,8 +38,11 @@ export interface WhoamiResult {
     /**
      * Additive. True when `sessionName` is a seat that can be messaged now: it
      * names a session and that session is not known to be down. False when the
-     * peer has no session, or its session is registered but not running (still
-     * starting, exited, detached, superseded). `sessionName` is unchanged and can
+     * peer has no session, its session is registered but not running (still
+     * starting, exited, detached, superseded), or the seat identity reconciler's
+     * last verdict confirmed the tmux session is gone although the row still
+     * says running (killed out-of-band). That verdict is at most one reconcile
+     * poll old (5s); whoami does not probe tmux itself. `sessionName` is unchanged and can
      * still carry the last known name; the `commands` examples only use reachable
      * peers.
      */
@@ -154,6 +159,7 @@ export class WhoamiService {
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
   private transcriptStore: TranscriptStore;
+  private seatIdentityStore: SeatIdentityStore;
   private contextUsageStore: import("./context-usage-store.js").ContextUsageStore | null;
 
   constructor(deps: WhoamiDeps) {
@@ -161,6 +167,7 @@ export class WhoamiService {
     this.rigRepo = deps.rigRepo;
     this.sessionRegistry = deps.sessionRegistry;
     this.transcriptStore = deps.transcriptStore;
+    this.seatIdentityStore = new SeatIdentityStore(deps.db);
     this.contextUsageStore = deps.contextUsageStore ?? null;
   }
 
@@ -246,6 +253,9 @@ export class WhoamiService {
       resolvedSpecVersion: nodeRow.resolved_spec_version,
     };
 
+    // One query for the rig's reconciler verdicts (no tmux call, no per-peer query).
+    const identityVerdicts = this.seatIdentityStore.getForRig(nodeRow.rig_id);
+
     // Build peers — other nodes in this rig with their current sessions
     const peers: WhoamiResult["peers"] = [];
     for (const peerNode of rig.nodes) {
@@ -266,7 +276,7 @@ export class WhoamiService {
         podId: peerNode.podId ?? null,
         podNamespace: peerPodNamespace,
         memberId: peerMemberId,
-        reachable: this.isSessionReachable(peerNode.id, peerSessionName),
+        reachable: this.isSessionReachable(peerNode.id, peerSessionName, identityVerdicts.get(peerNode.id) ?? null),
       });
     }
 
@@ -347,7 +357,7 @@ export class WhoamiService {
       resolvedBy,
       identity,
       peers,
-      peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state",
+      peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state; peers[].reachable = the peer names a session that is running and, per the seat identity reconciler's last verdict (refreshed every ~5s, not a live tmux probe), not confirmed gone, so a tmux session killed within the last few seconds can still read true",
       edges: { outgoing, incoming },
       transcript,
       commands: { sendExamples, captureExamples },
@@ -429,8 +439,12 @@ export class WhoamiService {
    * A name with no session row at all (a bound seat the registry never saw) is
    * not judged down, because nothing says it is.
    */
-  private isSessionReachable(nodeId: string, sessionName: string | null): boolean {
+  private isSessionReachable(nodeId: string, sessionName: string | null, verdict: SeatIdentityVerdict | null): boolean {
     if (sessionName === null) return false;
+    // A `running` row is bookkeeping: tmux can lose the session out-of-band. The identity reconciler already
+    // lists tmux sessions each poll and persists session_missing for running seats; reuse it, but only when
+    // it was recorded for the very session name being advertised.
+    if (verdict !== null && verdict.sessionName === sessionName && identityVerdictConfirmsSessionMissing(verdict)) return false;
     const row = this.db
       .prepare("SELECT status FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY id DESC LIMIT 1")
       .get(nodeId, sessionName) as { status: string } | undefined;
