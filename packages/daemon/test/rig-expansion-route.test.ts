@@ -681,3 +681,90 @@ describe("POST /api/rigs/:rigId/expand - present-invalid role / starter_ref reje
     expect(res.status).not.toBe(400);
   });
 });
+
+// compaction_strategy / mechanic / startup are accepted member fields of the RigSpec (`rig up`), but
+// the expand ingress normalizer, the ExpansionPodFragment member type and buildExpansionSpecObject
+// had no entry for them, so a seat added through `rig expand` silently lost its compaction
+// strategy, its continuity mechanic and its startup block. They ride RAW (presence-preserving) so
+// the ONE canonical RigSpec validator owns the checks and rejects exactly as `rig up` does.
+describe("POST /api/rigs/:rigId/expand - compaction_strategy / mechanic / startup", () => {
+  const RIG_ROOT = "/project/rigs/cms-rig";
+  const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db, {
+      podInstantiatorFsOps: {
+        readFile: (p: string) => {
+          if (p.includes("agents/impl")) return agentYaml;
+          throw new Error(`Not found: ${p}`);
+        },
+        exists: (p: string) => p.includes("agents/impl"),
+      },
+    });
+  });
+
+  afterEach(() => { db.close(); });
+
+  const base = { runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." };
+  const startupA = { actions: [{ type: "send_text", value: "hello-a", idempotent: true }] };
+  const startupB = { actions: [{ type: "send_text", value: "hello-b", idempotent: true }] };
+
+  it("valid values reach the materialized spec per seat (two distinct values; none invented when absent)", async () => {
+    const rig = setup.rigRepo.createRig("cms-carry");
+    const spy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "cms", label: "CMS", members: [
+        { id: "a", ...base, compaction_strategy: "harness_native", mechanic: "mech-a@some-rig", startup: startupA },
+        { id: "b", ...base, compaction_strategy: "pod_continuity", mechanic: "mech-b@some-rig", startup: startupB },
+        { id: "c", ...base },
+      ], edges: [] } }),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).not.toBe(400);
+    expect(res.status).toBeLessThan(500);
+    const spec = spy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [a, b, c] = spec.pods[0]!.members;
+    expect(a).toMatchObject({ compaction_strategy: "harness_native", mechanic: "mech-a@some-rig", startup: startupA });
+    expect(b).toMatchObject({ compaction_strategy: "pod_continuity", mechanic: "mech-b@some-rig", startup: startupB });
+    for (const k of ["compaction_strategy", "mechanic", "startup"]) expect(k in c!).toBe(false);
+    spy.mockRestore();
+  });
+
+  const shellAction = { actions: [{ type: "shell", value: "ls", idempotent: true }] };
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['compaction_strategy "bogus"', { compaction_strategy: "bogus" }],
+    ['compaction_strategy "custom_prompt"', { compaction_strategy: "custom_prompt" }],
+    ["compaction_strategy 7", { compaction_strategy: 7 }],
+    ["compaction_strategy null", { compaction_strategy: null }],
+    ['mechanic "not-canonical"', { mechanic: "not-canonical" }],
+    ["mechanic 7", { mechanic: 7 }],
+    ["mechanic null", { mechanic: null }],
+    ['startup "str" (primitive)', { startup: "str" }],
+    ["startup {files:'x'}", { startup: { files: "x" } }],
+    ["startup shell action", { startup: shellAction }],
+  ];
+
+  it.each(rows)("%s: expand rejects with the same errors as rig up and persists nothing", async (_label, overrides) => {
+    const upSpec = { version: "0.2", name: "cms-up", pods: [{ id: "cms", label: "CMS", members: [{ id: "seat", ...base, ...overrides }], edges: [] }], edges: [] };
+    const up = await setup.podInstantiator.instantiate(JSON.stringify(upSpec), RIG_ROOT);
+    expect(up.ok, "rig up must reject this input (otherwise the row proves nothing)").toBe(false);
+    const upErrors = (up as { errors?: string[] }).errors ?? [];
+    expect(upErrors.length).toBeGreaterThan(0);
+
+    const rig = setup.rigRepo.createRig("cms-expand");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rigRoot: RIG_ROOT, pod: { id: "cms", label: "CMS", members: [{ id: "seat", ...base, ...overrides }], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; code?: string; error?: string };
+    expect(body.code).toBe("validation_failed");
+    expect(body.error).toBe(upErrors.join("; "));
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ? AND logical_id LIKE 'cms.%'").get(rig.id)).toMatchObject({ c: 0 });
+  });
+});

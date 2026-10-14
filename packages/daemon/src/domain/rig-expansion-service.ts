@@ -163,6 +163,11 @@ export class RigExpansionService {
             ...("role" in member && member.role !== undefined ? { role: member.role } : {}),
             ...(member.restorePolicy ? { restore_policy: member.restorePolicy } : {}),
             ...(member.label ? { label: member.label } : {}),
+            // compaction_strategy / mechanic / startup: PRESENCE-preserving RAW carry, like role and
+            // remote_control -- present-invalid values reach the canonical validator and reject there.
+            ...("compactionStrategy" in member && member.compactionStrategy !== undefined ? { compaction_strategy: member.compactionStrategy } : {}),
+            ...("mechanic" in member && member.mechanic !== undefined ? { mechanic: member.mechanic } : {}),
+            ...("startup" in member && member.startup !== undefined ? { startup: member.startup } : {}),
             // OPR.0.5.6.3 repair amendment: session_source is carried FAITHFULLY —
             // the route already normalizes valid shapes to the typed spec (whose
             // field names are identical in snake_case form), and a present-INVALID

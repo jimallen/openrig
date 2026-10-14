@@ -1391,6 +1391,12 @@ export interface ExpansionPodFragment {
     remoteControl?: unknown;
     restorePolicy?: string;
     label?: string;
+    /** Member `compaction_strategy`. Typed UNKNOWN (RAW presence preserved; the canonical validator owns the vocabulary). */
+    compactionStrategy?: unknown;
+    /** Member `mechanic` (seat@rig address). Typed UNKNOWN: the canonical validator rejects non-canonical values. */
+    mechanic?: unknown;
+    /** Member `startup` block. Typed UNKNOWN: the canonical validateStartupBlock owns the shape. */
+    startup?: unknown;
     /**
      * OPR.0.4.6.FAC1: optional seat-side role; threaded through
      * buildExpansionSpecObject → the pod-member schema → nodes.role

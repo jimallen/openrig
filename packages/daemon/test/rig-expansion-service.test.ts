@@ -452,4 +452,31 @@ describe("RigExpansionService", () => {
     expect("effort" in unset!).toBe(false);
     materializeSpy.mockRestore();
   });
+  // Fragment->spec map in isolation: compaction_strategy / mechanic / startup ride the fragment
+  // into the materialized spec RAW (presence, not truthiness) and are never invented when absent.
+  it("carries member compactionStrategy / mechanic / startup into the structured materialize spec", async () => {
+    const rig = seedRig();
+    const materializeSpy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    const startup = { actions: [{ type: "send_text", value: "hi", idempotent: true }] };
+    await service.expand({
+      rigId: rig.id,
+      pod: {
+        id: "cms",
+        label: "CMS",
+        members: [
+          { id: "a", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp", compactionStrategy: "harness_native", mechanic: "m-a@r", startup },
+          { id: "b", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp", compactionStrategy: "pod_continuity", mechanic: "m-b@r" },
+          { id: "c", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: "/tmp" },
+        ],
+        edges: [],
+      },
+    });
+    const specObject = materializeSpy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    const [a, b, c] = specObject.pods[0]!.members;
+    expect(a).toMatchObject({ compaction_strategy: "harness_native", mechanic: "m-a@r", startup });
+    expect(b).toMatchObject({ compaction_strategy: "pod_continuity", mechanic: "m-b@r" });
+    expect("startup" in b!).toBe(false);
+    for (const k of ["compaction_strategy", "mechanic", "startup"]) expect(k in c!).toBe(false);
+    materializeSpy.mockRestore();
+  });
 });

@@ -199,6 +199,17 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
           : "starter_ref" in m
             ? { starterRef: m["starter_ref"] }
             : {}),
+        // compaction_strategy / mechanic / startup: PRESENCE-preserving RAW carry (no route-local
+        // validation). The canonical RigSpec validator owns the vocabulary, the canonical
+        // seat@rig address shape and the startup-block shape, so a present-invalid value rejects
+        // exactly as it does for `rig up`.
+        ...("compactionStrategy" in m
+          ? { compactionStrategy: m["compactionStrategy"] }
+          : "compaction_strategy" in m
+            ? { compactionStrategy: m["compaction_strategy"] }
+            : {}),
+        ...("mechanic" in m ? { mechanic: m["mechanic"] } : {}),
+        ...("startup" in m ? { startup: m["startup"] } : {}),
         // Presence-governed, never truthiness: null/false/primitive raw values
         // must survive to canonical validation, not vanish at a truthy check.
         ...(hasSessionSource ? { sessionSource } : {}),
