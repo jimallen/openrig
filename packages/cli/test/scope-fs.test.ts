@@ -319,6 +319,17 @@ describe("listMissions + listSlices + nextSliceNN", () => {
     expect(closed.map((s) => s.name)).toEqual(["04-baz"]);
   });
 
+  it("listSlices active filter treats complete/completed as terminal, as a mission does", () => {
+    const base = path.join(missionsRoot, "release-0.3.2", "slices");
+    writeFile(path.join(base, "05-complete", "README.md"), "---\nid: OPR.0.3.2.5\nstatus: complete\n---\nbody\n");
+    writeFile(path.join(base, "06-completed", "README.md"), "---\nid: OPR.0.3.2.6\nstatus: Completed\n---\nbody\n");
+    writeFile(path.join(base, "07-incomplete", "README.md"), "---\nid: OPR.0.3.2.7\nstatus: incomplete\n---\nbody\n");
+    const mission = findMission(missionsRoot, "release-0.3.2");
+    // the terminal slices are on disk and listed under "all", so their absence below is the filter, not a missing fixture
+    expect(listSlices(mission, "all").map((s) => s.name)).toContain("05-complete");
+    expect(listSlices(mission, "active").map((s) => s.name).sort()).toEqual(["01-foo", "02-bar", "07-incomplete"]);
+  });
+
   it("nextSliceNN skips numbers already used in slices/ AND closed/ (HG-3)", () => {
     const missionAbs = path.join(missionsRoot, "release-0.3.2");
     // existing: 01, 02, 04 → next should be 5 (not 3 — numbers never reused).
