@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
+import { execFileSync, spawn } from "node:child_process";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { migrationsForFullTestDb, createFullTestDb, createTestApp } from "./helpers/test-app.js";
@@ -197,6 +198,32 @@ describe("rig add: the culture file must be a readable regular file, checked bef
     const f = await runningRig();
     fs.symlinkSync(nodePath.join(f.rigRoot, "agents"), nodePath.join(f.rigRoot, "culture-dir-link"));
     await refused(f, "culture-dir-link", /is not a regular file/i);
+    f.db.close();
+  });
+
+  // exists() is true for these and statSync succeeds; only the file-type check refuses them. A FIFO is the
+  // dangerous one: reading it as a startup file would block the daemon forever. (isDirectory() in place of
+  // isFile() passes both of these, which the directory rows above cannot see.)
+  it("a FIFO is refused as not a regular file", async () => {
+    const f = await runningRig();
+    const fifo = nodePath.join(f.rigRoot, "culture.fifo");
+    execFileSync("mkfifo", [fifo]);
+    // A writer parked on the FIFO, looping so every read (the daemon may read a startup file more than
+    // once) finds a writer. Correct code never opens the FIFO, so the writer stays blocked and is killed
+    // below. A regression that lets the FIFO through would read it, so the row FAILS (seat created)
+    // instead of hanging the synchronous read and the whole worker.
+    const writer = spawn("sh", ["-c", 'while :; do printf "%s" "$1" > "$2"; done', "sh", `# fifo\n${MARKER}\n`, fifo], { stdio: "ignore" });
+    try {
+      await refused(f, "culture.fifo", /culture file .*culture\.fifo.* is not a regular file/i);
+    } finally { writer.kill("SIGKILL"); }
+    f.db.close();
+  });
+
+  it("a device file (/dev/null), directly and through a symlink, is refused as not a regular file", async () => {
+    const f = await runningRig();
+    await refused(f, "/dev/null", /culture file .*\/dev\/null.* is not a regular file/i);
+    fs.symlinkSync("/dev/null", nodePath.join(f.rigRoot, "null-link.md"));
+    await refused(f, "null-link.md", /culture file .*null-link\.md.* is not a regular file/i);
     f.db.close();
   });
 
