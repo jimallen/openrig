@@ -35,6 +35,7 @@ import { inspectBundleBehaviour } from "../domain/bundle-behaviour-inspect.js";
 import type { BundleBehaviour } from "../domain/bundle-behaviour.js";
 import { normalizePreconditionsBlock, type BundlePrecondition } from "../domain/bundle-types.js";
 import { assertShippableSubstance } from "../domain/agent-resolver.js";
+import { checkCultureFile } from "../domain/culture-file-guard.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if
@@ -353,6 +354,7 @@ function podAssemblerFsOps(): PodAssemblerFsOps {
     realpath: (p) => fs.realpathSync(p),
     readFile: (p) => fs.readFileSync(p, "utf-8"),
     readFileBuffer: (p) => fs.readFileSync(p),
+    readCultureFile: (requested, resolved) => checkCultureFile(requested, resolved),
     fileMode: (p) => fs.statSync(p).mode & 0o777,
     writeFile: (p, c, mode) => {
       fs.writeFileSync(p, c);
