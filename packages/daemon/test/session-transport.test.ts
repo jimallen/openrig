@@ -1782,6 +1782,57 @@ describe("SessionTransport", () => {
     });
   });
 
+  describe("resolveSessions by session name: rigs that share a rig NAME", () => {
+    const NAME = "exec-cos@eztrack";
+
+    // OF-1: ambiguity was counted over distinct rig NAMES, so two live rigs both named "eztrack"
+    // collapsed to one and `rig send` silently picked one of them.
+    it("refuses as ambiguous, naming each candidate rig id and node id, when two live rigs share a rig name", async () => {
+      const rigA = rigRepo.createRig("eztrack");
+      const nodeA = rigRepo.addNode(rigA.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(nodeA.id, NAME);
+      const rigB = rigRepo.createRig("eztrack");
+      const nodeB = rigRepo.addNode(rigB.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(nodeB.id, NAME);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("ambiguous");
+        for (const id of [rigA.id, rigB.id, nodeA.id, nodeB.id]) expect(result.error).toContain(id);
+      }
+    });
+
+    it("does not call a live rig and its archived same-named predecessor ambiguous", async () => {
+      const old = rigRepo.createRig("eztrack");
+      const oldNode = rigRepo.addNode(old.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(oldNode.id, NAME);
+      expect(rigRepo.archiveRig(old.id)).toBe(true);
+      const live = rigRepo.createRig("eztrack");
+      const liveNode = rigRepo.addNode(live.id, "exec.cos", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(liveNode.id, NAME);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack", nodeLogicalId: "exec.cos" }] });
+    });
+
+    // OF-8: two nodes of ONE rig holding one session name. Rows come newest first; the target must
+    // be labelled with the newest node (the one whoami answers with), not the older one.
+    it("labels the target with the newest node when two nodes of one rig share the session name", async () => {
+      const rig = rigRepo.createRig("eztrack");
+      const older = rigRepo.addNode(rig.id, "exec.older", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(older.id, NAME);
+      const newer = rigRepo.addNode(rig.id, "exec.newer", { role: "orchestrator", runtime: "claude-code" });
+      sessionRegistry.registerSession(newer.id, NAME);
+
+      const result = await createTransport().resolveSessions({ session: NAME });
+
+      expect(result).toEqual({ ok: true, sessions: [{ sessionName: NAME, rigName: "eztrack", nodeLogicalId: "exec.newer" }] });
+    });
+  });
+
   // Test 11: resolveSessions by rig returns running sessions
   it("resolveSessions by rig returns running sessions", async () => {
     seedCanonicalRig();

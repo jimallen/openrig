@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "../domain/rig-repository.js";
-import { findSessionNameMatches } from "../domain/session-name-matches.js";
+import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "../domain/session-name-matches.js";
 import type { TranscriptIngestHealth, TranscriptStore } from "../domain/transcript-store.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { startTmuxTranscriptCapture } from "../domain/transcript-capture.js";
@@ -39,41 +39,23 @@ function resolveSessionToRig(
     };
   }
 
-  // Collect distinct rig names for all matching sessions
-  const rigNames = new Set<string>();
-  for (const row of sessionRows) {
-    const nodeRow = db
-      .prepare("SELECT rig_id, runtime FROM nodes WHERE id = ?")
-      .get(row.node_id) as NodeRow | undefined;
-    if (nodeRow) {
-      const rig = rigRepo.getRig(nodeRow.rig_id);
-      if (rig) rigNames.add(rig.rig.name);
-    }
+  // Ambiguity is counted over distinct rig IDS: two live rigs may share a rig NAME.
+  if (distinctRigIds(sessionRows).length > 1) {
+    return { error: describeAmbiguousSessionName(db, sessionName, sessionRows), status: 409 };
   }
 
-  if (rigNames.size === 0) {
+  const nodeId = sessionRows[0]!.node_id;
+  const nodeRow = db
+    .prepare("SELECT rig_id, runtime FROM nodes WHERE id = ?")
+    .get(nodeId) as NodeRow | undefined;
+  const rig = nodeRow ? rigRepo.getRig(nodeRow.rig_id) : null;
+  if (!nodeRow || !rig) {
     return {
       error: `Session '${sessionName}' not found. Check session names with: rig ps --nodes`,
       status: 404,
     };
   }
-
-  if (rigNames.size > 1) {
-    const names = Array.from(rigNames).join(", ");
-    return {
-      error: `Session '${sessionName}' is ambiguous — found in rigs: ${names}. Use a unique session name or specify the rig.`,
-      status: 409,
-    };
-  }
-
-  const selectedNode = db
-    .prepare("SELECT rig_id, runtime FROM nodes WHERE id = ?")
-    .get(sessionRows[0]!.node_id) as NodeRow;
-  return {
-    rigName: rigNames.values().next().value!,
-    nodeId: sessionRows[0]!.node_id,
-    runtime: selectedNode.runtime,
-  };
+  return { rigName: rig.rig.name, nodeId, runtime: nodeRow.runtime };
 }
 
 async function tryStartCaptureForSession(
