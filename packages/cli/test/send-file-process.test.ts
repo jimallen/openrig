@@ -118,6 +118,12 @@ describe("rig send --file - in a real child process (no readStdin seam)", () => 
     expect(requests).toHaveLength(0);
   });
 
+  // A CI image without python3 must not silently lose the real-TTY pin: say so in the test name and the log.
+  if (!hasPython) {
+    console.warn("[send-file-process] python3 not found: the real-TTY guard pin for `rig send --file -` DID NOT RUN");
+    it.skip("SKIPPED (python3 not found): the real-TTY guard pin for `--file -` did NOT run", () => {});
+  }
+
   describe.skipIf(!hasPython)("with a real pseudo-terminal as stdin", () => {
     const viaPty = (...a: string[]) => ["-I", "-c", PTY_WRAPPER, process.execPath, ...a];
 
