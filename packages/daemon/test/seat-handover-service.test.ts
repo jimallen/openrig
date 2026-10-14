@@ -1309,4 +1309,12 @@ describe("SeatHandoverService", () => {
     if (remoteControl) expect(successorBinding.remoteControl).toBe(true);
     else expect("remoteControl" in successorBinding).toBe(false);
   });
+
+  it("OPR.0.7.0.7: a seat's saved effort choice wins over its authored effort at handover (the shared resolver)", async () => {
+    const { node } = seedSeat({ runtime: "codex", effort: "medium" });
+    rigRepo.setNodeEffortChoice(node.id, "high");
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+    expect(result.ok).toBe(true);
+    expect((launchHarness.mock.calls[0]![0] as { effort?: string }).effort).toBe("high");
+  });
 });

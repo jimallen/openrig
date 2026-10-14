@@ -59,6 +59,7 @@ interface NodeEntry {
   runtime: string | null;
   model: string | null;
   sessionStatus: string | null;
+  intentionallyStopped?: boolean;
   startupStatus: "pending" | "ready" | "attention_required" | "failed" | null;
   restoreOutcome: string;
   // OPR.0.4.3.06 — challenge-verified orientation, distinct from startupStatus.
@@ -96,6 +97,9 @@ interface NodeEntry {
     evidenceSource: string;
     sampledAt: string;
     evidence: string | null;
+    rawEvent?: string | null;
+    stale?: boolean;
+    fallback?: boolean;
   };
   // PL-012: context-usage block surfaced from the daemon's
   // /api/rigs/:id/nodes route (already populated). Optional because
@@ -205,6 +209,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "runtime",
   "model",
   "sessionStatus",
+  "intentionallyStopped",
   "startupStatus",
   "restoreOutcome",
   "oriented",
@@ -597,6 +602,13 @@ function needsAttention(node: NodeEntry): boolean {
     || node.agentActivity?.state === "needs_input";
 }
 
+function hasCurrentUsageLimit(node: NodeEntry): boolean {
+  const activity = node.agentActivity;
+  return activity?.state === "unknown" && activity.reason === "usage_limit"
+    && activity.rawEvent === "at_limit" && activity.evidenceSource === "runtime_hook"
+    && activity.stale === false && !activity.fallback;
+}
+
 function missingSessionGuidance(node: NodeEntry): string | null {
   return node.identityVerdict?.reason === "session_missing"
     ? "tmux session missing; restore or relaunch the seat"
@@ -652,8 +664,8 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // OPR.0.4.3.06 — challenge-verified orientation, distinct from ready.
       oriented: n.oriented ?? "n-a",
       lifecycleState: n.lifecycleState,
-      // activity (state always; short reason only when attention — keep it lean).
-      agentActivity: attention
+      // Keep the current usage limit visible without classifying it as human attention.
+      agentActivity: attention || hasCurrentUsageLimit(n)
         ? { state: n.agentActivity?.state ?? "unknown", reason: n.agentActivity?.reason }
         : { state: n.agentActivity?.state ?? "unknown" },
       // Work counts. Compact keeps the base pending-only key plus the active
@@ -670,6 +682,7 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
       // else null (documented FR-4 fallback — not a fabricated timestamp).
       lastActivity: n.agentActivity?.sampledAt ?? n.startupCompletedAt ?? null,
     };
+    if (n.intentionallyStopped !== undefined) compact.intentionallyStopped = n.intentionallyStopped;
     // held/attention reason (short) when present.
     if (n.heldReason) compact.heldReason = n.heldReason;
     if (attention && n.latestError) {
@@ -826,7 +839,7 @@ activeCount, hasWorkCount, attentionCount, status, lifecycleState, uptime,
 latestSnapshot.
 --fields accepts (node-level, with --nodes): nodeId, rigId, rigName, logicalId, podId,
 podNamespace, hostSelfId, canonicalSessionName, nodeKind, runtime, model, sessionStatus,
-startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
+intentionallyStopped, startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
 resumeCommand, latestError, terminalActive, hasAssignedWork,
 assignedWorkCount, pendingWorkCount, inProgressWorkCount, blockedWorkCount,
 agentActivity, contextUsage, heldReason.
@@ -1221,7 +1234,7 @@ async function handleNodes(
     console.log(padCompactNodeRow("RIG", "SESSION", "LIFECYCLE", "ACTIVITY", "WORK", "REASON"));
     for (const n of humanList as NodeEntry[]) {
       const attn = needsAttention(n);
-      const reason = missingSessionGuidance(n) ?? (attn
+      const reason = missingSessionGuidance(n) ?? (attn || hasCurrentUsageLimit(n)
         ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
         : "—");
       console.log(padCompactNodeRow(

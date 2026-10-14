@@ -189,7 +189,8 @@ export class NodeLauncher {
       return { ok: false, code: tmuxResult.code, message: tmuxResult.message };
     }
 
-    const launchWarnings: string[] = [...codexSeatWarnings];
+    // The session's own non-fatal warnings (#771: the parent-session identity cleanup).
+    const launchWarnings: string[] = [...codexSeatWarnings, ...(tmuxResult.warnings ?? [])];
 
     // Observe the pane before the DB transaction. A concrete pane is committed
     // with session+binding; an unresolved pane gets a durable named verdict in

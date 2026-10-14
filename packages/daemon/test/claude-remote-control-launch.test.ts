@@ -66,9 +66,8 @@ describe("launchHarness: remote_control reaches every claude launch of the seat"
   it("FORK launch emits --remote-control <session name>, before --resume ... --fork-session", async () => {
     const tmux = mockTmux();
     const adapter = adapterWith(tmux);
-    vi.spyOn(adapter as unknown as { pollForResumeToken: () => Promise<string> }, "pollForResumeToken").mockResolvedValue("forked");
     await adapter.launchHarness(rc(), { name: SEAT, forkSource: { kind: "native_id", value: "parent-1" } });
-    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'parent-1' --fork-session --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'parent-1' --fork-session --session-id sess-1 --name ${SEAT}`);
   });
 
   it("sits after --model and --effort, so the optional value never precedes or swallows another flag", async () => {

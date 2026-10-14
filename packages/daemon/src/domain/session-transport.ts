@@ -1,5 +1,20 @@
+import { CODEX_TURN_STATUS_PATTERN } from "./codex-pane-patterns.js";
 import { randomUUID } from "node:crypto";
 import { inspectStartupStagedText, startupSubmissionEvidence, type StartupSubmissionEvidence } from "./startup-submission-evidence.js";
+import {
+  composerNumberedChoicePattern,
+  composerPromptClassForRuntime,
+  composerPromptIsAmbiguous,
+  composerSelectionPrefixPattern,
+  COMPOSER_DRAFT_PATTERN,
+  COMPOSER_EMPTY_CODEX_PLACEHOLDER_PATTERN as CODEX_EMPTY_COMPOSER_PATTERN,
+  COMPOSER_EMPTY_PATTERN,
+  COMPOSER_PROMPT_CLASS,
+  COMPOSER_SELECTION_PATTERN,
+  COMPOSER_SELECTION_SCAN_PATTERN,
+  findComposerInputLineIndex,
+  stripComposerPromptGlyph,
+} from "./composer-prompts.js";
 export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
@@ -10,6 +25,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
+import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
 import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "../lib/pane-envelope.js";
 import { getSelfHostId } from "./hosts/fanout-contract.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
@@ -35,7 +51,7 @@ const MID_WORK_PATTERNS = [
   /Working/,
   /^[✶✢✳✻✽·]\s+\S.*(?:…|\.{3})\s+\([^)]*\bthinking\)$/m,
   /esc to interrupt/,
-  /^[❯›]\s*\d+\.\s/m,   // trust/consent prompt choices (e.g. '› 1. Yes, continue')
+  COMPOSER_SELECTION_SCAN_PATTERN,   // trust/consent prompt choices (e.g. '› 1. Yes, continue')
 ];
 
 // Idle-prompt patterns: empty prompt line (no typed text after the char).
@@ -47,27 +63,32 @@ const MID_WORK_PATTERNS = [
 // normally sits above it, but Codex hides that row while it streams assistant output. So the
 // placeholder counts as idle only through MID_WORK_PATTERNS here, and classifySendReadiness
 // never lets a placeholder-only verdict override a display-fresh running/needs_input hook.
-const CODEX_EMPTY_COMPOSER_PATTERN = /^›\s+Ask Codex to do anything\s*$/;
-
-// Codex's live turn-status row: a bullet, a header ("Working", or the reasoning summary Codex shows in its place),
-// then the elapsed time and "esc to interrupt" in parentheses, e.g. "• Working (1h 09m 39s • esc to interrupt)".
-// Completed output that merely says "Working directory: …" or "Working tree is clean." never matches.
-const CODEX_TURN_STATUS_PATTERN = /^[•◦]\s+\S.*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)/;
 
 const IDLE_PROMPT_PATTERNS = [
-  /^[❯›]\s*$/,  // prompt char + optional whitespace + end-of-line only
+  COMPOSER_EMPTY_PATTERN,  // prompt char + optional whitespace + end-of-line only
   CODEX_EMPTY_COMPOSER_PATTERN,
 ];
 
 const PROMPT_DRAFT_PATTERNS = [
-  /^[❯›]\s+\S/,
+  COMPOSER_DRAFT_PATTERN,
 ];
+
+// Claude's permission-mode footers: default, accept edits, bypass, auto and plan, optionally after a
+// vim-mode marker such as "-- INSERT --" (#808). A suffix such as "· 1 shell" can follow the mode.
+const CLAUDE_MODE_FOOTER = /^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/;
+
+// Sibling pattern identical to CLAUDE_MODE_FOOTER except that it ends in \? for shortcuts$,
+// keeping unframed-composer and selectionLines checks anchored on the default footer (#808).
+const CLAUDE_ANCHORED_MODE_FOOTER = /^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts$)/;
+
+// Permission mode status footers specifically (excluding shortcuts hint that appears in Codex footers).
+const CLAUDE_PERMISSION_MODE_FOOTER = /(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b)/;
 
 // Footer hints, not proof of inactivity: Claude also renders its mode bar
 // during a turn. Current live-status evidence must take precedence below.
 const IDLE_STATUS_BAR_PATTERNS = [
   /gpt-\d[\d.]* .+ · Context \[/,  // Codex model/context footer
-  /⏵⏵ accept edits/,              // Claude Code edit-accept bar
+  CLAUDE_PERMISSION_MODE_FOOTER,   // Claude Code mode footers (#808)
 ];
 
 const IDLE_TERMINAL_COMMANDS = new Set(["zsh", "bash", "sh", "fish", "nu", "tmux"]);
@@ -144,9 +165,6 @@ const CLAUDE_STATUS_WARNINGS = [
   /^tmux focus-events off · add 'set -g focus-events on' to ~\/\.tmux\.conf and re…$/,
   /^You've used (?:\d|[1-9]\d)% of your weekly limit · resets \d{1,2}(?::\d{2})?(?:am|pm) \(UTC\)$/,
 ];
-// Claude's permission-mode footers: default, accept edits, bypass, auto and plan, optionally after a
-// vim-mode marker such as "-- INSERT --" (#808). A suffix such as "· 1 shell" can follow the mode.
-const CLAUDE_MODE_FOOTER = /^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/;
 // Current Claude status rows need not end in "thinking)" or show "esc to interrupt".
 // Completed summaries such as "✻ Crunched for 2s" lack the live ellipsis/timer shape.
 // While a hook runs, the timer follows its label: "(running PostToolUse hook · 3m 12s · …)".
@@ -179,7 +197,7 @@ function findClaudeComposer(paneContent: string, options: ClassifyPaneOptions = 
   if (indent === undefined) {
     // The unframed Claude prompt has the same current status/task block.
     // Keep Codex footers and a bare prompt with no visible block on their old path.
-    if (bar < 2 || !/^(?:⏵⏵ (?:accept edits|bypass permissions) on\b|⏸ plan mode on\b|\? for shortcuts$)/.test(lines[bar]!.trim())) return null;
+    if (bar < 2 || !CLAUDE_ANCHORED_MODE_FOOTER.test(lines[bar]!.trim())) return null;
     prompt = lines[bar - 1] ?? "";
     indent = /^([ \t]*)❯\s*$/.exec(prompt)?.[1];
     if (indent === undefined) return null;
@@ -227,7 +245,7 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
 
   const priorTrimmed = priorLine.trim();
   const looksLikeDraft = PROMPT_DRAFT_PATTERNS.some((pattern) => pattern.test(priorTrimmed));
-  const looksLikeSelection = /^[❯›]\s*\d+\.\s/.test(priorTrimmed);
+  const looksLikeSelection = COMPOSER_SELECTION_PATTERN.test(priorTrimmed);
   if (!looksLikeDraft || looksLikeSelection) return null;
 
   return truncateEvidence(priorTrimmed);
@@ -322,12 +340,12 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
   // A complete later empty composer with a recognized Claude bar makes the preceding question history.
   // Keep draft handling and selectors without this dialog boundary unchanged.
   const selectionLines = claudeComposer?.framed &&
-      /^(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts$)/.test(claudeComposer.bar) &&
+      CLAUDE_ANCHORED_MODE_FOOTER.test(claudeComposer.bar) &&
       IDLE_PROMPT_PATTERNS.some(pattern => pattern.test(claudeComposer.text)) &&
       oldQuestionEnd >= 0 && oldQuestionEnd < promptScanLines.length - 1
     ? promptScanLines.slice(oldQuestionEnd + 1) : promptScanLines;
   const selectionPromptEvidence = findCurrentClaudeQuestion(paneContent) ??
-    findPatternEvidence(selectionLines, [/^[❯›]\s*\d+\.\s/m]);
+    findPatternEvidence(selectionLines, [COMPOSER_SELECTION_SCAN_PATTERN]);
   if (selectionPromptEvidence) {
     return {
       state: "attention",
@@ -380,7 +398,8 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
     CLAUDE_LIVE_STATUS_PATTERN,
     ...(options.timerlessStatusIsLive ? [CLAUDE_TIMERLESS_STATUS_PATTERN] : []),
   ]);
-  if (idleStatusBarLine && (!idleStatusBarLine.includes("⏵⏵ accept edits") || !midWorkEvidence)) {
+  const isClaudeStatusBar = CLAUDE_PERMISSION_MODE_FOOTER.test(idleStatusBarLine ?? "");
+  if (idleStatusBarLine && (!isClaudeStatusBar || !midWorkEvidence)) {
     return {
       state: "agent_idle",
       reason: "idle_status_bar",
@@ -645,6 +664,100 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
+/**
+ * Claude indents continuation lines in submitted prompts. Compare the same
+ * line content in the sent text and both captures, retaining line breaks and
+ * within-line spacing rather than allowing unrelated words to match.
+ */
+function normalizeVerificationText(text: string): string {
+  return text.replace(/\r?\n[ \t]*/g, "\n");
+}
+
+/** Match the full envelope with whitespace collapsed, including body and recipient.
+ * Raw sends retain their normalized 40-character prefix and spacing. */
+function verificationSnippet(text: string): { snippet: string; envelope: boolean } {
+  const normalized = normalizeVerificationText(text);
+  const header = /^From: [^\n]+\nTo: [^\n]+\n(?:Sent: [^\n]+\n)?---\n/.exec(normalized);
+  return { snippet: header ? normalized.replace(/\s+/g, " ").trim() : normalized.slice(0, 40), envelope: !!header };
+}
+
+/** Count whole visible envelope blocks, not prefixes of longer messages.
+ * A new envelope, prompt or same-column output ends an indented user block.
+ * Whitespace is compared only after retaining boundaries and quote indentation. */
+function countEnvelopeOccurrences(transcript: string, expected: string, promptClass: string): number {
+  const promptPrefix = new RegExp(`^[${promptClass}]\\s+`);
+  const promptBoundary = new RegExp(`^[${promptClass}](?:\\s|$)`);
+  const lines = transcript.split("\n");
+  let count = 0;
+  let block: string[] | null = null;
+  let blockIndent = 0;
+  let blockPrompted = false;
+  let inAgentOutput = false;
+  const finish = () => {
+    if (block?.join("\n").replace(/\s+/g, " ").trim() === expected) count++;
+    block = null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const indent = /^[ \t]*/.exec(line)![0].length;
+    const prompted = promptPrefix.test(line.slice(indent));
+    const header = line.slice(indent).replace(promptPrefix, "");
+    const atBoundary = (!block && !inAgentOutput) || indent <= blockIndent;
+    const candidate = normalizeVerificationText([header, ...lines.slice(i + 1, i + 5)].join("\n"));
+    const envelopeHeader = /^From: [^\n]+\nTo: [^\n]+\n(?:Sent: [^\n]+\n)?---\n/.test(candidate);
+    if (atBoundary && envelopeHeader && (!inAgentOutput || prompted)) {
+      finish();
+      block = [header];
+      blockIndent = indent;
+      // Flat historical captures have no role columns; retain whole-block
+      // equality there instead of treating their own header/body as output.
+      blockPrompted = prompted && /^[ \t]*/.exec(lines[i + 1] ?? "")![0].length > indent;
+      inAgentOutput = false;
+    } else if (atBoundary && blockPrompted && line.trim().length > 0) {
+      // Any nonblank boundary line is outside an indented user block. Deeper
+      // quotes stay in the body, and blank separators do not change its text.
+      finish();
+      inAgentOutput = true;
+    } else if (atBoundary && promptBoundary.test(line.slice(indent))) {
+      finish();
+    } else if (block) {
+      block.push(line);
+    }
+  }
+  finish();
+  return count;
+}
+
+/** The last prompt marker owns the current input region. Never count it or its
+ * continuation lines as submitted transcript, in either capture. If a capture
+ * ends at a historical prompt with no later input marker, leave it unconfirmed. */
+function verificationTranscript(content: string | null, promptClass: string): string {
+  const indentedPrompt = new RegExp(`^([ \\t]*)[${promptClass}]`);
+  const lines = (content ?? "").replace(/\r\n/g, "\n").split("\n");
+  let inputAt = findComposerInputLineIndex(lines, promptClass);
+  if (inputAt >= 0) {
+    let indent = /^[ \t]*/.exec(lines[inputAt]!)![0].length;
+    // Claude indents draft continuation lines. A quoted prompt on one of them
+    // belongs to the enclosing input, not a new transcript/composer boundary.
+    for (let i = inputAt - 1; i >= 0; i--) {
+      const prompt = indentedPrompt.exec(lines[i]!);
+      if (prompt && prompt[1]!.length < indent) {
+        inputAt = i;
+        indent = prompt[1]!.length;
+      }
+    }
+  }
+  // A visible framed composer starts at its upper rule, not its prompt.
+  // Keep quoted/indented rules in the message; require a matching lower frame.
+  if (inputAt > 0) {
+    const indent = /^[ \t]*/.exec(lines[inputAt]!)![0];
+    const frame = (line: string) => line.startsWith(indent) &&
+      /^─{3,}(?: .+ ─+)?$/.test(line.slice(indent.length).trimEnd());
+    if (frame(lines[inputAt - 1]!) && lines.slice(inputAt + 1).some(frame)) inputAt--;
+  }
+  return (inputAt < 0 ? lines : lines.slice(0, inputAt)).join("\n");
+}
+
 /** Map a resolved fan-out target + its recipient list → the EnvelopeScope (ruling 03c35295). The
  *  transport knows the target shape + resolved seats, so it builds the honest scale daemon-side:
  *  DM / multi (full list) / rig- or pod-scoped broadcast (with seat count) / topology. */
@@ -672,37 +785,42 @@ export type ResolveResult =
 
 /** The existing submit-only identity check, also used to inspect startup's own paste.
  * A false result is no matching staged evidence, not proof of model consumption. */
-export function hasExpectedStagedText(pane: string | null, expected: string): boolean {
+export function hasExpectedStagedText(pane: string | null, expected: string, runtime: string | null = null): boolean {
   const norm = (s: string) => s.replace(/\s+/g, "");
+  // The composer glyph set is scoped to the runtime when known: a Claude draft's
+  // continuation line can start with a Codex glyph, and taking that line as the
+  // input marker would misread the staged text. Unknown runtimes keep the union.
+  const promptClass = composerPromptClassForRuntime(runtime);
   // Round-2 (r2 HIGH-1): the evidence must be the CURRENT ACTIVE INPUT and must identify
   // THIS piece — stale scrollback can carry an old placeholder while a LATER interactive
   // prompt owns the input, and an Enter there approves the prompt. So:
   //   1. Only the pane's LAST input-marker line counts (the current input; everything above
   //      is history).
-  //   2. A numbered-option line (`❯ 1. …`) is a PROMPT SELECTION, never staged input: refuse.
+  //   2. A numbered-option line (`❯ 1. …`, `› 1.Yes`) is a PROMPT SELECTION, never staged
+  //      input: refuse.
   //   3. A pasted-text placeholder is identity-qualified: "[Pasted text #N +X lines]" counts
   //      only when X matches the expected piece's own line count (±1 for a trailing newline).
   //      More than one placeholder is COALESCED staging (several pieces, one Enter): refuse.
   //   4. Otherwise the line must carry the content's own head (24 normalized chars — a short
   //      paste renders inline, possibly truncated).
   const paneLines = (pane ?? "").split("\n");
-  let currentInputAt = -1;
-  for (let i = paneLines.length - 1; i >= 0; i--) {
-    if (paneLines[i]!.trimStart().startsWith("❯")) { currentInputAt = i; break; }
-  }
+  const currentInputAt = findComposerInputLineIndex(paneLines, promptClass);
   let stagedEvidence = false;
   if (currentInputAt >= 0) {
+    // Unknown runtime: a composer block that mixes glyph kinds has no runtime to
+    // say which line is live, so fail closed exactly as the pre-union check did.
+    if (composerPromptIsAmbiguous(paneLines, currentInputAt, promptClass)) return false;
     const inputLine = paneLines[currentInputAt]!.trimStart();
-    // The region is the last ❯-line through the input box's closing separator (a box-drawing
-    // line) or pane end — wrapped input continues below the marker; everything ABOVE the
-    // marker is history and everything below the separator is hint-bar chrome.
+    // The region is the last composer-marker line through the input box's closing separator
+    // (a box-drawing line) or pane end — wrapped input continues below the marker; everything
+    // ABOVE the marker is history and everything below the separator is hint-bar chrome.
     let regionEnd = paneLines.length;
     for (let i = currentInputAt + 1; i < paneLines.length; i++) {
       const t = paneLines[i]!.trim();
       if (t.length >= 10 && /^[─═-]+$/.test(t)) { regionEnd = i; break; }
     }
     const region = paneLines.slice(currentInputAt, regionEnd).join("\n");
-    if (!/^❯\s*\d+\./.test(inputLine)) {
+    if (!composerSelectionPrefixPattern(promptClass).test(inputLine)) {
       // Round-3 (r2 R2 HIGH-1, specimen-pinned): Claude renders ONE staged piece as MANY
       // placeholders whose displayed counts are SEGMENT sizes (sum ≤ source lines), followed
       // by the piece's own literal tail wrapped across pane lines — and the placeholder
@@ -727,7 +845,7 @@ export function hasExpectedStagedText(pane: string | null, expected: string): bo
         // or one that is not the piece's own suffix, FAIL CLOSED — the TUI did not expose
         // enough content to identify the staged state, and a bare Enter is never guessed.
         const chrome = /paste again to expand|ctrl\+g to edit( in Vim)?/gi;
-        const residual = norm(regionFlat.replace(placeholderRe, "").replace(chrome, "")).replace(/^❯/, "");
+        const residual = stripComposerPromptGlyph(norm(regionFlat.replace(placeholderRe, "").replace(chrome, "")), promptClass);
         const pieceNorm = norm(expected);
         const sum = counts.reduce((a, b) => a + b, 0);
         // Round-5 (r2 R4 HIGH-1): the suffix anchor is JOINED to the opaque prefix. The
@@ -761,17 +879,22 @@ export function hasExpectedStagedText(pane: string | null, expected: string): bo
  * numbered choice or a partial prefix. Unknown rendering is not consumption. */
 function promptAnswerStaged(pane: string | null, answer: string, runtime: string | null): boolean {
   if (!pane || !answer.trim() || /[\r\n\x1b]/.test(answer)) return false;
+  // Fail closed for an unknown runtime: with no scoped glyph set there is no way to
+  // say which prompt line is the live input (the pre-shared-matcher check did the same).
+  if (runtime !== "codex" && runtime !== "claude-code") return false;
+  const promptClass = composerPromptClassForRuntime(runtime);
   const lines = pane.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const input = lines[i]!.trimStart();
-    if (!/^[❯›]/.test(input)) continue;
-    if (/^[❯›]\s*\d+[.)]/.test(input)) return false;
-    if (runtime === "codex" ? !input.startsWith("›") : runtime !== "claude-code" || !input.startsWith("❯")) return false;
-    const end = lines.findIndex((line, index) => index > i && (runtime === "codex"
-      ? line.trim() === "" : /^[─═-]{10,}$/.test(line.trim())));
-    return end > i && lines.slice(i, end).join("\n").trimStart().slice(1).trim() === answer.trim();
-  }
-  return false;
+  // Only the LAST prompt line of this runtime's glyph set can be the current input;
+  // everything above it is transcript history, and another harness's glyph is not ours.
+  const inputIndex = findComposerInputLineIndex(lines, promptClass);
+  if (inputIndex < 0) return false;
+  const input = lines[inputIndex]!.trimStart();
+  // A numbered choice (`.` or `)`), e.g. `» 1)` or `❯ 1.`, is a menu selection, never the answer.
+  if (composerNumberedChoicePattern(promptClass).test(input)) return false;
+  // Where the input ends: Codex closes the composer on a blank line, Claude Code on a rule line.
+  const end = lines.findIndex((line, index) => index > inputIndex && (runtime === "codex"
+    ? line.trim() === "" : /^[─═-]{10,}$/.test(line.trim())));
+  return end > inputIndex && lines.slice(inputIndex, end).join("\n").trimStart().slice(1).trim() === answer.trim();
 }
 
 export interface SendOpts {
@@ -785,6 +908,15 @@ export interface SendOpts {
   verify?: boolean;
   force?: boolean;
   waitForIdleMs?: number;
+  /** Internal #1084 seam: a lease-free idle wait already completed in send()
+   *  before the serial lease; sendUnguarded consumes this evidence instead of
+   *  waiting again, then re-checks readiness just before typing. Never
+   *  client-supplied. */
+  preWaitedIdle?: { activity: AgentActivity; waitedMs: number; attempts: number; deadlineAt: number };
+  /** Internal #1084 seam: the delivery-guard target bound before the
+   *  lease-free wait; the leased send refuses with guard_target_changed when
+   *  the seat changed hands meanwhile. Never client-supplied. */
+  preWaitBound?: GuardTarget;
   /** Internal, with `waitForIdleMs`: decide idle from a live pane read only. A runtime hook can't
    *  authorize the send (a hook saying the seat waits on a person still refuses). For a caller whose
    *  latest hook may predate the state that matters, such as a post-compact drain whose newest hook
@@ -1243,6 +1375,9 @@ export class SessionTransport {
     return pref.desired || pref.effective ? target : null;
   }
 
+  /** Deliver text and Enter to the resolved recipient under the send guards.
+   * With verification requested, compare rendered message counts, excluding
+   * agent input; a confirmed render does not prove agent consumption. */
   async send(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
     const guard = this.tmuxAdapter.deliveryGuard;
     if (!guard) return this.sendUnguarded(sessionName, text, opts);
@@ -1272,7 +1407,42 @@ export class SessionTransport {
           if (prior.deliveryState === "retained" || prior.deliveryState === "retired") return retainedResult();
         }
       }
-      return await guard.operation(sessionName, () => this.sendUnguarded(sessionName, text, opts), async target => {
+      // #1084 — the idle wait must not occupy the seat's serial lease: a long
+      // --wait-for-idle inside guard.operation holds up other sends and queue
+      // creates to this seat for the whole wait. The lease-free wait, main's
+      // quick refusals ahead of it, and the occupant binding all live in
+      // preWaitForIdle; the lease is entered only for the idle re-check +
+      // write. A null return means go through guard.operation exactly as on
+      // main (guard held, target unresolvable, or a quick refusal).
+      let sendOpts = opts;
+      if (opts?.waitForIdleMs !== undefined && !opts.submitOnly && !opts.preWaitedIdle) {
+        const pre = await this.preWaitForIdle(sessionName, opts, guard);
+        if (pre === null) {
+          // Fall through with today's path (in-lease wait / retain / throw).
+        } else if (!pre.ok) {
+          return pre.failure;
+        } else {
+          // Occupant check (review round 3): the lease starts only after the
+          // pre-wait, so refuse here when the seat changed hands meanwhile —
+          // exactly as main refuses with guard_target_changed. Retention must
+          // not adopt the new occupant either, so this runs before operation.
+          const current = guard.target(sessionName);
+          if (JSON.stringify(pre.bound) !== JSON.stringify(current)) {
+            return {
+              ok: false,
+              sessionName,
+              sent: false,
+              reason: "guard_target_changed",
+              error: "Input target/occupant changed; no input written.",
+              activity: pre.evidence.activity,
+              waitedMs: pre.evidence.waitedMs,
+              attempts: pre.evidence.attempts,
+            };
+          }
+          sendOpts = { ...opts, preWaitedIdle: pre.evidence, preWaitBound: pre.bound };
+        }
+      }
+      return await guard.operation(sessionName, () => this.sendUnguarded(sessionName, text, sendOpts), async target => {
         if (opts?.submitOnly) return { ok: false, sessionName, sent: false, reason: "typing_guard_enabled", error: "Typing guard prevents submit-only; no Enter was sent." };
         this.db.transaction(() => {
           for (const id of ids) {
@@ -1303,6 +1473,138 @@ export class SessionTransport {
     } catch (error) {
       return { ok: false, sessionName, sent: false, reason: (error as { code?: string }).code ?? "guard_unavailable", error: (error as Error).message };
     }
+  }
+
+  /**
+   * #1084/#1103: lease-free idle wait before the serial lease, so a long
+   * --wait-for-idle holds up no other send or queue create to this seat.
+   * Returns the wait evidence plus the occupant bound before the wait (both
+   * threaded into the leased send), a failure result using main's exact
+   * reasons, or null when the send must go through guard.operation exactly
+   * as on main. Order matters: typing-guard decision first, then main's
+   * quick refusals (runtime identity, wait validations, session probe),
+   * then the wait. Only the lookups sit inside try: a late throw surfaces
+   * instead of silently running a second full wait inside the lease.
+   */
+  private async preWaitForIdle(
+    sessionName: string,
+    opts: SendOpts,
+    guard: SeatDeliveryGuard,
+  ): Promise<
+    | { ok: true; evidence: NonNullable<SendOpts["preWaitedIdle"]>; bound: GuardTarget }
+    | { ok: false; failure: SendResult }
+    | null
+  > {
+    const timeoutMs = opts.waitForIdleMs;
+    if (timeoutMs === undefined) return null;
+    let meta: {
+      runtime: string | null; attachmentType: string | null; nodeId: string | null;
+      pane: string | null; occupant: string | null; resumeToken: string | null;
+    };
+    let bound: GuardTarget;
+    try {
+      const preTarget = guard.maybeTarget(sessionName);
+      if (!preTarget) return null;
+      const prePref = guard.preference(preTarget.nodeId);
+      if (prePref.effective || prePref.desired) return null;
+      meta = this.getSessionMeta(sessionName);
+      bound = guard.target(sessionName);
+    } catch {
+      return null;
+    }
+    // External CLI seats never wait: main refuses them before anything else,
+    // and a probe or wait would only delay that refusal (or mistake it for
+    // an absent session).
+    if (meta.attachmentType === "external_cli") {
+      return { ok: false, failure: {
+        ok: false,
+        sessionName,
+        reason: "transport_unavailable",
+        error: `Session '${sessionName}' is attached as an external CLI node. Inbound tmux transport is unavailable for this target.`,
+      } };
+    }
+    const runtime = meta.runtime;
+    if (runtime && runtime !== "terminal" && runtime !== "claude-code") {
+      const unverified = await this.unverifiedShellForeground(sessionName, runtime, meta.pane, meta.resumeToken);
+      if (unverified) {
+        return { ok: false, failure: {
+          ok: false,
+          sessionName,
+          sent: false,
+          reason: "target_runtime_unverified",
+          error: `Refused: '${sessionName}' reports ${unverified} as the foreground command, but OpenRig could not verify its expected ${runtime} agent in the bound pane. The agent may still be running behind a wrapper. No text was sent.`,
+        } };
+      }
+    }
+    if (opts.force) {
+      return { ok: false, failure: {
+        ok: false,
+        sessionName,
+        reason: "invalid_wait_for_idle",
+        error: "--wait-for-idle cannot be combined with force. No text was sent.",
+        sent: false,
+      } };
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return { ok: false, failure: {
+        ok: false,
+        sessionName,
+        reason: "invalid_wait_for_idle",
+        error: "waitForIdleMs must be a positive number. No text was sent.",
+        sent: false,
+      } };
+    }
+    try {
+      const target = this.absenceProbeTarget(sessionName);
+      const observedAt = this.now().toISOString();
+      const probe = await this.tmuxAdapter.probeSession(sessionName);
+      if (probe.state === "absent") {
+        this.recordSessionMissingVerdict(target, observedAt);
+        return { ok: false, failure: {
+          ok: false,
+          sessionName,
+          reason: "session_missing",
+          error: `Session '${sessionName}' not found: tmux reports no session with this name. No text was sent. Check available sessions with: rig ps --nodes`,
+        } };
+      }
+      if (probe.state === "transport_unavailable") {
+        return { ok: false, failure: {
+          ok: false,
+          sessionName,
+          reason: "tmux_unavailable",
+          error: `The tmux server could not be reached (${probe.cause}). Whether session '${sessionName}' exists was not determined. No text was sent.`,
+        } };
+      }
+    } catch (err) {
+      return { ok: false, failure: {
+        ok: false,
+        sessionName,
+        reason: "tmux_unavailable",
+        error: `The tmux session probe failed unexpectedly (${err instanceof Error ? err.message : String(err)}). Whether session '${sessionName}' exists was not determined. No text was sent.`,
+      } };
+    }
+    const deadlineAt = Date.now() + timeoutMs;
+    const preWait = await this.waitForIdle({
+      sessionName,
+      runtime: meta.runtime,
+      attachmentType: meta.attachmentType,
+      timeoutMs,
+      binding: { sessionName, nodeId: meta.nodeId, occupant: meta.occupant, pane: meta.pane },
+      readinessFromPaneOnly: opts.readinessFromPaneOnly === true,
+    });
+    if (!preWait.ok) {
+      return { ok: false, failure: {
+        ok: false,
+        sessionName,
+        reason: preWait.reason,
+        error: preWait.error,
+        sent: false,
+        activity: preWait.activity,
+        waitedMs: preWait.waitedMs,
+        attempts: preWait.attempts,
+      } };
+    }
+    return { ok: true, evidence: { activity: preWait.activity, waitedMs: preWait.waitedMs, attempts: preWait.attempts, deadlineAt }, bound };
   }
 
   private async sendUnguarded(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
@@ -1446,7 +1748,7 @@ export class SessionTransport {
       const recordMismatch = (pane: string | null): void => {
         if (!opts.requireFullStagedText || !opts.onStartupMismatch) return;
         try {
-          const evidence = startupSubmissionEvidence(pane, expected, opts.submitOnlyCaptureLines ?? 50);
+          const evidence = startupSubmissionEvidence(pane, expected, opts.submitOnlyCaptureLines ?? 50, runtime);
           if (evidence) opts.onStartupMismatch(evidence);
         } catch { /* Observation has no delivery authority. */ }
       };
@@ -1461,8 +1763,8 @@ export class SessionTransport {
         throw error; // Preserve the existing guarded/unguarded error handling.
       }
       const staged = opts.requireFullStagedText
-        ? inspectStartupStagedText(pane, expected) === "staged"
-        : hasExpectedStagedText(pane, expected);
+        ? inspectStartupStagedText(pane, expected, runtime) === "staged"
+        : hasExpectedStagedText(pane, expected, runtime);
       if (!staged) {
         recordMismatch(pane);
         return {
@@ -1485,7 +1787,10 @@ export class SessionTransport {
       return observe({ ok: true, sessionName, outcome: "rendered-unconfirmed", submitOnly: true });
     }
 
-    if (waitForIdleMs !== undefined) {
+    // #1084: when send() already waited lease-free (preWaitedIdle), the wait
+    // below is skipped; otherwise wait here, exactly as before
+    // (typing-guard flip and unresolvable-target races keep today's behavior).
+    if (waitForIdleMs !== undefined && !opts?.preWaitedIdle) {
       const waitResult = await this.waitForIdle({
         sessionName,
         runtime,
@@ -1507,6 +1812,103 @@ export class SessionTransport {
           error: waitResult.error,
           sent: false,
           ...waitEvidence,
+        };
+      }
+    } else if (opts?.preWaitedIdle && waitForIdleMs !== undefined) {
+      // Occupant check (review round 3): the lease started only after the
+      // pre-wait, so refuse when the seat changed hands meanwhile, exactly
+      // as main refuses with guard_target_changed. No new refusal.
+      const preGuard = this.tmuxAdapter.deliveryGuard;
+      if (preGuard && opts.preWaitBound) {
+        const current = preGuard.target(sessionName);
+        if (JSON.stringify(opts.preWaitBound) !== JSON.stringify(current)) {
+          return {
+            ok: false,
+            sessionName,
+            sent: false,
+            reason: "guard_target_changed",
+            error: "Input target/occupant changed; no input written.",
+            activity: opts.preWaitedIdle.activity,
+            waitedMs: opts.preWaitedIdle.waitedMs,
+            attempts: opts.preWaitedIdle.attempts,
+          };
+        }
+      }
+      // Idle re-check (review round 1 + bot round 2): the wait-mode contract
+      // holds at type time too — only idle types. The budget is measured
+      // from the ORIGINAL deadline (lease-queue time counts too), so the
+      // total wait never exceeds what the caller asked for. Below one poll
+      // interval, waiting buys nothing: one unraced observation decides, so
+      // an idle seat at a dead budget still sends instead of losing a race
+      // against a zero timer.
+      const preEvidence = opts.preWaitedIdle;
+      const deadlineRemainingMs = preEvidence.deadlineAt - Date.now();
+      if (deadlineRemainingMs > this.waitForIdlePollMs) {
+        const rewait = await this.waitForIdle({
+          sessionName,
+          runtime,
+          attachmentType: sessionMeta.attachmentType,
+          timeoutMs: deadlineRemainingMs,
+          // Message-only: the re-wait runs on the leftover budget, but the
+          // timeout names the configured --wait-for-idle value.
+          timeoutLabelMs: waitForIdleMs,
+          binding: observed?.binding,
+          readinessFromPaneOnly: opts.readinessFromPaneOnly === true,
+        });
+        waitEvidence = {
+          activity: rewait.activity,
+          waitedMs: preEvidence.waitedMs + rewait.waitedMs,
+          attempts: preEvidence.attempts + rewait.attempts,
+        };
+        if (!rewait.ok) {
+          return {
+            ok: false,
+            sessionName,
+            reason: rewait.reason,
+            error: rewait.error,
+            sent: false,
+            ...waitEvidence,
+          };
+        }
+      } else {
+        const recheck = await this.classifySendReadiness({
+          sessionName,
+          runtime,
+          attachmentType: sessionMeta.attachmentType,
+          binding: observed?.binding,
+          readinessFromPaneOnly: opts.readinessFromPaneOnly === true,
+        });
+        if (recheck.state !== "idle") {
+          const late: { reason: string; error: string } =
+            recheck.state === "needs_input"
+              ? {
+                  reason: "target_needs_input",
+                  error: `Refused: '${sessionName}' is at an interactive prompt (${recheck.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`,
+                }
+              : recheck.state === "unknown"
+                ? {
+                    reason: "target_activity_unknown",
+                    error: `Target activity could not be determined (${recheck.reason}) when the ${waitForIdleMs}ms wait ended. No text was sent.`,
+                  }
+                : {
+                    reason: "wait_for_idle_timeout",
+                    error: `Target was still busy (${recheck.reason}) when the ${waitForIdleMs}ms wait ended. No text was sent.`,
+                  };
+          return {
+            ok: false,
+            sessionName,
+            sent: false,
+            reason: late.reason,
+            error: late.error,
+            activity: recheck,
+            waitedMs: preEvidence.waitedMs,
+            attempts: preEvidence.attempts + 1,
+          };
+        }
+        waitEvidence = {
+          activity: recheck,
+          waitedMs: preEvidence.waitedMs,
+          attempts: preEvidence.attempts + 1,
         };
       }
     }
@@ -1602,7 +2004,8 @@ export class SessionTransport {
       try {
         preVerifyContent = await this.runStage(
           "session_transport.pre_capture",
-          () => this.tmuxAdapter.capturePaneContent(sessionName, 30),
+          () => runtime === "terminal" || !verificationSnippet(text).envelope ? this.tmuxAdapter.capturePaneContent(sessionName, 30)
+            : this.tmuxAdapter.capturePaneContent(sessionName, 30, { joinWrappedLines: true }),
         );
         if (observed) observed.pre = captureSlot(preVerifyContent, this.now().toISOString(), captureSeq);
       } catch {
@@ -1690,12 +2093,22 @@ export class SessionTransport {
       try {
         const content = await this.runStage(
           "session_transport.post_capture",
-          () => this.tmuxAdapter.capturePaneContent(sessionName, 30),
+          () => runtime === "terminal" || !verificationSnippet(text).envelope ? this.tmuxAdapter.capturePaneContent(sessionName, 30)
+            : this.tmuxAdapter.capturePaneContent(sessionName, 30, { joinWrappedLines: true }),
         );
         if (observed) observed.post = captureSlot(content, this.now().toISOString(), captureSeq);
-        const snippet = text.substring(0, Math.min(text.length, 40));
-        const preCount = countOccurrences(preVerifyContent ?? "", snippet);
-        const postCount = countOccurrences(content ?? "", snippet);
+        // A terminal prompt is command history, not an agent composer. Preserve
+        // its original prefix-count verification even while a command is running.
+        const terminal = runtime === "terminal";
+        const { snippet, envelope } = terminal ? { snippet: text.slice(0, 40), envelope: false } : verificationSnippet(text);
+        // Only Codex gains »; all other runtimes keep the existing boundaries.
+        const promptClass = runtime === "codex" ? COMPOSER_PROMPT_CLASS : "❯›";
+        const transcript = terminal ? (pane: string | null) => pane ?? ""
+          : (pane: string | null) => envelope ? verificationTranscript(pane, promptClass)
+            : normalizeVerificationText(verificationTranscript(pane, promptClass));
+        const count = envelope ? (pane: string, expected: string) => countEnvelopeOccurrences(pane, expected, promptClass) : countOccurrences;
+        const preCount = count(transcript(preVerifyContent), snippet);
+        const postCount = count(transcript(content), snippet);
         const verified = postCount > preCount;
         return observe({ ok: true, sessionName, ...interaction, verified, outcome: verified ? "delivered" : "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
       } catch {
@@ -1734,6 +2147,10 @@ export class SessionTransport {
     signal?: AbortSignal;
     binding?: ObservedBinding;
     readinessFromPaneOnly?: boolean;
+    // Optional display value for timeout messages. The deadline always comes
+    // from timeoutMs; when set, expiry reports this value instead, so a
+    // re-wait running on a leftover budget still names the configured wait.
+    timeoutLabelMs?: number;
   }): Promise<
     | { ok: true; activity: AgentActivity; waitedMs: number; attempts: number }
     | { ok: false; reason: string; error: string; activity: AgentActivity; waitedMs: number; attempts: number }
@@ -1746,6 +2163,7 @@ export class SessionTransport {
     const deadline = Date.now() + input.timeoutMs;
     let attempts = 0;
     let last: AgentActivity | null = null;
+    const labelMs = input.timeoutLabelMs ?? input.timeoutMs;
     const expire = () => {
       const count = `${attempts} observation${attempts === 1 ? "" : "s"}`;
       const activity: AgentActivity = last ?? {
@@ -1757,14 +2175,14 @@ export class SessionTransport {
           ok: false as const,
           reason: "target_activity_unknown",
           error: last
-            ? `Target activity could not be determined (${activity.reason}) when the ${input.timeoutMs}ms wait ended (${count}). No text was sent.`
-            : `Target activity could not be determined: no observation completed within the ${input.timeoutMs}ms wait. No text was sent.`,
+            ? `Target activity could not be determined (${activity.reason}) when the ${labelMs}ms wait ended (${count}). No text was sent.`
+            : `Target activity could not be determined: no observation completed within the ${labelMs}ms wait. No text was sent.`,
           activity, waitedMs: input.timeoutMs, attempts,
         }
         : {
           ok: false as const,
           reason: "wait_for_idle_timeout",
-          error: `Target was still busy (${activity.reason}) when the ${input.timeoutMs}ms wait ended (${count}). No text was sent.`,
+          error: `Target was still busy (${activity.reason}) when the ${labelMs}ms wait ended (${count}). No text was sent.`,
           activity, waitedMs: input.timeoutMs, attempts,
         };
     };
