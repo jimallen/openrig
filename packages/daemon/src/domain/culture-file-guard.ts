@@ -16,6 +16,15 @@ import nodePath from "node:path";
  * descriptor. The same reader runs again at delivery (every adapter, fresh start and restore), so a FIFO or
  * an oversize file swapped in after `rig add` is refused there instead of hanging the daemon.
  *
+ * Every read of the persisted culture path goes through this reader (census by grep of `absolutePath`,
+ * `resolved_files_json`, `resolvedStartupFiles`, `GuidanceItem`/`sourcePath` and `readFile` over daemon/src):
+ * the four adapters, the seat-lifecycle reload (keeps the flag), restore-guidance (item flag), the startup
+ * orchestrator (auto classification, first send_text file) and the instantiator's plan-time auto hint. The
+ * other consumers only stat/exist-check the path. RESIDUAL: a CONTENT swap of a regular, single-link,
+ * under-cap file between two reads still goes through (the later read re-checks, so only changed text the
+ * trusted caller could have named anyway). A legacy node persisted before the `guardedRead` flag keeps its
+ * old plain reads until it is re-added. Other startup files (skills, agent files) are not guarded.
+ *
  * Cap: the largest culture file in real use, measured 2026-10-14, is 19,385 bytes (the jims-team release
  * CULTURE.md); the next is 17,053. 256 KiB is ~13x the largest and far below any credential bundle or log.
  */
