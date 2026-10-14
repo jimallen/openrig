@@ -722,6 +722,13 @@ human-formatted CLI output preserves the literal `Peers:` line prefix verbatim
 (parser/test compatibility) and surfaces the clarifier in-band beneath it; the
 JSON form exposes `peersNote` directly for programmatic consumers.
 
+Each `peers[]` entry also carries an additive `reachable` boolean. `false` means the
+peer has no session, or its session is registered but not running (still starting,
+exited, detached, superseded); `sessionName` can still hold that last known name, so
+check `reachable` before `rig send` / `rig capture`. The human output marks such a
+peer `(not running)`, and the `commands` examples only use reachable peers. A daemon
+older than this field omits it, which is not the same as `false`.
+
 ## Inventory and Monitoring
 
 ```bash

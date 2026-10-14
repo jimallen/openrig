@@ -47,6 +47,8 @@ interface WhoamiPeer {
   sessionName: string | null;
   runtime: string;
   podNamespace?: string | null;
+  /** Additive; absent from an older daemon. False means the session is registered but not running. */
+  reachable?: boolean;
 }
 
 interface WhoamiEdge {
@@ -93,7 +95,7 @@ function projectCompactWhoami(data: Record<string, unknown>): Record<string, unk
     },
     peers: peers.map((p) => {
       const peer = (p ?? {}) as Record<string, unknown>;
-      return { logicalId: peer["logicalId"], sessionName: peer["sessionName"], runtime: peer["runtime"] };
+      return { logicalId: peer["logicalId"], sessionName: peer["sessionName"], runtime: peer["runtime"], reachable: peer["reachable"] };
     }),
     // KEEP: openrig-user SKILL.md documents peersNote as a required recovery field.
     peersNote: data["peersNote"],
@@ -230,7 +232,7 @@ export function whoamiCommand(depsOverride?: WhoamiDeps): Command {
     .option("--verbose", "Alias for --full")
     .addHelpText("after", `
 By default rig whoami is COMPACT: identity (rig/pod/member/session/runtime),
-peers (with sessionName for 'rig send'), edges, and the transcript path — the
+peers (with sessionName for 'rig send', and reachable: false when that session is not running), edges, and the transcript path — the
 boot + compaction-restore recovery essentials. Use --full / --verbose for the
 complete payload (contextUsage, command examples, runtime token detail,
 workspace block). The compact form omits the Context line; use 'rig context' or
@@ -355,7 +357,9 @@ workspace block). The compact form omits the Context line; use 'rig context' or
         // `Peers:` prefix (existing output greps key on it).
         console.log("Peers: (this rig's roster, excluding self — directional edges below; `rig ps --nodes` for inventory incl. self + live state)");
         for (const peer of data.peers) {
-          console.log(`  ${peer.logicalId.padEnd(20)} ${(peer.sessionName ?? "—").padEnd(30)} ${peer.runtime}`);
+          // `reachable` is additive: an older daemon omits it, and that is not "not running".
+          const note = peer.reachable === false ? "  (not running)" : "";
+          console.log(`  ${peer.logicalId.padEnd(20)} ${(peer.sessionName ?? "—").padEnd(30)} ${peer.runtime}${note}`);
         }
       }
 

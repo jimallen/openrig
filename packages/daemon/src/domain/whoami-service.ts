@@ -33,6 +33,15 @@ export interface WhoamiResult {
     podId: string | null;
     podNamespace: string | null;
     memberId: string;
+    /**
+     * Additive. True when `sessionName` is a seat that can be messaged now: it
+     * names a session and that session is not known to be down. False when the
+     * peer has no session, or its session is registered but not running (still
+     * starting, exited, detached, superseded). `sessionName` is unchanged and can
+     * still carry the last known name; the `commands` examples only use reachable
+     * peers.
+     */
+    reachable: boolean;
   }>;
   /**
    * OPR.99.0.6.1 — the peers[] roster contract, stated in-band so a fresh
@@ -257,6 +266,7 @@ export class WhoamiService {
         podId: peerNode.podId ?? null,
         podNamespace: peerPodNamespace,
         memberId: peerMemberId,
+        reachable: this.isSessionReachable(peerNode.id, peerSessionName),
       });
     }
 
@@ -305,7 +315,7 @@ export class WhoamiService {
     };
 
     // Build command examples from peers
-    const reachablePeers = peers.filter((p) => p.sessionName !== null);
+    const reachablePeers = peers.filter((p) => p.sessionName !== null && p.reachable);
     const sendExamples = reachablePeers.slice(0, 3).map((p) => `rig send ${p.sessionName} 'message' --verify`);
     const captureExamples = reachablePeers.slice(0, 3).map((p) => `rig capture ${p.sessionName}`);
 
@@ -402,6 +412,22 @@ export class WhoamiService {
     // Unknown runtime: surface null until the daemon learns the
     // runtime's context exposure shape. PL-005 honest-degradation.
     return null;
+  }
+
+  /**
+   * A session name is reachable unless a session row for that node and name says
+   * it is not running. The name alone is not proof: getCurrentSessionName falls
+   * back to the newest row of any status, and a binding can outlive its session.
+   * `running` is the daemon's live predicate (ps, activity, transcript capture).
+   * A name with no session row at all (a bound seat the registry never saw) is
+   * not judged down, because nothing says it is.
+   */
+  private isSessionReachable(nodeId: string, sessionName: string | null): boolean {
+    if (sessionName === null) return false;
+    const row = this.db
+      .prepare("SELECT status FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY id DESC LIMIT 1")
+      .get(nodeId, sessionName) as { status: string } | undefined;
+    return row === undefined || row.status === "running";
   }
 
   private getCurrentSessionName(nodeId: string, rigId: string): string | null {
