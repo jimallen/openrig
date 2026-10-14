@@ -414,10 +414,11 @@ export function listSlices(
   }
   out.sort((a, b) => (a.nn ?? Number.MAX_SAFE_INTEGER) - (b.nn ?? Number.MAX_SAFE_INTEGER) || a.name.localeCompare(b.name));
   if (state === "active") {
-    // active = not in closed/, and not already delivered in-place.
+    // active = not in closed/, and not already delivered in-place. `complete`/`completed` are
+    // terminal here as they are for a mission (scope-audit missionIsActive).
     return out.filter((s) => {
       const st = (s.status ?? "").toLowerCase();
-      return st !== "done" && !st.startsWith("closed") && !st.startsWith("shipped");
+      return st !== "done" && !st.startsWith("closed") && !st.startsWith("shipped") && !st.startsWith("complete");
     });
   }
   if (state === "shipped") {
