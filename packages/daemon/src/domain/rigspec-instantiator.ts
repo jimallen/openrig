@@ -1,7 +1,7 @@
 import { unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { checkCultureFile, persistedCulturePath, readGuardedStartupFile } from "./culture-file-guard.js";
 import type Database from "better-sqlite3";
 import {
   resolvePermissionPolicyAttachment,
@@ -1014,16 +1014,13 @@ export class PodRigInstantiator {
       if (!this.deps.fsOps.exists(resolvedCulture)) {
         return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" not found (looked at ${resolvedCulture}); pass a path relative to the rig root (--rig-root) or an absolute path`] };
       }
-      // Existing is not enough: a directory, or a file this process cannot read, would pass exists() and
-      // then fail as a required startup file after the seat was created. Symlinks are followed (stat, not
-      // lstat): a link is judged by what it points at.
-      let cultureStat: ReturnType<typeof statSync> | undefined;
-      try { cultureStat = statSync(resolvedCulture); } catch { /* exists() said yes but stat failed: fall through to the readability refusal below */ }
-      if (cultureStat !== undefined && !cultureStat.isFile()) {
-        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" (${resolvedCulture}) is not a regular file; pass the path of the rig's culture file, not a directory`] };
-      }
-      try { accessSync(resolvedCulture, fsConstants.R_OK); } catch {
-        return { ok: false, code: "validation_failed", errors: [`culture file "${cultureFile}" (${resolvedCulture}) is not readable by the daemon; fix its permissions or pass another path`] };
+      // Existing is not enough, and neither is readable: the file's content is injected into the new seat's
+      // startup context, so it must be a single-link regular file of bounded size that the daemon opened
+      // once (culture-file-guard.ts), refused here, before any seat exists. TRUST BOUNDARY: the API caller
+      // is trusted, there is no folder allowlist; this guards against accidents and swaps, not a hostile caller.
+      const checked = checkCultureFile(cultureFile, resolvedCulture);
+      if (!checked.ok) {
+        return { ok: false, code: "validation_failed", errors: [checked.message] };
       }
     }
 
@@ -2552,11 +2549,14 @@ export class PodRigInstantiator {
     if (rigSpec.cultureFile) {
       files.push({
         path: rigSpec.cultureFile,
-        absolutePath: nodePath.resolve(rigRoot, rigSpec.cultureFile),
+        // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through
+        // the shared guarded reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through.
+        absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, rigSpec.cultureFile)),
         ownerRoot: rigRoot,
         deliveryHint: "auto",
         required: true,
         appliesOn: ["fresh_start", "restore"],
+        guardedRead: true,
       });
     }
     // Layer 4: Rig startup
@@ -2608,11 +2608,14 @@ export class PodRigInstantiator {
     if (rigSpec.cultureFile) {
       files.push({
         path: rigSpec.cultureFile,
-        absolutePath: nodePath.resolve(rigRoot, rigSpec.cultureFile),
+        // The RESOLVED real path is persisted, not the requested one, and delivery/restore read it through
+        // the shared guarded reader (guardedRead): a later symlink retarget or FIFO swap cannot slip through.
+        absolutePath: persistedCulturePath(nodePath.resolve(rigRoot, rigSpec.cultureFile)),
         ownerRoot: rigRoot,
         deliveryHint: "auto",
         required: true,
         appliesOn: ["fresh_start", "restore"],
+        guardedRead: true,
       });
     }
     // 4. Rig startup
@@ -2732,7 +2735,7 @@ export class PodRigInstantiator {
     return files.map((f) => {
       if (f.deliveryHint !== "auto") return f;
       try {
-        const content = this.deps.fsOps.readFile(f.absolutePath);
+        const content = f.guardedRead ? readGuardedStartupFile(f) : this.deps.fsOps.readFile(f.absolutePath);
         return { ...f, deliveryHint: resolveConcreteHint(f.path, content) };
       } catch {
         // If file can't be read, default to send_text (safest — delivered after harness ready)

@@ -13,6 +13,7 @@
 // (ctx% via ContextUsageStore) and the four seeded behaviors are later RED-first
 // increments (A5 items 5-8) — deliberately NOT here.
 
+import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
@@ -120,7 +121,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
     for (const file of files) {
       try {
         if (!this.fsOps) throw new Error("no fsOps configured — cannot read startup file content");
-        const content = this.fsOps.readFile(file.absolutePath);
+        const content = file.guardedRead ? readGuardedStartupFile(file) : this.fsOps.readFile(file.absolutePath);
         const hint = file.deliveryHint === "auto" ? resolveConcreteHint(file.path, content) : file.deliveryHint;
 
         switch (hint) {

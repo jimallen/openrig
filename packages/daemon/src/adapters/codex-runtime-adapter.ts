@@ -1,4 +1,5 @@
 import { operationalLaunchArg } from "./kernel-authority.js";
+import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
@@ -325,7 +326,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
     for (const file of files) {
       try {
-        const content = this.fs.readFile(file.absolutePath);
+        const content = file.guardedRead ? readGuardedStartupFile(file) : this.fs.readFile(file.absolutePath);
         const hint = file.deliveryHint === "auto" ? this.detectDeliveryHint(file.path, content) : file.deliveryHint;
 
         switch (hint) {

@@ -1425,6 +1425,8 @@ export class SeatLifecycleService {
         required: raw["required"],
         appliesOn: raw["appliesOn"],
         ...(raw["kind"] === "file" ? { kind: "file" as const } : {}),
+        // The guarded-reader flag must survive the reload, or a relaunch reads the culture file unguarded.
+        ...(raw["guardedRead"] === true ? { guardedRead: true as const } : {}),
       }));
     }
 

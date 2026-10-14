@@ -138,6 +138,7 @@ import { resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig, type ResolutionContext } from "./profile-resolver.js";
 import { getOpenRigInstallCwdError, resolveAuthoredCwd, resolveLaunchCwd } from "./cwd-resolution.js";
 import nodePath from "node:path";
+import { checkCultureFile } from "./culture-file-guard.js";
 import { validateClaudeActivityHookDelivery, CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import {
   resolvePermissionPolicyAttachment,
@@ -294,6 +295,17 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
         errors.push(`${pod.id}.${member.id}: ${err}`);
       }
     }
+  }
+
+  // 2b. The spec's culture file is injected into every seat's startup context. Judge the file it resolves to
+  // (regular, single link, bounded, opened once), as `rig add --culture` does. TRUST BOUNDARY: the caller is
+  // trusted, there is no folder allowlist (culture_file may legitimately resolve through symlinks into the
+  // installed package, e.g. the kernel overlay). A file that does not exist is left to the existing
+  // required-startup-file failure (unchanged behaviour); only an existing file is judged.
+  if (rigSpec.cultureFile) {
+    const resolvedCulture = nodePath.resolve(preflightCtx.rigRoot, rigSpec.cultureFile);
+    const checked = checkCultureFile(rigSpec.cultureFile, resolvedCulture);
+    if (!checked.ok && checked.reason !== "not_found") errors.push(checked.message);
   }
 
   // 3. For each pod member: resolve agent_ref + profile, check runtime, check cwd

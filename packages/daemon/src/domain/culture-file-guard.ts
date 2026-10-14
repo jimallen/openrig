@@ -1,0 +1,112 @@
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import nodePath from "node:path";
+
+/**
+ * TRUST BOUNDARY (read this before changing anything here).
+ *
+ * The caller of the daemon API (`rig add --culture`, MCP `rig_add` cultureFile, a rig spec's culture_file)
+ * is TRUSTED: whoever can reach the daemon can already start a seat in any folder, so a folder allowlist
+ * cannot be the security boundary and there is none. These checks guard against ACCIDENTS and SWAPS, not a
+ * hostile caller: a culture file that is a directory, a FIFO or a device, a runaway file, a file replaced by
+ * a symlink or another file between the check and the read, or a hard link that aliases some other file.
+ * They do not stop a caller from naming a readable regular file such as ~/.ssh/id_rsa.
+ *
+ * A culture file's content is injected into every seat's startup context. It must be, after realpath
+ * (symlinks followed), a regular file with a single link, at most CULTURE_FILE_MAX_BYTES, read through ONE
+ * descriptor. The same reader runs again at delivery (every adapter, fresh start and restore), so a FIFO or
+ * an oversize file swapped in after `rig add` is refused there instead of hanging the daemon.
+ *
+ * Every read of the persisted culture path goes through this reader (census by grep of `absolutePath`,
+ * `resolved_files_json`, `resolvedStartupFiles`, `GuidanceItem`/`sourcePath` and `readFile` over daemon/src):
+ * the four adapters, the seat-lifecycle reload (keeps the flag), restore-guidance (item flag), the startup
+ * orchestrator (auto classification, first send_text file) and the instantiator's plan-time auto hint. The
+ * other consumers only stat/exist-check the path. RESIDUAL: a CONTENT swap of a regular, single-link,
+ * under-cap file between two reads still goes through (the later read re-checks, so only changed text the
+ * trusted caller could have named anyway). A legacy node persisted before the `guardedRead` flag keeps its
+ * old plain reads until it is re-added. Other startup files (skills, agent files) are not guarded.
+ *
+ * Cap: the largest culture file in real use, measured 2026-10-14, is 19,385 bytes (the jims-team release
+ * CULTURE.md); the next is 17,053. 256 KiB is ~13x the largest and far below any credential bundle or log.
+ */
+export const CULTURE_FILE_MAX_BYTES = 256 * 1024;
+
+export type CultureFileCheck =
+  | { ok: true; realPath: string; bytes: number; content: string }
+  | { ok: false; reason: "not_found" | "not_regular_file" | "hard_linked" | "too_large" | "unreadable" | "changed"; message: string };
+
+/**
+ * Check and read a culture file. Order: realpath (follows every symlink) -> open the RESOLVED path once with
+ * O_NOFOLLOW|O_NONBLOCK (a symlink swapped in at the leaf fails; a FIFO swapped in opens instead of hanging)
+ * -> fstat that descriptor (regular file, one link, size) -> read from that same descriptor, never past the
+ * cap -> re-resolve the path and require the same file (device+inode) at the same real path, which catches a
+ * parent directory swapped for a symlink during the window.
+ * `requested` is only for messages. Nothing here creates anything: a refusal is a pure return.
+ */
+export function checkCultureFile(
+  requested: string,
+  resolvedPath: string,
+  /** Test seams only: run exactly in the race windows (before the open / after the read) so the swap
+   *  defences can be exercised deterministically. Production callers pass nothing. */
+  hooks?: { beforeOpen?: () => void; afterRead?: () => void },
+): CultureFileCheck {
+  let realPath: string;
+  try { realPath = realpathSync(resolvedPath); } catch {
+    return { ok: false, reason: "not_found", message: `culture file "${requested}" not found (looked at ${resolvedPath}); pass a path relative to the rig root (--rig-root) or an absolute path` };
+  }
+  let fd: number | undefined;
+  try {
+    hooks?.beforeOpen?.();
+    try { fd = openSync(realPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch {
+      return { ok: false, reason: "unreadable", message: `culture file "${requested}" (${realPath}) is not readable by the daemon (it could not be opened; a symlink swapped in at the last moment is refused too); fix its permissions or pass another path` };
+    }
+    const st = fstatSync(fd);
+    if (!st.isFile()) {
+      return { ok: false, reason: "not_regular_file", message: `culture file "${requested}" (${realPath}) is not a regular file (a directory, pipe, device or socket); pass the path of the rig's culture file` };
+    }
+    if (st.nlink > 1) {
+      return { ok: false, reason: "hard_linked", message: `culture file "${requested}" (${realPath}) has ${st.nlink} hard links; a hard link can alias a file from somewhere else, so a culture file must have exactly one` };
+    }
+    if (st.size > CULTURE_FILE_MAX_BYTES) {
+      return { ok: false, reason: "too_large", message: `culture file "${requested}" (${realPath}) is ${st.size} bytes, over the ${CULTURE_FILE_MAX_BYTES}-byte limit for a culture file` };
+    }
+    const buf = Buffer.alloc(CULTURE_FILE_MAX_BYTES + 1);
+    let n = 0;
+    for (;;) {
+      const got = readSync(fd, buf, n, buf.length - n, null);
+      if (got === 0) break;
+      n += got;
+      if (n > CULTURE_FILE_MAX_BYTES) {
+        return { ok: false, reason: "too_large", message: `culture file "${requested}" (${realPath}) grew past the ${CULTURE_FILE_MAX_BYTES}-byte limit while being read` };
+      }
+    }
+    hooks?.afterRead?.();
+    let same = false;
+    try { const again = realpathSync(resolvedPath); const l = lstatSync(again); same = again === realPath && l.ino === st.ino && l.dev === st.dev; } catch { same = false; }
+    if (!same) {
+      return { ok: false, reason: "changed", message: `culture file "${requested}" changed while it was being checked (${realPath}); refusing, retry once the file is stable` };
+    }
+    return { ok: true, realPath, bytes: n, content: buf.subarray(0, n).toString("utf-8") };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * The path to persist for a culture file: the RESOLVED real path, so a later symlink retarget cannot change
+ * what delivery and restore read. An unresolvable path is returned lexically resolved; the delivery-time
+ * guard then refuses it as not found.
+ */
+export function persistedCulturePath(resolvedPath: string): string {
+  try { return realpathSync(resolvedPath); } catch { return nodePath.resolve(resolvedPath); }
+}
+
+/**
+ * The ONE reader every adapter (claude-code, codex, pi, stub) uses for a startup file flagged
+ * `guardedRead` (the rig culture overlay): fresh start and restore alike. Throws with the refusal message,
+ * which each adapter already records as a failed startup file (a required file then fails the delivery).
+ */
+export function readGuardedStartupFile(file: { path: string; absolutePath: string }): string {
+  const checked = checkCultureFile(file.path, file.absolutePath);
+  if (!checked.ok) throw new Error(checked.message);
+  return checked.content;
+}
