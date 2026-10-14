@@ -10,6 +10,9 @@ import {SessionTransport} from '../src/domain/session-transport.js';
 import {SeatDeliveryGuard} from '../src/domain/seat-delivery-guard.js';
 import {TmuxAdapter} from '../src/adapters/tmux.js';
 import {ContextMonitor} from '../src/domain/context-monitor.js';
+import {createFullTestDb} from './helpers/test-app.js';
+import {RigRepository} from '../src/domain/rig-repository.js';
+import {SessionRegistry} from '../src/domain/session-registry.js';
 const seat='writer@demo', input={sessionName:seat,runtime:'claude-code',usedPercentage:90};
 const homes:string[]=[];
 afterEach(()=>{vi.restoreAllMocks();for(const h of homes.splice(0))rmSync(h,{recursive:true,force:true});});
@@ -257,7 +260,7 @@ for(const expiry of ['missing map','idle after completed map'])it(`route reports
   c.set('compactionEnforcer' as never,f.e);
   c.set('sessionTransport' as never,f.transport);
   c.set('contextUsageStore' as never,{getForNode:()=>({availability:'known',usedPercentage:4})});
-  c.set('db' as never,{prepare:()=>({get:()=>({node_id:'node-one',runtime:'claude-code'})})});
+  c.set('db' as never,seatDb());
   await next();
  });
  app.route('/api/compaction',compactionRoutes());
@@ -274,6 +277,15 @@ for(const expiry of ['missing map','idle after completed map'])it(`route reports
  expect(compacts(f)).toHaveLength(0);
 });
 
+// The route resolves the seat's node through the shared live-first session-name lookup (OF-2), which reads
+// rigs/nodes/sessions; a real seeded database replaces the former canned-row prepare() stub.
+function seatDb(cwd?:string){
+ const db=createFullTestDb();
+ const rig=new RigRepository(db).createRig('demo');
+ const node=new RigRepository(db).addNode(rig.id,'writer',{role:'worker',runtime:'claude-code',cwd});
+ new SessionRegistry(db).registerSession(node.id,seat);
+ return db;
+}
 function routeFixture(f:ReturnType<typeof fixture>, cwd?:string){
  vi.spyOn(f.transport,'resolveSessions').mockResolvedValue({ok:true,sessions:[seat]} as any);
  const app=new Hono();
@@ -281,7 +293,7 @@ function routeFixture(f:ReturnType<typeof fixture>, cwd?:string){
   c.set('compactionEnforcer' as never,f.e);
   c.set('sessionTransport' as never,f.transport);
   c.set('contextUsageStore' as never,{getForNode:()=>({availability:'known',usedPercentage:4})});
-  c.set('db' as never,{prepare:()=>({get:()=>({node_id:'node-one',runtime:'claude-code',cwd})})});
+  c.set('db' as never,seatDb(cwd));
   await next();
  });
  app.route('/api/compaction',compactionRoutes());

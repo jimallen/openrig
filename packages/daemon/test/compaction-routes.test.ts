@@ -132,7 +132,7 @@ describe("compaction routes — POST /api/compaction/trigger", () => {
       sleep: async () => undefined,
       waitForIdlePollMs: 1,
     });
-    const enforcer = new ClaudeCompactionEnforcer(makeSettings(), transport, { openrigHome: stateDir, manualPrepWaitMs: 50, resolveOccupantGeneration: () => "fixture-generation" });
+    const enforcer = new ClaudeCompactionEnforcer(makeSettings(), transport, { openrigHome: stateDir, manualPrepWaitMs: 60_000, resolveOccupantGeneration: () => "fixture-generation" });
     const app = new Hono();
     app.use("*", async (c, next) => {
       c.set("sessionTransport" as never, transport);
@@ -164,6 +164,30 @@ describe("compaction routes — POST /api/compaction/trigger", () => {
     // Phase 2 /compact followed.
     expect(sentTexts[1]).toContain("/compact");
     expect(sentTexts).toHaveLength(2);
+  });
+
+  it("an archived rig's newer session of the same name does not decide the runtime (OF-2)", async () => {
+    // Live claude-code seat registered first; archived codex seat of the same name registered after, so
+    // its session row has the newest id. Judged against the archived row the route would 422 runtime_filter.
+    const liveRig = rigRepo.createRig("my-rig");
+    const live = rigRepo.addNode(liveRig.id, "dev.impl", { role: "worker", runtime: "claude-code" });
+    const s1 = sessionRegistry.registerSession(live.id, "dev-impl@my-rig");
+    sessionRegistry.updateStatus(s1.id, "running");
+    sessionRegistry.updateBinding(live.id, { tmuxSession: "dev-impl@my-rig" });
+    usageStore.persist(live.id, knownUsage("dev-impl@my-rig", 42));
+    const oldRig = rigRepo.createRig("my-rig-old");
+    const old = rigRepo.addNode(oldRig.id, "dev.impl", { role: "worker", runtime: "codex" });
+    sessionRegistry.registerSession(old.id, "dev-impl@my-rig");
+    expect(rigRepo.archiveRig(oldRig.id)).toBe(true);
+
+    const { app } = buildApp();
+    const res = await app.request("/api/compaction/trigger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, session: "dev-impl@my-rig", stage: "compact-sent" });
   });
 
   it("non-Claude seat → 422 runtime_filter (rejected, not silent no-op)", async () => {

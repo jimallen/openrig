@@ -11,11 +11,13 @@
 // TODAY — those are it.todo ledger entries at the bottom (routed to the desk as
 // findings; a passing pin would freeze the defect). When a finding's fix lands,
 // its todo graduates to a real pin.
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createDaemon } from "../src/startup.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
 import type { AppDeps } from "../src/server.js";
 import type { CmuxTransportFactory } from "../src/terminal/cmux-transport.js";
 import type { ExecFn } from "../src/domain/tmux-adapter.js";
@@ -144,5 +146,53 @@ describe("P16 — UNINJECTED-SERVICE findings ledger (routed to desk; todo gradu
     expect(src, "server.ts must app.use the seam, not just import it").toMatch(
       /app\.use\(\s*["']\*["']\s*,\s*createSlowOpRequestMiddleware\(/,
     );
+  });
+});
+
+// OF-2 — the two startup closures that resolve a session NAME must resolve it live-first. The helper
+// functions are pinned in latest-row-live-first.test.ts; these rows pin that createDaemon actually wires them.
+describe("OF-2 — startup wiring of name-keyed lookups is live-first (composed createDaemon)", () => {
+  const NAME = "dev-impl@of2wire";
+  let seeded: { liveNodeId: string; liveSessionId: string } | undefined;
+  function seedLiveAndArchived() {
+    if (seeded) return seeded;
+    const rigRepo = new RigRepository(db);
+    const registry = new SessionRegistry(db);
+    const liveRig = rigRepo.createRig("of2wire");
+    const liveNode = rigRepo.addNode(liveRig.id, "dev.impl", { role: "worker", runtime: "codex" });
+    const liveSession = registry.registerSession(liveNode.id, NAME);
+    db.prepare("UPDATE sessions SET resume_token = 'LIVE-TOKEN' WHERE id = ?").run(liveSession.id);
+    const oldRig = rigRepo.createRig("of2wire-old");
+    const oldNode = rigRepo.addNode(oldRig.id, "dev.impl", { role: "worker", runtime: "claude-code" });
+    const oldSession = registry.registerSession(oldNode.id, NAME);
+    db.prepare("UPDATE sessions SET resume_token = 'ARCHIVED-TOKEN' WHERE id = ?").run(oldSession.id);
+    expect(rigRepo.archiveRig(oldRig.id)).toBe(true);
+    seeded = { liveNodeId: liveNode.id, liveSessionId: liveSession.id };
+    return seeded;
+  }
+
+  it("deps.wakeResolveService resolves the live seat's resume token, not the archived predecessor's", () => {
+    const { liveSessionId } = seedLiveAndArchived();
+    const resolution = deps.wakeResolveService!.resolve(NAME);
+    expect(resolution).toMatchObject({ resolved: true, token: "LIVE-TOKEN", runtime: "codex", sessionId: liveSessionId });
+  });
+
+  it("the queue's waiting-activity reader reads the live node's seat state", () => {
+    const { liveNodeId } = seedLiveAndArchived();
+    const spy = vi.spyOn(deps.seatActivityService!, "getSeatState");
+    const reader = priv<((session: string) => unknown) | undefined>(deps.queueRepo, "activityReader");
+    expect(reader, "startup must attach the queue activity reader").toBeDefined();
+    reader!(NAME);
+    expect(spy).toHaveBeenCalledWith(liveNodeId);
+    spy.mockRestore();
+  });
+
+  it("the classifier lease's liveness probe judges the live seat, not a stale running archived row", () => {
+    const { liveSessionId } = seedLiveAndArchived();
+    db.prepare("UPDATE sessions SET status = 'running' WHERE session_name = ?").run(NAME);
+    const isAlive = priv<(session: string) => boolean>(deps.classifierLeaseManager, "isAlive");
+    expect(isAlive(NAME)).toBe(true);
+    db.prepare("UPDATE sessions SET status = 'exited' WHERE id = ?").run(liveSessionId);
+    expect(isAlive(NAME)).toBe(false);
   });
 });

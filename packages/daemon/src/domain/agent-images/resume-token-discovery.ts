@@ -10,6 +10,7 @@
 // than fabricating one (docs/as-built/architecture/adapters-and-runtimes.md § Resume honesty).
 
 import type Database from "better-sqlite3";
+import { findLatestSessionNameMatch } from "../latest-session-name-match.js";
 
 export type DiscoveryRuntime = "claude-code" | "codex";
 
@@ -35,9 +36,10 @@ export interface DiscoveryFailure {
 export type DiscoveryOutcome = { ok: true; result: DiscoveryResult } | { ok: false; failure: DiscoveryFailure };
 
 export function discoverResumeToken(db: Database.Database, sourceSession: string): DiscoveryOutcome {
-  const sessionRow = db
-    .prepare("SELECT id, node_id, resume_token FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
-    .get(sourceSession) as { id: string; node_id: string; resume_token: string | null } | undefined;
+  const latest = findLatestSessionNameMatch(db, sourceSession);
+  const sessionRow = latest
+    ? db.prepare("SELECT id, node_id, resume_token FROM sessions WHERE id = ?").get(latest.id) as { id: string; node_id: string; resume_token: string | null } | undefined
+    : undefined;
   if (!sessionRow) {
     return {
       ok: false,

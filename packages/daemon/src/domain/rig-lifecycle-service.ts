@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
@@ -696,14 +697,13 @@ export class RigLifecycleService {
     fallbackDestination: string,
     targetNodeIds: Set<string>,
   ): Promise<FallbackValidationFailure | null> {
-    const row = this.db.prepare(`
+    const latest = findLatestSessionNameMatch(this.db, fallbackDestination);
+    const row = latest ? this.db.prepare(`
       SELECT s.node_id, n.logical_id, s.status
       FROM sessions s
       JOIN nodes n ON n.id = s.node_id
-      WHERE s.session_name = ?
-      ORDER BY s.created_at DESC, s.id DESC
-      LIMIT 1
-    `).get(fallbackDestination) as { node_id: string; logical_id: string; status: string } | undefined;
+      WHERE s.id = ?
+    `).get(latest.id) as { node_id: string; logical_id: string; status: string } | undefined : undefined;
 
     if (!row || row.status !== "running") {
       return {

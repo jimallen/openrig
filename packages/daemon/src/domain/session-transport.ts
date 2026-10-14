@@ -23,6 +23,7 @@ import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } 
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
 import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
@@ -1079,6 +1080,9 @@ export class SessionTransport {
 
   /** Freeze the registration and binding before asking tmux about this name. */
   private absenceProbeTarget(sessionName: string): AbsenceProbeTarget | undefined {
+    // Only the seat that answers the name (live rig before archived) may be probed.
+    const answering = findLatestSessionNameMatch(this.db, sessionName);
+    if (!answering) return undefined;
     return this.db
       .prepare(`
         SELECT s.id AS session_id, n.id AS node_id, s.session_name AS session_name, b.tmux_pane AS tmux_pane
@@ -1088,9 +1092,10 @@ export class SessionTransport {
         JOIN bindings b ON b.node_id = n.id AND b.tmux_session = s.session_name
         WHERE s.status = 'running'
           AND s.session_name = ?
+          AND n.id = ?
         LIMIT 1
       `)
-      .get(sessionName) as AbsenceProbeTarget | undefined;
+      .get(sessionName, answering.node_id) as AbsenceProbeTarget | undefined;
   }
 
   /** Positive tmux absence only; a delayed reply cannot describe a replacement. */
@@ -1114,9 +1119,10 @@ export class SessionTransport {
     runtime: string | null; attachmentType: string | null; nodeId: string | null; pane: string | null; occupant: string | null; resumeToken: string | null;
     rotation: ClaudeResumeRotation | null;
   } {
-    // One existing statement; P2 reads the binding columns it already joins plus the
-    // same current-occupant subselect the delivery guard uses. No extra query.
-    const row = this.db.prepare(`
+    // P2 reads the binding columns it already joins plus the same current-occupant subselect the
+    // delivery guard uses; the live-first row is chosen by findLatestSessionNameMatch.
+    const latest = findLatestSessionNameMatch(this.db, sessionName);
+    const row = latest ? this.db.prepare(`
       SELECT
         n.runtime AS runtime,
         b.attachment_type AS attachment_type,
@@ -1132,10 +1138,8 @@ export class SessionTransport {
       FROM sessions s
       JOIN nodes n ON s.node_id = n.id
       LEFT JOIN bindings b ON b.node_id = n.id
-      WHERE s.session_name = ?
-      ORDER BY s.id DESC
-      LIMIT 1
-    `).get(sessionName) as SessionMetaRow | undefined;
+      WHERE s.id = ?
+    `).get(latest.id) as SessionMetaRow | undefined : undefined;
 
     return {
       runtime: row?.runtime ?? null,
