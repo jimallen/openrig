@@ -132,7 +132,7 @@ describe("compaction routes — POST /api/compaction/trigger", () => {
       sleep: async () => undefined,
       waitForIdlePollMs: 1,
     });
-    const enforcer = new ClaudeCompactionEnforcer(makeSettings(), transport, { openrigHome: stateDir, manualPrepWaitMs: 50, resolveOccupantGeneration: () => "fixture-generation" });
+    const enforcer = new ClaudeCompactionEnforcer(makeSettings(), transport, { openrigHome: stateDir, manualPrepWaitMs: 60_000, resolveOccupantGeneration: () => "fixture-generation" });
     const app = new Hono();
     app.use("*", async (c, next) => {
       c.set("sessionTransport" as never, transport);

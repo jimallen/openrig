@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { findLatestSessionNameMatch } from "../src/domain/latest-session-name-match.js";
+import { findLatestSessionNameMatch, isSessionNameRunning } from "../src/domain/latest-session-name-match.js";
 import { resolveSessionNodeId } from "../src/domain/queue-owner.js";
 import { nodeRuntimeOf } from "../src/domain/workflow-projector.js";
 import { discoverResumeToken } from "../src/domain/agent-images/resume-token-discovery.js";
@@ -25,6 +25,7 @@ import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
 import { SeatAttentionReconciler } from "../src/domain/seat-attention-reconciler.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { OperatingPostureService } from "../src/domain/rig-mode/operating-posture.js";
+import { QueueRepository as QueueRepositoryClass } from "../src/domain/queue-repository.js";
 import { WorkflowRuntime } from "../src/domain/workflow-runtime.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
@@ -47,13 +48,15 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
     const liveRig = rigRepo.createRig("alpha");
     const liveNode = rigRepo.addNode(liveRig.id, "dev.impl", { role: "worker", runtime: "codex", cwd: "/live/cwd" });
     const liveSession = registry.registerSession(liveNode.id, NAME);
-    db.prepare("UPDATE sessions SET resume_token = 'LIVE-TOKEN', status = 'running' WHERE id = ?").run(liveSession.id);
+    // created_at is set explicitly (archived strictly newer): sessions created within one second share a
+    // created_at, which would let a created_at-ordered revert pass by insertion-order accident.
+    db.prepare("UPDATE sessions SET resume_token = 'LIVE-TOKEN', status = 'running', created_at = '2026-01-01 00:00:00' WHERE id = ?").run(liveSession.id);
     live = { nodeId: liveNode.id, sessionId: liveSession.id, rigId: liveRig.id };
 
     const oldRig = rigRepo.createRig("alpha-old");
     const oldNode = rigRepo.addNode(oldRig.id, "dev.impl", { role: "worker", runtime: "claude-code", cwd: "/archived/cwd" });
     const oldSession = registry.registerSession(oldNode.id, NAME);
-    db.prepare("UPDATE sessions SET resume_token = 'ARCHIVED-TOKEN', status = 'running' WHERE id = ?").run(oldSession.id);
+    db.prepare("UPDATE sessions SET resume_token = 'ARCHIVED-TOKEN', status = 'running', created_at = '2026-06-01 00:00:00' WHERE id = ?").run(oldSession.id);
     expect(rigRepo.archiveRig(oldRig.id)).toBe(true);
     archived = { nodeId: oldNode.id, sessionId: oldSession.id, rigId: oldRig.id };
 
@@ -171,5 +174,77 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
     expect(findLatestSessionNameMatch(bare, "x@y")?.node_id).toBe("n2");
     expect(findLatestSessionNameMatch(bare, "absent@y")).toBeNull();
     bare.close();
+  });
+
+  it("isSessionNameRunning judges the live seat: a stale running archived row cannot vouch for a stopped live seat", () => {
+    expect(isSessionNameRunning(db, NAME)).toBe(true);
+    db.prepare("UPDATE sessions SET status = 'exited' WHERE id = ?").run(live.sessionId);
+    expect(isSessionNameRunning(db, NAME)).toBe(false);
+    expect(isSessionNameRunning(db, "nobody@nowhere")).toBe(false);
+  });
+
+  it("queue terminal-transport check follows the live seat's binding, not an archived tmux binding", () => {
+    // Live seat attaches externally (no tmux); the archived predecessor had a tmux binding.
+    registry.updateBinding(archived.nodeId, { tmuxSession: NAME });
+    registry.updateBinding(live.nodeId, { attachmentType: "external_cli", externalSessionName: "ext" });
+    const repo = Object.create(QueueRepositoryClass.prototype) as unknown as { db: Database.Database; hasTerminalTransport(d: string): boolean };
+    repo.db = db;
+    expect(repo.hasTerminalTransport(NAME)).toBe(false);
+  });
+
+  it("session-transport absence probe targets the live seat, not the archived one", () => {
+    registry.updateBinding(archived.nodeId, { tmuxSession: NAME, tmuxPane: "%9" });
+    registry.updateBinding(live.nodeId, { tmuxSession: NAME, tmuxPane: "%1" });
+    const svc = Object.create(SessionTransport.prototype) as unknown as { db: Database.Database; absenceProbeTarget(n: string): { node_id: string; tmux_pane: string | null } | undefined };
+    svc.db = db;
+    const target = svc.absenceProbeTarget(NAME);
+    expect(target?.node_id).toBe(live.nodeId);
+    expect(target?.tmux_pane).toBe("%1");
+  });
+
+  it("with two live rigs holding the name, the NEWEST live row answers (not the oldest, not an archived one)", () => {
+    const newerRig = rigRepo.createRig("alpha-2");
+    const newerNode = rigRepo.addNode(newerRig.id, "dev.impl", { role: "worker", runtime: "codex", cwd: "/newer/cwd" });
+    registry.registerSession(newerNode.id, NAME);
+    expect(resolveSessionNodeId(db, NAME)).toBe(newerNode.id);
+    expect(nodeRuntimeOf(db, NAME)).toBe("codex");
+  });
+});
+
+describe("claim-service binding lookup is live-first (OF-2)", () => {
+  const BOUND = "dev-impl@alpha";
+  function resolve(db: Database.Database): string | null {
+    const svc = Object.create(ClaimService.prototype) as unknown as { db: Database.Database; resolveNodeIdForSessionName(n: string): string | null };
+    svc.db = db;
+    return svc.resolveNodeIdForSessionName(BOUND);
+  }
+  function seed(archivedFirst: boolean) {
+    const db = createFullTestDb();
+    const rigRepo = new RigRepository(db);
+    const registry = new SessionRegistry(db);
+    const make = (rigName: string, archive: boolean) => {
+      const rig = rigRepo.createRig(rigName);
+      const node = rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "codex" });
+      registry.registerSession(node.id, BOUND);
+      registry.updateBinding(node.id, { tmuxSession: BOUND });
+      if (archive) expect(rigRepo.archiveRig(rig.id)).toBe(true);
+      return node.id;
+    };
+    const first = archivedFirst ? make("alpha-old", true) : make("alpha", false);
+    const second = archivedFirst ? make("alpha", false) : make("alpha-old", true);
+    return { db, liveNodeId: archivedFirst ? second : first, archivedNodeId: archivedFirst ? first : second };
+  }
+
+  it("a recreated live rig's binding wins over the archived predecessor's older binding", () => {
+    const { db, liveNodeId, archivedNodeId } = seed(true);
+    expect(liveNodeId).not.toBe(archivedNodeId);
+    expect(resolve(db)).toBe(liveNodeId);
+    db.close();
+  });
+
+  it("the live binding wins when the archived rig's binding is the newer one", () => {
+    const { db, liveNodeId } = seed(false);
+    expect(resolve(db)).toBe(liveNodeId);
+    db.close();
   });
 });

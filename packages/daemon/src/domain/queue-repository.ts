@@ -1,4 +1,5 @@
 import { readWakeLadderBackstop } from "./queue-wake-ladder.js";
+import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { EventBus } from "./event-bus.js";
@@ -3640,12 +3641,14 @@ export class QueueRepository {
       const anyTopology = this.db.prepare("SELECT 1 FROM sessions LIMIT 1").get()
         ?? this.db.prepare("SELECT 1 FROM nodes LIMIT 1").get();
       if (!anyTopology) return true;
-      if (this.db.prepare(
-        `SELECT 1 FROM sessions s JOIN bindings b ON b.node_id = s.node_id
-          WHERE s.session_name = ?
+      // The seat that answers the name (live rig before archived) decides, not any archived row of that name.
+      const answering = findLatestSessionNameMatch(this.db, dest);
+      if (answering && this.db.prepare(
+        `SELECT 1 FROM bindings b
+          WHERE b.node_id = ?
             AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
             AND b.tmux_session IS NOT NULL LIMIT 1`,
-      ).get(dest)) return true;
+      ).get(answering.node_id)) return true;
       const at = dest.lastIndexOf("@");
       if (at <= 0) return true; // non-canonical shapes stay on the legacy path
       const seat = dest.slice(0, at);

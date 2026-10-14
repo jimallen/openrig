@@ -1,5 +1,5 @@
 import { OutboxHandler } from "./outbox-handler.js";
-import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
+import { findBindingNodeLiveFirst, findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -618,10 +618,8 @@ export class ClaimService {
   /** Map a canonical session name to its persisted node via the daemon's own
    *  history: the current binding first, then the most recent session row. */
   private resolveNodeIdForSessionName(sessionName: string): string | null {
-    const bound = this.db
-      .prepare("SELECT node_id FROM bindings WHERE tmux_session = ?")
-      .get(sessionName) as { node_id: string } | undefined;
-    if (bound) return bound.node_id;
+    const boundNodeId = findBindingNodeLiveFirst(this.db, sessionName);
+    if (boundNodeId) return boundNodeId;
     return findLatestSessionNameMatch(this.db, sessionName)?.node_id ?? null;
   }
 

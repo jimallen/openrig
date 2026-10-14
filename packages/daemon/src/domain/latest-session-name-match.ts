@@ -18,3 +18,40 @@ export function findLatestSessionNameMatch(db: Database.Database, sessionName: s
     .get(sessionName) as { id: string; node_id: string; session_name: string } | undefined;
   return row ? { ...row, rig_id: "" } : null;
 }
+
+/**
+ * The node a tmux session name is bound to, live rig before archived. An archived rig keeps its
+ * `bindings` rows, so a bare `WHERE tmux_session = ?` can land on the archived predecessor of a
+ * recreated rig. Among rows of equal archive state the newest binding wins, so the answer is
+ * deterministic. Without topology tables there is no archive flag to honour and the newest binding answers.
+ */
+export function findBindingNodeLiveFirst(db: Database.Database, tmuxSession: string): string | null {
+  const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('rigs', 'nodes')").all() as Array<{ name: string }>).map((t) => t.name));
+  const hasArchive = tables.has("rigs") && tables.has("nodes")
+    && (db.prepare("PRAGMA table_info(rigs)").all() as Array<{ name: string }>).some((column) => column.name === "archived_at");
+  const row = (hasArchive
+    ? db.prepare(`
+        SELECT b.node_id AS node_id
+        FROM bindings b
+        JOIN nodes n ON n.id = b.node_id
+        JOIN rigs r ON r.id = n.rig_id
+        WHERE b.tmux_session = ?
+        ORDER BY (r.archived_at IS NOT NULL) ASC, b.id DESC
+        LIMIT 1
+      `)
+    : db.prepare("SELECT node_id FROM bindings WHERE tmux_session = ? ORDER BY id DESC LIMIT 1")
+  ).get(tmuxSession) as { node_id: string } | undefined;
+  return row?.node_id ?? null;
+}
+
+/**
+ * Whether the seat that answers a session name is running: the live-first newest row's status, not
+ * "any row with that name is running". An archived rig's stale `running` row must not vouch for a
+ * recreated live seat that has stopped.
+ */
+export function isSessionNameRunning(db: Database.Database, sessionName: string): boolean {
+  const latest = findLatestSessionNameMatch(db, sessionName);
+  if (!latest) return false;
+  const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(latest.id) as { status: string } | undefined;
+  return row?.status === "running";
+}

@@ -948,6 +948,9 @@ export class SessionTransport {
 
   /** Freeze the registration and binding before asking tmux about this name. */
   private absenceProbeTarget(sessionName: string): AbsenceProbeTarget | undefined {
+    // Only the seat that answers the name (live rig before archived) may be probed.
+    const answering = findLatestSessionNameMatch(this.db, sessionName);
+    if (!answering) return undefined;
     return this.db
       .prepare(`
         SELECT s.id AS session_id, n.id AS node_id, s.session_name AS session_name, b.tmux_pane AS tmux_pane
@@ -957,9 +960,10 @@ export class SessionTransport {
         JOIN bindings b ON b.node_id = n.id AND b.tmux_session = s.session_name
         WHERE s.status = 'running'
           AND s.session_name = ?
+          AND n.id = ?
         LIMIT 1
       `)
-      .get(sessionName) as AbsenceProbeTarget | undefined;
+      .get(sessionName, answering.node_id) as AbsenceProbeTarget | undefined;
   }
 
   /** Positive tmux absence only; a delayed reply cannot describe a replacement. */

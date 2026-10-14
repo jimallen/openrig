@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { resolveSessionNodeId } from "./domain/queue-owner.js";
+import { isSessionNameRunning } from "./domain/latest-session-name-match.js";
 import { listWakeSessionsBySeat } from "./domain/wake-resolve-service.js";
 import { discoverTailscaleSelfNames } from "./middleware/browser-boundary.js";
 import { configureShadowCapture } from "./domain/shadow-capture.js";
@@ -1300,12 +1301,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // status == 'running'.
       classifierLeaseManagerInstance.attachIsAlive((classifierSession: string): boolean => {
         try {
-          const row = db
-            .prepare(
-              `SELECT 1 FROM sessions WHERE session_name = ? AND status = 'running' LIMIT 1`,
-            )
-            .get(classifierSession) as { 1: number } | undefined;
-          return row !== undefined;
+          return isSessionNameRunning(db, classifierSession);
         } catch {
           // Conservative: on lookup error, treat as alive (do not falsely
           // trigger deadness-based lease expiry).
@@ -2314,8 +2310,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
         },
         resolveOversightSeat: () => {
-          const row = db.prepare("SELECT session_name FROM sessions WHERE session_name = ? AND status = 'running' LIMIT 1").get(OVERSIGHT_SEAT);
-          return row ? OVERSIGHT_SEAT : null;
+          return isSessionNameRunning(db, OVERSIGHT_SEAT) ? OVERSIGHT_SEAT : null;
         },
         recordProclamation: (proclamation) => {
           eventBus.emit({
