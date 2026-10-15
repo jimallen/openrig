@@ -2204,18 +2204,203 @@ describe("RestoreOrchestrator", () => {
     const newNode = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", effort: "medium" });
     expect(newNode.id).not.toBe(oldNode.id);
     db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run("xhigh", newNode.id);
+    // The regrown seat carries its own launch posture; the vanished node's is gone with it.
+    db.prepare("UPDATE nodes SET policy_origin = 'builtin', policy_launch_posture = 'full_bypass' WHERE id = ?").run(newNode.id);
 
     const claude = mockClaudeResume();
     const orch = createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") });
-    await orch.restore(snap.id);
+    const result = await orch.restore(snap.id);
 
-    // Observed at the resume adapter (the legacy path). Restoring a snapshot of a node id that no longer exists ends
-    // in a later "FOREIGN KEY constraint failed" restore_error (measured; bookkeeping for the vanished node id), so the
-    // restore's overall result is deliberately not asserted: this test's subject is only which live seat is read.
+    // The restore as a whole succeeds: every write lands on the live seat (the new node id), none on the vanished
+    // snapshot node id. At base this was a "FOREIGN KEY constraint failed" restore_error after the resume had launched.
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.rigResult).toBe("fully_restored");
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, logicalId: "dev.impl", status: "resumed" })]);
+    // The restored seat is bound, on the NEW node id.
+    expect(sessionRegistry.getBindingForNode(newNode.id)).not.toBeNull();
+    expect(sessionRegistry.getBindingForNode(newNode.id)!.nodeId).toBe(newNode.id);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM bindings WHERE node_id = ?").get(oldNode.id)).toEqual({ n: 0 });
+    // The new seat's running session is the one the restore launched.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE node_id = ? AND status = 'running'").get(newNode.id)).toEqual({ n: 1 });
+
+    // Observed at the resume adapter (the legacy path).
     const spy = vi.mocked(claude.resume);
     expect(spy).toHaveBeenCalledTimes(1);
     // The regrown seat's latest choice (xhigh) beats the snapshot's authored value (medium).
     expect(spy.mock.calls[0]![8]).toBe("xhigh");
+    // The resume is keyed to the LIVE seat (argument 7 is the node id), with the live seat's posture (argument 4).
+    expect(spy.mock.calls[0]![7]).toBe(newNode.id);
+    expect(spy.mock.calls[0]![4]).toBe("full_bypass");
+  });
+
+  // The other half of the same rule: a seat removed and NOT grown back has no live node to write to. Restore does not
+  // recreate it (the node launcher reports "Node <id> not found in rig" for it, as it always has); the seat is reported
+  // failed with that reason, before any session is started or any row written, and the rig's other seats still restore.
+  it("a seat removed and not grown back is reported failed without aborting the restore, and the other seats still restore", async () => {
+    const rig = rigRepo.createRig("removed-seat-rig");
+    const gone = rigRepo.addNode(rig.id, "dev.gone", { runtime: "claude-code" });
+    const kept = rigRepo.addNode(rig.id, "dev.kept", { runtime: "claude-code" });
+    const goneSession = sessionRegistry.registerSession(gone.id, "dev-gone@removed-seat-rig");
+    const keptSession = sessionRegistry.registerSession(kept.id, "dev-kept@removed-seat-rig");
+    for (const s of [goneSession, keptSession]) {
+      sessionRegistry.updateStatus(s.id, "running");
+      sessionRegistry.updateResumeToken(s.id, "claude_id", `token-${s.id}`);
+    }
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    for (const s of [goneSession, keptSession]) sessionRegistry.updateStatus(s.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id IN (?, ?)").run(gone.id, kept.id);
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(gone.id);
+
+    const claude = mockClaudeResume();
+    const orch = createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", `token-${keptSession.id}`) });
+    const result = await orch.restore(snap.id);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byLogical = Object.fromEntries(result.result.nodes.map((n) => [n.logicalId, n]));
+    expect(byLogical["dev.gone"]).toMatchObject({ status: "failed", error: expect.stringContaining("dev.gone") });
+    expect(byLogical["dev.kept"]).toMatchObject({ nodeId: kept.id, status: "resumed" });
+    expect(result.result.rigResult).toBe("partially_restored");
+    // Nothing was started for the removed seat: one resume, for the kept seat only.
+    expect(vi.mocked(claude.resume)).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE rig_id = ? AND logical_id = 'dev.gone'").get(rig.id)).toEqual({ n: 0 });
+    expect(sessionRegistry.getBindingForNode(kept.id)).not.toBeNull();
+  });
+
+  // Each row below is one write the restore makes against the seat, on a seat grown back under a NEW node id. A write
+  // keyed by the snapshot's (vanished) node id either fails the foreign key to `nodes` (the whole restore ends as a
+  // restore_error) or silently lands on nothing.
+  function snapshotThenRegrow(rigName: string, opts?: { podId?: string; runtime?: string; token?: string; cwd?: string; restorePolicy?: string; checkpoint?: boolean }) {
+    const runtime = opts?.runtime ?? "claude-code";
+    const rig = rigRepo.createRig(rigName);
+    if (opts?.podId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.podId, rig.id, "Dev");
+    const nodeOpts = { runtime, ...(opts?.podId ? { podId: opts.podId } : {}), ...(opts?.cwd ? { cwd: opts.cwd } : {}) };
+    const oldNode = rigRepo.addNode(rig.id, "dev.impl", nodeOpts);
+    const sessionName = `dev-impl@${rigName}`;
+    const session = sessionRegistry.registerSession(oldNode.id, sessionName);
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateResumeToken(session.id, runtime === "stub" ? "stub_id" : "claude_id", opts?.token ?? "resume-token-123");
+    if (opts?.restorePolicy) db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?").run(opts.restorePolicy, session.id);
+    if (opts?.checkpoint) checkpointStore.createCheckpoint(oldNode.id, { summary: "Was working on feature X", keyArtifacts: ["src/feature.ts"] });
+    if (opts?.podId) {
+      db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)")
+        .run(oldNode.id, "[]", "[]", "[]", runtime);
+    }
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(oldNode.id);
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(oldNode.id);
+    const newNode = rigRepo.addNode(rig.id, "dev.impl", nodeOpts);
+    expect(newNode.id).not.toBe(oldNode.id);
+    return { rig, snap, oldNode, newNode, sessionName };
+  }
+
+  it("a regrown seat's stale binding and session are cleared on the NEW node id, so the launch is not refused as already bound", async () => {
+    const { snap, newNode, sessionName } = snapshotThenRegrow("regrown-stale-rig");
+    // Left on the live seat: a binding and a session row that no process backs (tmux reports no session).
+    const stale = sessionRegistry.registerSession(newNode.id, sessionName);
+    sessionRegistry.updateStatus(stale.id, "detached");
+    sessionRegistry.updateBinding(newNode.id, { tmuxSession: sessionName });
+
+    // The delivery guard's lifecycle claim is re-bound for the live seat, never the vanished node id.
+    const rebindLifecycle = vi.fn();
+    const tmux = { ...mockTmux(), deliveryGuard: { ownsLifecycle: () => true, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle } } as unknown as TmuxAdapter;
+    const orch = createOrchestrator({ tmux, claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "resume-token-123") });
+    const result = await orch.restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    // (Two calls: the restore's, before the launch, and the launcher's, after it. Both name the live seat.)
+    expect(new Set(rebindLifecycle.mock.calls.map((call) => call[0]))).toEqual(new Set([newNode.id]));
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "resumed" })]);
+    // The stale row is superseded; the one launched by this restore is the only one still in play.
+    expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(stale.id)).toEqual({ status: "superseded" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE node_id = ? AND status = 'running'").get(newNode.id)).toEqual({ n: 1 });
+  });
+
+  it("a regrown seat whose launch fails gets its prior binding back on the NEW node id (compensation), and the restore still returns", async () => {
+    const { snap, newNode, sessionName } = snapshotThenRegrow("regrown-launchfail-rig");
+    sessionRegistry.updateBinding(newNode.id, { tmuxSession: sessionName, tmuxPane: "%7" });
+    const tmux = mockTmux();
+    (tmux.createSession as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false as const, code: "unknown", message: "simulated launch failure" });
+
+    const orch = createOrchestrator({ tmux });
+    const result = await orch.restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "failed" })]);
+    expect(sessionRegistry.getBindingForNode(newNode.id)).toMatchObject({ nodeId: newNode.id, tmuxSession: sessionName, tmuxPane: "%7" });
+  });
+
+  it("a regrown seat whose resume concludes failed is rolled back to its prior binding on the NEW node id", async () => {
+    const { snap, newNode, sessionName } = snapshotThenRegrow("regrown-rollback-rig");
+    sessionRegistry.updateBinding(newNode.id, { tmuxSession: sessionName, tmuxPane: "%7" });
+    const claude = mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
+
+    const orch = createOrchestrator({ claude });
+    const result = await orch.restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "awaiting-decision" })]);
+    expect(sessionRegistry.getBindingForNode(newNode.id)).toMatchObject({ nodeId: newNode.id, tmuxSession: sessionName, tmuxPane: "%7" });
+  });
+
+  it("pod-aware: a regrown seat resumes through the harness launch and is rebound on the NEW node id", async () => {
+    const { StubRuntimeAdapter } = await import("../src/adapters/stub-runtime-adapter.js") as { StubRuntimeAdapter: new (deps: unknown) => RuntimeAdapter };
+    const { snap, newNode } = snapshotThenRegrow("regrown-pod-rig", { podId: "pod-regrow", runtime: "stub" });
+    db.prepare("UPDATE nodes SET policy_origin = 'builtin', policy_launch_posture = 'full_bypass' WHERE id = ?").run(newNode.id);
+    const adapter = new StubRuntimeAdapter({ tmux: {} as unknown, runtime: "stub" });
+    const launchSpy = vi.spyOn(adapter, "launchHarness");
+
+    const result = await createOrchestrator().restore(snap.id, { adapters: { stub: adapter } });
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "resumed" })]);
+    expect(sessionRegistry.getBindingForNode(newNode.id)).not.toBeNull();
+    // The harness launch recorded its startup on the new seat's session.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE node_id = ? AND status = 'running' AND startup_status = 'ready'").get(newNode.id)).toEqual({ n: 1 });
+    // The startup events are the new seat's, and the harness was launched with the new seat's posture.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE node_id = ? AND type = 'node.startup_ready'").get(newNode.id)).toEqual({ n: 1 });
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect((launchSpy.mock.calls[0]![0] as { launchPosture?: string }).launchPosture).toBe("full_bypass");
+  });
+
+  it("pod-aware: a regrown seat whose live continuity state is 'restoring' is skipped, not launched over", async () => {
+    const { snap, newNode } = snapshotThenRegrow("regrown-continuity-rig", { podId: "pod-cont", runtime: "claude-code" });
+    db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, ?)").run("pod-cont", newNode.id, "restoring");
+    const tmux = mockTmux();
+    const claude = mockClaudeResume();
+
+    const result = await createOrchestrator({ tmux, claude }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "fresh" })]);
+    expect(result.result.warnings.some((w) => w.includes("continuity state is 'restoring', skipping"))).toBe(true);
+    expect(tmux.createSession).not.toHaveBeenCalled();
+    expect(claude.resume).not.toHaveBeenCalled();
+  });
+
+  it("a regrown seat is rebuilt from the snapshot's checkpoint (keyed by the snapshot's node id) and bound on the NEW node id", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-regrow-"));
+    try {
+      const { snap, newNode } = snapshotThenRegrow("regrown-checkpoint-rig", { cwd: tmpDir, restorePolicy: "checkpoint_only", checkpoint: true });
+      const claude = mockClaudeResume();
+
+      const result = await createOrchestrator({ claude }).restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "rebuilt" })]);
+      expect(claude.resume).not.toHaveBeenCalled();
+      expect(sessionRegistry.getBindingForNode(newNode.id)).not.toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 
   // The legacy resume path hands claude's resume a five-slot tail when the seat declares remote_control, and keeps the
@@ -3095,7 +3280,7 @@ describe("RestoreOrchestrator", () => {
     });
     const result = await orchestrator.restore(snapshot.id);
 
-    expect(result.ok).toBe(true);
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
     if (!result.ok) return;
     expect(result.result.rigResult).toBe("fully_restored");
   });

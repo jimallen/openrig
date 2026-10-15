@@ -838,9 +838,24 @@ export class RestoreOrchestrator {
     warnings?: string[],
   ): Promise<RestoreNodeResult> {
     // Compare against the live logical target without changing saved post-launch inputs.
+    //
+    // Two ids name a seat here and they are not interchangeable. `node.id` is the SNAPSHOT's node id: it keys only the
+    // snapshot's own records (its sessions, checkpoints and startup context). `nodeId` is the LIVE seat's id, found by
+    // logical id in this rig, and it keys every write to the database: a seat that was removed and grown back keeps its
+    // logical id but has a new node id, and a write keyed by the old one violates the foreign key to `nodes`.
     const node = entry.node;
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
-    const nodeId = node.id;
+    if (!liveNode) {
+      // Removed since the snapshot and not grown back. Restore does not recreate a node (the launcher reports the same
+      // "not found in rig" for it); it reports this seat failed, before anything is started or written, and goes on.
+      return {
+        nodeId: node.id,
+        logicalId: node.logicalId,
+        status: "failed",
+        error: `Node ${node.logicalId} not found in rig: it was removed after this snapshot and has not been added back, so there is no seat to restore it into. Restore does not recreate removed nodes.`,
+      };
+    }
+    const nodeId = liveNode.id;
 
     // OPR.0.5.7.1 (bought ordering blocker, baton 0efd154d): D1 present-map
     // ambiguity must be DETECTED before any continuity_state short-circuit —
@@ -848,7 +863,7 @@ export class RestoreOrchestrator {
     // (classified running downstream) while the occupant truth is ambiguous,
     // bypassing A1's loud-failure semantics. Resolved/none/legacy states
     // fall through to absent-history classification and the continuity check.
-    const occupantResolution = resolveActiveSnapshotSession(data, nodeId);
+    const occupantResolution = resolveActiveSnapshotSession(data, node.id);
     if (occupantResolution.kind === "ambiguous") {
       return {
         nodeId,
@@ -859,8 +874,8 @@ export class RestoreOrchestrator {
     }
 
     const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
-    const runtimeError = restoreRuntimeCompatibilityError(liveNode ? liveNode.runtime : node.runtime,
-      data.nodeStartupContext?.[nodeId]?.runtime);
+    const runtimeError = restoreRuntimeCompatibilityError(liveNode.runtime,
+      data.nodeStartupContext?.[node.id]?.runtime);
     if (runtimeError) {
       return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: runtimeError };
     }
@@ -868,17 +883,17 @@ export class RestoreOrchestrator {
     // Classify absent-seat history before the continuity short-circuit: a
     // restoring seat must not report fresh while its forecast awaits a decision.
     const priorWithToken = occupantResolution.kind === "none" && !freshRequested
-      ? absentSeatResumeHistory(data.sessions, nodeId)
+      ? absentSeatResumeHistory(data.sessions, node.id)
       : null;
     if (priorWithToken) {
       return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name) };
     }
 
     // Consult live continuity state BEFORE clearing stale state
-    if (node.podId) {
+    if (liveNode.podId) {
       const continuityRow = this.db.prepare(
         "SELECT status FROM continuity_state WHERE pod_id = ? AND node_id = ?"
-      ).get(node.podId, nodeId) as { status: string } | undefined;
+      ).get(liveNode.podId, nodeId) as { status: string } | undefined;
       if (continuityRow) {
         if (continuityRow.status === "restoring") {
           warnings?.push(`Node ${node.logicalId}: continuity state is 'restoring', skipping`);
@@ -1020,7 +1035,7 @@ export class RestoreOrchestrator {
       warnings?.push(...launchResult.warnings);
     }
 
-    const restored = await this.postLaunchRestore(entry, rigId, data, launchResult.sessionName, launchResult, opts, warnings, priorState);
+    const restored = await this.postLaunchRestore(entry, nodeId, rigId, data, launchResult.sessionName, launchResult, opts, warnings, priorState);
     return this.checkRestoredGuidance(restored, entry.node, rigId, data, warnings);
   }
 
@@ -1083,6 +1098,7 @@ export class RestoreOrchestrator {
 
   private async postLaunchRestore(
     entry: PlanEntry,
+    liveNodeId: string,
     rigId: string,
     data: SnapshotData,
     sessionName: string,
@@ -1091,17 +1107,19 @@ export class RestoreOrchestrator {
     warnings?: string[],
     priorState?: { binding: import("./types.js").Binding | null; sessions: { id: string; status: string }[] },
   ): Promise<RestoreNodeResult> {
-    const node = entry.node;
+    // `node` carries the LIVE seat's id: every database write below is keyed by `node.id`. The snapshot's own records
+    // (sessions, checkpoints, startup context) are keyed by `snapshotNodeId`. They differ when the seat was removed and
+    // grown back, and a write keyed by the vanished snapshot id fails the foreign key to `nodes`.
+    const snapshotNodeId = entry.node.id;
+    const node = { ...entry.node, id: liveNodeId };
     // OPR.0.7.0.7: what this restore launches with when the seat has a saved effort choice is decided by the one
     // precedence seam (latest wins), which also says so when the snapshot held another value.
     let restoreEffort: { effort: string | null } | undefined;
     const effortForRestore = (): string | null => {
       if (!restoreEffort) {
-        // The live seat is found by its logical id in this rig: a seat removed and grown back has a new node id,
-        // and its latest saved choice still wins over the older snapshot.
-        const liveRow = this.db.prepare("SELECT id FROM nodes WHERE rig_id = ? AND logical_id = ?").get(rigId, node.logicalId) as
-          { id: string } | undefined;
-        const decided = effortPrecedence.restoreLaunchEffort({ snapshot: node, live: readSeatEffort(this.db, liveRow?.id ?? node.id) });
+        // The live seat (found by its logical id in this rig by the caller): a seat removed and grown back has a new
+        // node id, and its latest saved choice still wins over the older snapshot.
+        const decided = effortPrecedence.restoreLaunchEffort({ snapshot: entry.node, live: readSeatEffort(this.db, node.id) });
         if (decided.warning) warnings?.push(`Restore: ${node.logicalId}: ${decided.warning}`);
         restoreEffort = decided;
       }
@@ -1110,7 +1128,7 @@ export class RestoreOrchestrator {
     // OPR.0.5.7.1 D1 — the active occupant is RESOLVED, never inferred from
     // row ordering (cite site 2 of 2; "latest = max id" was the incident's
     // defect: a superseded row with a newer ULID defeated the real occupant).
-    const sessionResolution = resolveActiveSnapshotSession(data, node.id);
+    const sessionResolution = resolveActiveSnapshotSession(data, snapshotNodeId);
     if (sessionResolution.kind === "ambiguous") {
       return {
         nodeId: node.id,
@@ -1120,7 +1138,7 @@ export class RestoreOrchestrator {
       };
     }
     const session = sessionResolution.kind === "resolved" ? sessionResolution.session : null;
-    const checkpoint = data.checkpoints[node.id] ?? null;
+    const checkpoint = data.checkpoints[snapshotNodeId] ?? null;
 
     // Check restore policy. OPR.0.3.4.2: a --fresh-listed seat (operation B)
     // deliberately skips the resume attempt; its launch reports `fresh-primed`.
@@ -1139,7 +1157,7 @@ export class RestoreOrchestrator {
     // Legacy nodes: resume via old claude-resume/codex-resume helpers
     const isPodAware = !!node.podId;
 
-    const startupCtx = data.nodeStartupContext?.[node.id] ?? null;
+    const startupCtx = data.nodeStartupContext?.[snapshotNodeId] ?? null;
     // Restore only the saved activity selection before either native resume path.
     // This also heals settings stripped by older restores. The entry is a marker:
     // the adapter uses its current relay/manifest, not the old install's path.
