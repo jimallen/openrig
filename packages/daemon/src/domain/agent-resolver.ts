@@ -20,6 +20,17 @@ export interface AgentResolverFsOps {
   readPersonaFile?(path: string): string;
 }
 
+/**
+ * The filesystem every PRODUCTION construction must hand the resolver: the guard's two members are required, so
+ * a new construction that forgets `...guardedAgentRefFsOps` fails to compile instead of silently resolving
+ * unguarded. (`AgentResolverFsOps` keeps them optional only so in-memory test filesystems stay small; the
+ * test tree is not type-checked.)
+ */
+export type GuardedAgentResolverFsOps = AgentResolverFsOps & {
+  realpath(path: string): string;
+  readPersonaFile(path: string): string;
+};
+
 export interface ResolvedAgentSpec {
   spec: AgentSpec;
   sourcePath: string;

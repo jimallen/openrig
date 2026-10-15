@@ -20,6 +20,8 @@ export interface PodAssemblerFsOps extends AgentResolverFsOps {
    */
   readCultureFile?(requested: string, resolvedPath: string): CultureFileCheck;
   realpath(path: string): string;
+  /** Required: bundle create must read each persona's agent.yaml through the guard (see agent-ref-guard.ts). */
+  readPersonaFile(path: string): string;
   mkdirp(path: string): void;
   /** Source permission bits, used to preserve executable bundle assets. */
   fileMode?(path: string): number;

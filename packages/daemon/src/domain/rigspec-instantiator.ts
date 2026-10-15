@@ -308,7 +308,7 @@ export class RigInstantiator {
 import { RigSpecCodec as PodRigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema as PodRigSpecSchema, VALID_EDGE_KINDS } from "./rigspec-schema.js";
 import { rigPreflight, preflightValidatedSpec } from "./rigspec-preflight.js";
-import { resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
+import { resolveAgentRef, type GuardedAgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig } from "./profile-resolver.js";
 import { resolveStartup } from "./startup-resolver.js";
 import { planProjection, claudeConflictTargetPath, projectionConflictWarnings, filterProtectedProjections, type ProjectionPlan } from "./projection-planner.js";
@@ -347,7 +347,7 @@ interface PodInstantiatorDeps {
   eventBus: EventBus;
   nodeLauncher: NodeLauncher;
   startupOrchestrator: StartupOrchestrator;
-  fsOps: AgentResolverFsOps;
+  fsOps: GuardedAgentResolverFsOps;
   /** §6 reconciliation: main's managed Claude activity-hook delivery asset paths, forwarded to
    *  preflight (defaults to daemon-shipped assets; tests inject fixtures). Restores main's proven
    *  threading, dropped when the restacked 4.8 instantiator won the warnings-site conflicts. */

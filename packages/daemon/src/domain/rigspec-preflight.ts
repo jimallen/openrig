@@ -134,7 +134,7 @@ export class RigSpecPreflight {
 
 import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
-import { resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
+import { resolveAgentRef, type GuardedAgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig, type ResolutionContext } from "./profile-resolver.js";
 import { getOpenRigInstallCwdError, resolveAuthoredCwd, resolveLaunchCwd } from "./cwd-resolution.js";
 import nodePath from "node:path";
@@ -160,7 +160,7 @@ export interface RigPreflightInput {
   rigSpecYaml: string;
   rigRoot: string;
   cwdOverride?: string;
-  fsOps: AgentResolverFsOps;
+  fsOps: GuardedAgentResolverFsOps;
   /** Config-resolved managed skill catalog root. Must match runtime resolution. */
   skillsRoot?: string;
   systemSkills?: string[];
@@ -178,7 +178,7 @@ export interface RigPreflightInput {
 export interface PreflightSpecContext {
   rigRoot: string;
   cwdOverride?: string;
-  fsOps: AgentResolverFsOps;
+  fsOps: GuardedAgentResolverFsOps;
   /** Config-resolved managed skill catalog root. Must match runtime resolution. */
   skillsRoot?: string;
   systemSkills?: string[];

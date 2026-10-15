@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, realpathSync, statSync, lstatSync, readdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { readGuardedPersonaFile } from "@openrig/daemon/agent-ref";
+import { readGuardedPersonaFile, PersonaFileRefused } from "@openrig/daemon/agent-ref";
 import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { resolveEffectiveHost } from "../host-selection.js";
@@ -167,7 +167,9 @@ function checkGitHubBundleRefs(folder: string, checkoutDir: string, retainedChec
         contained(path.join(dir, "package.yaml"));
       }
     }
-  } catch {
+  } catch (error) {
+    // A persona file the guard refused says why (size, link count, not a regular file); anything else is a ref outside the repository.
+    if (error instanceof PersonaFileRefused) throw new Error(`GitHub bundle persona file refused: ${error.message}; no bundle was built.`);
     throw new Error("GitHub bundle refs must resolve inside the fetched repository; no bundle was built.");
   }
 }

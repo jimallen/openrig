@@ -92,6 +92,43 @@ describe("local: refs stay inside their spec tree", () => {
     refusedWith(resolveAgentRef("local:../../../elsewhere", nodePath.join(root, "tree", "rigs", "team"), realFs), "ref_refused", /outside/);
   });
 
+  it("X8: a sibling folder whose name merely starts with the tree root's name is outside it (not a string-prefix test)", () => {
+    persona(nodePath.join(root, "tree", "agents", "engineer"), "engineer");
+    fs.mkdirSync(nodePath.join(root, "tree", "rigs", "team"), { recursive: true });
+    persona(nodePath.join(root, "tree-evil", "agents", "p"), "p");
+    refusedWith(resolveAgentRef("local:../../../tree-evil/agents/p", nodePath.join(root, "tree", "rigs", "team"), realFs), "ref_refused", /outside/);
+  });
+
+  it("X8b: the tree root's own parent folder is outside it", () => {
+    persona(nodePath.join(root, "tree", "agents", "engineer"), "engineer");
+    fs.mkdirSync(nodePath.join(root, "tree", "rigs", "team"), { recursive: true });
+    persona(root, "parent");
+    refusedWith(resolveAgentRef("local:../../..", nodePath.join(root, "tree", "rigs", "team"), realFs), "ref_refused", /outside/);
+  });
+
+  it("X4b: a folder with only rigs/ (no agents/) is not a spec tree root", () => {
+    fs.mkdirSync(nodePath.join(root, "outer", "rigs"), { recursive: true });
+    fs.mkdirSync(nodePath.join(root, "outer", "proj", "rig"), { recursive: true });
+    persona(nodePath.join(root, "outer", "other", "p"), "p");
+    refusedWith(resolveAgentRef("local:../../other/p", nodePath.join(root, "outer", "proj", "rig"), realFs), "ref_refused", /outside/);
+  });
+
+  it("X21: the NEAREST marked tree decides, even over the root the ref was reached under (a persona folder holding its own agents/ and rigs/ confines its imports to itself)", () => {
+    const rig = nodePath.join(root, "rig");
+    persona(nodePath.join(rig, "shared"), "shared");
+    const impl = persona(nodePath.join(rig, "agents", "impl"), "impl", ["local:../../shared"]);
+    fs.mkdirSync(nodePath.join(impl, "agents")); fs.mkdirSync(nodePath.join(impl, "rigs"));
+    refusedWith(resolveAgentRef("local:agents/impl", rig, realFs), "import_error", /outside/);
+  });
+
+  it("X22: a local: ref that goes through an in-tree symlink resolves to the REAL persona folder", () => {
+    persona(nodePath.join(root, "rig", "agents", "impl"), "impl");
+    fs.symlinkSync(nodePath.join(root, "rig", "agents", "impl"), nodePath.join(root, "rig", "agents", "alias"));
+    const r = resolveAgentRef("local:agents/alias", nodePath.join(root, "rig"), realFs);
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(root, "rig", "agents", "impl"));
+  });
+
   it("POSITIVE (release layout through a symlinked rig folder): refs are relative to the REAL location", () => {
     persona(nodePath.join(root, "tree", "agents", "engineer"), "engineer");
     fs.mkdirSync(nodePath.join(root, "tree", "rigs", "team"), { recursive: true });
