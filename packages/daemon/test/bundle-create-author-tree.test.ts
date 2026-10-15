@@ -105,24 +105,34 @@ describe("bundle create: author bundle.yaml trees are written from the guarded b
   it("a declared directory swapped for a symlink to an OUTSIDE directory after the guarded pass does not bundle the outside bytes", () => {
     declareSkill();
     fs.writeFileSync(path.join(outside, "secret.txt"), MARKER);
+    let fired = false;
     consumeAuthorBundleYaml(root, staging, {
       afterGuardedPass: (declared) => {
         if (declared !== "skills/s") return;
         fs.renameSync(path.join(root, "skills", "s"), path.join(root, "skills", "s.orig"));
         fs.symlinkSync(outside, path.join(root, "skills", "s"));
+        fired = true;
       },
     });
+    // The swap really ran (else every assertion below passes vacuously) and left the outside link in place.
+    expect(fired).toBe(true);
+    expect(fs.lstatSync(path.join(root, "skills", "s")).isSymbolicLink()).toBe(true);
     expect(fs.existsSync(staged("skills", "s", "secret.txt"))).toBe(false);
     expect(fs.readFileSync(staged("skills", "s", "helper.txt"), "utf-8")).toBe("help\n");
   });
 
   it("a file swapped for a 3 MiB file after the guarded pass is not copied (the cap is not bypassed)", () => {
     declareSkill();
+    let fired = false;
     consumeAuthorBundleYaml(root, staging, {
       afterGuardedPass: (declared) => {
-        if (declared === "skills/s") fs.writeFileSync(path.join(root, "skills", "s", "helper.txt"), Buffer.alloc(3 * 1024 * 1024, 0x61));
+        if (declared !== "skills/s") return;
+        fs.writeFileSync(path.join(root, "skills", "s", "helper.txt"), Buffer.alloc(3 * 1024 * 1024, 0x61));
+        fired = true;
       },
     });
+    expect(fired).toBe(true);
+    expect(fs.statSync(path.join(root, "skills", "s", "helper.txt")).size).toBe(3 * 1024 * 1024);
     expect(fs.readFileSync(staged("skills", "s", "helper.txt"), "utf-8")).toBe("help\n");
   });
 
@@ -130,13 +140,17 @@ describe("bundle create: author bundle.yaml trees are written from the guarded b
     declareSkill();
     const fifo = path.join(outside, "pipe");
     fifoWithWriter(fifo);
+    let fired = false;
     consumeAuthorBundleYaml(root, staging, {
       afterGuardedPass: (declared) => {
         if (declared !== "skills/s") return;
         fs.unlinkSync(path.join(root, "skills", "s", "helper.txt"));
         fs.symlinkSync(fifo, path.join(root, "skills", "s", "helper.txt"));
+        fired = true;
       },
     });
+    expect(fired).toBe(true);
+    expect(fs.lstatSync(path.join(root, "skills", "s", "helper.txt")).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(staged("skills", "s", "helper.txt"), "utf-8")).toBe("help\n");
   }, 10000);
 
@@ -148,7 +162,10 @@ describe("bundle create: author bundle.yaml trees are written from the guarded b
       { encoding: "utf-8", timeout: 25000, killSignal: "SIGKILL", cwd: path.join(import.meta.dirname, "..") });
     expect(r.error, `child did not finish: ${r.error?.message} ${r.stderr}`).toBeUndefined();
     expect(r.status, r.stderr).toBe(0);
-    expect((JSON.parse(r.stdout.trim().split("\n").pop()!) as { helper: string }).helper).toBe("help\n");
+    const out = JSON.parse(r.stdout.trim().split("\n").pop()!) as { helper: string; fired: boolean; linked: boolean };
+    expect(out.fired, "the swap hook ran in the child").toBe(true);
+    expect(out.linked, "the source helper.txt is now a symlink").toBe(true);
+    expect(out.helper).toBe("help\n");
   }, 40000);
 
   // ---- symlinks inside the source root ----
