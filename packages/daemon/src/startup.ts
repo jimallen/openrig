@@ -179,6 +179,7 @@ import type { NotificationAdapter } from "./domain/mission-control/notification-
 import { OPENRIG_HOME } from "./openrig-compat.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
+import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -762,6 +763,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const externalInstallExecutor = new ExternalInstallExecutor({ exec, db });
   const packageInstallService = new PackageInstallService({ packageRepo, installRepo, installEngine, installVerifier });
   const resolverFsOps = {
+    ...guardedAgentRefFsOps,
     readFile: (p: string) => fs.readFileSync(p, "utf-8"),
     exists: (p: string) => fs.existsSync(p),
     listFiles: (dirPath: string) => {
@@ -1015,7 +1017,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const podInstantiator = new PodRigInstantiator({
     db, rigRepo, podRepo,
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
-    fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
+    fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
     adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
     tmuxAdapter,
     agentImageLibrary,

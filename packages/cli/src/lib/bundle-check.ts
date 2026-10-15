@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { readGuardedPersonaFile } from "@openrig/daemon/agent-ref";
 import { authoredMapping, readDeclaredConfigurations, checkDeclaredConfigurations } from "./bundle-configuration.js";
 import { authoredCompatibility } from "./bundle-source.js";
 
@@ -85,7 +86,7 @@ export async function checkBundleFolder(folder: string) {
     try {
       const manifestPath = fileRead("agent.yaml", dir);
       if (!manifestPath) { agentFindings++; return; }
-      const yaml = fs.readFileSync(manifestPath, "utf8");
+      const yaml = readGuardedPersonaFile(manifestPath);
       const valid = validateAgentSpecFromYaml(yaml);
       if (!valid.valid) { agentFindings++; add("portable_agents", "finding", valid.errors.join("; "), path.relative(root, dir)); return; }
       const a = parseYaml(yaml) as { imports?: Array<{ ref?: string }>; resources?: Record<string, unknown> };

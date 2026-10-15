@@ -2,6 +2,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync, spawn } from "node:child_process";
 import { Command } from "commander";
 import { checkBundleFolder } from "../src/lib/bundle-check.js";
 import { bundleCommand } from "../src/commands/bundle.js";
@@ -47,6 +48,37 @@ describe("advisory bundle check", () => {
     expect((await checkBundleFolder(root)).checks).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: rule, status: "finding" })]));
   });
 
+
+  describe("a persona's agent.yaml is read through the persona-file guard", () => {
+    const localAgentSpec = () => SPEC.replace("builtin:terminal", "local:agent").replace("runtime: terminal", "runtime: codex").replace("profile: none", "profile: default");
+    const AGENT = 'name: fixture\nversion: "1.0"\nprofiles:\n  default: {}\n';
+    const agentFinding = { ruleId: "portable_agents", status: "finding" };
+
+    it("POSITIVE: a regular agent.yaml passes", async () => {
+      fs.mkdirSync(path.join(root, "agent")); fs.writeFileSync(path.join(root, "agent", "agent.yaml"), AGENT);
+      fs.writeFileSync(path.join(root, "rig.yaml"), localAgentSpec());
+      expect((await checkBundleFolder(root)).checks.filter(c => c.status === "finding")).toEqual([]);
+    });
+
+    it("an oversize agent.yaml (over 64 KiB) is a finding", async () => {
+      fs.mkdirSync(path.join(root, "agent")); fs.writeFileSync(path.join(root, "agent", "agent.yaml"), AGENT + "#".repeat(64 * 1024));
+      fs.writeFileSync(path.join(root, "rig.yaml"), localAgentSpec());
+      expect((await checkBundleFolder(root)).checks).toEqual(expect.arrayContaining([expect.objectContaining(agentFinding)]));
+    });
+
+    it("a FIFO agent.yaml with a writer attached is a finding and the check does not hang", async () => {
+      fs.mkdirSync(path.join(root, "agent")); execFileSync("mkfifo", [path.join(root, "agent", "agent.yaml")]);
+      fs.writeFileSync(path.join(root, "rig.yaml"), localAgentSpec());
+      // `<>` opens the FIFO read-write, so a plain blocking read of it never sees EOF.
+      const writer = spawn("sh", ["-c", 'exec 3<>"$1"; exec sleep 120', "sh", path.join(root, "agent", "agent.yaml")], { stdio: "ignore" });
+      try {
+        await new Promise((r) => setTimeout(r, 300));
+        expect((await checkBundleFolder(root)).checks).toEqual(expect.arrayContaining([expect.objectContaining(agentFinding)]));
+      } finally {
+        writer.kill("SIGKILL");
+      }
+    }, 15000);
+  });
 
   it("checks startup paths relative to the declaring local agent", async () => {
     const dir = path.join(root, "agent"); fs.mkdirSync(dir);

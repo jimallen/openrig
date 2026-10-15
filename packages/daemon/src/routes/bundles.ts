@@ -36,6 +36,7 @@ import type { BundleBehaviour } from "../domain/bundle-behaviour.js";
 import { normalizePreconditionsBlock, type BundlePrecondition } from "../domain/bundle-types.js";
 import { assertShippableSubstance } from "../domain/agent-resolver.js";
 import { checkCultureFile } from "../domain/culture-file-guard.js";
+import { guardedAgentRefFsOps } from "../domain/agent-ref-guard.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if
@@ -351,6 +352,7 @@ function integrityFsOps(): IntegrityFsOps {
 function podAssemblerFsOps(): PodAssemblerFsOps {
   return {
     ...assemblerFsOps(),
+    ...guardedAgentRefFsOps,
     realpath: (p) => fs.realpathSync(p),
     readFile: (p) => fs.readFileSync(p, "utf-8"),
     readFileBuffer: (p) => fs.readFileSync(p),

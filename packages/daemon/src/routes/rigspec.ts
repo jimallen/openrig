@@ -15,6 +15,7 @@ import { RigNotFoundError } from "../domain/errors.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { runtimeVersionProbeCwd } from "../adapters/preflight-exec.js";
 import { RigSpecParseError, validateRigSpecImport } from "../domain/spec-validation-service.js";
+import { guardedAgentRefFsOps } from "../domain/agent-ref-guard.js";
 
 export const rigspecImportRoutes = new Hono();
 
@@ -250,7 +251,7 @@ rigspecImportRoutes.post("/preflight", async (c) => {
     const unprojected = unprojectedProjectRigError(raw);
     if (unprojected) return c.json({ ready: false, errors: [unprojected], warnings: [] });
     const cwdOverride = c.req.header("X-Cwd-Override") ?? undefined;
-    const fsOps = { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
+    const fsOps = { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
     const { execSync } = await import("node:child_process");
     const exec = async (cmd: string) => runSyncSite("rigspec.import.preflight", () =>
       execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, cwd: runtimeVersionProbeCwd(cmd) })
