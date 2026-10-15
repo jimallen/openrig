@@ -5,10 +5,20 @@ import { RigSpecSchema } from "./rigspec-schema.js";
 import { assertShippableSubstance, resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
 import { serializePodBundleManifest, type PodBundleManifest, type PodBundleAgentEntry, type PodBundleAgentImportEntry, type BundleProvenance, type BundleCompatibility } from "./bundle-types.js";
 import type { RigSpec, StartupBlock } from "./types.js";
+import type { CultureFileCheck } from "./culture-file-guard.js";
+
+/** The culture-file guard refused the spec's culture file. A caller-correctable input error (route: 400). */
+export class CultureFileRefused extends Error {}
 
 export interface PodAssemblerFsOps extends AgentResolverFsOps {
   /** Raw bytes, for files the bundle copies verbatim (agent packages, culture, docs, startup files). */
   readFileBuffer(path: string): Uint8Array;
+  /**
+   * The guarded reader for the rig's culture file (culture-file-guard.ts `checkCultureFile`): one open with
+   * O_NOFOLLOW|O_NONBLOCK, regular file, one link, at most the size cap. Production wires it; when absent
+   * (in-memory test filesystems) the culture file is read with `readFileBuffer` like any other rig file.
+   */
+  readCultureFile?(requested: string, resolvedPath: string): CultureFileCheck;
   realpath(path: string): string;
   mkdirp(path: string): void;
   /** Source permission bits, used to preserve executable bundle assets. */
@@ -92,7 +102,7 @@ export class PodBundleAssembler {
 
     // 2b. Culture file
     if (rigSpec.cultureFile) {
-      this.collectRigFile(rigSpec.cultureFile, opts.rigRoot, opts.outputDir, collectedFiles);
+      this.collectRigFile(rigSpec.cultureFile, opts.rigRoot, opts.outputDir, collectedFiles, true);
     }
 
     // 2b2. Docs files — required when declared (unlike culture/startup which are optional)
@@ -239,7 +249,7 @@ export class PodBundleAssembler {
     return { manifest, collectedFiles, ...(warnings.length > 0 ? { warnings } : {}) };
   }
 
-  private collectRigFile(relPath: string, rigRoot: string, outputDir: string, collected: string[]): void {
+  private collectRigFile(relPath: string, rigRoot: string, outputDir: string, collected: string[], guardedCulture = false): void {
     const root = nodePath.resolve(rigRoot);
     const absPath = nodePath.resolve(root, relPath);
     if (absPath !== root && !absPath.startsWith(nodePath.join(root, nodePath.sep))) {
@@ -251,7 +261,16 @@ export class PodBundleAssembler {
     if (realPath !== realRoot && !realPath.startsWith(nodePath.join(realRoot, nodePath.sep))) {
       throw new Error(`"${relPath}" resolves outside the rig root through a symlink; copy the file into the rig to bundle it`);
     }
-    const content = this.fs.readFileBuffer(realPath);
+    let content: Uint8Array;
+    if (guardedCulture && this.fs.readCultureFile) {
+      // The culture file is injected into every seat's startup context, so it gets the same refusal the
+      // delivery path applies (a FIFO would hang this read; an oversize or hard-linked file would be bundled).
+      const checked = this.fs.readCultureFile(relPath, realPath);
+      if (!checked.ok) throw new CultureFileRefused(checked.message);
+      content = checked.raw;
+    } else {
+      content = this.fs.readFileBuffer(realPath);
+    }
     const sourceMode = this.fs.fileMode?.(realPath);
     const mode = sourceMode === undefined ? undefined : sourceMode | 0o600;
     assertShippableSubstance([{ path: relPath, bytes: content }]);

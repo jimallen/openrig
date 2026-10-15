@@ -7,7 +7,7 @@ import type { EventBus } from "../domain/event-bus.js";
 import type { BootstrapOrchestrator } from "../domain/bootstrap-orchestrator.js";
 import type { BootstrapRepository } from "../domain/bootstrap-repository.js";
 import { LegacyBundleAssembler as BundleAssembler, type AssemblerFsOps } from "../domain/bundle-assembler.js";
-import { PodBundleAssembler, type PodAssemblerFsOps } from "../domain/pod-bundle-assembler.js";
+import { PodBundleAssembler, CultureFileRefused, type PodAssemblerFsOps } from "../domain/pod-bundle-assembler.js";
 import { computeIntegrity, writeIntegrity, verifyIntegrity, type IntegrityFsOps } from "../domain/bundle-integrity.js";
 import { pack, unpack, verifyArchiveDigest, collectUnsafeArchiveEntries, unsafeArchiveEntryReason } from "../domain/bundle-archive.js";
 import { resolvePackage } from "../domain/package-resolve-helper.js";
@@ -35,6 +35,7 @@ import { inspectBundleBehaviour } from "../domain/bundle-behaviour-inspect.js";
 import type { BundleBehaviour } from "../domain/bundle-behaviour.js";
 import { normalizePreconditionsBlock, type BundlePrecondition } from "../domain/bundle-types.js";
 import { assertShippableSubstance } from "../domain/agent-resolver.js";
+import { checkCultureFile } from "../domain/culture-file-guard.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if
@@ -353,6 +354,7 @@ function podAssemblerFsOps(): PodAssemblerFsOps {
     realpath: (p) => fs.realpathSync(p),
     readFile: (p) => fs.readFileSync(p, "utf-8"),
     readFileBuffer: (p) => fs.readFileSync(p),
+    readCultureFile: (requested, resolved) => checkCultureFile(requested, resolved),
     fileMode: (p) => fs.statSync(p).mode & 0o777,
     writeFile: (p, c, mode) => {
       fs.writeFileSync(p, c);
@@ -934,6 +936,9 @@ bundleRoutes.post("/create", async (c) => {
       fs.rmSync(tmpStaging, { recursive: true, force: true });
     }
   } catch (err) {
+    // A culture file the guard refuses (FIFO, oversize, hard-linked) is a caller-correctable input, like the
+    // route's other validation failures, not a daemon fault.
+    if (err instanceof CultureFileRefused) return c.json({ error: err.message }, 400);
     return c.json({ error: (err as Error).message }, 500);
   }
 });

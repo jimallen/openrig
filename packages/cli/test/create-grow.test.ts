@@ -570,6 +570,7 @@ describe("rig spec show", () => {
     const rigDeps: RigDeps = {
       ...deps(client),
       readFile: vi.fn(),
+      readCultureFile: vi.fn(),
     };
     const program = createProgram({ rigDeps });
     program.exitOverride();

@@ -547,6 +547,39 @@ describe("the guard holds on the loader, resume-guidance, orchestrator and plan-
     }, 10000);
   });
 
+  describe("RESUME guidance: the gap text carries the guard's reason", () => {
+    // An 'auto' culture entry the guard refuses becomes an unresolved item; restoreMissingGuidance must report
+    // it as `<blockId>: <guard reason>`, not the generic "can't be read" text a plain unreadable file gets.
+    const gapFor = async (swap: (real: string, outside: string) => void) => {
+      const { f, real, row } = await added();
+      const snap = snapshot(row);
+      snap.resolvedStartupFiles = snap.resolvedStartupFiles.map((e: ResolvedStartupFile) => (e.guardedRead ? { ...e, deliveryHint: "auto" } : e));
+      swap(real, f.outside);
+      fs.rmSync(nodePath.join(f.addCwd, "CLAUDE.md"), { force: true });
+      const ops = { exists: (p: string) => fs.existsSync(p), readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), cwd: f.addCwd };
+      const guidance = seatGuidance(snap as never, f.addCwd, null, ops.exists, ops.readFile)!;
+      const item = guidance.items.find((i) => i.sourcePath === real)!;
+      const repaired = restoreMissingGuidance(guidance, ops);
+      f.db.close();
+      return { item, repaired };
+    };
+
+    it("an oversize swap: the gap is the item's blockId and the guard's own over-the-limit message", async () => {
+      const { item, repaired } = await gapFor((real) => fs.writeFileSync(real, BIG("# SKILL\n")));
+      expect(item.unresolved).toBe(true);
+      expect(repaired.gaps).toEqual([`${item.blockId}: ${item.unresolvedReason}`]);
+      expect(repaired.gaps[0]).toMatch(/is \d+ bytes, over the 262144-byte limit for a culture file/);
+      expect(repaired.gaps[0]).not.toContain("can't be read");
+    });
+
+    it("a hard-linked swap: a different reason yields a different gap (the text is derived, not constant)", async () => {
+      const { item, repaired } = await gapFor((real, outside) => fs.linkSync(real, nodePath.join(outside, "alias2.md")));
+      expect(repaired.gaps).toEqual([`${item.blockId}: ${item.unresolvedReason}`]);
+      expect(repaired.gaps[0]).toMatch(/has 2 hard links/);
+      expect(repaired.gaps[0]).not.toMatch(/over the/);
+    });
+  });
+
   describe("RESUME guidance: auto classification of an oversize file", () => {
     it("an 'auto' culture entry whose file was swapped for an oversize '# SKILL' file is reported unresolved, not classified from its content", async () => {
       const { f, real, row } = await added();

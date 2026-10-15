@@ -31,7 +31,7 @@ import nodePath from "node:path";
 export const CULTURE_FILE_MAX_BYTES = 256 * 1024;
 
 export type CultureFileCheck =
-  | { ok: true; realPath: string; bytes: number; content: string }
+  | { ok: true; realPath: string; bytes: number; content: string; raw: Buffer }
   | { ok: false; reason: "not_found" | "not_regular_file" | "hard_linked" | "too_large" | "unreadable" | "changed"; message: string };
 
 /**
@@ -85,7 +85,12 @@ export function checkCultureFile(
     if (!same) {
       return { ok: false, reason: "changed", message: `culture file "${requested}" changed while it was being checked (${realPath}); refusing, retry once the file is stable` };
     }
-    return { ok: true, realPath, bytes: n, content: buf.subarray(0, n).toString("utf-8") };
+    // `raw` is the exact guarded bytes, for a caller that copies the file verbatim (bundle create) and must
+    // not round-trip them through a UTF-8 string.
+    // Buffer.from(view) copies, but a small Buffer may still be a slice of Node's shared buffer pool: use `raw` as a
+    // Buffer (length, equals, write it out), never through `raw.buffer`, which is the whole pool.
+    const raw = Buffer.from(buf.subarray(0, n));
+    return { ok: true, realPath, bytes: n, content: raw.toString("utf-8"), raw };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
