@@ -376,6 +376,63 @@ describe("BootstrapOrchestrator", () => {
     });
   });
 
+  // project_rig is a pod-format key, projected only by `rig up --cwd` on a pod spec. A flat (legacy) spec
+  // carrying it used to launch unprojected through every orchestrator legacy branch (rig up <file>, MCP rig_up
+  // via /api/up, and the v1 .rigbundle branch); plan mode reported "planned" with no error.
+  describe("flat spec with project_rig", () => {
+    const FLAT_PROJECT_RIG = SIMPLE_SPEC_YAML.replace("name: test-rig\n", "name: test-rig\nproject_rig: true\n");
+    const flatOrchestrator = (rigBundleSpecPath?: string) => {
+      const instantiator = createMockInstantiator(db);
+      const instantiate = vi.spyOn(instantiator, "instantiate");
+      const orch = buildOrchestrator({ instantiator });
+      if (rigBundleSpecPath) {
+        // v1 bundle branch: the manifest peek fails on a non-archive and falls through to the legacy resolver.
+        (orch as any).deps.bundleSourceResolver = {
+          resolve: async () => ({ specPath: rigBundleSpecPath, tempDir: path.dirname(rigBundleSpecPath), packageRefMap: {}, manifest: {} }),
+          cleanup: () => {},
+        };
+      }
+      return { orch, instantiate };
+    };
+
+    it.each(["apply", "plan"] as const)("rig up <flat file> (%s) is refused, pointing to the pod format, and launches nothing", async (mode) => {
+      const project = path.join(tmpDir, "flatproj");
+      fs.mkdirSync(project);
+      const { orch, instantiate } = flatOrchestrator();
+      const result = await orch.bootstrap({ mode, sourceRef: writeSpec(FLAT_PROJECT_RIG), cwdOverride: project });
+      expect(result.status).toBe("failed");
+      expect(result.errors.join("\n")).toMatch(/project_rig.*pod/);
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig" });
+      expect(instantiate).not.toHaveBeenCalled();
+    });
+
+    it.each(["apply", "plan"] as const)("the v1 .rigbundle branch (%s) refuses it too and launches nothing", async (mode) => {
+      const { orch, instantiate } = flatOrchestrator(writeSpec(FLAT_PROJECT_RIG));
+      const result = await orch.bootstrap({ mode, sourceRef: path.join(tmpDir, "not-a-bundle.rigbundle"), sourceKind: "rig_bundle" });
+      expect(result.status).toBe("failed");
+      expect(result.errors.join("\n")).toMatch(/project_rig.*pod/);
+      expect(result.stages.find((s) => s.stage === "resolve_spec")?.detail).toMatchObject({ code: "project_rig" });
+      expect(instantiate).not.toHaveBeenCalled();
+    });
+
+    it("an invalid flat spec with project_rig reports its validation errors first, as import does", async () => {
+      const invalid = FLAT_PROJECT_RIG.replace("runtime: claude-code", "runtime: not-a-runtime");
+      const { orch, instantiate } = flatOrchestrator();
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(invalid) });
+      expect(result.status).toBe("failed");
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.join("\n")).not.toMatch(/project_rig/);
+      expect(instantiate).not.toHaveBeenCalled();
+    });
+
+    it.each([["no flag", ""], ["project_rig: false", "project_rig: false\n"]])("a flat spec with %s still launches (control)", async (_label, flag) => {
+      const { orch, instantiate } = flatOrchestrator();
+      const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(SIMPLE_SPEC_YAML.replace("name: test-rig\n", `name: test-rig\n${flag}`)) });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      expect(instantiate).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // T1: Plan mode returns plan, 0 bootstrap_actions rows
   it("plan mode returns plan with zero bootstrap_actions rows", async () => {
     const specPath = writeSpec(SIMPLE_SPEC_YAML);

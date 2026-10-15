@@ -560,6 +560,80 @@ describe("Rigspec import routes (pod-aware dual-stack)", () => {
     expect(body.ready).toBe(true);
   });
 
+  // Invalid pod spec + project_rig: import reports the validation errors first; preflight must too, or the
+  // user fixes the project-rig error, then meets the validation errors in a second round.
+  it("POST /api/rigs/import/preflight reports an invalid project_rig spec's validation errors, as import does", async () => {
+    const invalid = projectRigYaml("project_rig: true\n").replace("agent_ref: \"builtin:terminal\", ", "");
+    const headers = { "Content-Type": "text/plain", "X-Rig-Root": "/tmp" };
+    const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers, body: invalid });
+    const imp = await app.request("/api/rigs/import", { method: "POST", headers, body: invalid });
+    const preBody = await pre.json();
+    const impBody = await imp.json();
+    expect(imp.status).toBe(400);
+    expect(impBody.errors.length).toBeGreaterThan(0);
+    expect(impBody.errors.join("\n")).not.toContain("is a project rig");
+    expect(preBody.ready).toBe(false);
+    expect(preBody.errors).toEqual(impBody.errors);
+  });
+
+  // import with X-Cwd-Override does NOT project the spec (only `rig up --cwd` does), so it still refuses;
+  // preflight must agree and not green-light the spec merely because a cwd override is present.
+  it("a project_rig spec is refused by preflight AND import even with X-Cwd-Override (neither projects)", async () => {
+    const headers = { "Content-Type": "text/plain", "X-Rig-Root": "/tmp", "X-Cwd-Override": "/tmp" };
+    const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers, body: projectRigYaml("project_rig: true\n") });
+    const preBody = await pre.json();
+    expect(preBody.ready).toBe(false);
+    expect(preBody.errors).toEqual(["team is a project rig: launch it with rig up <spec> --cwd <project folder>."]);
+    const imp = await app.request("/api/rigs/import", { method: "POST", headers, body: projectRigYaml("project_rig: true\n") });
+    expect(imp.status).toBe(400);
+    expect((await imp.json()).errors).toEqual(preBody.errors);
+  });
+
+  it("the missing X-Rig-Root 400 comes before the project_rig refusal", async () => {
+    const res = await app.request("/api/rigs/import/preflight", { method: "POST", headers: { "Content-Type": "text/plain" }, body: projectRigYaml("project_rig: true\n") });
+    expect(res.status).toBe(400);
+    expect((await res.json()).errors).toEqual(["X-Rig-Root header required for pod-aware specs"]);
+  });
+
+  // project_rig is a pod-format key (only the pod schema declares it, and only `rig up --cwd` projects it).
+  // A legacy flat spec carrying it ignored the flag: preflight ready:true and import launched it unprojected.
+  const flatProjectRig = VALID_YAML.replace("name: r99\n", "name: r99\nproject_rig: true\n");
+  it("a legacy flat spec with project_rig is refused by preflight AND import, pointing to the pod format", async () => {
+    const headers = { "Content-Type": "text/plain" };
+    const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers, body: flatProjectRig });
+    const preBody = await pre.json();
+    expect(preBody.ready === false || pre.status === 400).toBe(true);
+    const preErrors = preBody.errors as string[];
+    expect(preErrors.join("\n")).toMatch(/project_rig.*pod/);
+    const imp = await app.request("/api/rigs/import", { method: "POST", headers, body: flatProjectRig });
+    expect(imp.status).toBe(400);
+    expect((await imp.json()).errors).toEqual(preErrors);
+    expect(rigRepo.findRigsByName("r99")).toHaveLength(0);
+  });
+
+  // Position of the flat check relative to normalize: an invalid flat spec reports its own error first
+  // (as the pod routes report validation errors before the project-rig refusal); import and preflight agree.
+  it("an invalid legacy flat spec with project_rig reports the spec's own error, not the project_rig refusal", async () => {
+    const invalid = INVALID_YAML.replace("name: \"\"\n", "name: r99\nproject_rig: true\n");
+    const headers = { "Content-Type": "text/plain" };
+    const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers, body: invalid });
+    const imp = await app.request("/api/rigs/import", { method: "POST", headers, body: invalid });
+    const preBody = await pre.json();
+    const impBody = await imp.json();
+    expect(imp.status).toBe(400);
+    expect(impBody.errors.join("\n")).not.toMatch(/project_rig/);
+    expect(preBody.errors.join("\n")).not.toMatch(/project_rig/);
+    expect(preBody.errors).toEqual(impBody.errors);
+  });
+
+  it("a legacy flat spec without project_rig, or with project_rig: false, still passes preflight (control)", async () => {
+    for (const body of [VALID_YAML, VALID_YAML.replace("name: r99\n", "name: r99\nproject_rig: false\n")]) {
+      const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers: { "Content-Type": "text/plain" }, body });
+      const preBody = await pre.json();
+      expect(preBody.errors ?? []).toEqual([]);
+    }
+  });
+
   // T9: legacy import still works through dual-stack
   it("POST /api/rigs/import with legacy YAML still creates rig", async () => {
     const res = await app.request("/api/rigs/import", {

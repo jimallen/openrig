@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { SessionTransport, classifyPaneActivity } from "../src/domain/session-transport.js";
+import { SessionTransport, classifyPaneActivity, paneReadClause } from "../src/domain/session-transport.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
@@ -418,6 +418,33 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(r.error).not.toContain("unrecognized");
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("a stale permission_prompt hook + a pane capture that throws refuses and says the pane not read (capture_failed), not that it was read", async () => {
+    const fixedNow = new Date("2026-10-08T06:47:16.000Z");
+    seedPersonWaitingHook(fixedNow, 36_000);
+    const { sendText, sendKeys } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => { throw new Error("capture boom"); }, sendText, sendKeys }), { now: () => fixedNow });
+    const r = await t.send("dev-impl@my-rig", "hi");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_needs_input");
+    expect(r.error).toContain("(permission_prompt; latest hook, pane not read (capture_failed))");
+    expect(r.error).not.toContain("read as unknown");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  // Every unknown probe reason (census: the state:"unknown" sites of probeSessionActivity/classifyPaneActivity)
+  // split by whether any pane content was captured. no_session is unreachable through send() (the session name is
+  // always a string there), so it is pinned here at the wording function only.
+  it.each([
+    "capture_failed", "unsupported_attachment", "unsupported_runtime", "session_missing", "tmux_unavailable", "no_session",
+  ])("the refusal wording says the pane was not read for %s", (reason) => {
+    expect(paneReadClause(reason)).toBe(`pane not read (${reason})`);
+  });
+
+  it.each(["empty_capture", "no_activity_signal"])("the refusal wording says the pane was read as unknown for %s", (reason) => {
+    expect(paneReadClause(reason)).toBe(`pane read as unknown (${reason})`);
   });
 
   it("a stale permission_prompt hook + a recognized empty composer sends (no new refusal at an idle prompt)", async () => {
