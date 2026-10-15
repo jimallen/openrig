@@ -6,6 +6,7 @@
 //   pack            vendorContextPackDir(<dir>)
 //   project-swap    vendorProjectDir(<dir>), swapping <dir>/project.yaml for a symlink to <fifo> (NO writer)
 //                   right after the daemon stats it (the stat-then-read window)
+//   pack-manifest-swap  vendorContextPackDir(<dir>), swapping <dir>/manifest.yaml likewise
 //   pack-swap       vendorContextPackDir(<dir>), swapping <dir>/identity/who.md for a symlink to <fifo> likewise
 // Prints one JSON line {ok, name, message, fired}; exits 0 whenever the call returned or threw.
 import fs from "node:fs";
@@ -17,7 +18,7 @@ import { VendoredFileRefused } from "../../src/domain/vendored-file-guard.js";
 const [mode, dir, staging, fifo] = process.argv.slice(2) as [string, string, string, string | undefined];
 let fired = false;
 if (mode.endsWith("-swap")) {
-  const target = mode === "project-swap" ? path.join(dir, "project.yaml") : path.join(dir, "identity", "who.md");
+  const target = mode === "project-swap" ? path.join(dir, "project.yaml") : mode === "pack-manifest-swap" ? path.join(dir, "manifest.yaml") : path.join(dir, "identity", "who.md");
   const realStat = fs.statSync;
   (fs as { statSync: unknown }).statSync = ((p: fs.PathLike, ...rest: unknown[]) => {
     const result = (realStat as (...a: unknown[]) => unknown)(p, ...rest);

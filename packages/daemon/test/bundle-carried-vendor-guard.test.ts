@@ -329,6 +329,15 @@ describe("bundle create: carried project and context pack use the guarded reader
     }
   });
 
+  it("manifest.yaml swapped for a symlink to a FIFO with NO writer between the stat and the read does not stall (child process)", () => {
+    const fifo = path.join(outside, "pipe");
+    execFileSync("mkfifo", [fifo]);
+    const r = child("pack-manifest-swap", pack, fifo);
+    expect(r.fired).toBe(true);
+    expect(r.ok).toBe(false);
+    expect(r.refused).toBe(true);
+  });
+
   it("a declared pack file swapped for a symlink to a FIFO with NO writer between the stat and the read does not stall (child process)", () => {
     const fifo = path.join(outside, "pipe");
     execFileSync("mkfifo", [fifo]);
