@@ -756,9 +756,16 @@ export class RestoreOrchestrator {
       });
     }
     // Restore prior session statuses
+    // Each in its own try, so one failed write does not strand the sessions after it; the faults are reported together.
+    const failures: string[] = [];
     for (const sess of priorState.sessions) {
-      this.sessionRegistry.updateStatus(sess.id, sess.status);
+      try {
+        this.sessionRegistry.updateStatus(sess.id, sess.status);
+      } catch (err) {
+        failures.push(`session ${sess.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    if (failures.length > 0) throw new Error(`could not restore prior session status (${failures.join("; ")})`);
   }
 
   private computeRestorePlan(data: SnapshotData): PlanEntry[] {
@@ -854,6 +861,58 @@ export class RestoreOrchestrator {
     opts?: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[] },
     warnings?: string[],
   ): Promise<RestoreNodeResult> {
+    // One seat's THROWN error (a launcher, adapter, filesystem or database fault, as opposed to a failed launch RESULT)
+    // is that seat's failure, not the attempt's: it must not skip the seats after it or the restore.completed /
+    // restore.subset_completed event that closes the attempt.
+    const progress: SeatRestoreProgress = { launchReturned: false };
+    try {
+      return await this.restoreNodeUnisolated(entry, rigId, snapshotId, data, opts, warnings, progress);
+    } catch (err) {
+      const errors = [err instanceof Error ? err.message : String(err)];
+      console.error(`[restore] ${entry.node.logicalId}: restore threw and was isolated to this seat:`, err instanceof Error ? (err.stack ?? err.message) : err);
+      // Whether a launch HAPPENED is decided from evidence, not from whether launchNode returned: it commits the session
+      // and binding and then makes more calls before it returns, so a throw in that tail has launched a seat whose
+      // return value never arrived. A session row for this node that did not exist before clearStaleState is the proof.
+      let launchedSessionLeft = progress.launchReturned;
+      if (!launchedSessionLeft && progress.nodeId && progress.knownSessionIds) {
+        try {
+          const nodeId = progress.nodeId;
+          launchedSessionLeft = this.sessionRegistry.getSessionsForRig(rigId)
+            .some((session) => session.nodeId === nodeId && !progress.knownSessionIds!.has(session.id));
+        } catch {
+          // Cannot tell: fall back to the launch-did-not-return reading and compensate.
+        }
+      }
+      if (launchedSessionLeft) {
+        // The launched session is the current state; as for any post-launch failure it is not rolled back.
+        errors.push("the launched session was left in place (not rolled back)");
+      } else if (progress.priorState && progress.nodeId) {
+        // Nothing was launched: the seat's binding was cleared and its sessions superseded. Compensate exactly as a
+        // failed launch result does.
+        try {
+          this.restoreNodeState(progress.nodeId, progress.priorState);
+        } catch (compensationErr) {
+          errors.push(`compensation also failed: ${compensationErr instanceof Error ? compensationErr.message : String(compensationErr)}`);
+        }
+      }
+      return {
+        nodeId: progress.nodeId ?? entry.node.id,
+        logicalId: entry.node.logicalId,
+        status: "failed",
+        error: errors.join("; "),
+      };
+    }
+  }
+
+  private async restoreNodeUnisolated(
+    entry: PlanEntry,
+    rigId: string,
+    snapshotId: string,
+    data: SnapshotData,
+    opts: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[] } | undefined,
+    warnings: string[] | undefined,
+    progress: SeatRestoreProgress,
+  ): Promise<RestoreNodeResult> {
     // Compare against the live logical target without changing saved post-launch inputs.
     //
     // Two ids name a seat here and they are not interchangeable. `node.id` is the SNAPSHOT's node id: it keys only the
@@ -873,6 +932,7 @@ export class RestoreOrchestrator {
       };
     }
     const nodeId = liveNode.id;
+    progress.nodeId = nodeId;
 
     // OPR.0.5.7.1 (bought ordering blocker, baton 0efd154d): D1 present-map
     // ambiguity must be DETECTED before any continuity_state short-circuit —
@@ -956,6 +1016,9 @@ export class RestoreOrchestrator {
 
     // Capture prior state for compensation
     const priorState = this.captureNodeState(nodeId, rigId);
+    progress.priorState = priorState;
+    // Every session row the seat has now, superseded and exited included: a row outside this set is one the launch made.
+    progress.knownSessionIds = new Set(this.sessionRegistry.getSessionsForRig(rigId).filter((s) => s.nodeId === nodeId).map((s) => s.id));
 
     // Clear stale state so NodeLauncher doesn't see already_bound
     this.clearStaleState(nodeId, rigId);
@@ -1033,6 +1096,7 @@ export class RestoreOrchestrator {
 
     // Attempt launch — compensate ONLY if launch itself fails
     const launchResult = await this.nodeLauncher.launchNode(rigId, node.logicalId, launchOpts);
+    progress.launchReturned = true;
     if (!launchResult.ok) {
       // Launch failed — restore prior state (compensating action)
       this.restoreNodeState(nodeId, priorState);
@@ -2030,6 +2094,18 @@ export class RestoreOrchestrator {
       return false;
     }
   }
+}
+
+/** How far one seat's restore got, so a thrown error can be compensated by what had been done. */
+interface SeatRestoreProgress {
+  /** The LIVE node id, once found. */
+  nodeId?: string;
+  /** The seat's binding and sessions as they were before clearStaleState; set just before it runs. */
+  priorState?: { binding: import("./types.js").Binding | null; sessions: { id: string; status: string }[] };
+  /** Ids of every session row the seat had before clearStaleState; set with priorState. */
+  knownSessionIds?: Set<string>;
+  /** True once nodeLauncher.launchNode has returned (ok or not). */
+  launchReturned: boolean;
 }
 
 interface PlanEntry {
