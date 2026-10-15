@@ -395,7 +395,8 @@ describe("PodBundleAssembler", () => {
   });
 
   it.each([false, true])("keeps in-root symlinks with a symlinked rig root: %s", (aliasRoot) => {
-    const root = nodeFs.mkdtempSync(nodePath.join(tmpdir(), "pod-containment-"));
+    // realpath'd: agent_refs resolve against the rig's real location (macOS tmpdir is a symlink).
+    const root = nodeFs.realpathSync(nodeFs.mkdtempSync(nodePath.join(tmpdir(), "pod-containment-")));
     try {
       const actualRoot = nodePath.join(root, "rig");
       nodeFs.mkdirSync(actualRoot);
@@ -407,6 +408,9 @@ describe("PodBundleAssembler", () => {
       const fs = mockFs({
         [`${rigRoot}/rig.yaml`]: rigSpecYaml(spec),
         [`${rigRoot}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+        // agent_refs resolve against the rig's REAL location (the guard realpaths a symlinked rig root), so the
+        // in-memory persona is also present there.
+        [`${actualRoot}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
         [`${rigRoot}/inside.md`]: "# Local context",
       });
       Object.assign(fs, { realpath: nodeFs.realpathSync });
