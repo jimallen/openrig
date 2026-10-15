@@ -5069,4 +5069,175 @@ describe("RestoreOrchestrator", () => {
       expect(delivered).toEqual([]);
     });
   });
+
+  // A throw out of one seat's restore (a launcher, adapter or database error, not a failed launch RESULT) must not
+  // abort the whole attempt: the seat is compensated like a failed launch, reported failed, and the rest go on.
+  describe("per-seat isolation of a thrown error", () => {
+    function seedTwoSeats() {
+      const snap = seedRigAndSnapshot({
+        nodes: [
+          { logicalId: "seat-a", role: "worker", runtime: "claude-code" },
+          { logicalId: "seat-b", role: "worker", runtime: "claude-code" },
+        ],
+        edges: [],
+        withBinding: "seat-a",
+      });
+      const aId = snap.data.nodes.find((n) => n.logicalId === "seat-a")!.id;
+      const bId = snap.data.nodes.find((n) => n.logicalId === "seat-b")!.id;
+      // Seat A's prior state: a surface on its binding and an idle (not running) session row.
+      sessionRegistry.updateBinding(aId, { cmuxSurface: "surface-prior-a" });
+      const priorSession = sessionRegistry.registerSession(aId, "r99-seat-a-prior");
+      sessionRegistry.updateStatus(priorSession.id, "idle");
+      return { snap, aId, bId, priorSessionId: priorSession.id };
+    }
+
+    function throwingLauncherFor(orch: RestoreOrchestrator, logicalId: string, message: string) {
+      const launcher = (orch as unknown as { nodeLauncher: NodeLauncher }).nodeLauncher;
+      const real = launcher.launchNode.bind(launcher);
+      return vi.spyOn(launcher, "launchNode").mockImplementation(async (rigId, id, opts) => {
+        if (id === logicalId) throw new Error(message);
+        return real(rigId, id, opts);
+      });
+    }
+
+    function eventTypes(rigId: string): string[] {
+      return (db.prepare("SELECT type FROM events WHERE rig_id = ? ORDER BY seq").all(rigId) as { type: string }[]).map((r) => r.type);
+    }
+
+    it("restore: a launcher throw on seat A compensates A, still restores B, and ends with restore.completed and a true receipt", async () => {
+      const { snap, aId, bId, priorSessionId } = seedTwoSeats();
+      const tmux = mockTmux();
+      const orch = createOrchestrator({ tmux });
+      const launchSpy = throwingLauncherFor(orch, "seat-a", "launcher exploded on A");
+      let attemptId = 0;
+
+      const result = await orch.restore(snap.id, { onAttemptStarted: (id) => { attemptId = id; } });
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      const a = result.result.nodes.find((n) => n.logicalId === "seat-a")!;
+      const b = result.result.nodes.find((n) => n.logicalId === "seat-b")!;
+      expect(a).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("launcher exploded on A") });
+      expect(b.nodeId).toBe(bId);
+      expect(b.status).not.toBe("failed");
+      expect(launchSpy.mock.calls.map((c) => c[1])).toEqual(["seat-a", "seat-b"]);
+      expect(result.result.rigResult).toBe("partially_restored");
+
+      // A's prior binding and session status are back; B holds a live binding.
+      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(priorSessionId)).toEqual({ status: "idle" });
+      expect(sessionRegistry.getBindingForNode(bId)).not.toBeNull();
+
+      const types = eventTypes(snap.rigId);
+      expect(types.filter((t) => t === "restore.started")).toHaveLength(1);
+      expect(types.filter((t) => t === "restore.completed")).toHaveLength(1);
+
+      const receipt = deriveRestoreAttemptReceipt(db, snap.rigId, attemptId);
+      expect(receipt.ok).toBe(true);
+      if (!receipt.ok) return;
+      expect(receipt.currentNodes.find((n) => n.nodeId === aId)).toMatchObject({ status: "failed" });
+      expect(receipt.currentNodes.find((n) => n.nodeId === bId)?.status).not.toBe("failed");
+      expect(receipt.currentIntendedSetVerdict).toBe("partially_restored");
+      const inventory = getNodeInventory(db, snap.rigId);
+      expect(inventory.find((e) => e.logicalId === "seat-a")).toMatchObject({ restoreOutcome: "failed" });
+      expect(inventory.find((e) => e.logicalId === "seat-b")?.restoreOutcome).not.toBe("failed");
+    });
+
+    it("restore: when the compensation itself throws, both errors are reported, A is failed, and B is still restored", async () => {
+      const { snap, aId, bId, priorSessionId } = seedTwoSeats();
+      const orch = createOrchestrator();
+      throwingLauncherFor(orch, "seat-a", "launcher exploded on A");
+      const realUpdateStatus = sessionRegistry.updateStatus.bind(sessionRegistry);
+      vi.spyOn(sessionRegistry, "updateStatus").mockImplementation((id: string, status: string) => {
+        // Only the compensation restores the prior "idle" status; clearing stale state writes "superseded".
+        if (id === priorSessionId && status === "idle") throw new Error("compensation exploded on A");
+        return realUpdateStatus(id, status);
+      });
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      const a = result.result.nodes.find((n) => n.logicalId === "seat-a")!;
+      expect(a.nodeId).toBe(aId);
+      expect(a.status).toBe("failed");
+      expect(a.error).toContain("launcher exploded on A");
+      expect(a.error).toContain("compensation exploded on A");
+      const b = result.result.nodes.find((n) => n.logicalId === "seat-b")!;
+      expect(b.nodeId).toBe(bId);
+      expect(b.status).not.toBe("failed");
+      expect(result.result.rigResult).toBe("partially_restored");
+      expect(eventTypes(snap.rigId).filter((t) => t === "restore.completed")).toHaveLength(1);
+    });
+
+    it("restore: every seat throwing yields rigResult failed, never success, and still completes", async () => {
+      const { snap } = seedTwoSeats();
+      const orch = createOrchestrator();
+      const launcher = (orch as unknown as { nodeLauncher: NodeLauncher }).nodeLauncher;
+      vi.spyOn(launcher, "launchNode").mockRejectedValue(new Error("everything exploded"));
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes.map((n) => n.status)).toEqual(["failed", "failed"]);
+      expect(result.result.rigResult).toBe("failed");
+      expect(eventTypes(snap.rigId).filter((t) => t === "restore.completed")).toHaveLength(1);
+    });
+
+    it("subset launch: a launcher throw on seat A compensates A, still launches B, and records restore.subset_completed", async () => {
+      const { snap, aId, bId, priorSessionId } = seedTwoSeats();
+      const orch = createOrchestrator();
+      throwingLauncherFor(orch, "seat-a", "launcher exploded on A");
+
+      const result = await orch.launchNodeSubset(snap.rigId, ["seat-a", "seat-b"], { snapshotId: snap.id });
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      const a = result.launched!.find((n) => n.logicalId === "seat-a")!;
+      const b = result.launched!.find((n) => n.logicalId === "seat-b")!;
+      expect(a).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("launcher exploded on A") });
+      expect(b.nodeId).toBe(bId);
+      expect(b.status).not.toBe("failed");
+      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+      expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(priorSessionId)).toEqual({ status: "idle" });
+      expect(eventTypes(snap.rigId).filter((t) => t === "restore.subset_completed")).toHaveLength(1);
+    });
+
+    it("restore: a throw AFTER the launch returned fails the seat but does not roll back the launched session", async () => {
+      const { snap, aId, bId } = seedTwoSeats();
+      const orch = createOrchestrator();
+      const real = (orch as unknown as { postLaunchRestore: (...args: unknown[]) => Promise<unknown> }).postLaunchRestore.bind(orch);
+      vi.spyOn(orch as unknown as { postLaunchRestore: (...args: unknown[]) => Promise<unknown> }, "postLaunchRestore")
+        .mockImplementation(async (entry: unknown, nodeId: unknown, ...rest: unknown[]) => {
+          if (nodeId === aId) throw new Error("post-launch exploded on A");
+          return real(entry, nodeId, ...rest);
+        });
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-a")).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("post-launch exploded on A") });
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-b")).toMatchObject({ nodeId: bId });
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.status).not.toBe("failed");
+      // The launched session stays the current state: the prior binding was NOT put back over it.
+      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).not.toBe("surface-prior-a");
+      expect(sessionRegistry.getBindingForNode(aId)?.tmuxSession).toBeTruthy();
+      expect(result.result.rigResult).toBe("partially_restored");
+    });
+
+    it("restore: a thrown seat that was removed and grown back is reported by its LIVE node id", async () => {
+      const { snap, oldNode, newNode } = snapshotThenRegrow("regrown-throw-rig");
+      const orch = createOrchestrator();
+      throwingLauncherFor(orch, "dev.impl", "launcher exploded on regrown seat");
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "failed", error: expect.stringContaining("launcher exploded on regrown seat") })]);
+      expect(result.result.nodes[0]!.nodeId).not.toBe(oldNode.id);
+    });
+  });
 });
