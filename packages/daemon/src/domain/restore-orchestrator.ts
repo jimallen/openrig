@@ -497,12 +497,20 @@ export class RestoreOrchestrator {
     const unmatchedIds = logicalIds.filter((id) => !matchedIds.has(id));
     if (targetNodes.length === 0) return { ok: false, code: "no_matching_nodes", message: `No nodes match logical ids: ${logicalIds.join(", ")}` };
 
+    // The targets come from the SNAPSHOT; every liveness check and lifecycle claim is about the LIVE seat, found by
+    // logical id. A seat removed and grown back keeps its logical id but has a new node id, so the snapshot's id names
+    // nothing live: matched on it, the regrown target is mistaken for a non-target (and held) and its live session is
+    // not seen. A target with no live node (removed, not grown back) has no sessions; restore reports it failed.
+    const liveNodeOf = (node: { logicalId: string }) => allNodes.find((current) => current.logicalId === node.logicalId);
     const nonTargetNodes = opts.nonTargetMode === "detach_and_hold"
-      ? allNodes.filter((node) => !targetNodes.some((target) => target.id === node.id))
+      ? allNodes.filter((node) => !targetNodes.some((target) => target.logicalId === node.logicalId))
       : [];
 
     const guard = this.tmuxAdapter.deliveryGuard;
-    const guardedIds = [...targetNodes, ...nonTargetNodes].map(node => node.id);
+    const guardedIds = [
+      ...targetNodes.flatMap((node) => liveNodeOf(node)?.id ?? []),
+      ...nonTargetNodes.map(node => node.id),
+    ];
     if (guard && guardedIds.some(id => !guard.ownsLifecycle(id))) {
       return guard.lifecycle(guardedIds, () => this.launchNodeTargets(rigId, logicalIds, opts));
     }
@@ -517,8 +525,10 @@ export class RestoreOrchestrator {
     const subsetWarnings: string[] = [];
 
     for (const node of targetNodes) {
-      const sessions = this.sessionRegistry.getSessionsForRig(rigId)
-        .filter((s) => s.nodeId === node.id && s.status === "running");
+      const liveTarget = liveNodeOf(node);
+      const liveId = liveTarget?.id ?? null;
+      const sessions = liveId === null ? [] : this.sessionRegistry.getSessionsForRig(rigId)
+        .filter((s) => s.nodeId === liveId && s.status === "running");
 
       let isLive = false;
       let isUnknown = false;
@@ -531,9 +541,9 @@ export class RestoreOrchestrator {
             // A preserved shell is not a running agent. Reuse the process-lineage
             // check's positive idle-shell evidence; opaque wrappers stay untouched.
             isLive = true;
-            const binding = this.sessionRegistry.getBindingForNode(node.id);
+            const binding = this.sessionRegistry.getBindingForNode(liveId!);
             const pane = binding?.tmuxSession === session.sessionName ? binding.tmuxPane : null;
-            const runtime = allNodes.find(current => current.id === node.id)?.runtime ?? node.runtime;
+            const runtime = liveTarget?.runtime ?? node.runtime;
             // Launch needs consistent positive evidence: both samples idle with the same fingerprint, and the
             // bound pane still in this session (a recycled pane id could name another session's shell).
             if (pane && ["claude-code", "codex", "pi", "omp"].includes(runtime ?? "")
@@ -553,7 +563,7 @@ export class RestoreOrchestrator {
       }
 
       if (isLive) {
-        alreadyRunning.push({ nodeId: node.id, logicalId: node.logicalId });
+        alreadyRunning.push({ nodeId: liveId ?? node.id, logicalId: node.logicalId });
         continue;
       }
       if (idleSession) {
@@ -561,15 +571,14 @@ export class RestoreOrchestrator {
         // Choosing a fresh versus resumed conversation belongs to the person. Stopping closes the pane, so
         // stop-then-launch is offered as a resume only when this snapshot can resume the seat; otherwise the
         // message says what that launch would do instead. The command pins the snapshot that was checked.
-        const liveNode = allNodes.find(current => current.logicalId === node.logicalId);
-        const outcome = snapshotLaunchOutcome(snapshot.data, node.id, liveNode ? liveNode.runtime : node.runtime);
+        const outcome = snapshotLaunchOutcome(snapshot.data, node.id, liveTarget ? liveTarget.runtime : node.runtime);
         const launchCommand = `rig launch ${rigId} ${node.logicalId} --snapshot-id ${snapshot.id}`;
         const relaunch = outcome.kind === "resume"
           ? `To resume its conversation: rig seat stop ${idleSession} --reason "<why>", then ${launchCommand} (this closes the pane, and launch resumes from that snapshot's resume token). `
           : `Stopping it and launching from snapshot ${snapshot.id} won't resume this conversation: that snapshot ${outcome.why}, so launch would `
             + `${outcome.kind === "fresh" ? "start a fresh conversation" : outcome.kind === "decision" ? "start nothing and ask for a decision" : "fail"}. `;
         launched.push({
-          nodeId: node.id, logicalId: node.logicalId, status: "attention_required",
+          nodeId: liveId ?? node.id, logicalId: node.logicalId, status: "attention_required",
           error: `Session alive, agent not running for '${node.logicalId}': tmux session '${idleSession}' holds an idle shell, and its pane and history are preserved. `
             + `The person chooses how to bring the agent back. ${relaunch}`
             + `To start a blank occupant: rig seat launch ${idleSession} --fresh --stop --reason "<why>". `
