@@ -119,6 +119,7 @@ describe("RestoreOrchestrator", () => {
     pi?: PiResumeAdapter;
     omp?: OmpResumeAdapter;
     listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
+    serviceOrchestrator?: import("../src/domain/service-orchestrator.js").ServiceOrchestrator;
   }) {
     const tmux = opts?.tmux ?? mockTmux();
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
@@ -130,6 +131,7 @@ describe("RestoreOrchestrator", () => {
       piResume: opts?.pi,
       ompResume: opts?.omp,
       listProcesses: opts?.listProcesses,
+      serviceOrchestrator: opts?.serviceOrchestrator,
     });
   }
 
@@ -2621,6 +2623,56 @@ describe("RestoreOrchestrator", () => {
     expect(rebindLifecycle).not.toHaveBeenCalled();
     expect(tmux.createSession).not.toHaveBeenCalled();
     expect(claude.resume).not.toHaveBeenCalled();
+  });
+
+  it("pod-aware: the continuity consult runs for a regrown seat that joined a pod the snapshot's seat was not in", async () => {
+    // The snapshot's seat had no pod; the regrown seat has one, with a restore already in progress for it.
+    const { snap, newNode } = snapshotThenRegrow("regrown-joined-rig", { livePodId: "pod-joined", runtime: "claude-code" });
+    db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, ?)").run("pod-joined", newNode.id, "restoring");
+    const tmux = mockTmux();
+
+    const result = await createOrchestrator({ tmux }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "fresh" })]);
+    expect(tmux.createSession).not.toHaveBeenCalled();
+  });
+
+  // The roster and plan payloads are display-only (the receipt joins on them), but they name a regrown seat by its live id
+  // wherever they are emitted, not only in the main result.
+  it("a restore refused by pre-validation names the regrown seat in its roster by the live node id", async () => {
+    // A checkpoint with no cwd to write it to is a blocker; nothing is mutated.
+    const { snap, newNode } = snapshotThenRegrow("regrown-blocked-rig", { checkpoint: true });
+
+    const result = await createOrchestrator().restore(snap.id);
+
+    expect(result).toMatchObject({ ok: false, code: "pre_restore_validation_failed" });
+    if (result.ok) return;
+    expect(result.result!.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+  });
+
+  it("a restore whose services fail to boot records the regrown seat in its roster by the live node id", async () => {
+    const { rig, snap, newNode } = snapshotThenRegrow("regrown-services-rig");
+    rigRepo.setServicesRecord(rig.id, { kind: "compose", specJson: "{}", rigRoot: "/rig-root", composeFile: "compose.yaml" });
+    const serviceOrchestrator = { boot: vi.fn(async () => ({ ok: false as const, error: "boom" })) } as unknown as import("../src/domain/service-orchestrator.js").ServiceOrchestrator;
+
+    const result = await createOrchestrator({ serviceOrchestrator }).restore(snap.id, { fsOps: { exists: () => true } });
+
+    expect(result).toMatchObject({ ok: false, code: "service_boot_failed" });
+    const completed = db.prepare("SELECT payload FROM events WHERE type = 'restore.completed' ORDER BY seq DESC LIMIT 1").get() as { payload: string };
+    expect(JSON.parse(completed.payload).result.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+  });
+
+  it("the subset plan keeps the snapshot's node id for a target that was removed and not grown back", async () => {
+    const { rig, snap, oldNode, newNode } = snapshotThenRegrow("removed-plan-rig");
+    removeRegrownSeat(newNode.id);
+
+    const plan = createOrchestrator().planNodeSubset(rig.id, ["dev.impl"], { snapshotId: snap.id });
+
+    expect(plan).toMatchObject({ ok: true, planOnly: true });
+    if (!plan.ok) return;
+    expect(plan.targetNodes).toEqual([{ nodeId: oldNode.id, logicalId: "dev.impl" }]);
   });
 
   it("pod-aware: the continuity consult uses the LIVE seat's pod when the regrown seat moved pods", async () => {

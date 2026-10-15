@@ -1,11 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
-it("probes exact native session names so a live prefix neighbor cannot hide a detached seat", () => {
+// The fixture imports the BUILT daemon (packages/daemon/dist). In a tree without a build it would die with
+// ERR_MODULE_NOT_FOUND, which says nothing about the probe, so the test is skipped there: run the daemon build first.
+const hasDaemonBuild = existsSync(fileURLToPath(new URL("../dist/adapters/tmux.js", import.meta.url)));
+
+it.skipIf(!hasDaemonBuild)("probes exact native session names so a live prefix neighbor cannot hide a detached seat (needs packages/daemon/dist; skipped without a daemon build)", () => {
   const home = mkdtempSync(join(tmpdir(), "openrig-exact-probe-"));
   try {
     const result = spawnSync(process.execPath, [
