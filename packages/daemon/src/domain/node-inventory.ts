@@ -469,7 +469,7 @@ function mapProjectionEntries(entries: unknown[]): Array<{ id: string; category:
  * fail-open discipline: turning a stale verdict into ABSENT never down-ranks;
  * only a matching mismatch/pane_missing does.
  */
-function applicableVerdict(
+export function applicableVerdict(
   verdict: SeatIdentityVerdict | null,
   row: Pick<InventoryRow, "session_id" | "session_name" | "session_created_at" | "binding_tmux_pane" | "handover_at">,
 ): SeatIdentityVerdict | null {

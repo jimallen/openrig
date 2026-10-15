@@ -4,6 +4,7 @@ import type { SessionRegistry } from "./session-registry.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { findSessionNameMatches } from "./session-name-matches.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
+import { applicableVerdict } from "./node-inventory.js";
 import { identityVerdictConfirmsSessionMissing, type SeatIdentityVerdict } from "./types.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
 
@@ -40,9 +41,10 @@ export interface WhoamiResult {
      * names a session and that session is not known to be down. False when the
      * peer has no session, its session is registered but not running (still
      * starting, exited, detached, superseded), or the seat identity reconciler's
-     * last verdict confirmed the tmux session is gone although the row still
-     * says running (killed out-of-band). That verdict is at most one reconcile
-     * poll old (5s); whoami does not probe tmux itself. `sessionName` is unchanged and can
+     * last verdict, still applicable to the current session, confirmed the tmux
+     * session is gone although the row still says running (killed out-of-band).
+     * That verdict is at most one reconcile poll old (5s); whoami does not probe
+     * tmux itself. `sessionName` is unchanged and can
      * still carry the last known name; the `commands` examples only use reachable
      * peers.
      */
@@ -357,7 +359,7 @@ export class WhoamiService {
       resolvedBy,
       identity,
       peers,
-      peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state; peers[].reachable = the peer names a session that is running and, per the seat identity reconciler's last verdict (refreshed every ~5s, not a live tmux probe), not confirmed gone, so a tmux session killed within the last few seconds can still read true",
+      peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state; peers[].reachable = the peer names a session that is running and, per the seat identity reconciler's last verdict (refreshed every ~5s, not a live tmux probe), not confirmed gone, so a tmux session killed within the last ~5s can still read true, and a stale verdict (older than the current session, other pane or pre-handover) is ignored so a relaunched peer is not hidden",
       edges: { outgoing, incoming },
       transcript,
       commands: { sendExamples, captureExamples },
@@ -443,8 +445,22 @@ export class WhoamiService {
     if (sessionName === null) return false;
     // A `running` row is bookkeeping: tmux can lose the session out-of-band. The identity reconciler already
     // lists tmux sessions each poll and persists session_missing for running seats; reuse it, but only when
-    // it was recorded for the very session name being advertised.
-    if (verdict !== null && verdict.sessionName === sessionName && identityVerdictConfirmsSessionMissing(verdict)) return false;
+    // the verdict still applies to the seat's current occupant (same rule as node-inventory's
+    // applicableVerdict: session name, registered pane, observation after the session was created and after
+    // any handover). A stale verdict fails open: it never hides a relaunched peer.
+    if (verdict !== null && verdict.sessionName === sessionName) {
+      const current = this.db.prepare(`
+        SELECT s.id as session_id, s.session_name, s.created_at as session_created_at,
+               b.tmux_pane as binding_tmux_pane, n.handover_at
+        FROM nodes n
+        LEFT JOIN sessions s ON s.node_id = n.id
+          AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
+        LEFT JOIN bindings b ON b.node_id = n.id
+        WHERE n.id = ?
+      `).get(nodeId) as { session_id: string | null; session_name: string | null; session_created_at: string | null; binding_tmux_pane: string | null; handover_at: string | null } | undefined;
+      if (current && current.session_name !== null
+        && identityVerdictConfirmsSessionMissing(applicableVerdict(verdict, { ...current, session_name: current.session_name }))) return false;
+    }
     const row = this.db
       .prepare("SELECT status FROM sessions WHERE node_id = ? AND session_name = ? ORDER BY id DESC LIMIT 1")
       .get(nodeId, sessionName) as { status: string } | undefined;

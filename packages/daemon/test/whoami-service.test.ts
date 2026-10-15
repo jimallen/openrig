@@ -251,8 +251,9 @@ describe("WhoamiService", () => {
       function verdict(nodeId: string, sessionName: string, over: Partial<SeatIdentityVerdict>): SeatIdentityVerdict {
         return {
           nodeId, sessionName, verdict: "pane_missing", evidenceSource: "tmux_session", reason: "session_missing",
-          evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
-          observedAt: "2026-10-14T00:00:00.000Z", ...over,
+          // Far-future observedAt: newer than any session row created by the fixture (never wall clock).
+          evidence: { registeredPane: null, observedPid: null, observedCommand: null, matchedLayer: null },
+          observedAt: "2099-01-01T00:00:00.000Z", ...over,
         };
       }
 
@@ -296,11 +297,85 @@ describe("WhoamiService", () => {
         expect(result.peers.find((p) => p.logicalId === "dev.relaunched")!.reachable).toBe(true);
       });
 
+      it("a session_missing verdict for the newest row's session does not hide the peer when the binding advertises a different, running session", () => {
+        const { rig, self } = seedSelfWithRig();
+        const node = seedPeer("dev.split", rig.id, [
+          { name: "dev-split@my-rig", status: "running" },
+          { name: "dev-split-old@my-rig", status: "running" },
+        ], "dev-split@my-rig");
+        new SeatIdentityStore(db).upsert(verdict(node.id, "dev-split-old@my-rig", {}));
+
+        const peer = svc.resolve({ nodeId: self.id })!.peers.find((p) => p.logicalId === "dev.split")!;
+
+        expect(peer.sessionName).toBe("dev-split@my-rig");
+        expect(peer.reachable).toBe(true);
+      });
+
+      it("stays reachable on every pane-level verdict that leaves the session alive (pane_pid_gone, binding_pane_missing, pane_ambiguous)", () => {
+        const { rig, self } = seedSelfWithRig();
+        const kinds: Array<[string, Partial<SeatIdentityVerdict>]> = [
+          ["pidgone", { verdict: "pane_missing", reason: "pane_pid_gone", evidenceSource: "pane_process" }],
+          ["nobind", { verdict: "binding_absent", reason: "binding_pane_missing" }],
+          ["ambig", { verdict: "mismatch", reason: "pane_ambiguous", evidenceSource: "pane_process" }],
+        ];
+        for (const [name, over] of kinds) {
+          const node = seedPeer(`dev.${name}`, rig.id, [{ name: `dev-${name}@my-rig`, status: "running" }], `dev-${name}@my-rig`);
+          new SeatIdentityStore(db).upsert(verdict(node.id, `dev-${name}@my-rig`, over));
+        }
+
+        const result = svc.resolve({ nodeId: self.id })!;
+
+        for (const [name] of kinds) expect(result.peers.find((p) => p.logicalId === `dev.${name}`)!.reachable).toBe(true);
+      });
+
+      it("a session_missing verdict older than the current session (killed, then relaunched under the same name) does not hide the peer", () => {
+        const { rig, self } = seedSelfWithRig();
+        const node = seedPeer("dev.relaunch", rig.id, [
+          { name: "dev-relaunch@my-rig", status: "exited" },
+          { name: "dev-relaunch@my-rig", status: "running" },
+        ], "dev-relaunch@my-rig");
+        new SeatIdentityStore(db).upsert(verdict(node.id, "dev-relaunch@my-rig", { observedAt: "2020-01-01T00:00:00.000Z" }));
+
+        const result = svc.resolve({ nodeId: self.id })!;
+
+        expect(result.peers.find((p) => p.logicalId === "dev.relaunch")!.reachable).toBe(true);
+        expect(result.commands.sendExamples).toContain("rig send dev-relaunch@my-rig 'message' --verify");
+      });
+
+      it("a session_missing verdict recorded against a different registered pane than the current binding's does not hide the peer", () => {
+        const { rig, self } = seedSelfWithRig();
+        const node = seedPeer("dev.repaned", rig.id, [{ name: "dev-repaned@my-rig", status: "running" }], "dev-repaned@my-rig");
+        db.prepare("UPDATE bindings SET tmux_pane = '%7' WHERE node_id = ?").run(node.id);
+        new SeatIdentityStore(db).upsert(verdict(node.id, "dev-repaned@my-rig", {
+          evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+        }));
+
+        expect(svc.resolve({ nodeId: self.id })!.peers.find((p) => p.logicalId === "dev.repaned")!.reachable).toBe(true);
+
+        // Control: the same verdict against the matching pane does hide it.
+        new SeatIdentityStore(db).upsert(verdict(node.id, "dev-repaned@my-rig", {
+          evidence: { registeredPane: "%7", observedPid: null, observedCommand: null, matchedLayer: null },
+        }));
+        expect(svc.resolve({ nodeId: self.id })!.peers.find((p) => p.logicalId === "dev.repaned")!.reachable).toBe(false);
+      });
+
+      it("a session_missing verdict observed before the seat's handover does not hide the peer", () => {
+        const { rig, self } = seedSelfWithRig();
+        const node = seedPeer("dev.handed", rig.id, [{ name: "dev-handed@my-rig", status: "running" }], "dev-handed@my-rig");
+        db.prepare("UPDATE nodes SET handover_at = ? WHERE id = ?").run("2098-06-01T00:00:00.000Z", node.id);
+        new SeatIdentityStore(db).upsert(verdict(node.id, "dev-handed@my-rig", { observedAt: "2098-01-01T00:00:00.000Z" }));
+
+        expect(svc.resolve({ nodeId: self.id })!.peers.find((p) => p.logicalId === "dev.handed")!.reachable).toBe(true);
+      });
+
       it("peersNote states that running-but-missing is judged from the reconciler's last verdict, not a live probe", () => {
         const { self } = seedSelfWithRig();
         const note = svc.resolve({ nodeId: self.id })!.peersNote;
         expect(note).toContain("reachable");
         expect(note).toContain("seat identity reconciler");
+        expect(note).toContain("refreshed every ~5s, not a live tmux probe");
+        expect(note).toContain("killed within the last ~5s can still read true");
+        expect(note).toContain("a stale verdict");
       });
     });
 
