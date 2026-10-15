@@ -37,7 +37,7 @@ import { normalizePreconditionsBlock, type BundlePrecondition } from "../domain/
 import { assertShippableSubstance } from "../domain/agent-resolver.js";
 import { checkCultureFile } from "../domain/culture-file-guard.js";
 import { guardedAgentRefFsOps } from "../domain/agent-ref-guard.js";
-import { checkVendoredFile, productionVendoredReadDeps, readContainedVendoredFile, readContainedVendoredFileWithMode, VendoredFileRefused, VendoredTreeBudget } from "../domain/vendored-file-guard.js";
+import { collectVendoredTree, checkVendoredFile, productionVendoredReadDeps, readContainedVendoredFile, readContainedVendoredFileWithMode, VendoredFileRefused, VendoredTreeBudget } from "../domain/vendored-file-guard.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if
@@ -624,37 +624,14 @@ export function consumeAuthorBundleYaml(sourceRoot: string, staging: string, hoo
     const sourceReal = assertSourceRealContained(sourceAbs, kindLabel, declared);
     // Pre-walk the realpath-resolved dir to catch nested symlink escapes (and cycles) before anything is read
     assertNoSymlinkEscapeInTree(sourceReal, kindLabel, declared);
-    const sources: Array<{ relativePath: string; path: string; bytes: Buffer; mode: number }> = [];
-    const budget = new VendoredTreeBudget(`author bundle ${kindLabel} '${declared}'`);
-    let entries = 0;
-    // `ancestors` is the chain of REAL directories being walked: a directory symlink whose target is one of them
-    // is a cycle (a link to `.` or `..`), refused rather than walked forever.
-    const collectSources = (current: string, prefix: string, ancestors: readonly string[]): void => {
-      const chain = [...ancestors, current];
-      for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (++entries > AUTHOR_TREE_MAX_ENTRIES) {
-          throw new VendoredFileRefused(`author bundle ${kindLabel} '${declared}' lists more than ${AUTHOR_TREE_MAX_ENTRIES} entries (a symlink fan-out?); bundle a smaller folder`);
-        }
-        const child = nodePath.join(current, entry.name);
-        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) collectSources(child, relativePath, chain);
-        else if (entry.isSymbolicLink() && fs.statSync(child).isDirectory()) {
-          const target = fs.realpathSync(child);
-          if (chain.includes(target)) {
-            throw new VendoredFileRefused(`author bundle ${kindLabel} '${declared}' has a symlink cycle at '${nodePath.join(declared, relativePath)}' (it points back to ${target}); remove the link`);
-          }
-          collectSources(target, relativePath, chain);
-        } else if (entry.isFile() || entry.isSymbolicLink()) {
-          const read = readContainedVendoredFileWithMode(productionVendoredReadDeps, sourceRootReal, nodePath.join(declared, relativePath), child);
-          const bytes = Buffer.from(read.bytes);
-          budget.take(bytes.byteLength);
-          sources.push({ relativePath, path: nodePath.join(declared, relativePath), bytes, mode: read.mode });
-        } else {
-          throw new VendoredFileRefused(`bundled file "${nodePath.join(declared, relativePath)}" is not a regular file (a pipe, device or socket); a bundled folder may hold only regular files and symlinks to regular files`);
-        }
-      }
-    };
-    collectSources(sourceReal, "", []);
+    const sources = collectVendoredTree({
+      rootReal: sourceRootReal,
+      startReal: sourceReal,
+      label: `author bundle ${kindLabel} '${declared}'`,
+      display: (relativePath) => nodePath.join(declared, relativePath),
+      budget: new VendoredTreeBudget(`author bundle ${kindLabel} '${declared}'`),
+      maxEntries: AUTHOR_TREE_MAX_ENTRIES,
+    }).map((file) => ({ ...file, path: nodePath.join(declared, file.relativePath) }));
     assertShippableSubstance(sources);
     const targetAbs = nodePath.resolve(staging, declared);
     if (!targetAbs.startsWith(stagingResolved + nodePath.sep)) {
