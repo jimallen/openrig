@@ -682,7 +682,7 @@ describe("NodeLauncher", () => {
       expect(result.warnings).toBeUndefined();
     });
 
-    it("keeps the fork's warnings and upstream's tmux warnings together, fork first", async () => {
+    it("keeps the fork's warnings and upstream's tmux warnings together", async () => {
       const result = await launchWith(
         "codex",
         await homeWithBlockedDirs({ shim: true, codex: true }),
@@ -690,11 +690,13 @@ describe("NodeLauncher", () => {
       );
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok");
+      // Order is not part of the contract: every consumer of launchNode warnings forwards or spreads them
+      // (none indexes by position), so assert the set, each exactly once.
       const warnings = result.warnings ?? [];
       expect(warnings).toHaveLength(3);
-      expect(warnings[0]).toContain(SHIM_MARKER);
-      expect(warnings[1]).toContain(CODEX_MARKER);
-      expect(warnings[2]).toBe("identity cleanup skipped: boom");
+      expect(warnings.filter((w) => w.includes(SHIM_MARKER))).toHaveLength(1);
+      expect(warnings.filter((w) => w.includes(CODEX_MARKER))).toHaveLength(1);
+      expect(warnings.filter((w) => w === "identity cleanup skipped: boom")).toHaveLength(1);
     });
   });
 

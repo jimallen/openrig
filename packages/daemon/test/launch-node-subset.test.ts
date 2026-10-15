@@ -451,6 +451,39 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     expect(listProcesses).not.toHaveBeenCalled();
   });
 
+  // A seat removed and grown back keeps its logical id but has a new node id; its live session and pane belong to the
+  // NEW node. The snapshot (and so the launch target) still names the old one.
+  function regrowPreservedShell(liveRuntime: string) {
+    const seeded = seedPreservedShell("claude-code");
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(seeded.nodeIds[0]);
+    const grown = rigRepo.addNode(seeded.rigId, "dev.driver", { role: "driver", runtime: liveRuntime, podId: "pod-1" });
+    const session = sessionRegistry.registerSession(grown.id, seeded.session.sessionName);
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateBinding(grown.id, { tmuxSession: session.sessionName, tmuxPane: "%1" });
+    return { ...seeded, grown, session };
+  }
+
+  it.each(["subset", "single-seat"])("%s launch of a regrown seat whose agent exited reports its preserved shell on the NEW node id", async (route) => {
+    const { rigId, nodeIds, grown } = regrowPreservedShell("claude-code");
+    expect(grown.id).not.toBe(nodeIds[0]);
+    const result = route === "subset"
+      ? await orchestrator.launchNodeSubset(rigId, ["dev.driver"])
+      : await orchestrator.launchSingleNode(rigId, "dev.driver");
+    expect(result.alreadyRunning).toEqual([]);
+    expect(result.launched).toEqual([expect.objectContaining({ nodeId: grown.id, logicalId: "dev.driver", status: "attention_required", error: expect.stringContaining("Session alive, agent not running") })]);
+    expect(tmux.createSession).not.toHaveBeenCalled();
+  });
+
+  it("launch of a regrown seat judges its preserved shell by the LIVE seat's runtime, not the snapshot's", async () => {
+    // The snapshot says claude-code (an agent runtime, so an idle shell means an exited agent); the live seat is a
+    // plain terminal, whose shell is simply what it runs.
+    const { rigId, grown } = regrowPreservedShell("terminal");
+    const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
+    expect(result.launched ?? []).toEqual([]);
+    expect(result.alreadyRunning).toEqual([{ nodeId: grown.id, logicalId: "dev.driver" }]);
+    expect(tmux.createSession).not.toHaveBeenCalled();
+  });
+
   it("single-seat launch also reports the stopped agent", async () => {
     const { rigId } = seedPreservedShell();
     const result = await orchestrator.launchSingleNode(rigId, "dev.driver");
