@@ -22,6 +22,8 @@ import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { RestoreOrchestrator, rollupRestoreRigResult } from "../src/domain/restore-orchestrator.js";
+import { deriveRestoreAttemptReceipt } from "../src/domain/restore-attempt-receipt.js";
+import { getNodeInventory } from "../src/domain/node-inventory.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { TmuxAdapter, type TmuxResult } from "../src/adapters/tmux.js";
@@ -2271,7 +2273,7 @@ describe("RestoreOrchestrator", () => {
   // Each row below is one write the restore makes against the seat, on a seat grown back under a NEW node id. A write
   // keyed by the snapshot's (vanished) node id either fails the foreign key to `nodes` (the whole restore ends as a
   // restore_error) or silently lands on nothing.
-  function snapshotThenRegrow(rigName: string, opts?: { podId?: string; runtime?: string; token?: string; cwd?: string; restorePolicy?: string; checkpoint?: boolean }) {
+  function snapshotThenRegrow(rigName: string, opts?: { podId?: string; runtime?: string; token?: string; cwd?: string; restorePolicy?: string; checkpoint?: boolean; absent?: boolean; livePodId?: string }) {
     const runtime = opts?.runtime ?? "claude-code";
     const rig = rigRepo.createRig(rigName);
     if (opts?.podId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.podId, rig.id, "Dev");
@@ -2287,11 +2289,14 @@ describe("RestoreOrchestrator", () => {
       db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)")
         .run(oldNode.id, "[]", "[]", "[]", runtime);
     }
+    // `absent`: the seat had no running occupant when the snapshot was taken, but an earlier occupant left a token.
+    if (opts?.absent) sessionRegistry.updateStatus(session.id, "exited");
     const snap = snapshotCapture.captureSnapshot(rig.id, "test");
     sessionRegistry.updateStatus(session.id, "exited");
     db.prepare("DELETE FROM bindings WHERE node_id = ?").run(oldNode.id);
     db.prepare("DELETE FROM nodes WHERE id = ?").run(oldNode.id);
-    const newNode = rigRepo.addNode(rig.id, "dev.impl", nodeOpts);
+    if (opts?.livePodId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.livePodId, rig.id, "Moved");
+    const newNode = rigRepo.addNode(rig.id, "dev.impl", opts?.livePodId ? { ...nodeOpts, podId: opts.livePodId } : nodeOpts);
     expect(newNode.id).not.toBe(oldNode.id);
     return { rig, snap, oldNode, newNode, sessionName };
   }
@@ -2494,6 +2499,141 @@ describe("RestoreOrchestrator", () => {
     expect(held).toEqual([]);
     expect(result.nonTargetEffects?.affected).toEqual([]);
     expect(result.launched).toEqual([expect.objectContaining({ nodeId: newNode.id, logicalId: "dev.impl", status: "resumed" })]);
+  });
+
+  it("the subset plan names a regrown target by its live node id, as execution does", async () => {
+    const { rig, snap, oldNode, newNode } = snapshotThenRegrow("regrown-plan-rig");
+
+    const plan = createOrchestrator().planNodeSubset(rig.id, ["dev.impl"], { snapshotId: snap.id });
+
+    expect(plan).toMatchObject({ ok: true, planOnly: true });
+    if (!plan.ok) return;
+    expect(plan.targetNodes).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+    expect(plan.targetNodes![0]!.nodeId).not.toBe(oldNode.id);
+  });
+
+  // The restore receipt (`rig restore status`) and the node inventory join the attempt's roster with the result's
+  // nodes and with later reconciliations. All three must name a regrown seat by the same (live) id.
+  it("restore receipt: a regrown seat that resumed is fully_restored, not 'No restore outcome was recorded'", async () => {
+    const { rig, snap, newNode } = snapshotThenRegrow("regrown-receipt-rig");
+    let attemptId = 0;
+
+    const result = await createOrchestrator({ claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "resume-token-123") })
+      .restore(snap.id, { onAttemptStarted: (id) => { attemptId = id; } });
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "resumed" })]);
+    expect(result.result.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+
+    const receipt = deriveRestoreAttemptReceipt(db, rig.id, attemptId);
+    expect(receipt.ok).toBe(true);
+    if (!receipt.ok) return;
+    expect(receipt.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+    expect(receipt.currentNodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "resumed" })]);
+    expect(receipt.unresolvedIntendedSeats).toEqual([]);
+    expect(receipt.currentIntendedSetVerdict).toBe("fully_restored");
+  });
+
+  it("restore receipt and inventory: an operator-recovered regrown seat keeps its reconciliation and its strict resume evidence", async () => {
+    const { rig, snap, newNode } = snapshotThenRegrow("regrown-recon-rig", { podId: "pod-recon", runtime: "claude-code", token: "chooser-token-123" });
+    let attemptId = 0;
+    const hasSession = vi.fn(async () => false);
+    const tmux = { ...mockTmux(), hasSession, capturePaneContent: vi.fn(async () => ["Claude Code v2.1.89", "", " ❯ accept edits on", ""].join("\n")) } as unknown as TmuxAdapter;
+    const adapter: RuntimeAdapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness: vi.fn(async () => ({ ok: false as const, error: "Claude is at a resume-selection prompt", recovery: "attention_required" as const })),
+    };
+    const orch = createOrchestrator({ tmux, listProcesses: nativeLineage("claude-code", "chooser-token-123") });
+
+    const restored = await orch.restore(snap.id, { adapters: { "claude-code": adapter }, onAttemptStarted: (id) => { attemptId = id; } });
+    expect(restored.ok ? null : `${restored.code}: ${restored.message}`).toBeNull();
+    if (!restored.ok) return;
+    expect(restored.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "attention_required" })]);
+
+    hasSession.mockResolvedValue(true);
+    const reconciled = await orch.reconcileNodeRuntimeTruth(rig.id, newNode.id);
+    expect(reconciled).toMatchObject({ ok: true, to: "operator_recovered" });
+
+    const receipt = deriveRestoreAttemptReceipt(db, rig.id, attemptId);
+    expect(receipt.ok).toBe(true);
+    if (!receipt.ok) return;
+    expect(receipt.reconciliations).toEqual([expect.objectContaining({ nodeId: newNode.id, to: "operator_recovered" })]);
+    expect(receipt.currentNodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "operator_recovered" })]);
+    expect(receipt.currentIntendedSetVerdict).toBe("fully_restored");
+    const entry = getNodeInventory(db, rig.id).find((candidate) => candidate.rigId === rig.id && candidate.logicalId === "dev.impl");
+    expect(entry).toMatchObject({ restoreOutcome: "operator_recovered", continuityOutcome: "resumed" });
+  });
+
+  // A seat that had no running occupant when the snapshot was taken, but whose earlier occupant left a resume token,
+  // stops for a decision rather than being silently fresh-primed over its history. That history is the SNAPSHOT's
+  // record (keyed by the snapshot's node id), so a regrown seat is held to it just like any other.
+  it("a regrown seat with absent-seat resume history stops for a decision on the NEW node id, and nothing is started", async () => {
+    const { snap, newNode } = snapshotThenRegrow("regrown-absent-rig", { absent: true });
+    const tmux = mockTmux();
+    const claude = mockClaudeResume();
+
+    const result = await createOrchestrator({ tmux, claude }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "awaiting-decision", error: expect.stringContaining("not resumed") })]);
+    expect(tmux.createSession).not.toHaveBeenCalled();
+    expect(claude.resume).not.toHaveBeenCalled();
+  });
+
+  // The removed-and-not-regrown guard: it exists, and it comes first.
+  function removeRegrownSeat(newNodeId: string) {
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(newNodeId);
+  }
+
+  it("a removed seat is reported failed even when it has absent-seat resume history (the guard precedes the awaiting-decision classification)", async () => {
+    const { snap, oldNode, newNode } = snapshotThenRegrow("removed-absent-rig", { absent: true });
+    removeRegrownSeat(newNode.id);
+    const tmux = mockTmux();
+
+    const result = await createOrchestrator({ tmux }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: oldNode.id, logicalId: "dev.impl", status: "failed", error: expect.stringContaining("removed after this snapshot") })]);
+    expect(result.result.rigResult).toBe("failed");
+    // With no live node the roster keeps the snapshot's id: the id its failed result carries, so the two still join.
+    expect(result.result.intendedRoster).toEqual([{ nodeId: oldNode.id, logicalId: "dev.impl" }]);
+    expect(tmux.createSession).not.toHaveBeenCalled();
+  });
+
+  it("a removed seat is not touched before it is reported: no lifecycle rebind, no session, no resume", async () => {
+    const { snap, newNode } = snapshotThenRegrow("removed-untouched-rig");
+    removeRegrownSeat(newNode.id);
+    const rebindLifecycle = vi.fn();
+    const tmux = { ...mockTmux(), deliveryGuard: { ownsLifecycle: () => true, lifecycle: async (_ids: string[], fn: () => unknown) => fn(), rebindLifecycle } } as unknown as TmuxAdapter;
+    const claude = mockClaudeResume();
+
+    const result = await createOrchestrator({ tmux, claude }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ logicalId: "dev.impl", status: "failed" })]);
+    expect(rebindLifecycle).not.toHaveBeenCalled();
+    expect(tmux.createSession).not.toHaveBeenCalled();
+    expect(claude.resume).not.toHaveBeenCalled();
+  });
+
+  it("pod-aware: the continuity consult uses the LIVE seat's pod when the regrown seat moved pods", async () => {
+    const { snap, newNode } = snapshotThenRegrow("regrown-moved-rig", { podId: "pod-before", livePodId: "pod-after", runtime: "claude-code" });
+    db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, ?)").run("pod-after", newNode.id, "restoring");
+    const tmux = mockTmux();
+
+    const result = await createOrchestrator({ tmux }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "fresh" })]);
+    expect(tmux.createSession).not.toHaveBeenCalled();
   });
 
   // The legacy resume path hands claude's resume a five-slot tail when the seat declares remote_control, and keeps the

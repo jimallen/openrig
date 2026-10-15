@@ -304,6 +304,13 @@ export class RestoreOrchestrator {
         freshLogicalIds: opts?.freshLogicalIds,
       });
       const topology = resolveSnapshotRestoreTopology(snapshot.data);
+      // The attempt's roster names its seats by the ids the attempt's results use: the LIVE node ids (a seat removed and
+      // grown back has a new one), found by logical id. The restore receipt and the node inventory join the roster with
+      // `result.nodes[].nodeId` and with later reconciliations (both live ids); a snapshot-id roster made a resumed
+      // regrown seat read as "No restore outcome was recorded". A seat with no live node keeps its snapshot id, which is
+      // the id its `failed` result carries.
+      const liveIdByLogicalId = new Map((this.rigRepo.getRig(rigId)?.nodes ?? []).map((live) => [live.logicalId, live.id]));
+      const intendedRoster = topology.intendedRoster.map((seat) => ({ ...seat, nodeId: liveIdByLogicalId.get(seat.logicalId) ?? seat.nodeId }));
       if (validation.blockers.length > 0) {
         const result: RestoreResult = {
           snapshotId,
@@ -313,7 +320,7 @@ export class RestoreOrchestrator {
           warnings: validation.warnings,
           blockers: validation.blockers,
           snapshotSelection,
-          intendedRoster: topology.intendedRoster,
+          intendedRoster,
           excludedNodes: topology.excludedNodes,
         };
         return {
@@ -343,7 +350,7 @@ export class RestoreOrchestrator {
         rigId,
         snapshotId,
         snapshotSelection,
-        intendedRoster: topology.intendedRoster,
+        intendedRoster,
         excludedNodes: topology.excludedNodes,
       });
       const attemptId = restoreStartedEvent.seq;
@@ -371,7 +378,7 @@ export class RestoreOrchestrator {
                 nodes: [],
                 warnings: [`Service boot failed: ${bootResult.error}`],
                 snapshotSelection,
-                intendedRoster: topology.intendedRoster,
+                intendedRoster,
                 excludedNodes: topology.excludedNodes,
               },
             });
@@ -400,7 +407,7 @@ export class RestoreOrchestrator {
         nodes: nodeResults,
         warnings: restoreWarnings,
         snapshotSelection,
-        intendedRoster: topology.intendedRoster,
+        intendedRoster,
         excludedNodes: topology.excludedNodes,
       };
 
@@ -462,7 +469,8 @@ export class RestoreOrchestrator {
       snapshotSelection: selected.selection,
       targetNodes: intendedNodes
         .filter((node) => targetIds.has(node.logicalId))
-        .map((node) => ({ nodeId: node.id, logicalId: node.logicalId })),
+        // The live seat's id, as execution reports it (a seat grown back has a new one); a removed seat keeps the snapshot's.
+        .map((node) => ({ nodeId: rig.nodes.find((live) => live.logicalId === node.logicalId)?.id ?? node.id, logicalId: node.logicalId })),
       unmatchedIds: logicalIds.filter((id) => !targetIds.has(id) && !targetNodeIds.has(id)),
       nonTargetEffects,
     };
