@@ -15,6 +15,10 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createDb } from "../src/db/connection.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { createTestApp } from "./helpers/test-app.js";
 import { vendorContextPackDir } from "../src/domain/bundle-carried-context-pack.js";
 import { vendorProjectDir } from "../src/domain/bundle-carried-project.js";
 import {
@@ -345,5 +349,56 @@ describe("bundle create: carried project and context pack use the guarded reader
     expect(r.fired).toBe(true);
     expect(r.ok).toBe(false);
     expect(r.refused).toBe(true);
+  });
+
+  // ---------------------------------------------------------------- the real route
+
+  describe("through POST /api/bundles/create", () => {
+    const AGENT_YAML = ["name: impl-agent", 'version: "1.0.0"', "resources:", "  skills: []", "profiles:", "  default:", "    uses:", "      skills: []"].join("\n");
+    const RIG_YAML = ['version: "0.2"', "name: carried-rig", "pods:", "  - id: dev", "    label: dev", "    members:", "      - id: impl", '        agent_ref: "local:agents/impl"',
+      "        profile: default", "        runtime: claude-code", "        cwd: .", "    edges: []", "edges: []"].join("\n");
+    const post = (extra: Record<string, unknown>) => {
+      const db = createDb();
+      migrate(db, ALL_MIGRATIONS);
+      try {
+        fs.mkdirSync(path.join(work, "rig", "agents", "impl"), { recursive: true });
+        fs.writeFileSync(path.join(work, "rig", "agents", "impl", "agent.yaml"), AGENT_YAML);
+        fs.writeFileSync(path.join(work, "rig", "rig.yaml"), RIG_YAML);
+        return createTestApp(db).app.request("/api/bundles/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ specPath: path.join(work, "rig", "rig.yaml"), bundleName: "cv", bundleVersion: "0.1.0", outputPath: path.join(work, "cv.rigbundle"), ...extra }),
+        }).then(async (res) => ({ status: res.status, body: await res.text(), db }));
+      } catch (error) { db.close(); throw error; }
+    };
+
+    it("CONTROL: a project and a pack bundle (201)", async () => {
+      const r = await post({ projectDir: proj, contextPackDirs: [pack] });
+      r.db.close();
+      expect(r.status, r.body).toBe(201);
+    });
+    it("a hard-linked project file is a 400, not a 500", async () => {
+      fs.writeFileSync(path.join(outside, "secret.txt"), MARKER);
+      fs.linkSync(path.join(outside, "secret.txt"), path.join(proj, "alias.txt"));
+      const r = await post({ projectDir: proj });
+      r.db.close();
+      expect(r.status, r.body).toBe(400);
+      expect(r.body).toMatch(/hard links/);
+    });
+    it("a directory-link cycle in the project is a 400, not a 500", async () => {
+      fs.mkdirSync(path.join(proj, "sub"));
+      fs.symlinkSync(path.join(proj, "sub"), path.join(proj, "sub", "loop"));
+      const r = await post({ projectDir: proj });
+      r.db.close();
+      expect(r.status, r.body).toBe(400);
+      expect(r.body).toMatch(/symlink cycle/);
+    });
+    it("an oversize declared pack file is a 400", async () => {
+      bigFile(path.join(pack, "identity", "who.md"), 40 * MIB);
+      const r = await post({ contextPackDirs: [pack] });
+      r.db.close();
+      expect(r.status, r.body).toBe(400);
+      expect(r.body).toMatch(/byte limit/);
+    });
   });
 });
