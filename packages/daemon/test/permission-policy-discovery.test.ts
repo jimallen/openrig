@@ -67,7 +67,9 @@ function fsOps(): AgentResolverFsOps {
 
 function collisionFsOps(): AgentResolverFsOps {
   return {
-    exists: (path) => path.includes("agents/impl") || path.includes("agents/lib"),
+    // Exactly the persona folders and their agent.yaml: a substring match would also "find" agents/ and rigs/
+    // folders inside the persona, which the agent_ref guard reads as a spec tree root.
+    exists: (path) => /\/agents\/(impl|lib)(\/agent\.yaml)?$/.test(path),
     readFile: (path) => {
       if (path.includes("agents/impl")) return COLLIDING_AGENT_YAML;
       if (path.includes("agents/lib")) return COLLIDING_IMPORT_YAML;

@@ -53,6 +53,8 @@ while a local: --agent-ref is resolved from --cwd (the rig root sent to the daem
 absolute path or path: to avoid the difference. rig add behaves the same way (--culture from
 your directory, the fragment's agent_ref from --rig-root).
 
+Agent refs: Whoever can call the daemon is trusted to name any persona folder, so path: has no allowlist; the daemon guards against accidents and swaps, not a hostile caller: a local: ref must stay inside the spec tree it is written in (a stray .. or a symlink out is refused: use path:/abs/dir for a persona outside), and agent.yaml must be a regular, single-link file of at most 64 KiB.
+
 Examples:
   rig grow my-rig worker qa --pod dev
   rig grow my-rig worker --pod dev --culture ./my-rig/CULTURE.md --agent-ref path:/agents/builder`);
@@ -68,7 +70,7 @@ Examples:
     .option("--new-pod <pod>", "Create a new pod for the seats")
     .option("--runtime <runtime>", "Agent runtime", "claude-code")
     .option("--cwd <path>", "Working directory for the seat", process.cwd())
-    .option("--agent-ref <ref>", "Agent spec for every named seat (for example path:/abs/dir or local:agents/name; a local: ref is resolved from --cwd, not from the current directory); default is the shipped orchestrator agent")
+    .option("--agent-ref <ref>", "Agent spec for every named seat (for example path:/abs/dir or local:agents/name; a local: ref is resolved from --cwd, not from the current directory). Whoever can call the daemon is trusted to name any persona folder, so path: has no allowlist; the daemon guards against accidents and swaps, not a hostile caller: a local: ref must stay inside the spec tree it is written in (a stray .. or a symlink out is refused: use path:/abs/dir for a persona outside), and agent.yaml must be a regular, single-link file of at most 64 KiB; default is the shipped orchestrator agent")
     .option("--culture <path>", "The rig's culture file (a relative path is taken from the current directory). The rig does not remember it, so name it to give the added seats the rig's own culture. Not available with --new-pod")
     .option("--json", "JSON output for agents")
     .action(async (

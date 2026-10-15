@@ -30,60 +30,84 @@ import nodePath from "node:path";
  */
 export const CULTURE_FILE_MAX_BYTES = 256 * 1024;
 
-export type CultureFileCheck =
+export type GuardedFileCheck =
   | { ok: true; realPath: string; bytes: number; content: string; raw: Buffer }
   | { ok: false; reason: "not_found" | "not_regular_file" | "hard_linked" | "too_large" | "unreadable" | "changed"; message: string };
+export type CultureFileCheck = GuardedFileCheck;
+
+/** What differs between the files this reader guards: only the words in a refusal and the size cap. */
+export interface GuardedFileKind {
+  /** "culture file", "persona file": the noun every refusal message starts with. */
+  label: string;
+  maxBytes: number;
+  /** Appended to the not-found refusal. */
+  notFoundHint: string;
+  /** Appended to the not-a-regular-file refusal. */
+  notRegularHint: string;
+  /** "a culture file": completes "..., so X must have exactly one" and "over the N-byte limit for X". */
+  article: string;
+}
+
+export const CULTURE_FILE_KIND: GuardedFileKind = {
+  label: "culture file",
+  maxBytes: CULTURE_FILE_MAX_BYTES,
+  notFoundHint: "pass a path relative to the rig root (--rig-root) or an absolute path",
+  notRegularHint: "pass the path of the rig's culture file",
+  article: "a culture file",
+};
 
 /**
- * Check and read a culture file. Order: realpath (follows every symlink) -> open the RESOLVED path once with
+ * Check and read one guarded file. Order: realpath (follows every symlink) -> open the RESOLVED path once with
  * O_NOFOLLOW|O_NONBLOCK (a symlink swapped in at the leaf fails; a FIFO swapped in opens instead of hanging)
  * -> fstat that descriptor (regular file, one link, size) -> read from that same descriptor, never past the
  * cap -> re-resolve the path and require the same file (device+inode) at the same real path, which catches a
  * parent directory swapped for a symlink during the window.
  * `requested` is only for messages. Nothing here creates anything: a refusal is a pure return.
  */
-export function checkCultureFile(
+export function checkGuardedFile(
+  kind: GuardedFileKind,
   requested: string,
   resolvedPath: string,
   /** Test seams only: run exactly in the race windows (before the open / after the read) so the swap
    *  defences can be exercised deterministically. Production callers pass nothing. */
   hooks?: { beforeOpen?: () => void; afterRead?: () => void },
-): CultureFileCheck {
+): GuardedFileCheck {
+  const { label, maxBytes } = kind;
   let realPath: string;
   try { realPath = realpathSync(resolvedPath); } catch {
-    return { ok: false, reason: "not_found", message: `culture file "${requested}" not found (looked at ${resolvedPath}); pass a path relative to the rig root (--rig-root) or an absolute path` };
+    return { ok: false, reason: "not_found", message: `${label} "${requested}" not found (looked at ${resolvedPath}); ${kind.notFoundHint}` };
   }
   let fd: number | undefined;
   try {
     hooks?.beforeOpen?.();
     try { fd = openSync(realPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK); } catch {
-      return { ok: false, reason: "unreadable", message: `culture file "${requested}" (${realPath}) is not readable by the daemon (it could not be opened; a symlink swapped in at the last moment is refused too); fix its permissions or pass another path` };
+      return { ok: false, reason: "unreadable", message: `${label} "${requested}" (${realPath}) is not readable by the daemon (it could not be opened; a symlink swapped in at the last moment is refused too); fix its permissions or pass another path` };
     }
     const st = fstatSync(fd);
     if (!st.isFile()) {
-      return { ok: false, reason: "not_regular_file", message: `culture file "${requested}" (${realPath}) is not a regular file (a directory, pipe, device or socket); pass the path of the rig's culture file` };
+      return { ok: false, reason: "not_regular_file", message: `${label} "${requested}" (${realPath}) is not a regular file (a directory, pipe, device or socket); ${kind.notRegularHint}` };
     }
     if (st.nlink > 1) {
-      return { ok: false, reason: "hard_linked", message: `culture file "${requested}" (${realPath}) has ${st.nlink} hard links; a hard link can alias a file from somewhere else, so a culture file must have exactly one` };
+      return { ok: false, reason: "hard_linked", message: `${label} "${requested}" (${realPath}) has ${st.nlink} hard links; a hard link can alias a file from somewhere else, so ${kind.article} must have exactly one` };
     }
-    if (st.size > CULTURE_FILE_MAX_BYTES) {
-      return { ok: false, reason: "too_large", message: `culture file "${requested}" (${realPath}) is ${st.size} bytes, over the ${CULTURE_FILE_MAX_BYTES}-byte limit for a culture file` };
+    if (st.size > maxBytes) {
+      return { ok: false, reason: "too_large", message: `${label} "${requested}" (${realPath}) is ${st.size} bytes, over the ${maxBytes}-byte limit for ${kind.article}` };
     }
-    const buf = Buffer.alloc(CULTURE_FILE_MAX_BYTES + 1);
+    const buf = Buffer.alloc(maxBytes + 1);
     let n = 0;
     for (;;) {
       const got = readSync(fd, buf, n, buf.length - n, null);
       if (got === 0) break;
       n += got;
-      if (n > CULTURE_FILE_MAX_BYTES) {
-        return { ok: false, reason: "too_large", message: `culture file "${requested}" (${realPath}) grew past the ${CULTURE_FILE_MAX_BYTES}-byte limit while being read` };
+      if (n > maxBytes) {
+        return { ok: false, reason: "too_large", message: `${label} "${requested}" (${realPath}) grew past the ${maxBytes}-byte limit while being read` };
       }
     }
     hooks?.afterRead?.();
     let same = false;
     try { const again = realpathSync(resolvedPath); const l = lstatSync(again); same = again === realPath && l.ino === st.ino && l.dev === st.dev; } catch { same = false; }
     if (!same) {
-      return { ok: false, reason: "changed", message: `culture file "${requested}" changed while it was being checked (${realPath}); refusing, retry once the file is stable` };
+      return { ok: false, reason: "changed", message: `${label} "${requested}" changed while it was being checked (${realPath}); refusing, retry once the file is stable` };
     }
     // `raw` is the exact guarded bytes, for a caller that copies the file verbatim (bundle create) and must
     // not round-trip them through a UTF-8 string.
@@ -94,6 +118,15 @@ export function checkCultureFile(
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** The culture-file flavour of {@link checkGuardedFile}: same reader, culture wording and cap. */
+export function checkCultureFile(
+  requested: string,
+  resolvedPath: string,
+  hooks?: { beforeOpen?: () => void; afterRead?: () => void },
+): CultureFileCheck {
+  return checkGuardedFile(CULTURE_FILE_KIND, requested, resolvedPath, hooks);
 }
 
 /**

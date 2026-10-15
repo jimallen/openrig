@@ -3,13 +3,33 @@ import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import { parseAgentSpec, validateAgentSpec, normalizeAgentSpec } from "./agent-manifest.js";
 import type { AgentSpec, AgentResources } from "./types.js";
+import { PersonaFileRefused, resolveAgentRefDir } from "./agent-ref-guard.js";
 
 // -- Types --
 
 export interface AgentResolverFsOps {
   readFile(path: string): string;
   exists(path: string): boolean;
+  /**
+   * Production wiring (spread `guardedAgentRefFsOps` from agent-ref-guard.ts): `realpath` confines refs after
+   * symlinks are followed, `readPersonaFile` is the guarded agent.yaml reader (regular file, one link, size
+   * cap, one O_NOFOLLOW|O_NONBLOCK descriptor). Absent, as in in-memory test filesystems, refs are checked
+   * lexically and agent.yaml is read with `readFile`.
+   */
+  realpath?(path: string): string;
+  readPersonaFile?(path: string): string;
 }
+
+/**
+ * The filesystem every PRODUCTION construction must hand the resolver: the guard's two members are required, so
+ * a new construction that forgets `...guardedAgentRefFsOps` fails to compile instead of silently resolving
+ * unguarded. (`AgentResolverFsOps` keeps them optional only so in-memory test filesystems stay small; the
+ * test tree is not type-checked.)
+ */
+export type GuardedAgentResolverFsOps = AgentResolverFsOps & {
+  realpath(path: string): string;
+  readPersonaFile(path: string): string;
+};
 
 export interface ResolvedAgentSpec {
   spec: AgentSpec;
@@ -35,7 +55,8 @@ export type ResolveResult =
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "version_mismatch"; error: string }
   | { ok: false; code: "import_error"; error: string; importRef: string }
-  | { ok: false; code: "cycle_detected"; error: string };
+  | { ok: false; code: "cycle_detected"; error: string }
+  | { ok: false; code: "ref_refused"; error: string };
 
 // -- Resource category keys --
 
@@ -57,16 +78,19 @@ export function resolveAgentRef(
   rigRoot: string,
   fsOps: AgentResolverFsOps,
 ): ResolveResult {
-  const dirPath = resolveRefToAbsPath(ref, rigRoot);
-  if (!dirPath) {
-    return { ok: false, code: "not_found", error: `Cannot resolve agent_ref "${ref}"` };
+  const target = resolveAgentRefDir(ref, rigRoot, fsOps);
+  if (!target.ok) {
+    return target.kind === "refused"
+      ? { ok: false, code: "ref_refused", error: target.message }
+      : { ok: false, code: "not_found", error: target.message };
   }
+  const dirPath = target.dir;
 
   const baseResult = loadSpec(dirPath, fsOps);
   if (!baseResult.ok) return baseResult;
 
   // Resolve flat imports — import local: refs resolve relative to the base spec's directory
-  return resolveWithImports(baseResult.resolved, baseResult.resolved.sourcePath, fsOps, new Set([baseResult.resolved.sourcePath]));
+  return resolveWithImports(baseResult.resolved, baseResult.resolved.sourcePath, fsOps, new Set([baseResult.resolved.sourcePath]), target.importRoot);
 }
 
 /**
@@ -146,7 +170,7 @@ function declaresLoreTaxonomy(path: string, text: string): boolean {
 function loadSpec(
   dirPath: string,
   fsOps: AgentResolverFsOps,
-): { ok: true; resolved: ResolvedAgentSpec } | { ok: false; code: "not_found"; error: string } | { ok: false; code: "parse_error"; error: string } | { ok: false; code: "validation_failed"; errors: string[] } {
+): { ok: true; resolved: ResolvedAgentSpec } | { ok: false; code: "not_found"; error: string } | { ok: false; code: "parse_error"; error: string } | { ok: false; code: "ref_refused"; error: string } | { ok: false; code: "validation_failed"; errors: string[] } {
   const manifestPath = nodePath.join(dirPath, "agent.yaml");
 
   if (!fsOps.exists(manifestPath)) {
@@ -155,8 +179,9 @@ function loadSpec(
 
   let rawYaml: string;
   try {
-    rawYaml = fsOps.readFile(manifestPath);
+    rawYaml = fsOps.readPersonaFile ? fsOps.readPersonaFile(manifestPath) : fsOps.readFile(manifestPath);
   } catch (err) {
+    if (err instanceof PersonaFileRefused) return { ok: false, code: "ref_refused", error: err.message };
     return { ok: false, code: "parse_error", error: `Cannot read ${manifestPath}: ${(err as Error).message}` };
   }
 
@@ -193,6 +218,8 @@ function resolveWithImports(
   specDir: string,
   fsOps: AgentResolverFsOps,
   visitedPaths: Set<string>,
+  /** The root `local:` imports are confined to when no marked spec tree surrounds the persona (see agent-ref-guard.ts). */
+  importRoot?: string,
 ): ResolveResult {
   const resolvedImports: ResolvedAgentSpec[] = [];
   const importNames = new Set<string>();
@@ -203,10 +230,14 @@ function resolveWithImports(
       return { ok: false, code: "import_error", error: `Remote import source not supported in v1: "${imp.ref}"`, importRef: imp.ref };
     }
 
-    const importDir = resolveRefToAbsPath(imp.ref, specDir);
-    if (!importDir) {
-      return { ok: false, code: "import_error", error: `Cannot resolve import ref "${imp.ref}"`, importRef: imp.ref };
+    const importTarget = resolveAgentRefDir(imp.ref, specDir, fsOps, importRoot);
+    if (!importTarget.ok) {
+      return {
+        ok: false, code: "import_error", importRef: imp.ref,
+        error: importTarget.kind === "refused" ? `Import "${imp.ref}" refused: ${importTarget.message}` : `Cannot resolve import ref "${imp.ref}"`,
+      };
     }
+    const importDir = importTarget.dir;
 
     // Cycle detection
     if (visitedPaths.has(importDir)) {
@@ -215,7 +246,7 @@ function resolveWithImports(
 
     const importResult = loadSpec(importDir, fsOps);
     if (!importResult.ok) {
-      if (importResult.code === "not_found") {
+      if (importResult.code === "not_found" || importResult.code === "ref_refused") {
         return { ok: false, code: "import_error", error: importResult.error, importRef: imp.ref };
       }
       if (importResult.code === "validation_failed") {
@@ -307,20 +338,4 @@ function detectCollisions(base: ResolvedAgentSpec, imports: ResolvedAgentSpec[])
   }
 
   return collisions;
-}
-
-// -- Path resolution --
-
-function resolveRefToAbsPath(ref: string, baseDir: string): string | null {
-  if (ref.startsWith("local:")) {
-    const relPath = ref.slice("local:".length);
-    if (!relPath) return null;
-    return nodePath.resolve(baseDir, relPath);
-  }
-  if (ref.startsWith("path:")) {
-    const absPath = ref.slice("path:".length);
-    if (!absPath) return null;
-    return absPath;
-  }
-  return null;
 }

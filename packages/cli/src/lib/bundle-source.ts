@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, realpathSync, statSync, lstatSync, readdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { readGuardedPersonaFile, PersonaFileRefused } from "@openrig/daemon/agent-ref";
 import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl } from "../daemon-lifecycle.js";
 import { resolveEffectiveHost } from "../host-selection.js";
@@ -144,7 +145,7 @@ function checkGitHubBundleRefs(folder: string, checkoutDir: string, retainedChec
     if (!dir) throw new Error();
     const real = contained(dir);
     if (ancestors.has(real)) throw new Error();
-    const spec = parseYaml(readFileSync(contained(path.join(dir, "agent.yaml")), "utf8")) as { imports?: Array<{ ref?: unknown }> };
+    const spec = parseYaml(readGuardedPersonaFile(contained(path.join(dir, "agent.yaml")))) as { imports?: Array<{ ref?: unknown }> };
     const next = new Set(ancestors).add(real);
     // Keep the lexical directory: resolving it first would change relative imports through an alias.
     for (const imp of spec.imports ?? []) agent(imp.ref, dir, next);
@@ -166,7 +167,9 @@ function checkGitHubBundleRefs(folder: string, checkoutDir: string, retainedChec
         contained(path.join(dir, "package.yaml"));
       }
     }
-  } catch {
+  } catch (error) {
+    // A persona file the guard refused says why (size, link count, not a regular file); anything else is a ref outside the repository.
+    if (error instanceof PersonaFileRefused) throw new Error(`GitHub bundle persona file refused: ${error.message}; no bundle was built.`);
     throw new Error("GitHub bundle refs must resolve inside the fetched repository; no bundle was built.");
   }
 }

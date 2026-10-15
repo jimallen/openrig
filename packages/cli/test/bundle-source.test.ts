@@ -115,6 +115,28 @@ describe("GitHub bundle source", () => {
     expect(fs.readFileSync(outside, "utf8")).toBe("synthetic host-only fixture\n");
   });
 
+  it("a persona agent.yaml the guard refuses (over 64 KiB) is rejected with the guard's reason, not the generic ref message", async () => {
+    const imports = path.join(root, "imports");
+    const git = checkoutWith((checkout, folder) => {
+      rigWithAgent(folder, "local:../../agents/helper");
+      const helper = path.join(checkout, "agents/helper");
+      writeAgent(helper, "helper");
+      fs.appendFileSync(path.join(helper, "agent.yaml"), "#".repeat(64 * 1024));
+    });
+    const failure = await prepareGitHubBundle(URL, git, imports).then(() => "accepted", (e: Error) => e.message);
+    expect(failure).toMatch(/persona file refused: persona file ".*agent\.yaml" .* is \d+ bytes, over the 65536-byte limit for an agent\.yaml/);
+    expect(failure).not.toMatch(/refs must resolve inside/);
+    expect(fs.readdirSync(imports)).toEqual([]);
+  });
+
+  it("POSITIVE: a regular in-repo persona agent.yaml is accepted by the same reader", async () => {
+    const git = checkoutWith((checkout, folder) => {
+      rigWithAgent(folder, "local:../../agents/helper");
+      writeAgent(path.join(checkout, "agents/helper"), "helper");
+    });
+    await expect(prepareGitHubBundle(URL, git, path.join(root, "imports"))).resolves.toBeTruthy();
+  });
+
   it.each(["member-local", "member-path", "import-local", "import-path"])("rejects outside agent references: %s", async kind => {
     const outside = path.join(root, "host-agent");
     writeAgent(outside, "host-fixture");
