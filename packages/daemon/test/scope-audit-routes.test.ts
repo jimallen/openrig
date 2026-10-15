@@ -348,6 +348,41 @@ describe("GET /api/scope/audit", () => {
     });
   });
 
+  it("dependency graph treats done and complete* slices as inactive, the same rule listSlices applies", async () => {
+    const missionName = "terminal-status-mission";
+    const missionDir = path.join(missionsRoot, missionName);
+    fs.mkdirSync(missionDir, { recursive: true });
+    fs.writeFileSync(path.join(missionDir, "SPEC.md"), "---\nid: OPR.9.8.7\nintent: graph\ndepends_on: []\n---\n# graph\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    fs.writeFileSync(path.join(missionDir, "NOTES.md"), "# Notes\n", "utf8");
+    // [dir, status, stays active]. Statuses are in slices/, so only the status can make them inactive.
+    const rows: Array<[string, string, boolean]> = [
+      ["01-active", "active", true],
+      ["02-done", "done", false],
+      ["03-complete", "complete", false],
+      ["04-completed", "Completed", false],
+      ["05-closed", "closed-stale", false],
+      ["06-shipped", "shipped-to-x", false],
+      ["07-incomplete", "incomplete", true],
+      ["08-in-progress", "in-progress", true],
+    ];
+    rows.forEach(([name, status], i) => {
+      const sliceDir = path.join(missionDir, "slices", name);
+      fs.mkdirSync(sliceDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sliceDir, "SPEC.md"),
+        validSliceReadme(`---\nid: OPR.9.8.7.${i + 1}\nstatus: ${status}\ndepends_on: []\n---`, name),
+        "utf8",
+      );
+      fs.writeFileSync(path.join(sliceDir, "PROGRESS.md"), "# Progress\n", "utf8");
+    });
+
+    const res = await app.request(`/api/scope/audit?mission=${missionName}`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { graph?: { nodes: Array<{ name: string }> } };
+    expect(body.graph?.nodes.map((n) => n.name)).toEqual(rows.filter(([, , active]) => active).map(([name]) => name));
+  });
+
   it("mission missing NOTES returns one advisory without reviving the retired brief gate", async () => {
     const missionDir = path.join(missionsRoot, "briefless-mission");
     fs.mkdirSync(missionDir, { recursive: true });

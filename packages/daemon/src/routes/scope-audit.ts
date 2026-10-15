@@ -9,6 +9,7 @@ import {
   deriveMissionDependencyGraph,
   type MissionDependencyGraph,
   type ScopeAuditResult,
+  sliceStatusIsActive,
 } from "../domain/scope/scope-audit.js";
 import type { SliceIndexer } from "../domain/slices/slice-indexer.js";
 import { NOTES_FILE_PRECEDENCE, resolveNodeFile, resolveNotesFile } from "../domain/scope/node-file.js";
@@ -74,7 +75,7 @@ function buildAuditDependencyGraph(missionName: string, missionDir: string): Mis
         id: nodeId(frontmatter),
         name: entry.name,
         dependsOn: frontmatter.depends_on,
-        active: bucket === "slices" && !status.startsWith("closed") && !status.startsWith("shipped"),
+        active: bucket === "slices" && sliceStatusIsActive(status),
         ordinal: Number(match[1]),
       });
     }

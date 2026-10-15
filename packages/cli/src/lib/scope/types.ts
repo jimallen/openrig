@@ -31,6 +31,9 @@ export interface MissionInfo {
   /** Minted dot-ID for this mission (read from frontmatter if present,
    *  otherwise inferred from the folder name pattern). */
   id: string | null;
+  /** Slice directories in slices/ whose status is still active (sliceStatusIsActive). Terminal
+   *  slices (done, closed*, shipped*, complete*) left in slices/ are in neither this count nor
+   *  closedSliceCount, so active + closed no longer equals the total slice directories. */
   activeSliceCount: number;
   closedSliceCount: number;
 }

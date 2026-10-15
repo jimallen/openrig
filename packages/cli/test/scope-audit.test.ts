@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyScopeItem, type ScopeAuditInput } from "../src/lib/scope/scope-audit.js";
+import { classifyScopeItem, sliceStatusIsActive, type ScopeAuditInput } from "../src/lib/scope/scope-audit.js";
 
 function makeInput(overrides: Partial<ScopeAuditInput>): ScopeAuditInput {
   return {
@@ -708,5 +708,15 @@ describe("PM dogfood #1 — authored README sections vs pristine scaffold PRD", 
       readmeFrontmatterRaw: "id: OPR.99.0.2.1\nstatus: planned",
     }));
     expect(asPlanned.findings).toEqual(asPlaceholder.findings);
+  });
+});
+
+describe("sliceStatusIsActive", () => {
+  it.each([
+    [null, true], [undefined, true], ["", true], ["active", true], ["in-progress", true], ["incomplete", true], ["undone", true],
+    ["done", false], ["DONE", false], ["closed", false], ["closed-stale", false], ["shipped", false], ["shipped-to-x", false],
+    ["complete", false], ["Completed", false],
+  ])("%j is active=%s", (status, active) => {
+    expect(sliceStatusIsActive(status)).toBe(active);
   });
 });

@@ -88,6 +88,19 @@ export interface ScopeAuditResult {
   frontmatterError: string | null;
 }
 
+/** The ONE rule for "is this slice still active". A slice whose frontmatter status is `done`,
+ * or starts with `closed`, `shipped` or `complete` is terminal; everything else (including no
+ * status) is active. Every active/terminal slice decision in the CLI and daemon (slice listing,
+ * the active-slice count, the dependency graph) must call this and not restate it. This is a
+ * slice rule: mission activity is `missionIsActive`, and proof is `statusRequiresProof`. */
+export function sliceStatusIsActive(status: string | null | undefined): boolean {
+  const normalized = (status ?? "").toLowerCase();
+  return normalized !== "done"
+    && !normalized.startsWith("closed")
+    && !normalized.startsWith("shipped")
+    && !normalized.startsWith("complete");
+}
+
 export interface MissionDependencyGraph {
   mission: { id: string | null; name: string; dependsOn: string[] };
   nodes: Array<{ id: string; name: string; dependsOn: string[] }>;
