@@ -73,7 +73,7 @@ describe("bundle create: the culture file is read through the culture-file guard
     try {
       const res = await create();
       const body = await res.json() as { error?: string };
-      expect(res.status, JSON.stringify(body)).toBe(500);
+      expect(res.status, JSON.stringify(body)).toBe(400);
       expect(body.error).toMatch(/culture file "culture\.md" .* is not a regular file/);
       noArtifact();
     } finally { writer.kill("SIGKILL"); }
@@ -83,7 +83,7 @@ describe("bundle create: the culture file is read through the culture-file guard
     fs.writeFileSync(path.join(tmpDir, "culture.md"), Buffer.alloc(OVER, 0x61));
     const res = await create();
     const body = await res.json() as { error?: string };
-    expect(res.status, JSON.stringify(body)).toBe(500);
+    expect(res.status, JSON.stringify(body)).toBe(400);
     expect(body.error).toMatch(/is 262145 bytes, over the 262144-byte limit/);
     noArtifact();
   });
@@ -93,9 +93,17 @@ describe("bundle create: the culture file is read through the culture-file guard
     fs.linkSync(path.join(tmpDir, "culture.md"), path.join(tmpDir, "alias.md"));
     const res = await create();
     const body = await res.json() as { error?: string };
-    expect(res.status, JSON.stringify(body)).toBe(500);
+    expect(res.status, JSON.stringify(body)).toBe(400);
     expect(body.error).toMatch(/has 2 hard links/);
     noArtifact();
+  });
+
+  // The 400 is specific to a refused culture file; an unrelated assembler failure stays a 500.
+  it("CONTROL: a non-culture assembler failure (unresolvable agent_ref) is still a 500, not a 400", async () => {
+    fs.writeFileSync(path.join(tmpDir, "culture.md"), `# culture\n${MARKER}\n`);
+    fs.rmSync(path.join(tmpDir, "agents"), { recursive: true });
+    const res = await create();
+    expect(res.status, await res.clone().text()).toBe(500);
   });
 
   // The guard's bytes are what is copied: a UTF-8 string round trip would turn 0xa0 0xa1 into U+FFFD.

@@ -6,9 +6,22 @@ import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-life
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { checkCultureFile } from "@openrig/daemon/culture-file";
 
 export interface RigDeps extends StatusDeps {
   readFile: (path: string) => string;
+  /**
+   * Reads the rig's culture file. Production reads it through the daemon's culture-file guard (regular file,
+   * one link, size cap, O_NONBLOCK), so a FIFO is refused instead of hanging `rig spec audit`. When absent
+   * (injected test deps) the culture file is read with `readFile`.
+   */
+  readCultureFile?: (path: string) => string;
+}
+
+function guardedCultureRead(path: string): string {
+  const checked = checkCultureFile(path, path);
+  if (!checked.ok) throw new Error(checked.message);
+  return checked.content;
 }
 
 export function rigCommand(depsOverride?: RigDeps): Command {
@@ -17,6 +30,7 @@ export function rigCommand(depsOverride?: RigDeps): Command {
     lifecycleDeps: realDeps(),
     clientFactory: (url: string) => new DaemonClient(url),
     readFile: (p) => fs.readFileSync(p, "utf-8"),
+    readCultureFile: guardedCultureRead,
   };
 
   cmd
@@ -128,11 +142,12 @@ export function rigCommand(depsOverride?: RigDeps): Command {
         }
         const culturePath = nodePath.isAbsolute(cultureFile) ? cultureFile : nodePath.join(nodePath.dirname(filePath), cultureFile);
         let cultureText: string | null = null;
-        try { cultureText = deps.readFile(culturePath); } catch { cultureText = null; }
+        let cultureRefusal = "";
+        try { cultureText = (deps.readCultureFile ?? deps.readFile)(culturePath); } catch (err) { cultureText = null; cultureRefusal = deps.readCultureFile ? ` ${(err as Error).message}` : ""; }
         if (cultureText === null) {
           findings.push({
             kind: "culture_unreadable",
-            message: `culture_file '${cultureFile}' is declared but could not be read at ${culturePath}.`,
+            message: `culture_file '${cultureFile}' is declared but could not be read at ${culturePath}.${cultureRefusal}`,
             typicalFix: "Ensure the culture file exists beside the rig spec.",
           });
         } else if (knownPods.size > 0) {

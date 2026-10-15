@@ -7,7 +7,7 @@ import type { EventBus } from "../domain/event-bus.js";
 import type { BootstrapOrchestrator } from "../domain/bootstrap-orchestrator.js";
 import type { BootstrapRepository } from "../domain/bootstrap-repository.js";
 import { LegacyBundleAssembler as BundleAssembler, type AssemblerFsOps } from "../domain/bundle-assembler.js";
-import { PodBundleAssembler, type PodAssemblerFsOps } from "../domain/pod-bundle-assembler.js";
+import { PodBundleAssembler, CultureFileRefused, type PodAssemblerFsOps } from "../domain/pod-bundle-assembler.js";
 import { computeIntegrity, writeIntegrity, verifyIntegrity, type IntegrityFsOps } from "../domain/bundle-integrity.js";
 import { pack, unpack, verifyArchiveDigest, collectUnsafeArchiveEntries, unsafeArchiveEntryReason } from "../domain/bundle-archive.js";
 import { resolvePackage } from "../domain/package-resolve-helper.js";
@@ -936,6 +936,9 @@ bundleRoutes.post("/create", async (c) => {
       fs.rmSync(tmpStaging, { recursive: true, force: true });
     }
   } catch (err) {
+    // A culture file the guard refuses (FIFO, oversize, hard-linked) is a caller-correctable input, like the
+    // route's other validation failures, not a daemon fault.
+    if (err instanceof CultureFileRefused) return c.json({ error: err.message }, 400);
     return c.json({ error: (err as Error).message }, 500);
   }
 });

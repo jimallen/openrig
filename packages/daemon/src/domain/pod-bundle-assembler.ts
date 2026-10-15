@@ -7,6 +7,9 @@ import { serializePodBundleManifest, type PodBundleManifest, type PodBundleAgent
 import type { RigSpec, StartupBlock } from "./types.js";
 import type { CultureFileCheck } from "./culture-file-guard.js";
 
+/** The culture-file guard refused the spec's culture file. A caller-correctable input error (route: 400). */
+export class CultureFileRefused extends Error {}
+
 export interface PodAssemblerFsOps extends AgentResolverFsOps {
   /** Raw bytes, for files the bundle copies verbatim (agent packages, culture, docs, startup files). */
   readFileBuffer(path: string): Uint8Array;
@@ -263,7 +266,7 @@ export class PodBundleAssembler {
       // The culture file is injected into every seat's startup context, so it gets the same refusal the
       // delivery path applies (a FIFO would hang this read; an oversize or hard-linked file would be bundled).
       const checked = this.fs.readCultureFile(relPath, realPath);
-      if (!checked.ok) throw new Error(checked.message);
+      if (!checked.ok) throw new CultureFileRefused(checked.message);
       content = checked.raw;
     } else {
       content = this.fs.readFileBuffer(realPath);
