@@ -7,6 +7,7 @@ import os from "node:os";
 import { parse as parseYaml } from "yaml";
 import { registerBundleProject } from "../src/domain/workspace/project-registration.js";
 import { vendorProjectDir } from "../src/domain/bundle-carried-project.js";
+import { VendoredFileRefused } from "../src/domain/vendored-file-guard.js";
 import { readProjectCatalog } from "../src/domain/workspace/project-catalog.js";
 
 const USER_CATALOG = `schema: openrig.workspace/v0alpha1
@@ -303,6 +304,8 @@ describe("vendorProjectDir", () => {
   it("refuses a file that resolves outside the project folder", () => {
     fs.writeFileSync(path.join(work, "secret.md"), "outside\n");
     fs.symlinkSync(path.join(work, "secret.md"), path.join(projectDir, "notes.md"));
-    expect(() => vendorProjectDir(projectDir, staging)).toThrow(/resolves outside the project directory/);
+    // The guarded collector's wording (was "resolves outside the project directory"); now also the 400 class.
+    expect(() => vendorProjectDir(projectDir, staging)).toThrow(/resolves to .*outside its folder/);
+    expect(() => vendorProjectDir(projectDir, staging)).toThrow(VendoredFileRefused);
   });
 });
