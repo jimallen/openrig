@@ -347,6 +347,15 @@ describe("listMissions + listSlices + nextSliceNN", () => {
     expect(mission.closedSliceCount).toBe(1);
   });
 
+  it("activeSliceCount ignores non-slice entries in slices/ (.nn-NN claim markers, unnumbered dirs)", () => {
+    const base = path.join(missionsRoot, "release-0.3.2", "slices");
+    writeFile(path.join(base, ".nn-01"), "claim marker file\n");
+    fs.mkdirSync(path.join(base, ".nn-02"), { recursive: true });
+    fs.mkdirSync(path.join(base, "notes"), { recursive: true });
+    expect(findMission(missionsRoot, "release-0.3.2").activeSliceCount).toBe(2);
+    expect(listMissions(missionsRoot).find((m) => m.name === "release-0.3.2")!.activeSliceCount).toBe(2);
+  });
+
   it("nextSliceNN skips numbers already used in slices/ AND closed/ (HG-3)", () => {
     const missionAbs = path.join(missionsRoot, "release-0.3.2");
     // existing: 01, 02, 04 → next should be 5 (not 3 — numbers never reused).
