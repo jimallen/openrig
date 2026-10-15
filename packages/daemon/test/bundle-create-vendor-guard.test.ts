@@ -244,10 +244,11 @@ describe("bundle create: files copied out of author folders go through the vendo
   it("a declared skill directory holding a symlink to a FIFO is refused, not read (writer attached)", async () => {
     fs.mkdirSync(path.join(tmpDir, "skills", "s"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "skills", "s", "SKILL.md"), "# s");
-    fifoWithWriter(path.join(tmpDir, "skills", "s", "pipe"));
-    fs.symlinkSync("pipe", path.join(tmpDir, "skills", "s", "viapipe"));
+    // Sorted so the LINK is met before the pipe itself (a direct pipe entry is refused on sight, see bundle-create-author-tree).
+    fifoWithWriter(path.join(tmpDir, "skills", "s", "zpipe"));
+    fs.symlinkSync("zpipe", path.join(tmpDir, "skills", "s", "apipe"));
     authorBundle(["skills:", "  - skills/s/SKILL.md"]);
-    await refused(/skills\/s\/viapipe.* is not a regular file/);
+    await refused(/skills\/s\/apipe.* is not a regular file/);
   }, 10000);
 
   it("a declared workflow spec that is a FIFO is refused (writer attached)", async () => {

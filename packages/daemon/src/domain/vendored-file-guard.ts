@@ -14,16 +14,21 @@ import { checkGuardedFile, type GuardedFileCheck, type GuardedFileKind } from ".
  *
  * Every file that goes into a bundle from such a folder is read through checkGuardedFile (one descriptor opened
  * with O_NOFOLLOW|O_NONBLOCK: a regular file, one link, at most VENDORED_FILE_MAX_BYTES), and its real path
- * must be inside the folder's real root. A symlink that stays inside the folder is followed and bundled as the
- * regular file it points to (the same as a docs/startup file, see collectRigFile); one that leaves it is REFUSED,
- * not skipped, exactly as a culture file or a docs file that resolves outside the rig root is refused, so a
- * bundle never silently lacks a file the author expected in it. The refusal is a caller-correctable 400.
- * Each folder's files together may not exceed VENDORED_TREE_MAX_BYTES.
+ * must be inside its root. WHICH root: a persona folder is confined to its own folder; the author bundle.yaml's
+ * skill, plugin, context-pack and agent-image trees (and bundle.yaml itself) are confined to the bundle SOURCE
+ * root, so a link between two folders of the same source tree is followed. A symlink that stays inside the root
+ * is followed and bundled as the regular file it points to; one that leaves it is REFUSED, not skipped, exactly
+ * as a culture file or a docs file that resolves outside the rig root is refused, so a bundle never silently
+ * lacks a file the author expected in it. The refusal is a caller-correctable 400. A symlink cycle inside an
+ * author tree is refused too (it would otherwise walk forever). Each folder's files together may not exceed
+ * VENDORED_TREE_MAX_BYTES.
  *
- * RESIDUAL: a CONTENT swap of a regular, single-link, in-root, under-cap file between the check and the copy
- * still goes through, and trees copied with cpSync (author-bundle skills/plugins) are re-read by cpSync after
- * the guarded pass; a FIFO swapped in at that moment makes cpSync throw, it does not hang, but its bytes are not
- * re-capped. A legacy tree with no guard seam (an in-memory test filesystem) is read with a plain read.
+ * Author trees are written from the bytes the guarded pass already read (never re-read by cpSync, which would
+ * reopen the swap window and, on Node 26, does not dereference file symlinks at all), with the source mode bits.
+ *
+ * RESIDUAL: a CONTENT swap of a regular, single-link, in-root, under-cap file between the check and the read
+ * of that same file still goes through (one descriptor, so only the bytes the trusted caller could have named
+ * anyway). A legacy tree with no guard seam (an in-memory test filesystem) is read with a plain read.
  *
  * Caps, measured 2026-10-15 (read-only): the persona folders of the deployed release (8 folders) and OpenRig's
  * built-ins (19 folders), the jims-team and demo folders: the largest single file is 61,540 bytes (a built-in
@@ -93,6 +98,11 @@ export const productionVendoredReadDeps: VendoredReadDeps = {
  * {@link VendoredFileRefused} for a policy refusal, {@link VendoredFileUnavailable} (code ENOENT / EACCES) for a missing or unreadable file.
  */
 export function readContainedVendoredFile(deps: VendoredReadDeps, realRoot: string | null, requested: string, path: string): Uint8Array {
+  return readContainedVendoredFileWithMode(deps, realRoot, requested, path).bytes;
+}
+
+/** {@link readContainedVendoredFile} that also returns the permission bits of the file that was read. */
+export function readContainedVendoredFileWithMode(deps: VendoredReadDeps, realRoot: string | null, requested: string, path: string): { bytes: Uint8Array; mode: number } {
   let real: string;
   try { real = deps.realpath(path); } catch (error) {
     const code = (error as { code?: string })?.code;
@@ -111,7 +121,7 @@ export function readContainedVendoredFile(deps: VendoredReadDeps, realRoot: stri
   if (realRoot !== null && !isInsideRoot(realRoot, checked.realPath)) {
     throw new VendoredFileRefused(`bundled file "${requested}" resolves to ${checked.realPath}, outside its folder ${realRoot}, through a symlink; copy the file into the folder to bundle it`);
   }
-  return checked.raw;
+  return { bytes: checked.raw, mode: checked.mode };
 }
 
 /** Running total of the bytes one folder contributes; refuses past VENDORED_TREE_MAX_BYTES. */

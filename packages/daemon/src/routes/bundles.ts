@@ -37,7 +37,7 @@ import { normalizePreconditionsBlock, type BundlePrecondition } from "../domain/
 import { assertShippableSubstance } from "../domain/agent-resolver.js";
 import { checkCultureFile } from "../domain/culture-file-guard.js";
 import { guardedAgentRefFsOps } from "../domain/agent-ref-guard.js";
-import { checkVendoredFile, productionVendoredReadDeps, readContainedVendoredFile, VendoredFileRefused, VendoredTreeBudget } from "../domain/vendored-file-guard.js";
+import { checkVendoredFile, productionVendoredReadDeps, readContainedVendoredFile, readContainedVendoredFileWithMode, VendoredFileRefused, VendoredTreeBudget } from "../domain/vendored-file-guard.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if
@@ -343,7 +343,14 @@ function assemblerFsOps(): AssemblerFsOps {
 function integrityFsOps(): IntegrityFsOps {
   return {
     readFile: (p) => fs.readFileSync(p, "utf-8"),
-    readFileBuffer: (p) => fs.readFileSync(p),
+    // The staged tree holds only regular files. A legacy package copy keeps a symlink verbatim, and a read that
+    // follows one to a FIFO would stall the daemon; refuse anything that is not a regular file before reading.
+    readFileBuffer: (p) => {
+      if (!fs.lstatSync(p).isFile()) {
+        throw new VendoredFileRefused(`bundled file "${nodePath.basename(p)}" is not a regular file (a symlink, pipe or device in the staged bundle); copy the real file into the package`);
+      }
+      return fs.readFileSync(p);
+    },
     writeFile: (p, c) => fs.writeFileSync(p, c, "utf-8"),
     exists: (p) => fs.existsSync(p),
     walkFiles: (dir) => realFsOps().listFiles!(dir),
@@ -494,7 +501,13 @@ interface AuthorBundleCrossPrimitives {
   agentImages?: string[];
 }
 
-function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBundleCrossPrimitives {
+/** Test seam only (production passes nothing): runs exactly between the guarded pass over a declared tree and the writes. */
+export interface AuthorBundleHooks { afterGuardedPass?: (declared: string) => void }
+
+/** The most entries one declared tree may list: a symlink fan-out must not walk forever. */
+const AUTHOR_TREE_MAX_ENTRIES = 20_000;
+
+export function consumeAuthorBundleYaml(sourceRoot: string, staging: string, hooks?: AuthorBundleHooks): AuthorBundleCrossPrimitives {
   const authorBundlePath = nodePath.join(sourceRoot, "bundle.yaml");
   if (!fs.existsSync(authorBundlePath)) return {};
   // Canonicalize sourceRoot before vendoring (banked 79a89d40 B1 guard
@@ -527,8 +540,12 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
    * problem class is symlinks escaping). Throws on any escape. */
   const assertNoSymlinkEscapeInTree = (dirAbs: string, kindLabel: string, declared: string): void => {
     const stack: string[] = [dirAbs];
+    // A directory symlink that points back up the tree would otherwise be pushed forever.
+    const visited = new Set<string>();
     while (stack.length > 0) {
       const cur = stack.pop()!;
+      if (visited.has(cur)) continue;
+      visited.add(cur);
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(cur, { withFileTypes: true });
@@ -550,8 +567,7 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
             throw new Error(`author bundle ${kindLabel} '${declared}' contains nested symlink at '${nodePath.relative(sourceRootReal, entryAbs)}' escaping bundle source root; rejected`);
           }
           // If the symlink target is a directory under sourceRoot, walk it
-          // (cpSync with dereference:true will follow it; we need to
-          // validate any nested symlinks too)
+          // (the guarded pass below follows it; validate any nested symlinks too)
           try {
             const st = fs.statSync(entryReal);
             if (st.isDirectory()) stack.push(entryReal);
@@ -563,7 +579,9 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
     }
   };
 
-  const authorYaml = fs.readFileSync(authorBundlePath, "utf-8");
+  // bundle.yaml itself goes through the guard: a FIFO named bundle.yaml would stall the read, and a link out of
+  // the source root is refused like any other file here.
+  const authorYaml = Buffer.from(readContainedVendoredFile(productionVendoredReadDeps, sourceRootReal, "bundle.yaml", authorBundlePath)).toString("utf-8");
   const authorParsed = parsePodBundleManifest(authorYaml) as Record<string, unknown>;
   const result: AuthorBundleCrossPrimitives = {};
   result.preconditions = normalizePreconditionsBlock(authorParsed["preconditions"], reason => {
@@ -604,35 +622,56 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
     if (!fs.existsSync(sourceAbs)) throw new Error(`author bundle ${kindLabel} '${declared}' does not exist in source`);
     // Realpath-validate the declared dir itself (catches symlink-to-outside-dir)
     const sourceReal = assertSourceRealContained(sourceAbs, kindLabel, declared);
-    // Pre-walk the realpath-resolved dir to catch nested symlink escapes
-    // before cpSync dereferences anything
+    // Pre-walk the realpath-resolved dir to catch nested symlink escapes (and cycles) before anything is read
     assertNoSymlinkEscapeInTree(sourceReal, kindLabel, declared);
-    const sources: Array<{ path: string; bytes: Buffer }> = [];
+    const sources: Array<{ relativePath: string; path: string; bytes: Buffer; mode: number }> = [];
     const budget = new VendoredTreeBudget(`author bundle ${kindLabel} '${declared}'`);
-    const collectSources = (current: string, prefix: string): void => {
+    let entries = 0;
+    // `ancestors` is the chain of REAL directories being walked: a directory symlink whose target is one of them
+    // is a cycle (a link to `.` or `..`), refused rather than walked forever.
+    const collectSources = (current: string, prefix: string, ancestors: readonly string[]): void => {
+      const chain = [...ancestors, current];
       for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (++entries > AUTHOR_TREE_MAX_ENTRIES) {
+          throw new VendoredFileRefused(`author bundle ${kindLabel} '${declared}' lists more than ${AUTHOR_TREE_MAX_ENTRIES} entries (a symlink fan-out?); bundle a smaller folder`);
+        }
         const child = nodePath.join(current, entry.name);
         const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) collectSources(child, relativePath);
+        if (entry.isDirectory()) collectSources(child, relativePath, chain);
         else if (entry.isSymbolicLink() && fs.statSync(child).isDirectory()) {
-          collectSources(fs.realpathSync(child), relativePath);
+          const target = fs.realpathSync(child);
+          if (chain.includes(target)) {
+            throw new VendoredFileRefused(`author bundle ${kindLabel} '${declared}' has a symlink cycle at '${nodePath.join(declared, relativePath)}' (it points back to ${target}); remove the link`);
+          }
+          collectSources(target, relativePath, chain);
         } else if (entry.isFile() || entry.isSymbolicLink()) {
-          const bytes = Buffer.from(readContainedVendoredFile(productionVendoredReadDeps, sourceRootReal, nodePath.join(declared, relativePath), child));
+          const read = readContainedVendoredFileWithMode(productionVendoredReadDeps, sourceRootReal, nodePath.join(declared, relativePath), child);
+          const bytes = Buffer.from(read.bytes);
           budget.take(bytes.byteLength);
-          sources.push({ path: nodePath.join(declared, relativePath), bytes });
+          sources.push({ relativePath, path: nodePath.join(declared, relativePath), bytes, mode: read.mode });
+        } else {
+          throw new VendoredFileRefused(`bundled file "${nodePath.join(declared, relativePath)}" is not a regular file (a pipe, device or socket); a bundled folder may hold only regular files and symlinks to regular files`);
         }
       }
     };
-    collectSources(sourceReal, "");
+    collectSources(sourceReal, "", []);
     assertShippableSubstance(sources);
     const targetAbs = nodePath.resolve(staging, declared);
     if (!targetAbs.startsWith(stagingResolved + nodePath.sep)) {
       throw new Error(`author bundle ${kindLabel} target '${declared}' escapes staging`);
     }
-    fs.mkdirSync(nodePath.dirname(targetAbs), { recursive: true });
-    // dereference: true → symlinks followed (now validated safe) and
-    // written as regular files for tar safety
-    fs.cpSync(sourceAbs, targetAbs, { recursive: true, dereference: true });
+    hooks?.afterGuardedPass?.(declared);
+    // Write the bytes the guarded pass already read, never re-read the tree: a second read (cpSync) reopened the
+    // swap window (a directory swapped for a link out, a file swapped for a runaway or a FIFO link), and on
+    // Node 26 cpSync does not dereference file symlinks at all. Source mode bits survive (the executable bit).
+    fs.mkdirSync(targetAbs, { recursive: true });
+    for (const source of sources) {
+      const dest = nodePath.resolve(targetAbs, source.relativePath);
+      if (!dest.startsWith(targetAbs + nodePath.sep)) throw new Error(`author bundle ${kindLabel} target '${source.path}' escapes staging`);
+      fs.mkdirSync(nodePath.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, source.bytes);
+      fs.chmodSync(dest, source.mode | 0o600);
+    }
   };
 
   // A portable skill includes its helpers/references. Retain the legacy

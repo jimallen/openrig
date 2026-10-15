@@ -31,7 +31,7 @@ import nodePath from "node:path";
 export const CULTURE_FILE_MAX_BYTES = 256 * 1024;
 
 export type GuardedFileCheck =
-  | { ok: true; realPath: string; bytes: number; content: string; raw: Buffer }
+  | { ok: true; realPath: string; bytes: number; content: string; raw: Buffer; /** Permission bits of the descriptor that was read (st_mode & 0o777). */ mode: number }
   | { ok: false; reason: "not_found" | "not_regular_file" | "hard_linked" | "too_large" | "unreadable" | "changed"; message: string };
 export type CultureFileCheck = GuardedFileCheck;
 
@@ -114,7 +114,7 @@ export function checkGuardedFile(
     // Buffer.from(view) copies, but a small Buffer may still be a slice of Node's shared buffer pool: use `raw` as a
     // Buffer (length, equals, write it out), never through `raw.buffer`, which is the whole pool.
     const raw = Buffer.from(buf.subarray(0, n));
-    return { ok: true, realPath, bytes: n, content: raw.toString("utf-8"), raw };
+    return { ok: true, realPath, bytes: n, content: raw.toString("utf-8"), raw, mode: st.mode & 0o777 };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
