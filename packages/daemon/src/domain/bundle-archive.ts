@@ -76,6 +76,11 @@ export function unsafeArchiveEntryReason(entryPath: string, entryType?: string):
   if (entryType === "SymbolicLink" || entryType === "Link") {
     return `${entryType}: ${entryPath}`;
   }
+  // A pipe or device extracts as a real FIFO/device node, and the integrity check then reads every file the
+  // manifest names with a plain synchronous read: a FIFO there would stall the daemon. A bundle holds files.
+  if (entryType === "FIFO" || entryType === "CharacterDevice" || entryType === "BlockDevice") {
+    return `${entryType}: ${entryPath}`;
+  }
   const normalizedPath = normalizeArchiveEntryPath(entryPath);
   if (normalizedPath.startsWith("/") || /^[a-zA-Z]:/.test(normalizedPath)) {
     return `absolute path: ${entryPath}`;

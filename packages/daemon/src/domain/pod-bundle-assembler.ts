@@ -5,10 +5,12 @@ import { RigSpecSchema } from "./rigspec-schema.js";
 import { assertShippableSubstance, resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
 import { serializePodBundleManifest, type PodBundleManifest, type PodBundleAgentEntry, type PodBundleAgentImportEntry, type BundleProvenance, type BundleCompatibility } from "./bundle-types.js";
 import type { RigSpec, StartupBlock } from "./types.js";
-import type { CultureFileCheck } from "./culture-file-guard.js";
+import type { CultureFileCheck, GuardedFileCheck } from "./culture-file-guard.js";
+import { readContainedVendoredFile, VendoredTreeBudget, type VendoredReadDeps } from "./vendored-file-guard.js";
 
 /** The culture-file guard refused the spec's culture file. A caller-correctable input error (route: 400). */
 export class CultureFileRefused extends Error {}
+export { VendoredFileRefused } from "./vendored-file-guard.js";
 
 export interface PodAssemblerFsOps extends AgentResolverFsOps {
   /** Raw bytes, for files the bundle copies verbatim (agent packages, culture, docs, startup files). */
@@ -19,6 +21,14 @@ export interface PodAssemblerFsOps extends AgentResolverFsOps {
    * (in-memory test filesystems) the culture file is read with `readFileBuffer` like any other rig file.
    */
   readCultureFile?(requested: string, resolvedPath: string): CultureFileCheck;
+  /**
+   * The guarded reader for every other file the bundle copies out of a folder (vendored persona folders, docs,
+   * startup files): vendored-file-guard.ts `checkVendoredFile`, one open with O_NOFOLLOW|O_NONBLOCK, regular
+   * file, one link, at most the per-file cap. REQUIRED in the type, like readPersonaFile, so a new production
+   * construction that forgets it fails to compile. (The test tree is not type-checked, so an in-memory test
+   * filesystem may omit it; the assembler then falls back to `readFileBuffer`.)
+   */
+  readVendoredFile(requested: string, resolvedPath: string): GuardedFileCheck;
   realpath(path: string): string;
   /** Required: bundle create must read each persona's agent.yaml through the guard (see agent-ref-guard.ts). */
   readPersonaFile(path: string): string;
@@ -270,6 +280,10 @@ export class PodBundleAssembler {
       const checked = this.fs.readCultureFile(relPath, realPath);
       if (!checked.ok) throw new CultureFileRefused(checked.message);
       content = checked.raw;
+    } else if (typeof this.fs.readVendoredFile === "function") {
+      // Docs and startup files: the rig-root containment above is the folder check; the guard stops a FIFO
+      // or device from stalling the read and caps a runaway file.
+      content = readContainedVendoredFile(this.vendoredReadDeps(), null, relPath, realPath);
     } else {
       content = this.fs.readFileBuffer(realPath);
     }
@@ -288,13 +302,26 @@ export class PodBundleAssembler {
     }
   }
 
+  private vendoredReadDeps(): VendoredReadDeps {
+    return { realpath: (p) => this.fs.realpath(p), check: (requested, resolved) => this.fs.readVendoredFile(requested, resolved) };
+  }
+
   private vendorDirectory(srcDir: string, destDir: string, collected: string[], relPrefix: string, onReadError?: (path: string, error: unknown) => boolean): void {
     const files = this.fs.listFiles(srcDir, onReadError);
     const sources: Array<{ file: string; content: Uint8Array; mode: number | undefined }> = [];
+    // listFiles does not follow symlinks (a link to a directory is listed as one entry and refused below), but
+    // reading a listed entry does, so every read is held to the folder's REAL root and the guarded reader.
+    const deps = typeof this.fs.readVendoredFile === "function" ? this.vendoredReadDeps() : undefined;
+    const realRoot = deps ? this.fs.realpath(srcDir) : null;
+    const budget = new VendoredTreeBudget(`persona folder "${relPrefix}"`);
     for (const file of files) {
       const sourcePath = nodePath.join(srcDir, file);
       try {
-        sources.push({ file, content: this.fs.readFileBuffer(sourcePath), mode: this.fs.fileMode?.(sourcePath) });
+        const content = deps
+          ? readContainedVendoredFile(deps, realRoot, nodePath.join(relPrefix, file), sourcePath)
+          : this.fs.readFileBuffer(sourcePath);
+        budget.take(content.byteLength);
+        sources.push({ file, content, mode: this.fs.fileMode?.(sourcePath) });
       } catch (error) {
         if (!onReadError?.(sourcePath, error)) throw error;
       }

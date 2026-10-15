@@ -37,6 +37,7 @@ import { normalizePreconditionsBlock, type BundlePrecondition } from "../domain/
 import { assertShippableSubstance } from "../domain/agent-resolver.js";
 import { checkCultureFile } from "../domain/culture-file-guard.js";
 import { guardedAgentRefFsOps } from "../domain/agent-ref-guard.js";
+import { checkVendoredFile, productionVendoredReadDeps, readContainedVendoredFile, VendoredFileRefused, VendoredTreeBudget } from "../domain/vendored-file-guard.js";
 
 /**
  * Compare two dotted numeric version strings (semver-ish). Returns -1 if
@@ -357,6 +358,7 @@ function podAssemblerFsOps(): PodAssemblerFsOps {
     readFile: (p) => fs.readFileSync(p, "utf-8"),
     readFileBuffer: (p) => fs.readFileSync(p),
     readCultureFile: (requested, resolved) => checkCultureFile(requested, resolved),
+    readVendoredFile: (requested, resolved) => checkVendoredFile(requested, resolved),
     fileMode: (p) => fs.statSync(p).mode & 0o777,
     writeFile: (p, c, mode) => {
       fs.writeFileSync(p, c);
@@ -588,7 +590,7 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
     }
     // readFileSync follows the symlink; we already validated its realpath
     // stays in sourceRootReal. Write as regular file (tar safety).
-    const content = fs.readFileSync(sourceAbs);
+    const content = Buffer.from(readContainedVendoredFile(productionVendoredReadDeps, sourceRootReal, declared, sourceAbs));
     assertShippableSubstance([{ path: declared, bytes: content }]);
     fs.mkdirSync(nodePath.dirname(targetAbs), { recursive: true });
     fs.writeFileSync(targetAbs, content);
@@ -606,6 +608,7 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
     // before cpSync dereferences anything
     assertNoSymlinkEscapeInTree(sourceReal, kindLabel, declared);
     const sources: Array<{ path: string; bytes: Buffer }> = [];
+    const budget = new VendoredTreeBudget(`author bundle ${kindLabel} '${declared}'`);
     const collectSources = (current: string, prefix: string): void => {
       for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
         const child = nodePath.join(current, entry.name);
@@ -614,7 +617,9 @@ function consumeAuthorBundleYaml(sourceRoot: string, staging: string): AuthorBun
         else if (entry.isSymbolicLink() && fs.statSync(child).isDirectory()) {
           collectSources(fs.realpathSync(child), relativePath);
         } else if (entry.isFile() || entry.isSymbolicLink()) {
-          sources.push({ path: nodePath.join(declared, relativePath), bytes: fs.readFileSync(child) });
+          const bytes = Buffer.from(readContainedVendoredFile(productionVendoredReadDeps, sourceRootReal, nodePath.join(declared, relativePath), child));
+          budget.take(bytes.byteLength);
+          sources.push({ path: nodePath.join(declared, relativePath), bytes });
         }
       }
     };
@@ -940,7 +945,7 @@ bundleRoutes.post("/create", async (c) => {
   } catch (err) {
     // A culture file the guard refuses (FIFO, oversize, hard-linked) is a caller-correctable input, like the
     // route's other validation failures, not a daemon fault.
-    if (err instanceof CultureFileRefused) return c.json({ error: err.message }, 400);
+    if (err instanceof CultureFileRefused || err instanceof VendoredFileRefused) return c.json({ error: err.message }, 400);
     return c.json({ error: (err as Error).message }, 500);
   }
 });
