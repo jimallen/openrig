@@ -109,8 +109,13 @@ describe("bundle create: carried project and context pack use the guarded reader
     expect(fs.readFileSync(s("SPEC-link.md"), "utf-8")).toBe("# spec\n");
     expect(fs.readFileSync(s("dir-link", "inner.md"), "utf-8")).toBe("inner\n");
     expect(fs.lstatSync(s("SPEC-link.md")).isSymbolicLink()).toBe(false);
-    expect(fs.statSync(s("run.sh")).mode & 0o111).not.toBe(0);
-    expect(fs.statSync(s("SPEC.md")).mode & 0o111).toBe(0);
+  });
+
+  it("project files keep the source permission bits (the executable bit), as author-tree files do", () => {
+    fs.writeFileSync(path.join(proj, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+    vendorProjectDir(proj, staging);
+    expect(fs.statSync(path.join(staging, "project", "run.sh")).mode & 0o111).not.toBe(0);
+    expect(fs.statSync(path.join(staging, "project", "SPEC.md")).mode & 0o111).toBe(0);
   });
 
   it("a 40 MiB project file is refused with the per-file cap, not copied", () => {
@@ -121,10 +126,18 @@ describe("bundle create: carried project and context pack use the guarded reader
   });
 
   it("a project whose files together pass the tree cap is refused", () => {
-    const files = Math.floor(VENDORED_PROJECT_TREE_MAX_BYTES / MIB) + 1;
-    for (let i = 0; i < files; i++) fs.writeFileSync(path.join(proj, `part-${String(i).padStart(2, "0")}.bin`), Buffer.alloc(MIB));
+    // 17 MiB against the 16 MiB project cap; the number is written out so moving the constant moves a row.
+    expect(VENDORED_PROJECT_TREE_MAX_BYTES).toBe(16 * MIB);
+    for (let i = 0; i < 17; i++) fs.writeFileSync(path.join(proj, `part-${String(i).padStart(2, "0")}.bin`), Buffer.alloc(MIB));
     expect(() => vendorProjectDir(proj, staging)).toThrow(VendoredFileRefused);
     expect(() => vendorProjectDir(proj, staging)).toThrow(/holds more than \d+ bytes of files/);
+  });
+
+  it("a symlink to an OUTSIDE EMPTY directory is refused too (no file inside would trip the file check)", () => {
+    fs.mkdirSync(path.join(outside, "empty"));
+    fs.symlinkSync(path.join(outside, "empty"), path.join(proj, "emptylink"));
+    expect(() => vendorProjectDir(proj, staging)).toThrow(VendoredFileRefused);
+    expect(() => vendorProjectDir(proj, staging)).toThrow(/directory link .* outside its folder/);
   });
 
   it("a hard link inside the project to an OUTSIDE file is refused and the outside bytes are not copied", () => {
@@ -228,12 +241,17 @@ describe("bundle create: carried project and context pack use the guarded reader
     }
   });
 
-  it("CONTROL pack: a fixture pack carries only its manifest and declared files, keeping the mode", () => {
+  it("CONTROL pack: a fixture pack carries only its manifest and declared files", () => {
     fs.writeFileSync(path.join(pack, "README.md"), "not part of the pack\n");
-    fs.chmodSync(path.join(pack, "craft", "how.md"), 0o755);
     expect(vendorContextPackDir(pack, staging)).toBe("context-packs/demo-world/manifest.yaml");
     expect(walk(staging)).toEqual(["context-packs/demo-world/craft/how.md", "context-packs/demo-world/identity/who.md", "context-packs/demo-world/manifest.yaml"]);
+  });
+
+  it("pack files keep the source permission bits", () => {
+    fs.chmodSync(path.join(pack, "craft", "how.md"), 0o755);
+    vendorContextPackDir(pack, staging);
     expect(fs.statSync(path.join(staging, "context-packs/demo-world/craft/how.md")).mode & 0o111).not.toBe(0);
+    expect(fs.statSync(path.join(staging, "context-packs/demo-world/identity/who.md")).mode & 0o111).toBe(0);
   });
 
   it("a 40 MiB declared pack file is refused with the per-file cap, not copied", () => {
@@ -244,12 +262,27 @@ describe("bundle create: carried project and context pack use the guarded reader
   });
 
   it("a pack whose declared files together pass the pack cap is refused", () => {
-    const n = Math.floor(VENDORED_CONTEXT_PACK_MAX_BYTES / MIB) + 1;
+    expect(VENDORED_CONTEXT_PACK_MAX_BYTES).toBe(8 * MIB);
+    const n = 9;
     const lines = ["name: demo-world", "version: 0.1.0", "taxonomy: world", "files:"];
     for (let i = 0; i < n; i++) { lines.push(`  - path: craft/p${i}.md`, "    role: craft"); fs.writeFileSync(path.join(pack, "craft", `p${i}.md`), Buffer.alloc(MIB - 1, 97)); }
     fs.writeFileSync(path.join(pack, "manifest.yaml"), lines.join("\n") + "\n");
     expect(() => vendorContextPackDir(pack, staging)).toThrow(VendoredFileRefused);
     expect(() => vendorContextPackDir(pack, staging)).toThrow(/holds more than \d+ bytes of files/);
+  });
+
+  it("manifest.yaml over the per-file cap is refused", () => {
+    fs.writeFileSync(path.join(pack, "manifest.yaml"), `${PACK_MANIFEST}# ${"x".repeat(2 * MIB)}\n`);
+    expect(() => vendorContextPackDir(pack, staging)).toThrow(VendoredFileRefused);
+    expect(() => vendorContextPackDir(pack, staging)).toThrow(/byte limit/);
+  });
+
+  it("a manifest.yaml that is a hard link to an OUTSIDE file is refused", () => {
+    fs.writeFileSync(path.join(outside, "m.yaml"), PACK_MANIFEST);
+    fs.rmSync(path.join(pack, "manifest.yaml"));
+    fs.linkSync(path.join(outside, "m.yaml"), path.join(pack, "manifest.yaml"));
+    expect(() => vendorContextPackDir(pack, staging)).toThrow(VendoredFileRefused);
+    expect(() => vendorContextPackDir(pack, staging)).toThrow(/hard links/);
   });
 
   it("a declared pack file that is a hard link to an OUTSIDE file is refused and the outside bytes are not copied", () => {
