@@ -256,7 +256,7 @@ export class AskService {
       const identity = this.resolveIdentity(context);
       if (identity && identity.identity.rigId === rigId) {
         return {
-          excerpts: identity.peers.map((peer) => this.formatPeerLine(peer.logicalId, peer.sessionName, peer.runtime, peer.podNamespace)),
+          excerpts: identity.peers.map((peer) => this.formatPeerLine(peer.logicalId, peer.sessionName, peer.runtime, peer.podNamespace, peer.reachable)),
           insufficient: false,
         };
       }
@@ -284,7 +284,8 @@ export class AskService {
     sessionName: string | null,
     runtime: string,
     podNamespace: string | null,
+    reachable: boolean,
   ): string {
-    return `${logicalId}  session=${sessionName ?? "unbound"}  runtime=${runtime}  pod=${podNamespace ?? "—"}`;
+    return `${logicalId}  session=${sessionName ?? "unbound"}  runtime=${runtime}  pod=${podNamespace ?? "—"}  reachable=${reachable}`;
   }
 }
