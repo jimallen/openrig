@@ -2102,6 +2102,90 @@ describe("RestoreOrchestrator", () => {
     }
   });
 
+  // OPR.0.7.0.7: the pod-aware startup binding carries `effort: effortForRestore()`, which the runtime adapter turns
+  // into the seat's reasoning-effort flag. The decided rule is latest-wins (seat-effort.ts LATEST_WINS_EFFORT_PRECEDENCE):
+  // a seat's saved `rig seat set-effort` choice beats the older snapshot. If this binding sent the snapshot's authored
+  // value (or nothing), a restored seat would silently run at a reasoning level the operator did not choose.
+  // `launchHarness` is the boundary: the test reads the binding the adapter was handed. Each row's expected value is
+  // restated here from the rule, not computed from the module under test.
+  it.each([
+    // [label, authored(snapshot), choice at snapshot, choice set after the snapshot, resumable, effort sent, warning expected]
+    ["fresh, authored effort only", "high", undefined, undefined, false, "high", false],
+    ["fresh, no effort anywhere sends none", null, undefined, undefined, false, undefined, false],
+    ["fresh, choice made after the snapshot beats the snapshot's authored value", "medium", undefined, "xhigh", false, "xhigh", true],
+    ["fresh, choice held by the snapshot and still live", "medium", "xhigh", undefined, false, "xhigh", false],
+    ["fresh, choice cleared after the snapshot: the older choice does not come back", "medium", "xhigh", null, false, "medium", false],
+    ["fresh, choice replaced after the snapshot: the latest one wins", "medium", "xhigh", "low", false, "low", true],
+    ["resumed through the harness launch (pod-aware; the legacy resume call is pinned separately below), choice made after the snapshot beats the snapshot's authored value", "medium", undefined, "xhigh", true, "xhigh", true],
+  ] as const)("pod-aware restore sends the decided effort to the adapter: %s", async (_label, authored, choiceAtSnapshot, choiceAfter, resumable, expected, warns) => {
+    const rig = rigRepo.createRig("effort-rig");
+    db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("effort-pod", rig.id, "Dev");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", podId: "effort-pod", ...(authored ? { effort: authored } : {}) });
+    if (choiceAtSnapshot) db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run(choiceAtSnapshot, node.id);
+    const session = sessionRegistry.registerSession(node.id, "dev-impl@effort-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    if (resumable) sessionRegistry.updateResumeToken(session.id, "claude_id", "resume-token-123");
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+    // The snapshot is now older than the live seat.
+    if (choiceAfter !== undefined) db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run(choiceAfter, node.id);
+
+    const launchSpy = vi.fn(async (_binding: unknown, _opts: unknown) => ({ ok: true as const, ...(resumable ? { resumeToken: "resume-token-123", resumeType: "claude_id" } : {}) }));
+    const adapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness: launchSpy,
+    };
+    const orch = createOrchestrator({ claude: mockClaudeResume(), ...(resumable ? { listProcesses: nativeLineage("claude-code", "resume-token-123") } : {}) });
+    const result = await orch.restore(snap.id, { adapters: { "claude-code": adapter }, ...(resumable ? {} : { freshLogicalIds: ["dev.impl"] }) });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.result.nodes[0]!.status).toBe(resumable ? "resumed" : "fresh-primed");
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect((launchSpy.mock.calls[0]![0] as { effort?: string }).effort).toBe(expected);
+    expect(result.result.warnings.some((w) => w.includes("Effort:"))).toBe(warns);
+  });
+
+  // The legacy resume path (a seat with no pod) does not launch a harness: `attemptResume` hands the effort to the
+  // runtime's resume adapter (restore-orchestrator.ts, `effortForRestore()` in the attemptResume call). The rows above
+  // use a pod, so they never reach it: a pod-aware seat resumes through the harness launch, and its effort is the
+  // binding's. That is why a spy on launchHarness could not see this call. Here the spy is the resume adapter itself.
+  it.each([
+    // [runtime, resume type, index of effort in the adapter's resume(...) arguments, authored, choice set after the snapshot, effort sent]
+    ["claude-code", "claude_id", 8, "medium", "xhigh", "xhigh"],
+    ["claude-code", "claude_id", 8, "medium", undefined, "medium"],
+    ["codex", "codex_id", 7, "medium", "xhigh", "xhigh"],
+    ["codex", "codex_id", 7, "medium", undefined, "medium"],
+  ] as const)("legacy (no pod) %s resume (%s, effort is argument %i) sends the decided effort to the resume adapter", async (runtime, resumeType, effortIndex, authored, choiceAfter, expected) => {
+    const rig = rigRepo.createRig("legacy-effort-rig");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime, effort: authored });
+    const session = sessionRegistry.registerSession(node.id, "dev-impl@legacy-effort-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateResumeToken(session.id, resumeType, "resume-token-123");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+    if (choiceAfter) db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run(choiceAfter, node.id);
+
+    const claude = mockClaudeResume();
+    const codex = mockCodexResume();
+    const orch = createOrchestrator({ claude, codex, listProcesses: nativeLineage(runtime, "resume-token-123") });
+    const result = await orch.restore(snap.id);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const spy = vi.mocked((runtime === "codex" ? codex : claude).resume);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![effortIndex]).toBe(expected);
+    expect(vi.mocked((runtime === "codex" ? claude : codex).resume)).not.toHaveBeenCalled();
+  });
+
   it("pod-aware chooser attention preserves the attempted native token for no-input reconciliation", async () => {
     const rig = rigRepo.createRig("test-rig");
     db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-chooser", rig.id, "Dev");
