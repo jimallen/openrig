@@ -756,9 +756,16 @@ export class RestoreOrchestrator {
       });
     }
     // Restore prior session statuses
+    // Each in its own try, so one failed write does not strand the sessions after it; the faults are reported together.
+    const failures: string[] = [];
     for (const sess of priorState.sessions) {
-      this.sessionRegistry.updateStatus(sess.id, sess.status);
+      try {
+        this.sessionRegistry.updateStatus(sess.id, sess.status);
+      } catch (err) {
+        failures.push(`session ${sess.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    if (failures.length > 0) throw new Error(`could not restore prior session status (${failures.join("; ")})`);
   }
 
   private computeRestorePlan(data: SnapshotData): PlanEntry[] {
@@ -862,10 +869,26 @@ export class RestoreOrchestrator {
       return await this.restoreNodeUnisolated(entry, rigId, snapshotId, data, opts, warnings, progress);
     } catch (err) {
       const errors = [err instanceof Error ? err.message : String(err)];
-      // Before the launch call returned, the seat's binding was cleared and its sessions superseded: compensate exactly
-      // as a failed launch result does. After it returned, the launched session is the current state, and (as for any
-      // post-launch failure) is not rolled back.
-      if (progress.priorState && progress.nodeId && !progress.launchReturned) {
+      console.error(`[restore] ${entry.node.logicalId}: restore threw and was isolated to this seat:`, err instanceof Error ? (err.stack ?? err.message) : err);
+      // Whether a launch HAPPENED is decided from evidence, not from whether launchNode returned: it commits the session
+      // and binding and then makes more calls before it returns, so a throw in that tail has launched a seat whose
+      // return value never arrived. A session row for this node that did not exist before clearStaleState is the proof.
+      let launchedSessionLeft = progress.launchReturned;
+      if (!launchedSessionLeft && progress.nodeId && progress.knownSessionIds) {
+        try {
+          const nodeId = progress.nodeId;
+          launchedSessionLeft = this.sessionRegistry.getSessionsForRig(rigId)
+            .some((session) => session.nodeId === nodeId && !progress.knownSessionIds!.has(session.id));
+        } catch {
+          // Cannot tell: fall back to the launch-did-not-return reading and compensate.
+        }
+      }
+      if (launchedSessionLeft) {
+        // The launched session is the current state; as for any post-launch failure it is not rolled back.
+        errors.push("the launched session was left in place (not rolled back)");
+      } else if (progress.priorState && progress.nodeId) {
+        // Nothing was launched: the seat's binding was cleared and its sessions superseded. Compensate exactly as a
+        // failed launch result does.
         try {
           this.restoreNodeState(progress.nodeId, progress.priorState);
         } catch (compensationErr) {
@@ -994,6 +1017,8 @@ export class RestoreOrchestrator {
     // Capture prior state for compensation
     const priorState = this.captureNodeState(nodeId, rigId);
     progress.priorState = priorState;
+    // Every session row the seat has now, superseded and exited included: a row outside this set is one the launch made.
+    progress.knownSessionIds = new Set(this.sessionRegistry.getSessionsForRig(rigId).filter((s) => s.nodeId === nodeId).map((s) => s.id));
 
     // Clear stale state so NodeLauncher doesn't see already_bound
     this.clearStaleState(nodeId, rigId);
@@ -2077,6 +2102,8 @@ interface SeatRestoreProgress {
   nodeId?: string;
   /** The seat's binding and sessions as they were before clearStaleState; set just before it runs. */
   priorState?: { binding: import("./types.js").Binding | null; sessions: { id: string; status: string }[] };
+  /** Ids of every session row the seat had before clearStaleState; set with priorState. */
+  knownSessionIds?: Set<string>;
   /** True once nodeLauncher.launchNode has returned (ok or not). */
   launchReturned: boolean;
 }

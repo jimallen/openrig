@@ -5073,6 +5073,10 @@ describe("RestoreOrchestrator", () => {
   // A throw out of one seat's restore (a launcher, adapter or database error, not a failed launch RESULT) must not
   // abort the whole attempt: the seat is compensated like a failed launch, reported failed, and the rest go on.
   describe("per-seat isolation of a thrown error", () => {
+    let consoleError: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => { consoleError = vi.spyOn(console, "error").mockImplementation(() => {}); });
+    afterEach(() => { consoleError.mockRestore(); });
+
     function seedTwoSeats() {
       const snap = seedRigAndSnapshot({
         nodes: [
@@ -5219,12 +5223,106 @@ describe("RestoreOrchestrator", () => {
       expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
       if (!result.ok) return;
       expect(result.result.nodes.find((n) => n.logicalId === "seat-a")).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("post-launch exploded on A") });
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-a")?.error).toContain("the launched session was left in place");
       expect(result.result.nodes.find((n) => n.logicalId === "seat-b")).toMatchObject({ nodeId: bId });
       expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.status).not.toBe("failed");
       // The launched session stays the current state: the prior binding was NOT put back over it.
       expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).not.toBe("surface-prior-a");
       expect(sessionRegistry.getBindingForNode(aId)?.tmuxSession).toBeTruthy();
       expect(result.result.rigResult).toBe("partially_restored");
+    });
+
+    it("restore: a throw in the launcher's tail, after it committed the session and binding, is NOT rolled back over the live launch", async () => {
+      const { snap, aId, bId } = seedTwoSeats();
+      sessionRegistry.updateBinding(aId, { tmuxPane: "%7" });
+      const tmux = mockTmux();
+      // launchNode commits, then calls finishLaunchBinding before it returns; the seat is launched but never reported.
+      (tmux as unknown as { finishLaunchBinding: (name: string) => void }).finishLaunchBinding = vi.fn((name: string) => {
+        if (name === "r99-seat-a") throw new Error("finishLaunchBinding exploded on A");
+      });
+      const orch = createOrchestrator({ tmux });
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      const a = result.result.nodes.find((n) => n.logicalId === "seat-a")!;
+      expect(a).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("finishLaunchBinding exploded on A") });
+      expect(a.error).toContain("the launched session was left in place");
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.nodeId).toBe(bId);
+      // The launched binding stands: neither the stale pane nor the prior surface was written back over it.
+      const binding = sessionRegistry.getBindingForNode(aId);
+      expect(binding?.tmuxPane).not.toBe("%7");
+      expect(binding?.cmuxSurface).not.toBe("surface-prior-a");
+      expect(sessionRegistry.getSessionsForRig(snap.rigId).filter((s) => s.nodeId === aId && s.status === "running")).toHaveLength(1);
+    });
+
+    it("restore: a throw while clearing the seat's stale state is compensated (the prior state was recorded first)", async () => {
+      const { snap, aId, priorSessionId } = seedTwoSeats();
+      const orch = createOrchestrator();
+      const realMarkSuperseded = sessionRegistry.markSuperseded.bind(sessionRegistry);
+      vi.spyOn(sessionRegistry, "markSuperseded").mockImplementation((id: string) => {
+        if (id === priorSessionId) throw new Error("clearing exploded on A");
+        return realMarkSuperseded(id);
+      });
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-a")).toMatchObject({ nodeId: aId, status: "failed", error: expect.stringContaining("clearing exploded on A") });
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-b")?.status).not.toBe("failed");
+      // clearStaleState had already cleared the binding; only compensation can have put it back.
+      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+    });
+
+    it("restore: compensation restores every prior session even when one status write throws, and reports it", async () => {
+      const { snap, aId, priorSessionId } = seedTwoSeats();
+      const second = sessionRegistry.registerSession(aId, "r99-seat-a-prior2");
+      sessionRegistry.updateStatus(second.id, "detached");
+      const orch = createOrchestrator();
+      throwingLauncherFor(orch, "seat-a", "launcher exploded on A");
+      const realUpdateStatus = sessionRegistry.updateStatus.bind(sessionRegistry);
+      vi.spyOn(sessionRegistry, "updateStatus").mockImplementation((id: string, status: string) => {
+        if (id === priorSessionId && status === "idle") throw new Error("first status write exploded");
+        return realUpdateStatus(id, status);
+      });
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      const a = result.result.nodes.find((n) => n.logicalId === "seat-a")!;
+      expect(a.status).toBe("failed");
+      expect(a.error).toContain("first status write exploded");
+      expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(second.id)).toEqual({ status: "detached" });
+    });
+
+    it("restore: a seat's older exited session rows are not mistaken for a launch, so its compensation still runs", async () => {
+      const { snap, aId } = seedTwoSeats();
+      const older = sessionRegistry.registerSession(aId, "r99-seat-a-older");
+      sessionRegistry.updateStatus(older.id, "exited");
+      const orch = createOrchestrator();
+      throwingLauncherFor(orch, "seat-a", "launcher exploded on A");
+
+      const result = await orch.restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes.find((n) => n.logicalId === "seat-a")?.error).not.toContain("left in place");
+      expect(sessionRegistry.getBindingForNode(aId)?.cmuxSurface).toBe("surface-prior-a");
+    });
+
+    it("restore: an isolated throw is logged with its stack", async () => {
+      const { snap } = seedTwoSeats();
+      const orch = createOrchestrator();
+      throwingLauncherFor(orch, "seat-a", "launcher exploded on A");
+
+      await orch.restore(snap.id);
+
+      const logged = consoleError.mock.calls.flat().map((x) => (x instanceof Error ? x.stack ?? x.message : String(x))).join("\n");
+      expect(logged).toContain("seat-a");
+      expect(logged).toMatch(/launcher exploded on A[\s\S]*at /);
     });
 
     it("restore: a thrown seat that was removed and grown back is reported by its LIVE node id", async () => {
