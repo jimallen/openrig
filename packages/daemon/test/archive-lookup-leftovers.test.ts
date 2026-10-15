@@ -72,6 +72,16 @@ describe("hasTerminalTransport is live-first through the composed rig+seat leg (
     expect(terminalTransport(db, NAME)).toBe(true);
   });
 
+  it("a seat whose session name does not compose from its rig and logical id is decided by its session row alone", () => {
+    const rig = rigRepo.createRig("gamma");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "codex" });
+    registry.registerSession(node.id, "custom-name@gamma"); // composes to seat "custom-name", not "dev-impl"
+    registry.updateBinding(node.id, { attachmentType: "external_cli", externalSessionName: "ext" });
+    expect(terminalTransport(db, "custom-name@gamma")).toBe(false);
+    registry.updateBinding(node.id, { attachmentType: "tmux", tmuxSession: "custom-name@gamma" });
+    expect(terminalTransport(db, "custom-name@gamma")).toBe(true);
+  });
+
   it("a database whose rigs table has no archive column still resolves the composed leg (partial schema stays safe)", () => {
     db.exec("DROP INDEX idx_rigs_archived; ALTER TABLE rigs DROP COLUMN archived_at");
     seedNode({ archived: false, withSession: false, tmux: false });
