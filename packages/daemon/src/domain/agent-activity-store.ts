@@ -41,6 +41,8 @@ interface AgentActivityStoreDeps {
 }
 
 interface SessionLookupRow {
+  /** The session row this lookup landed on, from the SAME node as `node_id`. */
+  session_id: string;
   rig_id: string;
   node_id: string;
   session_name: string;
@@ -286,10 +288,12 @@ export class AgentActivityStore {
     const row = this._resolveSession(input);
     if (!row) return null;
     // OMP identity is node-scoped so a reused session name on another node can
-    // never receive this seat's resume token. Other runtimes keep main's lookup.
+    // never receive this seat's resume token. Other runtimes keep main's name lookup, but only
+    // when the name is what was asked: an explicit nodeId (a hook event may name an archived
+    // node) answers with that node's own session, so the pair never mixes two nodes.
     const sessionRow = (row.runtime === "omp"
       ? this.db.prepare("SELECT id FROM sessions WHERE session_name = ? AND node_id = ? ORDER BY id DESC LIMIT 1").get(row.session_name, row.node_id)
-      : findLatestSessionNameMatch(this.db, row.session_name)) as { id: string } | undefined | null;
+      : { id: row.session_id }) as { id: string } | undefined | null;
     if (!sessionRow) return null;
     return { sessionId: sessionRow.id, rigId: row.rig_id, nodeId: row.node_id, sessionName: row.session_name, runtime: row.runtime };
   }
@@ -297,7 +301,7 @@ export class AgentActivityStore {
   private _resolveSession(input: { sessionName?: string | null; nodeId?: string | null }): SessionLookupRow | null {
     if (input.nodeId) {
       const row = this.db.prepare(`
-        SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
+        SELECT s.id AS session_id, n.rig_id, n.id AS node_id, s.session_name, n.runtime
         FROM nodes n
         LEFT JOIN sessions s ON s.node_id = n.id
           AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
@@ -311,7 +315,7 @@ export class AgentActivityStore {
     const latest = findLatestSessionNameMatch(this.db, input.sessionName);
     if (!latest) return null;
     const row = this.db.prepare(`
-      SELECT n.rig_id, n.id AS node_id, s.session_name, n.runtime
+      SELECT s.id AS session_id, n.rig_id, n.id AS node_id, s.session_name, n.runtime
       FROM sessions s
       JOIN nodes n ON n.id = s.node_id
       WHERE s.id = ?

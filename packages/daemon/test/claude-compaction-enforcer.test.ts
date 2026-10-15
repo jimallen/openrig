@@ -37,7 +37,7 @@ class ClaudeCompactionEnforcer extends ActualEnforcer {
       return result;
     };
     transport.waitUntilIdle = async () => ({ok: true, activity: {state: "idle", reason: "fixture", evidenceSource: "fixture"} as any, waitedMs: 0, attempts: 1});
-    super(settings, transport, { openrigHome: home, manualPrepWaitMs: 50, resolveOccupantGeneration: () => "fixture-generation", ...opts });
+    super(settings, transport, { openrigHome: home, manualPrepWaitMs: 60_000, resolveOccupantGeneration: () => "fixture-generation", ...opts });
   }
 }
 
@@ -1190,8 +1190,13 @@ describe("ClaudeCompactionEnforcer", () => {
         // And after a FAILED trigger (prep send fails → skipped-or-failed), a retry is allowed too.
         const { transport: t2, send: send2 } = makeSessionTransport();
         send2.mockImplementationOnce(async () => ({ ok: false, reason: "send_failed" }));
-        const enf2 = new ClaudeCompactionEnforcer(settings, t2, { openrigHome: HOME });
-        expect((await enf2.triggerManualCompact({ sessionName: SEAT, runtime: "claude-code", usedPercentage: 20 })).triggered).toBe(false);
+        // The failed prep send is an uncertain delivery, so this attempt ends only when its preparation
+        // deadline passes: the path under test. A fake clock expires it deterministically (each wait-loop
+        // sleep advances it) instead of racing a few real milliseconds against machine load.
+        let clock = 1_700_000_000_000;
+        const enf2 = new ClaudeCompactionEnforcer(settings, t2, { openrigHome: HOME, now: () => clock, sleep: async (ms) => { clock += ms; } });
+        const failedTrigger = await enf2.triggerManualCompact({ sessionName: SEAT, runtime: "claude-code", usedPercentage: 20 });
+        expect(failedTrigger).toMatchObject({ triggered: false, reason: "preparation_incomplete" });
         expect(enf2.getManualCompactionState(SEAT)?.stage).toBe("skipped-or-failed");
         // Retry proceeds (not blocked by the guard).
         expect(await enf2.triggerManualCompact({ sessionName: SEAT, runtime: "claude-code", usedPercentage: 20 }))

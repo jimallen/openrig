@@ -55,3 +55,37 @@ export function isSessionNameRunning(db: Database.Database, sessionName: string)
   const row = db.prepare("SELECT status FROM sessions WHERE id = ?").get(latest.id) as { status: string } | undefined;
   return row?.status === "running";
 }
+
+/**
+ * The seat name when the seat that answers it is running, else null. The oversight seat probe
+ * (startup.ts) is this, lifted out of the model-divergence monitor's dependency bag so it can be
+ * tested: `createDaemon` does not expose that bag.
+ */
+export function resolveRunningSeat(db: Database.Database, seatName: string): string | null {
+  return isSessionNameRunning(db, seatName) ? seatName : null;
+}
+
+/**
+ * The nodes a canonical `<seat>@<rig>` name composes to (rig name + dash-form logical id), each marked
+ * `archived`, so a caller can let archived nodes count only when no live node has the identity. Rig
+ * names are not unique, and an archived rig keeps its nodes and bindings. Without an archive column
+ * nothing is archived. Throws when `rigs`/`nodes` are absent, like the join it replaces; the caller
+ * decides how to fail.
+ */
+export function findComposedSeatNodes(db: Database.Database, rigName: string, seat: string): Array<{ node_id: string; archived: boolean }> {
+  const hasArchive = (db.prepare("PRAGMA table_info(rigs)").all() as Array<{ name: string }>).some((column) => column.name === "archived_at");
+  const rows = db.prepare(`
+    SELECT n.id AS node_id, ${hasArchive ? "(r.archived_at IS NOT NULL)" : "0"} AS archived
+      FROM nodes n JOIN rigs r ON r.id = n.rig_id
+     WHERE r.name = ? AND REPLACE(n.logical_id, '.', '-') = ?
+  `).all(rigName, seat) as Array<{ node_id: string; archived: number }>;
+  return rows.map((row) => ({ node_id: row.node_id, archived: row.archived === 1 }));
+}
+
+/** Whether a node belongs to an archived rig. A schema without topology/archive columns has none. */
+export function isNodeInArchivedRig(db: Database.Database, nodeId: string): boolean {
+  const hasArchive = (db.prepare("PRAGMA table_info(rigs)").all() as Array<{ name: string }>).some((column) => column.name === "archived_at");
+  if (!hasArchive) return false;
+  const row = db.prepare("SELECT r.archived_at AS archived_at FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?").get(nodeId) as { archived_at: string | null } | undefined;
+  return row?.archived_at != null;
+}

@@ -1,5 +1,5 @@
 import { readWakeLadderBackstop } from "./queue-wake-ladder.js";
-import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
+import { findComposedSeatNodes, findLatestSessionNameMatch, isNodeInArchivedRig } from "./latest-session-name-match.js";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { EventBus } from "./event-bus.js";
@@ -3683,27 +3683,31 @@ export class QueueRepository {
       const anyTopology = this.db.prepare("SELECT 1 FROM sessions LIMIT 1").get()
         ?? this.db.prepare("SELECT 1 FROM nodes LIMIT 1").get();
       if (!anyTopology) return true;
-      // The seat that answers the name (live rig before archived) decides, not any archived row of that name.
+      // The seat that answers the name decides, live rig before archived: an archived rig keeps its
+      // session rows and bindings, so a live external seat must not read as pane-bound because a
+      // same-named archived predecessor was tmux. An archived node counts only when no live node
+      // answers the name through either leg (session row, or composed rig name + logical id).
+      const candidates: Array<{ nodeId: string; archived: boolean }> = [];
       const answering = findLatestSessionNameMatch(this.db, dest);
-      if (answering && this.db.prepare(
+      if (answering) candidates.push({ nodeId: answering.node_id, archived: isNodeInArchivedRig(this.db, answering.node_id) });
+      const at = dest.lastIndexOf("@");
+      if (at <= 0 && !answering) return true; // non-canonical shapes stay on the legacy path
+      if (at > 0) {
+        for (const composed of findComposedSeatNodes(this.db, dest.slice(at + 1), dest.slice(0, at))) {
+          candidates.push({ nodeId: composed.node_id, archived: composed.archived });
+        }
+      }
+      const live = candidates.filter((c) => !c.archived);
+      const deciding = live.length > 0 ? live : candidates;
+      const hasTmux = this.db.prepare(
         `SELECT 1 FROM bindings b
           WHERE b.node_id = ?
             AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
             AND b.tmux_session IS NOT NULL LIMIT 1`,
-      ).get(answering.node_id)) return true;
-      const at = dest.lastIndexOf("@");
+      );
+      if (deciding.some((c) => hasTmux.get(c.nodeId))) return true;
       if (at <= 0) return true; // non-canonical shapes stay on the legacy path
-      const seat = dest.slice(0, at);
-      const rig = dest.slice(at + 1);
-      const composed = this.db.prepare(
-        `SELECT 1 FROM nodes n
-          JOIN rigs r ON r.id = n.rig_id
-          JOIN bindings b ON b.node_id = n.id
-          WHERE r.name = ? AND REPLACE(n.logical_id, '.', '-') = ?
-            AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
-            AND b.tmux_session IS NOT NULL LIMIT 1`,
-      ).get(rig, seat);
-      return !!composed;
+      return false;
     } catch {
       return true; // schema-partial fixture DB: never discriminate without evidence
     }
