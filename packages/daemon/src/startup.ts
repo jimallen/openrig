@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { resolveSessionNodeId } from "./domain/queue-owner.js";
-import { isSessionNameRunning } from "./domain/latest-session-name-match.js";
+import { isSessionNameRunning, resolveRunningSeat } from "./domain/latest-session-name-match.js";
 import { listWakeSessionsBySeat } from "./domain/wake-resolve-service.js";
 import { discoverTailscaleSelfNames } from "./middleware/browser-boundary.js";
 import { configureShadowCapture } from "./domain/shadow-capture.js";
@@ -2347,7 +2347,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
         },
         resolveOversightSeat: () => {
-          return isSessionNameRunning(db, OVERSIGHT_SEAT) ? OVERSIGHT_SEAT : null;
+          return resolveRunningSeat(db, OVERSIGHT_SEAT);
         },
         recordProclamation: (proclamation) => {
           eventBus.emit({
