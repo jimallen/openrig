@@ -11,11 +11,11 @@ import { checkCultureFile } from "@openrig/daemon/culture-file";
 export interface RigDeps extends StatusDeps {
   readFile: (path: string) => string;
   /**
-   * Reads the rig's culture file. Production reads it through the daemon's culture-file guard (regular file,
-   * one link, size cap, O_NONBLOCK), so a FIFO is refused instead of hanging `rig spec audit`. When absent
-   * (injected test deps) the culture file is read with `readFile`.
+   * Reads the rig's culture file. REQUIRED, with no fallback to `readFile`: production passes the daemon's
+   * culture-file guard (regular file, one link, size cap, O_NONBLOCK), so a FIFO is refused instead of
+   * hanging `rig spec audit`. A caller that injects its own deps must say how the culture file is read.
    */
-  readCultureFile?: (path: string) => string;
+  readCultureFile: (path: string) => string;
 }
 
 function guardedCultureRead(path: string): string {
@@ -143,7 +143,7 @@ export function rigCommand(depsOverride?: RigDeps): Command {
         const culturePath = nodePath.isAbsolute(cultureFile) ? cultureFile : nodePath.join(nodePath.dirname(filePath), cultureFile);
         let cultureText: string | null = null;
         let cultureRefusal = "";
-        try { cultureText = (deps.readCultureFile ?? deps.readFile)(culturePath); } catch (err) { cultureText = null; cultureRefusal = deps.readCultureFile ? ` ${(err as Error).message}` : ""; }
+        try { cultureText = deps.readCultureFile(culturePath); } catch (err) { cultureText = null; cultureRefusal = ` ${(err as Error).message}`; }
         if (cultureText === null) {
           findings.push({
             kind: "culture_unreadable",

@@ -121,6 +121,7 @@ describe("rig spec", () => {
       lifecycleDeps: runningLifecycleDeps(port),
       clientFactory: (baseUrl) => new DaemonClient(baseUrl),
       readFile: vi.fn(() => fileContent),
+      readCultureFile: vi.fn(() => fileContent),
     };
   }
 
@@ -157,7 +158,7 @@ describe("rig spec", () => {
     const lifecycleDeps = mockLifecycleDeps();
     const clientFactory = vi.fn(() => { throw new Error("validation must not connect to a daemon"); });
     const program = new Command().addCommand(rigCommand({
-      lifecycleDeps, clientFactory, readFile: () => yaml,
+      lifecycleDeps, clientFactory, readFile: () => yaml, readCultureFile: () => yaml,
     }));
     const { logs, exitCode } = await captureLogs(() => program.parseAsync(["node", "rig", "spec", "validate", "rig.yaml", "--json"]));
     expect(JSON.parse(logs.join("\n"))).toMatchObject({ valid, errors: expect.any(Array) });
@@ -173,7 +174,7 @@ describe("rig spec", () => {
     for (const json of [false, true]) {
       const lifecycleDeps = mockLifecycleDeps();
       const clientFactory = vi.fn(() => { throw new Error("must stay local"); });
-      const program = new Command().addCommand(rigCommand({ lifecycleDeps, clientFactory, readFile: () => yaml }));
+      const program = new Command().addCommand(rigCommand({ lifecycleDeps, clientFactory, readFile: () => yaml, readCultureFile: () => yaml }));
       const { logs, exitCode } = await captureLogs(() => program.parseAsync([
         "node", "rig", "spec", "validate", "rig.yaml", ...(json ? ["--json"] : []),
       ]));
@@ -191,7 +192,7 @@ describe("rig spec", () => {
     for (const json of [false, true]) {
       const lifecycleDeps = mockLifecycleDeps();
       const clientFactory = vi.fn(() => { throw new Error("must stay local"); });
-      const program = new Command().addCommand(rigCommand({ lifecycleDeps, clientFactory, readFile: () => yaml }));
+      const program = new Command().addCommand(rigCommand({ lifecycleDeps, clientFactory, readFile: () => yaml, readCultureFile: () => yaml }));
       const { logs, exitCode } = await captureLogs(() => program.parseAsync([
         "node", "rig", "spec", "validate", "rig.yaml", ...(json ? ["--json"] : []),
       ]));
@@ -210,14 +211,16 @@ describe("rig spec", () => {
 
   // Slice 16 (item 2): rig spec audit flags stale seat ids in the culture.
   function rigDepsMap(files: Record<string, string>): RigDeps {
+    const read = vi.fn((p: string) => {
+      const key = Object.keys(files).find((k) => p.endsWith(k));
+      if (key === undefined) throw new Error(`no such file: ${p}`);
+      return files[key]!;
+    });
     return {
       lifecycleDeps: runningLifecycleDeps(port),
       clientFactory: (baseUrl) => new DaemonClient(baseUrl),
-      readFile: vi.fn((p: string) => {
-        const key = Object.keys(files).find((k) => p.endsWith(k));
-        if (key === undefined) throw new Error(`no such file: ${p}`);
-        return files[key]!;
-      }),
+      readFile: read,
+      readCultureFile: read,
     };
   }
 
@@ -288,6 +291,7 @@ describe("rig spec", () => {
       lifecycleDeps: mockLifecycleDeps(),
       clientFactory,
       readFile: vi.fn(() => "version: '0.2'\nname: sparse-rig\npods: []\nedges: []\n"),
+      readCultureFile: vi.fn(() => { throw new Error("no culture file in this fixture"); }),
     };
     const program = new Command();
     program.exitOverride();

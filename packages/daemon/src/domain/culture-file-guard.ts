@@ -87,6 +87,8 @@ export function checkCultureFile(
     }
     // `raw` is the exact guarded bytes, for a caller that copies the file verbatim (bundle create) and must
     // not round-trip them through a UTF-8 string.
+    // Buffer.from(view) copies, but a small Buffer may still be a slice of Node's shared buffer pool: use `raw` as a
+    // Buffer (length, equals, write it out), never through `raw.buffer`, which is the whole pool.
     const raw = Buffer.from(buf.subarray(0, n));
     return { ok: true, realPath, bytes: n, content: raw.toString("utf-8"), raw };
   } finally {
