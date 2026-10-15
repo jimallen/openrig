@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import nodePath from "node:path";
 import { checkGuardedFile, type GuardedFileCheck, type GuardedFileKind } from "./culture-file-guard.js";
 
@@ -40,6 +40,16 @@ import { checkGuardedFile, type GuardedFileCheck, type GuardedFileKind } from ".
  */
 export const VENDORED_FILE_MAX_BYTES = 1024 * 1024;
 export const VENDORED_TREE_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * `--project-dir` carries a whole project workspace (SPEC.md, missions and slices), not one skill, so its tree
+ * cap is twice the author-tree cap. The per-file cap and entry cap are shared. Measured 2026-10-15 (read-only):
+ * the repo and this machine's ~/Code hold NO project.yaml folder to measure (0 found), and the real workspaces
+ * under ~/.openrig were not read, so this figure is a judgment, not a measurement: 16 MiB is 2x the author cap.
+ * The built-in context packs, for scale, are at most 127,413 bytes in total.
+ */
+export const VENDORED_PROJECT_TREE_MAX_BYTES = 16 * 1024 * 1024;
+/** Every file of one carried context pack together: a pack is a manifest and the files it names. */
+export const VENDORED_CONTEXT_PACK_MAX_BYTES = VENDORED_TREE_MAX_BYTES;
 
 export const VENDORED_FILE_KIND: GuardedFileKind = {
   label: "bundled file",
@@ -134,4 +144,73 @@ export class VendoredTreeBudget {
       throw new VendoredFileRefused(`${this.label} holds more than ${this.maxBytes} bytes of files; bundle create copies at most that much from one folder`);
     }
   }
+}
+
+/** The most entries one vendored tree may list: a symlink fan-out must not walk forever. */
+export const VENDORED_TREE_MAX_ENTRIES = 20_000;
+
+export interface VendoredTreeFile {
+  relativePath: string;
+  bytes: Buffer;
+  /** Permission bits of the file that was read. */
+  mode: number;
+}
+
+export interface CollectVendoredTreeOptions {
+  /** REAL path every file and directory link must stay inside. */
+  rootReal: string;
+  /** REAL path of the directory to walk (inside rootReal). */
+  startReal: string;
+  /** Start of every tree refusal: "author bundle skill 'skills/s'", "project 'demo'". */
+  label: string;
+  /** The path shown in a refusal for a tree-relative path. */
+  display: (relativePath: string) => string;
+  budget: VendoredTreeBudget;
+  maxEntries?: number;
+  deps?: VendoredReadDeps;
+}
+
+/**
+ * Walk one directory tree and read every file through the guarded reader. The ONE collector behind the author
+ * skill/plugin trees, `--project-dir` and (per file) the carried context packs. Per file: a regular file, one
+ * link, under VENDORED_FILE_MAX_BYTES, inside rootReal, read from one descriptor. Per tree: the budget, an entry
+ * cap, and a refusal of a directory link that leaves rootReal or points back at a directory being walked (the
+ * chain of REAL ancestors). A pipe, device or socket is refused, never skipped. Returns the bytes that were
+ * read; callers write THOSE, never re-read the source.
+ */
+export function collectVendoredTree(opts: CollectVendoredTreeOptions): VendoredTreeFile[] {
+  const deps = opts.deps ?? productionVendoredReadDeps;
+  const maxEntries = opts.maxEntries ?? VENDORED_TREE_MAX_ENTRIES;
+  const files: VendoredTreeFile[] = [];
+  let entries = 0;
+  const walk = (current: string, prefix: string, ancestors: readonly string[]): void => {
+    const chain = [...ancestors, current];
+    for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (++entries > maxEntries) {
+        throw new VendoredFileRefused(`${opts.label} lists more than ${maxEntries} entries (a symlink fan-out?); bundle a smaller folder`);
+      }
+      const child = nodePath.join(current, entry.name);
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(child, relativePath, chain);
+      else if (entry.isSymbolicLink() && statSync(child).isDirectory()) {
+        const target = realpathSync(child);
+        if (!isInsideRoot(opts.rootReal, target)) {
+          throw new VendoredFileRefused(`${opts.label} has a directory link at '${opts.display(relativePath)}' that resolves to ${target}, outside its folder ${opts.rootReal}; copy the directory into the folder to bundle it`);
+        }
+        if (chain.includes(target)) {
+          throw new VendoredFileRefused(`${opts.label} has a symlink cycle at '${opts.display(relativePath)}' (it points back to ${target}); remove the link`);
+        }
+        walk(target, relativePath, chain);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        const read = readContainedVendoredFileWithMode(deps, opts.rootReal, opts.display(relativePath), child);
+        const bytes = Buffer.from(read.bytes);
+        opts.budget.take(bytes.byteLength);
+        files.push({ relativePath, bytes, mode: read.mode });
+      } else {
+        throw new VendoredFileRefused(`bundled file "${opts.display(relativePath)}" is not a regular file (a pipe, device or socket); a bundled folder may hold only regular files and symlinks to regular files`);
+      }
+    }
+  };
+  walk(opts.startReal, "", []);
+  return files;
 }

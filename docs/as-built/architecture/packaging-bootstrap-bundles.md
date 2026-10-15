@@ -86,6 +86,13 @@ a 400:
   `packages/daemon/src/domain/bundle-carried-project.ts`) carries a folder with a
   `project.yaml` to `project/`.
 
+Both go through the same guarded reader as the author skill and plugin trees
+(`collectVendoredTree()` and `readContainedVendoredFileWithMode()` in
+`packages/daemon/src/domain/vendored-file-guard.ts`): at most 1 MiB per file, 8 MiB per
+carried pack, 16 MiB per carried project and 20,000 entries per tree; a hard-linked file,
+a pipe, device or socket, a link that leaves the folder and a directory-link cycle are
+refused with a 400; the staged bytes are the bytes that were read.
+
 Create also refuses content it must not ship. `computeIntegrity()` in
 `packages/daemon/src/domain/bundle-integrity.ts` throws on sensitive paths (`.env` files,
 `*.pem`, `*.key`, `*.p12`, `credentials.*`, `tokens.*`, `.git/` and `node_modules/`).

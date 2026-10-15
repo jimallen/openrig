@@ -2,6 +2,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { parseManifest } from "./context-packs/manifest-parser.js";
 import { isSafePackRef } from "./context-packs/ref-safety.js";
+import { productionVendoredReadDeps, readContainedVendoredFileWithMode, VendoredFileRefused, VendoredTreeBudget, VENDORED_CONTEXT_PACK_MAX_BYTES } from "./vendored-file-guard.js";
 import { assertShippableSubstance } from "./agent-resolver.js";
 
 /**
@@ -29,7 +30,12 @@ export function vendorContextPackDir(packDir: string, staging: string): string {
   if (!fs.existsSync(manifestPath) || !fs.statSync(manifestPath).isFile()) {
     throw new Error(`context pack directory '${packDir}' has no manifest.yaml`);
   }
-  const manifest = parseManifest(fs.readFileSync(manifestPath, "utf-8"), manifestPath);
+  // Every read below is the guarded read (one descriptor, regular file, one link, capped, inside the pack): the
+  // existence/isFile checks are stat-then-read, so they only choose the message; they are not the defence.
+  const budget = new VendoredTreeBudget(`context pack '${packDir}'`, VENDORED_CONTEXT_PACK_MAX_BYTES);
+  const manifestRead = readContainedVendoredFileWithMode(productionVendoredReadDeps, packReal, "manifest.yaml", manifestPath);
+  budget.take(manifestRead.bytes.byteLength);
+  const manifest = parseManifest(Buffer.from(manifestRead.bytes).toString("utf-8"), manifestPath);
   const name = manifest.name;
   if (!isSafePackRef(name) || name.includes("/")) {
     throw new Error(`context pack '${packDir}' has name '${name}', which cannot be used as a single pack directory name`);
@@ -50,12 +56,16 @@ export function vendorContextPackDir(packDir: string, staging: string): string {
       throw new Error(`context pack '${name}' declares '${relativePath}', which does not exist`);
     }
     if (!real.startsWith(packReal + nodePath.sep)) {
-      throw new Error(`context pack '${name}' file '${relativePath}' resolves outside the pack directory; rejected`);
+      throw new VendoredFileRefused(`context pack '${name}' file '${relativePath}' resolves outside the pack directory; rejected`);
     }
     if (!fs.statSync(real).isFile()) {
       throw new Error(`context pack '${name}' declares '${relativePath}', which is not a file`);
     }
-    return { relativePath, path: `${bundleDir}/${relativePath}`, bytes: fs.readFileSync(real) };
+    const read = readContainedVendoredFileWithMode(productionVendoredReadDeps, packReal, relativePath, absolute);
+    const bytes = Buffer.from(read.bytes);
+    // manifest.yaml was taken from the budget when it was read first.
+    if (relativePath !== "manifest.yaml") budget.take(bytes.byteLength);
+    return { relativePath, path: `${bundleDir}/${relativePath}`, bytes, mode: read.mode };
   });
   assertShippableSubstance(sources);
 
@@ -63,6 +73,7 @@ export function vendorContextPackDir(packDir: string, staging: string): string {
     const target = nodePath.join(staging, bundleDir, source.relativePath);
     fs.mkdirSync(nodePath.dirname(target), { recursive: true });
     fs.writeFileSync(target, source.bytes);
+    fs.chmodSync(target, source.mode | 0o600);
   }
   return `${bundleDir}/manifest.yaml`;
 }
