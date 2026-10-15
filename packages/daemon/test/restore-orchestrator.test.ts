@@ -2186,6 +2186,67 @@ describe("RestoreOrchestrator", () => {
     expect(vi.mocked((runtime === "codex" ? claude : codex).resume)).not.toHaveBeenCalled();
   });
 
+  // Upstream's intent (the comment at `effortForRestore`, restore-orchestrator.ts): "The live seat is found by its
+  // logical id in this rig: a seat removed and grown back has a new node id, and its latest saved choice still wins
+  // over the older snapshot." The rows above keep one node id throughout, so a lookup by the snapshot's node id
+  // satisfies them; only a seat grown back under a new node id tells the two lookups apart.
+  it("a seat grown back under a new node id: restore reads the live seat's effort choice by logical id, not by the snapshot's node id", async () => {
+    const rig = rigRepo.createRig("regrown-effort-rig");
+    const oldNode = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", effort: "medium" });
+    const session = sessionRegistry.registerSession(oldNode.id, "dev-impl@regrown-effort-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateResumeToken(session.id, "claude_id", "resume-token-123");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    // The seat is removed and grown back: same logical id, new node id, and the operator then chose xhigh for it.
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(oldNode.id);
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(oldNode.id);
+    const newNode = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", effort: "medium" });
+    expect(newNode.id).not.toBe(oldNode.id);
+    db.prepare("UPDATE nodes SET effort_choice = ? WHERE id = ?").run("xhigh", newNode.id);
+
+    const claude = mockClaudeResume();
+    const orch = createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") });
+    await orch.restore(snap.id);
+
+    // Observed at the resume adapter (the legacy path). Restoring a snapshot of a node id that no longer exists ends
+    // in a later "FOREIGN KEY constraint failed" restore_error (measured; bookkeeping for the vanished node id), so the
+    // restore's overall result is deliberately not asserted: this test's subject is only which live seat is read.
+    const spy = vi.mocked(claude.resume);
+    expect(spy).toHaveBeenCalledTimes(1);
+    // The regrown seat's latest choice (xhigh) beats the snapshot's authored value (medium).
+    expect(spy.mock.calls[0]![8]).toBe("xhigh");
+  });
+
+  // The legacy resume path hands claude's resume a five-slot tail when the seat declares remote_control, and keeps the
+  // exact undeclared call shape otherwise (restore-orchestrator.ts, `claudeTail` in attemptResume). Without the tail a
+  // restored seat that declared remote control comes back without it.
+  it.each([
+    // [label, node remote_control, expected arguments from index 8: effort, nonInterruptive, kernelAuthority, teamPermissionDefault, remoteControl]
+    // (teamPermissionDefault is true under the default permission selection, so it is the fourth slot in both rows.)
+    ["a declared remote_control seat gets the full five-slot tail ending in true", true, ["high", false, false, true, true]],
+    ["an undeclared seat keeps the short call shape (no fifth slot)", false, ["high", false, false, true]],
+  ] as const)("legacy claude resume: %s", async (_label, remoteControl, tail) => {
+    const rig = rigRepo.createRig("legacy-rc-rig");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", effort: "high", ...(remoteControl ? { remoteControl: true } : {}) });
+    const session = sessionRegistry.registerSession(node.id, "dev-impl@legacy-rc-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateResumeToken(session.id, "claude_id", "resume-token-123");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+
+    const claude = mockClaudeResume();
+    const orch = createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") });
+    const result = await orch.restore(snap.id);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const spy = vi.mocked(claude.resume);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]!.slice(8)).toEqual(tail);
+  });
+
   it("pod-aware chooser attention preserves the attempted native token for no-input reconciliation", async () => {
     const rig = rigRepo.createRig("test-rig");
     db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-chooser", rig.id, "Dev");
