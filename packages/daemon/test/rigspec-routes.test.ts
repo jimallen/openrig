@@ -611,6 +611,21 @@ describe("Rigspec import routes (pod-aware dual-stack)", () => {
     expect(rigRepo.findRigsByName("r99")).toHaveLength(0);
   });
 
+  // Position of the flat check relative to normalize: an invalid flat spec reports its own error first
+  // (as the pod routes report validation errors before the project-rig refusal); import and preflight agree.
+  it("an invalid legacy flat spec with project_rig reports the spec's own error, not the project_rig refusal", async () => {
+    const invalid = INVALID_YAML.replace("name: \"\"\n", "name: r99\nproject_rig: true\n");
+    const headers = { "Content-Type": "text/plain" };
+    const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers, body: invalid });
+    const imp = await app.request("/api/rigs/import", { method: "POST", headers, body: invalid });
+    const preBody = await pre.json();
+    const impBody = await imp.json();
+    expect(imp.status).toBe(400);
+    expect(impBody.errors.join("\n")).not.toMatch(/project_rig/);
+    expect(preBody.errors.join("\n")).not.toMatch(/project_rig/);
+    expect(preBody.errors).toEqual(impBody.errors);
+  });
+
   it("a legacy flat spec without project_rig, or with project_rig: false, still passes preflight (control)", async () => {
     for (const body of [VALID_YAML, VALID_YAML.replace("name: r99\n", "name: r99\nproject_rig: false\n")]) {
       const pre = await app.request("/api/rigs/import/preflight", { method: "POST", headers: { "Content-Type": "text/plain" }, body });

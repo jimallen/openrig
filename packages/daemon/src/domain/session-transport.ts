@@ -131,7 +131,7 @@ const PANE_NOT_READ_REASONS = new Set([
   "no_session", "unsupported_attachment", "unsupported_runtime", "session_missing", "tmux_unavailable", "capture_failed",
 ]);
 
-function paneReadClause(reason: string): string {
+export function paneReadClause(reason: string): string {
   return PANE_NOT_READ_REASONS.has(reason) ? `pane not read (${reason})` : `pane read as unknown (${reason})`;
 }
 

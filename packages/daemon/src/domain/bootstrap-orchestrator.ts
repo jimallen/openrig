@@ -1,6 +1,6 @@
 import { RigRepository } from "./rig-repository.js";
 import { makeRunningSessionCounter } from "./running-name-guard.js";
-import { applyProjectRig, prepareProjectRigWorkspaces, PROJECT_RIG_WORKSPACES } from "./project-rig.js";
+import { applyProjectRig, prepareProjectRigWorkspaces, PROJECT_RIG_WORKSPACES, flatSpecProjectRigError } from "./project-rig.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import nodePath from "node:path";
@@ -278,6 +278,12 @@ export class BootstrapOrchestrator {
           this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
           return { runId: run.id, status: "failed", stages, errors: validation.errors, warnings };
         }
+        const flatProjectRig = flatSpecProjectRigError(raw);
+        if (flatProjectRig) {
+          stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig", error: flatProjectRig } });
+          this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+          return { runId: run.id, status: "failed", stages, errors: [flatProjectRig], warnings };
+        }
         spec = this.resolveLegacyNodeCwds(RigSpecSchema.normalize(raw), specDir, opts.cwdOverride);
         stages.push({ stage: "resolve_spec", status: "ok", detail: { specName: spec.name, specVersion: spec.schemaVersion, source: "rig_bundle" } });
       } catch (err) {
@@ -305,6 +311,12 @@ export class BootstrapOrchestrator {
           stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "validation_failed", errors: validation.errors } });
           this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
           return { runId: run.id, status: "failed", stages, errors: validation.errors, warnings };
+        }
+        const flatProjectRig = flatSpecProjectRigError(raw);
+        if (flatProjectRig) {
+          stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig", error: flatProjectRig } });
+          this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");
+          return { runId: run.id, status: "failed", stages, errors: [flatProjectRig], warnings };
         }
         spec = this.resolveLegacyNodeCwds(RigSpecSchema.normalize(raw), specDir, opts.cwdOverride);
         const cwdError = spec.nodes
