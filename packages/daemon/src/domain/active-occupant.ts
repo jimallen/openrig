@@ -107,10 +107,19 @@ export function absentSeatResumeHistory<T extends { id: string; nodeId: string; 
   return rows.find((session) => !!session.resumeToken?.trim() && !!session.resumeType && session.resumeType !== "none") ?? null;
 }
 
+/** The ONE command every fresh-start suggestion names for a seat that could not be resumed. It is the
+ *  per-seat door: `rig seat launch` touches only that seat and works whether its siblings are live or not.
+ *  `rig up --existing <rig> --fresh <seat>` is NOT offered: restore refuses a rig with any live seat
+ *  (`rig_not_stopped`, HTTP 409), and a restore that leaves one seat awaiting a decision has normally just
+ *  started its siblings. The seat ref is shell-quoted; `<why>` is the operator's audit reason. */
+export function freshSeatLaunchCommand(logicalId: string, rigName: string): string {
+  const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
+  return `rig seat launch ${seat} --fresh --reason "<why>"`;
+}
+
 /** The stop-for-decision explanation for such a seat, worded once for apply and preview. */
 export function absentSeatResumeHistoryError(logicalId: string, resumeType: string | null, rigName: string): string {
-  const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
-  return `Original session not resumed: the seat had no running occupant when this snapshot was taken, but an earlier occupant left a '${resumeType}' resume token. No session was started. The recorded token has not been verified and may be stale or belong to another runtime. To deliberately start only this seat fresh, run: rig seat launch ${seat} --fresh --reason "<why>".`;
+  return `Original session not resumed: the seat had no running occupant when this snapshot was taken, but an earlier occupant left a '${resumeType}' resume token. No session was started. The recorded token has not been verified and may be stale or belong to another runtime. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(logicalId, rigName)}.`;
 }
 
 /** One wording for the loud failure everywhere — divergent phrasings would be

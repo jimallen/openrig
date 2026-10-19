@@ -12,6 +12,8 @@ import { prepareDaemonAutoStart } from "../daemon-auto-start.js";
 import type { StartOptions } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
+import { launchAcceptedFreshSeats } from "../fresh-seat-accept.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
@@ -687,33 +689,21 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
               if (yes) accepted.push(n.logicalId);
             }
             if (accepted.length > 0) {
-              let freshRes: { status: number; data: Record<string, unknown> };
-              try {
-                freshRes = await client.post<Record<string, unknown>>("/api/up", {
-                  sourceRef,
-                  plan: false,
-                  autoApprove: opts.yes ?? false, nonInterruptive: opts.nonInterruptive,
-                  cwdOverride: opts.cwd ? nodePath.resolve(opts.cwd) : defaultLibraryCwdOverride,
-                  targetRoot,
-                  freshLogicalIds: accepted,
-                }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
-              } catch (err) {
-                if (err instanceof DaemonConnectionError) {
-                  printHonestTimeout(err);
-                  return;
-                }
-                throw err;
-              }
-              const freshNodes = (freshRes.data["nodes"] as Array<{ logicalId: string; status: string }>) ?? [];
-              for (const n of freshNodes.filter((fn) => accepted.includes(fn.logicalId))) {
-                console.log(`  ${n.logicalId}: ${n.status}`);
+              const rigNameForRef = String(res.data["rigName"] ?? source);
+              const outcomes = await launchAcceptedFreshSeats(client, accepted, rigNameForRef, "operator accepted fresh start at rig up", LONG_RUNNING_UP_TIMEOUT_MS);
+              for (const o of outcomes) {
+                if (o.ok) console.log(`  ${o.logicalId}: fresh-primed`);
+                else console.error(`  ${o.logicalId}: fresh start failed${o.httpStatus ? ` (HTTP ${o.httpStatus})` : ""}: ${o.message}`);
               }
             } else {
-              console.log(`  No fresh sessions started. Re-run with --fresh <seat...> when you decide.`);
+              console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);
+              for (const n of awaiting) {
+                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source))}`);
+              }
             }
           } else {
             for (const n of awaiting) {
-              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately fresh-prime: rig up --existing ${source} --fresh ${n.logicalId}`);
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source))}`);
             }
           }
         }

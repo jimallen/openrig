@@ -337,7 +337,7 @@ For cmux, use `--provider cmux`. In the TUI, a rig's detail view has an `Open te
 - **Seat**: A stable role and address in a rig, such as `dev-build@starter`. The conversation occupying it can change while its identity and authored context remain.
 - **Pod**: A group of related seats with shared guidance and context. Each agent still has its own context window.
 - **Discovery**: `rig discover` fingerprints existing tmux sessions. `rig adopt` brings them under management.
-- **Snapshot/Restore**: `rig down --snapshot` captures full state. `rig up <name>` restores from latest snapshot. Restore reports per-node outcomes: resumed, fresh-primed, awaiting-decision (the original conversation can't resume; choose `--fresh`), attention_required, or failed.
+- **Snapshot/Restore**: `rig down --snapshot` captures full state. `rig up <name>` restores from latest snapshot. Restore reports per-node outcomes: resumed, fresh-primed, awaiting-decision (the original conversation can't resume; start that seat fresh with `rig seat launch '<seat>@<rig>' --fresh --reason "<why>"`), attention_required, or failed.
 - **RigBundle**: Portable archive with vendored AgentSpecs and SHA-256 integrity. Share topologies across machines. `rig up`, `rig bundle create`, `inspect` and `install` also take a GitHub folder link, `rig bundle check` checks a folder before you share it, and `rig bundle inspect` shows what a bundle will do before you install it. See [publishing a rig bundle](docs/reference/publishing-a-rig-bundle.md).
 - **Culture**: A rig's `CULTURE.md` (its `culture_file`) sets coordination norms for the group, on top of OpenRig's default culture, which every seat receives.
 

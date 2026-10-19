@@ -265,6 +265,19 @@ describe("rig snapshot + restore", () => {
     expect(output).toContain("rig restore snap-new-123 --rig rig-1");
   });
 
+  // `rig restore` is refused (rig_not_stopped, HTTP 409) while any seat is live, and a snapshot is normally taken of a
+  // live rig, so the restore line alone is advice that fails where it is printed.
+  it("snapshot create: says the rig must be stopped before the restore line it prints", async () => {
+    const program = new Command();
+    program.addCommand(snapshotCommand(runningDeps(port)));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "snapshot", "rig-1"]));
+    const lines = logs.join("\n").split("\n");
+    const stop = lines.findIndex((l) => l.includes("rig down rig-1"));
+    const restore = lines.findIndex((l) => l.includes("rig restore snap-new-123 --rig rig-1"));
+    expect(stop, lines.join("\n")).toBeGreaterThanOrEqual(0);
+    expect(restore).toBeGreaterThan(stop);
+  });
+
   it("snapshot create: sends an explicit intended-seat roster", async () => {
     const post = vi.fn(async () => ({ status: 201, data: { id: "snap-explicit" } }));
     const deps: StatusDeps = {
