@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { PaneCapture, TmuxAdapter } from "../adapters/tmux.js";
-import { classifyPaneActivity, type PaneActivityClassification } from "./session-transport.js";
+import { classifyPaneActivity, detectBackgroundJobs, type BackgroundJobs, type PaneActivityClassification } from "./session-transport.js";
 import { detectCodexLimitBanner, type CodexLimitBanner } from "./provider/codex-limit-banner.js";
 
 /** A cached STRUCTURAL pane observation: the classifyPaneActivity verdict plus WHEN the pane was read
@@ -11,6 +11,9 @@ export interface StructuralObservation {
   reason: string;
   evidence: string | null;
   observedAt: string;
+  /** Background work (shells, monitors, Codex background terminals) the pane shows after the turn.
+   *  Orthogonal to `state`: a seat can read agent_idle with jobs still running. */
+  backgroundJobs?: BackgroundJobs | null;
 }
 
 export const DEFAULT_STRUCTURAL_POLL_INTERVAL_MS = 1000;
@@ -109,6 +112,7 @@ export class SeatStructuralActivityService {
       reason: c.reason,
       evidence: c.evidence,
       observedAt: at.toISOString(),
+      backgroundJobs: detectBackgroundJobs(content),
     };
     this.latestBySession.set(sessionName, obs);
     // #763: a Codex usage-limit banner is invisible to the hook vocabulary,

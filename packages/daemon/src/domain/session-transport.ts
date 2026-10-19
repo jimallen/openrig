@@ -463,6 +463,53 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
   };
 }
 
+/** A background job a seat's pane shows still running after its turn ended. */
+export interface BackgroundJobs {
+  /** Total jobs the pane's own counter shows (shells + monitors, or Codex background terminals). */
+  count: number;
+  /** The counter text as the pane renders it, e.g. "2 shells" or "1 shell, 1 monitor". */
+  evidence: string;
+}
+
+// Claude's footer counts its background work as a chip after the permission-mode label:
+// "⏵⏵ bypass permissions on · 1 shell · ← for agents", "? for shortcuts · 2 shells". A chip is
+// `<n> shell(s)` / `<n> monitor(s)`, comma-joined when both kinds run. The chip noun is the product's
+// counter vocabulary (not a status verb); the monitor wording follows the shell chip and has no native
+// capture in this repository.
+const CLAUDE_JOB_CHIP = /^\d+ (?:shells?|monitors?)(?:, \d+ (?:shells?|monitors?))*$/;
+// Codex renders its own counter on a row of its own above the composer while idle:
+// "2 background terminals running · /ps to view · /stop to close". It must START the line: the same
+// words as a suffix of a `Working (… esc to interrupt)` row are turn status (already agent_active),
+// and scrollback copies of that row are history.
+const CODEX_JOB_ROW = /^(\d+) background terminals? running\b/;
+
+/**
+ * Background work the pane shows still running: Claude footer chips (shells, monitors) or the Codex
+ * background-terminal row, read from the live bottom of the capture only (the last PROMPT_SCAN_LINES
+ * non-blank lines; the LAST footer wins so an older repaint in scrollback cannot count). Purely
+ * structural: it classifies nothing about the turn, so classifyPaneActivity (and every send guard that
+ * reads it) is unchanged — a seat with a shell running still accepts a prompt. The prose status line
+ * ("✻ Churned for 9s · done 4:22 PM · 1 shell still running") is deliberately not read: it persists in
+ * scrollback after the shell exits, whereas the footer chip is repainted away with the job.
+ */
+export function detectBackgroundJobs(paneContent: string): BackgroundJobs | null {
+  const lines = trimPaneLines(paneContent).slice(-PROMPT_SCAN_LINES);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    const codex = CODEX_JOB_ROW.exec(line);
+    if (codex) {
+      const count = Number(codex[1]);
+      return count > 0 ? { count, evidence: truncateEvidence(line.split(" · ")[0]!.replace(/ running$/, "")) } : null;
+    }
+    if (!CLAUDE_MODE_FOOTER.test(line)) continue;
+    const chip = line.split(" · ").slice(1).find((segment) => CLAUDE_JOB_CHIP.test(segment));
+    if (!chip) return null;
+    const count = [...chip.matchAll(/(\d+) (?:shell|monitor)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+    return count > 0 ? { count, evidence: chip } : null;
+  }
+  return null;
+}
+
 export async function probeSessionActivity(input: {
   sessionName: string | null;
   runtime: string | null;

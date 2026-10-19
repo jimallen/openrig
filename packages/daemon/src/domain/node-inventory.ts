@@ -1365,23 +1365,43 @@ export async function attachAgentActivity(
       };
     };
 
+    // Capture-free cache read; the service rejects expired observations.
+    const structural = entry.canonicalSessionName
+      ? deps.structuralActivity?.getStructuralActivity(entry.canonicalSessionName)
+      : null;
+
+    /**
+     * BACKGROUND WORK — a seat whose turn ended while shells/monitors keep running posts an `idle`
+     * Stop hook, yet is busy. Like motion, background work only UPGRADES `idle` (never `unknown`, never
+     * `running`, never `needs_input`), and it yields to a pane that is asking a person something: a
+     * structural `attention` reading keeps the verdict it had. The count rides as evidence, and the
+     * verdict expires with the observation (the next tick that no longer shows the job reads idle).
+     */
+    const withBackgroundJob = (activity: AgentActivity): AgentActivity => {
+      const jobs = structural?.backgroundJobs;
+      if (!jobs || activity.state !== "idle" || structural?.state === "attention") return activity;
+      return {
+        state: "running",
+        reason: "background_job",
+        evidenceSource: "pane_heuristic",
+        sampledAt: structural!.observedAt,
+        evidence: jobs.evidence,
+        runtime: entry.runtime ?? null,
+      };
+    };
+
     const hookActivity = deps.activityStore?.getLatestForNode({
       sessionName: entry.canonicalSessionName,
       now: sampledAt,
     });
     // A fresh POSITIVE hook (running/needs_input/idle) is authoritative — EXCEPT that a positive
-    // `idle` hook now yields to live motion (D2). running/needs_input hooks are untouched.
+    // `idle` hook yields to live motion (D2) and to background work. running/needs_input hooks are untouched.
     if (hookActivity && hookActivity.state !== "unknown") {
       return {
         ...entry,
-        agentActivity: withMotion(hookActivity),
+        agentActivity: withMotion(withBackgroundJob(hookActivity)),
       };
     }
-
-    // Capture-free cache read; the service rejects expired observations.
-    const structural = entry.canonicalSessionName
-      ? deps.structuralActivity?.getStructuralActivity(entry.canonicalSessionName)
-      : null;
 
     // #763: a typed provider-interruption row (at_limit) is positive evidence
     // even though its state is unknown by construction (it must never count
@@ -1411,13 +1431,13 @@ export async function attachAgentActivity(
     if (structural && structural.state !== "unknown") {
       return {
         ...entry,
-        agentActivity: withMotion({
+        agentActivity: withMotion(withBackgroundJob({
           state: mapPaneState(structural.state),
           reason: structural.reason,
           evidenceSource: "pane_heuristic",
           sampledAt: structural.observedAt,
           evidence: structural.evidence,
-        }),
+        })),
       };
     }
 
