@@ -16,6 +16,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
+import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 const KERNEL_WAIT_MS = 60_000;
@@ -459,7 +460,7 @@ Examples:
           }
 
           const resStatus = res.data["status"] as string;
-          const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string }>) ?? [];
+          const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport }>) ?? [];
           const rigResult = res.data["rigResult"] as string | undefined;
 
           if (!opts.json) {
@@ -470,6 +471,8 @@ Examples:
               } else {
                 console.log(`    ${n.logicalId}: ${n.status}`);
               }
+              // OF-32 stage 3: a seat this restore started fresh says where its startup files came from.
+              if (n.startupSource) console.log(`      ${describeRestoreStartupSource(n.startupSource)}`);
             }
           }
 

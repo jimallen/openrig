@@ -213,6 +213,12 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     ...(opts.fresh === false ? {} : { freshLogicalIds: ["dev.impl"] }),
     ...(opts.startupFrom ? { startupFrom: opts.startupFrom } : {}),
   } as never);
+  /** The seat's entry in the last restore.completed event: what anything reading events sees. */
+  const eventSeat = () => {
+    const row = db.prepare("SELECT payload FROM events WHERE type = 'restore.completed' ORDER BY seq DESC LIMIT 1").get() as { payload: string };
+    return (JSON.parse(row.payload).result.nodes as Array<{ logicalId: string; startupSource?: unknown }>).find((n) => n.logicalId === "dev.impl")!;
+  };
+  const specB = () => ({ kind: "spec", specSource: linkSpec, specPath: path.join(root, "releases", "bbbbbbb", "rigs", "team", "rig.yaml"), previousSpecVersion: "1.0.0", specVersion: "2.0.0" });
   const seatResult = (outcome: Awaited<ReturnType<RestoreOrchestrator["restore"]>>) => {
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     if (!outcome.ok) throw new Error("restore refused");
@@ -230,6 +236,9 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(releaseOf(storedFiles(seat.nodeId))).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
+    // Review must-fix 1: the result and the event say where the files came from and that the agent moved 1.0.0 -> 2.0.0.
+    expect(node.startupSource).toEqual(specB());
+    expect(eventSeat().startupSource).toEqual(specB());
   });
 
   it("a seat whose restore policy starts it fresh re-reads too, without --fresh", async () => {
@@ -243,6 +252,9 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
     expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
+    // Review PA1: a routine restore that moves a policy-fresh seat to a new release announces it.
+    expect(node.startupSource).toEqual(specB());
+    expect(eventSeat().startupSource).toEqual(specB());
   });
 
   it("an exact resume never re-reads and keeps the saved context", async () => {
@@ -251,9 +263,11 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     retarget("bbbbbbb");
     const reads = vi.spyOn(inst, "readSeatStartupFromSpec");
 
-    await restoreFrom(snapshotId, { fresh: false });
+    const outcome = await restoreFrom(snapshotId, { fresh: false });
 
     expect(reads).not.toHaveBeenCalled();
+    // A resumed seat was given nothing new, so it names no startup source.
+    expect(outcome.ok && outcome.result.nodes.every((n) => n.startupSource === undefined)).toBe(true);
     expect(releaseOf(storedFiles(seat.nodeId))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
     expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
   });
@@ -301,6 +315,7 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     const node = seatResult(await restoreFrom(oldSnapshot, { startupFrom: "stored" }));
 
     expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
+    expect(node.startupSource).toEqual({ kind: "stored", reason: "requested" });
     expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(releaseOf(storedFiles(seat.nodeId))).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
@@ -349,6 +364,57 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
     expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
     expect(outcome.ok && outcome.result.warnings.some((w) => w.includes("dev.impl") && w.includes("records no spec source"))).toBe(true);
+    expect(node.startupSource).toEqual({ kind: "stored", reason: "no_recorded_source" });
+  });
+
+  // Review must-fix 3 / N4: a saved context the strict reader cannot read is not a dead end. Restore replays the
+  // snapshot's copy (as before stage 3), says so, and the launch saves a readable context again.
+  it("a seat whose saved startup context cannot be read comes up from the snapshot's copy, says so, and is healed", async () => {
+    const seat = await launchRig({ record: false });
+    const snapshotId = await down(seat.rigId);
+    db.prepare("UPDATE node_startup_context SET projection_entries_json = ? WHERE node_id = ?").run(JSON.stringify([{ category: "memory" }]), seat.nodeId);
+
+    const outcome = await restoreFrom(snapshotId);
+    const node = seatResult(outcome);
+
+    expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
+    expect(node.startupSource).toEqual({ kind: "snapshot", reason: "saved_context_unreadable" });
+    expect(eventSeat().startupSource).toEqual({ kind: "snapshot", reason: "saved_context_unreadable" });
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(outcome.ok && outcome.result.warnings.some((w) => w.includes("dev.impl") && w.includes("malformed") && w.includes("replays this snapshot's copy"))).toBe(true);
+    expect(JSON.parse((db.prepare("SELECT projection_entries_json AS e FROM node_startup_context WHERE node_id = ?").get(seat.nodeId) as { e: string }).e)
+      .some((e: { category: string }) => e.category === "memory")).toBe(false);
+  });
+
+  it("`rig seat launch --fresh` names that way back when the saved context cannot be read", async () => {
+    const seat = await launchRig({ record: false });
+    db.prepare("UPDATE node_startup_context SET projection_entries_json = ? WHERE node_id = ?").run(JSON.stringify([{ category: "memory" }]), seat.nodeId);
+
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable" });
+
+    expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
+    expect(!result.ok && result.guidance).toBe(`Stop the seat (rig seat stop dev-impl@team --reason "<why>") and start it from its last snapshot with: rig launch ${seat.rigId} dev.impl. That replays the snapshot's copy of its startup files and saves a new context once it is up.`);
+  });
+
+  // Reviewer's PIN-M7 (review of fc2d5b96, rev-of32s3-pin.test.ts), adopted as written.
+  it("PIN-M7 a seat refused before launch gets its prior binding and session states back", async () => {
+    const seat = await launchRig();
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    const snapshotId = await down(seat.rigId);
+    // A seat that was bound and detached (not exited) when the restore began.
+    sessionRegistry.updateBinding(seat.nodeId, { tmuxSession: "dev-impl@team" });
+    const latest = db.prepare("SELECT id FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1").get(seat.nodeId) as { id: string };
+    sessionRegistry.updateStatus(latest.id, "detached");
+    fs.unlinkSync(path.join(root, "library", "team"));
+    const before = { binding: sessionRegistry.getBindingForNode(seat.nodeId)?.tmuxSession ?? null,
+      statuses: db.prepare("SELECT id, status FROM sessions WHERE node_id = ? ORDER BY id").all(seat.nodeId) };
+    const node = seatResult(await restoreFrom(snapshotId, { fresh: false }));
+    expect(node.status).toBe("failed");
+    expect(node.error).toContain("Fresh start refused");
+    const after = { binding: sessionRegistry.getBindingForNode(seat.nodeId)?.tmuxSession ?? null,
+      statuses: db.prepare("SELECT id, status FROM sessions WHERE node_id = ? ORDER BY id").all(seat.nodeId) };
+    expect(before.binding).toBe("dev-impl@team");
+    expect(after).toEqual(before);
   });
 
   // The guidance check after the launch asks whether the seat's CLAUDE.md holds the blocks the seat was GIVEN (here

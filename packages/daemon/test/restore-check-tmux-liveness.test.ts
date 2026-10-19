@@ -312,4 +312,26 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     expect(check.status, check.evidence).toBe(status);
     if (status === "red") expect(check.evidence).toContain(missing);
   });
+
+  // Review N3: restore finds a seat by logical id and reads the LIVE node's saved context; a seat removed and grown
+  // back has a new node id, so the snapshot's node id names nothing. The prediction must look the seat up the same way.
+  it("restore-preconditions finds a regrown seat's saved context by its current node, as restore does", async () => {
+    const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "absent", "down@partly": "absent" }).adapter, { up: "exited", down: "exited" });
+    const down = rigRepo.getRig(rigId)!.nodes.find((n) => n.logicalId === "down")!;
+    db.prepare("UPDATE sessions SET restore_policy = 'relaunch_fresh' WHERE node_id = ?").run(down.id);
+    const full = rigRepo.getRig(rigId)!;
+    const oldId = "snapshot-era-node-id";
+    const swap = (id: string) => (id === down.id ? oldId : id);
+    const sessions = sessionRegistry.getSessionsForRig(rigId).map((s) => ({ ...s, nodeId: swap(s.nodeId) }));
+    const missing = "/tmp/of32-gone-release/role.md";
+    snapshotRepo.createSnapshot(rigId, "auto-pre-down", {
+      rig: full.rig, nodes: full.nodes.map((n) => ({ ...n, id: swap(n.id) })), edges: full.edges, sessions, checkpoints: {},
+      activeSessionIdByNode: Object.fromEntries(sessions.map((s) => [s.nodeId, s.id])),
+      nodeStartupContext: { [oldId]: { projectionEntries: [], runtime: "terminal", startupActions: [], resolvedStartupFiles: [
+        { path: "role.md", absolutePath: missing, ownerRoot: "/tmp/of32-gone-release", deliveryHint: "guidance_merge", required: true, appliesOn: ["fresh_start", "restore"] },
+      ] } },
+    });
+    const check = (await restoreCheck(app, rigName)).checks.find((c: { check: string }) => c.check === `rig.${rigName}.restore-preconditions`);
+    expect(check.status, check.evidence).toBe("green");
+  });
 });

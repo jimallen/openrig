@@ -508,12 +508,15 @@ export class RestoreCheckService {
       // OF-32: predict restore as it decides: a seat started fresh replays the snapshot's copy of its startup files
       // only when it has no saved context of its own and its rig's spec will not be re-read (the default restore).
       const rigSpecReread = this.deps.getRigSpecSource ? this.deps.getRigSpecSource(rig.rigId) !== null : false;
+      // Restore finds the seat by logical id and reads the LIVE node's saved context (a seat removed and grown back has
+      // a new node id); predict it the same way.
+      const liveNodeIdByLogicalId = new Map(this.deps.getNodeInventory(rig.rigId).map((entry) => [entry.logicalId, entry.nodeId]));
       const validation = validatePreRestore(input.snapshot.data, {
         fsOps: { exists: this.deps.exists },
         servicesRecord: input.servicesRecord,
         replaysSnapshotStartup: (node) => freshSeatReplaysSnapshotStartup({
           adapterAvailable: true,
-          seatHasSavedContext: this.deps.getStartupContext(node.id).status !== "missing",
+          seatHasSavedContext: ((liveId) => !!liveId && this.deps.getStartupContext(liveId).status !== "missing")(liveNodeIdByLogicalId.get(node.logicalId)),
           rigSpecReread,
         }),
       });

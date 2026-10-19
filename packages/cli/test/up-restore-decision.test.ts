@@ -179,6 +179,27 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(posted.body).toMatchObject({ fresh: true, startupFrom: "stored" });
   });
 
+  // OF-32 stage 3 review must-fix 1: each seat the restore started fresh says where its startup files came from.
+  it("rig up --existing prints, under each fresh seat, where its startup files came from and any agent version move", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "dev.impl", status: "fresh-primed", startupSource: { kind: "spec", specSource: "/lib/team/rig.yaml", specPath: "/rel/b/rigs/team/rig.yaml", previousSpecVersion: "1.0.0", specVersion: "2.0.0" } },
+        { logicalId: "dev.qa", status: "fresh-primed", startupSource: { kind: "stored", reason: "no_recorded_source" } },
+        { logicalId: "dev.ops", status: "fresh-primed", startupSource: { kind: "snapshot", reason: "saved_context_unreadable" } },
+        { logicalId: "dev.lead", status: "resumed" },
+      ], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    const at = (line: string) => logs.indexOf(line);
+    expect(at("    startup files re-read from /lib/team/rig.yaml (now /rel/b/rigs/team/rig.yaml); agent 1.0.0 -> 2.0.0")).toBe(at("  dev.impl: fresh-primed") + 1);
+    expect(at("    startup files replayed from the seat's last successful launch (this rig records no spec source)")).toBe(at("  dev.qa: fresh-primed") + 1);
+    expect(at("    startup files replayed from this snapshot (the seat's saved startup files cannot be read)")).toBe(at("  dev.ops: fresh-primed") + 1);
+    expect(logs[at("  dev.lead: resumed") + 1] ?? "").not.toContain("startup files");
+  });
+
   it("a seat restore refused before its launch prints why, not only 'failed'", async () => {
     const why = "Fresh start refused: This rig's spec source /lib/team/rig.yaml cannot be used for a fresh launch: the file (or a link on its path) no longer exists. No session was started.";
     respond = () => ({

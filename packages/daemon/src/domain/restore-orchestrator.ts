@@ -35,6 +35,7 @@ import type {
   Checkpoint,
   RestoreSnapshotSelection,
   NodeStartupSnapshot,
+  RestoreStartupSource,
 } from "./types.js";
 import { resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
@@ -1161,6 +1162,8 @@ export class RestoreOrchestrator {
     // refusal starts nothing. Without an adapter for the seat's runtime nothing is replayed or saved either way, and
     // the post-launch checks say so; the decision is skipped.
     let freshStartup: FreshStartupContext | null = null;
+    // What the restore result (and so restore.completed and `rig up`) says this seat was given, once it is launched.
+    let startupReport: RestoreStartupSource | null = null;
     const seatRuntime = liveNode.runtime ?? null;
     if (!snapshotSeatResumes(occupantResolution.kind === "resolved" ? occupantResolution.session : null, freshRequested)
       && seatRuntime && opts?.adapters?.[seatRuntime]) {
@@ -1176,9 +1179,13 @@ export class RestoreOrchestrator {
       let refusal: string | null = null;
       // startup_context_missing: the seat has no saved context of its own (it never launched in this database), so
       // the snapshot's copy is the only one and cannot be older than anything: it is replayed as before.
+      // startup_context_malformed: the seat's saved context cannot be read, so nothing newer can be lost; the
+      // snapshot's copy is replayed (as before stage 3), said in a warning, and a successful launch saves a new one.
+      // Refusing here would leave the seat no fresh path at all: `--startup-from stored` reads the same row.
+      const snapshotFallback = !decided.ok && (decided.code === "startup_context_missing" || decided.code === "startup_context_malformed");
       const chosen: NodeStartupSnapshot | null = decided.ok ? asReplayContext(decided.context)
-        : decided.code === "startup_context_missing" ? data.nodeStartupContext?.[node.id] ?? null : null;
-      if (!decided.ok && decided.code !== "startup_context_missing") {
+        : snapshotFallback ? data.nodeStartupContext?.[node.id] ?? null : null;
+      if (!decided.ok && !snapshotFallback) {
         refusal = `${decided.message}${decided.guidance ? ` ${decided.guidance}` : ""}`;
       } else if (chosen) {
         // The checks pre-restore validation runs on the snapshot's copy, run on what this seat will actually be given.
@@ -1199,6 +1206,21 @@ export class RestoreOrchestrator {
       if (decided.ok) {
         freshStartup = decided.context;
         for (const warning of decided.context.sourceWarnings) warnings?.push(`Restore: ${node.logicalId}: ${warning}`);
+        const source = decided.context.source;
+        if (source.kind === "spec") {
+          const previous = this.db.prepare("SELECT resolved_spec_version AS version FROM nodes WHERE id = ?").get(nodeId) as { version: string | null } | undefined;
+          startupReport = {
+            kind: "spec", specSource: source.specSource, specPath: source.specPath,
+            previousSpecVersion: previous?.version ?? null, specVersion: decided.context.resolvedSpec?.version ?? "",
+          };
+        } else {
+          startupReport = { kind: "stored", reason: source.reason };
+        }
+      } else if (chosen) {
+        startupReport = { kind: "snapshot", reason: decided.code === "startup_context_malformed" ? "saved_context_unreadable" : "no_saved_context" };
+        if (decided.code === "startup_context_malformed") {
+          warnings?.push(`Restore: ${node.logicalId}: ${decided.message} This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
+        }
       }
     }
 
@@ -1240,7 +1262,9 @@ export class RestoreOrchestrator {
     }
 
     const restored = await this.postLaunchRestore(entry, nodeId, rigId, data, launchResult.sessionName, launchResult, opts, warnings, priorState, freshStartup);
-    return this.checkRestoredGuidance(restored, entry.node, rigId, data, warnings, freshStartup ? asReplayContext(freshStartup) : undefined);
+    // OF-32: name the source on the seat's result, as `rig seat launch --fresh` does on its own.
+    const announced = startupReport ? { ...restored, startupSource: startupReport } : restored;
+    return this.checkRestoredGuidance(announced, entry.node, rigId, data, warnings, freshStartup ? asReplayContext(freshStartup) : undefined);
   }
 
   /** A seat that came back running should also have its role, culture and SOP guidance. If its

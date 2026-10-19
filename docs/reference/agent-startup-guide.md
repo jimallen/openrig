@@ -260,7 +260,13 @@ rig's spec as it is now, exactly as `rig seat launch --fresh` does, or replays i
 `--startup-from stored`. A seat whose spec can no longer start it is reported `failed` with the reason and the
 per-seat command to start it from its saved files, and nothing is started for it; its siblings are restored. A
 restore never writes a snapshot's older copy of the startup files over the seat's newer saved files, so restoring an
-older snapshot after a fresh launch picked up a new release does not take the seat back to the old release.
+older snapshot after a fresh launch picked up a new release does not take the seat back to the old release. Each
+seat a restore starts fresh names its source in the restore result (`startupSource`), in the `restore.completed`
+event and under the seat in `rig up` and `rig start` output: the spec it re-read and the agent version it moved
+from and to, its saved files, or the snapshot's copy. The snapshot's copy is used only when the seat has no saved
+files of its own, or when its saved files cannot be read; the restore then says so, and the launch saves readable
+files again. `rig seat launch --fresh` cannot use unreadable saved files; its refusal names the way back (stop the
+seat, then `rig launch <rig-id> <seat>`, which restores it from its last snapshot).
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
 seat without starting tmux, stopping or launching a process, projecting startup files, or changing

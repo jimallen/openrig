@@ -465,6 +465,16 @@ export interface RestoreValidationBlocker {
   remediation: string;
 }
 
+/** OF-32 stage 3: the startup source a restore gave a seat it started fresh, as `rig seat launch --fresh` reports its
+ *  own (`startupSource`), plus the snapshot's copy, which only restore can use. */
+export type RestoreStartupSource =
+  /** Re-read from the rig's recorded spec as it is now. The seat's agent spec version before this launch, and the one read. */
+  | { kind: "spec"; specSource: string; specPath: string; previousSpecVersion: string | null; specVersion: string }
+  /** The context saved by the seat's last successful launch. */
+  | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" }
+  /** This snapshot's copy: the seat has no saved context of its own, or it cannot be read. */
+  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" };
+
 export interface RestoreNodeResult {
   nodeId: string;
   logicalId: string;
@@ -485,6 +495,9 @@ export interface RestoreNodeResult {
   // outside the five-term split.)
   status: "resumed" | "rebuilt" | "fresh" | "fresh-primed" | "awaiting-decision" | "failed" | "attention_required" | "operator_recovered";
   error?: string;
+  /** OF-32 stage 3: where a seat this restore started fresh (not an exact resume) took its startup files from, set
+   *  once the seat was launched. Absent for a resumed seat, and when no adapter was available (nothing was given). */
+  startupSource?: RestoreStartupSource;
   /** Pane evidence captured when status is `attention_required` (L3, optional). */
   attentionEvidence?: string | null;
   /** Managed guidance block ids the seat's guidance file still lacks after restore. The seat keeps

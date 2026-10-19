@@ -14,6 +14,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
+import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
@@ -671,7 +672,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         }
         console.log(`Rig "${rigName ?? rigId}" restored (ID: ${rigId})`);
         if (rigResult) console.log(`Result: ${rigResult}`);
-        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string }>) ?? [];
+        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport }>) ?? [];
         for (const n of nodes) {
           // OPR.0.3.4.2 — the five-term vocabulary renders distinctly; the
           // awaiting-decision reason is part of the line (not a dead end).
@@ -684,6 +685,8 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           } else {
             console.log(`  ${n.logicalId}: ${n.status}`);
           }
+          // OF-32 stage 3: a seat this restore started fresh says where its startup files came from.
+          if (n.startupSource) console.log(`    ${describeRestoreStartupSource(n.startupSource)}`);
         }
         const warnings = (res.data["warnings"] as string[]) ?? [];
         for (const w of warnings) {

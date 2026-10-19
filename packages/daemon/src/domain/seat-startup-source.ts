@@ -164,7 +164,13 @@ export async function resolveFreshSeatStartup(
     context = reread;
   } else {
     const startup = readStoredStartupContext(deps.db, input.nodeId, input.cwd);
-    if (!startup.ok) return startup.refusal;
+    if (!startup.ok) {
+      // A saved context that cannot be read leaves `--startup-from stored` nothing to replay. Restore replays its
+      // snapshot's copy instead (and saves a new context once the seat is up), so that is the way back.
+      return startup.refusal.code === "startup_context_malformed"
+        ? { ...startup.refusal, guidance: `Stop the seat (rig seat stop ${input.sessionName} --reason "<why>") and start it from its last snapshot with: rig launch ${input.rigId} ${input.logicalId}. That replays the snapshot's copy of its startup files and saves a new context once it is up.` }
+        : startup.refusal;
+    }
     context = {
       ...startup.context,
       source: { kind: "stored", reason: storedReason },
