@@ -128,6 +128,71 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(upBodies[0]!.freshLogicalIds).toEqual(["dev.impl", "dev.qa"]);
   });
 
+  // OF-32 stage 3: the restore's escape from re-reading the spec.
+  it.each([
+    [["--startup-from", "stored"], "stored"],
+    [["--startup-from", "spec"], "spec"],
+    [[], undefined],
+  ] as const)("rig up --existing %j forwards startupFrom %s in the /api/up body", async (flag, expected) => {
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", ...flag]);
+    });
+    expect(upBodies).toHaveLength(1);
+    expect(upBodies[0]!.startupFrom).toBe(expected);
+    expect("startupFrom" in upBodies[0]!).toBe(expected !== undefined);
+  });
+
+  it("rig up --startup-from refuses a value other than spec or stored, before any request", async () => {
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "release"]);
+    });
+    expect(logs.join("\n")).toContain(`--startup-from takes spec or stored (got "release")`);
+    expect(exitCode).toBe(1);
+    expect(upBodies).toHaveLength(0);
+  });
+
+  it("under --startup-from stored, an accepted fresh start after a failed resume replays the saved files too", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }], warnings: [],
+    });
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "stored"]);
+    });
+    expect(seatPosts).toEqual([{
+      path: "/api/seat/launch/dev.impl%40myrig",
+      body: { fresh: true, reason: "operator accepted fresh start at rig up", startupFrom: "stored" },
+    }]);
+  });
+
+  it("under --startup-from stored, the headless fresh-start advice carries the escape and runs as printed", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "stored"]);
+    });
+    const advised = printedSeatLaunchCommands(logs.join("\n"));
+    expect(advised).toEqual([`rig seat launch 'dev.impl@myrig' --fresh --startup-from stored --reason "<why>"`]);
+    const posted = await runPrintedSeatCommand(advised[0]!);
+    expect(posted.body).toMatchObject({ fresh: true, startupFrom: "stored" });
+  });
+
+  it("a seat restore refused before its launch prints why, not only 'failed'", async () => {
+    const why = "Fresh start refused: This rig's spec source /lib/team/rig.yaml cannot be used for a fresh launch: the file (or a link on its path) no longer exists. No session was started.";
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.impl", status: "failed", error: why }, { logicalId: "dev.qa", status: "resumed" }], warnings: [],
+    });
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    expect(logs).toContain(`  dev.impl: failed — ${why}`);
+    expect(logs).toContain("  dev.qa: resumed");
+    expect(exitCode).toBe(1);
+  });
+
   it("headless awaiting-decision: honest machine status + --fresh hint, exit 1, NO auto-substitution", async () => {
     respond = () => ({
       status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",

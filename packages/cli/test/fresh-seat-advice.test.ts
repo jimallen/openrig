@@ -10,6 +10,12 @@ describe("cli freshSeatLaunchCommand", () => {
     expect(freshSeatLaunchCommand("operator.human", "kernel")).toBe(`rig seat launch 'operator.human@kernel' --fresh --reason "<why>"`);
   });
 
+  // OF-32 stage 3: the restore's stored escape travels into the advice (the daemon's twin has the same row).
+  it("carries --startup-from stored when the restore was asked for it, and nothing for spec or no choice", () => {
+    expect(freshSeatLaunchCommand("operator.human", "kernel", "stored")).toBe(`rig seat launch 'operator.human@kernel' --fresh --startup-from stored --reason "<why>"`);
+    expect(freshSeatLaunchCommand("operator.human", "kernel", "spec")).toBe(`rig seat launch 'operator.human@kernel' --fresh --reason "<why>"`);
+  });
+
   it("escapes an apostrophe so the printed command still parses back to the exact seat ref", () => {
     const command = freshSeatLaunchCommand("a'b", "r");
     expect(command).toBe(`rig seat launch 'a'"'"'b@r' --fresh --reason "<why>"`);

@@ -122,9 +122,19 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
     .option("--existing", "Treat <source> as an existing rig name; bypass library-spec name resolution")
     .option("--on-existing <choice>", "For a project rig whose project already has a stopped rig: resume (bring that rig back) or fresh (archive it and start a new one). Without it, rig up asks on a terminal")
     .option("--fresh <seats...>", "Deliberately fresh-prime the named seats (logical ids) instead of resuming their original sessions (operation B; reported as fresh-primed)")
+    .option("--startup-from <source>", "With an existing rig: where the seats this restore starts fresh (not resumed) take their startup files from: spec (default; the rig's spec as it is now) or stored (the files saved at each seat's last successful launch). A resumed seat keeps its saved files either way")
     .option("--json", "JSON output for agents")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
-    .action(async (source: string, opts: { nonInterruptive?: boolean; plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string; preset?: string; seat?: string[]; onExisting?: string }) => {
+    .action(async (source: string, opts: { nonInterruptive?: boolean; plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string; preset?: string; seat?: string[]; onExisting?: string; startupFrom?: string }) => {
+      // OF-32 stage 3: the restore's escape from re-reading the spec, checked before anything is sent.
+      if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
+        const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes spec or stored (got "${opts.startupFrom}").` };
+        if (opts.json) console.log(JSON.stringify(error)); else console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      const startupFrom = opts.startupFrom as "spec" | "stored" | undefined;
+      const startupFromBody = startupFrom ? { startupFrom } : {};
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no
       // selection = today exactly. Topology
@@ -197,6 +207,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           targetRoot: opts.target,
           existing: opts.existing,
           freshLogicalIds: opts.fresh,
+          ...startupFromBody,
         };
         const behaviour = /\.rigbundle$/i.test(source) && !opts.existing
           ? await showBundleBehaviourBeforeAction(async () => {
@@ -471,6 +482,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           targetRoot,
           // OPR.0.3.4.2 — operation B opt-in seats (deliberate fresh-prime).
           freshLogicalIds: opts.fresh,
+          ...startupFromBody,
           ...(opts.onExisting === "fresh" ? { onExisting: "fresh" } : {}),
           ...(specSourceRef ? { specSourceRef } : {}),
         }, opts.plan ? undefined : { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
@@ -505,6 +517,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
               sourceRef: rigName,
               plan: false,
               autoApprove: opts.yes ?? false, nonInterruptive: opts.nonInterruptive,
+              ...startupFromBody,
             }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
           } else {
             if (!opts.json) console.log(`Archiving the stopped rig "${rigName}" and starting fresh...`);
@@ -664,6 +677,10 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           // awaiting-decision reason is part of the line (not a dead end).
           if (n.status === "awaiting-decision" && n.error) {
             console.log(`  ${n.logicalId}: awaiting-decision — ${n.error}`);
+          } else if (n.status === "failed" && n.error) {
+            // OF-32: a seat refused before its launch (for example its spec can no longer start it) says why and
+            // what to do; the reason was dropped from the human output before.
+            console.log(`  ${n.logicalId}: failed — ${n.error}`);
           } else {
             console.log(`  ${n.logicalId}: ${n.status}`);
           }
@@ -696,7 +713,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             }
             if (accepted.length > 0) {
               const rigNameForRef = String(res.data["rigName"] ?? source);
-              const outcomes = await launchAcceptedFreshSeats(client, accepted, rigNameForRef, "operator accepted fresh start at rig up", LONG_RUNNING_UP_TIMEOUT_MS);
+              const outcomes = await launchAcceptedFreshSeats(client, accepted, rigNameForRef, "operator accepted fresh start at rig up", LONG_RUNNING_UP_TIMEOUT_MS, startupFrom);
               for (const o of outcomes) {
                 if (o.ok) console.log(`  ${o.logicalId}: fresh-primed`);
                 else console.error(`  ${o.logicalId}: fresh start failed${o.httpStatus ? ` (HTTP ${o.httpStatus})` : ""}: ${o.message}`);
@@ -705,12 +722,12 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             } else {
               console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);
               for (const n of awaiting) {
-                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source))}`);
+                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), startupFrom)}`);
               }
             }
           } else {
             for (const n of awaiting) {
-              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source))}`);
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), startupFrom)}`);
             }
           }
         }

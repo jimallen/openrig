@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
 import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
-import { validatePreRestore } from "./restore-preconditions.js";
+import { validatePreRestore, freshSeatReplaysSnapshotStartup } from "./restore-preconditions.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
 import type { SessionLiveness } from "./session-liveness.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
@@ -234,6 +234,8 @@ export interface RestoreCheckDeps {
   stateDir?: string;
   /** Relay-backed Claude hook events derived from the shipped hook manifest. */
   getClaudeActivityHookEvents?: () => string[];
+  /** OF-32: the spec source a rig records (null: none). A seat started fresh re-reads it; advice says so. */
+  getRigSpecSource?: (rigId: string) => string | null;
 }
 
 interface RigRollupInput {
@@ -503,9 +505,17 @@ export class RestoreCheckService {
           },
         };
       }
+      // OF-32: predict restore as it decides: a seat started fresh replays the snapshot's copy of its startup files
+      // only when it has no saved context of its own and its rig's spec will not be re-read (the default restore).
+      const rigSpecReread = this.deps.getRigSpecSource ? this.deps.getRigSpecSource(rig.rigId) !== null : false;
       const validation = validatePreRestore(input.snapshot.data, {
         fsOps: { exists: this.deps.exists },
         servicesRecord: input.servicesRecord,
+        replaysSnapshotStartup: (node) => freshSeatReplaysSnapshotStartup({
+          adapterAvailable: true,
+          seatHasSavedContext: this.deps.getStartupContext(node.id).status !== "missing",
+          rigSpecReread,
+        }),
       });
       const { blockers, warnings } = validation;
       return {
@@ -1529,7 +1539,7 @@ export class RestoreCheckService {
         }
         if (input.deadSeatIds.length > 0) {
           const rig = shellQuote(input.rigName);
-          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}. To keep the conversations instead: rig down ${rig}, then rig up ${rig} --existing (this restarts every seat).`);
+          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}.${this.freshStartupNote(input.rigId, "seat")} To keep the conversations instead: rig down ${rig}, then rig up ${rig} --existing (this restarts every seat).`);
         }
         blocked.push({
           scope: "rig",
@@ -1547,7 +1557,7 @@ export class RestoreCheckService {
           rigName: input.rigName,
           action: "restore_from_latest_snapshot",
           command: `rig up --existing ${shellQuote(input.rigName)}`,
-          reason: "Rig has a latest snapshot and one or more seats are not running/ready.",
+          reason: `Rig has a latest snapshot and one or more seats are not running/ready.${this.freshStartupNote(input.rigId, "restore")}`,
           safe: false,
           blocking: true,
         });
@@ -1560,7 +1570,7 @@ export class RestoreCheckService {
         rigName: input.rigName,
         action: "restore_from_latest_snapshot",
         command: `rig up --existing ${shellQuote(input.rigName)}`,
-        reason: "Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.",
+        reason: `Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.${this.freshStartupNote(input.rigId, "restore")}`,
         safe: false,
         blocking: true,
       });
@@ -1618,6 +1628,28 @@ export class RestoreCheckService {
       return `${actions.length} ${pluralize(actions.length, "rig")} can be recovered by known OpenRig command; ${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${unknown.length} unknown.`;
     }
     return `${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${actions.length} actionable; ${unknown.length} unknown.`;
+  }
+
+  /** OF-32: where a seat started fresh takes its startup files from, for this rig, and the stored escape. A fresh
+   *  seat (`rig seat launch --fresh`, or a seat `rig up --existing` does not resume) re-reads the rig's recorded spec
+   *  as it is now; `--startup-from stored` replays the files saved at its last successful launch. A rig that records
+   *  no source always replays those. Empty when the daemon cannot say (no source reader wired). */
+  private freshStartupNote(rigId: string, advice: "seat" | "restore"): string {
+    if (!this.deps.getRigSpecSource) return "";
+    let source: string | null;
+    try {
+      source = this.deps.getRigSpecSource(rigId);
+    } catch {
+      return "";
+    }
+    if (source === null) {
+      return advice === "seat"
+        ? " This rig records no spec source, so a seat started fresh replays the startup files saved at its last successful launch."
+        : " This rig records no spec source, so seats it starts fresh replay the startup files saved at their last successful launch.";
+    }
+    return advice === "seat"
+      ? ` A seat started fresh re-reads this rig's spec (${source}) as it is now; add --startup-from stored to give it the startup files saved at its last successful launch instead.`
+      : ` Seats it starts fresh (not resumed) re-read this rig's spec (${source}) as it is now; add --startup-from stored to give them the startup files saved at their last successful launch instead.`;
   }
 
   private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {

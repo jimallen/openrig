@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { validatePreRestore } from "../src/domain/restore-preconditions.js";
+import { validatePreRestore, freshSeatReplaysSnapshotStartup } from "../src/domain/restore-preconditions.js";
 import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry } from "../src/domain/restore-check-service.js";
 import type { SnapshotData, RigServicesRecord } from "../src/domain/types.js";
 
@@ -85,8 +85,12 @@ describe("shared restore preconditions", () => {
 });
 
 describe("restore-check consumes the shared snapshot validation", () => {
+  // OF-32 stage 3: the seat here has no saved startup context of its own, so (as restore does) its fresh start replays
+  // the snapshot's copy and that copy is what is validated. A seat with a saved context is pinned in
+  // "which fresh seats replay the snapshot's startup copy" below.
+  const noSavedContext = { getStartupContext: () => ({ status: "missing" as const, evidence: "no saved startup context (fixture)" }) };
   it.each(cases)("reports %s as red with the original message, remediation and snapshot", (missing, code, message, remediation) => {
-    const result = new RestoreCheckService(deps({ exists: (path) => path !== missing })).check({ compact: true, noQueue: true, noHooks: true });
+    const result = new RestoreCheckService(deps({ ...noSavedContext, exists: (path) => path !== missing })).check({ compact: true, noQueue: true, noHooks: true });
     expect(result.checks.find((c) => c.check === "rig.test-rig.restore-preconditions")).toEqual({
       check: "rig.test-rig.restore-preconditions", status: "red",
       evidence: `Snapshot chosen-snapshot: ${code}: ${message}`, remediation, remediationSafe: false,
@@ -101,7 +105,7 @@ describe("restore-check consumes the shared snapshot validation", () => {
     const snapshot = data();
     snapshot.nodeStartupContext!["node-1"]!.resolvedStartupFiles[0]!.required = false;
     const getRestoreInputs = () => ({ snapshot: { id: "optional", kind: "manual", data: snapshot }, servicesRecord: null });
-    const warning = new RestoreCheckService(deps({ getRestoreInputs, exists: (path) => path !== "/files/notes.md" })).check({});
+    const warning = new RestoreCheckService(deps({ ...noSavedContext, getRestoreInputs, exists: (path) => path !== "/files/notes.md" })).check({});
     expect(warning.checks.find((c) => c.check.endsWith("restore-preconditions"))?.status).toBe("yellow");
     const green = new RestoreCheckService(deps({ getRestoreInputs })).check({});
     expect(green.checks.find((c) => c.check.endsWith("restore-preconditions"))?.status).toBe("green");
@@ -143,5 +147,35 @@ describe("restore-check consumes the shared snapshot validation", () => {
       new RestoreCheckService(deps({ getRestoreInputs, getNodeInventory: () => nodes })).check({ recoveryOnly: true });
       expect(getRestoreInputs).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+// OF-32 stage 3: a seat a restore starts fresh is checked against the snapshot's copy only when that copy is what it
+// replays. Every combination of the three inputs, and the validator's use of the answer.
+describe("which fresh seats replay the snapshot's startup copy", () => {
+  it.each([
+    [false, false, false, true], [false, false, true, true], [false, true, false, true], [false, true, true, true],
+    [true, false, false, true], [true, false, true, false], [true, true, false, false], [true, true, true, false],
+  ] as const)("adapter %s, saved context %s, spec re-read %s -> replays the snapshot's copy: %s", (adapterAvailable, seatHasSavedContext, rigSpecReread, expected) => {
+    expect(freshSeatReplaysSnapshotStartup({ adapterAvailable, seatHasSavedContext, rigSpecReread })).toBe(expected);
+  });
+
+  it.each([[true, 1], [false, 0]] as const)("a fresh seat answered %s is validated against the snapshot's copy (%s blockers)", (replays, count) => {
+    const asked: string[] = [];
+    const result = validatePreRestore(data(), {
+      fsOps: { exists: (path) => path !== "/files/notes.md" },
+      replaysSnapshotStartup: (seat) => { asked.push(seat.logicalId); return replays; },
+    });
+    expect(asked).toEqual(["seat"]);
+    expect(result.blockers.filter((b) => b.code === "required_startup_file_missing")).toHaveLength(count);
+  });
+
+  it("an exact resume is never asked: it consumes no replay, whatever the answer", () => {
+    const resumed = { ...data(), sessions: [{ id: "s1", nodeId: "node-1", sessionName: "seat@test-rig", status: "running", resumeType: "claude_name", resumeToken: "tok", restorePolicy: "resume_if_possible" }],
+      activeSessionIdByNode: { "node-1": "s1" } } as unknown as SnapshotData;
+    const asked: string[] = [];
+    const result = validatePreRestore(resumed, { fsOps: { exists: () => false }, replaysSnapshotStartup: (seat) => { asked.push(seat.logicalId); return true; } });
+    expect(asked).toEqual([]);
+    expect(result.blockers.filter((b) => b.code === "required_startup_file_missing")).toHaveLength(0);
   });
 });

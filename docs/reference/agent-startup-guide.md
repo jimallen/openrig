@@ -251,8 +251,16 @@ launch that started an occupant (they then hold that release's files). A launch 
 Pass `--startup-from stored` to replay them instead of reading the spec. A rig created before OpenRig recorded spec
 sources (or not from a spec file, such as a bundle install), and a seat the spec does not declare (one added with
 `rig add`), replay them too and say so in a warning; `rig up` and `rig start` print that warning when you accept a
-fresh start. The result and the `seat.fresh_launched` event name the source used. Resume, and `rig up --existing`, do not read the
+fresh start. The result and the `seat.fresh_launched` event name the source used. A resumed seat does not read the
 spec again: a resumed conversation already holds the text it was given.
+
+`rig up <rig> --existing` applies the same rule seat by seat. A seat it resumes keeps its saved startup files. A seat
+it starts fresh (one listed with `--fresh <seat>`, or one whose restore policy or history starts it fresh) reads the
+rig's spec as it is now, exactly as `rig seat launch --fresh` does, or replays its saved files when you pass
+`--startup-from stored`. A seat whose spec can no longer start it is reported `failed` with the reason and the
+per-seat command to start it from its saved files, and nothing is started for it; its siblings are restored. A
+restore never writes a snapshot's older copy of the startup files over the seat's newer saved files, so restoring an
+older snapshot after a fresh launch picked up a new release does not take the seat back to the old release.
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
 seat without starting tmux, stopping or launching a process, projecting startup files, or changing

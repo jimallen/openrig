@@ -1,4 +1,4 @@
-import type { SnapshotData, RestoreValidationBlocker, RigServicesRecord } from "./types.js";
+import type { SnapshotData, RestoreValidationBlocker, RigServicesRecord, NodeStartupSnapshot } from "./types.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { resolveActiveSnapshotSession } from "./active-occupant.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
@@ -10,6 +10,11 @@ export function validatePreRestore(
     fsOps?: { exists(path: string): boolean };
     servicesRecord?: RigServicesRecord | null;
     freshLogicalIds?: string[];
+    /** OF-32: whether a seat this restore starts fresh replays the snapshot's copy of its startup context. Restore
+     *  decides a fresh seat's source per seat before its launch (the rig's spec as it is now, or the seat's own saved
+     *  context) and checks that source there, so a seat answered `false` is not checked against the snapshot's copy
+     *  here. Omitted: every fresh seat replays the snapshot's copy (the behaviour before OF-32 stage 3). */
+    replaysSnapshotStartup?: (node: { id: string; logicalId: string }) => boolean;
   },
 ): { blockers: RestoreValidationBlocker[]; warnings: string[] } {
   const blockers: RestoreValidationBlocker[] = [];
@@ -124,60 +129,10 @@ export function validatePreRestore(
       else if (!!sess.resumeType && sess.resumeType !== "none") consumesReplay = false;
       else consumesReplay = true;
     }
-
-    for (const storedFile of consumesReplay ? startupCtx.resolvedStartupFiles ?? [] : []) {
-      // Validate the file replay will actually deliver (#261: built-ins follow the running install).
-      const file = reanchorBuiltinStartupFile(storedFile, undefined, undefined, exists);
-      if (!file.required) {
-        if (pathLike(file.absolutePath) && !exists(file.absolutePath)) {
-          warnings.push(`Restore pre-validation: optional startup file missing for ${node.logicalId}: ${file.absolutePath}`);
-        }
-        continue;
-      }
-      if (pathLike(file.ownerRoot) && !exists(file.ownerRoot)) {
-        add({
-          code: "startup_owner_root_missing",
-          severity: "critical",
-          nodeId: node.id,
-          logicalId: node.logicalId,
-          target: file.path,
-          path: file.ownerRoot,
-          message: `Required startup file owner root is missing for ${node.logicalId}: ${file.ownerRoot}`,
-          remediation: "Restore the agent/source root or capture a new snapshot with reachable startup context.",
-        });
-      }
-      if (pathLike(file.absolutePath) && !exists(file.absolutePath)) {
-        add({
-          code: "required_startup_file_missing",
-          severity: "critical",
-          nodeId: node.id,
-          logicalId: node.logicalId,
-          target: file.path,
-          path: file.absolutePath,
-          message: `Required startup file is missing for ${node.logicalId}: ${file.absolutePath}`,
-          remediation: "Restore the missing startup file or capture a new snapshot before retrying restore.",
-        });
-      }
-    }
-
-    // OPR.0.3.4.5 (behavior 09): projection-validity != session continuity.
-    // A stale/missing projected skill/artifact must NOT abort a restore that
-    // has a valid native resume. Demoted from critical blockers to warnings
-    // flagged as projection_drift (compose slice-03's drift reporting shape).
-    // The existing post-launch filter (:855-885) already skips missing
-    // entries with a "(skipped)" warning; here we prevent the pre-restore
-    // gate from blocking the attempt entirely. Missing REQUIRED startup
-    // files and genuinely-fatal blockers (malformed snapshot, missing nodes)
-    // stay critical above.
-    for (const storedEntry of startupCtx.projectionEntries ?? []) {
-      const entry = reanchorShippedProjectionEntry(storedEntry, undefined, exists);
-      if (pathLike(entry.sourcePath) && !exists(entry.sourcePath)) {
-        warnings.push(`projection_drift: source root missing for ${node.logicalId}: ${entry.sourcePath} (projection will be skipped at startup; session continuity is unaffected)`);
-      }
-      if (pathLike(entry.absolutePath) && !exists(entry.absolutePath)) {
-        warnings.push(`projection_drift: entry missing for ${node.logicalId}: ${entry.absolutePath} (projection will be skipped at startup; session continuity is unaffected)`);
-      }
-    }
+    if (consumesReplay && opts.replaysSnapshotStartup && !opts.replaysSnapshotStartup(node)) continue;
+    const findings = startupInputFindings(node, startupCtx, exists, consumesReplay);
+    blockers.push(...findings.blockers);
+    warnings.push(...findings.warnings);
   }
 
   const servicesRecord = opts.servicesRecord ?? null;
@@ -205,6 +160,82 @@ export function validatePreRestore(
   }
 
   return { blockers, warnings };
+}
+
+/** The startup-input checks for one seat's startup context: required files (blockers, only when the seat consumes
+ *  the replay) and missing optional files and projection entries (warnings). Shared by pre-restore validation (the
+ *  snapshot's copy) and, OF-32, by restore's per-seat check of the source a fresh seat was actually given. */
+export function startupInputFindings(
+  node: { id: string; logicalId: string },
+  startupCtx: NodeStartupSnapshot,
+  exists: (path: string) => boolean,
+  consumesReplay: boolean,
+): { blockers: RestoreValidationBlocker[]; warnings: string[] } {
+  const blockers: RestoreValidationBlocker[] = [];
+  const warnings: string[] = [];
+
+  for (const storedFile of consumesReplay ? startupCtx.resolvedStartupFiles ?? [] : []) {
+    // Validate the file replay will actually deliver (#261: built-ins follow the running install).
+    const file = reanchorBuiltinStartupFile(storedFile, undefined, undefined, exists);
+    if (!file.required) {
+      if (pathLike(file.absolutePath) && !exists(file.absolutePath)) {
+        warnings.push(`Restore pre-validation: optional startup file missing for ${node.logicalId}: ${file.absolutePath}`);
+      }
+      continue;
+    }
+    if (pathLike(file.ownerRoot) && !exists(file.ownerRoot)) {
+      blockers.push({
+        code: "startup_owner_root_missing",
+        severity: "critical",
+        nodeId: node.id,
+        logicalId: node.logicalId,
+        target: file.path,
+        path: file.ownerRoot,
+        message: `Required startup file owner root is missing for ${node.logicalId}: ${file.ownerRoot}`,
+        remediation: "Restore the agent/source root or capture a new snapshot with reachable startup context.",
+      });
+    }
+    if (pathLike(file.absolutePath) && !exists(file.absolutePath)) {
+      blockers.push({
+        code: "required_startup_file_missing",
+        severity: "critical",
+        nodeId: node.id,
+        logicalId: node.logicalId,
+        target: file.path,
+        path: file.absolutePath,
+        message: `Required startup file is missing for ${node.logicalId}: ${file.absolutePath}`,
+        remediation: "Restore the missing startup file or capture a new snapshot before retrying restore.",
+      });
+    }
+  }
+
+  // OPR.0.3.4.5 (behavior 09): projection-validity != session continuity.
+  // A stale/missing projected skill/artifact must NOT abort a restore that
+  // has a valid native resume. Demoted from critical blockers to warnings
+  // flagged as projection_drift (compose slice-03's drift reporting shape).
+  // The existing post-launch filter (:855-885) already skips missing
+  // entries with a "(skipped)" warning; here we prevent the pre-restore
+  // gate from blocking the attempt entirely. Missing REQUIRED startup
+  // files and genuinely-fatal blockers (malformed snapshot, missing nodes)
+  // stay critical above.
+  for (const storedEntry of startupCtx.projectionEntries ?? []) {
+    const entry = reanchorShippedProjectionEntry(storedEntry, undefined, exists);
+    if (pathLike(entry.sourcePath) && !exists(entry.sourcePath)) {
+      warnings.push(`projection_drift: source root missing for ${node.logicalId}: ${entry.sourcePath} (projection will be skipped at startup; session continuity is unaffected)`);
+    }
+    if (pathLike(entry.absolutePath) && !exists(entry.absolutePath)) {
+      warnings.push(`projection_drift: entry missing for ${node.logicalId}: ${entry.absolutePath} (projection will be skipped at startup; session continuity is unaffected)`);
+    }
+  }
+  return { blockers, warnings };
+}
+
+/** OF-32: whether a seat a restore starts fresh replays the snapshot's copy of its startup context. Only when restore
+ *  cannot decide its source at launch (no adapter for its runtime: nothing is replayed or saved at all), or when the
+ *  seat has no saved context of its own and its rig's spec will not be re-read. Otherwise the source is the rig's
+ *  spec as it is now or the seat's own saved context, and it is checked per seat before the launch. */
+export function freshSeatReplaysSnapshotStartup(input: { adapterAvailable: boolean; seatHasSavedContext: boolean; rigSpecReread: boolean }): boolean {
+  return !input.adapterAvailable || (!input.seatHasSavedContext && !input.rigSpecReread);
 }
 
 function pathLike(value: unknown): value is string {

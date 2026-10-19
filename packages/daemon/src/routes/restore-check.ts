@@ -211,6 +211,8 @@ export function createRestoreCheckService(
     getStartupContext: (nodeId: string) => {
       return getStartupContext(rigRepo.db, nodeId);
     },
+    // OF-32: a seat started fresh re-reads this recorded spec; the advice and the restore prediction say so.
+    getRigSpecSource: (rigId: string) => rigRepo.getRigSpecSource(rigId),
     hasSnapshot: (rigId: string) => {
       return snapshotRepo.listSnapshots(rigId).length > 0;
     },

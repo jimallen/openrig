@@ -359,8 +359,20 @@ describe("OPR.0.5.7.1 repair child — D1 four-way occupant truth + D6a uncondit
     expect(delivered.join("")).not.toContain("STARTUP-GHOST");
   });
 
-  it("D6a-fresh-still-validates: a deliberate fresh launch with the same missing required file still fails validation", async () => {
-    const { snap, nodeId } = seedSnapshot({ startupContext: GHOST_CONTEXT });
+  // OF-32 stage 3: a seat started fresh takes its startup files from the same decision `rig seat launch --fresh` makes
+  // (here: this rig records no spec source, so the seat's own saved context, read with the same strict reader). That
+  // decision is made, and its required files checked, per seat before the launch, so a missing file now refuses the
+  // seat (no session started) instead of blocking the whole restore.
+  const SAVED_FRESH_CONTEXT = {
+    entries: [{ category: "guidance", effectiveId: "ghost-role", sourceSpec: "agent", sourcePath: "/tmp/never-read",
+      resourcePath: "role.md", absolutePath: "/tmp/never-read/role.md", mergeStrategy: "managed_block" }],
+    files: [{ path: "required-onboarding.md", absolutePath: "/tmp/never-read/required-onboarding.md", ownerRoot: "/tmp/never-read",
+      deliveryHint: "guidance_merge", required: true, appliesOn: ["fresh_start", "restore"] }],
+    actions: [{ type: "send_text", value: "STARTUP-GHOST-PROMPT", phase: "after_ready", appliesOn: ["fresh_start", "restore"], idempotent: true }],
+  };
+
+  it("D6a-fresh-still-validates: a deliberate fresh launch with the same missing required file still fails, before its launch", async () => {
+    const { snap, nodeId } = seedSnapshot({ startupContext: SAVED_FRESH_CONTEXT });
     const fixed = rewriteSnapshot(snap, nodeId, [
       { id: ULID_OLD, status: "running", token: "tok-active" },
     ], { mode: "explicit-id", id: ULID_OLD });
@@ -370,9 +382,14 @@ describe("OPR.0.5.7.1 repair child — D1 four-way occupant truth + D6a uncondit
       fsOps: { exists: (p) => !p.includes("never-read") },
       freshLogicalIds: ["seat"],
     });
-    // Deliberate fresh CONSUMES the replay inputs, so their validation stands.
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe("pre_restore_validation_failed");
+    // Deliberate fresh CONSUMES the replay inputs, so their validation stands: the seat is refused and nothing ran.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ logicalId: "seat", status: "failed",
+      error: expect.stringContaining("/tmp/never-read/required-onboarding.md") })]);
+    expect(result.result.nodes[0]!.error).toContain("No session was started");
+    expect(adapter.project).not.toHaveBeenCalled();
+    expect(adapter.deliverStartup).not.toHaveBeenCalled();
   });
 
   it("D6a-zero-content-pin: exact resume with intact startup context still delivers ZERO content (launch leg intact)", async () => {
@@ -392,7 +409,7 @@ describe("OPR.0.5.7.1 repair child — D1 four-way occupant truth + D6a uncondit
   });
 
   it("D6a-fresh-replay-floor: a deliberate fresh launch keeps its startup replay when inputs exist", async () => {
-    const { snap, nodeId } = seedSnapshot({ startupContext: GHOST_CONTEXT });
+    const { snap, nodeId } = seedSnapshot({ startupContext: SAVED_FRESH_CONTEXT });
     const fixed = rewriteSnapshot(snap, nodeId, [
       { id: ULID_OLD, status: "running", token: "tok-active" },
     ], { mode: "explicit-id", id: ULID_OLD });
