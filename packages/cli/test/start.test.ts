@@ -8,6 +8,7 @@ import { Command } from "commander";
 import { startCommand } from "../src/commands/start.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
+import { printedSeatLaunchCommands, runPrintedSeatCommand } from "./helpers/advised-command.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -249,6 +250,21 @@ describe("rig start (OPR.0.3.4.1)", () => {
     expect(output).toContain("awaiting-decision");
     const applyBodies = upBodies.filter((b) => b.plan !== true);
     expect(applyBodies.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a tokenless seat's headless hint is a command that works with live siblings: the per-seat launch, not `rig up --fresh`", async () => {
+    setupCandidateRig("tokenless-rig", { hasToken: false });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "start", "--last"]);
+    });
+    const output = logs.join("\n");
+    // dev.qa resumed in the same restore, so the rig has a live seat and `rig up --existing --fresh` would 409.
+    expect(output).not.toMatch(/rig up .*--fresh/);
+    const advised = printedSeatLaunchCommands(output);
+    expect(advised, output).toEqual([`rig seat launch 'dev.impl@tokenless-rig' --fresh --reason "<why>"`]);
+    const posted = await runPrintedSeatCommand(advised[0]!);
+    expect(posted.path).toBe("/api/seat/launch/dev.impl%40tokenless-rig");
+    expect(posted.body).toMatchObject({ fresh: true });
   });
 
   // ---- KERNEL INVARIANT ----

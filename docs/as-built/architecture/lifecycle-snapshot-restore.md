@@ -202,7 +202,16 @@ cited here by number with the code that carries them):
   launch is explicit: `rig up --existing <rig> --fresh <seats...>`
   (`packages/cli/src/commands/up.ts:99`). On a terminal, `rig up` asks
   yes or no for each `awaiting-decision` seat and re-posts with the accepted
-  seats as fresh (`up.ts:589`).
+  seats as fresh (`up.ts:589`). `rig up --existing <rig> --fresh` is a
+  whole-rig restore, so it is refused (`rig_not_stopped`, HTTP 409) while any
+  seat is live, and a restore that stops one seat for a decision has usually
+  just started its siblings. Every message that tells the operator how to
+  start such a seat fresh therefore names the per-seat command, `rig seat
+  launch '<seat>@<rig>' --fresh --reason "<why>"`, which touches only that
+  seat and works with siblings live or not.
+  A seat's restore policy is stored on its node and copied onto each new
+  session row (`SessionRegistry.registerSession`); a terminal seat is
+  `checkpoint_only`, never has a resume token, and restarts fresh-primed.
 - Rule 16 — `rig down` prints the snapshot id and a restore command
   (`packages/cli/src/commands/down.ts:293–303`); `rig up` on an existing rig
   prints per-node statuses and the attach command

@@ -122,6 +122,16 @@ export class SessionRegistry {
     this.watchdogRegistrationObserver = watchdogRegistrationObserver;
   }
 
+  private restorePolicyInheritable?: boolean;
+  /** Both tables carry `restore_policy` in every migrated database; reduced-schema fixtures stop short of it. */
+  private restorePolicyIsInheritable(): boolean {
+    if (this.restorePolicyInheritable === undefined) {
+      const has = (table: string) => (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === "restore_policy");
+      this.restorePolicyInheritable = has("sessions") && has("nodes");
+    }
+    return this.restorePolicyInheritable;
+  }
+
   setWatchdogRegistrationObserver(observer: WatchdogRegistrationObserver): void {
     this.watchdogRegistrationObserver = observer;
   }
@@ -139,11 +149,22 @@ export class SessionRegistry {
     }
 
     const id = ulid();
-    this.db
-      .prepare(
-        "INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)"
-      )
-      .run(id, nodeId, sessionName);
+    // A new occupant inherits its seat's restore policy. Without this every session after the first fell back to the
+    // column default (`resume_if_possible`), so a terminal seat (`checkpoint_only`, never has a resume token) came back
+    // from each restart as a seat that "had a session but no token" and stopped for a decision forever.
+    if (this.restorePolicyIsInheritable()) {
+      this.db
+        .prepare(
+          "INSERT INTO sessions (id, node_id, session_name, restore_policy) VALUES (?, ?, ?, COALESCE((SELECT restore_policy FROM nodes WHERE id = ?), 'resume_if_possible'))"
+        )
+        .run(id, nodeId, sessionName, nodeId);
+    } else {
+      this.db
+        .prepare(
+          "INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)"
+        )
+        .run(id, nodeId, sessionName);
+    }
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
     return this.rowToSession(

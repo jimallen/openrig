@@ -14,6 +14,7 @@ import {
 } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 const KERNEL_WAIT_MS = 60_000;
@@ -512,7 +513,7 @@ Examples:
             } else {
               // Headless: report honestly, no auto-substitute.
               for (const n of awaiting) {
-                if (!opts.json) console.error(`    ${n.logicalId}: awaiting-decision -- to fresh-prime: rig up --existing ${rigName} --fresh ${n.logicalId}`);
+                if (!opts.json) console.error(`    ${n.logicalId}: awaiting-decision -- to start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, rigName)}`);
               }
             }
           }

@@ -12,6 +12,7 @@ import { prepareDaemonAutoStart } from "../daemon-auto-start.js";
 import type { StartOptions } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
@@ -709,11 +710,14 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
                 console.log(`  ${n.logicalId}: ${n.status}`);
               }
             } else {
-              console.log(`  No fresh sessions started. Re-run with --fresh <seat...> when you decide.`);
+              console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);
+              for (const n of awaiting) {
+                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source))}`);
+              }
             }
           } else {
             for (const n of awaiting) {
-              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately fresh-prime: rig up --existing ${source} --fresh ${n.logicalId}`);
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source))}`);
             }
           }
         }

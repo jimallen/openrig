@@ -492,7 +492,9 @@ describe("Effort clear: removing effort from resolved config clears stored node 
     const session = ctx.sessionRegistry.registerSession(node.id, "dev-analyst@relaunch-rig");
     ctx.sessionRegistry.updateStatus(session.id, "running");
     ctx.sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());
-    ctx.db.prepare("UPDATE sessions SET resume_type = 'claude_name', resume_token = 'tok-456' WHERE id = ?").run(session.id);
+    // A resumable session. The node above is `checkpoint_only`, which a new session now inherits (it used to fall back to the
+    // column default, which is what let this fixture resume); this test is about the effort passed to a resume, so say so.
+    ctx.db.prepare("UPDATE sessions SET resume_type = 'claude_name', resume_token = 'tok-456', restore_policy = 'resume_if_possible' WHERE id = ?").run(session.id);
 
     const snapshot = ctx.snapshotCapture.captureSnapshot(rig.id, "manual");
     expect(snapshot.data.nodes[0]!.effort).toBeNull();

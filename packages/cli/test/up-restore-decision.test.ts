@@ -9,6 +9,7 @@ import { Command } from "commander";
 import { upCommand } from "../src/commands/up.js";
 import { DaemonClient, DaemonConnectionError } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
+import { printedSeatLaunchCommands, runPrintedSeatCommand } from "./helpers/advised-command.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -116,10 +117,32 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     });
     const output = logs.join("\n");
     expect(output).toContain("dev.impl: awaiting-decision");
-    expect(output).toContain("--fresh dev.impl");
+    // The advice must work in the state it is printed in: this restore left a seat awaiting a decision, which
+    // normally means its siblings were just started, and then `rig up --existing --fresh` is refused with
+    // rig_not_stopped (HTTP 409). The advised command is the per-seat door; run it through the real command tree.
+    expect(output).not.toMatch(/rig up .*--fresh/);
+    const advised = printedSeatLaunchCommands(output);
+    expect(advised, output).toEqual([`rig seat launch 'dev.impl@myrig' --fresh --reason "<why>"`]);
+    const posted = await runPrintedSeatCommand(advised[0]!);
+    expect(posted.path).toBe("/api/seat/launch/dev.impl%40myrig");
+    expect(posted.body).toMatchObject({ fresh: true, reason: "advice executed by test" });
     expect(exitCode).toBe(1);
     // CRITICAL: exactly one POST — nothing auto-substituted a fresh session.
     expect(upBodies).toHaveLength(1);
+  });
+
+  it("headless hint names the rig by the daemon's canonical name, not by whatever the operator typed after `rig up`", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "Original session unresumable: no resume token was captured for this seat." }],
+      warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    const advised = printedSeatLaunchCommands(logs.join("\n"));
+    expect(advised).toEqual([`rig seat launch 'operator.human@kernel' --fresh --reason "<why>"`]);
+    expect((await runPrintedSeatCommand(advised[0]!)).path).toBe("/api/seat/launch/operator.human%40kernel");
   });
 
   it("TTY ASK accepted: [y/N] offer names seat + reason, then re-runs as a deliberate fresh-prime", async () => {
@@ -163,6 +186,11 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
 
     expect(upBodies).toHaveLength(1);
     expect(logs.join("\n")).toContain("No fresh sessions started");
+    // Declining still leaves the operator a command that works: the per-seat launch, not a bare `--fresh <seat...>`.
+    const declinedAdvice = printedSeatLaunchCommands(logs.join("\n"));
+    expect(declinedAdvice).toEqual([`rig seat launch 'dev.impl@myrig' --fresh --reason "<why>"`]);
+    expect((await runPrintedSeatCommand(declinedAdvice[0]!)).path).toBe("/api/seat/launch/dev.impl%40myrig");
+    expect(logs.join("\n")).not.toMatch(/Re-run with --fresh/);
     expect(exitCode).toBe(1);
   });
 
