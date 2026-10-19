@@ -214,12 +214,12 @@ export function mockTmuxAdapter(): TmuxAdapter {
 }
 
 /**
- * mockTmuxAdapter() plus the classified `probeSession` answering one fixed state
- * for every session (restore-check's tmux liveness probe). Kept separate so the
+ * mockTmuxAdapter() plus a `hasSession` answering one fixed state
+ * for every session (restore-check's tmux liveness probe, shared with the restore orchestrator). Kept separate so the
  * default double stays exactly as the lifecycle tests rely on it.
  */
 export function mockTmuxAdapterProbing(state: "present" | "absent"): TmuxAdapter {
-  return { ...mockTmuxAdapter(), probeSession: vi.fn(async () => ({ state })) } as unknown as TmuxAdapter;
+  return { ...mockTmuxAdapter(), hasSession: vi.fn(async () => state === "present") } as unknown as TmuxAdapter;
 }
 
 export function unavailableCmuxAdapter(): CmuxAdapter {

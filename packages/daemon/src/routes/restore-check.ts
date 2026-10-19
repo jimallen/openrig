@@ -8,6 +8,7 @@ import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
 import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-store.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
+import { classifySessionLiveness, type SessionLiveness } from "../domain/session-liveness.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SnapshotRepository } from "../domain/snapshot-repository.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
@@ -149,23 +150,34 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
  * restore-check readiness signal (RecoveryPlan) the `/api/restore-check` route
  * emits, rather than re-implementing it (ponytail: one restore-check, composed).
  */
+/** Per-probe deadline: a hung tmux must not stall the polled status route. */
+export const RESTORE_CHECK_PROBE_TIMEOUT_MS = 2000;
+
+function withDeadline(probe: Promise<SessionLiveness>, ms: number): Promise<SessionLiveness> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("unreadable"), ms);
+    probe.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      () => { clearTimeout(timer); resolve("unreadable"); },
+    );
+  });
+}
+
 export function createRestoreCheckService(
   rigRepo: RigRepository,
   snapshotRepo: SnapshotRepository,
   tmuxAdapter?: TmuxAdapter,
+  opts?: { probeTimeoutMs?: number },
 ): RestoreCheckService {
+  const probeTimeoutMs = opts?.probeTimeoutMs ?? RESTORE_CHECK_PROBE_TIMEOUT_MS;
   const serviceDeps: RestoreCheckDeps = {
-    // Same classified session probe the restore orchestrator's liveness gate
-    // rides on. Only a positive present/absent answer is a verdict; a
-    // transport failure or a throw is "unreadable", never guessed.
-    probeSeatLiveness: tmuxAdapter ? async (sessionName: string) => {
-      try {
-        const probe = await tmuxAdapter.probeSession(sessionName);
-        return probe.state === "present" ? "live" : probe.state === "absent" ? "dead" : "unreadable";
-      } catch {
-        return "unreadable";
-      }
-    } : undefined,
+    // The SAME classification the restore orchestrator's liveness gate uses
+    // (classifySessionLiveness over hasSession): a missing tmux server counts
+    // as dead, exactly as `rig up --existing` reads it. A probe that throws or
+    // outlives the deadline is "unreadable" (liveness unknown), never guessed.
+    probeSeatLiveness: tmuxAdapter
+      ? (sessionName: string) => withDeadline(classifySessionLiveness(tmuxAdapter, sessionName), probeTimeoutMs)
+      : undefined,
     stateDir: OPENRIG_HOME,
     substrateRoot: dirname(resolveLegacyTopologyRigsRoot()),
     probeQueueStore: () => {
