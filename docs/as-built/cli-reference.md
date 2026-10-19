@@ -869,7 +869,7 @@ Relative paths differ by flag: `--culture` is taken from the directory the comma
 | `rig seat clear-attention <session>` | — | `--reason <text>`<br>`--json` |
 | `rig seat set-permissions <seat>` | — | `--mode <mode>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-model <seat>` | — | `--model <id>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
-| `rig seat launch <seat>` | — | `--fresh` **required**<br>`--reason <text>` **required**<br>`--stop`<br>`--operator <address>`<br>`--json` |
+| `rig seat launch <seat>` | — | `--fresh` **required**<br>`--reason <text>` **required**<br>`--stop`<br>`--startup-from <spec\|stored>`<br>`--operator <address>`<br>`--json` |
 | `rig seat continue <seat>` | — | `--json` |
 | `rig seat stop <seat>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat clean <seat>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
@@ -894,6 +894,14 @@ backfilled as intentional stops. If the session disappears between the live
 probe and the stop, its unexplained exit still affects rig health. The internal
 stop in `rig seat launch --fresh --stop` does not record final stop intent, so a
 refused replacement still degrades a rig with other healthy members running.
+
+`rig seat launch --fresh` reads the seat's startup files from the rig's recorded
+spec source as it is now (`rigs.spec_source_path`, migration 111; a spec library
+link keeps its link spelling and is followed again). A missing or changed source
+refuses (`startup_source_unavailable` / `startup_source_changed`) before anything
+is stopped. `--startup-from stored` replays the startup context saved at first
+launch; a rig with no recorded source does so with a warning. The source used is
+in the result (`startupSource`) and on `seat.fresh_launched`.
 
 `rig start --last` and `rig start --rigs <rig>` use the full per-seat lifecycle
 for restore selection. A partly running rig with an intentionally stopped member

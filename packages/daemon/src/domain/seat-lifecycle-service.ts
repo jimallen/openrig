@@ -9,7 +9,8 @@ import type { NodeInventoryEntry, PersistedEvent } from "./types.js";
 import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js";
 import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
-import type { StartupOrchestrator } from "./startup-orchestrator.js";
+import { serializeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
+import type { SeatStartupSpecReader, StartupFrom } from "./seat-startup-source.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
 import type { StartupAction } from "./types.js";
@@ -73,6 +74,8 @@ export interface SeatLifecycleDeps {
   inPlaceRestartIo?: Partial<InPlaceRestartIo>;
   inPlaceRestartTiming?: Partial<PaneCutoverTiming>;
   inPlaceRestartDaemonStartedAt?: Date;
+  /** OF-32: re-reads a fresh seat's startup policy from its rig's recorded spec source (PodRigInstantiator). */
+  seatStartupSource?: SeatStartupSpecReader;
   /** Where a session's native transcript is (the context-usage store); without it native effort is NOT VERIFIED. */
   transcripts?: { readSidecar(sessionName: string): { ok: true; data: { transcript_path?: string | null; session_id?: string | null } } | { ok: false }; readCodexTranscriptPath(threadId: string): string | null };
 }
@@ -102,6 +105,9 @@ export interface SeatRefusal {
     | "startup_context_missing"
     | "startup_context_malformed"
     | "startup_context_runtime_mismatch"
+    | "startup_source_unavailable"
+    | "startup_source_changed"
+    | "invalid_startup_from"
     | "runtime_adapter_missing"
     | "launch_unavailable"
     | "launch_failed"
@@ -194,6 +200,7 @@ export type LaunchFreshResult =
       model: string | null;
       effort?: string | null;
       startupPolicyHash: string;
+      startupSource: FreshStartupSource;
       supersededSessionIds: string[];
       warnings?: string[];
     }
@@ -219,13 +226,26 @@ interface PersistedStartupContextRow {
   runtime: string | null;
 }
 
+/** OF-32: where a fresh launch took its startup policy from, as reported to the operator and the audit event. */
+export type FreshStartupSource =
+  | { kind: "spec"; specSource: string; specPath: string }
+  | { kind: "stored"; reason: "requested" | "no_recorded_source" };
+
 interface ParsedStartupContext {
   plan: ProjectionPlan;
   resolvedStartupFiles: ResolvedStartupFile[];
   startupActions: StartupAction[];
   runtime: string;
   hash: string;
+  source: FreshStartupSource;
+  /** Agent spec provenance of a re-read context, written with the context row. */
+  resolvedSpec?: { name: string; version: string; hash: string };
+  /** Operator-facing notes about the source (no recorded source; re-read warnings). */
+  sourceWarnings: string[];
 }
+
+const NO_RECORDED_SOURCE_WARNING = "This rig records no spec source (it was created before OpenRig recorded one, or not from a spec file), "
+  + "so this fresh launch replays the startup files saved at the seat's first launch. To pick up spec changes, create the rig again from its spec.";
 
 export class SeatLifecycleService {
   private readonly db: Database.Database;
@@ -243,6 +263,7 @@ export class SeatLifecycleService {
   private readonly inPlaceRestartTiming?: Partial<PaneCutoverTiming>;
   private readonly inPlaceRestartDaemonStartedAt?: Date;
   private readonly transcripts: SeatLifecycleDeps["transcripts"] | null;
+  private readonly seatStartupSource: SeatStartupSpecReader | null;
 
   constructor(deps: SeatLifecycleDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatLifecycleService: rigRepo must share the same db handle");
@@ -263,6 +284,7 @@ export class SeatLifecycleService {
     this.inPlaceRestartTiming = deps.inPlaceRestartTiming;
     this.inPlaceRestartDaemonStartedAt = deps.inPlaceRestartDaemonStartedAt;
     this.transcripts = deps.transcripts ?? null;
+    this.seatStartupSource = deps.seatStartupSource ?? null;
   }
 
   async setModel(input: { seatRef: string; model: string; reason: string; operator?: string | null }): Promise<SetModelResult> {
@@ -700,7 +722,7 @@ export class SeatLifecycleService {
    * Reads only: callers receive no reservation or launch guarantee. Execution repeats
    * this resolution under its lifecycle lock rather than trusting an earlier plan.
    */
-  private resolveFreshLaunch(resolved: ResolvedSeat, seatRef: string) {
+  private async resolveFreshLaunch(resolved: ResolvedSeat, seatRef: string, startupFrom: StartupFrom = "spec") {
     const seat = this.describe(resolved);
     const rig = this.rigRepo.getRig(seat.rigId);
     const node = rig?.nodes.find((candidate) => candidate.id === seat.nodeId);
@@ -711,13 +733,72 @@ export class SeatLifecycleService {
       return { ok: false as const, code: "launch_unavailable" as const, message: "Fresh-launch services are unavailable in this daemon." };
     }
 
-    const startup = this.readStartupContext(node.id, node.cwd ?? ".");
-    if (!startup.ok) return startup.refusal;
-    if (!node.runtime || startup.context.runtime !== node.runtime) {
+    const canonicalSessionName = deriveCanonicalFromEntry(resolved.entry)
+      ?? deriveSessionName(seat.rigName, seat.logicalId);
+
+    // OF-32: a fresh conversation has no continuity, so it re-reads the rig's spec source as it is now,
+    // unless the operator asks for the stored context or the rig records no source.
+    let reread: ParsedStartupContext | null = null;
+    let storedReason: "requested" | "no_recorded_source" = "requested";
+    if (startupFrom === "spec") {
+      const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
+      const read = !this.seatStartupSource
+        ? (this.rigRepo.getRigSpecSource(seat.rigId) ? null : { kind: "unrecorded" as const })
+        : adapter
+          ? await this.seatStartupSource.readSeatStartupFromSpec({ rigId: seat.rigId, nodeId: node.id, adapter, sessionName: canonicalSessionName })
+          : null;
+      if (!read) {
+        return adapter
+          ? { ok: false as const, code: "launch_unavailable" as const, message: "This daemon cannot re-read a seat's spec source." }
+          : { ok: false as const, code: "runtime_adapter_missing" as const, message: `No runtime adapter is available for '${node.runtime ?? "missing"}'.` };
+      }
+      if (read.kind === "refused") {
+        return {
+          ok: false as const, code: read.code, message: read.message,
+          guidance: "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's first launch.",
+        };
+      }
+      if (read.kind === "spec") {
+        // S04 owns the live ambient skill set, as on the stored path: a fresh seat does not reinstall catalog skills.
+        const entries = read.plan.entries.filter((entry) => entry.category !== "skill");
+        try {
+          resolveStartupProof(read.startupActions, "fresh_start");
+        } catch (err) {
+          return { ok: false as const, code: "startup_source_unavailable" as const, message: `This rig's spec source ${read.specSource} gives an invalid startup policy: ${(err as Error).message}.` };
+        }
+        const row = serializeStartupContext(entries, read.resolvedStartupFiles, read.startupActions);
+        reread = {
+          plan: { ...read.plan, entries },
+          resolvedStartupFiles: read.resolvedStartupFiles,
+          startupActions: read.startupActions,
+          runtime: read.plan.runtime,
+          hash: createHash("sha256").update(JSON.stringify([row.projectionEntriesJson, row.resolvedFilesJson, row.startupActionsJson, read.plan.runtime])).digest("hex"),
+          source: { kind: "spec", specSource: read.specSource, specPath: read.specPath },
+          resolvedSpec: read.resolvedSpec,
+          sourceWarnings: read.warnings,
+        };
+      } else {
+        storedReason = "no_recorded_source";
+      }
+    }
+
+    let context: ParsedStartupContext;
+    if (reread) {
+      context = reread;
+    } else {
+      const startup = this.readStartupContext(node.id, node.cwd ?? ".");
+      if (!startup.ok) return startup.refusal;
+      context = {
+        ...startup.context,
+        source: { kind: "stored", reason: storedReason },
+        sourceWarnings: storedReason === "no_recorded_source" ? [NO_RECORDED_SOURCE_WARNING] : [],
+      };
+    }
+    if (!node.runtime || context.runtime !== node.runtime) {
       return {
         ok: false as const,
         code: "startup_context_runtime_mismatch" as const,
-        message: `Persisted startup context runtime '${startup.context.runtime}' does not match current node runtime '${node.runtime ?? "missing"}'.`,
+        message: `Persisted startup context runtime '${context.runtime}' does not match current node runtime '${node.runtime ?? "missing"}'.`,
       };
     }
     const adapter = this.runtimeAdapters[node.runtime];
@@ -729,9 +810,7 @@ export class SeatLifecycleService {
       };
     }
 
-    const canonicalSessionName = deriveCanonicalFromEntry(resolved.entry)
-      ?? deriveSessionName(seat.rigName, seat.logicalId);
-    return { ok: true as const, resolved, seat, rig, node, adapter, startup: startup.context, canonicalSessionName, nodeLauncher: this.nodeLauncher, startupOrchestrator: this.startupOrchestrator };
+    return { ok: true as const, resolved, seat, rig, node, adapter, startup: context, canonicalSessionName, nodeLauncher: this.nodeLauncher, startupOrchestrator: this.startupOrchestrator };
   }
 
   /**
@@ -820,7 +899,7 @@ export class SeatLifecycleService {
    * Errors are reduced to safe codes;
    * startup text, credentials and process output are not included in the response.
    */
-  async planFresh(input: { seatRef: string; fresh: boolean; stop?: boolean }) {
+  async planFresh(input: { seatRef: string; fresh: boolean; stop?: boolean; startupFrom?: StartupFrom }) {
     const refusal = (error: SeatRefusal) => ({
       ...error, planOnly: true as const, complete: error.code !== "tmux_probe_failed", launchable: false as const,
       // Parser/probe errors can embed persisted startup content or process output.
@@ -829,11 +908,11 @@ export class SeatLifecycleService {
     if (!input.fresh) return refusal({ ok: false, code: "fresh_required", message: "--plan requires --fresh." });
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return refusal(resolved);
-    const prepared = this.resolveFreshLaunch(resolved, input.seatRef);
+    const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom);
     if ("code" in prepared) return refusal(prepared);
     const { seat, rig, node, startup, canonicalSessionName } = prepared;
     const blockers: Array<{ code: string; message: string; guidance?: string }> = [];
-    const warnings = ["Snapshot only; execution resolves and validates again. Native readiness is not checked."];
+    const warnings = ["Snapshot only; execution resolves and validates again. Native readiness is not checked.", ...startup.sourceWarnings];
     let complete = true;
     let tmuxUnknown = false;
     const guard = this.tmuxAdapter.deliveryGuard?.preference(node.id);
@@ -873,7 +952,7 @@ export class SeatLifecycleService {
       sessionName: canonicalSessionName, currentOccupant,
       stopRequired, wouldStop: blockers.length > 0 ? false : tmuxUnknown ? null : owned && input.stop === true,
       blockers, warnings, siblings,
-      startup: { projectionCount: startup.plan.entries.length,
+      startup: { source: startup.source, projectionCount: startup.plan.entries.length,
         fileCount: startup.resolvedStartupFiles.filter(f => f.appliesOn.includes("fresh_start")).length,
         actionCount: startup.startupActions.filter(a => a.appliesOn.includes("fresh_start")).length },
     };
@@ -892,6 +971,8 @@ export class SeatLifecycleService {
     reason: string;
     stop?: boolean;
     operator?: string | null;
+    /** OF-32: "spec" (default) re-reads the rig's spec source; "stored" replays the context saved at first launch. */
+    startupFrom?: StartupFrom;
   }): Promise<LaunchFreshResult> {
     const required = this.requireReason(input.reason);
     if (required) return required;
@@ -908,9 +989,13 @@ export class SeatLifecycleService {
     if (guard && !guard.ownsLifecycle(resolved.nodeId)) {
       return guard.lifecycle([resolved.nodeId], () => this.launchFresh(input));
     }
-    const prepared = this.resolveFreshLaunch(resolved, input.seatRef);
+    const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom);
     if ("code" in prepared) return prepared;
     const { seat, node, adapter, startup, canonicalSessionName, nodeLauncher, startupOrchestrator } = prepared;
+    const withSourceWarnings = (warnings?: string[]) => {
+      const all = [...startup.sourceWarnings, ...(warnings ?? [])];
+      return all.length > 0 ? all : warnings;
+    };
     const historyRefusal = await this.validateFreshHistory(resolved.nodeId, canonicalSessionName, input.seatRef);
     if (historyRefusal) return historyRefusal;
     const retiringRows = this.nonTerminalSessions(node.id);
@@ -1066,6 +1151,7 @@ export class SeatLifecycleService {
       includeDurableObligations: true,
       sessionName: canonicalSessionName,
       allowFreshFallback: false,
+      ...(startup.resolvedSpec ? { resolvedSpecProvenance: startup.resolvedSpec } : {}),
     });
 
     if (!startupResult.ok && startupResult.startupStatus === "failed") {
@@ -1088,14 +1174,14 @@ export class SeatLifecycleService {
             code: "startup_failed",
             status: "failed",
             message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupResult.errors.join("; ")}`,
-            warnings: startupResult.warnings,
+            warnings: withSourceWarnings(startupResult.warnings),
           }
         : {
             ok: false,
             code: "attention_required",
             status: "attention_required",
             message: `Fresh startup failed and the new process could not be confirmed stopped; the seat requires attention: ${startupResult.errors.join("; ")}`,
-            warnings: startupResult.warnings,
+            warnings: withSourceWarnings(startupResult.warnings),
             sessionName: canonicalSessionName,
             sessionId: launch.session.id,
             generation,
@@ -1142,6 +1228,8 @@ export class SeatLifecycleService {
         model: node.model,
         effort: resolveSeatEffort(node).effective,
         startupPolicyHash: startup.hash,
+        startupSource: startup.source.kind,
+        ...(startup.source.kind === "spec" ? { specSource: startup.source.specSource } : {}),
         reason: input.reason.trim(),
         operator: input.operator ?? null,
         status: attentionRequired ? "attention_required" : "ready",
@@ -1161,7 +1249,7 @@ export class SeatLifecycleService {
         sessionName: canonicalSessionName,
         sessionId: launch.session.id,
         generation,
-        warnings: startupResult.warnings,
+        warnings: withSourceWarnings(startupResult.warnings),
       };
     }
 
@@ -1175,8 +1263,9 @@ export class SeatLifecycleService {
       model: node.model,
       effort: resolveSeatEffort(node).effective ?? undefined,
       startupPolicyHash: startup.hash,
+      startupSource: startup.source,
       supersededSessionIds,
-      warnings: startupResult.warnings,
+      warnings: withSourceWarnings(startupResult.warnings),
     };
   }
 
@@ -1347,7 +1436,7 @@ export class SeatLifecycleService {
   private readStartupContext(
     nodeId: string,
     cwd: string,
-  ): { ok: true; context: ParsedStartupContext } | { ok: false; refusal: SeatRefusal } {
+  ): { ok: true; context: Omit<ParsedStartupContext, "source" | "sourceWarnings" | "resolvedSpec"> } | { ok: false; refusal: SeatRefusal } {
     const row = this.db.prepare(
       "SELECT projection_entries_json, resolved_files_json, startup_actions_json, runtime FROM node_startup_context WHERE node_id = ?",
     ).get(nodeId) as PersistedStartupContextRow | undefined;

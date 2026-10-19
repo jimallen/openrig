@@ -236,13 +236,26 @@ post-launch files. If it needs them, first look at what that occupant has done; 
 `rig seat launch <seat> --fresh --reason <text>` starts a blank conversation for the seat. If the occupant is still
 live, the command refuses with `session_live` unless you also pass `--stop`, which replaces that occupant deliberately.
 
+**Where a fresh seat's startup files come from.** A fresh conversation has no continuity, so `rig seat launch --fresh`
+reads the rig's spec again as it is now. OpenRig records the spec a rig was launched from in the spelling you used: a
+spec library link keeps its link path, so a link that now points at a newer release gives the fresh seat that
+release's role, culture and startup files. The seat's working folder, runtime, model and permissions stay as they
+are. The launch is refused with `startup_source_unavailable`, and nothing is stopped, when that spec or a link on its
+path no longer exists, no longer parses, or the seat's agent no longer resolves. It is refused with
+`startup_source_changed` when the spec no longer declares the seat, or now gives it a different runtime, agent ref or
+profile. A fresh launch never changes a seat's identity; create the rig again for that. Pass `--startup-from stored`
+to replay the startup files saved at the seat's first launch instead. A rig created before OpenRig recorded spec
+sources (or not from a spec file, such as a bundle install) replays those saved files and says so in a warning. The
+result and the `seat.fresh_launched` event name the source used. Resume, and `rig up --existing`, do not read the
+spec again: a resumed conversation already holds the text it was given.
+
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
 seat without starting tmux, stopping or launching a process, projecting startup files, or changing
 lifecycle/queue records. Add `--json` for structured output. `--fresh` is still required;
 `--reason` is optional for the preview and required when executing. Pass `--stop` to preview the
 intended replacement of a live managed occupant. Adopted and unmanaged occupants remain blocked.
 
-The plan identifies the target, current occupant, stop requirements, blockers, startup counts,
+The plan identifies the target, current occupant, stop requirements, blockers, startup source and counts,
 and each sibling seat's unchanged effect. Siblings stay attached and untouched. Launch composes
 a new command through the runtime adapter using current settings; it does not replay a stored
 wrapper command. The seat's launch environment and managed executable selection still apply.

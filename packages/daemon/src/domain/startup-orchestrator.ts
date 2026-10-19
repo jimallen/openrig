@@ -87,6 +87,27 @@ export interface StartupInput {
   includeDurableObligations?: boolean;
   /** Readiness timeout in ms (defaults to runtime.readiness_timeout_seconds). */
   readinessTimeoutMs?: number;
+  /**
+   * OF-32: the agent spec this startup context was resolved from, when the caller re-read it. Written to the
+   * node's resolved_spec_* columns in the same transaction as the context row, so the two never disagree.
+   */
+  resolvedSpecProvenance?: { name: string; version: string; hash: string };
+}
+
+/**
+ * The four persisted columns of a node's startup context, exactly as the writer stores them. A caller that
+ * hashes a context it is about to persist uses this, so its hash equals the one read back later.
+ */
+export function serializeStartupContext(
+  entries: ProjectionPlan["entries"],
+  resolvedStartupFiles: ResolvedStartupFile[],
+  startupActions: StartupAction[],
+): { projectionEntriesJson: string; resolvedFilesJson: string; startupActionsJson: string } {
+  return {
+    projectionEntriesJson: JSON.stringify(entries.map((e) => ({ category: e.category, effectiveId: e.effectiveId, sourceSpec: e.sourceSpec, sourcePath: e.sourcePath, resourcePath: e.resourcePath, absolutePath: e.absolutePath, resourceType: e.resourceType, mergeStrategy: e.mergeStrategy, target: e.target }))),
+    resolvedFilesJson: JSON.stringify(resolvedStartupFiles),
+    startupActionsJson: JSON.stringify(startupActions),
+  };
 }
 
 type StartupSendFailure = { error: string };
@@ -300,15 +321,18 @@ export class StartupOrchestrator {
 
     // 7. Persist startup context for restore replay
     if (!input.preserveStartupContext) try {
-      this.db.prepare(
-        "INSERT OR REPLACE INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)"
-      ).run(
-        input.nodeId,
-        JSON.stringify(input.plan.entries.map((e) => ({ category: e.category, effectiveId: e.effectiveId, sourceSpec: e.sourceSpec, sourcePath: e.sourcePath, resourcePath: e.resourcePath, absolutePath: e.absolutePath, resourceType: e.resourceType, mergeStrategy: e.mergeStrategy, target: e.target }))),
-        JSON.stringify(input.resolvedStartupFiles),
-        JSON.stringify(input.startupActions),
-        input.adapter.runtime,
-      );
+      const row = serializeStartupContext(input.plan.entries, input.resolvedStartupFiles, input.startupActions);
+      const provenance = input.resolvedSpecProvenance;
+      this.db.transaction(() => {
+        this.db.prepare(
+          "INSERT OR REPLACE INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)"
+        ).run(input.nodeId, row.projectionEntriesJson, row.resolvedFilesJson, row.startupActionsJson, input.adapter.runtime);
+        // OF-32: a context re-read from the spec carries the agent spec it came from; both land together.
+        if (provenance) {
+          this.db.prepare("UPDATE nodes SET resolved_spec_name = ?, resolved_spec_version = ?, resolved_spec_hash = ? WHERE id = ?")
+            .run(provenance.name, provenance.version, provenance.hash, input.nodeId);
+        }
+      })();
     } catch (error) {
       return this.fail(input, "failed", [`Startup context persistence failed: ${String(error)}`]);
     }

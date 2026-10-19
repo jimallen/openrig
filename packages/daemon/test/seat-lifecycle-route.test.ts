@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
+import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
 
 describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
   let db: Database.Database;
@@ -210,5 +211,30 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
       operator: "orch-lead@seat-rig",
     });
     expect(await res.json()).toMatchObject({ status: "ready", generation: "gen-fresh", warnings: ["Startup submission unverified"] });
+  });
+
+  // OF-32: the daemon's seat routes re-read through the pod instantiator, so a recorded source is used.
+  it("the launch preview asks the pod instantiator to re-read a rig's recorded spec source", async () => {
+    setup = createTestApp(db, { wireRuntimeAdapters: true });
+    const seat = seedSeat();
+    setup.rigRepo.setRigSpecSource(seat.rig.id, "/library/team/rig.yaml");
+    const reread = vi.spyOn(PodRigInstantiator.prototype, "readSeatStartupFromSpec").mockResolvedValue({
+      kind: "refused", code: "startup_source_unavailable", specSource: "/library/team/rig.yaml", message: "fixture: gone",
+    });
+    const res = await post("launch-plan", seat.sessionName, { fresh: true });
+    expect(reread).toHaveBeenCalledWith(expect.objectContaining({ rigId: seat.rig.id, nodeId: seat.node.id }));
+    expect(await res.json()).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+  });
+
+  // OF-32: where a fresh launch takes its startup files from reaches the service; anything else is refused.
+  it.each([["launch", "launchFresh"], ["launch-plan", "planFresh"]] as const)("%s forwards startupFrom and refuses an unknown value", async (route, method) => {
+    const spy = vi.spyOn(SeatLifecycleService.prototype, method).mockResolvedValue({ ok: false, code: "fixture", message: "fixture" } as never);
+    await post(route, "dev-impl@seat-rig", { fresh: true, reason: "r", startupFrom: "stored" });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ startupFrom: "stored" }));
+    spy.mockClear();
+    const bad = await post(route, "dev-impl@seat-rig", { fresh: true, reason: "r", startupFrom: "latest" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ ok: false, code: "invalid_startup_from" });
+    expect(spy).not.toHaveBeenCalled();
   });
 });

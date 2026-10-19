@@ -279,6 +279,20 @@ function printSeatError(error: SeatStatusError, fallback: string): void {
   }
 }
 
+/** OF-32: where a fresh launch took (or would take) its startup files from. */
+type StartupSourceReport = { kind: "spec"; specSource: string; specPath: string } | { kind: "stored"; reason: string };
+
+function describeStartupSource(source: StartupSourceReport): string {
+  if (source.kind === "spec") {
+    return source.specPath === source.specSource
+      ? `Startup files: re-read from ${source.specSource}.`
+      : `Startup files: re-read from ${source.specSource} (now ${source.specPath}).`;
+  }
+  return source.reason === "requested"
+    ? "Startup files: replayed from the first launch (--startup-from stored)."
+    : "Startup files: replayed from the first launch (this rig records no spec source).";
+}
+
 export function seatCommand(depsOverride?: SeatDeps & { readStdin?: () => Promise<string> }): Command {
   const cmd = new Command("seat")
     .description("Inspect OpenRig seat observability state");
@@ -695,6 +709,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--reason <text>", "Audit reason (required when executing, optional with --plan)")
     .option("--plan", "Preview this fresh launch without changing any seat or starting tmux")
     .option("--stop", "Stop the current live managed occupant before launching fresh")
+    .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; stored: replay the startup files saved at first launch")
     .option("--operator <address>", "Operator recorded on the audit event")
     .option("--json", "JSON output for agents")
     .description("Launch a deliberate fresh occupant for exactly one existing seat")
@@ -704,14 +719,29 @@ A live managed seat requires --stop; adopted and unmanaged sessions are refused.
 Sibling seats stay attached and untouched. The runtime adapter composes a new
 command from current settings; launch does not replay a stored wrapper command.
 The seat launch environment and managed executable selection still apply.
+Startup files come from the rig's spec as it is now: the spec it was launched from is
+read again (a spec library link follows its current target), so a new persona release
+reaches a fresh seat. If that spec has moved, been deleted or no longer declares this
+seat, the launch is refused with the reason and nothing is stopped. --startup-from stored
+replays the startup files saved at the seat's first launch instead. A rig created before
+OpenRig recorded spec sources replays the saved files and says so in a warning.
+Resume never re-reads the spec: the conversation already holds the text it was given.
 Preview is a read-only snapshot, not a reservation or a native readiness check.
 A successful preview exits 0; inspect launchable to decide whether launch is allowed.
 Unreadable tmux produces complete:false and unknown eligibility unless already blocked.
 Examples:
   rig seat launch dev.impl --fresh --plan --json
   rig seat launch dev-impl@my-rig --fresh --reason "deliberate blank restart"
-  rig seat launch dev.impl --fresh --stop --reason "replace managed occupant" --json`)
-    .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; operator?: string; json?: boolean }) => {
+  rig seat launch dev.impl --fresh --stop --reason "replace managed occupant" --json
+  rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the first-launch persona"`)
+    .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; operator?: string; json?: boolean }) => {
+      if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
+        const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes spec or stored (got "${opts.startupFrom}").` };
+        if (opts.json) console.log(JSON.stringify(error, null, 2));
+        else console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
       if (!opts.plan && !opts.reason?.trim()) {
         const error = { ok: false, code: "missing_reason", message: "Execution requires --reason; use --plan for a read-only preview." };
         if (opts.json) console.log(JSON.stringify(error, null, 2));
@@ -724,6 +754,7 @@ Examples:
         reason: opts.reason,
         stop: opts.stop === true,
         operator: opts.operator,
+        ...(opts.startupFrom ? { startupFrom: opts.startupFrom } : {}),
       }, opts, (data) => {
         if (opts.plan) {
           console.log(`Fresh launch preview: ${String(data["sessionName"])} (no changes made).`);
@@ -733,8 +764,9 @@ Examples:
             console.log(`Blocked: ${blocker.message}`);
             if (blocker.guidance) console.log(blocker.guidance);
           }
-          const startup = data["startup"] as { projectionCount: number; fileCount: number; actionCount: number };
+          const startup = data["startup"] as { projectionCount: number; fileCount: number; actionCount: number; source?: StartupSourceReport };
           console.log(`Startup: ${startup.projectionCount} projections, ${startup.fileCount} files, ${startup.actionCount} actions.`);
+          if (startup.source) console.log(describeStartupSource(startup.source));
           for (const sibling of data["siblings"] as Array<{ logicalId: string }>) console.log(`Sibling ${sibling.logicalId}: unchanged.`);
           return;
         }
@@ -743,6 +775,8 @@ Examples:
         console.log(`Fresh occupant ready: ${s?.logicalId}@${s?.rigName} (${String(data["sessionName"])}).`);
         console.log(`Generation: ${String(data["generation"])}; model: ${String(data["model"] ?? "none")}.`);
         console.log(`Startup policy: ${String(data["startupPolicyHash"])}; superseded sessions: ${superseded?.length ?? 0}.`);
+        const source = data["startupSource"] as StartupSourceReport | undefined;
+        if (source) console.log(describeStartupSource(source));
         console.log("No continuity source was used; siblings and durable work were preserved.");
       });
     });

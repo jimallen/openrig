@@ -583,7 +583,9 @@ before readiness checks, so attention, timeout, or a readiness exception cannot
 retain the preceding proof. A replacement that fails to launch does not retire
 the current proof; resume/adoption also preserves existing proof history.
 The effective selection is recorded on `node.startup_pending`; actions are
-persisted in startup context for restore and fresh relaunch.
+persisted in startup context for restore. A fresh relaunch (`rig seat launch
+--fresh`) reads them again from the rig's spec as it is now, or replays the
+persisted ones with `--startup-from stored`.
 
 The harness readiness window defaults to 30 seconds. On a loaded machine, set
 `rig config set runtime.readiness_timeout_seconds 60` to give new seats and

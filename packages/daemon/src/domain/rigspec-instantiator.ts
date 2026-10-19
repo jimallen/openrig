@@ -317,6 +317,9 @@ import { StartupOrchestrator } from "./startup-orchestrator.js";
 import { PodRepository } from "./pod-repository.js";
 import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, StartupAction, StartupFile } from "./types.js";
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile } from "./runtime-adapter.js";
+import type { SeatStartupRead } from "./seat-startup-source.js";
+import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
+import fs from "node:fs";
 import { resolveConcreteHint } from "./runtime-adapter.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { installTopologyDefaults } from "./topology-defaults-installer.js";
@@ -2636,6 +2639,91 @@ export class PodRigInstantiator {
       }),
     ];
     return { ok: true, plan: planResult.plan, resolvedStartupFiles, startupActions, conflictWarnings };
+  }
+
+  /**
+   * OF-32: re-read one existing agent seat's startup policy from its rig's recorded spec source, as that source
+   * is now. The recorded spelling is re-anchored (a shipped spec follows the running install) and its links are
+   * followed again, so a library link reaches the release it points at today; relative refs resolve beside the
+   * real file, as at first launch. The seat keeps its identity and settings: its runtime, agent ref and profile
+   * must still match the spec (a mismatch is refused, never adopted), and its recorded cwd and rig name are used.
+   * Reads only; writes nothing and launches nothing.
+   */
+  async readSeatStartupFromSpec(input: { rigId: string; nodeId: string; adapter: RuntimeAdapter; sessionName: string }): Promise<SeatStartupRead> {
+    const specSource = this.deps.rigRepo.getRigSpecSource(input.rigId);
+    if (!specSource) return { kind: "unrecorded" };
+    const unavailable = (detail: string): SeatStartupRead => ({
+      kind: "refused", code: "startup_source_unavailable", specSource,
+      message: `This rig's spec source ${specSource} cannot be used for a fresh launch: ${detail}`,
+    });
+    const changed = (detail: string): SeatStartupRead => ({
+      kind: "refused", code: "startup_source_changed", specSource,
+      message: `This rig's spec source ${specSource} no longer matches this seat: ${detail}`,
+    });
+    const rig = this.deps.rigRepo.getRig(input.rigId);
+    const node = rig?.nodes.find((n) => n.id === input.nodeId);
+    if (!rig || !node) return unavailable("the seat no longer exists.");
+
+    let specPath: string;
+    let yaml: string;
+    try {
+      specPath = fs.realpathSync(reanchorShippedSpecPath(specSource));
+      yaml = fs.readFileSync(specPath, "utf-8");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      return unavailable(code === "ENOENT" ? "the file (or a link on its path) no longer exists." : `it could not be read (${code ?? (err as Error).message}).`);
+    }
+    let raw: unknown;
+    try {
+      raw = PodRigSpecCodec.parse(yaml);
+    } catch (err) {
+      return unavailable(`it no longer parses (${(err as Error).message}).`);
+    }
+    const validation = PodRigSpecSchema.validate(raw);
+    if (!validation.valid) return unavailable(`it no longer validates (${validation.errors.join("; ")}).`);
+    // The rig's own name, not the spec's: a project rig is named after its project at launch.
+    const rigSpec = { ...PodRigSpecSchema.normalize(raw as Record<string, unknown>), name: rig.rig.name };
+    const rigRoot = nodePath.dirname(specPath);
+
+    const pod = rigSpec.pods.find((p) => node.logicalId.startsWith(`${p.id}.`) && p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
+    const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
+    if (!pod || !member) return changed(`it no longer declares ${node.logicalId}.`);
+    const same = (a: unknown, b: unknown) => (a ?? null) === (b ?? null);
+    const drift = [
+      !same(member.runtime, node.runtime) ? `runtime ${member.runtime} (seat: ${node.runtime ?? "none"})` : null,
+      !same(member.agentRef, node.agentRef) ? `agent_ref ${member.agentRef} (seat: ${node.agentRef ?? "none"})` : null,
+      !same(member.profile, node.profile) ? `profile ${member.profile} (seat: ${node.profile ?? "none"})` : null,
+    ].filter((d): d is string => d !== null);
+    if (drift.length > 0) return changed(`it now declares ${drift.join(", ")}; a fresh launch never changes a seat's identity.`);
+
+    const resolveResult = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
+    if (!resolveResult.ok) return unavailable(`its agent ${member.agentRef} does not resolve (${agentRefFailureMessage(resolveResult)}).`);
+    const config = this.resolveMemberConfig({ resolveResult, rigSpec, rigRoot, pod, member, cwdOverride: node.cwd ?? undefined });
+    if (!config.ok) return unavailable(`its configuration does not resolve (${config.errors.join("; ")}).`);
+    const startup = this.buildMemberStartup({
+      rigId: input.rigId, rigSpec, rigRoot, pod, member, resolveResult, config: config.config,
+      adapter: input.adapter, tmuxSession: input.sessionName, sessionName: input.sessionName,
+    });
+    if (!startup.ok) return unavailable(`its projection plan does not resolve (${startup.errors.join("; ")}).`);
+    let starterFiles: ResolvedStartupFile[] = [];
+    if (member.starterRef) {
+      const { AgentStarterResolver } = await import("./agent-starter-resolver.js");
+      try {
+        starterFiles = new AgentStarterResolver().resolveStarter(member.starterRef.name).files;
+      } catch (err) {
+        return unavailable(`its Agent Starter does not resolve (${(err as Error).message}).`);
+      }
+    }
+    return {
+      kind: "spec",
+      specSource,
+      specPath,
+      plan: startup.plan,
+      resolvedStartupFiles: [...starterFiles, ...startup.resolvedStartupFiles],
+      startupActions: startup.startupActions,
+      resolvedSpec: { name: config.config.resolvedSpecName, version: config.config.resolvedSpecVersion, hash: config.config.resolvedSpecHash },
+      warnings: [...(config.config.skillWarnings ?? []), ...startup.conflictWarnings],
+    };
   }
 
   private buildResolvedStartupFiles(

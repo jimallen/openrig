@@ -1,3 +1,4 @@
+import { STARTUP_FROM_VALUES, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
 import { OutboxHandler } from "../domain/outbox-handler.js";
 import { Hono } from "hono";
 import type { RigRepository } from "../domain/rig-repository.js";
@@ -241,12 +242,14 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     occupantInvalidator: (c.get("occupantInvalidator" as never) as import("../domain/occupant-invalidator.js").OccupantInvalidator | undefined) ?? undefined,
     activityOracle: (c.get("seatActivityService" as never) as import("../domain/seat-activity-service.js").SeatActivityService | undefined) ?? undefined,
     transcripts: (c.get("contextUsageStore" as never) as ContextUsageStore | undefined) ?? undefined,
+    // OF-32: the instantiator re-reads a fresh seat's startup policy from its rig's spec source.
+    seatStartupSource: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? undefined,
   });
 }
 
 function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
-    || code === "missing_effort" || code === "invalid_effort") return 400;
+    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
@@ -303,18 +306,31 @@ seatRoutes.get("/effort/:seatRef", async (c) => {
   return c.json(result, seatLifecycleStatus(result.code));
 });
 
+/** OF-32: where a fresh launch takes its startup policy from; absent means the spec as it is now. */
+function startupFromOf(body: Record<string, unknown>): StartupFrom | undefined | null {
+  const value = body["startupFrom"];
+  if (value === undefined) return undefined;
+  return typeof value === "string" && (STARTUP_FROM_VALUES as readonly string[]).includes(value) ? value as StartupFrom : null;
+}
+const INVALID_STARTUP_FROM = { ok: false, code: "invalid_startup_from", message: `startupFrom must be one of: ${STARTUP_FROM_VALUES.join(", ")}.` } as const;
+
 // A distinct route fails closed against older daemons that do not support previews.
 seatRoutes.post("/launch-plan/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const startupFrom = startupFromOf(body);
+  if (startupFrom === null) return c.json(INVALID_STARTUP_FROM, 400);
   const result = await seatLifecycleService(c).planFresh({
-    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true,
+    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true, startupFrom,
   });
   return result.ok ? c.json(result) : c.json(result, seatLifecycleStatus(result.code));
 });
 
 seatRoutes.post("/launch/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const startupFrom = startupFromOf(body);
+  if (startupFrom === null) return c.json(INVALID_STARTUP_FROM, 400);
   const result = await seatLifecycleService(c).launchFresh({
+    startupFrom,
     seatRef: c.req.param("seatRef")!,
     fresh: body["fresh"] === true,
     reason: typeof body["reason"] === "string" ? body["reason"] : "",

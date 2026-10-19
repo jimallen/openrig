@@ -109,6 +109,21 @@ export function reanchorBuiltinStartupFile<T extends { path: string; absolutePat
 }
 
 /**
+ * OF-32: re-anchor a recorded rig spec source (a rig.yaml path) that lies under a recognized OpenRig install's
+ * daemon/specs to the running install, under the same rule as shipped startup files (packaged: always;
+ * dev checkout: only when the recorded file is gone). Anything else is returned unchanged.
+ */
+export function reanchorShippedSpecPath(
+  specPath: string,
+  specsRoot: string = runningShippedSpecsRoot(),
+  exists: Exists = existsSync,
+): string {
+  const stored = shippedSpecsRootOf(specPath);
+  if (!stored || !shouldReanchor(stored.layout, specPath, exists)) return specPath;
+  return nodePath.join(specsRoot, nodePath.relative(stored.root, nodePath.resolve(specPath)));
+}
+
+/**
  * Re-anchor one stored projection entry to the running install when it is a shipped-spec
  * resource: both its sourcePath and its resource absolutePath lie under the same recognized
  * OpenRig install's daemon/specs root (dev-checkout resources only when missing). A resource

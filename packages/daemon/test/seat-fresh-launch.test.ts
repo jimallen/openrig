@@ -151,7 +151,8 @@ describe("SeatLifecycleService.launchFresh", () => {
     ]), seat.node.id);
     const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "explicit fresh" });
     expect(result.ok).toBe(verified);
-    expect(result.warnings).toEqual(["Existing projection warning", expect.stringContaining("Startup submission unverified")]);
+    // OF-32: this fixture's rig records no spec source, so the replay of stored files is announced first.
+    expect(result.warnings).toEqual([expect.stringContaining("records no spec source"), "Existing projection warning", expect.stringContaining("Startup submission unverified")]);
     if (verified) expect(new SeatIdentityStore(db).getForNode(seat.node.id)?.verdict).toBe("verified");
     else expect(result).toMatchObject({ code: "runtime_identity_unverified", status: "attention_required" });
   });
@@ -940,7 +941,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     harnessResult = { ok: false, error: "binary missing" };
     adapter.project = async () => ({ projected: [], skipped: [], failed: [], warnings: ["Earlier projection warning"] });
     const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "hard failure proof" });
-    expect(result).toMatchObject({ ok: false, code: "startup_failed", status: "failed", warnings: ["Earlier projection warning"] });
+    expect(result).toMatchObject({ ok: false, code: "startup_failed", status: "failed", warnings: [expect.stringContaining("records no spec source"), "Earlier projection warning"] });
     expect(alive.has(seat.sessionName)).toBe(false);
     expect(sessionRegistry.getBindingForNode(seat.node.id)).toBeNull();
     const sessions = sessionRegistry.getSessionsForRig(seat.rig.id).filter((row) => row.nodeId === seat.node.id);
