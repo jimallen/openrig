@@ -873,8 +873,22 @@ export class RestoreOrchestrator {
       // Whether a launch HAPPENED is decided from evidence, not from whether launchNode returned: it commits the session
       // and binding and then makes more calls before it returns, so a throw in that tail has launched a seat whose
       // return value never arrived. A session row for this node that did not exist before clearStaleState is the proof.
-      let launchedSessionLeft = progress.launchReturned;
-      if (!launchedSessionLeft && progress.nodeId && progress.knownSessionIds) {
+      //
+      // Unreadable evidence (OF-27 N8): if launchNode HAS returned the answer is already known and the read is not
+      // needed. If it has not returned and the evidence cannot be read, the seat is compensated. The throw is then
+      // almost certainly before the launcher committed (the commit-to-return tail is short), where skipping the
+      // rollback would strand a seat with its binding cleared and its sessions superseded; the opposite fault, a
+      // post-commit tail throw AND a failed read, would put the stale binding back over the live one. Only the first
+      // is likely, so compensation is the less destructive fallback.
+      //
+      // Known residual (OF-27, concurrent writer): the check counts ANY new session row for this node, so a row some
+      // other actor registers for the same node during the launcher's window (reconciler, claim, discovery) is read as
+      // "launched" and skips the rollback of a pre-commit throw. The seat is then left cleared with the error saying a
+      // session was left in place; no live state is overwritten, and a re-restore recovers it. A guard that also
+      // required the node's binding to name the new row's session would tighten this, but a false negative there
+      // compensates over a real launch, the destructive direction, so the cheap guard was declined.
+      let launchedSessionLeft = progress.launchReturned && !progress.launchResultFailed;
+      if (!progress.launchReturned && progress.nodeId && progress.knownSessionIds) {
         try {
           const nodeId = progress.nodeId;
           launchedSessionLeft = this.sessionRegistry.getSessionsForRig(rigId)
@@ -883,7 +897,11 @@ export class RestoreOrchestrator {
           // Cannot tell: fall back to the launch-did-not-return reading and compensate.
         }
       }
-      if (launchedSessionLeft) {
+      if (progress.launchResultFailed) {
+        // The launcher returned a failed result, so nothing was launched, and the body already tried to put the prior
+        // state back; that attempt is what threw. Do not try again and do not claim a session was left.
+        errors.push("the launch had failed, so no session was launched, and rolling back the failed launch threw: the seat's prior state may not be fully restored");
+      } else       if (launchedSessionLeft) {
         // The launched session is the current state; as for any post-launch failure it is not rolled back.
         errors.push("the launched session was left in place (not rolled back)");
       } else if (progress.priorState && progress.nodeId) {
@@ -1098,6 +1116,7 @@ export class RestoreOrchestrator {
     const launchResult = await this.nodeLauncher.launchNode(rigId, node.logicalId, launchOpts);
     progress.launchReturned = true;
     if (!launchResult.ok) {
+      progress.launchResultFailed = true;
       // Launch failed — restore prior state (compensating action)
       this.restoreNodeState(nodeId, priorState);
       return {
@@ -2106,6 +2125,8 @@ interface SeatRestoreProgress {
   knownSessionIds?: Set<string>;
   /** True once nodeLauncher.launchNode has returned (ok or not). */
   launchReturned: boolean;
+  /** True once launchNode returned a failed result: nothing was launched and the body is compensating. */
+  launchResultFailed?: boolean;
 }
 
 interface PlanEntry {
