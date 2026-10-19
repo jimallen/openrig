@@ -688,6 +688,34 @@ describe("RestoreOrchestrator", () => {
     expect(snapshotRepo.listSnapshots(rig.id)).toHaveLength(1);
   });
 
+  // OF-33: a wedged tmux (has-session never answers; the exec has no timeout of its own) used to hang
+  // restore() forever BEFORE any state change. It is now cut off at the shared 2000 ms probe deadline and
+  // read as unreadable => the same fail-closed refusal a throwing probe gets. The literal is restated
+  // here on purpose: this pin must not import the constant it pins.
+  it("a hung tmux probe on a DB-running seat is cut off at 2000 ms and refuses restore (fail closed), not hangs", async () => {
+    const rig = rigRepo.createRig("wedged");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "dev-worker@wedged");
+    sessionRegistry.updateStatus(session.id, "running");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
+    const tmux = { ...mockTmux(), hasSession: vi.fn(() => new Promise<boolean>(() => { /* never settles */ })) } as unknown as TmuxAdapter;
+    const orch = createOrchestrator({ tmux });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let result: Awaited<ReturnType<typeof orch.restore>> | undefined;
+      const pending = orch.restore(snap.id).then((r) => { result = r; });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result, "restore() is still hung 2000 ms after a never-answering has-session").toBeDefined();
+      await pending;
+      expect(result!.ok).toBe(false);
+      if (!result!.ok) expect(result!.code).toBe("rig_not_stopped");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // --- Scenario A: stale DB sessions after tmux crash ---
 
   it("restores successfully when DB shows sessions running but tmux sessions are dead (post-crash)", async () => {

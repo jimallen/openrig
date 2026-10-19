@@ -8,7 +8,7 @@ import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
 import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-store.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import { classifySessionLiveness, type SessionLiveness } from "../domain/session-liveness.js";
+import { classifySessionLiveness, SESSION_LIVENESS_DEADLINE_MS } from "../domain/session-liveness.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SnapshotRepository } from "../domain/snapshot-repository.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
@@ -144,25 +144,15 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
   }
 }
 
+/** Per-probe deadline: a hung tmux must not stall the polled status route. Shared with the orchestrator. */
+export const RESTORE_CHECK_PROBE_TIMEOUT_MS = SESSION_LIVENESS_DEADLINE_MS;
+
 /**
  * OPR.0.4.3.22 — build a RestoreCheckService wired to the live daemon
  * repositories. Extracted so the rig-status compose route can consume the SAME
  * restore-check readiness signal (RecoveryPlan) the `/api/restore-check` route
  * emits, rather than re-implementing it (ponytail: one restore-check, composed).
  */
-/** Per-probe deadline: a hung tmux must not stall the polled status route. */
-export const RESTORE_CHECK_PROBE_TIMEOUT_MS = 2000;
-
-function withDeadline(probe: Promise<SessionLiveness>, ms: number): Promise<SessionLiveness> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve("unreadable"), ms);
-    probe.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      () => { clearTimeout(timer); resolve("unreadable"); },
-    );
-  });
-}
-
 export function createRestoreCheckService(
   rigRepo: RigRepository,
   snapshotRepo: SnapshotRepository,
@@ -176,7 +166,7 @@ export function createRestoreCheckService(
     // as dead, exactly as `rig up --existing` reads it. A probe that throws or
     // outlives the deadline is "unreadable" (liveness unknown), never guessed.
     probeSeatLiveness: tmuxAdapter
-      ? (sessionName: string) => withDeadline(classifySessionLiveness(tmuxAdapter, sessionName), probeTimeoutMs)
+      ? (sessionName: string) => classifySessionLiveness(tmuxAdapter, sessionName, probeTimeoutMs)
       : undefined,
     stateDir: OPENRIG_HOME,
     substrateRoot: dirname(resolveLegacyTopologyRigsRoot()),

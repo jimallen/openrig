@@ -194,6 +194,23 @@ describe("RestoreCheckService", () => {
     testOpenRigHome = null;
   });
 
+  // OF-33 X1: the production wiring (routes/restore-check.ts) hands the service a probe that never
+  // rejects, so this catch is reachable only through the RestoreCheckDeps.probeSeatLiveness contract
+  // itself (a Promise any other provider may reject). It is the one thing keeping a rejecting provider
+  // from turning the polled restore-check / status routes into a 500.
+  it("checkWithLiveness: a rejecting liveness provider is read as unreadable, never thrown to the caller", async () => {
+    const probed: string[] = [];
+    const service = new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ sessionStatus: "exited", startupStatus: "ready" })],
+      probeSeatLiveness: async (name: string) => { probed.push(name); throw new Error("provider exploded (injected)"); },
+    }));
+    const result = await service.checkWithLiveness({ noQueue: true, noHooks: true });
+    expect(probed).toEqual(["dev-impl@test-rig"]);
+    expect(result.recovery.status).toBe("unknown");
+    expect(result.recovery.actions).toEqual([]);
+    expect(result.recovery.unknown[0]!.reason).toContain("tmux liveness is unknown for dev-impl@test-rig");
+  });
+
   // --- Daemon false-green regression matrix ---
 
   it("daemon-down: exact 'Daemon not running' text produces red", () => {

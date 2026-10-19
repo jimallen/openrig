@@ -9,18 +9,29 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 export type SessionLiveness = "live" | "dead" | "unreadable";
 
 /**
+ * Per-probe deadline. tmux's exec has no timeout of its own, so a wedged tmux server would otherwise
+ * leave `has-session` (and everything awaiting it: the polled status route, restore-check, restore)
+ * pending forever. An answer that has not arrived by then is read as `unreadable`, never guessed.
+ */
+export const SESSION_LIVENESS_DEADLINE_MS = 2000;
+
+/**
  * The ONE classification of a session's liveness for restore. The restore
  * orchestrator's live/stale/unknown buckets (classifyRunningSessions) and
  * restore-check's advice both call this, so a different reading of the same
  * tmux answer cannot drift between "what restore will do" and "what we advise".
  */
-export async function classifySessionLiveness(
+export function classifySessionLiveness(
   tmux: Pick<TmuxAdapter, "hasSession">,
   sessionName: string,
+  deadlineMs: number = SESSION_LIVENESS_DEADLINE_MS,
 ): Promise<SessionLiveness> {
-  try {
-    return (await tmux.hasSession(sessionName)) ? "live" : "dead";
-  } catch {
-    return "unreadable";
-  }
+  return new Promise<SessionLiveness>((resolve) => {
+    const timer = setTimeout(() => resolve("unreadable"), deadlineMs);
+    // hasSession may throw synchronously (a test double, a bad adapter) as well as reject.
+    Promise.resolve().then(() => tmux.hasSession(sessionName)).then(
+      (present) => { clearTimeout(timer); resolve(present ? "live" : "dead"); },
+      () => { clearTimeout(timer); resolve("unreadable"); },
+    );
+  });
 }

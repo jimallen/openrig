@@ -1515,7 +1515,7 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because rig up --existing is refused while any seat is live.`,
+          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because this check cannot tell whether those seats are live. Restore itself only probes seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts.`,
         });
         continue;
       }
