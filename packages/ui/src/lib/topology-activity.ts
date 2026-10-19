@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { AgentActivitySummary, CurrentQitemSummary } from "../hooks/useNodeInventory.js";
 import { HYBRID_CROSS_RIG_STROKE_DASH } from "./hybrid-layout.js";
 import { parseSessionName, sessionMemberLabel } from "./session-name.js";
+import { isBackgroundJobRunning } from "./activity-visuals.js";
 
 const SESSION_PAIR_DELIMITER = "\u0000";
 
@@ -180,6 +181,8 @@ export function getBaselineActivityState(input: TopologyActivityBaseline | null 
   // presence) per IMPL-PRD §2.3 non-inference contract — that
   // queue-to-active conflation was the reported bug. Queued work is
   // rendered separately by the UI (hasAssignedWork affordance).
+  // OF-34: a background job is quiet by nature; the quiet-terminal signal must not demote it.
+  if (isBackgroundJobRunning(input.agentActivity)) return "active";
   if (input.terminalActive === true) return "active";
   if (input.terminalActive === false) return "idle";
 

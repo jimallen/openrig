@@ -69,6 +69,22 @@ export function isCurrentUsageLimit(activity: AgentActivitySummary | null | unde
     && activity.stale === false && !activity.fallback;
 }
 
+/**
+ * OF-34 — a seat whose turn ended while background shells/monitors/terminals keep running. The daemon
+ * lifts its idle verdict to `running` with `reason: "background_job"` (pane evidence). A background job
+ * is QUIET by nature, so the quiet-terminal signal (`terminalActive === false`) must not demote it
+ * back to idle: that signal means "no output lately", which is exactly what a waiting shell or monitor
+ * produces. Deliberately keyed on the reason, so every other pane_heuristic verdict keeps ranking
+ * below the terminal signal.
+ */
+export function isBackgroundJobRunning(activity: AgentActivitySummary | null | undefined): boolean {
+  return activity?.state === "running"
+    && activity.reason === "background_job"
+    && activity.evidenceSource === "pane_heuristic"
+    && !activity.stale
+    && !activity.fallback;
+}
+
 export function getActivityState(
   activity: AgentActivitySummary | null | undefined,
   terminalActive?: boolean | null,
@@ -102,6 +118,7 @@ export function getActivityStateWithSource(
   if (activity?.state === "needs_input" && activity.evidenceSource === "pane_heuristic") {
     return { state: "needs_input", source: "pane_heuristic" };
   }
+  if (isBackgroundJobRunning(activity)) return { state: "running", source: "pane_heuristic" };
   if (terminalActive === true) return { state: "running", source: "terminal_activity" };
   if (terminalActive === false) return { state: "idle", source: "terminal_activity" };
   if (activity && activity.state !== "unknown" && activity.evidenceSource === "pane_heuristic") {
