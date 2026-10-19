@@ -101,9 +101,18 @@ describe("Daemon Lifecycle", () => {
     expect(args[0]).toContain("dist/index.js");
     expect(opts.env).toMatchObject({
       OPENRIG_PORT: "7433",
-      OPENRIG_DB: "openrig.sqlite",
+      OPENRIG_DB: path.resolve("openrig.sqlite"),
     });
     expect(opts.detached).toBe(true);
+  });
+
+  // OF-31: a daemon that inherits the caller's cwd dies for Codex launches the
+  // day that directory is deleted. It is spawned from a directory that cannot vanish.
+  it("start: spawns the daemon with an explicit cwd (home), never the caller's", async () => {
+    const deps = startableDeps();
+    await startDaemon({ port: 7433, db: "openrig.sqlite" }, deps);
+    const [, , opts] = (deps.spawn as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(opts.cwd).toBe(os.homedir());
   });
 
   it("start: initializes the canonical instance and configured workspace before spawning", async () => {

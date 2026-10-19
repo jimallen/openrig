@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { connectionErrorCode, formatDaemonHostForUrl } from "./client.js";
 import { blockedConnectionGuidance, isBlockedConnectionCode } from "./daemon-reachability.js";
@@ -196,6 +197,8 @@ export interface LifecycleDeps {
     env: Record<string, string>;
     stdio: unknown;
     detached: boolean;
+    /** OF-31: never inherit the caller's cwd; it may be deleted under the daemon. */
+    cwd: string;
   }) => ChildProcess;
   // OPR.0.4.3.21 — optional `json` lets getDaemonStatus read the enriched
   // /healthz body (event-loop evidence). Optional so existing mocks that
@@ -500,12 +503,13 @@ export function buildDaemonEnv(
     env["OPENRIG_BIND_HOST"] = opts.host;
     env["OPENRIG_HOST"] = opts.host;
   }
-  env["OPENRIG_DB"] = opts.db;
+  // OF-31: the daemon is spawned with cwd=$HOME, so resolve caller-relative paths here, against the caller's cwd.
+  env["OPENRIG_DB"] = path.resolve(opts.db);
   if (opts.transcriptsEnabled !== undefined) {
     env["OPENRIG_TRANSCRIPTS_ENABLED"] = String(opts.transcriptsEnabled);
   }
   if (opts.transcriptsPath) {
-    env["OPENRIG_TRANSCRIPTS_PATH"] = opts.transcriptsPath;
+    env["OPENRIG_TRANSCRIPTS_PATH"] = path.resolve(opts.transcriptsPath);
   }
   if (opts.transcriptsLines !== undefined) {
     env["OPENRIG_TRANSCRIPTS_LINES"] = String(opts.transcriptsLines);
@@ -695,6 +699,7 @@ async function startOwnedDaemon(opts: StartOptions, deps: LifecycleDeps, lock: D
     }),
     stdio: ["ignore", logFd, logFd],
     detached: true,
+    cwd: homedir(),
     });
   } finally { deps.closeFile?.(logFd); }
 
