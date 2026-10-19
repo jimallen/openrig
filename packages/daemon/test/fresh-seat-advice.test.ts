@@ -130,6 +130,17 @@ describe("a terminal seat's restore policy survives a restart (operator.human@ke
     expect((plain.db.prepare("SELECT restore_policy FROM sessions WHERE id = ?").get(plainNext.id) as { restore_policy: string }).restore_policy).toBe("resume_if_possible");
   });
 
+  // Claim, self-attach and handover register their occupant through registerClaimedSession.
+  it("a claimed occupant (claim / self-attach / handover) inherits its seat's restore policy too", () => {
+    const h = fixture({ nodePolicy: "checkpoint_only", withSibling: false });
+    const claimed = h.sessionRegistry.registerClaimedSession(h.node.id, "dev-worker@advice-rig");
+    const read = (id: string) => (h.db.prepare("SELECT restore_policy, origin FROM sessions WHERE id = ?").get(id) as { restore_policy: string; origin: string });
+    expect(read(claimed.id)).toEqual({ restore_policy: "checkpoint_only", origin: "claimed" });
+    const plain = fixture({ withSibling: false });
+    const plainClaimed = plain.sessionRegistry.registerClaimedSession(plain.node.id, "dev-worker@advice-rig");
+    expect((plain.db.prepare("SELECT restore_policy FROM sessions WHERE id = ?").get(plainClaimed.id) as { restore_policy: string }).restore_policy).toBe("resume_if_possible");
+  });
+
   it("a checkpoint_only seat with a token-less history restarts fresh-primed, not awaiting-decision, on every restore", async () => {
     // The seat's session row is written by registerSession, exactly as a restart writes it (the fixture applies no
     // policy of its own). A terminal seat never has a resume token.

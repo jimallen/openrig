@@ -1,4 +1,4 @@
-import { DaemonConnectionError } from "./client.js";
+import { DaemonConnectionError, DaemonResponseError } from "./client.js";
 
 /** What an operator's "y" to "start a fresh session instead?" does: one per-seat fresh launch for each accepted seat.
  *  It is NOT a second whole-rig `/api/up` with `freshLogicalIds`: that restore is refused (`rig_not_stopped`, HTTP 409)
@@ -35,8 +35,14 @@ export async function launchAcceptedFreshSeats(
       const text = typeof data["message"] === "string" ? data["message"] : typeof data["error"] === "string" ? data["error"] : "fresh launch refused";
       outcomes.push({ logicalId, ok, httpStatus: res.status, message: ok ? null : `${code}${text}` });
     } catch (err) {
-      if (!(err instanceof DaemonConnectionError)) throw err;
-      outcomes.push({ logicalId, ok: false, httpStatus: null, message: `no answer from the daemon (${err.message}); it may still be launching. Verify with: rig ps` });
+      // Each seat is independent: whatever happened to this one, the next is still tried and every result is returned.
+      if (err instanceof DaemonResponseError) {
+        outcomes.push({ logicalId, ok: false, httpStatus: err.status, message: `unreadable response from the daemon${err.bodySnippet ? ` (${err.bodySnippet.trim()})` : ""}; the launch may or may not have happened. Verify with: rig ps` });
+      } else if (err instanceof DaemonConnectionError) {
+        outcomes.push({ logicalId, ok: false, httpStatus: null, message: `no answer from the daemon (${err.message}); it may still be launching. Verify with: rig ps` });
+      } else {
+        outcomes.push({ logicalId, ok: false, httpStatus: null, message: `${err instanceof Error ? err.message : String(err)}` });
+      }
     }
   }
   return outcomes;

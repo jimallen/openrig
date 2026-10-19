@@ -36,7 +36,7 @@ export function snapshotCommand(depsOverride?: StatusDeps): Command {
         process.exitCode = 1;
       } else {
         console.log(`Snapshot created: ${res.data.id}`);
-        console.log(`Restore is refused while any seat is live; stop the rig first with: rig down ${rigId}`);
+        console.log(`If any seat is live, restore is refused; stop the rig first with: rig down ${rigId}`);
         console.log(`To restore: rig restore ${res.data.id} --rig ${rigId}`);
       }
     });

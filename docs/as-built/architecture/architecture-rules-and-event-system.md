@@ -74,8 +74,9 @@ system-level invariants.
 15. Restore honesty: a failed resume stops loudly as `awaiting-decision`, with
     the blank session rolled back and no session running
     (`restore-orchestrator.ts:1055`). No automatic fresh fallback. Fresh launch
-    is explicit follow-up only (`rig up --fresh <seats...>`,
-    `packages/cli/src/commands/up.ts:99`).
+    is explicit follow-up only (`rig seat launch '<seat>@<rig>' --fresh`
+    per seat; `rig up --existing <rig> --fresh <seats...>` only while the whole
+    rig is stopped, `packages/cli/src/commands/up.ts:99`).
 16. Post-command handoff required on `up`, `down`, `restore`,
     `snapshot create`: what happened + current state + next action.
 17. Session naming: `{pod}-{member}@{rig}` — human-authored,

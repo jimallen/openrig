@@ -180,11 +180,21 @@ export class SessionRegistry {
     reservedGeneration?: string | null,
   ): Session {
     const id = ulid();
-    this.db
-      .prepare(
-        "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status) VALUES (?, ?, ?, 'running', 'claimed', 'ready')"
-      )
-      .run(id, nodeId, sessionName);
+    // A claimed session (claim, self-attach, handover) is a new occupant of the same seat, so it inherits the seat's
+    // restore policy exactly as `registerSession` does.
+    if (this.restorePolicyIsInheritable()) {
+      this.db
+        .prepare(
+          "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status, restore_policy) VALUES (?, ?, ?, 'running', 'claimed', 'ready', COALESCE((SELECT restore_policy FROM nodes WHERE id = ?), 'resume_if_possible'))"
+        )
+        .run(id, nodeId, sessionName, nodeId);
+    } else {
+      this.db
+        .prepare(
+          "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status) VALUES (?, ?, ?, 'running', 'claimed', 'ready')"
+        )
+        .run(id, nodeId, sessionName);
+    }
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
 

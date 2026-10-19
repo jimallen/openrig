@@ -1047,9 +1047,10 @@ Bare names are special:
 
 Resume-original-by-default (v0.3.4+):
 - For an existing rig, `rig up <name>` resumes each seat from its original session/snapshot by default (operation A). Seats that successfully resume report `resumed`.
-- `--fresh <seat...>` is the per-seat opt-in for deliberate fresh-prime (operation B). Named seats are reported as `fresh-primed`.
+- `--fresh <seat...>` is the per-seat opt-in for deliberate fresh-prime (operation B). Named seats are reported as `fresh-primed`. It is part of a whole-rig restore, so it works only while the rig is fully stopped: with any seat live the daemon refuses it (`rig_not_stopped`, HTTP 409).
+- To start ONE seat fresh while its siblings are live (the usual state after a restore leaves a seat `awaiting-decision`), use the per-seat door: `rig seat launch '<seat>@<rig>' --fresh --reason "<why>"`. It touches only that seat and works with siblings live or not.
 - `--existing` forces existing-rig restore semantics on a bare name, bypassing library-spec resolution. Useful when a rig name collides with a library spec name.
-- Example: `rig up --existing my-rig --fresh dev-impl` — resume everything in `my-rig` except `dev-impl`, which is freshly primed.
+- Example, rig fully stopped: `rig up --existing my-rig --fresh dev-impl` — resume everything in `my-rig` except `dev-impl`, which is freshly primed.
 - Seats with no resumable session land in `awaiting-decision` (zero-session honest state, NOT `failed`); see the five-term restore vocabulary in "Recovery and Resilience" below.
 
 `--plan` (v0.3.4+):

@@ -47,7 +47,7 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
   let port: number;
   let upBodies: Array<Record<string, unknown>> = [];
   let seatPosts: Array<{ path: string; body: Record<string, unknown> }> = [];
-  let seatAnswer: (path: string) => { status: number; data: Record<string, unknown> };
+  let seatAnswer: (path: string) => { status: number; data: Record<string, unknown>; raw?: string };
   /** Per-test response factory keyed on the freshLogicalIds in the request. */
   let respond: (body: Record<string, unknown>) => Record<string, unknown>;
 
@@ -73,6 +73,11 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
         if (req.method === "POST" && req.url?.startsWith("/api/seat/launch/")) {
           seatPosts.push({ path: req.url, body: JSON.parse(raw || "{}") });
           const answer = seatAnswer(req.url);
+          if (answer.raw !== undefined) {
+            res.writeHead(answer.status, { "Content-Type": "text/plain" });
+            res.end(answer.raw);
+            return;
+          }
           res.writeHead(answer.status, { "Content-Type": "application/json" });
           res.end(JSON.stringify(answer.data));
           return;
@@ -231,6 +236,62 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
       await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "kern", "--existing"]);
     });
     expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/operator.human%40kernel"]);
+  });
+
+  // Each accepted seat is independent: a bad answer for one must not hide the others' results or stop them being tried.
+  it("several accepted seats: one unreadable answer in the middle does not stop the rest or hide earlier results", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "a.one", status: "awaiting-decision", error: "no token" },
+        { logicalId: "b.two", status: "awaiting-decision", error: "no token" },
+        { logicalId: "c.three", status: "awaiting-decision", error: "no token" },
+      ], warnings: [],
+    });
+    seatAnswer = (path) => path.includes("b.two")
+      ? { status: 502, data: {}, raw: "Bad Gateway" }
+      : { status: 200, data: { ok: true, status: "ready" } };
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    const output = logs.join("\n");
+    expect(seatPosts.map((p) => p.path)).toEqual([
+      "/api/seat/launch/a.one%40myrig", "/api/seat/launch/b.two%40myrig", "/api/seat/launch/c.three%40myrig",
+    ]);
+    expect(output).toContain("a.one: fresh-primed");
+    expect(output).toContain("c.three: fresh-primed");
+    expect(output).toMatch(/b\.two: fresh start failed \(HTTP 502\): unreadable response from the daemon/);
+    expect(output).not.toContain("b.two: fresh-primed");
+  });
+
+  it("several accepted seats: a refusal for the first still lets the second be tried and reported", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "a.one", status: "awaiting-decision", error: "no token" },
+        { logicalId: "b.two", status: "awaiting-decision", error: "no token" },
+      ], warnings: [],
+    });
+    seatAnswer = (path) => path.includes("a.one")
+      ? { status: 409, data: { ok: false, code: "session_live", message: "A live managed occupant requires --stop." } }
+      : { status: 200, data: { ok: true } };
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    expect(seatPosts).toHaveLength(2);
+    expect(logs.join("\n")).toContain("a.one: fresh start failed (HTTP 409)");
+    expect(logs.join("\n")).toContain("b.two: fresh-primed");
+  });
+
+  it("TTY ASK declined names each seat's rig by the daemon's canonical name, not by what was typed after `rig up`", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "no token" }], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => false)).parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    expect(printedSeatLaunchCommands(logs.join("\n"))).toEqual([`rig seat launch 'operator.human@kernel' --fresh --reason "<why>"`]);
   });
 
   it("TTY ASK declined: no second POST, no session started", async () => {
