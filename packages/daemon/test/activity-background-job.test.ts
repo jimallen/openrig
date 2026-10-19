@@ -126,6 +126,27 @@ describe("OF-34 detectBackgroundJobs (structural, from the pane's own counter)",
     expect(detectBackgroundJobs(claudePane({ footer: "⏵⏵ bypass permissions on · ran 3 shells" }))).toBeNull();
   });
 
+  // Live footer bytes captured read-only from exec-cos (launched with --remote-control): two leading
+  // spaces, the chip, ~165 alignment spaces, then Claude's right-aligned remote-control indicator.
+  const COS_FOOTER = `  ⏵⏵ bypass permissions on · 1 shell${" ".repeat(165)}/rc`;
+  it.each([
+    ["the exact exec-cos live footer (/rc)", COS_FOOTER, { count: 1, evidence: "1 shell" }],
+    ["trailing warnings", `  ⏵⏵ bypass permissions on · 1 shell${" ".repeat(40)}⚠ 2 warnings`, { count: 1, evidence: "1 shell" }],
+    ["trailing warnings and /rc", `  ⏵⏵ bypass permissions on · 2 shells${" ".repeat(40)}⚠ 2 warnings · /rc`, { count: 2, evidence: "2 shells" }],
+    ["a chip in the middle followed by a trailing run", `  ⏵⏵ bypass permissions on · 1 monitor  ← for agents${" ".repeat(30)}/rc`, { count: 1, evidence: "1 monitor" }],
+  ])("a right-aligned trailing status does not hide the chip: %s", (_n, footer, expected) => {
+    expect(detectBackgroundJobs(claudePane({ footer: footer.trimStart() }))).toEqual(expected);
+  });
+
+  it("trailing status does not loosen anything else: no chip, a single space, quoted prose, or a non-whole segment stay null", () => {
+    const f = (footer: string) => detectBackgroundJobs(claudePane({ footer }));
+    expect(f(`⏵⏵ bypass permissions on (shift+tab to cycle)${" ".repeat(165)}/rc`)).toBeNull();
+    expect(f("⏵⏵ bypass permissions on · 1 shell /rc")).toBeNull();
+    expect(f(`⏵⏵ bypass permissions on · ran 3 shells${" ".repeat(40)}/rc`)).toBeNull();
+    expect(f(`⏵⏵ bypass permissions on · 3 shells queued${" ".repeat(40)}/rc`)).toBeNull();
+    expect(f(`⏵⏵ bypass permissions on · 0 shells${" ".repeat(40)}/rc`)).toBeNull();
+  });
+
   it("only the live bottom 12 non-blank lines are read: the footer on line 12 counts, on line 13 it is history", () => {
     const filler = (n: number) => Array.from({ length: n }, (_, i) => `output line ${i}`).join("\n");
     const footerWithChip = "  ⏵⏵ bypass permissions on · 1 shell";
@@ -189,6 +210,12 @@ describe("OF-34 ACTIVITY: a positive idle hook yields to a background job", () =
     // sampledAt is when the pane was OBSERVED, not when the request was served and not wall clock
     expect(a.sampledAt).toBe(new Date(T0).toISOString());
     expect(a.sampledAt).not.toBe(new Date(T0 + REQUEST_SKEW_MS).toISOString());
+  });
+
+  it("exec-cos: Stop-hook idle + the live /rc footer -> running / background_job", async () => {
+    const h = harness(claudePane({ status: STATUS_ONE, footer: `⏵⏵ bypass permissions on · 1 shell${" ".repeat(165)}/rc` }));
+    await h.service.pollSeat("dev-impl@rig");
+    expect(await h.derive(hook("idle", "stop"))).toMatchObject({ state: "running", reason: "background_job", evidence: "1 shell" });
   });
 
   it("no background job: the idle hook stays idle (the unfixed behaviour is preserved)", async () => {

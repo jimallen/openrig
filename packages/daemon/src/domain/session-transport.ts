@@ -504,7 +504,10 @@ export function detectBackgroundJobs(paneContent: string): BackgroundJobs | null
       return count > 0 ? { count, evidence: truncateEvidence(line.split(" · ")[0]!.replace(/ running$/, "")) } : null;
     }
     if (!CLAUDE_MODE_FOOTER.test(line)) continue;
-    const chip = line.split(" · ").slice(1).find((segment) => CLAUDE_JOB_CHIP.test(segment));
+    // A right-aligned trailing status (`/rc`, `⚠ 2 warnings`, both) follows the chip after a run of 2+
+    // spaces inside the same " · " segment; only the part before that run is the chip. The chip must
+    // still be the WHOLE of that part, and a single space does not count as the alignment run.
+    const chip = line.split(" · ").slice(1).map((segment) => segment.replace(/ {2,}.*$/, "")).find((segment) => CLAUDE_JOB_CHIP.test(segment));
     if (!chip) return null;
     const count = [...chip.matchAll(/(\d+) (?:shell|monitor)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
     return count > 0 ? { count, evidence: chip } : null;
