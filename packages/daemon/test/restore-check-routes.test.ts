@@ -5,7 +5,7 @@ import { OPENRIG_HOME } from "../src/openrig-compat.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import type { Hono } from "hono";
-import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { createFullTestDb, createTestApp, mockTmuxAdapterProbing } from "./helpers/test-app.js";
 import { createApp } from "../src/server.js";
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
@@ -103,7 +103,7 @@ describe("Restore check routes", () => {
     process.env["OPENRIG_HOME"] = openRigHome;
 
     db = createFullTestDb();
-    const setup = createTestApp(db);
+    const setup = createTestApp(db, { tmux: mockTmuxAdapterProbing("absent") });
     app = createApp(setup);
     rigRepo = setup.rigRepo;
     sessionRegistry = setup.sessionRegistry;
@@ -191,11 +191,16 @@ describe("Restore check routes", () => {
     sessionRegistry.updateStartupStatus(session.id, "ready");
     insertStartupContextRow(db, node.id, { runtime: "terminal" });
     seedCurrentSnapshot(rig.id);
-    const selection = vi.spyOn(snapshotRepo, "selectRestoreUsable");
+    // OF-29: "running-ready" now needs tmux to agree with the DB, so this rig's
+    // seat is live in the tmux double (default double: session absent).
+    const liveTmux = mockTmuxAdapterProbing("present");
+    const liveSetup = createTestApp(db, { tmux: liveTmux });
+    const liveApp = createApp(liveSetup);
+    const selection = vi.spyOn(liveSetup.snapshotRepo, "selectRestoreUsable");
     try {
-      expect((await app.request(`/api/rigs/${rig.id}/status`)).status).toBe(200);
+      expect((await liveApp.request(`/api/rigs/${rig.id}/status`)).status).toBe(200);
       expect(selection).not.toHaveBeenCalled();
-      await app.request("/api/restore-check?rig=ready-poll&noQueue=true&noHooks=true");
+      await liveApp.request("/api/restore-check?rig=ready-poll&noQueue=true&noHooks=true");
       expect(selection).toHaveBeenCalledTimes(1);
     } finally {
       selection.mockRestore();

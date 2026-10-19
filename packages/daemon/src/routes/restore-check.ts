@@ -7,6 +7,7 @@ import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry, ty
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
 import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-store.js";
+import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SnapshotRepository } from "../domain/snapshot-repository.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
@@ -151,8 +152,20 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
 export function createRestoreCheckService(
   rigRepo: RigRepository,
   snapshotRepo: SnapshotRepository,
+  tmuxAdapter?: TmuxAdapter,
 ): RestoreCheckService {
   const serviceDeps: RestoreCheckDeps = {
+    // Same classified session probe the restore orchestrator's liveness gate
+    // rides on. Only a positive present/absent answer is a verdict; a
+    // transport failure or a throw is "unreadable", never guessed.
+    probeSeatLiveness: tmuxAdapter ? async (sessionName: string) => {
+      try {
+        const probe = await tmuxAdapter.probeSession(sessionName);
+        return probe.state === "present" ? "live" : probe.state === "absent" ? "dead" : "unreadable";
+      } catch {
+        return "unreadable";
+      }
+    } : undefined,
     stateDir: OPENRIG_HOME,
     substrateRoot: dirname(resolveLegacyTopologyRigsRoot()),
     probeQueueStore: () => {
@@ -218,7 +231,7 @@ export function createRestoreCheckService(
 }
 
 // GET /api/restore-check?rig=<name>&noQueue=true&noHooks=true&compact=1
-restoreCheckRoutes.get("/", (c) => {
+restoreCheckRoutes.get("/", async (c) => {
   const deps = getDeps(c);
   const rigFilter = c.req.query("rig") ?? undefined;
   const noQueue = c.req.query("noQueue") === "true";
@@ -228,8 +241,8 @@ restoreCheckRoutes.get("/", (c) => {
   const includeReady = c.req.query("ready") === "1";
 
   try {
-    const service = createRestoreCheckService(deps.rigRepo, deps.snapshotRepo);
-    const result = service.check({ rig: rigFilter, noQueue, noHooks, compact, includeReady });
+    const service = createRestoreCheckService(deps.rigRepo, deps.snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined);
+    const result = await service.checkWithLiveness({ rig: rigFilter, noQueue, noHooks, compact, includeReady });
 
     if (compact) {
       const compactResult = {

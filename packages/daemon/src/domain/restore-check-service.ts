@@ -192,7 +192,17 @@ export interface NodeInventoryEntry {
   cwd?: string | null;
 }
 
+/**
+ * What tmux says about a seat's canonical session, independent of the DB.
+ * `unreadable` means tmux could not be asked (transport down / probe threw):
+ * liveness is UNKNOWN, never assumed dead or live.
+ */
+export type SeatLiveness = "live" | "dead" | "unreadable";
+
 export interface RestoreCheckDeps {
+  /** Probe whether a seat's tmux session is live (the tmux adapter's classified
+   *  session probe). Optional: without it checkWithLiveness() behaves like check(). */
+  probeSeatLiveness?: (sessionName: string) => Promise<SeatLiveness>;
   /** Get all rigs as summaries */
   listRigs: () => Array<{ rigId: string; name: string; hasServices?: boolean }>;
   /** Get node inventory for a rig (ADR-0002: NodeInventory projection) */
@@ -225,6 +235,7 @@ export interface RestoreCheckDeps {
 }
 
 interface RigRollupInput {
+  liveness: Map<string, SeatLiveness>;
   rig: { rigId: string; name: string };
   nodes: NodeInventoryEntry[];
   checks: CheckEntry[];
@@ -239,6 +250,10 @@ interface RecoveryRigInput {
   blockingChecks: CheckEntry[];
   latestSnapshot: { id: string; kind: string } | null;
   snapshotLookupError?: string;
+  /** Seats whose tmux session is live, whatever the DB says (restore refuses a rig with any). */
+  liveSeats: string[];
+  /** Seats whose tmux liveness could not be read. */
+  unknownLivenessSeats: string[];
 }
 
 interface HostInfraCheckResult {
@@ -260,7 +275,37 @@ export class RestoreCheckService {
    * Compute scoped restore checks and recovery guidance from daemon, rig and
    * seat evidence without launching occupants.
    */
-  check(opts: RestoreCheckOpts): RestoreCheckResult {
+
+  /**
+   * check() plus a tmux liveness probe per seat, so recovery advice reflects
+   * what tmux says and not only what the DB says. Without a probe dep this is
+   * check().
+   */
+  async checkWithLiveness(opts: RestoreCheckOpts): Promise<RestoreCheckResult> {
+    const probe = this.deps.probeSeatLiveness;
+    const liveness = new Map<string, SeatLiveness>();
+    if (probe) {
+      const names = new Set<string>();
+      try {
+        for (const rig of this.deps.listRigs()) {
+          if (opts.rig && rig.name !== opts.rig) continue;
+          for (const node of this.deps.getNodeInventory(rig.rigId)) {
+            if (node.canonicalSessionName) names.add(node.canonicalSessionName);
+          }
+        }
+      } catch { /* runCheck reports the same read failure as its own unknown result */ }
+      await Promise.all([...names].map(async (name) => {
+        try { liveness.set(name, await probe(name)); } catch { liveness.set(name, "unreadable"); }
+      }));
+    }
+    return this.check(opts, liveness);
+  }
+
+  /**
+   * `liveness` is the per-session tmux answer gathered by checkWithLiveness();
+   * omitted, every seat is judged on DB state alone (the pre-OF-29 behaviour).
+   */
+  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map()): RestoreCheckResult {
     const checks: CheckEntry[] = [];
     // rev1-r2 no-false-ready: ready-seat caveat signals that default compact
     // COMPUTES but does NOT emit (AC-4 token-safe) still count toward the
@@ -336,7 +381,7 @@ export class RestoreCheckService {
       // Explicit restore-check still assesses its next restore, even while it is running.
       let preconditionError: string | undefined;
       const allReady = nodes.length > 0 && nodes.every((node) =>
-        Boolean(node.canonicalSessionName) && node.sessionStatus === "running" && node.startupStatus === "ready"
+        seatRunningReady(node, liveness)
       );
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig);
@@ -347,7 +392,7 @@ export class RestoreCheckService {
       }
 
       for (const node of nodes) {
-        const readinessCheck = this.checkSeatReadiness(node);
+        const readinessCheck = this.checkSeatReadiness(node, liveness);
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
@@ -403,11 +448,12 @@ export class RestoreCheckService {
         }
       }
 
-      rigRollupInputs.push({ rig, nodes, checks: rigChecks, preconditionError });
+      rigRollupInputs.push({ liveness, rig, nodes, checks: rigChecks, preconditionError });
     }
 
-    const rigRollups = rigRollupInputs.map((input) => this.buildRigRollup(input));
-    for (const rollup of rigRollups) {
+    const internalRollups = rigRollupInputs.map((input) => this.buildRigRollup(input));
+    const rigRollups: RigRestoreRollup[] = internalRollups.map(({ liveSeats: _live, unknownLivenessSeats: _unknown, ...rollup }) => rollup);
+    for (const rollup of internalRollups) {
       const latestSnapshot = restoreInputsByRig.get(rollup.rigId) ?? this.inspectLatestSnapshot(rollup.rigId);
       recoveryRigInputs.push({
         rigId: rollup.rigId,
@@ -417,6 +463,8 @@ export class RestoreCheckService {
         blockingChecks: rollup.blockingChecks,
         latestSnapshot: latestSnapshot.snapshot,
         snapshotLookupError: latestSnapshot.error,
+        liveSeats: rollup.liveSeats,
+        unknownLivenessSeats: rollup.unknownLivenessSeats,
       });
     }
 
@@ -827,7 +875,7 @@ export class RestoreCheckService {
     };
   }
 
-  private checkSeatReadiness(node: NodeInventoryEntry): CheckEntry {
+  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>): CheckEntry {
     const session = node.canonicalSessionName ?? node.logicalId;
     const check = `seat.${session}.readiness`;
 
@@ -855,13 +903,41 @@ export class RestoreCheckService {
       };
     }
 
-    if (node.sessionStatus !== "running" || node.startupStatus !== "ready") {
-      const latestError = node.latestError ? ` latestError=${node.latestError}` : "";
+    const tmux = liveness.get(node.canonicalSessionName);
+    const dbReady = node.sessionStatus === "running" && node.startupStatus === "ready";
+
+    if (dbReady && tmux === "dead") {
       return {
         check,
         status: "red",
-        evidence: `Seat not running/ready: sessionStatus=${node.sessionStatus ?? "unknown"} startupStatus=${node.startupStatus ?? "unknown"}${latestError}`,
+        evidence: `Seat not running/ready: DB says sessionStatus=running startupStatus=ready but tmux session ${node.canonicalSessionName} is absent (stale DB state)`,
         remediation: "Restore or relaunch the seat, then rerun rig restore-check",
+        remediationSafe: false,
+      };
+    }
+
+    if (dbReady && tmux === "unreadable") {
+      return {
+        check,
+        status: "yellow",
+        evidence: `Seat tmux liveness unknown: DB says running/ready but tmux session ${node.canonicalSessionName} could not be read`,
+        remediation: "Check that tmux is reachable, then rerun rig restore-check",
+        remediationSafe: true,
+      };
+    }
+
+    if (!dbReady) {
+      const latestError = node.latestError ? ` latestError=${node.latestError}` : "";
+      const tmuxNote = tmux === "live" ? `; tmux session ${node.canonicalSessionName} is LIVE`
+        : tmux === "unreadable" ? `; tmux liveness unknown (session ${node.canonicalSessionName} could not be read)`
+        : "";
+      return {
+        check,
+        status: "red",
+        evidence: `Seat not running/ready: sessionStatus=${node.sessionStatus ?? "unknown"} startupStatus=${node.startupStatus ?? "unknown"}${latestError}${tmuxNote}`,
+        remediation: tmux === "live"
+          ? "The seat is live in tmux although the DB does not show it running; rig up --existing would be refused while a seat is live. Inspect with rig ps --nodes, then rerun rig restore-check"
+          : "Restore or relaunch the seat, then rerun rig restore-check",
         remediationSafe: false,
       };
     }
@@ -1426,6 +1502,25 @@ export class RestoreCheckService {
       }
       if (input.runningReadyNodes === input.expectedNodes) continue;
 
+      if (input.unknownLivenessSeats.length > 0) {
+        unknown.push({
+          scope: "rig",
+          rigId: input.rigId,
+          rigName: input.rigName,
+          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because rig up --existing is refused while any seat is live.`,
+        });
+        continue;
+      }
+      if (input.liveSeats.length > 0) {
+        blocked.push({
+          scope: "rig",
+          rigId: input.rigId,
+          rigName: input.rigName,
+          reason: `Seats live in tmux: ${input.liveSeats.join(", ")}. rig up --existing is refused (rig_not_stopped, 409) while any seat is live; inspect with rig ps --nodes, or stop the rig with rig down first.`,
+        });
+        continue;
+      }
+
       if (input.latestSnapshot) {
         actions.push({
           scope: "rig",
@@ -1506,11 +1601,13 @@ export class RestoreCheckService {
     return `${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${actions.length} actionable; ${unknown.length} unknown.`;
   }
 
-  private buildRigRollup(input: RigRollupInput): RigRestoreRollup {
+  private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveSeats: string[]; unknownLivenessSeats: string[] } {
     const blockingChecks = input.checks.filter((check) => check.status === "red");
     const caveatChecks = input.checks.filter((check) => check.status === "yellow");
     const expectedNodes = input.nodes.length;
     let runningReadyNodes = 0;
+    const liveSeats: string[] = [];
+    const unknownLivenessSeats: string[] = [];
     let blockedNodes = 0;
     let caveatNodes = 0;
     // FR-8: per-seat class breakdown (each seat counts toward exactly one class).
@@ -1528,7 +1625,10 @@ export class RestoreCheckService {
       const nodeChecks = input.checks.filter((check) => check.check.startsWith(`seat.${session}.`));
       const hasBlocking = nodeChecks.some((check) => check.status === "red");
       const hasCaveat = nodeChecks.some((check) => check.status === "yellow");
-      const runningReady = Boolean(node.canonicalSessionName) && node.sessionStatus === "running" && node.startupStatus === "ready";
+      const seatLiveness = node.canonicalSessionName ? input.liveness.get(node.canonicalSessionName) : undefined;
+      if (seatLiveness === "live") liveSeats.push(session);
+      if (seatLiveness === "unreadable") unknownLivenessSeats.push(session);
+      const runningReady = seatRunningReady(node, input.liveness);
       if (runningReady) runningReadyNodes += 1;
       if (hasBlocking) blockedNodes += 1;
       else if (hasCaveat) caveatNodes += 1;
@@ -1581,6 +1681,8 @@ export class RestoreCheckService {
       classCounts,
       blockingChecks,
       caveatChecks,
+      liveSeats,
+      unknownLivenessSeats,
     };
   }
 
@@ -1606,6 +1708,13 @@ export class RestoreCheckService {
       blocking: c.status === "red",
     }));
   }
+}
+
+/** DB says running+ready AND tmux has not contradicted it (unprobed counts as DB-only). */
+function seatRunningReady(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>): boolean {
+  if (!node.canonicalSessionName || node.sessionStatus !== "running" || node.startupStatus !== "ready") return false;
+  const tmux = liveness.get(node.canonicalSessionName);
+  return tmux !== "dead" && tmux !== "unreadable";
 }
 
 function shellQuote(value: string): string {
