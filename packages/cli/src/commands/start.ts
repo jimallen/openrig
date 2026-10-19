@@ -15,6 +15,7 @@ import {
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
+import { launchAcceptedFreshSeats } from "../fresh-seat-accept.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 const KERNEL_WAIT_MS = 60_000;
@@ -485,26 +486,12 @@ Examples:
                 if (yes) accepted.push(n.logicalId);
               }
               if (accepted.length > 0) {
-                try {
-                  const freshRes = await client.post<Record<string, unknown>>(
-                    `/api/rigs/${encodeURIComponent(rigId)}/up`,
-                    { plan: false, freshLogicalIds: accepted },
-                    { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS },
-                  );
-                  if (freshRes.status >= 400) {
-                    const freshError = String(freshRes.data["error"] ?? "fresh-prime failed");
-                    console.error(`    Fresh-prime for ${rigName}: ${freshError} (HTTP ${freshRes.status})`);
+                const outcomes = await launchAcceptedFreshSeats(client, accepted, rigName, "operator accepted fresh start at rig start", LONG_RUNNING_UP_TIMEOUT_MS);
+                for (const o of outcomes) {
+                  if (o.ok) {
+                    if (!opts.json) console.log(`    ${o.logicalId}: fresh-primed`);
                   } else {
-                    const freshNodes = (freshRes.data["nodes"] as Array<{ logicalId: string; status: string }>) ?? [];
-                    for (const fn of freshNodes.filter((fn) => accepted.includes(fn.logicalId))) {
-                      if (!opts.json) console.log(`    ${fn.logicalId}: ${fn.status}`);
-                    }
-                  }
-                } catch (err) {
-                  if (err instanceof DaemonConnectionError) {
-                    console.error(`    Fresh-prime timed out for ${rigName}; the daemon may still be processing. Verify with: rig ps`);
-                  } else {
-                    throw err;
+                    console.error(`    ${o.logicalId}: fresh start failed for ${rigName}${o.httpStatus ? ` (HTTP ${o.httpStatus})` : ""}: ${o.message}`);
                   }
                 }
               } else if (!opts.json) {

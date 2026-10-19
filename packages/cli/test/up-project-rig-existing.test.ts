@@ -48,6 +48,7 @@ describe("rig up — project rig with an existing stopped rig", () => {
   let server: http.Server;
   let port: number;
   let bodies: Array<Record<string, unknown>> = [];
+  let seatPosts: Array<{ path: string; body: Record<string, unknown> }> = [];
   let ambiguous = false;
   let awaiting = false;
   let tmp: string;
@@ -90,6 +91,12 @@ describe("rig up — project rig with an existing stopped rig", () => {
           }
           return;
         }
+        if (req.method === "POST" && req.url?.startsWith("/api/seat/launch/")) {
+          seatPosts.push({ path: req.url, body: JSON.parse(raw || "{}") as Record<string, unknown> });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, status: "ready" }));
+          return;
+        }
         res.writeHead(404).end();
       });
     });
@@ -101,6 +108,7 @@ describe("rig up — project rig with an existing stopped rig", () => {
 
   beforeEach(() => {
     bodies = [];
+    seatPosts = [];
     ambiguous = false;
     awaiting = false;
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "up-project-rig-"));
@@ -199,11 +207,14 @@ describe("rig up — project rig with an existing stopped rig", () => {
     expect(exitCode).toBe(1);
   });
 
-  it("after a resume, a seat's fresh start goes to the resumed rig, not the spec", async () => {
+  it("after a resume, a seat's fresh start is launched on its own in the resumed rig, not the spec", async () => {
     awaiting = true;
     await up(makeCmd(async () => "resume", async () => true));
-    expect(bodies.map((b) => b.sourceRef)).toEqual([spec, "eztrack", "eztrack"]);
-    expect(bodies[2]!.freshLogicalIds).toEqual(["exec.cos"]);
+    // The restore of the resumed rig runs once; the accepted seat is then started fresh on its own (a second whole-rig
+    // restore would be refused while a sibling is live), and its ref names the resumed rig, not the spec.
+    expect(bodies.map((b) => b.sourceRef)).toEqual([spec, "eztrack"]);
+    expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/exec.cos%40eztrack"]);
+    expect(seatPosts[0]!.body).toMatchObject({ fresh: true });
   });
 
   it("a same-named rig of another folder is explained as is, with nothing asked", async () => {

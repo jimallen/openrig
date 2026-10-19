@@ -46,6 +46,8 @@ describe("rig start (OPR.0.3.4.1)", () => {
   let server: http.Server;
   let port: number;
   let upBodies: Array<Record<string, unknown>> = [];
+  let seatPosts: Array<{ path: string; body: Record<string, unknown> }> = [];
+  let seatAnswer: { status: number; data: Record<string, unknown> } = { status: 200, data: { ok: true } };
   let routes: Record<string, (req: http.IncomingMessage, body: Record<string, unknown>) => Record<string, unknown>>;
 
   beforeAll(async () => {
@@ -91,6 +93,12 @@ describe("rig start (OPR.0.3.4.1)", () => {
           res.end(JSON.stringify(data));
           return;
         }
+        if (method === "POST" && url.startsWith("/api/seat/launch/")) {
+          seatPosts.push({ path: url, body });
+          res.writeHead(seatAnswer.status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(seatAnswer.data));
+          return;
+        }
         // Id-based plan preview: POST /api/rigs/:id/up (used by rig start candidate discovery)
         const rigUpMatch = method === "POST" && url.match(/^\/api\/rigs\/([^/]+)\/up$/);
         if (rigUpMatch) {
@@ -114,6 +122,8 @@ describe("rig start (OPR.0.3.4.1)", () => {
 
   beforeEach(() => {
     upBodies = [];
+    seatPosts = [];
+    seatAnswer = { status: 200, data: { ok: true } };
     routes = {};
   });
 
@@ -265,6 +275,35 @@ describe("rig start (OPR.0.3.4.1)", () => {
     const posted = await runPrintedSeatCommand(advised[0]!);
     expect(posted.path).toBe("/api/seat/launch/dev.impl%40tokenless-rig");
     expect(posted.body).toMatchObject({ fresh: true });
+  });
+
+  // The accepted seat's rig has a live sibling (dev.qa resumed), where a second whole-rig restore is refused with 409.
+  it("an accepted fresh start launches that seat on its own, with the sibling live", async () => {
+    setupCandidateRig("tokenless-rig", { hasToken: false });
+    const prompt = vi.fn(async () => true);
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(prompt).parseAsync(["node", "rig", "start", "--last"]);
+    });
+    expect(prompt).toHaveBeenCalled();
+    // Only the first restore; no second /api/rigs/:id/up carrying freshLogicalIds.
+    expect(upBodies.filter((b) => b.plan !== true && b.freshLogicalIds !== undefined)).toEqual([]);
+    expect(seatPosts).toEqual([{
+      path: "/api/seat/launch/dev.impl%40tokenless-rig",
+      body: { fresh: true, reason: "operator accepted fresh start at rig start" },
+    }]);
+    expect(logs.join("\n")).toContain("dev.impl: fresh-primed");
+  });
+
+  it("an accepted fresh start the daemon refuses is reported with its reason (the exit code is already 1: the seat is still awaiting a decision)", async () => {
+    setupCandidateRig("tokenless-rig", { hasToken: false });
+    seatAnswer = { status: 409, data: { ok: false, code: "session_live", message: "A live managed occupant requires --stop." } };
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "start", "--last"]);
+    });
+    const output = logs.join("\n");
+    expect(output).toContain("dev.impl: fresh start failed for tokenless-rig (HTTP 409): session_live: A live managed occupant requires --stop.");
+    expect(output).not.toContain("dev.impl: fresh-primed");
+    expect(exitCode).toBe(1);
   });
 
   // ---- KERNEL INVARIANT ----

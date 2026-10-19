@@ -46,6 +46,8 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
   let server: http.Server;
   let port: number;
   let upBodies: Array<Record<string, unknown>> = [];
+  let seatPosts: Array<{ path: string; body: Record<string, unknown> }> = [];
+  let seatAnswer: (path: string) => { status: number; data: Record<string, unknown> };
   /** Per-test response factory keyed on the freshLogicalIds in the request. */
   let respond: (body: Record<string, unknown>) => Record<string, unknown>;
 
@@ -57,8 +59,22 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
         if (req.method === "POST" && req.url === "/api/up") {
           const body = JSON.parse(raw || "{}");
           upBodies.push(body);
+          // The daemon refuses a whole-rig restore while any sibling is live (rig_not_stopped, HTTP 409). In these tests a
+          // sibling is always live, so a fresh-listed /api/up gets exactly that answer.
+          if (body.plan !== true && Array.isArray(body.freshLogicalIds) && body.freshLogicalIds.length > 0) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Rig rig-1 has live sessions. Stop the rig with 'rig down' before restoring", code: "rig_not_stopped" }));
+            return;
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(respond(body)));
+          return;
+        }
+        if (req.method === "POST" && req.url?.startsWith("/api/seat/launch/")) {
+          seatPosts.push({ path: req.url, body: JSON.parse(raw || "{}") });
+          const answer = seatAnswer(req.url);
+          res.writeHead(answer.status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(answer.data));
           return;
         }
         res.writeHead(404).end();
@@ -72,6 +88,8 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
 
   beforeEach(() => {
     upBodies = [];
+    seatPosts = [];
+    seatAnswer = () => ({ status: 200, data: { ok: true, status: "ready" } });
     respond = () => ({ status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "fully_restored", nodes: [], warnings: [] });
   });
 
@@ -145,19 +163,17 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect((await runPrintedSeatCommand(advised[0]!)).path).toBe("/api/seat/launch/operator.human%40kernel");
   });
 
-  it("TTY ASK accepted: [y/N] offer names seat + reason, then re-runs as a deliberate fresh-prime", async () => {
-    respond = (body) => Array.isArray(body.freshLogicalIds) && (body.freshLogicalIds as string[]).length > 0
-      ? {
-          status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
-          nodes: [{ logicalId: "dev.impl", status: "fresh-primed" }], warnings: [],
-        }
-      : {
-          status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
-          nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }], warnings: [],
-        };
+  it("TTY ASK accepted: [y/N] offer names seat + reason, then starts that seat fresh on its own while a sibling is live", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" },
+        { logicalId: "dev.qa", status: "resumed" },
+      ], warnings: [],
+    });
     const prompt = vi.fn(async () => true);
 
-    const { logs } = await captureLogs(async () => {
+    const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd(prompt).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
     });
 
@@ -166,10 +182,55 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(question).toContain("dev.impl");
     expect(question).toContain("no token available");
     expect(question).toContain("[y/N]");
-    // The accepted seat was re-run as operation B.
-    expect(upBodies).toHaveLength(2);
-    expect(upBodies[1]!.freshLogicalIds).toEqual(["dev.impl"]);
+    // One restore only: a second whole-rig /api/up with freshLogicalIds is refused (409) while dev.qa is live. The
+    // accepted seat goes through the per-seat fresh launch, the route behind `rig seat launch --fresh`.
+    expect(upBodies).toHaveLength(1);
+    expect(upBodies.every((b) => b.freshLogicalIds === undefined)).toBe(true);
+    expect(seatPosts).toEqual([{
+      path: "/api/seat/launch/dev.impl%40myrig",
+      body: { fresh: true, reason: "operator accepted fresh start at rig up" },
+    }]);
     expect(logs.join("\n")).toContain("dev.impl: fresh-primed");
+    expect(logs.join("\n")).not.toContain("fresh start failed");
+    expect(exitCode).toBe(1); // the restore itself still left a seat awaiting a decision
+  });
+
+  it("TTY ASK accepted but the daemon refuses the fresh launch: the refusal is reported, never dropped", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }], warnings: [],
+    });
+    seatAnswer = () => ({ status: 409, data: { ok: false, code: "session_live", message: "A live managed occupant requires --stop." } });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    const output = logs.join("\n");
+    expect(output).toContain("dev.impl: fresh start failed (HTTP 409): session_live: A live managed occupant requires --stop.");
+    expect(output).not.toContain("dev.impl: fresh-primed");
+  });
+
+  it("TTY ASK accepted and the daemon answers 200 with ok:false: that is a refusal too", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }], warnings: [],
+    });
+    seatAnswer = () => ({ status: 200, data: { ok: false, code: "attention_required", message: "The new occupant needs attention." } });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    expect(logs.join("\n")).toContain("dev.impl: fresh start failed (HTTP 200): attention_required: The new occupant needs attention.");
+    expect(logs.join("\n")).not.toContain("dev.impl: fresh-primed");
+  });
+
+  it("TTY ASK accepted names the seat's rig by the daemon's canonical name, not by what was typed after `rig up`", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "no resume token was captured for this seat" }], warnings: [],
+    });
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/operator.human%40kernel"]);
   });
 
   it("TTY ASK declined: no second POST, no session started", async () => {
