@@ -1,3 +1,5 @@
+// Must stay first: pins the daemon cwd before any module evaluates a path.
+import "./daemon-cwd-anchor.js";
 import { serve, type ServerType } from "@hono/node-server";
 import path from "node:path";
 import { pathToFileURL } from "node:url";

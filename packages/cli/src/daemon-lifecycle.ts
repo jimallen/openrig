@@ -1,9 +1,11 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { connectionErrorCode, formatDaemonHostForUrl } from "./client.js";
 import { blockedConnectionGuidance, isBlockedConnectionCode } from "./daemon-reachability.js";
 import type { DaemonStartLock } from "./daemon-start-lock.js";
+import { rebaseRelativePath, rebaseRelativePathEnv } from "@openrig/daemon/daemon-path-env";
 import { DAEMON_STOP_WAIT_MS, DAEMON_SHUTDOWN_RECEIPT, type DaemonShutdownReceipt } from "@openrig/daemon/daemon-shutdown";
 import { ConfigStore } from "./config-store.js";
 import { readLocalOrigin } from "./local-origin.js";
@@ -196,6 +198,8 @@ export interface LifecycleDeps {
     env: Record<string, string>;
     stdio: unknown;
     detached: boolean;
+    /** OF-31: never inherit the caller's cwd; it may be deleted under the daemon. */
+    cwd: string;
   }) => ChildProcess;
   // OPR.0.4.3.21 — optional `json` lets getDaemonStatus read the enriched
   // /healthz body (event-loop evidence). Optional so existing mocks that
@@ -451,6 +455,10 @@ const ENV_SCRUB_EXACT = new Set([
   "TERMINFO",
 ]);
 
+function callerCwdOrNull(): string | null {
+  try { return process.cwd(); } catch { return null; }
+}
+
 export function buildDaemonEnv(
   baseEnv: Record<string, string>,
   opts: {
@@ -491,6 +499,10 @@ export function buildDaemonEnv(
     if (key !== "CODEX_HOME" && ENV_SCRUB_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
     env[key] = value;
   }
+  // OF-31: the daemon is spawned with cwd=$HOME; inherited relative path env keeps
+  // meaning what it meant to the caller, exactly as the daemon's own anchor does.
+  const callerCwd = callerCwdOrNull();
+  if (callerCwd !== null) rebaseRelativePathEnv(env, callerCwd);
 
   // Explicit OPENRIG_* overrides — always win over inherited values
   env["OPENRIG_PORT"] = String(opts.port);
@@ -500,12 +512,12 @@ export function buildDaemonEnv(
     env["OPENRIG_BIND_HOST"] = opts.host;
     env["OPENRIG_HOST"] = opts.host;
   }
-  env["OPENRIG_DB"] = opts.db;
+  env["OPENRIG_DB"] = callerCwd === null ? opts.db : rebaseRelativePath(opts.db, callerCwd);
   if (opts.transcriptsEnabled !== undefined) {
     env["OPENRIG_TRANSCRIPTS_ENABLED"] = String(opts.transcriptsEnabled);
   }
   if (opts.transcriptsPath) {
-    env["OPENRIG_TRANSCRIPTS_PATH"] = opts.transcriptsPath;
+    env["OPENRIG_TRANSCRIPTS_PATH"] = callerCwd === null ? opts.transcriptsPath : rebaseRelativePath(opts.transcriptsPath, callerCwd);
   }
   if (opts.transcriptsLines !== undefined) {
     env["OPENRIG_TRANSCRIPTS_LINES"] = String(opts.transcriptsLines);
@@ -695,6 +707,7 @@ async function startOwnedDaemon(opts: StartOptions, deps: LifecycleDeps, lock: D
     }),
     stdio: ["ignore", logFd, logFd],
     detached: true,
+    cwd: homedir(),
     });
   } finally { deps.closeFile?.(logFd); }
 
@@ -1093,6 +1106,7 @@ export function tailLogs(deps: LifecycleDeps, opts: { follow: boolean }): void {
     env: process.env as Record<string, string>,
     stdio: "inherit" as unknown,
     detached: false,
+    cwd: homedir(),
   });
   child.unref();
 }
