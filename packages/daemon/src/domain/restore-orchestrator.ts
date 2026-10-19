@@ -42,6 +42,7 @@ import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore } from "./restore-preconditions.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
+import { classifySessionLiveness } from "./session-liveness.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
 // does NOT meet all four evidence preconditions is a no-op with a missing
@@ -708,17 +709,12 @@ export class RestoreOrchestrator {
 
     for (const session of this.sessionRegistry.getSessionsForRig(rigId)) {
       if (session.status !== "running") continue;
-      try {
-        const alive = await this.tmuxAdapter.hasSession(session.sessionName);
-        if (alive) {
-          live.push(session.id);
-        } else {
-          stale.push(session.id);
-        }
-      } catch {
-        // tmux check failed — fail closed: classify as unknown so restore blocks
-        unknown.push(session.id);
-      }
+      // Shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
+      // A probe that throws fails closed: classified unknown so restore blocks.
+      const liveness = await classifySessionLiveness(this.tmuxAdapter, session.sessionName);
+      if (liveness === "live") live.push(session.id);
+      else if (liveness === "dead") stale.push(session.id);
+      else unknown.push(session.id);
     }
 
     return { live, stale, unknown };

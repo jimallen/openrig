@@ -280,7 +280,7 @@ rigsRoutes.get("/summary", (c) => {
 // (kernel rig only). Status is NEVER inferred from pane text or daemon /healthz;
 // `src[]` carries the composed provenance (the non-inference contract). The fold
 // preserves per-seat truth — a rig never globally flips to fresh (the LOCK).
-rigsRoutes.get("/:id/status", (c) => {
+rigsRoutes.get("/:id/status", async (c) => {
   const repo = getRepo(c);
   const rig = repo.getRig(c.req.param("id"));
   if (!rig) return c.json({ error: `Rig "${c.req.param("id")}" not found` }, 404);
@@ -301,8 +301,8 @@ rigsRoutes.get("/:id/status", (c) => {
   // contributes nothing (fold still reads plan + lifecycle) rather than 500-ing.
   let recovery: RecoveryPlan | null = null;
   try {
-    recovery = createRestoreCheckService(repo, snapshotRepo)
-      .check({ rig: rig.rig.name, noQueue: true, noHooks: true, recoveryOnly: true })
+    recovery = (await createRestoreCheckService(repo, snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)
+      .checkWithLiveness({ rig: rig.rig.name, noQueue: true, noHooks: true, recoveryOnly: true }))
       .recovery;
   } catch {
     recovery = null;

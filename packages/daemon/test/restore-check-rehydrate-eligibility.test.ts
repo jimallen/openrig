@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { createFullTestDb, createTestApp, mockTmuxAdapterProbing } from "./helpers/test-app.js";
 import { createApp } from "../src/server.js";
 import { createRestoreCheckService } from "../src/routes/restore-check.js";
 import * as eligibility from "../src/domain/rehydrate-eligibility.js";
@@ -15,7 +15,7 @@ describe("restore-check current-state eligibility correction", () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), "restore-eligibility-"));
     vi.stubEnv("OPENRIG_HOME", home);
-    setup = createTestApp(createFullTestDb());
+    setup = createTestApp(createFullTestDb(), { tmux: mockTmuxAdapterProbing("absent") });
     app = createApp(setup);
   });
   afterEach(() => {

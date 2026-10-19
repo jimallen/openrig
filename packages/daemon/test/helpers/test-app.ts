@@ -213,6 +213,15 @@ export function mockTmuxAdapter(): TmuxAdapter {
   } as unknown as TmuxAdapter);
 }
 
+/**
+ * mockTmuxAdapter() plus a `hasSession` answering one fixed state
+ * for every session (restore-check's tmux liveness probe, shared with the restore orchestrator). Kept separate so the
+ * default double stays exactly as the lifecycle tests rely on it.
+ */
+export function mockTmuxAdapterProbing(state: "present" | "absent"): TmuxAdapter {
+  return { ...mockTmuxAdapter(), hasSession: vi.fn(async () => state === "present") } as unknown as TmuxAdapter;
+}
+
 export function unavailableCmuxAdapter(): CmuxAdapter {
   const factory: CmuxTransportFactory = async () => {
     throw Object.assign(new Error("no socket"), { code: "ENOENT" });
