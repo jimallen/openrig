@@ -15,6 +15,7 @@ import { deriveDisplayActivity } from "./activity-taxonomy.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { probeSessionActivity, mapPaneState } from "./session-transport.js";
 import type { StructuralObservation } from "./seat-structural-activity-service.js";
+import type { BackgroundJobs } from "./session-transport.js";
 import { findLatestUsableSnapshot, findLatestUsableSnapshotsForAllRigs } from "./rig-repository.js";
 import { resolveNodeWorkspace } from "./workspace/workspace-resolver.js";
 import { deriveCanonicalSessionName } from "./session-name.js";
@@ -1066,6 +1067,22 @@ export function getNodeDetailWithContext(
 }
 
 /**
+ * OF-34 — THE one rule for "an idle verdict yields to background work", called by BOTH enrichers
+ * (attachAgentActivity's agentActivity and attachTerminalActivityAndWork's activityState) so the two
+ * operator-facing projections can never disagree. Only an IDLE verdict lifts; a pane that is asking a
+ * person something (structural `attention`) keeps its verdict; the job exists only while the cached
+ * observation is current (getStructuralActivity ages it out), so the lift expires with the chip.
+ * Returns the jobs that lift the verdict, or null when it must stay as it is.
+ */
+export function backgroundJobsLiftingIdle(
+  verdictIsIdle: boolean,
+  observation: StructuralObservation | null | undefined,
+): BackgroundJobs | null {
+  if (!verdictIsIdle || !observation?.backgroundJobs || observation.state === "attention") return null;
+  return observation.backgroundJobs;
+}
+
+/**
  * Slice 15 — populate `terminalActive` + `hasAssignedWork` per node.
  *
  * Two orthogonal enrichments computed independently (non-inference
@@ -1080,7 +1097,15 @@ export function getNodeDetailWithContext(
  */
 export function attachTerminalActivityAndWork(
   entries: NodeInventoryEntry[],
-  deps: { db: Database.Database; seatActivity?: SeatActivityService },
+  deps: {
+    db: Database.Database;
+    seatActivity?: SeatActivityService;
+    /** OF-34 — the cached structural observation, read ONLY to let an arbitrated idle yield to a
+     *  background job in this DISPLAY projection. SeatActivityService itself is not changed: the
+     *  idle-gate watchdog, execution view and rig-tier ps read its arbitrated state as a decision
+     *  input and must keep seeing idle-at-prompt for a seat with a shell running. */
+    structuralActivity?: { getStructuralActivity(sessionName: string): StructuralObservation | null };
+  },
 ): NodeInventoryEntry[] {
   const seatActivity = deps.seatActivity ?? null;
   const assignedByDest = readAssignedWorkBySession(deps.db);
@@ -1104,12 +1129,19 @@ export function attachTerminalActivityAndWork(
     // pre-taxonomy shape (undefined) rather than faking a null oracle answer.
     if (!sessionMissing && seatActivity && entry.canonicalSessionName && typeof seatActivity.getSeatStateBySession === "function") {
       const arb = seatActivity.getSeatStateBySession(entry.canonicalSessionName);
+      // OF-34: an arbitrated idle with nothing waiting on a person yields to a background job.
+      const lifting = arb
+        ? backgroundJobsLiftingIdle(
+            arb.activity === "idle-at-prompt" && arb.needsInput.count === 0,
+            deps.structuralActivity?.getStructuralActivity(entry.canonicalSessionName),
+          )
+        : null;
       activityState = arb
         ? {
-            activity: arb.activity,
-            display: deriveDisplayActivity(arb.activity, arb.needsInput),
+            activity: lifting ? "working" : arb.activity,
+            display: lifting ? "working" : deriveDisplayActivity(arb.activity, arb.needsInput),
             needsInput: arb.needsInput,
-            decidedBy: arb.decidedBy,
+            decidedBy: lifting ? "background-job" : arb.decidedBy,
             seq: arb.seq,
             lastSwap: arb.lastSwap,
           }
@@ -1250,6 +1282,10 @@ export async function attachAgentActivity(
      *  15). ACTIVITY was the one consumer that never read it, which is why the web UI could show a
      *  seat working while `rig ps` called the same seat `unknown`. Absent = the pre-fix behavior. */
     seatActivity?: { getSeatActivity(sessionName: string): SeatActivity | null };
+    /** OF-34 — the structural cache read ONLY for the background-job lift, for callers (node detail)
+     *  that must keep their live-probe verdict ladder and so do not pass `structuralActivity`.
+     *  Falls back to `structuralActivity` when absent. */
+    backgroundJobActivity?: { getStructuralActivity(sessionName: string): StructuralObservation | null };
     now?: Date;
     // OPR.0.4.3 healthz-wedge amplification fix: cheap by default. The per-node
     // tmux `capturePaneContent` fallback (probeSessionActivity) is the storm that
@@ -1377,14 +1413,17 @@ export async function attachAgentActivity(
      * structural `attention` reading keeps the verdict it had. The count rides as evidence, and the
      * verdict expires with the observation (the next tick that no longer shows the job reads idle).
      */
+    const jobObservation = entry.canonicalSessionName
+      ? (deps.backgroundJobActivity ?? deps.structuralActivity)?.getStructuralActivity(entry.canonicalSessionName)
+      : null;
     const withBackgroundJob = (activity: AgentActivity): AgentActivity => {
-      const jobs = structural?.backgroundJobs;
-      if (!jobs || activity.state !== "idle" || structural?.state === "attention") return activity;
+      const jobs = backgroundJobsLiftingIdle(activity.state === "idle", jobObservation);
+      if (!jobs) return activity;
       return {
         state: "running",
         reason: "background_job",
         evidenceSource: "pane_heuristic",
-        sampledAt: structural!.observedAt,
+        sampledAt: jobObservation!.observedAt,
         evidence: jobs.evidence,
         runtime: entry.runtime ?? null,
       };
@@ -1475,7 +1514,7 @@ export async function attachAgentActivity(
 
     return {
       ...entry,
-      agentActivity: withMotion(await probeSessionActivity({
+      agentActivity: withMotion(withBackgroundJob(await probeSessionActivity({
       sessionName: entry.canonicalSessionName,
       runtime: entry.runtime,
       attachmentType: entry.attachmentType,
@@ -1483,7 +1522,7 @@ export async function attachAgentActivity(
       now: sampledAt,
       captureObserver: deps.captureObserver,
       binding: deps.captureObserver ? deps.observationBinding?.(entry) : undefined,
-    })),
+    }))),
     };
   }));
 }

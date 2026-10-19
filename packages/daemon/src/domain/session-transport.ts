@@ -480,8 +480,10 @@ const CLAUDE_JOB_CHIP = /^\d+ (?:shells?|monitors?)(?:, \d+ (?:shells?|monitors?
 // Codex renders its own counter on a row of its own above the composer while idle:
 // "2 background terminals running · /ps to view · /stop to close". It must START the line: the same
 // words as a suffix of a `Working (… esc to interrupt)` row are turn status (already agent_active),
-// and scrollback copies of that row are history.
-const CODEX_JOB_ROW = /^(\d+) background terminals? running\b/;
+// and scrollback copies of that row are history. The `/ps to view … /stop to close` tail is required
+// (the way transcript-store.ts isStatusOverlayLine anchors the same row) so prose that merely says
+// "2 background terminals running" does not count.
+const CODEX_JOB_ROW = /^(\d+) background terminals? running\b.*\/ps to view\b.*\/stop to close\b/;
 
 /**
  * Background work the pane shows still running: Claude footer chips (shells, monitors) or the Codex
