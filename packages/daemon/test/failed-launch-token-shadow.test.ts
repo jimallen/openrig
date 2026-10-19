@@ -10,6 +10,7 @@ import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { snapshotMatchesCurrentOccupants } from "../src/domain/rehydrate-eligibility.js";
 import { buildRestorePlanPreview, collectPreviewSessionRows } from "../src/domain/restore-plan-preview.js";
 import { resolveActiveOccupantRow, resolveActiveSnapshotSession } from "../src/domain/active-occupant.js";
+import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
 
 // OF-30. A harness launch that FAILED (Codex profile preflight) wrote a new sessions row with startup_status
 // 'failed' and no resume token. The earlier rows (exited, startup ready) still held a valid codex_id token, but
@@ -63,7 +64,8 @@ describe("a launch that failed before ready does not hide its predecessor's resu
 
   function livePlan(rigId: string) {
     const rig = rigRepo.getRig(rigId)!;
-    return buildRestorePlanPreview(rig, null, collectPreviewSessionRows(db, rig, null)).nodes[0]!;
+    // The call shape every production caller uses (rigs.ts, up.ts, startup.ts): the recorded fresh-occupant relation rides along.
+    return buildRestorePlanPreview(rig, null, collectPreviewSessionRows(db, rig, null), undefined, Date.now(), readFreshOccupantRelations(db, rigId)).nodes[0]!;
   }
 
   it.each(["detached", "running"] as const)("live plan resumes the predecessor's token behind a %s failed launch", (status) => {
@@ -148,7 +150,7 @@ describe("a launch that failed before ready does not hide its predecessor's resu
     const other = rigRepo.addNode(rig.id, "other", { role: "worker", runtime: "codex" });
     ranOccupant(other.id, CODEX_ID);
     failedLaunch(node.id);
-    const forecast = buildRestorePlanPreview(rigRepo.getRig(rig.id)!, null, collectPreviewSessionRows(db, rigRepo.getRig(rig.id)!, null))
+    const forecast = buildRestorePlanPreview(rigRepo.getRig(rig.id)!, null, collectPreviewSessionRows(db, rigRepo.getRig(rig.id)!, null), undefined, Date.now(), readFreshOccupantRelations(db, rig.id))
       .nodes.find((n) => n.logicalId === "impl")!;
     expect(forecast.intendedAction).toBe("awaiting-decision");
     // The snapshot/current comparison reads every row of the rig at once; it must not borrow across seats either.
@@ -179,6 +181,126 @@ describe("a launch that failed before ready does not hide its predecessor's resu
     expect(resolveActiveOccupantRow(rows, undefined, "n")).toMatchObject({ kind: "resolved", session: { id: "02-new", resumeToken: "t" } });
     // ... and the single-row legacy branch has no predecessor to inherit from, so it is left as recorded.
     expect(resolveActiveOccupantRow([rows[1]!], undefined, "n")).toMatchObject({ kind: "resolved", session: { id: "02-new", resumeToken: null } });
+  });
+
+  it("the walk looks only at OLDER rows: a newer row's token is never inherited by an older failed launch", () => {
+    const rows = [
+      { id: "01", nodeId: "n", status: "exited", resumeType: "codex_id", resumeToken: "OLD", startupStatus: "ready", startupCompletedAt: READY_AT },
+      { id: "02", nodeId: "n", status: "detached", resumeType: null, resumeToken: null, startupStatus: "failed", startupCompletedAt: null },
+      { id: "03", nodeId: "n", status: "running", resumeType: "codex_id", resumeToken: "NEWER", startupStatus: "ready", startupCompletedAt: READY_AT },
+    ];
+    expect(resolveActiveOccupantRow(rows, { n: "02" }, "n")).toMatchObject({ kind: "resolved", session: { id: "02", resumeToken: "OLD" } });
+  });
+
+  it("probe status and verification travel with the inherited token: a donor marked not_resumable plans as stale", () => {
+    const { rig, node } = seat();
+    const old = ranOccupant(node.id, CODEX_ID);
+    registry.markResumeProbeResult(old.id, "not_resumable");
+    failedLaunch(node.id);
+    const forecast = livePlan(rig.id);
+    expect(forecast.tokenState).toBe("stale");
+    // and a verified donor's freshness is carried too, not recomputed from the empty failed row
+    const rows = [
+      { id: "01", nodeId: "n", status: "exited", resumeType: "codex_id", resumeToken: "t", resumeLastVerified: "2020-02-03 04:05:06", resumeLastProbeStatus: "resumable", startupStatus: "ready", startupCompletedAt: READY_AT },
+      { id: "02", nodeId: "n", status: "running", resumeType: null, resumeToken: null, startupStatus: "failed", startupCompletedAt: null },
+    ];
+    expect(resolveActiveOccupantRow(rows, { n: "02" }, "n")).toMatchObject({ session: { resumeLastVerified: "2020-02-03 04:05:06", resumeLastProbeStatus: "resumable" } });
+  });
+
+  it("an operator-attested token on an older failed row is itself a usable donor", () => {
+    const { rig, node } = seat();
+    const older = failedLaunch(node.id, "superseded");
+    registry.updateResumeToken(older.id, "codex_id", "attested-on-failed-row", "operator");
+    failedLaunch(node.id);
+    const snapshot = capture.captureSnapshot(rig.id, "auto-rehydrate");
+    expect(resolveActiveSnapshotSession(snapshot.data, node.id)).toMatchObject({ kind: "resolved", session: { resumeToken: "attested-on-failed-row" } });
+  });
+
+  describe("a deliberate fresh start is the operator's choice to leave the earlier conversation", () => {
+    it("registerSession marks a fresh occupant (the launchFresh writer) and nothing else", () => {
+      const { node } = seat();
+      const plain = registry.registerSession(node.id, "impl@r01");
+      const fresh = registry.registerSession(node.id, "impl@r01", "fresh");
+      const restoreFresh = registry.registerSession(node.id, "impl@r01", "initial", null, true);
+      expect(plain.freshStart).toBeUndefined();
+      expect(fresh.freshStart).toBe(true);
+      expect(restoreFresh.freshStart).toBe(true);
+      expect(db.prepare("SELECT fresh_start FROM sessions WHERE id = ?").get(plain.id)).toEqual({ fresh_start: 0 });
+    });
+
+    /** A resumable conversation, then a fresh start that fails, then an ordinary token-less failed launch. */
+    function freshFailedThenOrdinaryFailure(freshRow: "launch-fresh" | "restore-fresh") {
+      const { rig, node } = seat();
+      const donor = ranOccupant(node.id, CODEX_ID);
+      registry.markSuperseded(donor.id); // what launchFresh does to the rows it replaces
+      const failedFresh = freshRow === "launch-fresh"
+        ? registry.registerSession(node.id, "impl@r01", "fresh")
+        : registry.registerSession(node.id, "impl@r01", "initial", null, true);
+      registry.updateStartupStatus(failedFresh.id, "failed");
+      registry.updateStatus(failedFresh.id, "exited"); // compensateFailedFreshLaunch ends it exited
+      const later = failedLaunch(node.id, "running");
+      return { rig, node, later };
+    }
+
+    it.each(["launch-fresh", "restore-fresh"] as const)("a later failed launch does not walk through a failed %s into the conversation it left", (writer) => {
+      const { rig, node } = freshFailedThenOrdinaryFailure(writer);
+      expect(livePlan(rig.id).intendedAction).toBe("awaiting-decision");
+      const snapshot = capture.captureSnapshot(rig.id, "auto-rehydrate");
+      expect(resolveActiveSnapshotSession(snapshot.data, node.id)).toMatchObject({ kind: "resolved", session: { resumeToken: null } });
+    });
+
+    it("the snapshot-versus-current comparison applies the same bound: a fresh start in the history keeps the two in step", () => {
+      const { rig } = freshFailedThenOrdinaryFailure("launch-fresh");
+      const snapshot = capture.captureSnapshot(rig.id, "auto-rehydrate");
+      expect(snapshotMatchesCurrentOccupants(db, rigRepo.getRig(rig.id)!, snapshot)).toBe(true);
+    });
+
+    it.each(["launch-fresh", "restore-fresh"] as const)("a failed %s that is itself the occupant does not inherit the earlier token", (writer) => {
+      const { rig, node } = seat();
+      ranOccupant(node.id, CODEX_ID);
+      const failedFresh = writer === "launch-fresh"
+        ? registry.registerSession(node.id, "impl@r01", "fresh")
+        : registry.registerSession(node.id, "impl@r01", "initial", null, true);
+      registry.updateStartupStatus(failedFresh.id, "failed");
+      registry.updateStatus(failedFresh.id, "running");
+      const forecast = livePlan(rig.id);
+      expect(forecast.intendedAction).toBe("awaiting-decision");
+      expect(forecast.reason).toContain(NO_IDENTITY);
+    });
+
+    it("the same sequence with an ordinary (not fresh) first failure still resumes: the marker is what stops the walk", () => {
+      const { rig, node } = seat();
+      const donor = ranOccupant(node.id, CODEX_ID);
+      registry.markSuperseded(donor.id);
+      const first = registry.registerSession(node.id, "impl@r01");
+      registry.updateStartupStatus(first.id, "failed");
+      registry.updateStatus(first.id, "exited");
+      failedLaunch(node.id, "running");
+      expect(livePlan(rig.id).intendedAction).toBe("resume-original");
+    });
+
+    it("a fresh start that succeeded and later left a token is a usable donor like any other row", () => {
+      const { rig, node } = seat();
+      ranOccupant(node.id, "token-before-the-fresh-choice");
+      const fresh = registry.registerSession(node.id, "impl@r01", "fresh");
+      registry.updateStartupStatus(fresh.id, "ready", READY_AT);
+      registry.updateResumeToken(fresh.id, "codex_id", CODEX_ID, "hook");
+      registry.updateStatus(fresh.id, "exited");
+      failedLaunch(node.id);
+      const snapshot = capture.captureSnapshot(rig.id, "auto-rehydrate");
+      expect(resolveActiveSnapshotSession(snapshot.data, node.id)).toMatchObject({ session: { resumeToken: CODEX_ID } });
+    });
+
+    it("the marker survives a snapshot round trip, and a snapshot without it (older revision) still reads as an ordinary failure", () => {
+      const rows = [
+        { id: "01", nodeId: "n", status: "superseded", resumeType: "codex_id", resumeToken: "t", startupStatus: "ready", startupCompletedAt: READY_AT },
+        { id: "02", nodeId: "n", status: "exited", resumeType: null, resumeToken: null, startupStatus: "failed", startupCompletedAt: null, freshStart: true },
+        { id: "03", nodeId: "n", status: "running", resumeType: null, resumeToken: null, startupStatus: "failed", startupCompletedAt: null },
+      ];
+      expect(resolveActiveOccupantRow(rows, { n: "03" }, "n")).toMatchObject({ session: { resumeToken: null } });
+      const older = rows.map(({ freshStart: _drop, ...r }) => r);
+      expect(resolveActiveOccupantRow(older, { n: "03" }, "n")).toMatchObject({ session: { resumeToken: "t" } });
+    });
   });
 
   it("keeps the occupant's own identity: only resume fields are inherited, never id, status or restore policy", () => {

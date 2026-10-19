@@ -37,6 +37,8 @@ interface LaunchOpts {
   silenceWindowSeconds?: number;
   /** A deliberate fresh occupant is distinct from initial rig boot in the tenure ledger. */
   occupantKind?: OccupantKind;
+  /** The operator asked for this seat to start fresh (a restore with `--fresh <seat>`); recorded on the session row. */
+  freshStart?: boolean;
 }
 
 interface NodeLauncherDeps {
@@ -237,6 +239,7 @@ export class NodeLauncher {
           sessionName,
           opts?.occupantKind ?? "initial",
           occupantGeneration,
+          opts?.freshStart === true,
         );
         createdSessionId = session.id;
         this.sessionRegistry.updateStatus(session.id, "running");

@@ -111,6 +111,7 @@ import { usageSamplesClientCostSchema } from "./migrations/105_usage_samples_cli
 import { piUsageEntriesSchema } from "./migrations/107_pi_usage_entries.js";
 import { piUsageChargesSchema } from "./migrations/108_pi_usage_charges.js";
 import { sessionRestorePolicyBackfillSchema } from "./migrations/109_session_restore_policy_backfill.js";
+import { sessionFreshStartSchema } from "./migrations/110_session_fresh_start.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -221,4 +222,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   piUsageEntriesSchema,
   piUsageChargesSchema,
   sessionRestorePolicyBackfillSchema,
+  sessionFreshStartSchema,
 ];

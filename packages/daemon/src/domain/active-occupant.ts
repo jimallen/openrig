@@ -44,6 +44,7 @@ interface ResumeIdentityFields {
   resumeLastProbeStatus?: string | null;
   startupStatus?: string | null;
   startupCompletedAt?: string | null;
+  freshStart?: boolean | null;
 }
 
 const RESUME_IDENTITY_KEYS = ["resumeType", "resumeToken", "resumeProvenance", "resumeLastVerified", "resumeLastProbeStatus"] as const;
@@ -52,9 +53,11 @@ function hasUsableResumeIdentity(row: ResumeIdentityFields): boolean {
   return !!row.resumeToken?.trim() && !!row.resumeType && row.resumeType !== "none";
 }
 
-/** A launch that recorded `failed` and never completed startup: no occupant ever ran in it. */
+/** A launch that recorded `failed` and never completed startup: no occupant ever ran in it. A deliberate fresh
+ *  start is excluded: the operator chose not to continue the earlier conversation, and no later restore may
+ *  resume one from before that choice, whether or not the fresh launch itself got anywhere. */
 function isFailedLaunchThatNeverReachedReady(row: ResumeIdentityFields): boolean {
-  return row.startupStatus === "failed" && !row.startupCompletedAt;
+  return row.startupStatus === "failed" && !row.startupCompletedAt && !row.freshStart;
 }
 
 /** A launch that failed before ready has no occupant, so its empty token is not evidence about the seat's

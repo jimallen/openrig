@@ -18,6 +18,7 @@ import { normalizeStartupBlock } from "../src/domain/startup-validation.js";
 import { deriveOriented } from "../src/domain/startup-proof.js";
 import { deriveRehydrateSessionIdByNode } from "../src/domain/active-occupant.js";
 import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows } from "../src/domain/restore-plan-preview.js";
 import type { NativeProcessLister, NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
@@ -947,6 +948,26 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(sessions[0]).toMatchObject({ status: "exited", startupStatus: "failed" });
     expect(sessionRegistry.currentOccupantTenure(seat.node.id)?.kind).toBe("fresh");
     expect(db.prepare("SELECT COUNT(*) AS c FROM events WHERE type = 'seat.fresh_launch_failed'").get()).toEqual({ c: 1 });
+  });
+
+  it("OF-30: a failed fresh launch is marked, so a later failed launch cannot read past it into the conversation it superseded", async () => {
+    const seat = seedSeat();
+    sessionRegistry.updateStartupStatus(seat.session!.id, "ready", "2020-01-02T03:04:05.000Z");
+    sessionRegistry.updateResumeToken(seat.session!.id, "claude_id", "conversation-before-the-fresh-choice", "hook");
+    harnessResult = { ok: false, error: "binary missing" };
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "fresh that fails" });
+    expect(result).toMatchObject({ ok: false, code: "startup_failed" });
+    const failedFresh = sessionRegistry.getSessionsForRig(seat.rig.id).find((row) => row.id !== seat.session!.id)!;
+    expect(failedFresh).toMatchObject({ status: "exited", startupStatus: "failed", freshStart: true });
+    expect(sessionRegistry.getSessionsForRig(seat.rig.id).find((row) => row.id === seat.session!.id)).toMatchObject({ status: "superseded" });
+
+    // ... then an ordinary launch that fails before ready and leaves no token.
+    const later = sessionRegistry.registerSession(seat.node.id, seat.sessionName);
+    sessionRegistry.updateStartupStatus(later.id, "failed");
+    sessionRegistry.updateStatus(later.id, "running");
+    const rig = rigRepo.getRig(seat.rig.id)!;
+    const forecast = buildRestorePlanPreview(rig, null, collectPreviewSessionRows(db, rig, null), undefined, Date.now(), readFreshOccupantRelations(db, rig.id)).nodes[0]!;
+    expect(forecast.intendedAction).toBe("awaiting-decision");
   });
 
   // #261: a fresh launch delivers stored built-in startup files from the RUNNING install;

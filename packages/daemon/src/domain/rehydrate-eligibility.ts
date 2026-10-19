@@ -26,7 +26,7 @@ export function snapshotMatchesCurrentOccupants(
   const rows = db.prepare(
     `SELECT s.id, s.node_id AS nodeId, s.status,
             s.resume_type AS resumeType, s.resume_token AS resumeToken,
-            s.startup_status AS startupStatus, s.startup_completed_at AS startupCompletedAt
+            s.startup_status AS startupStatus, s.startup_completed_at AS startupCompletedAt, s.fresh_start AS freshStart
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id
        WHERE n.rig_id = ?`
@@ -38,6 +38,7 @@ export function snapshotMatchesCurrentOccupants(
     resumeToken: string | null;
     startupStatus: string | null;
     startupCompletedAt: string | null;
+    freshStart: number | null;
   }>;
 
   const recorded = readFreshOccupantRelations(db, rig.rig.id);
