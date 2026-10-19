@@ -11,10 +11,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-/** Single-path OpenRig env vars. List-valued vars (…_ROOTS, …_ALLOWLIST) are
- * deliberately excluded: their separator syntax is not ours to rewrite. */
-const SINGLE_PATH_ENV = /^(?:OPENRIG|RIGGED)_(?:[A-Z0-9_]*_)?(?:HOME|DB|ROOT|PATH|DIR|FILE|SOCKET)$/;
+import { rebaseRelativePathEnv } from "./daemon-path-env.js";
 
 export interface CwdAnchorDeps {
   cwd: () => string;
@@ -33,10 +30,7 @@ export function anchorDaemonCwd(
 ): string {
   let launchCwd: string | null = null;
   try { launchCwd = deps.cwd(); } catch { /* already deleted: nothing relative can be honoured */ }
-  for (const [key, value] of Object.entries(env)) {
-    if (!SINGLE_PATH_ENV.test(key) || !value || path.isAbsolute(value) || launchCwd === null) continue;
-    env[key] = path.resolve(launchCwd, value);
-  }
+  if (launchCwd !== null) rebaseRelativePathEnv(env, launchCwd);
   const target = deps.home();
   deps.chdir(target);
   return target;

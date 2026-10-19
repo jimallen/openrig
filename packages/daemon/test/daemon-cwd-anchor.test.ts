@@ -62,6 +62,12 @@ describe("daemon cwd anchor (OF-31)", () => {
     });
   });
 
+  it("does not rewrite :memory:, ~ or file: values", () => {
+    const env: NodeJS.ProcessEnv = { OPENRIG_DB: ":memory:", OPENRIG_HOME: "~/x", OPENRIG_SKILLS_ROOT: "file:y" };
+    anchorDaemonCwd(env, { cwd: () => "/launch", chdir: () => {}, home: () => "/home/u" });
+    expect(env).toEqual({ OPENRIG_DB: ":memory:", OPENRIG_HOME: "~/x", OPENRIG_SKILLS_ROOT: "file:y" });
+  });
+
   it("still anchors when the launch cwd is already gone", () => {
     const chdirs: string[] = [];
     anchorDaemonCwd({ OPENRIG_DB: "rel.sqlite" }, {

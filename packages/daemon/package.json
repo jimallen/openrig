@@ -16,6 +16,10 @@
     "./stream-classifier": { "types": "./dist/stream-classifier-surface.d.ts", "import": "./dist/stream-classifier-surface.js" },
     "./attention": { "types": "./dist/attention-surface.d.ts", "import": "./dist/attention-surface.js" },
     "./project-catalog": { "types": "./dist/project-catalog-surface.d.ts", "import": "./dist/project-catalog-surface.js" },
+    "./daemon-path-env": {
+      "types": "./dist/daemon-path-env.d.ts",
+      "import": "./dist/daemon-path-env.js"
+    },
     "./daemon-shutdown": {
       "types": "./dist/daemon-shutdown.d.ts",
       "import": "./dist/daemon-shutdown.js"

@@ -847,6 +847,8 @@ describe("Daemon Lifecycle", () => {
     expect(cmd).toBe("tail");
     expect(args).toContain("-f");
     expect(args).toContain(LOG_FILE);
+    // OF-31: LifecycleDeps.spawn requires a cwd; tail gets a stable one too.
+    expect(spawnFn.mock.calls[0]![2].cwd).toBe(os.homedir());
   });
 
   // Test 17: pid alive + healthz failure -> running with healthy=false, daemon.json preserved
@@ -1322,6 +1324,39 @@ describe("startDaemon env sanitization", () => {
         else process.env[k] = v;
       }
     }
+  });
+});
+
+// OF-31: the daemon is spawned with cwd=$HOME, so every caller-relative path the
+// CLI hands it must be rebased against the CALLER's cwd here (same rule as the
+// daemon's own anchor on a direct launch).
+describe("buildDaemonEnv caller-relative paths (OF-31)", () => {
+  const opts = (extra: Record<string, unknown> = {}) => ({ port: 7433, db: "rel/x.sqlite", ...extra });
+
+  it("rebases --db and the transcripts path against the caller's cwd", () => {
+    const env = buildDaemonEnv({}, opts({ transcriptsPath: "logs/t" }));
+    expect(env["OPENRIG_DB"]).toBe(path.resolve("rel/x.sqlite"));
+    expect(env["OPENRIG_TRANSCRIPTS_PATH"]).toBe(path.resolve("logs/t"));
+  });
+
+  it("rebases inherited relative single-path env, leaving absolute, list and non-path values alone", () => {
+    const env = buildDaemonEnv({
+      OPENRIG_HOME: "rh", OPENRIG_WORKSPACE_ROOT: "ws", OPENRIG_TOPOLOGY_ROOT: "/abs/topo",
+      OPENRIG_PROGRESS_SCAN_ROOTS: "a:b", OPENRIG_URL: "http://x/dir", OPENRIG_FOO: "bar",
+    }, opts());
+    expect(env["OPENRIG_HOME"]).toBe(path.resolve("rh"));
+    expect(env["OPENRIG_WORKSPACE_ROOT"]).toBe(path.resolve("ws"));
+    expect(env["OPENRIG_TOPOLOGY_ROOT"]).toBe("/abs/topo");
+    expect(env["OPENRIG_PROGRESS_SCAN_ROOTS"]).toBe("a:b");
+    expect(env["OPENRIG_URL"]).toBe("http://x/dir");
+    expect(env["OPENRIG_FOO"]).toBe("bar");
+  });
+
+  it("does not turn :memory:, ~ or file: values into cwd-relative paths", () => {
+    expect(buildDaemonEnv({}, opts({ db: ":memory:" }))["OPENRIG_DB"]).toBe(":memory:");
+    const env = buildDaemonEnv({ OPENRIG_HOME: "~/x", OPENRIG_SKILLS_ROOT: "file:y" }, opts());
+    expect(env["OPENRIG_HOME"]).toBe("~/x");
+    expect(env["OPENRIG_SKILLS_ROOT"]).toBe("file:y");
   });
 });
 
