@@ -288,8 +288,13 @@ export class RestoreOrchestrator {
     // changes occur — critical for pre_restore snapshot ordering (snapshot
     // must capture original DB state, not post-reconciliation state).
     const classification = await this.classifyRunningSessions(rigId);
-    if (classification.live.length > 0 || classification.unknown.length > 0) {
+    if (classification.live.length > 0) {
       return { ok: false, code: "rig_not_stopped", message: `Rig ${rigId} has live sessions. Stop the rig with 'rig down' before restoring, or use the latest auto-pre-down snapshot.` };
+    }
+    if (classification.unknown.length > 0) {
+      // Not "live": tmux gave no usable answer (deadline or probe error). Fail closed, but do not tell the
+      // operator to stop a rig nobody has shown to be running; the refusal is retryable.
+      return { ok: false, code: "rig_not_stopped", message: `Rig ${rigId} was not restored: tmux did not answer a session-liveness probe within the deadline (or the probe errored), so liveness is unknown. Nothing was changed. Retry, or check tmux first (for example 'tmux ls').` };
     }
 
     // Per-rig concurrency lock
@@ -697,6 +702,9 @@ export class RestoreOrchestrator {
    * behind newer detached rows. Returns structured classification for the caller
    * to act on: live sessions block restore, stale sessions get marked detached
    * AFTER the pre_restore snapshot is captured, unknown sessions fail closed.
+   * Probing stops at the first live or unreadable session: either one already refuses the restore, and
+   * on a wedged tmux every further probe would cost another full deadline. The buckets are therefore
+   * complete only when the restore may proceed (no live, no unknown).
    */
   private async classifyRunningSessions(rigId: string): Promise<{
     live: string[];
@@ -712,9 +720,9 @@ export class RestoreOrchestrator {
       // Shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
       // A probe that throws fails closed: classified unknown so restore blocks.
       const liveness = await classifySessionLiveness(this.tmuxAdapter, session.sessionName);
-      if (liveness === "live") live.push(session.id);
+      if (liveness === "live") { live.push(session.id); break; }
       else if (liveness === "dead") stale.push(session.id);
-      else unknown.push(session.id);
+      else { unknown.push(session.id); break; }
     }
 
     return { live, stale, unknown };
