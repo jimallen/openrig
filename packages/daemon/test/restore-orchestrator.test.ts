@@ -340,6 +340,22 @@ describe("RestoreOrchestrator", () => {
       expect(db.prepare("SELECT * FROM continuity_state").all()).toEqual(continuityBefore);
     });
 
+    // OF-30: the operator's --fresh is recorded on the session row the restore launches, so a failed fresh restore is
+    // never mistaken for an ordinary failed launch whose predecessor's conversation could be resumed.
+    it.each([
+      ["--fresh", { resumeToken: "earlier-thread" }, ["worker"], 1],
+      ["a seat with no token and no --fresh (nothing was chosen)", { resumeToken: null }, undefined, 0],
+    ] as const)("OF-30: marks the launched session as a deliberate fresh start only for %s", async (_label, history, fresh, marked) => {
+      const snap = absentSeat(history);
+      const node = snap.data.nodes[0]!;
+      const before = new Set((db.prepare("SELECT id FROM sessions WHERE node_id = ?").all(node.id) as Array<{ id: string }>).map((r) => r.id));
+      const result = await createOrchestrator({ tmux: mockTmux() }).restore(snap.id, { freshLogicalIds: fresh ? [...fresh] : undefined });
+      expect(result.ok).toBe(true);
+      const created = (db.prepare("SELECT id, fresh_start FROM sessions WHERE node_id = ?").all(node.id) as Array<{ id: string; fresh_start: number }>).filter((r) => !before.has(r.id));
+      expect(created).toHaveLength(1);
+      expect(created[0]!.fresh_start).toBe(marked);
+    });
+
     it("--fresh still starts it fresh", async () => {
       const tmux = mockTmux();
       const result = await createOrchestrator({ tmux }).restore(absentSeat().id, { freshLogicalIds: ["worker"] });

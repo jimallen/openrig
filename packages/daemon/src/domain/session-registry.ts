@@ -132,6 +132,15 @@ export class SessionRegistry {
     return this.restorePolicyInheritable;
   }
 
+  private freshStartColumn?: boolean;
+  /** Every migrated database carries `sessions.fresh_start`; reduced-schema fixtures stop short of it. */
+  private sessionsHaveFreshStartColumn(): boolean {
+    if (this.freshStartColumn === undefined) {
+      this.freshStartColumn = (this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).some((c) => c.name === "fresh_start");
+    }
+    return this.freshStartColumn;
+  }
+
   setWatchdogRegistrationObserver(observer: WatchdogRegistrationObserver): void {
     this.watchdogRegistrationObserver = observer;
   }
@@ -141,6 +150,7 @@ export class SessionRegistry {
     sessionName: string,
     kind: OccupantKind = "initial",
     reservedGeneration?: string | null,
+    freshStart = false,
   ): Session {
     if (!validateSessionName(sessionName)) {
       throw new Error(
@@ -164,6 +174,11 @@ export class SessionRegistry {
           "INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)"
         )
         .run(id, nodeId, sessionName);
+    }
+    // A fresh launch, by any route, is the operator's choice not to continue an earlier conversation. Record that on
+    // the row so a failed one cannot later be read as an ordinary failed launch (active-occupant.ts).
+    if ((kind === "fresh" || freshStart) && this.sessionsHaveFreshStartColumn()) {
+      this.db.prepare("UPDATE sessions SET fresh_start = 1 WHERE id = ?").run(id);
     }
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
@@ -737,6 +752,7 @@ export class SessionRegistry {
       origin: (row.origin === "claimed" ? "claimed" : "launched"),
       startupStatus: (row.startup_status as Session["startupStatus"]) ?? "pending",
       startupCompletedAt: row.startup_completed_at ?? null,
+      ...(row.fresh_start === 1 ? { freshStart: true } : {}),
     };
   }
 
@@ -771,6 +787,7 @@ interface SessionRow {
   origin: string;
   startup_status: string | null;
   startup_completed_at: string | null;
+  fresh_start?: number | null;
   // OPR.0.4.3.20 FR-3/FR-6 — resume ledger provenance + verification freshness.
   resume_provenance?: string | null;
   resume_last_verified?: string | null;

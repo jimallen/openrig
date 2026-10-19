@@ -34,6 +34,55 @@ export type ActiveSnapshotSessionResolution =
   | { kind: "none" }
   | { kind: "ambiguous"; candidateIds: string[]; detail: string };
 
+/** The resume-identity and launch-outcome fields the failed-launch rule reads. Optional so rows that do not
+ *  carry them (older serialized snapshots, narrow preview rows) simply never qualify as a failed launch. */
+interface ResumeIdentityFields {
+  resumeType?: string | null;
+  resumeToken?: string | null;
+  resumeProvenance?: string | null;
+  resumeLastVerified?: string | null;
+  resumeLastProbeStatus?: string | null;
+  startupStatus?: string | null;
+  startupCompletedAt?: string | null;
+  freshStart?: boolean | null;
+}
+
+const RESUME_IDENTITY_KEYS = ["resumeType", "resumeToken", "resumeProvenance", "resumeLastVerified", "resumeLastProbeStatus"] as const;
+
+function hasUsableResumeIdentity(row: ResumeIdentityFields): boolean {
+  return !!row.resumeToken?.trim() && !!row.resumeType && row.resumeType !== "none";
+}
+
+/** A launch that recorded `failed` and never completed startup: no occupant ever ran in it. A deliberate fresh
+ *  start is excluded: the operator chose not to continue the earlier conversation, and no later restore may
+ *  resume one from before that choice, whether or not the fresh launch itself got anywhere. */
+function isFailedLaunchThatNeverReachedReady(row: ResumeIdentityFields): boolean {
+  return row.startupStatus === "failed" && !row.startupCompletedAt && !row.freshStart;
+}
+
+/** A launch that failed before ready has no occupant, so its empty token is not evidence about the seat's
+ *  conversation. When the resolved occupant is such a row with no token, its resume identity is the newest
+ *  OLDER row's usable one, provided every row between them is also a failed launch that never reached ready.
+ *  A row that did reach ready (or any row not recorded as a failed launch) ran a real occupant, so its
+ *  missing token is real and the walk stops there. The occupant's own id, status and policy are kept. */
+export function inheritResumeIdentityBehindFailedLaunches<T extends OccupantCandidateRow>(occupant: T, history: T[]): T {
+  const own = occupant as T & ResumeIdentityFields;
+  if (own.resumeToken?.trim() || !isFailedLaunchThatNeverReachedReady(own)) return occupant;
+  const older = history
+    .filter((row) => row.nodeId === occupant.nodeId && row.id < occupant.id)
+    .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  for (const row of older) {
+    const candidate = row as T & ResumeIdentityFields;
+    if (hasUsableResumeIdentity(candidate)) {
+      const inherited: ResumeIdentityFields = {};
+      for (const key of RESUME_IDENTITY_KEYS) if (key in candidate) inherited[key] = candidate[key];
+      return { ...occupant, ...inherited };
+    }
+    if (!isFailedLaunchThatNeverReachedReady(candidate)) return occupant;
+  }
+  return occupant;
+}
+
 /** The four-way ladder (moved from restore-orchestrator.ts, behavior
  *  byte-faithful; generic over the row shape so no consumer copies it). */
 export function resolveActiveOccupantRow<T extends OccupantCandidateRow>(
@@ -48,9 +97,9 @@ export function resolveActiveOccupantRow<T extends OccupantCandidateRow>(
     // "never ran" (none) and legacy inference may run — a single row, else
     // the uniquely-running row, else ambiguity.
     if (rows.length === 0) return { kind: "none" };
-    if (rows.length === 1) return { kind: "resolved", session: rows[0]! };
+    if (rows.length === 1) return { kind: "resolved", session: inheritResumeIdentityBehindFailedLaunches(rows[0]!, rows) };
     const running = rows.filter((s) => s.status === "running");
-    if (running.length === 1) return { kind: "resolved", session: running[0]! };
+    if (running.length === 1) return { kind: "resolved", session: inheritResumeIdentityBehindFailedLaunches(running[0]!, rows) };
     return { kind: "ambiguous", candidateIds: rows.map((r) => r.id), detail: "no explicit active relation (pre-convention snapshot) and no uniquely-running row" };
   }
   // Map PRESENT: it is the authority even with zero session rows — a null,
@@ -66,7 +115,7 @@ export function resolveActiveOccupantRow<T extends OccupantCandidateRow>(
   if (!hit) {
     return { kind: "ambiguous", candidateIds: rows.map((r) => r.id), detail: `the recorded active relation ${rel} names no session row in this snapshot (dangling)` };
   }
-  return { kind: "resolved", session: hit };
+  return { kind: "resolved", session: inheritResumeIdentityBehindFailedLaunches(hit, rows) };
 }
 
 /** The snapshot-shaped entry point (the original public signature; a thin
@@ -87,7 +136,7 @@ export function resolveActiveSnapshotSession(data: SnapshotData, nodeId: string)
     if (!session) {
       return { kind: "ambiguous", candidateIds: rows.map((row) => row.id), detail: `the recorded active occupant ${state.sessionId} names no session row in this snapshot (dangling)` };
     }
-    return { kind: "resolved", session };
+    return { kind: "resolved", session: inheritResumeIdentityBehindFailedLaunches(session, rows) };
   }
   return resolveActiveOccupantRow(data.sessions, data.activeSessionIdByNode, nodeId);
 }

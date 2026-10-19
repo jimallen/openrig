@@ -1114,7 +1114,7 @@ export class RestoreOrchestrator {
     }
 
     // Attempt launch — compensate ONLY if launch itself fails
-    const launchResult = await this.nodeLauncher.launchNode(rigId, node.logicalId, launchOpts);
+    const launchResult = await this.nodeLauncher.launchNode(rigId, node.logicalId, freshRequested ? { ...launchOpts, freshStart: true } : launchOpts);
     progress.launchReturned = true;
     if (!launchResult.ok) {
       progress.launchResultFailed = true;

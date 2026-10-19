@@ -105,6 +105,8 @@ export interface Session {
   origin: "launched" | "claimed";
   startupStatus: "pending" | "ready" | "attention_required" | "failed";
   startupCompletedAt: string | null;
+  /** True when the launch was a deliberate fresh start (OF-30). Absent on rows and snapshots written before it. */
+  freshStart?: boolean;
 }
 
 // -- Event types --
