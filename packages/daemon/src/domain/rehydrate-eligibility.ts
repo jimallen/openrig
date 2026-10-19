@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { resolveActiveOccupantRow, resolveActiveSnapshotSession } from "./active-occupant.js";
+import { inheritResumeIdentityBehindFailedLaunches, resolveActiveOccupantRow, resolveActiveSnapshotSession } from "./active-occupant.js";
 import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
 import type { RigWithRelations, Snapshot } from "./types.js";
 
@@ -25,32 +25,39 @@ export function snapshotMatchesCurrentOccupants(
   if (rig.nodes.length === 0) return true;
   const rows = db.prepare(
     `SELECT s.id, s.node_id AS nodeId, s.status,
-            s.resume_type AS resumeType, s.resume_token AS resumeToken
+            s.resume_type AS resumeType, s.resume_token AS resumeToken,
+            s.startup_status AS startupStatus, s.startup_completed_at AS startupCompletedAt
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id
-       WHERE n.rig_id = ? AND s.status != 'superseded'`
+       WHERE n.rig_id = ?`
   ).all(rig.rig.id) as Array<{
     id: string;
     nodeId: string;
     status: string;
     resumeType: string | null;
     resumeToken: string | null;
+    startupStatus: string | null;
+    startupCompletedAt: string | null;
   }>;
 
   const recorded = readFreshOccupantRelations(db, rig.rig.id);
   // A clean down exits the fresh occupant without revoking its relation.
   // Keep that row for snapshot comparison, but exclude unrelated exited history.
-  const candidates = rows.filter((row) => row.status !== "exited" || recorded[row.nodeId] === row.id);
+  const candidates = rows.filter((row) => row.status !== "superseded" && (row.status !== "exited" || recorded[row.nodeId] === row.id));
   for (const node of rig.nodes) {
     const current = resolveActiveOccupantRow(candidates, Object.prototype.hasOwnProperty.call(recorded, node.id) ? recorded : undefined, node.id);
     if (current.kind === "none") continue;
     if (current.kind === "ambiguous") return false;
     const captured = resolveActiveSnapshotSession(snapshot.data, node.id);
+    // The snapshot resolves the occupant's resume identity through its whole history (a failed launch that
+    // never reached ready inherits its predecessor's). The candidates above drop that history, so resolve
+    // the current row's identity the same way, over every row the node has.
+    const currentSession = inheritResumeIdentityBehindFailedLaunches(current.session, rows);
     if (
       captured.kind !== "resolved"
-      || captured.session.id !== current.session.id
-      || (captured.session.resumeType ?? null) !== current.session.resumeType
-      || (captured.session.resumeToken ?? null) !== current.session.resumeToken
+      || captured.session.id !== currentSession.id
+      || (captured.session.resumeType ?? null) !== currentSession.resumeType
+      || (captured.session.resumeToken ?? null) !== currentSession.resumeToken
     ) {
       return false;
     }
