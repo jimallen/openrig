@@ -51,6 +51,9 @@ export interface BootstrapOptions {
   /** A project rig whose project already has a stopped rig: "fresh" archives it and
    *  starts a new one; absent, the launch stops and asks (code project_rig_exists). */
   onExisting?: "fresh";
+  /** OF-32: the spec as the operator named it, when that differs from `sourceRef` (a spec library link,
+   *  which `sourceRef` reaches by its real path). Recorded only when it resolves to the same file. */
+  specSourceRef?: string;
 }
 
 /** Stage result */
@@ -302,7 +305,7 @@ export class BootstrapOrchestrator {
 
         // Pod-aware format detection: if has pods[], delegate to PodRigInstantiator
         if (raw && Array.isArray(raw["pods"]) && this.deps.podInstantiator) {
-          return this.handlePodAwareSpec(opts, run, rawYaml, specDir, stages, errors, warnings);
+          return this.handlePodAwareSpec(opts, run, rawYaml, specDir, stages, errors, warnings, undefined, this.recordedSpecSource(opts));
         }
 
         // Legacy path: validate as flat-node spec
@@ -666,6 +669,19 @@ export class BootstrapOrchestrator {
 
   // -- Pod-aware bootstrap path --
 
+  /** OF-32: the spec source a directly launched rig records: the operator's own spelling (for example a spec
+   *  library link) when it resolves to the very file being launched, otherwise the launched path itself. */
+  private recordedSpecSource(opts: BootstrapOptions): string {
+    const launched = nodePath.resolve(opts.sourceRef);
+    const named = opts.specSourceRef ? nodePath.resolve(opts.specSourceRef) : null;
+    if (named && named !== launched) {
+      try {
+        if (fs.realpathSync.native(named) === fs.realpathSync.native(launched)) return named;
+      } catch { /* an unreadable spelling is not recorded */ }
+    }
+    return launched;
+  }
+
   private async handlePodAwareSpec(
     opts: BootstrapOptions,
     run: { id: string },
@@ -675,6 +691,7 @@ export class BootstrapOrchestrator {
     errors: string[],
     warnings: string[],
     installRoot?: string,
+    specSourcePath?: string,
   ): Promise<BootstrapResult> {
     const { mode } = opts;
     const podInstantiator = this.deps.podInstantiator!;
@@ -828,7 +845,7 @@ export class BootstrapOrchestrator {
       if (typeof raw?.["non_interruptive"] === "boolean") declaredNonInterruptive = raw["non_interruptive"];
     } catch { /* The instantiator returns the existing structured validation failure. */ }
     const nonInterruptive = opts.nonInterruptive ?? declaredNonInterruptive ?? (new SettingsStore().resolveOne("launch.non_interruptive").value === true);
-    const outcome = await podInstantiator.instantiate(rigSpecYaml, rigRoot, { nonInterruptive, cwdOverride: opts.cwdOverride, prelaunchHook, installRoot });
+    const outcome = await podInstantiator.instantiate(rigSpecYaml, rigRoot, { nonInterruptive, cwdOverride: opts.cwdOverride, prelaunchHook, installRoot, specSourcePath });
     if ((outcome.ok || "rigId" in outcome) && (nonInterruptive || opts.nonInterruptive === false)) warnings.push(nonInterruptiveSummary(nonInterruptive));
     const withRouting = (r: BootstrapResult): BootstrapResult => (bundleRouting ? { ...r, bundleRouting } : r);
 

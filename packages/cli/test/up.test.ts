@@ -1151,6 +1151,47 @@ describe("Up CLI", () => {
     expect(exitCode).toBeUndefined();
   });
 
+  // OF-32: a library spec reached through a link launches by its real path and sends the link path too, so the
+  // rig records the spelling whose target can later move to a new release.
+  it.each([
+    [{ linkPath: "/home/u/.openrig/specs/team/rig.yaml" }, "/home/u/.openrig/specs/team/rig.yaml"],
+    [{}, undefined],
+  ] as const)("up <library name> with entry %j sends specSourceRef %s", async (extra, expected) => {
+    const origListeners = server.listeners("request");
+    let lastBody: Record<string, unknown> = {};
+    server.removeAllListeners("request");
+    server.on("request", async (req: http.IncomingMessage, res: http.ServerResponse) => {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const url = decodeURIComponent(req.url ?? "");
+      if (url === "/api/specs/library?kind=rig") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify([{ id: "rig-team", kind: "rig", name: "team", sourceType: "user_file", sourcePath: "/rel/26408ed/rigs/team/rig.yaml", ...extra }]));
+      } else if (url === "/api/rigs/summary") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify([]));
+      } else if (url === "/api/up" && req.method === "POST") {
+        lastBody = JSON.parse(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "planned", runId: "r", stages: [], errors: [] }));
+      } else {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `unexpected request: ${req.method} ${url}` }));
+      }
+    });
+
+    const { exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "team", "--plan"]);
+    });
+
+    server.removeAllListeners("request");
+    for (const l of origListeners) server.on("request", l as (...args: unknown[]) => void);
+
+    expect(lastBody.sourceRef).toBe("/rel/26408ed/rigs/team/rig.yaml");
+    expect(lastBody.specSourceRef).toBe(expected);
+    expect(exitCode).toBeUndefined();
+  });
+
   it.each([false, true])("up --existing bypasses library-name ambiguity with plan=%s", async (plan) => {
     const origListeners = server.listeners("request");
     let lastBody: Record<string, unknown> = {};

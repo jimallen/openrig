@@ -475,6 +475,13 @@ class GenerationChanged extends Error {
   }
 }
 
+/** The operator-facing reason an agent ref did not resolve (a validation failure lists every error). */
+function agentRefFailureMessage(result: Extract<ReturnType<typeof resolveAgentRef>, { ok: false }>): string {
+  return result.code === "validation_failed"
+    ? (result as { errors: string[] }).errors.join("; ")
+    : (result as { error: string }).error;
+}
+
 export class PodRigInstantiator {
   readonly db: Database.Database;
   private deps: PodInstantiatorDeps;
@@ -1249,10 +1256,9 @@ export class PodRigInstantiator {
       // silently rewrite the persisted declaration, so it must agree with the retained seat.
       || (member.remoteControl === true) !== (node.remoteControl === true)) return refuse("Member source disagrees with the retained seat identity or policy.");
     const resolved = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
-    if (!resolved.ok) return refuse(resolved.code === "validation_failed" ? resolved.errors.join("; ") : resolved.error);
+    if (!resolved.ok) return refuse(agentRefFailureMessage(resolved));
     if (!node.resolvedSpecHash || resolved.resolved.hash !== node.resolvedSpecHash) return refuse("Agent source hash differs from the failed first start.");
-    const config = resolveNodeConfig({ baseSpec: resolved.resolved, importedSpecs: resolved.imports, collisions: resolved.collisions,
-      profileName: member.profile, specRoot: rigRoot, member, pod, rig: rigSpec, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext() });
+    const config = this.resolveMemberConfig({ resolveResult: resolved, rigSpec, rigRoot, pod, member });
     if (!config.ok) return refuse(config.errors.join("; "));
     if (!same(config.config.model, node.model) || !same(config.config.effort, node.effort) || !same(config.config.cwd, node.cwd) || !same(config.config.restorePolicy, node.restorePolicy)) {
       return refuse("Resolved model, effort, cwd or restore policy differs from the failed first start.");
@@ -1275,7 +1281,7 @@ export class PodRigInstantiator {
     return { ok: true, rigId, nodeId, logicalId: node.logicalId, status: "launched", sessionName: result.sessionName, warnings: result.warnings };
   }
 
-  async instantiate(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; force?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
+  async instantiate(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; specSourcePath?: string; force?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
     // #141: while an import may archive a stopped same-name generation, allow one import per rig name at
     // a time on this daemon. Otherwise two imports could each replace it, or one could archive the other's
     // in-progress replacement. Unrelated names are unaffected; an adapter that cannot probe keeps today's
@@ -1301,7 +1307,7 @@ export class PodRigInstantiator {
     }
   }
 
-  private async instantiateOnce(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; force?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
+  private async instantiateOnce(rigSpecYaml: string, rigRoot: string, opts?: { nonInterruptive?: boolean; cwdOverride?: string; installRoot?: string; specSourcePath?: string; force?: boolean; prelaunchHook?: (rigId: string, replacedRigIds: readonly string[]) => Promise<{ ok: true; rollback?: () => Promise<void> } | { ok: false; code: string; message: string; retainRig?: boolean }> }): Promise<InstantiateOutcome> {
     // 1. Parse + validate
     let rigSpec: PodRigSpec;
     try {
@@ -1383,7 +1389,10 @@ export class PodRigInstantiator {
             if (makeRunningSessionCounter(this.db)(id) > 0 || !this.deps.rigRepo.archiveRig(id)) throw new GenerationChanged(rigSpec.name);
           }
         }
-        return this.deps.rigRepo.createRig(rigSpec.name, opts?.installRoot);
+        const created = this.deps.rigRepo.createRig(rigSpec.name, opts?.installRoot);
+        // OF-32: recorded in the creating transaction, so a rig never exists without the source it was made from.
+        if (opts?.specSourcePath) this.deps.rigRepo.setRigSpecSource(created.id, opts.specSourcePath);
+        return created;
       });
       const rig = create();
       rigId = rig.id;
@@ -1515,27 +1524,12 @@ export class PodRigInstantiator {
         // Resolve agent ref
         const resolveResult = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
         if (!resolveResult.ok) {
-          const msg = resolveResult.code === "validation_failed"
-            ? (resolveResult as { errors: string[] }).errors.join("; ")
-            : (resolveResult as { error: string }).error;
-          nodeResults.push({ logicalId: qualifiedId, status: "failed", error: msg });
+          nodeResults.push({ logicalId: qualifiedId, status: "failed", error: agentRefFailureMessage(resolveResult) });
           continue;
         }
 
         // Resolve node config (profile + precedence)
-        const configResult = resolveNodeConfig({
-          baseSpec: resolveResult.resolved,
-          importedSpecs: resolveResult.imports,
-          collisions: resolveResult.collisions,
-          profileName: member.profile,
-          specRoot: rigRoot,
-          cwdOverride: opts?.cwdOverride,
-          member,
-          pod,
-          rig: rigSpec,
-          skillsRoot: this.resolveSkillsRoot(),
-          ...this.systemWorldResolutionContext(),
-        });
+        const configResult = this.resolveMemberConfig({ resolveResult, rigSpec, rigRoot, pod, member, cwdOverride: opts?.cwdOverride });
         if (!configResult.ok) {
           nodeResults.push({ logicalId: qualifiedId, status: "failed", error: configResult.errors.join("; ") });
           continue;
@@ -2021,24 +2015,16 @@ export class PodRigInstantiator {
     }
     const resolveResult = input.resolveResult ?? resolveAgentRef(input.member.agentRef, input.rigRoot, this.deps.fsOps);
     if (!resolveResult.ok) {
-      const msg = resolveResult.code === "validation_failed"
-        ? (resolveResult as { errors: string[] }).errors.join("; ")
-        : (resolveResult as { error: string }).error;
-      return { status: "failed", error: msg };
+      return { status: "failed", error: agentRefFailureMessage(resolveResult) };
     }
 
-    const configResult = input.configResult ?? resolveNodeConfig({
-      baseSpec: resolveResult.resolved,
-      importedSpecs: resolveResult.imports,
-      collisions: resolveResult.collisions,
-      profileName: input.member.profile,
-      specRoot: input.rigRoot,
-      cwdOverride: input.cwdOverride,
-      member: input.member,
+    const configResult = input.configResult ?? this.resolveMemberConfig({
+      resolveResult,
+      rigSpec: input.rigSpec,
+      rigRoot: input.rigRoot,
       pod: input.pod,
-      rig: input.rigSpec,
-      skillsRoot: this.resolveSkillsRoot(),
-      ...this.systemWorldResolutionContext(),
+      member: input.member,
+      cwdOverride: input.cwdOverride,
     });
     if (!configResult.ok) {
       return { status: "failed", error: configResult.errors.join("; ") };
@@ -2130,68 +2116,29 @@ export class PodRigInstantiator {
       return { status: "failed", error: `No adapter for runtime "${input.member.runtime}"`, sessionName: canonicalSessionName, warnings: launchResult.warnings };
     }
 
-    // P20 — the projection manifest: consulted so a divergent target is
-    // discriminated operator-modified (protect) vs stale-projection (safe
-    // overwrite). REAL store-backed lookup on this.db (never a mock/null — the
-    // uninjected-service dead-invalidator class the P17 comment below records).
-    const projectionManifest = new ProjectionManifestStore(this.db);
-    const planResult = planProjection({
+    const startup = this.buildMemberStartup({
+      rigId: input.rigId,
+      rigSpec: input.rigSpec,
+      rigRoot: input.rigRoot,
+      pod: input.pod,
+      member: input.member,
+      resolveResult,
       config: configResult.config,
-      collisions: resolveResult.collisions,
-      fsOps: this.deps.fsOps,
-      // P17 (finding A2): the conflict detector's resolver, UNINJECTED since the
-      // 4.8 restack dropped the warnings-site threading — without it every entry
-      // classified safe_projection and divergent targets overwrote silently.
-      // #25: a Claude seat's guidance conflict target is the rig's selected file (rig row,
-      // the same source startNode binds for the write). An adapter that writes skills
-      // outside the project tree (OMP's seat agent dir) names its own skill target.
-      resolveTargetPath: (category, effectiveId, cwd, sourcePath) =>
-        input.member.runtime === "codex" && category === "skill"
-          ? nodePath.join(cwd, ".agents", "skills", effectiveId, "SKILL.md")
-          : category === "skill" && adapter.skillTargetPath
-            ? adapter.skillTargetPath(launchResult.binding.tmuxSession, effectiveId)
-            : claudeConflictTargetPath(
-              category, effectiveId, cwd, sourcePath,
-              input.member.runtime === "claude-code" ? this.deps.rigRepo.getRigClaudeManagedBlockFile(input.rigId) ?? undefined : undefined,
-            ),
-      lastHashLookup: (targetPath) => projectionManifest.lastHash(targetPath),
+      adapter,
+      tmuxSession: launchResult.binding.tmuxSession,
+      sessionName: canonicalSessionName,
+      force: input.force,
     });
-    if (!planResult.ok) {
-      return { status: "failed", error: planResult.errors.join("; "), sessionName: canonicalSessionName, warnings: launchResult.warnings };
+    if (!startup.ok) {
+      return { status: "failed", error: startup.errors.join("; "), sessionName: canonicalSessionName, warnings: launchResult.warnings };
     }
     // P17: a divergent target is never SILENT again — each conflict rides the
     // instantiate warnings surface with the file, reason, and consequence.
     (launchResult.warnings ??= []).push(
       ...[...(configResult.config.skillWarnings ?? []), ...keptSkillWarnings].map(warning => `${canonicalSessionName}: ${warning}`),
-      ...projectionConflictWarnings(planResult.plan),
+      ...startup.conflictWarnings,
     );
-
-    // Codex project() writes plan entries before startup-file delivery. Protect
-    // edited skills there too; filtering only startup files is insufficient.
-    if (input.member.runtime === "codex" && !input.force) {
-      planResult.plan.entries = planResult.plan.entries.filter(
-        entry => entry.category !== "skill" || entry.classification !== "operator_conflict",
-      );
-    }
-
-    const resolvedFiles = this.buildResolvedStartupFiles(
-      resolveResult.resolved.spec,
-      resolveResult.resolved.sourcePath,
-      resolveResult.resolved.spec.profiles[input.member.profile],
-      input.rigSpec,
-      input.rigRoot,
-      input.pod,
-      input.member,
-    );
-    const managedDedupedFiles = this.dedupeProjectedManagedStartupFiles(planResult.plan, resolvedFiles);
-    // P20 atom-4 PROTECT: hold back operator-edited skill targets (operator_conflict)
-    // so the adapter never overwrites an operator's edit — unless the operator forces
-    // it (input.force). The per-conflict warning already tells the operator this.
-    const dedupedResolvedFiles = filterProtectedProjections(
-      managedDedupedFiles,
-      planResult.plan,
-      { force: input.force },
-    ).delivered;
+    const dedupedResolvedFiles = startup.resolvedStartupFiles;
 
     const binding: NodeBinding = {
       id: launchResult.binding.id,
@@ -2325,19 +2272,9 @@ export class PodRigInstantiator {
       sessionId: launchResult.session.id,
       binding,
       adapter,
-      plan: planResult.plan,
+      plan: startup.plan,
       resolvedStartupFiles: finalResolvedStartupFiles,
-      startupActions: [
-        ...configResult.config.startup.actions,
-        this.buildSessionIdentityAction({
-          rigName: input.rigSpec.name,
-          pod: input.pod,
-          member: input.member,
-          runtime: input.member.runtime,
-          sessionName: canonicalSessionName,
-          resolvedSpecName: configResult.config.resolvedSpecName,
-        }),
-      ],
+      startupActions: startup.startupActions,
       isRestore: false,
       ...(forkSourceOpt ?? {}),
       ...(rebuildArtifactsOpt ?? {}),
@@ -2579,6 +2516,126 @@ export class PodRigInstantiator {
     }
 
     return this.resolveAutoHints(files);
+  }
+
+  /**
+   * OF-32 seam: one member's node config, resolved exactly as a launch resolves it (agent, profile, rig, pod and
+   * member layers; culture; skills). Reads specs and writes nothing, so a fresh seat can re-read its startup
+   * policy without launching; first launch, first-start retry and fresh re-read all go through here.
+   */
+  resolveMemberConfig(input: {
+    resolveResult: Extract<ReturnType<typeof resolveAgentRef>, { ok: true }>;
+    rigSpec: PodRigSpec;
+    rigRoot: string;
+    pod: RigSpecPod;
+    member: RigSpecPodMember;
+    cwdOverride?: string;
+  }): ReturnType<typeof resolveNodeConfig> {
+    return resolveNodeConfig({
+      baseSpec: input.resolveResult.resolved,
+      importedSpecs: input.resolveResult.imports,
+      collisions: input.resolveResult.collisions,
+      profileName: input.member.profile,
+      specRoot: input.rigRoot,
+      cwdOverride: input.cwdOverride,
+      member: input.member,
+      pod: input.pod,
+      rig: input.rigSpec,
+      skillsRoot: this.resolveSkillsRoot(),
+      ...this.systemWorldResolutionContext(),
+    });
+  }
+
+  /**
+   * OF-32 seam: the startup policy a member's launch persists (projection plan, layered startup files, startup
+   * actions including the session identity), built from its resolved config. Reads specs and the projection
+   * manifest; writes nothing and launches nothing. `conflictWarnings` are the plan's divergent-target warnings,
+   * computed before the Codex skill filter, as a launch reports them. Agent Starter files are not included:
+   * the caller resolves them where its launch order requires.
+   */
+  buildMemberStartup(input: {
+    rigId: string;
+    rigSpec: PodRigSpec;
+    rigRoot: string;
+    pod: RigSpecPod;
+    member: RigSpecPodMember;
+    resolveResult: Extract<ReturnType<typeof resolveAgentRef>, { ok: true }>;
+    config: Extract<ReturnType<typeof resolveNodeConfig>, { ok: true }>["config"];
+    adapter: RuntimeAdapter;
+    tmuxSession: string | null;
+    sessionName: string;
+    force?: boolean;
+  }):
+    | { ok: false; errors: string[] }
+    | { ok: true; plan: ProjectionPlan; resolvedStartupFiles: ResolvedStartupFile[]; startupActions: StartupAction[]; conflictWarnings: string[] } {
+    const { resolveResult, adapter } = input;
+    // P20 — the projection manifest: consulted so a divergent target is
+    // discriminated operator-modified (protect) vs stale-projection (safe
+    // overwrite). REAL store-backed lookup on this.db (never a mock/null — the
+    // uninjected-service dead-invalidator class the P17 comment below records).
+    const projectionManifest = new ProjectionManifestStore(this.db);
+    const planResult = planProjection({
+      config: input.config,
+      collisions: resolveResult.collisions,
+      fsOps: this.deps.fsOps,
+      // P17 (finding A2): the conflict detector's resolver, UNINJECTED since the
+      // 4.8 restack dropped the warnings-site threading — without it every entry
+      // classified safe_projection and divergent targets overwrote silently.
+      // #25: a Claude seat's guidance conflict target is the rig's selected file (rig row,
+      // the same source startNode binds for the write). An adapter that writes skills
+      // outside the project tree (OMP's seat agent dir) names its own skill target.
+      resolveTargetPath: (category, effectiveId, cwd, sourcePath) =>
+        input.member.runtime === "codex" && category === "skill"
+          ? nodePath.join(cwd, ".agents", "skills", effectiveId, "SKILL.md")
+          : category === "skill" && adapter.skillTargetPath
+            ? adapter.skillTargetPath(input.tmuxSession, effectiveId)
+            : claudeConflictTargetPath(
+              category, effectiveId, cwd, sourcePath,
+              input.member.runtime === "claude-code" ? this.deps.rigRepo.getRigClaudeManagedBlockFile(input.rigId) ?? undefined : undefined,
+            ),
+      lastHashLookup: (targetPath) => projectionManifest.lastHash(targetPath),
+    });
+    if (!planResult.ok) return { ok: false, errors: planResult.errors };
+    const conflictWarnings = projectionConflictWarnings(planResult.plan);
+
+    // Codex project() writes plan entries before startup-file delivery. Protect
+    // edited skills there too; filtering only startup files is insufficient.
+    if (input.member.runtime === "codex" && !input.force) {
+      planResult.plan.entries = planResult.plan.entries.filter(
+        entry => entry.category !== "skill" || entry.classification !== "operator_conflict",
+      );
+    }
+
+    const resolvedFiles = this.buildResolvedStartupFiles(
+      resolveResult.resolved.spec,
+      resolveResult.resolved.sourcePath,
+      resolveResult.resolved.spec.profiles[input.member.profile],
+      input.rigSpec,
+      input.rigRoot,
+      input.pod,
+      input.member,
+    );
+    const managedDedupedFiles = this.dedupeProjectedManagedStartupFiles(planResult.plan, resolvedFiles);
+    // P20 atom-4 PROTECT: hold back operator-edited skill targets (operator_conflict)
+    // so the adapter never overwrites an operator's edit — unless the operator forces
+    // it (input.force). The per-conflict warning already tells the operator this.
+    const resolvedStartupFiles = filterProtectedProjections(
+      managedDedupedFiles,
+      planResult.plan,
+      { force: input.force },
+    ).delivered;
+    const startupActions: StartupAction[] = [
+      ...input.config.startup.actions,
+      this.buildSessionIdentityAction({
+        rigName: input.rigSpec.name,
+        pod: input.pod,
+        member: input.member,
+        runtime: input.member.runtime,
+        sessionName: input.sessionName,
+        resolvedSpecName: input.config.resolvedSpecName,
+      }),
+    ];
+    return { ok: true, plan: planResult.plan, resolvedStartupFiles, startupActions, conflictWarnings };
   }
 
   private buildResolvedStartupFiles(

@@ -175,6 +175,19 @@ export class RigRepository {
     return row?.install_root ?? null;
   }
 
+  /** OF-32: record where this rig's spec came from, as the operator named it (a library link keeps its
+   *  link spelling). Resolved again at each use; never a substitute for the startup context itself. */
+  setRigSpecSource(rigId: string, specSourcePath: string): void {
+    this.db.prepare("UPDATE rigs SET spec_source_path = ? WHERE id = ?").run(specSourcePath, rigId);
+  }
+
+  /** OF-32: the recorded spec source, or null when none was recorded (older rigs, specs without a file). */
+  getRigSpecSource(rigId: string): string | null {
+    const row = this.db.prepare("SELECT spec_source_path FROM rigs WHERE id = ?").get(rigId) as
+      { spec_source_path: string | null } | undefined;
+    return row?.spec_source_path ?? null;
+  }
+
   /**
    * PL-007 Workspace Primitive — persist the typed workspace block on the
    * rigs row. Stored as JSON in `workspace_json` (migration 038). Pass

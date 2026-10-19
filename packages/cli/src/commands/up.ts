@@ -265,6 +265,9 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
 
       // If it looks like a name, check for library spec match
       let defaultLibraryCwdOverride: string | undefined;
+      // OF-32: a library spec reached through a link is launched by its real path; the link path is sent too,
+      // so the rig records the spelling whose target can move to a later release.
+      let specSourceRef: string | undefined;
       // Cache rig summaries so we can both detect ambiguity AND derive lifecycleState
       // for "Recovering ..." vs "Turning on ..." wording (post-L2).
       let rigSummariesCache: Array<{ id: string; name: string; lifecycleState?: string }> | null = null;
@@ -349,6 +352,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             return;
           }
           sourceRef = entry.sourcePath;
+          if (entry.linkPath) specSourceRef = entry.linkPath;
           if (!opts.cwd && entry.kind === "rig" && entry.sourceType === "builtin") {
             defaultLibraryCwdOverride = process.cwd();
           }
@@ -468,6 +472,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           // OPR.0.3.4.2 — operation B opt-in seats (deliberate fresh-prime).
           freshLogicalIds: opts.fresh,
           ...(opts.onExisting === "fresh" ? { onExisting: "fresh" } : {}),
+          ...(specSourceRef ? { specSourceRef } : {}),
         }, opts.plan ? undefined : { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
 
         // A project rig whose project already has a stopped rig: resume it or start fresh,
@@ -511,6 +516,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
               targetRoot,
               freshLogicalIds: opts.fresh,
               onExisting: "fresh",
+              ...(specSourceRef ? { specSourceRef } : {}),
             }, { timeoutMs: LONG_RUNNING_UP_TIMEOUT_MS });
           }
         }
