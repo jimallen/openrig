@@ -294,6 +294,19 @@ describe("rig start (OPR.0.3.4.1)", () => {
     expect(logs.join("\n")).toContain("dev.impl: fresh-primed");
   });
 
+  // OF-32 (N4): the accept path shows the daemon's warning and a refusal's stored-escape guidance.
+  it.each([
+    [{ status: 200, data: { ok: true, status: "ready", warnings: ["This rig records no spec source (fixture)."] } }, "dev.impl: warning: This rig records no spec source (fixture)."],
+    [{ status: 409, data: { ok: false, code: "startup_source_unavailable", message: "gone", guidance: "run again with --startup-from stored (fixture)" } }, "dev.impl: run again with --startup-from stored (fixture)"],
+  ] as const)("an accepted fresh start prints what the daemon said: %j", async (answer, line) => {
+    setupCandidateRig("tokenless-rig", { hasToken: false });
+    seatAnswer = answer as never;
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "start", "--last"]);
+    });
+    expect(logs).toContain(`    ${line}`);
+  });
+
   it("an accepted fresh start the daemon refuses is reported with its reason (the exit code is already 1: the seat is still awaiting a decision)", async () => {
     setupCandidateRig("tokenless-rig", { hasToken: false });
     seatAnswer = { status: 409, data: { ok: false, code: "session_live", message: "A live managed occupant requires --stop." } };

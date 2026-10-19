@@ -288,9 +288,10 @@ function describeStartupSource(source: StartupSourceReport): string {
       ? `Startup files: re-read from ${source.specSource}.`
       : `Startup files: re-read from ${source.specSource} (now ${source.specPath}).`;
   }
-  return source.reason === "requested"
-    ? "Startup files: replayed from the first launch (--startup-from stored)."
-    : "Startup files: replayed from the first launch (this rig records no spec source).";
+  const why = source.reason === "requested" ? "--startup-from stored"
+    : source.reason === "not_in_spec" ? "the rig's spec does not declare this seat"
+      : "this rig records no spec source";
+  return `Startup files: replayed from the seat's last successful launch (${why}).`;
 }
 
 export function seatCommand(depsOverride?: SeatDeps & { readStdin?: () => Promise<string> }): Command {
@@ -709,7 +710,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--reason <text>", "Audit reason (required when executing, optional with --plan)")
     .option("--plan", "Preview this fresh launch without changing any seat or starting tmux")
     .option("--stop", "Stop the current live managed occupant before launching fresh")
-    .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; stored: replay the startup files saved at first launch")
+    .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; stored: replay the startup files saved by the seat's last successful launch")
     .option("--operator <address>", "Operator recorded on the audit event")
     .option("--json", "JSON output for agents")
     .description("Launch a deliberate fresh occupant for exactly one existing seat")
@@ -721,10 +722,14 @@ command from current settings; launch does not replay a stored wrapper command.
 The seat launch environment and managed executable selection still apply.
 Startup files come from the rig's spec as it is now: the spec it was launched from is
 read again (a spec library link follows its current target), so a new persona release
-reaches a fresh seat. If that spec has moved, been deleted or no longer declares this
-seat, the launch is refused with the reason and nothing is stopped. --startup-from stored
-replays the startup files saved at the seat's first launch instead. A rig created before
-OpenRig recorded spec sources replays the saved files and says so in a warning.
+reaches a fresh seat. If that spec has moved or been deleted, no longer passes the launch
+preflight, or now gives this seat a different runtime, agent or profile, the launch is
+refused with the reason and nothing is stopped.
+"Saved startup files" are the ones the seat's last successful launch wrote: its first
+launch, or the last fresh launch that started an occupant. A launch that fails leaves
+them unchanged. --startup-from stored replays them instead of reading the spec. A rig
+created before OpenRig recorded spec sources, and a seat the spec does not declare
+(one added with rig add), replay them too and say so in a warning.
 Resume never re-reads the spec: the conversation already holds the text it was given.
 Preview is a read-only snapshot, not a reservation or a native readiness check.
 A successful preview exits 0; inspect launchable to decide whether launch is allowed.
@@ -733,7 +738,7 @@ Examples:
   rig seat launch dev.impl --fresh --plan --json
   rig seat launch dev-impl@my-rig --fresh --reason "deliberate blank restart"
   rig seat launch dev.impl --fresh --stop --reason "replace managed occupant" --json
-  rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the first-launch persona"`)
+  rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the running persona"`)
     .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; operator?: string; json?: boolean }) => {
       if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
         const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes spec or stored (got "${opts.startupFrom}").` };

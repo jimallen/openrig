@@ -2660,6 +2660,8 @@ export class PodRigInstantiator {
       kind: "refused", code: "startup_source_changed", specSource,
       message: `This rig's spec source ${specSource} no longer matches this seat: ${detail}`,
     });
+    // A recorded source is always absolute (bootstrap resolves it); a relative one would depend on the daemon's cwd.
+    if (!nodePath.isAbsolute(specSource)) return unavailable("it is not an absolute path, so it cannot be located.");
     const rig = this.deps.rigRepo.getRig(input.rigId);
     const node = rig?.nodes.find((n) => n.id === input.nodeId);
     if (!rig || !node) return unavailable("the seat no longer exists.");
@@ -2687,7 +2689,8 @@ export class PodRigInstantiator {
 
     const pod = rigSpec.pods.find((p) => node.logicalId.startsWith(`${p.id}.`) && p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
     const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
-    if (!pod || !member) return changed(`it no longer declares ${node.logicalId}.`);
+    // A seat the spec does not declare (added with `rig add`, or dropped from the spec) has only its saved context.
+    if (!pod || !member) return { kind: "undeclared", specSource };
     const same = (a: unknown, b: unknown) => (a ?? null) === (b ?? null);
     const drift = [
       !same(member.runtime, node.runtime) ? `runtime ${member.runtime} (seat: ${node.runtime ?? "none"})` : null,
@@ -2714,15 +2717,30 @@ export class PodRigInstantiator {
         return unavailable(`its Agent Starter does not resolve (${(err as Error).message}).`);
       }
     }
+    // The checks first launch runs before anything starts (culture file guard, session names, cwd, runtime
+    // probes), for this seat only: a sibling's problem is not this seat's. A failure here refuses before any stop.
+    const preflight = await preflightValidatedSpec(
+      { ...rigSpec, pods: [{ ...pod, members: [member], edges: [] }], edges: [] },
+      {
+        rigRoot, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext(),
+        cwdOverride: node.cwd ?? undefined, rigNameOverride: rig.rig.name,
+        inheritedPermissionPolicy: this.inheritedPermissionPolicy(input.rigId), exec: this.deps.exec,
+      },
+    );
+    if (!preflight.ready) return unavailable(`it does not pass the launch preflight (${preflight.errors.join("; ")}).`);
+    const resolvedStartupFiles = [...starterFiles, ...startup.resolvedStartupFiles];
+    // A required file a fresh start would deliver must exist now, not fail after the live occupant is stopped.
+    const missing = resolvedStartupFiles.find((f) => f.required && f.appliesOn.includes("fresh_start") && !fs.existsSync(f.absolutePath));
+    if (missing) return unavailable(`its required startup file ${missing.path} (${missing.absolutePath}) does not exist.`);
     return {
       kind: "spec",
       specSource,
       specPath,
       plan: startup.plan,
-      resolvedStartupFiles: [...starterFiles, ...startup.resolvedStartupFiles],
+      resolvedStartupFiles,
       startupActions: startup.startupActions,
       resolvedSpec: { name: config.config.resolvedSpecName, version: config.config.resolvedSpecVersion, hash: config.config.resolvedSpecHash },
-      warnings: [...(config.config.skillWarnings ?? []), ...startup.conflictWarnings],
+      warnings: [...(config.config.skillWarnings ?? []), ...startup.conflictWarnings, ...preflight.warnings],
     };
   }
 

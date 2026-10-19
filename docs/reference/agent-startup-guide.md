@@ -241,12 +241,17 @@ reads the rig's spec again as it is now. OpenRig records the spec a rig was laun
 spec library link keeps its link path, so a link that now points at a newer release gives the fresh seat that
 release's role, culture and startup files. The seat's working folder, runtime, model and permissions stay as they
 are. The launch is refused with `startup_source_unavailable`, and nothing is stopped, when that spec or a link on its
-path no longer exists, no longer parses, or the seat's agent no longer resolves. It is refused with
-`startup_source_changed` when the spec no longer declares the seat, or now gives it a different runtime, agent ref or
-profile. A fresh launch never changes a seat's identity; create the rig again for that. Pass `--startup-from stored`
-to replay the startup files saved at the seat's first launch instead. A rig created before OpenRig recorded spec
-sources (or not from a spec file, such as a bundle install) replays those saved files and says so in a warning. The
-result and the `seat.fresh_launched` event name the source used. Resume, and `rig up --existing`, do not read the
+path no longer exists, no longer parses, the seat's agent no longer resolves, a required startup file is missing, or
+the seat fails the same preflight a first launch runs (for example a culture file that is not a single-link regular
+file within the size limit). It is refused with `startup_source_changed` when the spec now gives the seat a different
+runtime, agent ref or profile. A fresh launch never changes a seat's identity; create the rig again for that.
+
+The **saved startup files** are the ones the seat's last successful launch wrote: its first launch, or the last fresh
+launch that started an occupant (they then hold that release's files). A launch that fails leaves them unchanged.
+Pass `--startup-from stored` to replay them instead of reading the spec. A rig created before OpenRig recorded spec
+sources (or not from a spec file, such as a bundle install), and a seat the spec does not declare (one added with
+`rig add`), replay them too and say so in a warning; `rig up` and `rig start` print that warning when you accept a
+fresh start. The result and the `seat.fresh_launched` event name the source used. Resume, and `rig up --existing`, do not read the
 spec again: a resumed conversation already holds the text it was given.
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected

@@ -12,6 +12,16 @@ export interface FreshSeatOutcome {
   httpStatus: number | null;
   /** The daemon's refusal text (or the timeout note) when `ok` is false. */
   message: string | null;
+  /** The daemon's warnings, success or not (for example a fresh seat that replayed its saved startup files). */
+  warnings: string[];
+  /** The daemon's next step for a refusal (for example `--startup-from stored`), when it gave one. */
+  guidance: string | null;
+}
+
+/** Print what the daemon said beyond ok/failed, so the operator sees it on the accept path too (OF-32). */
+export function printFreshSeatNotes(outcome: FreshSeatOutcome, indent: string): void {
+  for (const warning of outcome.warnings) console.error(`${indent}${outcome.logicalId}: warning: ${warning}`);
+  if (outcome.guidance) console.error(`${indent}${outcome.logicalId}: ${outcome.guidance}`);
 }
 
 export async function launchAcceptedFreshSeats(
@@ -33,15 +43,17 @@ export async function launchAcceptedFreshSeats(
       const ok = res.status >= 200 && res.status < 300 && data["ok"] !== false;
       const code = typeof data["code"] === "string" ? `${data["code"]}: ` : "";
       const text = typeof data["message"] === "string" ? data["message"] : typeof data["error"] === "string" ? data["error"] : "fresh launch refused";
-      outcomes.push({ logicalId, ok, httpStatus: res.status, message: ok ? null : `${code}${text}` });
+      const warnings = Array.isArray(data["warnings"]) ? (data["warnings"] as unknown[]).filter((w): w is string => typeof w === "string") : [];
+      const guidance = !ok && typeof data["guidance"] === "string" ? data["guidance"] : null;
+      outcomes.push({ logicalId, ok, httpStatus: res.status, message: ok ? null : `${code}${text}`, warnings, guidance });
     } catch (err) {
       // Each seat is independent: whatever happened to this one, the next is still tried and every result is returned.
       if (err instanceof DaemonResponseError) {
-        outcomes.push({ logicalId, ok: false, httpStatus: err.status, message: `unreadable response from the daemon${err.bodySnippet ? ` (${err.bodySnippet.trim()})` : ""}; the launch may or may not have happened. Verify with: rig ps` });
+        outcomes.push({ logicalId, ok: false, httpStatus: err.status, message: `unreadable response from the daemon${err.bodySnippet ? ` (${err.bodySnippet.trim()})` : ""}; the launch may or may not have happened. Verify with: rig ps`, warnings: [], guidance: null });
       } else if (err instanceof DaemonConnectionError) {
-        outcomes.push({ logicalId, ok: false, httpStatus: null, message: `no answer from the daemon (${err.message}); it may still be launching. Verify with: rig ps` });
+        outcomes.push({ logicalId, ok: false, httpStatus: null, message: `no answer from the daemon (${err.message}); it may still be launching. Verify with: rig ps`, warnings: [], guidance: null });
       } else {
-        outcomes.push({ logicalId, ok: false, httpStatus: null, message: `${err instanceof Error ? err.message : String(err)}` });
+        outcomes.push({ logicalId, ok: false, httpStatus: null, message: `${err instanceof Error ? err.message : String(err)}`, warnings: [], guidance: null });
       }
     }
   }

@@ -19,6 +19,7 @@ import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-
 import type { ProjectionPlan } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { reanchorShippedSpecPath } from "../src/domain/builtin-startup-files.js";
+import { guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
 
 const RIG = (name = "team", agentRef = "local:agents/impl", extra = "") => `version: "0.2"
 name: ${name}
@@ -140,7 +141,8 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
-      fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
+      // The production agent-ref guard (OF-16): realpath confinement and the guarded agent.yaml read.
+      fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
       adapters: { "claude-code": adapter },
       tmuxAdapter: tmux,
       onboardingEnabledResolver: () => false,
@@ -245,8 +247,27 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     ["the library link was removed", () => fs.unlinkSync(path.join(root, "library", "team")), "startup_source_unavailable", "no longer exists"],
     ["the spec no longer parses", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), "pods: [unclosed"), "startup_source_unavailable", "parse"],
     ["the seat's agent is gone", () => fs.rmSync(path.join(releaseB, "agents"), { recursive: true }), "startup_source_unavailable", "local:agents/impl"],
-    ["the seat is no longer declared", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG().replace("id: impl", "id: other")), "startup_source_changed", "no longer declares dev.impl"],
     ["the seat's agent ref changed", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG("team", "local:agents/other")), "startup_source_changed", "agent_ref local:agents/other"],
+    ["the seat's runtime changed", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG().replace("runtime: claude-code", "runtime: codex")), "startup_source_changed", "runtime codex"],
+    ["the seat's profile changed", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG().replace("profile: default", "profile: other")), "startup_source_changed", "profile other"],
+    // OF-16 parity on the re-read: the agent folder may not leave the spec tree, as at first launch.
+    ["the seat's agent folder links outside the spec tree", () => {
+      const outside = path.join(root, "outside", "impl");
+      fs.mkdirSync(path.join(outside, "guidance"), { recursive: true });
+      fs.writeFileSync(path.join(outside, "agent.yaml"), AGENT("9.9.9"));
+      fs.writeFileSync(path.join(outside, "guidance", "role.md"), "# outside\n");
+      fs.rmSync(path.join(releaseB, "agents", "impl"), { recursive: true });
+      fs.symlinkSync(outside, path.join(releaseB, "agents", "impl"));
+    }, "startup_source_unavailable", "outside"],
+    // The first-launch preflight, for this seat, before anything is stopped.
+    ["the culture file is over the size limit", () => fs.writeFileSync(path.join(releaseB, "CULTURE.md"), "x".repeat(300 * 1024)), "startup_source_unavailable", "preflight"],
+    ["the culture file is hard-linked", () => {
+      const other = path.join(root, "other-culture.md");
+      fs.writeFileSync(other, "# other\n");
+      fs.rmSync(path.join(releaseB, "CULTURE.md"));
+      fs.linkSync(other, path.join(releaseB, "CULTURE.md"));
+    }, "startup_source_unavailable", "preflight"],
+    ["a required startup file is missing", () => fs.rmSync(path.join(releaseB, "agents", "impl", "guidance", "role.md")), "startup_source_unavailable", "required startup file guidance/role.md"],
   ] as const)("refuses with the reason, before stopping anything, when %s", async (_label, damage, code, reason) => {
     const seat = await launchRig();
     retarget("bbbbbbb");
@@ -265,6 +286,88 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(alive.has(seat.sessionName)).toBe(true);
     expect(delivered).toEqual([]);
     expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+  });
+
+  it("control: an agent folder linked to a sibling inside the spec tree is accepted", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    const inside = path.join(releaseB, "agents", "impl-real");
+    fs.renameSync(path.join(releaseB, "agents", "impl"), inside);
+    fs.symlinkSync(inside, path.join(releaseB, "agents", "impl"));
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "inside link" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    // As at first launch, the agent is resolved through the guard's realpath: the saved role file names the real folder.
+    const role = storedFiles(seat.node.id).find((f) => f.path === "guidance/role.md")!;
+    expect(role.absolutePath).toBe(path.join(inside, "guidance", "role.md"));
+  });
+
+  // N1: a launch that fails leaves the saved context (what --startup-from stored and restore replay) as it was.
+  it("a fresh launch that fails keeps the saved startup files and provenance, so stored still replays them", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    adapter.launchHarness = async () => ({ ok: false, error: "fixture: harness refused", recovery: "none" } as never);
+    const failed = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+    expect(failed.ok).toBe(false);
+    expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(nodeSpec(seat.node.id).version).toBe("1.0.0");
+    adapter.launchHarness = async () => ({ ok: true, resumeToken: "native-uuid-2", resumeType: "claude_session_id" });
+    delivered = [];
+    const replay = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "back", startupFrom: "stored" });
+    expect(replay.ok, JSON.stringify(replay)).toBe(true);
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+  });
+
+  // N3: a seat the spec does not declare has only its saved files; it replays them with a warning instead of refusing,
+  // so the TUI fresh choice and the rig up / rig start accept-fresh path (which cannot pass a flag) keep working.
+  it("a seat the spec no longer declares replays its saved files with a warning", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG().replace("id: impl", "id: other"));
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "dropped" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(result).toMatchObject({ startupSource: { kind: "stored", reason: "not_in_spec" } });
+    expect(result.warnings?.[0]).toContain(`does not declare dev.impl`);
+  });
+
+  it("a seat added with rig add after launch replays its saved files with a warning", async () => {
+    const seat = await launchRig();
+    const added = await inst.addMemberToPod(seat.rigId, "dev", { id: "extra", agent_ref: "local:agents/impl", profile: "default", runtime: "claude-code", cwd: "." },
+      path.dirname(fs.realpathSync(linkSpec)), { cwdOverride: workdir });
+    expect(added.ok, JSON.stringify(added)).toBe(true);
+    retarget("bbbbbbb");
+    delivered = [];
+    const plan = await service.planFresh({ seatRef: "dev-extra@team", fresh: true, stop: true });
+    const result = await service.launchFresh({ seatRef: "dev-extra@team", fresh: true, stop: true, reason: "added seat" });
+    expect(plan).toMatchObject({ ok: true, startup: { source: { kind: "stored", reason: "not_in_spec" } } });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result).toMatchObject({ startupSource: { kind: "stored", reason: "not_in_spec" } });
+    expect(result.warnings?.[0]).toContain("does not declare dev.extra");
+  });
+
+  // X4: the identity a re-read delivers names the rig, not the spec (a project rig is named after its project).
+  it("the re-read uses the rig's own name, not the name inside the spec", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    fs.writeFileSync(path.join(releaseB, "rig.yaml"), RIG("renamed-in-spec"));
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const actions = JSON.parse((db.prepare("SELECT startup_actions_json FROM node_startup_context WHERE node_id = ?").get(seat.node.id) as { startup_actions_json: string }).startup_actions_json) as Array<{ builtin?: string; value: string }>;
+    const identity = actions.find((a) => a.builtin === "session_identity")!.value;
+    expect(identity).toContain("- rig: team");
+    expect(identity).not.toContain("renamed-in-spec");
+  });
+
+  // N5: a relative recorded source would depend on the daemon's working folder; it is refused.
+  it("refuses a relative recorded spec source", async () => {
+    const seat = await launchRig();
+    rigRepo.setRigSpecSource(seat.rigId, "library/team/rig.yaml");
+    const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "relative" });
+    expect(plan).toMatchObject({ ok: false, code: "startup_source_unavailable", launchable: false });
+    expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+    expect(!result.ok && result.message).toContain("not an absolute path");
+    expect(alive.has(seat.sessionName)).toBe(true);
   });
 
   it("a rig with no recorded source replays the stored files and says so", async () => {

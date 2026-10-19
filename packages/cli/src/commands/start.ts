@@ -15,7 +15,7 @@ import {
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
-import { launchAcceptedFreshSeats } from "../fresh-seat-accept.js";
+import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 const KERNEL_WAIT_MS = 60_000;
@@ -493,6 +493,7 @@ Examples:
                   } else {
                     console.error(`    ${o.logicalId}: fresh start failed for ${rigName}${o.httpStatus ? ` (HTTP ${o.httpStatus})` : ""}: ${o.message}`);
                   }
+                  printFreshSeatNotes(o, "    ");
                 }
               } else if (!opts.json) {
                 console.log(`    No fresh sessions started for ${rigName}.`);

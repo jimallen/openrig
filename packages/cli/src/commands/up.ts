@@ -13,7 +13,7 @@ import type { StartOptions } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
-import { launchAcceptedFreshSeats } from "../fresh-seat-accept.js";
+import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
@@ -700,6 +700,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
               for (const o of outcomes) {
                 if (o.ok) console.log(`  ${o.logicalId}: fresh-primed`);
                 else console.error(`  ${o.logicalId}: fresh start failed${o.httpStatus ? ` (HTTP ${o.httpStatus})` : ""}: ${o.message}`);
+                printFreshSeatNotes(o, "  ");
               }
             } else {
               console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);

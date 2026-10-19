@@ -9,7 +9,7 @@ import type { NodeInventoryEntry, PersistedEvent } from "./types.js";
 import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js";
 import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
-import { serializeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
+import { serializeStartupContext, writeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
 import type { SeatStartupSpecReader, StartupFrom } from "./seat-startup-source.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
@@ -229,7 +229,7 @@ interface PersistedStartupContextRow {
 /** OF-32: where a fresh launch took its startup policy from, as reported to the operator and the audit event. */
 export type FreshStartupSource =
   | { kind: "spec"; specSource: string; specPath: string }
-  | { kind: "stored"; reason: "requested" | "no_recorded_source" };
+  | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" };
 
 interface ParsedStartupContext {
   plan: ProjectionPlan;
@@ -245,7 +245,13 @@ interface ParsedStartupContext {
 }
 
 const NO_RECORDED_SOURCE_WARNING = "This rig records no spec source (it was created before OpenRig recorded one, or not from a spec file), "
-  + "so this fresh launch replays the startup files saved at the seat's first launch. To pick up spec changes, create the rig again from its spec.";
+  + "so this fresh launch replays the startup files saved at the seat's last successful launch. To pick up spec changes, create the rig again from its spec.";
+
+/** OF-32: a seat its rig's spec does not declare (added later with `rig add`, or dropped from the spec). */
+function notInSpecWarning(logicalId: string, specSource: string): string {
+  return `This rig's spec ${specSource} does not declare ${logicalId} (it was added to the rig after launch, or the spec no longer lists it), `
+    + "so this fresh launch replays the startup files saved at the seat's last successful launch.";
+}
 
 export class SeatLifecycleService {
   private readonly db: Database.Database;
@@ -739,7 +745,8 @@ export class SeatLifecycleService {
     // OF-32: a fresh conversation has no continuity, so it re-reads the rig's spec source as it is now,
     // unless the operator asks for the stored context or the rig records no source.
     let reread: ParsedStartupContext | null = null;
-    let storedReason: "requested" | "no_recorded_source" = "requested";
+    let storedReason: "requested" | "no_recorded_source" | "not_in_spec" = "requested";
+    let undeclaredSource: string | null = null;
     if (startupFrom === "spec") {
       const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
       const read = !this.seatStartupSource
@@ -755,7 +762,7 @@ export class SeatLifecycleService {
       if (read.kind === "refused") {
         return {
           ok: false as const, code: read.code, message: read.message,
-          guidance: "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's first launch.",
+          guidance: "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.",
         };
       }
       if (read.kind === "spec") {
@@ -777,6 +784,9 @@ export class SeatLifecycleService {
           resolvedSpec: read.resolvedSpec,
           sourceWarnings: read.warnings,
         };
+      } else if (read.kind === "undeclared") {
+        storedReason = "not_in_spec";
+        undeclaredSource = read.specSource;
       } else {
         storedReason = "no_recorded_source";
       }
@@ -791,7 +801,8 @@ export class SeatLifecycleService {
       context = {
         ...startup.context,
         source: { kind: "stored", reason: storedReason },
-        sourceWarnings: storedReason === "no_recorded_source" ? [NO_RECORDED_SOURCE_WARNING] : [],
+        sourceWarnings: storedReason === "no_recorded_source" ? [NO_RECORDED_SOURCE_WARNING]
+          : storedReason === "not_in_spec" ? [notInSpecWarning(seat.logicalId, undeclaredSource ?? "")] : [],
       };
     }
     if (!node.runtime || context.runtime !== node.runtime) {
@@ -971,7 +982,7 @@ export class SeatLifecycleService {
     reason: string;
     stop?: boolean;
     operator?: string | null;
-    /** OF-32: "spec" (default) re-reads the rig's spec source; "stored" replays the context saved at first launch. */
+    /** OF-32: "spec" (default) re-reads the rig's spec source; "stored" replays the context saved by the last successful launch. */
     startupFrom?: StartupFrom;
   }): Promise<LaunchFreshResult> {
     const required = this.requireReason(input.reason);
@@ -1151,10 +1162,28 @@ export class SeatLifecycleService {
       includeDurableObligations: true,
       sessionName: canonicalSessionName,
       allowFreshFallback: false,
-      ...(startup.resolvedSpec ? { resolvedSpecProvenance: startup.resolvedSpec } : {}),
+      deferStartupContextWrite: true,
     });
 
-    if (!startupResult.ok && startupResult.startupStatus === "failed") {
+    // OF-32: the context (and, for a re-read, the agent provenance) is saved only once this launch has produced
+    // an occupant, so a failed attempt leaves the saved context that `--startup-from stored` and restore replay
+    // exactly as it was.
+    let failed = !startupResult.ok && startupResult.startupStatus === "failed";
+    let startupErrors = startupResult.ok ? [] : startupResult.errors;
+    if (!failed) {
+      try {
+        writeStartupContext(this.db, {
+          nodeId: node.id, entries: startup.plan.entries, resolvedStartupFiles: startup.resolvedStartupFiles,
+          startupActions: startup.startupActions, runtime: adapter.runtime,
+          ...(startup.resolvedSpec ? { provenance: startup.resolvedSpec } : {}),
+        });
+      } catch (error) {
+        failed = true;
+        startupErrors = [`Startup context persistence failed: ${String(error)}`];
+      }
+    }
+
+    if (failed) {
       const compensation = await this.compensateFailedFreshLaunch({
         seat,
         launch,
@@ -1166,21 +1195,21 @@ export class SeatLifecycleService {
         effort: resolveSeatEffort(node).effective,
         reason: input.reason,
         operator: input.operator,
-        errors: startupResult.errors,
+        errors: startupErrors,
       });
       return compensation === "zero"
         ? {
             ok: false,
             code: "startup_failed",
             status: "failed",
-            message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupResult.errors.join("; ")}`,
+            message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupErrors.join("; ")}`,
             warnings: withSourceWarnings(startupResult.warnings),
           }
         : {
             ok: false,
             code: "attention_required",
             status: "attention_required",
-            message: `Fresh startup failed and the new process could not be confirmed stopped; the seat requires attention: ${startupResult.errors.join("; ")}`,
+            message: `Fresh startup failed and the new process could not be confirmed stopped; the seat requires attention: ${startupErrors.join("; ")}`,
             warnings: withSourceWarnings(startupResult.warnings),
             sessionName: canonicalSessionName,
             sessionId: launch.session.id,
