@@ -11,6 +11,9 @@ export interface SpecLibraryEntry {
   version: string;
   sourceType: "builtin" | "user_file";
   sourcePath: string;
+  /** OF-32: the library path that reached `sourcePath` through a symlink, present only when the two differ.
+   *  A rig launched from this entry records it, so a later fresh seat follows where the link points then. */
+  linkPath?: string;
   relativePath: string;
   updatedAt: string;
   summary?: string;
@@ -187,6 +190,7 @@ export class SpecLibraryService {
         const sourcePath = realPathIfLinked(root.path, absPath);
         const entry = this.classifySpec(yaml, root.sourceType, sourcePath, relPath, stat.mtimeMs);
         if (entry) {
+          if (sourcePath !== absPath) entry.linkPath = absPath;
           newEntries.set(entry.id, entry);
         }
       }

@@ -381,6 +381,39 @@ describe("fresh launch preview", () => {
     expect(JSON.parse(output.logs.join("\n"))).toMatchObject({ code: "missing_reason" });
     expect(calls).toEqual([]);
   });
+
+  // OF-32: --startup-from chooses the spec as it is now (default) or the files saved at first launch.
+  it.each([["--plan"], ["--reason", "keep persona"]] as const)("--startup-from stored reaches the daemon (%s)", async (...mode) => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    await captureLogs(() => makeCommand(makeDeps({ status: 200, data: { ok: true } }, calls)).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--startup-from", "stored", ...mode, "--json",
+    ]).then(() => undefined));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({ fresh: true, startupFrom: "stored" });
+  });
+
+  it("refuses an unknown --startup-from before contacting the daemon", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const output = await captureLogs(() => makeCommand(makeDeps({ status: 200, data: {} }, calls)).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--startup-from", "latest", "--reason", "r", "--json",
+    ]).then(() => undefined));
+    expect(output.exitCode).toBe(1);
+    expect(JSON.parse(output.logs.join("\n"))).toMatchObject({ code: "invalid_startup_from" });
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    [{ kind: "spec", specSource: "/lib/team/rig.yaml", specPath: "/rel/b/rigs/team/rig.yaml" }, "re-read from /lib/team/rig.yaml (now /rel/b/rigs/team/rig.yaml)"],
+    [{ kind: "stored", reason: "no_recorded_source" }, "this rig records no spec source"],
+  ] as const)("names where the fresh occupant's startup files came from: %j", async (startupSource, text) => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const data = { ok: true, seat: { logicalId: "dev.impl", rigName: "team" }, sessionName: "dev-impl@team", generation: "g", model: null,
+      startupPolicyHash: "h", supersededSessionIds: [], startupSource };
+    const output = await captureLogs(() => makeCommand(makeDeps({ status: 200, data }, calls)).parseAsync([
+      "node", "rig", "seat", "launch", "dev@fixture", "--fresh", "--reason", "r",
+    ]).then(() => undefined));
+    expect(output.logs.join("\n")).toContain(text);
+  });
 });
 
 describe("OPR.0.7.0.5 rig seat restart --keep-conversation", () => {

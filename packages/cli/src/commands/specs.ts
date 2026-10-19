@@ -25,6 +25,8 @@ interface LibraryEntry {
   version: string;
   sourceType: string;
   sourcePath: string;
+  /** OF-32: the library link path that reached sourcePath, when it was reached through a symlink. */
+  linkPath?: string;
   relativePath: string;
   updatedAt: string;
   summary?: string;

@@ -209,6 +209,8 @@ upRoutes.post("/", async (c) => {
   const cwdOverride = typeof body["cwdOverride"] === "string" ? body["cwdOverride"] : undefined;
   const targetRoot = typeof body["targetRoot"] === "string" ? body["targetRoot"] : undefined;
   const onExisting = body["onExisting"] === "fresh" ? "fresh" as const : undefined;
+  // OF-32: a spec library link the CLI resolved to its real path; recorded on the rig when it names the same file.
+  const specSourceRef = typeof body["specSourceRef"] === "string" && body["specSourceRef"] ? body["specSourceRef"] : undefined;
 
   if (!sourceRef) {
     return c.json({ error: "sourceRef is required" }, 400);
@@ -382,6 +384,7 @@ upRoutes.post("/", async (c) => {
         targetRoot,
         onExisting,
         runId: run.id,
+        ...(specSourceRef ? { specSourceRef } : {}),
       });
 
       if (result.status === "completed") {

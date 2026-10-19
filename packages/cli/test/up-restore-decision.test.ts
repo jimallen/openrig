@@ -154,6 +154,22 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(upBodies).toHaveLength(1);
   });
 
+  // OF-32 (N4): accepting a fresh start shows the daemon's no-source warning, and a refusal's stored-escape guidance.
+  it.each([
+    [{ status: 200, data: { ok: true, status: "ready", warnings: ["This rig records no spec source (fixture)."] } }, "dev.impl: warning: This rig records no spec source (fixture)."],
+    [{ status: 409, data: { ok: false, code: "startup_source_unavailable", message: "gone", guidance: "run again with --startup-from stored (fixture)" } }, "dev.impl: run again with --startup-from stored (fixture)"],
+  ] as const)("accepted fresh start prints what the daemon said: %j", async (answer, line) => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.impl", status: "awaiting-decision", error: "no token available" }, { logicalId: "dev.qa", status: "resumed" }], warnings: [],
+    });
+    seatAnswer = () => answer as never;
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    expect(logs).toContain(`  ${line}`);
+  });
+
   it("headless hint names the rig by the daemon's canonical name, not by whatever the operator typed after `rig up`", async () => {
     respond = () => ({
       status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",
