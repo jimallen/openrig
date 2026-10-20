@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 
@@ -23,6 +24,9 @@ describe("test setup pins process basics", () => {
   });
   it("umask is 022, whatever the account default", () => {
     expect(process.umask()).toBe(0o022);
+  });
+  it("os.tmpdir() is already a real path (macOS hands out the /var -> /private/var symlink otherwise)", () => {
+    expect(realpathSync(tmpdir())).toBe(tmpdir());
   });
   bashOnly("the fixture user HOME is quiet for interactive bash (no sudo hint on stdout)", () => {
     expect(existsSync(join(process.env.HOME!, ".hushlogin"))).toBe(true);

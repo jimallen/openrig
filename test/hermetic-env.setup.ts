@@ -92,7 +92,11 @@ if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
 //   umask  — 002 (user-private-group accounts) turns a created 0o755 into 0o775. Pin 022.
 //   .hushlogin — Ubuntu's /etc/bash.bashrc prints a sudo hint on STDOUT of every
 //            interactive `bash -ic` for a sudo-group user whose HOME lacks .hushlogin.
+//   TMPDIR — macOS's os.tmpdir() is /var/folders/..., a symlink to /private/var/folders/...; tests
+//            that compare a path they created with one a child process reports (cwd, realpath,
+//            git toplevel) see two spellings of one directory. Hand out the real path. A no-op on Linux.
 if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
+  try { process.env["TMPDIR"] = fs.realpathSync(os.tmpdir()); } catch { /* keep the inherited value */ }
   if (fs.existsSync("/bin/bash")) process.env["SHELL"] = "/bin/bash";
   try { process.umask(0o022); } catch { /* worker_threads cannot set umask; the forks pool (vitest default) can */ }
   fs.writeFileSync(path.join(`${fixtureHome}-user-home`, ".hushlogin"), "");
