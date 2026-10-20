@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import nodePath from "node:path";
 import { DaemonClient, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
@@ -653,6 +654,7 @@ Examples:
     .argument("<state>", "on or off")
     .requiredOption("--reason <text>", "Audit reason recorded on the node.mcp_server_changed event")
     .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
+    .option("--spec <file>", "Read the declaration from this spec file (it must declare this rig); overrides the rig's recorded spec")
     .option("--json", "JSON output for agents")
     .description("Switch one declared Codex MCP server on or off for this seat instance only (audited); no restart")
     .addHelpText("after", `
@@ -665,13 +667,19 @@ config are unchanged.
 Examples:
   rig seat set-mcp verify-ops@eztrack lsp on --reason "mcpls pilot"
   rig seat set-mcp verify-ops@eztrack lsp off --reason "pilot rollback" --json`)
-    .action(async (seat: string, server: string, state: string, opts: { reason: string; operator?: string; json?: boolean }) => {
+    .action(async (seat: string, server: string, state: string, opts: { reason: string; operator?: string; spec?: string; json?: boolean }) => {
       if (state !== "on" && state !== "off") {
         console.error("State must be on or off.");
         process.exitCode = 1;
         return;
       }
-      await runLifecycleVerb("set-mcp", seat, { server, state, reason: opts.reason, operator: opts.operator }, opts, (data) => {
+      if (opts.spec !== undefined && state !== "on") {
+        console.error("--spec applies only to on.");
+        process.exitCode = 1;
+        return;
+      }
+      const body = { server, state, reason: opts.reason, operator: opts.operator, ...(opts.spec !== undefined ? { specFile: nodePath.resolve(opts.spec) } : {}) };
+      await runLifecycleVerb("set-mcp", seat, body, opts, (data) => {
         const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
         const name = `${s?.logicalId}@${s?.rigName}`;
         console.log(data["changed"] === false

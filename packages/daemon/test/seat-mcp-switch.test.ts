@@ -172,6 +172,54 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     return { ...result, commands };
   }
 
+  describe("set-mcp --spec <file>: the operator names the spec (Jim, 2026-10-20)", () => {
+    const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+    function specFile(name: string, opts: { member?: string; projectRig?: boolean; file?: string } = {}): string {
+      const p = join(root, "spec", opts.file ?? `${name}.yaml`);
+      writeFileSync(p, `version: "0.2"\nname: ${name}\n${opts.projectRig ? "project_rig: true\n" : ""}pods:\n  - id: verify\n    label: Verify\n    members:\n      - id: ${opts.member ?? "ops"}\n        runtime: codex\n        agent_ref: local:agents/ops\n        profile: default\n        cwd: .\n${lspBlock()}    edges: []\nedges: []\n`);
+      return p;
+    }
+    const on = (s: ReturnType<typeof seat>, file: string) => service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r", specFile: file });
+
+    it("a file declaring this rig and member is used when nothing is recorded, and the audit names the file and its sha256", async () => {
+      const s = seat("eztrack", { spec: false });
+      const file = specFile("eztrack");
+      expect(await on(s, file)).toMatchObject({ ok: true, to: "on", declaredIn: file });
+      expect(JSON.parse(column(s.node.id)!)["lsp"]).toMatchObject({ specSource: "operator", specSha256: sha(file), declaredIn: file });
+      expect(events()[0]).toMatchObject({ specSource: "operator", specSha256: sha(file), declaredIn: file });
+    });
+
+    it("overrides a recorded spec source", async () => {
+      writeSpec(""); // the recorded spec no longer declares lsp
+      const s = seat("eztrack");
+      expect(await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" })).toMatchObject({ ok: false, code: "mcp_server_undeclared" });
+      expect(await on(s, specFile("eztrack"))).toMatchObject({ ok: true });
+    });
+
+    it("a project-rig spec matches the rig its project folder names", async () => {
+      const s = seat("eztrack", { spec: false, cwd: join(root, "eztrack", ".workspaces", "verify-ops") });
+      expect(await on(s, specFile("jims-team", { projectRig: true, file: "project.yaml" }))).toMatchObject({ ok: true });
+    });
+
+    it.each([
+      ["a spec naming another rig", "mcp_spec_rig_mismatch"],
+      ["a project-rig spec whose project folder is not this rig's", "mcp_spec_rig_mismatch"],
+      ["a spec that does not declare this member", "mcp_server_undeclared"],
+      ["a missing file", "mcp_spec_file_unavailable"],
+      ["a relative path", "invalid_mcp_spec_file"],
+    ])("refuses %s, and stores and audits nothing", async (label, code) => {
+      const s = seat("eztrack", { spec: false });
+      const file = label === "a spec naming another rig" ? specFile("openrig")
+        : label === "a project-rig spec whose project folder is not this rig's" ? specFile("jims-team", { projectRig: true, file: "project.yaml" })
+        : label === "a spec that does not declare this member" ? specFile("eztrack", { member: "qa" })
+        : label === "a missing file" ? join(root, "spec", "absent.yaml")
+        : "spec/eztrack.yaml";
+      expect(await on(s, file)).toMatchObject({ ok: false, code });
+      expect(column(s.node.id)).toBeNull();
+      expect(events()).toEqual([]);
+    });
+  });
+
   describe("a seat that is not full_bypass: allowed, with a warning (Jim, 2026-10-20)", () => {
     const fullBypass = (rigId: string) => rigRepo.setRigPolicyProvenance(rigId,
       { origin: "builtin", resolvedTarget: "policies/builtin/yolo.policy.md", declaringDir: null, launchPosture: "full_bypass" });

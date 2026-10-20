@@ -92,6 +92,7 @@ export interface SeatRefusal {
     // rig seat set-mcp
     | "missing_actor" | "invalid_mcp_server" | "invalid_mcp_state" | "mcp_unsupported_runtime" | "mcp_unavailable"
     | "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
+    | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "invalid_mcp_spec_file"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -371,7 +372,7 @@ export class SeatLifecycleService {
    * actor is required); never restarts the seat or touches its peers. A server is off for every seat until
    * this runs for that seat.
    */
-  async setMcpServer(input: { seatRef: string; server: string; state: "on" | "off"; reason: string; actor: string }): Promise<
+  async setMcpServer(input: { seatRef: string; server: string; state: "on" | "off"; reason: string; actor: string; specFile?: string }): Promise<
     | { ok: true; seat: SeatDescriptor; server: string; from: "on" | "off"; to: "on" | "off"; changed: boolean; declaredIn: string | null; switchedOn: string[]; effect: string; warning?: string }
     | SeatRefusal
   > {
@@ -380,6 +381,9 @@ export class SeatLifecycleService {
     if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the MCP server audit; pass --operator <address> outside a managed seat." };
     if (!MCP_SERVER_NAME.test(input.server ?? "") || isPrototypeName(input.server)) return { ok: false, code: "invalid_mcp_server", message: `"${input.server}" isn't an MCP server name: use the name declared under the member's mcp_servers.` };
     if (input.state !== "on" && input.state !== "off") return { ok: false, code: "invalid_mcp_state", message: "State must be on or off." };
+    if (input.specFile !== undefined && (input.state !== "on" || !nodePath.isAbsolute(input.specFile))) {
+      return { ok: false, code: "invalid_mcp_spec_file", message: "--spec takes an absolute path and applies only to on." };
+    }
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
@@ -394,7 +398,8 @@ export class SeatLifecycleService {
     let entry: StoredSeatMcpServer | null = null;
     if (input.state === "on") {
       const read = readDeclaredMcpServer({
-        specSource: this.rigRepo.getRigSpecSource(seat.rigId), server: input.server,
+        specSource: this.rigRepo.getRigSpecSource(seat.rigId), server: input.server, rigName: seat.rigName,
+        ...(input.specFile !== undefined ? { operatorSpecFile: input.specFile } : {}),
         node: { logicalId: seat.logicalId, runtime: node.runtime, agentRef: node.agent_ref, profile: node.profile, cwd: node.cwd },
         now: () => new Date().toISOString(),
       });
@@ -429,6 +434,7 @@ export class SeatLifecycleService {
           server: input.server, from, to: input.state, reason: input.reason.trim(), actor: input.actor.trim(),
           declaredIn: entry?.declaredIn ?? null, declarationSha256: entry ? declarationSha256(entry.declaration) : null,
           commandSha256: entry?.commandSha256 ?? null, warning,
+          specSource: entry?.specSource ?? null, specSha256: entry?.specSha256 ?? null,
         });
       })();
       if (persisted) this.eventBus.notifySubscribers(persisted);

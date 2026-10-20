@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
+import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
 import {
   commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, validateMcpServersBlock,
   type SeatMcpSelection, type SeatMcpServer,
@@ -30,6 +31,10 @@ export interface StoredSeatMcpServer {
   /** The file the command resolved to at switch-on, and its sha256; every launch recomputes the hash. */
   commandPath: string;
   commandSha256: string;
+  /** Where the declaration came from: the rig's recorded spec source, or a file the operator named (--spec). */
+  specSource: "recorded" | "operator";
+  /** sha256 of the spec file's bytes as read at switch-on. */
+  specSha256: string;
 }
 
 type Stored = Record<string, StoredSeatMcpServer>;
@@ -93,7 +98,8 @@ export const declarationSha256 = (declaration: Record<string, unknown>) =>
 
 export type DeclaredServerRead =
   | { ok: true; entry: StoredSeatMcpServer }
-  | { ok: false; code: "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"; message: string };
+  | { ok: false; code: "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
+      | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch"; message: string };
 
 /**
  * Read one declared server for one seat from its rig's recorded spec source, as that file is now, and
@@ -102,31 +108,44 @@ export type DeclaredServerRead =
  * directory and the spec's directory. Reads only.
  */
 export function readDeclaredMcpServer(input: {
+  /** The rig's recorded spec source (rigs.spec_source_path), used unless the operator names a file. */
   specSource: string | null;
+  /** `rig seat set-mcp --spec <file>` (Jim, 2026-10-20): an absolute path the operator chose. It must declare
+   *  this rig by name; it is used when nothing is recorded and overrides what is. */
+  operatorSpecFile?: string;
+  rigName: string;
   server: string;
   node: { logicalId: string; runtime: string | null; agentRef: string | null; profile: string | null; cwd: string | null };
   now: () => string;
 }): DeclaredServerRead {
-  const { specSource } = input;
+  const operator = input.operatorSpecFile !== undefined;
+  const specSource = operator ? input.operatorSpecFile! : input.specSource;
   if (!specSource) {
-    return { ok: false, code: "mcp_spec_source_unrecorded", message: "This rig has no recorded spec source (it was launched before OpenRig recorded one, or from text), so there is no reviewed declaration to switch on. Relaunch the rig from its spec file, then switch the server on." };
+    return { ok: false, code: "mcp_spec_source_unrecorded", message: "This rig has no recorded spec source (it was launched before OpenRig recorded one, or from text). Name the reviewed spec file with --spec <file>, or relaunch the rig from its spec file." };
   }
-  const unavailable = (detail: string): DeclaredServerRead => ({ ok: false, code: "mcp_spec_source_unavailable", message: `This rig's spec source ${specSource} cannot be read for MCP servers: ${detail}` });
+  const unavailable = (detail: string): DeclaredServerRead => operator
+    ? { ok: false, code: "mcp_spec_file_unavailable", message: `The spec file ${specSource} cannot be used for MCP servers: ${detail}` }
+    : { ok: false, code: "mcp_spec_source_unavailable", message: `This rig's spec source ${specSource} cannot be read for MCP servers: ${detail}` };
   if (!nodePath.isAbsolute(specSource)) return unavailable("it is not an absolute path.");
   let specPath: string;
-  let yaml: string;
+  let bytes: Buffer;
   try {
-    specPath = fs.realpathSync(reanchorShippedSpecPath(specSource));
-    yaml = fs.readFileSync(specPath, "utf-8");
+    specPath = fs.realpathSync(operator ? specSource : reanchorShippedSpecPath(specSource));
+    bytes = fs.readFileSync(specPath);
   } catch (err) {
     return unavailable(`it could not be read (${(err as NodeJS.ErrnoException).code ?? (err as Error).message}).`);
   }
+  const yaml = bytes.toString("utf-8");
+  const specSha256 = createHash("sha256").update(bytes).digest("hex");
   let raw: unknown;
   try { raw = RigSpecCodec.parse(yaml); } catch (err) { return unavailable(`it no longer parses (${(err as Error).message}).`); }
   const validation = RigSpecSchema.validate(raw);
   if (!validation.valid) return unavailable(`it no longer validates (${validation.errors.join("; ")}).`);
   const spec = RigSpecSchema.normalize(raw as Record<string, unknown>);
   const node = input.node;
+  if (operator && !declaresRig(raw as Record<string, unknown>, input.rigName, node.cwd)) {
+    return { ok: false, code: "mcp_spec_rig_mismatch", message: `The spec file ${specPath} declares rig "${spec.name}", not this seat's rig "${input.rigName}"${(raw as Record<string, unknown>)["project_rig"] === true ? " (as a project rig it would name the rig after its project folder, which is not this seat's)" : ""}.` };
+  }
   const pod = spec.pods.find((p) => p.members.some((m) => `${p.id}.${m.id}` === node.logicalId));
   const member = pod?.members.find((m) => `${pod.id}.${m.id}` === node.logicalId);
   if (!pod || !member) return { ok: false, code: "mcp_server_undeclared", message: `The spec ${specPath} does not declare seat ${node.logicalId}, so it declares no MCP server for it.` };
@@ -148,5 +167,16 @@ export function readDeclaredMcpServer(input: {
   const commandSha256 = commandBinarySha256(declaration.command);
   if (!commandSha256) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: its command ${declaration.command} cannot be read to pin its checksum.` };
   return { ok: true, entry: { declaration: serializeMcpServer(declaration), specDir, declaredIn: specPath, switchedOnAt: input.now(),
-    commandPath: fs.realpathSync(declaration.command), commandSha256 } };
+    commandPath: fs.realpathSync(declaration.command), commandSha256, specSource: operator ? "operator" : "recorded", specSha256 } };
+}
+
+/**
+ * Whether a spec declares this rig: by name, or, for a project rig, by the name `rig up --cwd <project>`
+ * gives it (the project folder's slug), judged from the seat's own folder <project>/.workspaces/<pod>-<member>.
+ */
+function declaresRig(raw: Record<string, unknown>, rigName: string, seatCwd: string | null): boolean {
+  if (raw["name"] === rigName) return true;
+  if (raw["project_rig"] !== true || !seatCwd) return false;
+  const workspaces = nodePath.dirname(seatCwd);
+  return nodePath.basename(workspaces) === PROJECT_RIG_WORKSPACES && projectRigSlug(nodePath.dirname(workspaces)) === rigName;
 }

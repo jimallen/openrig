@@ -267,6 +267,21 @@ describe("rig seat set-mcp", () => {
     expect(logs.join("\n")).toContain("Switched on for this seat: lsp.");
   });
 
+  it("--spec sends the file as an absolute path, and only with on", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: { ok: true, seat, server: "lsp", from: "off", to: "on", changed: true, declaredIn: "/x", switchedOn: ["lsp"], effect: "Saved." } }, calls);
+    await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "on", "--reason", "x", "--operator", "o@h", "--spec", "rigs/rig.yaml"]);
+    });
+    expect(calls[0]!.body).toEqual({ server: "lsp", state: "on", reason: "x", operator: "o@h", specFile: `${process.cwd()}/rigs/rig.yaml` });
+    const { errors, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "off", "--reason", "x", "--spec", "rigs/rig.yaml"]);
+    });
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--spec applies only to on.");
+    expect(calls).toHaveLength(1);
+  });
+
   it("prints the daemon's unsandboxed-server warning", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const warning = 'Codex MCP server "lsp" runs outside Codex\'s sandbox with your full user rights (this seat\'s launch posture is floor, not full_bypass); it can do what this seat\'s own commands cannot.';
