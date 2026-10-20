@@ -1,6 +1,7 @@
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
+import { readSeatMcpServers } from "./seat-mcp-servers.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -2011,7 +2012,14 @@ export class RestoreOrchestrator {
     }
 
     if (this.codexResume.canResume(resumeType, resumeToken)) {
-      const result = await this.codexResume.resume(sessionName, resumeType, resumeToken, cwd, codexConfigProfile, resolvedPosture, model, ...launchTail);
+      // A seat with a switched-on Codex MCP server gets the full tail plus its selection; every other seat keeps
+      // the exact call shape. launchOverride keeps kernelAuthority and teamPermissionDefault exclusive, so the
+      // full tail equals launchTail's precedence (the same reasoning as the Claude remote_control tail above).
+      const mcp = readSeatMcpServers(this.db, nodeId);
+      const result = mcp.ok && mcp.servers.length === 0
+        ? await this.codexResume.resume(sessionName, resumeType, resumeToken, cwd, codexConfigProfile, resolvedPosture, model, ...launchTail)
+        : await this.codexResume.resume(sessionName, resumeType, resumeToken, cwd, codexConfigProfile, resolvedPosture, model,
+          effort, nonInterruptive, kernelAuthority && !teamPermissionDefault, teamPermissionDefault, mcp);
       if (result.ok) {
         const notice = nonInterruptiveNotice("codex", { nonInterruptive, launchPosture: resolvedPosture, permissionMode });
         if (notice) warnings?.push(`${sessionName}: ${notice}`);

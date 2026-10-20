@@ -1,3 +1,5 @@
+import { readDeclaredMcpServer, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
+import { MCP_SERVER_NAME } from "./codex-mcp-servers.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -87,6 +89,9 @@ export interface SeatRefusal {
     | "seat_ref_required"
     | "seat_not_found"
     | "seat_ambiguous"
+    // rig seat set-mcp
+    | "missing_actor" | "invalid_mcp_server" | "invalid_mcp_state" | "mcp_unsupported_runtime" | "mcp_unavailable"
+    | "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -356,6 +361,67 @@ export class SeatLifecycleService {
       running: running.state, ...(running.detail ? { runningDetail: running.detail } : {}),
       emitted: "not_yet", observed: "not_observed", effect,
       ...(unknownLevelWarning(runtime, requested) ? { warning: unknownLevelWarning(runtime, requested) } : {}),
+    };
+  }
+
+  /**
+   * Switch one declared Codex MCP server on or off for ONE seat instance, for its next managed launch,
+   * resume, restore or restart. `on` reads the declaration from the rig's recorded spec source as that file
+   * is now and stores a checked snapshot on the node; `off` removes it. Audited like set-permissions (an
+   * actor is required); never restarts the seat or touches its peers. A server is off for every seat until
+   * this runs for that seat.
+   */
+  async setMcpServer(input: { seatRef: string; server: string; state: "on" | "off"; reason: string; actor: string }): Promise<
+    | { ok: true; seat: SeatDescriptor; server: string; from: "on" | "off"; to: "on" | "off"; changed: boolean; declaredIn: string | null; switchedOn: string[]; effect: string }
+    | SeatRefusal
+  > {
+    const required = this.requireReason(input.reason);
+    if (required) return required;
+    if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the MCP server audit; pass --operator <address> outside a managed seat." };
+    if (!MCP_SERVER_NAME.test(input.server ?? "")) return { ok: false, code: "invalid_mcp_server", message: `"${input.server}" isn't an MCP server name: use the name declared under the member's mcp_servers.` };
+    if (input.state !== "on" && input.state !== "off") return { ok: false, code: "invalid_mcp_state", message: "State must be on or off." };
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    const seat = this.describe(resolved);
+    const node = this.db.prepare("SELECT runtime, agent_ref, profile, cwd FROM nodes WHERE id = ?").get(seat.nodeId) as
+      { runtime: string | null; agent_ref: string | null; profile: string | null; cwd: string | null } | undefined;
+    if (!node) return { ok: false, code: "seat_not_found", message: `Seat "${input.seatRef}" has no node row.` };
+    if (node.runtime !== "codex") return { ok: false, code: "mcp_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${node.runtime ?? "unknown"}; MCP servers from the rig spec apply to codex seats only.` };
+    const before = switchedOnNames(this.db, seat.nodeId);
+    if (before === null) return { ok: false, code: "mcp_unavailable", message: "This seat's stored MCP selection cannot be read; nothing was changed." };
+    const from: "on" | "off" = before.includes(input.server) ? "on" : "off";
+
+    let entry: StoredSeatMcpServer | null = null;
+    if (input.state === "on") {
+      const read = readDeclaredMcpServer({
+        specSource: this.rigRepo.getRigSpecSource(seat.rigId), server: input.server,
+        node: { logicalId: seat.logicalId, runtime: node.runtime, agentRef: node.agent_ref, profile: node.profile, cwd: node.cwd },
+        now: () => new Date().toISOString(),
+      });
+      if (!read.ok) return { ok: false, code: read.code, message: read.message };
+      entry = read.entry;
+    }
+    // `on` always rewrites the snapshot (it re-reads the spec as it is now); `off` on an off server is a no-op.
+    const changed = input.state === "on" || from === "on";
+    if (changed) {
+      let persisted: PersistedEvent | null = null;
+      let written = false;
+      this.db.transaction(() => {
+        if (!writeSeatMcpServer(this.db, seat.nodeId, input.server, entry)) return;
+        written = true;
+        persisted = this.eventBus.persistWithinTransaction({
+          type: "node.mcp_server_changed", rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
+          server: input.server, from, to: input.state, reason: input.reason.trim(), actor: input.actor.trim(),
+          declaredIn: entry?.declaredIn ?? null, declarationSha256: entry ? declarationSha256(entry.declaration) : null,
+        });
+      })();
+      if (persisted) this.eventBus.notifySubscribers(persisted);
+      if (!written) return { ok: false, code: "mcp_unavailable", message: `The MCP selection for seat "${input.seatRef}" was not saved (this daemon's database has no nodes.codex_mcp_servers column, or no row matched); nothing changed.` };
+    }
+    return {
+      ok: true, seat, server: input.server, from, to: input.state, changed, declaredIn: entry?.declaredIn ?? null,
+      switchedOn: switchedOnNames(this.db, seat.nodeId) ?? [],
+      effect: `Saved for this seat's next managed launch, resume, restore or restart; the running process is unchanged and nothing was restarted. An in-place restart reports the change as drift (config mcp_servers.${input.server}).`,
     };
   }
 
