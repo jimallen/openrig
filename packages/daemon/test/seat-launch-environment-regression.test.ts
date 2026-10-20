@@ -95,7 +95,12 @@ it.each(["fresh", "resume", "fork"] as const)("C: %s uses the probe's separate N
   const result = await adapter.launchHarness(binding, { name: "seat", ...(kind === "resume" ? { resumeToken: "old" } : kind === "fork" ? { forkSource: { kind: "native_id", value: "parent" } } : {}) });
   expect(result.ok).toBe(true);
   const command = (f.tmux.sendShellCommand.mock.calls.at(-1) as unknown as string[])[1]!;
-  const userPath = "/usr/bin:/bin";
+  // The user's PATH carries a DECOY `node` ahead of any real one. On a host whose real Node lives in /usr/bin (distro
+  // packages) the command would otherwise find it through `#!/usr/bin/env node` even if the launch did not pin the probe's
+  // interpreter, and `observed.node === process.execPath` would hold either way. Here an unpinned launch runs the decoy.
+  const decoyBin = path.join(f.root, "decoy-node-bin"); mkdirSync(decoyBin);
+  f.exe(path.join(decoyBin, "node"), "#!/bin/sh\necho decoy-node-on-user-path\nexit 97\n");
+  const userPath = `${decoyBin}:/usr/bin:/bin`;
   const { stdout } = await exec("/bin/bash", ["--noprofile", "--norc", "-c", command], { cwd: f.cwd, env: { ...f.env, PATH: userPath }, timeout: 5000 });
   const observed = JSON.parse(stdout); expect(observed.started).toBe(true); expect(observed.node).toBe(process.execPath);
   expect(observed.path.split(":").slice(1).join(":")).toBe(userPath);
