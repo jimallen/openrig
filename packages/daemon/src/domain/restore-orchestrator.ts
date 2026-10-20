@@ -37,7 +37,7 @@ import type {
   NodeStartupSnapshot,
   RestoreStartupSource,
 } from "./types.js";
-import { resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { projectRereadSkills, resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
 import { readNodeStartupSnapshot } from "./snapshot-capture.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
@@ -1241,6 +1241,9 @@ export class RestoreOrchestrator {
           for (const warning of findings.warnings) if (!warnings?.includes(warning)) warnings?.push(warning);
         }
       }
+      // OF-32 N6: a seat that re-read its spec gets that release's skills as first launch does, just before its launch.
+      const skills = decided.ok && !refusal ? projectRereadSkills(this.seatStartupSource, decided.context) : { ok: true as const };
+      if (!skills.ok) refusal = skills.message;
       if (refusal) {
         this.restoreNodeState(nodeId, priorState);
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${refusal} No session was started.` };
