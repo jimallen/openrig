@@ -84,6 +84,10 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     data.activeOccupantsByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, { kind: "absent" }]));
     data.activeSessionIdByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, null]));
   });
+  const AMBIGUOUS_OCCUPANT = (snapshotId: string) => editSnapshot(snapshotId, (data) => {
+    // Captured with two live occupant candidates: which saved session is the seat's cannot be told.
+    data.activeOccupantsByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, { kind: "ambiguous", candidateIds: data.sessions.map((session: { id: string }) => session.id) }]));
+  });
   const REMOVE_SEAT = async (_snapshotId: string, seat: { rigId: string; nodeId: string }) => {
     const bus = new EventBus(h.db);
     const lifecycle = new RigLifecycleService({
@@ -112,10 +116,15 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     { name: "G8 seat removed since the snapshot: listed", listed: true, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: REMOVE_SEAT, expected: "failed", says: "removed after this snapshot" },
     // Gate order: the runtime gate answers before the token gate, so the runtime's words are the ones restore gives.
     { name: "G9 runtime differs AND no token: restore says the runtime", listed: false, prepare: (s) => DROP_TOKEN(s.nodeId), afterSnapshot: CHANGE_RUNTIME, expected: "awaiting-decision", says: "saved startup runtime matches" },
+    // Which saved session is the seat's cannot be told: restore refuses the whole snapshot before any seat (pre-restore
+    // validation names it), so the seat gate behind it is not reached through restore(); the check is red for that
+    // reason alone and does not also claim the seat.
+    { name: "G12 ambiguous occupant: unlisted", listed: false, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: AMBIGUOUS_OCCUPANT, expected: "restore-ended" },
+    { name: "G13 ambiguous occupant: listed", listed: true, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: AMBIGUOUS_OCCUPANT, expected: "restore-ended" },
     // Pre-restore validation refuses the whole restore (the seat's own saved startup file is gone) before any seat is looked at,
     // so the runtime gate behind it never answers: the check is red for the validation blocker alone and does not also
     // claim the seat.
-    { name: "G11 validation refuses the snapshot, so the seat gates are never reached", listed: false, prepare: (s) => { policyFresh(s.nodeId); GONE_OWN_FILE(s.nodeId); }, afterSnapshot: CHANGE_RUNTIME, expected: "restore-ended" },
+    { name: "G11 validation refuses the snapshot, so the seat gates are never reached", listed: false, prepare: (s) => { policyFresh(s.nodeId); GONE_OWN_FILE(s.nodeId); }, afterSnapshot: CHANGE_RUNTIME, expected: "restore-ended", says: "/nonexistent/of40/role.md" },
   ];
 
   it.each(ROWS.map((row) => [row.name, row] as const))("%s", async (_name, row) => {
@@ -134,14 +143,11 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     // And it says what restore says: the stop reason is restore's own text.
     if (restore.error) expect(check.evidence).toContain(restore.error);
     if (row.says) {
-      expect(restore.error, "the table's own expectation of which gate answered").toContain(row.says);
+      if (restore.error !== null) expect(restore.error, "the table's own expectation of which gate answered").toContain(row.says);
       expect(check.evidence).toContain(row.says);
     }
     // Restore stopped before any seat: the check names the validation blocker and claims nothing about the seat.
-    if (row.expected === "restore-ended") {
-      expect(check.evidence).toContain("/nonexistent/of40/role.md");
-      expect(check.evidence).not.toContain("Restore would not start");
-    }
+    if (row.expected === "restore-ended") expect(check.evidence).not.toContain("Restore would not start");
   });
 
   it("G10 a pod seat whose continuity is 'restoring' is skipped as fresh by restore; the no-token gate behind it never runs, so the check is not red", async () => {
