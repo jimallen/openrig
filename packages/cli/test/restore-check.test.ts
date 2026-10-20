@@ -372,6 +372,19 @@ describe("rig restore-check", () => {
     expect(query.get("startupFrom")).toBe("stored");
   });
 
+  it("--fresh without --rig is refused before anything is sent, and says why", async () => {
+    const { deps, requestedPaths } = makeDeps();
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => { errors.push(a.join(" ")); });
+    try {
+      await restoreCheckCommand(deps).parseAsync(["node", "rig", "--fresh", "dev.impl", "--json"]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(requestedPaths).toEqual([]);
+    expect(errors.join("\n")).toContain("--fresh needs --rig <name>");
+  });
+
   it("without --fresh the query names no fresh seat", async () => {
     const { deps, requestedPaths } = makeDeps();
     await restoreCheckCommand(deps).parseAsync(["node", "rig", "--json"]);

@@ -250,6 +250,11 @@ Examples:
         process.exitCode = 2;
         return;
       }
+      if (opts.fresh && opts.fresh.length > 0 && !opts.rig) {
+        console.error("--fresh needs --rig <name>: a restore targets one rig, and the same seat name in another rig would be predicted too.");
+        process.exitCode = 2;
+        return;
+      }
       const deps = getDepsF();
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (status.state !== "running" || status.healthy === false) {

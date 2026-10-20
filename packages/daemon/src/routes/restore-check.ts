@@ -268,6 +268,11 @@ restoreCheckRoutes.get("/", async (c) => {
 
   // OF-32 follow-up: `fresh=a,b` predicts `rig up --existing --fresh a b`; `startupFrom` is its `--startup-from`.
   const freshLogicalIds = (c.req.query("fresh") ?? "").split(",").map((id) => id.trim()).filter((id) => id.length > 0);
+  // A restore targets one rig (`rig up <rig> --fresh <seats>`); a seat name is looked up in the rigs being checked, so
+  // without a rig filter another rig's seat of the same name would be predicted (and turn red) too.
+  if (freshLogicalIds.length > 0 && !rigFilter) {
+    return c.json({ error: "fresh needs rig=<name>: a restore targets one rig, and the same seat name in another rig would be predicted too.", code: "fresh_requires_rig" }, 400);
+  }
   const startupFromQuery = c.req.query("startupFrom");
   if (startupFromQuery !== undefined && startupFromQuery !== "spec" && startupFromQuery !== "stored") {
     return c.json({ error: "startupFrom must be one of: spec, stored.", code: "invalid_startup_from" }, 400);
