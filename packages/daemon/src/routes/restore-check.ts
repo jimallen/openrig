@@ -153,7 +153,7 @@ export const RESTORE_CHECK_PROBE_TIMEOUT_MS = SESSION_LIVENESS_DEADLINE_MS;
 /** Restore's own decisions, for the check and the plan: the functions RestoreOrchestrator calls. */
 export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Record<string, RuntimeAdapter | undefined>, specReader: SeatStartupSpecReader | null): RestoreParityDeps {
   return {
-    startupToValidate: (rigId, logicalId, listed) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed }),
+    startupToValidate: (rigId, logicalId, listed, selectedCopy) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed, selectedCopy }),
     predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
       { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
       { rigId, ...listed, snapshot: snapshotData, exists: existsSync },

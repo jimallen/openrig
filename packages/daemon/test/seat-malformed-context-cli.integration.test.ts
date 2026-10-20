@@ -111,30 +111,6 @@ describe("N-C2 no spec recorded, not JSON, checkpoint_only: the named `rig launc
   }, 400_000);
 });
 
-describe("N-C2 no spec recorded: why rig down + rig up --existing --fresh is not advised", () => {
-  for (const [name, column, value, seatEnds] of [
-    ["R3 bad startup action (D5): comes back and the same refusal is printed again", "startup_actions_json", JSON.stringify([{ type: "x" }]), "fresh-primed"],
-    ["R1 not-array resolved files: the row is still unreadable", "resolved_files_json", "{}", "failed"],
-  ] as const) {
-    describe(name, () => {
-      const t = useRig({ recordSpec: false });
-      it("typed as a replay of that sequence", async () => {
-        t.corrupt(column, value);
-        const first = await t.refuse();
-        expect(first.code).not.toBe(0);
-        expect(first.text).toContain("No restore command reliably heals it");
-
-        const downRan = await sh(`rig down '${rigName}' --json`, t.ctx.daemon!.readEnv);
-        const upRan = await sh(`rig up '${rigName}' --existing --fresh dev.impl --startup-from stored --json`, t.ctx.daemon!.readEnv);
-        // Positive controls: both commands really ran, and the seat ended as the guidance says it can.
-        expect(downRan.code, downRan.stderr).toBe(0);
-        const upNodes = (JSON.parse(upRan.stdout) as { nodes: Array<{ logicalId: string; status: string }> }).nodes;
-        expect(upNodes.find((n) => n.logicalId === "dev.impl")?.status, upRan.stdout).toBe(seatEnds);
-
-        const again = await t.refuse();
-        expect(again.code, "still refused").not.toBe(0);
-        expect(again.text).toContain("No restore command reliably heals it");
-      }, 400_000);
-    });
-  }
-});
+// The old "why rig down + rig up --existing --fresh is not advised" rows (D5: the restore replayed the snapshot rig down
+// had just taken) no longer hold: OF-36 passes a copy restore cannot use over. The advised route, with and without a
+// snapshot from before the break, is typed in restore-own-row-cli.integration.test.ts.

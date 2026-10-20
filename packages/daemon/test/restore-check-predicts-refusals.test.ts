@@ -128,21 +128,24 @@ describe("restore-check and restore agree, seat state by seat state", () => {
 
   // --- seats not listed: a plain `rig up --existing` -----------------------------------------------------------------
   // N-C4 (review of fc2d5b96): restore-check treated a saved context that is JSON of the wrong shape as "no own context"
-  // and validated the snapshot's copy; restore replays the own row as it is. Measured at 95fd7cc0.
+  // and validated the snapshot's copy, while restore replayed the own row as it is. The last column was restore's outcome
+  // at 95fd7cc0 (and c99782ac) with the snapshot's copy clean: 4 restore-ended, 4 failed-after-launch, 7 ok. OF-36:
+  // restore treats every one of these rows as unreadable and replays the newest usable snapshot copy (here the clean
+  // copy, taken before the break), so with the copy clean all 15 now come up ("ok" below); the check agrees either way.
   const SHAPES: Array<[string, string, string, Outcome]> = [
-    ["files is not a list", "resolved_files_json", "{}", "restore-ended"],
-    ["files is a string", "resolved_files_json", '"str"', "failed-after-launch"],
-    ["files is null", "resolved_files_json", "null", "failed-after-launch"],
-    ["files has a null member", "resolved_files_json", "[null]", "restore-ended"],
+    ["files is not a list", "resolved_files_json", "{}", "ok"],
+    ["files is a string", "resolved_files_json", '"str"', "ok"],
+    ["files is null", "resolved_files_json", "null", "ok"],
+    ["files has a null member", "resolved_files_json", "[null]", "ok"],
     ["files has a member with no path", "resolved_files_json", '[{"path":"x"}]', "ok"],
     ["files has a number member", "resolved_files_json", "[1]", "ok"],
     ["files has an array member", "resolved_files_json", "[[]]", "ok"],
-    ["projection is not a list", "projection_entries_json", "{}", "restore-ended"],
-    ["projection has a null member", "projection_entries_json", "[null]", "restore-ended"],
+    ["projection is not a list", "projection_entries_json", "{}", "ok"],
+    ["projection has a null member", "projection_entries_json", "[null]", "ok"],
     ["projection has a number member", "projection_entries_json", "[1]", "ok"],
     ["projection has a member of the wrong shape", "projection_entries_json", '[{"category":"memory"}]', "ok"],
-    ["actions is not a list", "startup_actions_json", "{}", "failed-after-launch"],
-    ["actions is null", "startup_actions_json", "null", "failed-after-launch"],
+    ["actions is not a list", "startup_actions_json", "{}", "ok"],
+    ["actions is null", "startup_actions_json", "null", "ok"],
     ["actions has a number member", "startup_actions_json", "[1]", "ok"],
     ["actions has an empty-object member", "startup_actions_json", "[{}]", "ok"],
   ];

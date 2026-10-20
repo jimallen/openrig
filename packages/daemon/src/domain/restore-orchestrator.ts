@@ -40,13 +40,13 @@ import type {
 import { projectRereadSkills, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { asReplayContext, decideListedFreshSeat, startupToValidateForSeat } from "./fresh-seat-restore-decision.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
-import { readNodeStartupSnapshot } from "./snapshot-capture.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
-import { validatePreRestore, startupInputFindings } from "./restore-preconditions.js";
+import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
+import { noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 
@@ -344,7 +344,7 @@ export class RestoreOrchestrator {
         // OF-32: a seat started fresh replays the snapshot's copy of its startup files only when nothing newer exists;
         // otherwise its source is decided and checked per seat before its launch (restoreNodeUnisolated), and the
         // snapshot's copy (which may name a release since deleted) cannot block the restore.
-        freshSeatStartup: (node) => this.freshSeatStartupToValidate(rigId, node.logicalId, opts),
+        freshSeatStartup: (node) => this.freshSeatStartupToValidate(rigId, node.logicalId, opts, snapshot.data.nodeStartupContext?.[node.id] ?? null),
       });
       const topology = resolveSnapshotRestoreTopology(snapshot.data);
       // The attempt's roster names its seats by the ids the attempt's results use: the LIVE node ids (a seat removed and
@@ -376,7 +376,15 @@ export class RestoreOrchestrator {
 
       // 2. Capture pre-restore snapshot BEFORE any DB mutations —
       // DB still reflects original session state (running for stale sessions)
-      const preRestoreSnapshot = this.snapshotCapture.captureSnapshot(rigId, "pre_restore");
+      // N-C3: a seat whose saved startup context is not JSON is restorable (pre-restore validation found what it replays
+      // instead), so this capture records no copy for it rather than ending the restore.
+      const captureWarnings: string[] = [];
+      const preRestoreSnapshot = this.snapshotCapture.captureSnapshot(rigId, "pre_restore", {
+        onUnreadableStartupContext: (nodeId, message) => {
+          const logicalId = rig.nodes.find((n) => n.id === nodeId)?.logicalId ?? nodeId;
+          captureWarnings.push(`Restore: ${logicalId}: the pre-restore snapshot holds no copy of its saved startup context, which is not JSON (${message}).`);
+        },
+      });
 
       if (opts?.nonInterruptive !== undefined) this.rigRepo.setRigNonInterruptive(rigId, opts.nonInterruptive);
 
@@ -435,7 +443,7 @@ export class RestoreOrchestrator {
 
       // 5. Execute restore with compensating pattern per node
       const nodeResults: RestoreNodeResult[] = [];
-      const restoreWarnings: string[] = [...validation.warnings];
+      const restoreWarnings: string[] = [...validation.warnings, ...captureWarnings];
       if (this.rigRepo.getRigNonInterruptive(rigId)) restoreWarnings.push(nonInterruptiveSummary(true));
       else if (opts?.nonInterruptive === false) restoreWarnings.push(nonInterruptiveSummary(false));
       for (const entry of plan) {
@@ -965,11 +973,11 @@ export class RestoreOrchestrator {
 
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
    *  will act (see validatePreRestore's `freshSeatStartup`). */
-  private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined): "resolved_at_launch" | NodeStartupSnapshot | undefined {
+  private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined, selectedCopy: NodeStartupSnapshot | null): FreshSeatStartupOverride {
     // Shared with restore-check (startupToValidateForSeat), so the check validates what restore validates.
     return startupToValidateForSeat({ db: this.db, rigRepo: this.rigRepo }, {
-      rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom,
-    }).override;
+      rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom, selectedCopy,
+    });
   }
 
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
@@ -1172,27 +1180,33 @@ export class RestoreOrchestrator {
       // this restore starts fresh (by restore policy, with no history, a checkpoint rebuild) comes back on its saved
       // setup exactly as before stage 3: no re-read, no per-seat refusal, the same lenient replay and the same
       // pre-restore validation. The one difference is the snapshot-hazard fix: the saved setup is the seat's own saved
-      // context, not an older snapshot's copy of it. Only when it has none, or it is not JSON, is the copy replayed.
-      let unreadable: string | null = null;
-      try {
-        savedSetup = readNodeStartupSnapshot(this.db, nodeId);
-      } catch (err) {
-        unreadable = (err as Error).message;
+      // context, not an older snapshot's copy of it. When it has none, the snapshot's copy is replayed. OF-36: when it
+      // cannot be used (not JSON, the wrong shape, another runtime), or it has none and this snapshot's copy cannot be
+      // used, the newest usable snapshot copy is replayed; when no snapshot holds one, nothing is started for the seat.
+      // The same decision as pre-restore validation (startupToValidateForSeat), which refuses a whole restore() first;
+      // a `rig launch` target has no pre-restore validation, so this is where it is refused.
+      const pick = seatStartupForRestore(this.db, { rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime }, data.nodeStartupContext?.[node.id] ?? null);
+      if (pick.kind === "none_usable") {
+        this.restoreNodeState(nodeId, priorState);
+        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId) });
+        return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${noUsableCopyMessage(node.logicalId, pick.why)} ${remedy} No session was started.` };
       }
-      if (savedSetup) {
+      savedSetup = pick.context;
+      if (pick.kind === "own") {
         startupReport = { kind: "stored", reason: "not_fresh_listed" };
-      } else if (data.nodeStartupContext?.[node.id]) {
-        startupReport = { kind: "snapshot", reason: unreadable ? "saved_context_unreadable" : "no_saved_context" };
-        if (unreadable) {
-          warnings?.push(`Restore: ${node.logicalId}: its saved startup context cannot be read (${unreadable}). This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
-        }
+      } else if (pick.kind === "fallback") {
+        startupReport = { kind: "snapshot", reason: "saved_context_unreadable", ...(pick.from.snapshotId !== snapshotId ? { snapshotId: pick.from.snapshotId } : {}) };
+        // Pre-restore validation may already have reported it.
+        if (!warnings?.includes(pick.warning)) warnings?.push(pick.warning);
+      } else if (pick.context) {
+        startupReport = { kind: "snapshot", reason: "no_saved_context" };
       }
     }
     if (startsFresh && freshRequested && opts?.adapters) {
       const rigName = rig?.rig.name ?? data.rig.name;
       // The decision itself (source, snapshot-copy fallback, refusal text) is shared with restore-check and the plan,
       // which ask the same function what this restore would refuse (fresh-seat-restore-decision.ts).
-      const { decided, chosen, refusal: decidedRefusal, warnings: findingWarnings } = await decideListedFreshSeat(
+      const { decided, chosen, refusal: decidedRefusal, warnings: findingWarnings, copyFromSnapshotId } = await decideListedFreshSeat(
         { db: this.db, rigRepo: this.rigRepo, specReader: this.seatStartupSource, runtimeAdapters: opts.adapters },
         {
           rigId, nodeId, logicalId: node.logicalId, rigName, runtime: seatRuntime, cwd: node.cwd ?? ".",
@@ -1224,10 +1238,13 @@ export class RestoreOrchestrator {
           startupReport = { kind: "stored", reason: source.reason };
         }
       } else if (chosen) {
-        startupReport = { kind: "snapshot", reason: decided.code === "startup_context_malformed" ? "saved_context_unreadable" : "no_saved_context" };
-        if (decided.code === "startup_context_malformed") {
-          warnings?.push(`Restore: ${node.logicalId}: ${decided.message} This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
-        }
+        // A snapshot's copy, chosen before the launch (OF-36: not necessarily this snapshot's), is what is replayed.
+        savedSetup = chosen;
+        // The decision's warnings (pushed above) name the snapshot whose copy is replayed when it is not this one.
+        startupReport = {
+          kind: "snapshot", reason: decided.code === "startup_context_malformed" ? "saved_context_unreadable" : "no_saved_context",
+          ...(copyFromSnapshotId && copyFromSnapshotId !== snapshotId ? { snapshotId: copyFromSnapshotId } : {}),
+        };
       }
     }
 
@@ -1399,13 +1416,22 @@ export class RestoreOrchestrator {
     const isPodAware = !!node.podId;
 
     const startupCtx = data.nodeStartupContext?.[snapshotNodeId] ?? null;
+    // OF-36: `rig down` copies a seat's saved context verbatim, so this copy can be any JSON. A copy that is not a valid
+    // startup setup is never dereferenced: what a fresh seat replays was chosen before its launch (a usable copy, or a
+    // refusal), a resume's contained replay reads only its runtime, and the resume steps below that read its lists
+    // (activity hooks, missing guidance blocks) take nothing from it.
+    const copyProblem = startupCtx ? startupContextUnusable(startupCtx, null) : null;
+    const resumeCtx = copyProblem ? null : startupCtx;
+    if (copyProblem && resumeRequested) {
+      warnings?.push(`Restore: ${node.logicalId}: this snapshot's copy of its startup context cannot be used (${copyProblem}), so this resume takes nothing from it (no saved activity hooks or missing guidance blocks are put back).`);
+    }
     // Restore only the saved activity selection before either native resume path.
     // This also heals settings stripped by older restores. The entry is a marker:
     // the adapter uses its current relay/manifest, not the old install's path.
     // No current profile resolution, guidance, skills or startup replay belongs here.
     const activityAdapter = opts?.adapters?.["claude-code"];
-    if (resumeRequested && resumeToken && launchResult && startupCtx?.runtime === "claude-code" && activityAdapter) {
-      const entries = startupCtx.projectionEntries.filter(e =>
+    if (resumeRequested && resumeToken && launchResult && resumeCtx?.runtime === "claude-code" && activityAdapter) {
+      const entries = resumeCtx.projectionEntries.filter(e =>
         e.category === "runtime_resource" && e.resourceType === "claude_activity_hooks");
       if (entries.length > 0) try {
         const result = await activityAdapter.project({
@@ -1431,7 +1457,7 @@ export class RestoreOrchestrator {
     if (resumeRequested && resumeToken && launchResult) {
       let guidance: ReturnType<typeof seatGuidance> = null;
       try {
-        guidance = seatGuidance(startupCtx, node.cwd, this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
+        guidance = seatGuidance(resumeCtx, node.cwd, this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
       } catch (err) {
         // Guidance never blocks the exact resume; the post-launch check discloses the gap.
         warnings?.push(`Restore guidance: ${node.logicalId}: could not read its saved guidance selection: ${(err as Error).message}`);

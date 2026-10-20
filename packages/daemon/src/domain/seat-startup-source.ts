@@ -165,7 +165,12 @@ export async function resolveFreshSeatStartup(
         : { ok: false, code: "runtime_adapter_missing", message: `No runtime adapter is available for '${input.runtime ?? "missing"}'.` };
     }
     if (read.kind === "refused") {
-      return { ok: false, code: read.code, message: read.message, guidance: input.refusalGuidance };
+      // N-C2 re-check N6: the caller's guidance offers the stored files as the way out; when they cannot be used either,
+      // that escape is refused too (it would print the spec-route advice back), so it is not offered.
+      const stored = readStoredStartupContext(deps.db, input.nodeId, input.cwd);
+      const guidance = stored.ok ? input.refusalGuidance
+        : `Restore or fix the spec at that path. The seat's saved startup context cannot be used either (${stored.refusal.message}), so rig seat launch --fresh --startup-from stored is refused too.`;
+      return { ok: false, code: read.code, message: read.message, guidance };
     }
     if (read.kind === "spec") {
       // The plan's skill entries stay out of the adapter's projection, as on the stored path: S04's reconciler owns the
@@ -229,20 +234,23 @@ export async function resolveFreshSeatStartup(
 }
 
 /**
- * What the operator can do about a saved startup context that cannot be read (N-C2). The advice splits on what this
- * builder knows, and every sentence was run against the real CLI (see seat-malformed-context-cli.integration.test.ts):
+ * What the operator can do about a saved startup context that cannot be read (N-C2, rewritten for OF-36). The advice
+ * splits on what this builder knows, and every command it names was run against the real CLI
+ * (seat-malformed-context-cli.integration.test.ts):
  *  - `specRoute`: the operator asked for `--startup-from stored` and the rig records a spec source. Then
  *    `rig seat launch <seat@rig> --fresh --stop` (default: re-read the spec) heals every kind of unreadable row, keeps
  *    the other seats running, and delivers the spec's CURRENT startup files, not the saved ones. A spec that can no
- *    longer start the seat refuses it and changes nothing.
- *  - No spec route (the rig records no source, or its spec does not declare the seat): no restore command heals every
- *    row. `rig down` + `rig up --existing --fresh` replays the snapshot `rig down` has just taken, i.e. the row as it is
- *    now, so it only heals what a lenient replay happens to drop: for some damage it fails or leaves the row
- *    unreadable, and the next attempt prints the same advice. Only one narrow route is measured to heal: a context
- *    that is not JSON, on a seat whose restore policy is checkpoint_only, with a usable earlier snapshot, through
- *    `rig launch <rig> <seat>`. Under the default policy `rig launch` exact-resumes a seat that has a resume token,
- *    delivers nothing and leaves the row unreadable.
- *  - `rig down` cannot snapshot a seat whose column is not JSON, so the rig is never advised to be stopped there.
+ *    longer start the seat refuses it and changes nothing; the restore route below is then the way back.
+ *  - The restore route (OF-36). Restore treats an unreadable row as no row: a seat it starts fresh replays the newest
+ *    snapshot copy of its startup files that is valid, and a successful launch saves it as the seat's new context; when
+ *    no snapshot holds a valid copy it refuses that seat and starts nothing for it.
+ *    - Wrong shape: `rig down` copies the row verbatim (that copy is passed over), and
+ *      `rig up --existing --fresh <seat> --startup-from stored` starts the seat fresh whatever its restore policy.
+ *    - Not JSON: `rig down` cannot snapshot the seat, so a following `rig up --existing` has no snapshot of the rig as
+ *      it was stopped (what it does instead depends on the older snapshots: N-C2 N5 measured `no_snapshot` with none);
+ *      the rig is never advised to be stopped. `rig seat stop` + `rig launch <rig> <seat>` restores
+ *      only this seat, and starts it fresh only when its restore policy does (for example checkpoint_only); under the
+ *      default policy a seat with a resume token is resumed, nothing is delivered and the row stays unreadable.
  */
 function malformedContextGuidance(
   input: { rigId: string; logicalId: string; sessionName: string },
@@ -250,13 +258,15 @@ function malformedContextGuidance(
 ): string {
   const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
   const repair = "the saved row has to be repaired outside restore";
+  const viaRestore = how.notJson
+    ? `Do not stop the rig: rig down cannot snapshot this seat, so a following rig up --existing has no snapshot of the rig as it was stopped. Stop only this seat (rig seat stop ${quote(input.sessionName)} --reason "<why>"), then run rig launch ${input.rigId} ${input.logicalId}: a seat that starts fresh there (for example under restore policy checkpoint_only) replays the newest snapshot copy of its startup files that is valid and saves it as its new context, or, if no snapshot holds one, is refused and nothing is started for it. Under the default policy (resume_if_possible) a seat with a resume token is resumed instead: nothing is delivered and the context stays unreadable. If it is resumed or refused, ${repair}.`
+    : `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down ${quote(how.rigName)}, then rig up ${quote(how.rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from stored (this stops and restarts every seat; the snapshot rig down takes carries the damage and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then ${repair}. Note that rig launch ${input.rigId} ${input.logicalId} on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
   if (how.specRoute) {
-    return `Start it from the rig's recorded spec instead: rig seat launch ${quote(`${input.logicalId}@${how.rigName}`)} --fresh --stop --reason "<why>". That re-reads the spec and delivers the spec's current startup files, not the saved ones, saves them as the seat's new context, and leaves the other seats running. If the spec can no longer start the seat, that launch is refused and changes nothing; then no restore command heals this context reliably and ${repair}.`;
+    return `Start it from the rig's recorded spec instead: rig seat launch ${quote(`${input.logicalId}@${how.rigName}`)} --fresh --stop --reason "<why>". That re-reads the spec and delivers the spec's current startup files, not the saved ones, saves them as the seat's new context, and leaves the other seats running. If the spec can no longer start the seat, that launch is refused and changes nothing. ${viaRestore}`;
   }
-  if (how.notJson) {
-    return `A column of the saved startup context is not JSON, and there is no spec to re-read for this seat. Do not stop the rig: rig down cannot snapshot this seat and rig up --existing fails on it (restore_error). After stopping the seat (rig seat stop ${input.sessionName} --reason "<why>"), rig launch ${input.rigId} ${input.logicalId} starts it from the last snapshot's copy of its startup files and saves a new context only when the seat's restore policy is checkpoint_only and a snapshot taken before the context broke is usable. Under the default policy (resume_if_possible) a seat with a resume token is resumed instead, nothing is delivered and the context stays unreadable. In any other case ${repair}.`;
-  }
-  return `The saved startup context is not a valid startup setup, and there is no spec to re-read for this seat. No restore command reliably heals it: rig launch ${input.rigId} ${input.logicalId} resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable; rig down followed by rig up --existing --fresh replays the snapshot rig down has just taken, which carries the same damage, so for some damage it fails, and for some it leaves the context unreadable and the same refusal comes back. The saved row has to be repaired outside restore.`;
+  return how.notJson
+    ? `A column of the saved startup context is not JSON, and there is no spec to re-read for this seat. ${viaRestore}`
+    : `The saved startup context is not a valid startup setup, and there is no spec to re-read for this seat. ${viaRestore}`;
 }
 
 interface PersistedStartupContextRow {
@@ -296,8 +306,46 @@ export function readStoredStartupContext(
   } catch (error) {
     return { ...malformedStartupContext(nodeId, `JSON parse failed: ${error instanceof Error ? error.message : String(error)}`), unparseable: true };
   }
-  if (!Array.isArray(rawEntries) || !Array.isArray(rawFiles) || !Array.isArray(rawActions) || !row.runtime?.trim()) {
-    return malformedStartupContext(nodeId, "projection entries, resolved files, and startup actions must be arrays and runtime must be non-empty");
+  const parsed = parseStartupContextShape({ projectionEntries: rawEntries, resolvedStartupFiles: rawFiles, startupActions: rawActions, runtime: row.runtime });
+  if (!parsed.ok) return malformedStartupContext(nodeId, parsed.detail);
+  const { entries, resolvedStartupFiles, startupActions } = parsed;
+
+  const startupFiles = resolvedStartupFiles.map((file) => ({
+    kind: file.kind,
+    path: file.path,
+    deliveryHint: file.deliveryHint,
+    required: file.required,
+    appliesOn: file.appliesOn,
+  }));
+  const runtime = row.runtime as string;
+  const plan: ProjectionPlan = {
+    runtime,
+    cwd,
+    entries,
+    startup: { files: startupFiles, actions: startupActions },
+    conflicts: [],
+    noOps: [],
+    diagnostics: [],
+  };
+  const hash = createHash("sha256")
+    .update(JSON.stringify([row.projection_entries_json, row.resolved_files_json, row.startup_actions_json, row.runtime]))
+    .digest("hex");
+  return { ok: true, context: { plan, resolvedStartupFiles, startupActions, runtime, hash } };
+}
+
+/**
+ * OF-36: the one rule for whether a saved startup context (parsed) is a valid startup setup: the rule the seat's own
+ * fresh launch applies to its row (`readStoredStartupContext`), and the rule restore applies to the row and to every
+ * snapshot copy it might replay instead (own-startup-replay.ts). On success it gives the context as a launch replays it
+ * (skill entries dropped, built-ins re-anchored to the running install).
+ */
+export function parseStartupContextShape(raw: { projectionEntries: unknown; resolvedStartupFiles: unknown; startupActions: unknown; runtime: unknown }):
+  { ok: true; entries: ProjectionEntry[]; resolvedStartupFiles: ResolvedStartupFile[]; startupActions: StartupAction[] } | { ok: false; detail: string } {
+  const rawEntries = raw.projectionEntries;
+  const rawFiles = raw.resolvedStartupFiles;
+  const rawActions = raw.startupActions;
+  if (!Array.isArray(rawEntries) || !Array.isArray(rawFiles) || !Array.isArray(rawActions) || typeof raw.runtime !== "string" || !raw.runtime.trim()) {
+    return { ok: false, detail: "projection entries, resolved files, and startup actions must be arrays and runtime must be non-empty" };
   }
 
   const entries: ProjectionEntry[] = [];
@@ -309,7 +357,7 @@ export function readStoredStartupContext(
       || !isOptionalString(raw["target"])
       || !isOptionalOneOf(raw["mergeStrategy"], ["managed_block", "append"] as const)
       || !isOptionalOneOf(raw["pluginType"], ["claude", "codex", "auto"] as const)) {
-      return malformedStartupContext(nodeId, "projection_entries_json contains an invalid entry");
+      return { ok: false, detail: "projection_entries_json contains an invalid entry" };
     }
     // S04 owns the live ambient skill set. Replaying the older catalog
     // selection here could reinstall a skill that work-install removed.
@@ -338,7 +386,7 @@ export function readStoredStartupContext(
       || typeof raw["required"] !== "boolean"
       || !isStringArrayOf(raw["appliesOn"], ["fresh_start", "restore"] as const)
       || !isOptionalOneOf(raw["kind"], ["file"] as const)) {
-      return malformedStartupContext(nodeId, "resolved_files_json contains an invalid entry");
+      return { ok: false, detail: "resolved_files_json contains an invalid entry" };
     }
     // #261: recognized built-in startup files follow the running install.
     resolvedStartupFiles.push(reanchorBuiltinStartupFile({
@@ -363,7 +411,7 @@ export function readStoredStartupContext(
       || !isStringArrayOf(raw["appliesOn"], ["fresh_start", "restore"] as const)
       || typeof raw["idempotent"] !== "boolean"
       || !isOptionalOneOf(raw["builtin"], ["session_identity"] as const)) {
-      return malformedStartupContext(nodeId, "startup_actions_json contains an invalid entry");
+      return { ok: false, detail: "startup_actions_json contains an invalid entry" };
     }
     startupActions.push({
       type: raw["type"],
@@ -378,29 +426,15 @@ export function readStoredStartupContext(
   try {
     resolveStartupProof(startupActions, "fresh_start");
   } catch (err) {
-    return malformedStartupContext(nodeId, (err as Error).message);
+    return { ok: false, detail: (err as Error).message };
   }
+  return { ok: true, entries, resolvedStartupFiles, startupActions };
+}
 
-  const startupFiles = resolvedStartupFiles.map((file) => ({
-    kind: file.kind,
-    path: file.path,
-    deliveryHint: file.deliveryHint,
-    required: file.required,
-    appliesOn: file.appliesOn,
-  }));
-  const plan: ProjectionPlan = {
-    runtime: row.runtime,
-    cwd,
-    entries,
-    startup: { files: startupFiles, actions: startupActions },
-    conflicts: [],
-    noOps: [],
-    diagnostics: [],
-  };
-  const hash = createHash("sha256")
-    .update(JSON.stringify([row.projection_entries_json, row.resolved_files_json, row.startup_actions_json, row.runtime]))
-    .digest("hex");
-  return { ok: true, context: { plan, resolvedStartupFiles, startupActions, runtime: row.runtime, hash } };
+/** Why a parsed startup context is not a valid startup setup, or null when it is (`parseStartupContextShape`). */
+export function startupContextShapeProblem(raw: { projectionEntries: unknown; resolvedStartupFiles: unknown; startupActions: unknown; runtime: unknown }): string | null {
+  const parsed = parseStartupContextShape(raw);
+  return parsed.ok ? null : parsed.detail;
 }
 
 function malformedStartupContext(nodeId: string, detail: string): { ok: false; refusal: FreshStartupRefusal } {

@@ -82,9 +82,16 @@ describe("refusal prediction through the routes", () => {
     const status = async () => (await (await setup.app.request(`/api/rigs/${rig.id}/status`)).json()).src as string[];
 
     expect(await status()).toContain("restore-check: actionable");
-    // The saved list of startup files has an empty member: the readiness probe reads it as fine (it drops the member), but restore
-    // ends in restore_error replaying it.
+    // The saved list of startup files has an empty member. OF-36: restore treats that row as unreadable and replays the
+    // newest snapshot copy it can use, here the clean one: still actionable.
     db.prepare("UPDATE node_startup_context SET resolved_files_json = '[null]' WHERE node_id = ?").run(node.id);
+    expect(await status()).toContain("restore-check: actionable");
+    // The only snapshot's copy is broken too (as when `rig down` copied the broken row): restore refuses before it starts
+    // anything, and the status route folds that refusal.
+    const snap = db.prepare("SELECT id, data FROM snapshots WHERE rig_id = ?").get(rig.id) as { id: string; data: string };
+    const data = JSON.parse(snap.data);
+    data.nodeStartupContext[node.id].resolvedStartupFiles = [null];
+    db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snap.id);
 
     expect(await status()).toContain("restore-check: blocked");
   });

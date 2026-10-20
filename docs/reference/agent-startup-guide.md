@@ -265,20 +265,26 @@ older snapshot after a fresh launch picked up a new release does not take the se
 seat a restore starts fresh names its source in the restore result (`startupSource`), in the `restore.completed`
 event and under the seat in `rig up` and `rig start` output: the spec it re-read and the agent version it moved
 from and to, its saved files (with why: not listed with `--fresh`, `--startup-from stored`, no recorded source),
-or the snapshot's copy. The snapshot's copy is used only when the seat has no saved
-files of its own, or when its saved files cannot be read; the restore then says so, and the launch saves what it replayed as the seat's new files
-(readable again only if that copy was). `rig seat launch --fresh --startup-from stored` cannot use unreadable saved files, and its refusal says which way back
-holds, because none holds for every row. When the rig records a spec source, `rig seat launch '<seat>@<rig>' --fresh
---stop --reason "<why>"` (the default, which re-reads the spec) heals every kind of unreadable row, leaves the other
-seats running, and delivers the spec's current startup files, not the saved ones; if the spec can no longer start the
-seat it is refused and changes nothing. When there is no spec to re-read, no restore command reliably heals the row:
-`rig down` followed by `rig up --existing --fresh` replays the snapshot `rig down` has just taken, which carries the same
-damage, so for some damage it fails and for some it leaves the files unreadable; `rig launch <rig-id> <seat>` resumes a
-seat that has a resume token under the default `resume_if_possible` policy and leaves the files unreadable. The one
-measured exception is files that are not JSON on a `checkpoint_only` seat with a usable snapshot taken before they
-broke: stop the seat, then `rig launch <rig-id> <seat>` starts it from that snapshot's copy and saves a new context
-(`rig down` cannot snapshot such a seat, so do not stop the rig). Otherwise the saved row has to be repaired outside
-restore.
+or a snapshot's copy. A snapshot's copy is used only when the seat has no saved files of its own, or when its saved
+files cannot be used: not JSON, the wrong shape, or another runtime than the seat's. Snapshots copy the saved files as
+they are, so a snapshot taken after they broke carries the same damage: restore passes any copy it cannot use over and
+replays the newest snapshot copy that is valid (normally one taken before the break), says which snapshot in its
+warnings and under the seat, and the launch saves it as the seat's new files. When no snapshot holds a valid copy,
+nothing is started for the seat: a plain `rig up --existing` is refused before it starts anything
+(`saved_startup_context_unusable`, which `rig restore-check` predicts with the same text), and a seat listed with
+`--fresh`, or a `rig launch` target, is reported `failed` ("Fresh start refused") while its siblings are restored.
+A seat that resumes replays nothing, so a broken copy does not stop it.
+`rig seat launch --fresh --startup-from stored` cannot use unreadable saved files, and its refusal says which way back
+holds. When the rig records a spec source, `rig seat launch '<seat>@<rig>' --fresh --stop --reason "<why>"` (the
+default, which re-reads the spec) heals every kind of unreadable row, leaves the other seats running, and delivers the
+spec's current startup files, not the saved ones; if the spec can no longer start the seat it is refused and changes
+nothing. Otherwise restore is the way back. For files of the wrong shape: `rig down <rig>`, then
+`rig up <rig> --existing --fresh <seat> --startup-from stored` (this restarts every seat). For files that are not JSON,
+do not stop the rig (`rig down` cannot snapshot such a seat, so a following `rig up --existing` has no snapshot of the
+rig as it was stopped): stop only the seat, then `rig launch <rig-id> <seat>`,
+which starts it from a valid copy when the seat starts fresh (for example under `checkpoint_only`); under the default
+`resume_if_possible` policy a seat with a resume token is resumed and its files stay unreadable. If no snapshot holds a
+valid copy, the saved row has to be repaired outside restore.
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
 seat without starting tmux, stopping or launching a process, projecting startup files, or changing

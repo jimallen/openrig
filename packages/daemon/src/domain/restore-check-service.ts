@@ -182,9 +182,10 @@ export interface RestoreCheckOpts {
  *  own-startup-replay.ts). Optional so the service stays framework-free; production wires it
  *  (routes/restore-check.ts). Without it the check judges a seat's saved context from `getStartupContext` alone. */
 export interface RestoreParityDeps {
-  /** startupToValidateForSeat, for this seat and these listed seats. */
-  startupToValidate(rigId: string, logicalId: string, listed: { freshLogicalIds?: string[]; startupFrom?: "spec" | "stored" }):
-    { override: "resolved_at_launch" | NodeStartupSnapshot | undefined; replayProblem: string | null };
+  /** startupToValidateForSeat, for this seat and these listed seats; `selectedCopy` is the checked snapshot's copy of
+   *  the seat's startup context. Its `{ refuse }` is restore's own pre-restore refusal (OF-36). */
+  startupToValidate(rigId: string, logicalId: string, listed: { freshLogicalIds?: string[]; startupFrom?: "spec" | "stored" }, selectedCopy: NodeStartupSnapshot | null):
+    import("./restore-preconditions.js").FreshSeatStartupOverride;
   /** predictListedSeatRefusals: logical id -> the text restore reports after "Fresh start refused: ". */
   predictListedSeatRefusals(rigId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: "spec" | "stored" }): Promise<Map<string, string>>;
 }
@@ -557,41 +558,25 @@ export class RestoreCheckService {
       const liveNodeIdByLogicalId = new Map(this.deps.getNodeInventory(rig.rigId).map((entry) => [entry.logicalId, entry.nodeId]));
       const parity = this.deps.restoreParity;
       const listed = { freshLogicalIds: opts.freshLogicalIds, startupFrom: opts.startupFrom };
-      // Seats whose saved startup context restore cannot replay (it ends the restore or fails the seat), by logical id.
-      const unreplayable = new Map<string, string>();
       const validation = validatePreRestore(input.snapshot.data, {
         fsOps: { exists: this.deps.exists },
         servicesRecord: input.servicesRecord,
         ...(parity && opts.freshLogicalIds?.length ? { freshLogicalIds: opts.freshLogicalIds } : {}),
         freshSeatStartup: (node) => {
           if (parity) {
-            // The same function restore validates with: for a seat this restore starts fresh, its own saved context as
-            // restore reads it (a JSON row of the wrong shape is a row, not "no context"; N-C4).
-            const decided = parity.startupToValidate(rig.rigId, node.logicalId, listed);
-            if (decided.replayProblem) {
-              unreplayable.set(node.logicalId, decided.replayProblem);
-              return undefined;
-            }
-            return decided.override;
+            // The same function restore validates with (OF-36): for a seat this restore starts fresh, what it replays (its
+            // own saved context, or the newest usable snapshot copy when that cannot be used), or restore's own refusal
+            // when nothing can be used; validatePreRestore turns that into the same blocker restore reports.
+            return parity.startupToValidate(rig.rigId, node.logicalId, listed, input.snapshot.data.nodeStartupContext?.[node.id] ?? null);
           }
           const liveId = liveNodeIdByLogicalId.get(node.logicalId);
           const saved = liveId ? this.deps.getStartupContext(liveId) : null;
           return saved?.status === "ok"
-            ? { projectionEntries: saved.projectionEntries, resolvedStartupFiles: saved.resolvedStartupFiles, startupActions: [], runtime: saved.runtime ?? "" } as unknown as NodeStartupSnapshot
+            ? { replay: { projectionEntries: saved.projectionEntries, resolvedStartupFiles: saved.resolvedStartupFiles, startupActions: [], runtime: saved.runtime ?? "" } as unknown as NodeStartupSnapshot }
             : undefined;
         },
       });
       const { blockers, warnings } = validation;
-      for (const [logicalId, problem] of unreplayable) {
-        blockers.push({
-          code: "saved_startup_context_unreplayable",
-          severity: "critical",
-          logicalId,
-          target: "node_startup_context",
-          message: `Restore cannot replay the saved startup context of ${logicalId}: ${problem}. It would end the restore or fail that seat after its launch.`,
-          remediation: `List the seat so restore re-reads its spec instead of replaying the saved context: rig up --existing ${rig.name} --fresh ${logicalId}`,
-        });
-      }
       if (listedRefusals instanceof Error) {
         // The prediction could not be asked. Never green: say so.
         return {

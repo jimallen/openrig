@@ -473,8 +473,10 @@ export type RestoreStartupSource =
   /** The context saved by the seat's last successful launch. `not_fresh_listed`: the restore started the seat fresh
    *  without its being listed with --fresh, so it comes back on its saved setup and the spec is not re-read. */
   | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" | "not_fresh_listed" }
-  /** This snapshot's copy: the seat has no saved context of its own, or it cannot be read. */
-  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" };
+  /** A snapshot's copy: the seat has no saved context of its own, or it cannot be used (not JSON, the wrong shape,
+   *  another runtime). `snapshotId` (OF-36): the copy came from another snapshot than the restored one, the newest
+   *  whose copy can be used; absent when it is the restored snapshot's own copy. */
+  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable"; snapshotId?: string };
 
 export interface RestoreNodeResult {
   nodeId: string;

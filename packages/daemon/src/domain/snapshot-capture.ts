@@ -71,7 +71,13 @@ export class SnapshotCapture {
     this.checkpointStore = deps.checkpointStore;
   }
 
-  captureSnapshot(rigId: string, kind: string, opts?: { intendedNodeIds?: string[] }): Snapshot {
+  captureSnapshot(rigId: string, kind: string, opts?: {
+    intendedNodeIds?: string[];
+    /** N-C3: with this, a seat whose saved startup context has a column that is not JSON is captured with no copy
+     *  (null) and reported here, instead of failing the whole capture. Restore's own pre-restore capture passes it;
+     *  `rig down` and the periodic capture do not (whether they should is a decision for the owner, OF-36). */
+    onUnreadableStartupContext?: (nodeId: string, message: string) => void;
+  }): Snapshot {
     // 1. Get rig with nodes, edges, bindings
     const rig = this.rigRepo.getRig(rigId);
     if (!rig) {
@@ -117,7 +123,17 @@ export class SnapshotCapture {
 
     const nodeStartupContext: Record<string, import("./types.js").NodeStartupSnapshot | null> = {};
     for (const node of rig.nodes) {
-      nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
+      const onUnreadable = opts?.onUnreadableStartupContext;
+      if (!onUnreadable) {
+        nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
+        continue;
+      }
+      try {
+        nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
+      } catch (err) {
+        nodeStartupContext[node.id] = null;
+        onUnreadable(node.id, (err as Error).message);
+      }
     }
 
     // 4b. Get env receipt from services record if services exist

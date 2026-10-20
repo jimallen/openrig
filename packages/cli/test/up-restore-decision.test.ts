@@ -196,7 +196,7 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     const at = (line: string) => logs.indexOf(line);
     expect(at("    startup files re-read from /lib/team/rig.yaml (now /rel/b/rigs/team/rig.yaml); agent 1.0.0 -> 2.0.0")).toBe(at("  dev.impl: fresh-primed") + 1);
     expect(at("    startup files replayed from the seat's last successful launch (this rig records no spec source)")).toBe(at("  dev.qa: fresh-primed") + 1);
-    expect(at("    startup files replayed from this snapshot (the seat's saved startup files cannot be read)")).toBe(at("  dev.ops: fresh-primed") + 1);
+    expect(at("    startup files replayed from this snapshot (the seat's saved startup files cannot be used)")).toBe(at("  dev.ops: fresh-primed") + 1);
     expect(logs[at("  dev.lead: resumed") + 1] ?? "").not.toContain("startup files");
   });
 

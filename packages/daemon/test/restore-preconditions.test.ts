@@ -166,7 +166,7 @@ describe("which fresh seats replay the snapshot's startup copy", () => {
   it.each([
     ["the snapshot's copy (undefined)", undefined, ["/files/notes.md"]],
     ["resolved at launch (a --fresh seat)", "resolved_at_launch", []],
-    ["the seat's own saved context", saved, ["/files/saved.md"]],
+    ["the seat's own saved context", { replay: saved }, ["/files/saved.md"]],
   ] as const)("a fresh seat whose source is %s is validated against exactly that", (_label, answer, missingPaths) => {
     const asked: string[] = [];
     const result = validatePreRestore(data(), {
@@ -175,6 +175,21 @@ describe("which fresh seats replay the snapshot's startup copy", () => {
     });
     expect(asked).toEqual(["seat"]);
     expect(result.blockers.filter((b) => b.code === "required_startup_file_missing").map((b) => b.path)).toEqual(missingPaths);
+  });
+
+  // OF-36: what the seat replays instead (the newest usable snapshot copy) carries a warning, and a seat with nothing
+  // usable is refused with the blocker it was given, before any of its files are checked.
+  it("a replacement copy's warning is reported, and a refusal is the blocker given (no file of the seat is checked)", () => {
+    const warned = validatePreRestore(data(), {
+      fsOps: { exists: (path) => path !== "/files/saved.md" },
+      freshSeatStartup: () => ({ replay: saved, warning: "replays snapshot S1's copy (injected)" }),
+    });
+    expect(warned.warnings).toContain("replays snapshot S1's copy (injected)");
+    expect(warned.blockers.map((b) => b.path)).toEqual(["/files/saved.md"]);
+
+    const blocker = { code: "saved_startup_context_unusable", severity: "critical" as const, logicalId: "seat", message: "nothing usable (injected)", remediation: "repair (injected)" };
+    const refused = validatePreRestore(data(), { fsOps: { exists: () => false }, freshSeatStartup: () => ({ refuse: blocker }) });
+    expect(refused.blockers).toEqual([blocker]);
   });
 
   it("an exact resume is never asked: it consumes no replay, whatever the answer", () => {
