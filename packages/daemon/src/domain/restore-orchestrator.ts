@@ -327,7 +327,7 @@ export class RestoreOrchestrator {
     if (classification.unknown.length > 0) {
       // Not "live": tmux gave no usable answer (deadline or probe error). Fail closed, but do not tell the
       // operator to stop a rig nobody has shown to be running; the refusal is retryable.
-      return { ok: false, code: "rig_not_stopped", message: `Rig ${rigId} was not restored: tmux did not answer a session-liveness probe within the deadline (or the probe errored), so liveness is unknown. Nothing was changed. Retry, or check tmux first (for example 'tmux ls').` };
+      return { ok: false, code: "rig_not_stopped", message: `Rig ${rigId} was not restored: tmux did not answer a session-liveness probe within the deadline (or the probe errored), so liveness is unknown and some seats may still be live. Nothing was changed. Retry, or check tmux first (for example 'tmux ls'); if tmux shows seats still running, stop the rig with 'rig down' before restoring.` };
     }
 
     // Per-rig concurrency lock
