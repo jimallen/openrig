@@ -49,6 +49,12 @@ async function scenario(mode: "shell" | "argv") {
     const files = await spawnedFiles(async () => {
       const created = await adapter.createSession("seat a", root);
       const duplicate = await adapter.createSession("seat a", root);
+      // Type only once the pane's shell has drawn its prompt. Text typed earlier is echoed by the tty ahead of the prompt and the
+      // command's output then shares the prompt's line ("$ openrig-native"), so no line equals the marker: `captured` came back
+      // empty in 5 of 180 runs at the base commit with 60 copies of this file running at once (a standalone replay of new-session, send-keys, capture reproduces the shared-line pane).
+      for (let i = 0; i < 300 && !/[$#%>] ?$/.test((await adapter.capturePaneContent("seat a", 50) ?? "").trimEnd()); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       const typed = await adapter.sendText("seat a", "echo 'openrig-'native", undefined, { bracketed: false });
       const entered = await adapter.sendKeys("seat a", ["Enter"]);
       // The quotes keep the typed line from matching: only the command's output contains the marker.
