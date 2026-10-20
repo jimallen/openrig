@@ -688,6 +688,119 @@ describe("RestoreOrchestrator", () => {
     expect(snapshotRepo.listSnapshots(rig.id)).toHaveLength(1);
   });
 
+  // OF-33: a wedged tmux (has-session never answers; the exec has no timeout of its own) used to hang
+  // restore() forever BEFORE any state change. It is now cut off at the shared 2000 ms probe deadline and
+  // read as unreadable => the same fail-closed refusal a throwing probe gets. The literal is restated
+  // here on purpose: this pin must not import the constant it pins.
+  it("a hung tmux probe on a DB-running seat is cut off at 2000 ms and refuses restore (fail closed), not hangs", async () => {
+    const rig = rigRepo.createRig("wedged");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "dev-worker@wedged");
+    sessionRegistry.updateStatus(session.id, "running");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "manual");
+    const tmux = { ...mockTmux(), hasSession: vi.fn(() => new Promise<boolean>(() => { /* never settles */ })) } as unknown as TmuxAdapter;
+    const orch = createOrchestrator({ tmux });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let result: Awaited<ReturnType<typeof orch.restore>> | undefined;
+      const pending = orch.restore(snap.id).then((r) => { result = r; });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result, "restore() is still hung 2000 ms after a never-answering has-session").toBeDefined();
+      await pending;
+      expect(result!.ok).toBe(false);
+      if (!result!.ok) expect(result!.code).toBe("rig_not_stopped");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // OF-33 N-1 / N-2. `answers` is consumed one probe at a time (missing => dead).
+  function seedRunningSeats(rigName: string, count: number): string {
+    const rig = rigRepo.createRig(rigName);
+    for (let i = 0; i < count; i++) {
+      const node = rigRepo.addNode(rig.id, `w${i}`, { role: "worker", runtime: "claude-code" });
+      const session = sessionRegistry.registerSession(node.id, `dev-w${i}@${rigName}`);
+      sessionRegistry.updateStatus(session.id, "running");
+    }
+    return snapshotCapture.captureSnapshot(rig.id, "manual").id;
+  }
+  type ProbeAnswer = "live" | "dead" | "throw" | "hang";
+  function scriptedTmux(answers: ProbeAnswer[]): { tmux: TmuxAdapter; calls: string[] } {
+    const calls: string[] = [];
+    const hasSession = vi.fn((name: string) => {
+      const answer = answers[calls.length] ?? "dead";
+      calls.push(name);
+      if (answer === "throw") return Promise.reject(new Error("tmux probe failed (injected)"));
+      if (answer === "hang") return new Promise<boolean>(() => { /* never settles */ });
+      return Promise.resolve(answer === "live");
+    });
+    return { tmux: { ...mockTmux(), hasSession } as unknown as TmuxAdapter, calls };
+  }
+
+  it("N-1: an unreadable tmux probe is refused with its own wording (tmux did not answer, retry), not the 'live sessions / rig down' text", async () => {
+    const snapId = seedRunningSeats("unread", 2);
+    const { tmux } = scriptedTmux(["throw"]);
+    const result = await createOrchestrator({ tmux }).restore(snapId);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("rig_not_stopped");
+    expect(result.message).toContain("tmux did not answer");
+    expect(result.message).toContain("Retry");
+    expect(result.message).not.toContain("live sessions");
+    expect(result.message).not.toContain("rig down");
+  });
+
+  it("N-1 control: a genuinely live seat still gets the 'has live sessions ... rig down' refusal", async () => {
+    const snapId = seedRunningSeats("livectl", 2);
+    const { tmux } = scriptedTmux(["live"]);
+    const result = await createOrchestrator({ tmux }).restore(snapId);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("rig_not_stopped");
+    expect(result.message).toContain("has live sessions");
+    expect(result.message).toContain("rig down");
+    expect(result.message).not.toContain("tmux did not answer");
+  });
+
+  it.each([
+    ["live", "live"],
+    ["unreadable", "throw"],
+  ] as const)("N-2: probing stops at the first %s seat (1 probe of 3), the refusal is unchanged", async (_label, first) => {
+    const snapId = seedRunningSeats(`stop-${first}`, 3);
+    const { tmux, calls } = scriptedTmux([first, "live", "live"]);
+    const result = await createOrchestrator({ tmux }).restore(snapId);
+    expect(calls).toHaveLength(1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("rig_not_stopped");
+  });
+
+  it("N-2 control: dead seats do not stop the scan (every DB-running seat is probed before restore proceeds)", async () => {
+    const snapId = seedRunningSeats("allstale", 3);
+    const { tmux, calls } = scriptedTmux(["dead", "dead", "dead"]);
+    await createOrchestrator({ tmux }).restore(snapId);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("N-2: with every probe hung, restore is refused after ONE 2000 ms deadline, not one per seat", async () => {
+    const snapId = seedRunningSeats("wedged3", 3);
+    const { tmux, calls } = scriptedTmux(["hang", "hang", "hang"]);
+    const orch = createOrchestrator({ tmux });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let result: Awaited<ReturnType<typeof orch.restore>> | undefined;
+      const pending = orch.restore(snapId).then((r) => { result = r; });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(result, "restore() still waiting after one deadline: it kept probing further seats").toBeDefined();
+      await pending;
+      expect(calls).toHaveLength(1);
+      expect(result!.ok).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // --- Scenario A: stale DB sessions after tmux crash ---
 
   it("restores successfully when DB shows sessions running but tmux sessions are dead (post-crash)", async () => {

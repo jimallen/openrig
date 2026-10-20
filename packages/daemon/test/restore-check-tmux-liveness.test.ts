@@ -212,6 +212,59 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     expect(result.checks.find((c) => c.check === "seat.up@partly.readiness")?.evidence).toContain("tmux liveness unknown");
   });
 
+  // OF-33 T3: the deadline the production routes really use (no probeTimeoutMs given) is 2000 ms.
+  // Fake timers, so no real 2 s wait. The literal is restated here on purpose: it must not import the
+  // constant it pins.
+  it("a hung tmux probe with no explicit deadline is cut off at the 2000 ms default, not before and not never", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { adapter } = tmuxWith({ "up@partly": "hang", "down@partly": "absent" });
+      build(adapter);
+      const service = createRestoreCheckService(rigRepo, snapshotRepo, adapter);
+      let result: Awaited<ReturnType<typeof service.checkWithLiveness>> | undefined;
+      const pending = service.checkWithLiveness({ rig: "partly", noQueue: true, noHooks: true }).then((r) => { result = r; });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(result!.recovery.status).toBe("unknown");
+      expect(result!.checks.find((c) => c.check === "seat.up@partly.readiness")?.evidence).toContain("tmux liveness unknown");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an answered probe leaves no deadline timer behind (a polled route must not leak one timer per seat per poll)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { adapter } = tmuxWith({ "up@partly": "present", "down@partly": "throw" });
+      build(adapter);
+      const service = createRestoreCheckService(rigRepo, snapshotRepo, adapter);
+      await service.checkWithLiveness({ rig: "partly", noQueue: true, noHooks: true });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // OF-33 N3: the orchestrator only probes seats the DB shows running, so for a DB-exited seat whose
+  // probe fails, restore is NOT refused. The advice must not claim it is.
+  it.each([
+    ["DB-exited seat, probe throws", { up: "exited", down: "exited" }, "throw"],
+    ["DB-running seat, probe throws", { up: "running", down: "exited" }, "throw"],
+  ] as const)("unreadable-probe advice states what restore really does (%s)", async (_label, dbState, probe) => {
+    const { app, rigName } = build(tmuxWith({ "up@partly": probe, "down@partly": "absent" }).adapter, dbState);
+    const body = await restoreCheck(app, rigName);
+    expect(body.recovery.status).toBe("unknown");
+    expect(body.recovery.actions).toEqual([]);
+    const reason: string = body.recovery.unknown[0].reason;
+    expect(reason).toContain("tmux liveness is unknown for up@partly");
+    expect(reason).not.toContain("refused while any seat is live");
+    expect(reason).toContain("Restore itself only probes seats the DB shows running");
+    expect(reason).toContain("refuses (rig_not_stopped, 409) if one of those is live or unreadable");
+    expect(reason).toContain("otherwise starts");
+  });
+
   it("probe scope and count: only the checked rig's seats are probed, once each (restore-check and composed status)", async () => {
     const t = tmuxWith({});
     const { app, rigId } = build(t.adapter, { up: "exited", down: "exited" });
