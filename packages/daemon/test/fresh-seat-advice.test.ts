@@ -68,6 +68,9 @@ describe("every fresh-start suggestion is a command that works in the state it i
   it("shared builder: quotes the seat ref and names the per-seat door, never `rig up`", () => {
     expect(freshSeatLaunchCommand("operator.human", "kernel")).toBe(`rig seat launch 'operator.human@kernel' --fresh --reason "<why>"`);
     expect(freshSeatLaunchCommand("a'b", "r")).toBe(`rig seat launch 'a'"'"'b@r' --fresh --reason "<why>"`);
+    // OF-32 stage 3: a restore run with `--startup-from stored` names the same escape (the CLI twin has this row).
+    expect(freshSeatLaunchCommand("operator.human", "kernel", "stored")).toBe(`rig seat launch 'operator.human@kernel' --fresh --startup-from stored --reason "<why>"`);
+    expect(freshSeatLaunchCommand("operator.human", "kernel", "spec")).toBe(`rig seat launch 'operator.human@kernel' --fresh --reason "<why>"`);
   });
 
   it("restore stops a seat with no token while its sibling is live: the advice launches that seat; the old `rig up --fresh` advice is refused", async () => {
@@ -114,7 +117,8 @@ describe("every fresh-start suggestion is a command that works in the state it i
     expect(messages.length, "positive control: the population is the 7 stop-for-decision messages at e493aa62").toBe(7);
     for (const line of messages) {
       expect(line, line).not.toMatch(/Re-run with --fresh/);
-      expect(line, line).toMatch(/this\.freshStartCommand\(rigId, data, node\.logicalId\)/);
+      // OF-32 stage 3: and every one carries the restore's `--startup-from` choice, so the stored escape is not lost.
+      expect(line, line).toMatch(/this\.freshStartCommand\(rigId, data, node\.logicalId, opts\?\.startupFrom\)/);
     }
   });
 });

@@ -3916,6 +3916,9 @@ describe("RestoreOrchestrator", () => {
     if (!result.ok) return;
     expect(result.result.rigResult).toBe("partially_restored");
     expect(result.result.warnings.some((warning) => warning.includes("optional startup file missing"))).toBe(true);
+    // OF-32 stage 3: the seat has no saved context of its own, so its fresh start replays this snapshot copy, which
+    // pre-restore validation and the per-seat check before its launch both inspect: the warning is still said once.
+    expect(result.result.warnings.filter((warning) => warning.includes("optional startup file missing"))).toHaveLength(1);
   });
 
   it("D1/D4: validation block does not emit restore events or mutate stale sessions", async () => {
@@ -4951,6 +4954,16 @@ describe("RestoreOrchestrator", () => {
       customSameBasename,
     ];
     const notOld = (p: string) => !p.startsWith("/old-openrig");
+    /** OF-32 stage 3: a seat restored fresh replays its own saved context (node_startup_context), not the snapshot's
+     *  copy, so a fixture that changes what was saved changes both. */
+    const saveBoth = (snap: ReturnType<typeof seedPodAware>["snap"], patch: (context: { projectionEntries: unknown[]; resolvedStartupFiles: unknown[] }) => void) => {
+      const fixed = updateSnapshotData(snap, (data) => { for (const context of Object.values(data.nodeStartupContext)) patch(context as never); });
+      for (const [nodeId, context] of Object.entries(fixed.data.nodeStartupContext)) {
+        db.prepare("UPDATE node_startup_context SET projection_entries_json = ?, resolved_files_json = ? WHERE node_id = ?")
+          .run(JSON.stringify((context as { projectionEntries: unknown[] }).projectionEntries), JSON.stringify((context as { resolvedStartupFiles: unknown[] }).resolvedStartupFiles), nodeId);
+      }
+      return fixed;
+    };
 
     function seedPodAware(resume: boolean) {
       const rig = rigRepo.createRig("test-rig");
@@ -5003,15 +5016,21 @@ describe("RestoreOrchestrator", () => {
       expect(delivered.some((f) => f.absolutePath === `${RUNNING_ASSETS}/guidance/CULTURE-default.md`)).toBe(true);
     });
 
-    it("a genuinely missing CURRENT built-in still blocks restore honestly, naming the running path", async () => {
+    // OF-32 stage 3: the seat has a saved context of its own, so its files are checked per seat before its launch
+    // (not against the snapshot's copy before the restore): the seat is refused, honestly, and nothing is started.
+    it("a genuinely missing CURRENT built-in still refuses the seat honestly, naming the running path", async () => {
       const { snap, adapter } = seedPodAware(false);
       const runningCulture = `${RUNNING_ASSETS}/guidance/CULTURE-default.md`;
       const result = await createOrchestrator().restore(snap.id, {
         adapters: { "claude-code": adapter }, fsOps: { exists: (p) => notOld(p) && p !== runningCulture }, freshLogicalIds: ["dev.impl"],
       });
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.result.blockers?.[0]).toMatchObject({ code: "required_startup_file_missing", path: runningCulture });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const seat = result.result.nodes.find((n) => n.logicalId === "dev.impl")!;
+      expect(seat.status).toBe("failed");
+      expect(seat.error).toContain(`Required startup file is missing for dev.impl: ${runningCulture}`);
+      expect(seat.error).toContain("No session was started");
+      expect(adapter.launchHarness).not.toHaveBeenCalled();
     });
 
     it("extension: replay projects shipped-spec resources from the running install; plugin entry untouched; no drift warning for the old path", async () => {
@@ -5022,7 +5041,7 @@ describe("RestoreOrchestrator", () => {
         { category: "runtime_resource", effectiveId: "shared:claude-default-mcp", sourceSpec: "shared", sourcePath: `${OLD_SPECS}/agents/shared`, resourcePath: "r", absolutePath: `${OLD_SPECS}/agents/shared/runtime/claude-mcp.fragment.json`, resourceType: "claude_mcp_fragment" },
         { category: "plugin", effectiveId: "shared:openrig-core", sourceSpec: "shared", sourcePath: `${OLD_SPECS}/agents/shared`, resourcePath: "p", absolutePath: "/home/u/.openrig/plugins/openrig-core" },
       ];
-      const fixed = updateSnapshotData(snap, (data) => { for (const k of Object.keys(data.nodeStartupContext)) data.nodeStartupContext[k].projectionEntries = entries; });
+      const fixed = saveBoth(snap, (context) => { context.projectionEntries = entries; });
       const result = await createOrchestrator().restore(fixed.id, {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
@@ -5044,7 +5063,7 @@ describe("RestoreOrchestrator", () => {
       const RUNNING_SPECS = path.resolve(import.meta.dirname, "../specs");
       const { snap, deliverStartup, adapter } = seedPodAware(false);
       const shippedCulture = { path: "culture/CULTURE.md", absolutePath: `${OLD_SPECS}/rigs/launch/kernel/culture/CULTURE.md`, ownerRoot: `${OLD_SPECS}/rigs/launch/kernel`, deliveryHint: "guidance_merge", required: true, appliesOn: ["fresh_start", "restore"] };
-      const fixed = updateSnapshotData(snap, (data) => { for (const k of Object.keys(data.nodeStartupContext)) data.nodeStartupContext[k].resolvedStartupFiles = [shippedCulture, customSameBasename]; });
+      const fixed = saveBoth(snap, (context) => { context.resolvedStartupFiles = [shippedCulture, customSameBasename]; });
       const result = await createOrchestrator().restore(fixed.id, {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
@@ -5062,9 +5081,7 @@ describe("RestoreOrchestrator", () => {
         ownerRoot: `${OLD_SPECS}/rigs/launch/first-project`, deliveryHint: "guidance_merge",
         required: true, appliesOn: ["fresh_start", "restore"],
       };
-      const fixed = updateSnapshotData(snap, (data) => {
-        for (const context of Object.values(data.nodeStartupContext)) context.resolvedStartupFiles = [culture];
-      });
+      const fixed = saveBoth(snap, (context) => { context.resolvedStartupFiles = [culture]; });
       const result = await createOrchestrator().restore(fixed.id, {
         adapters: { "claude-code": adapter }, freshLogicalIds: ["dev.impl"],
         fsOps: { exists: (p) => p.startsWith(RUNNING_SPECS) ? fs.existsSync(p) : notOld(p) },

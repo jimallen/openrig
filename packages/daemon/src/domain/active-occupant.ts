@@ -161,14 +161,16 @@ export function absentSeatResumeHistory<T extends { id: string; nodeId: string; 
  *  `rig up --existing <rig> --fresh <seat>` is NOT offered: restore refuses a rig with any live seat
  *  (`rig_not_stopped`, HTTP 409), and a restore that leaves one seat awaiting a decision has normally just
  *  started its siblings. The seat ref is shell-quoted; `<why>` is the operator's audit reason. */
-export function freshSeatLaunchCommand(logicalId: string, rigName: string): string {
+export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: "spec" | "stored"): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
-  return `rig seat launch ${seat} --fresh --reason "<why>"`;
+  // OF-32: a fresh seat re-reads its rig's spec by default. An operator who chose `--startup-from stored` for this
+  // restore is told the same escape for the seats it could not start.
+  return `rig seat launch ${seat} --fresh${startupFrom === "stored" ? " --startup-from stored" : ""} --reason "<why>"`;
 }
 
 /** The stop-for-decision explanation for such a seat, worded once for apply and preview. */
-export function absentSeatResumeHistoryError(logicalId: string, resumeType: string | null, rigName: string): string {
-  return `Original session not resumed: the seat had no running occupant when this snapshot was taken, but an earlier occupant left a '${resumeType}' resume token. No session was started. The recorded token has not been verified and may be stale or belong to another runtime. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(logicalId, rigName)}.`;
+export function absentSeatResumeHistoryError(logicalId: string, resumeType: string | null, rigName: string, startupFrom?: "spec" | "stored"): string {
+  return `Original session not resumed: the seat had no running occupant when this snapshot was taken, but an earlier occupant left a '${resumeType}' resume token. No session was started. The recorded token has not been verified and may be stale or belong to another runtime. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(logicalId, rigName, startupFrom)}.`;
 }
 
 /** One wording for the loud failure everywhere — divergent phrasings would be

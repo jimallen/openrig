@@ -282,7 +282,7 @@ Root: `rig`; declared option: `-V, --version`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig up <source>` | — | `--non-interruptive`<br>`--no-non-interruptive`<br>`--plan`<br>`--yes`<br>`--cwd <path>`<br>`--target <root>`<br>`--preset <name>`<br>`--seat <member=runtime>` (repeatable)<br>`--existing`<br>`--fresh <seats...>`<br>`--json`<br>`--host <id>` |
+| `rig up <source>` | — | `--non-interruptive`<br>`--no-non-interruptive`<br>`--plan`<br>`--yes`<br>`--cwd <path>`<br>`--target <root>`<br>`--preset <name>`<br>`--seat <member=runtime>` (repeatable)<br>`--existing`<br>`--fresh <seats...>`<br>`--startup-from <spec\|stored>`<br>`--json`<br>`--host <id>` |
 
 ### down
 
@@ -904,6 +904,14 @@ is stopped. `--startup-from stored` replays the startup context saved by the
 seat's last successful launch (a failed launch never overwrites it); a rig with
 no recorded source, and a seat its spec does not declare, do so with a warning. The source used is
 in the result (`startupSource`) and on `seat.fresh_launched`.
+
+`rig up <rig> --existing` decides each seat listed with `--fresh <seat>` the same way, before that seat is
+launched: the spec as it is now, or with `--startup-from stored` the context saved by the seat's last successful
+launch. A refused listed seat is `failed` with the reason and the per-seat `rig seat launch ... --startup-from
+stored` command; its siblings are restored. Every other seat it starts fresh comes back on its own saved context,
+and a seat it resumes keeps it; none of them reads the spec. A fresh seat never replays the snapshot's older copy
+when it has a saved context of its own. Each fresh seat's source is on its result (`startupSource`) and printed
+under it. `--startup-from` is refused (`invalid_startup_from`) for a new rig.
 
 `rig start --last` and `rig start --rigs <rig>` use the full per-seat lifecycle
 for restore selection. A partly running rig with an intentionally stopped member

@@ -8,6 +8,30 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [Unreleased]
+
+### Fresh seats re-read their rig's spec (OF-32, fork)
+
+- A seat you ask to start fresh, by `rig seat launch --fresh` or by listing it with `rig up --existing --fresh <seat>`,
+  takes its role, culture and startup files from the rig's recorded spec as it is now. Every other seat a restore
+  starts fresh (by restore policy, with no history, rebuilt from a checkpoint) comes back on its own saved startup
+  files exactly as before, without reading the spec. A spec library link is followed again,
+  so a new persona release reaches the seat without archiving the rig. Only rigs created after migration `111`
+  record a spec; older rigs replay each seat's saved startup files and say so in a warning.
+- `--startup-from stored` (on `rig seat launch` and `rig up --existing`) replays the files saved by the seat's last
+  successful launch instead. A resumed seat keeps its saved files either way.
+- Each seat a restore starts fresh names its source in the restore result (`startupSource`), in the
+  `restore.completed` event, and under the seat in `rig up` / `rig start`: the spec path and the agent version it
+  moved from and to, the saved files, or the snapshot's copy.
+- A seat listed with `--fresh` whose spec can no longer start it (moved, unparsable, a different runtime, agent or
+  profile, a missing required file) is reported `failed` before its launch, with the reason and the per-seat
+  `--startup-from stored` command; its siblings are restored. Seats not listed are never refused for their spec.
+- A restore never writes a snapshot's older startup files over the seat's newer saved files.
+- Behaviour change: a seat listed with `--fresh` on a restore no longer reinstalls catalog skills from its saved
+  selection, as `rig seat launch --fresh` already did not (other fresh seats still do). Skills already in its working folder stay; a working folder that
+  lost its skill folders does not get them back from a restore, and a new release's added skills are not installed
+  by a re-read.
+
 ## [0.6.10]
 
 0.6.10 is a fix release, most of it from the community. Setup can be told

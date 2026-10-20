@@ -182,6 +182,24 @@ describe("rig start (OPR.0.3.4.1)", () => {
     };
   }
 
+  // OF-32 stage 3 review must-fix 1: rig start, which restores too, says where a fresh seat's startup files came from.
+  it("rig start prints, under a seat the restore started fresh, where its startup files came from", async () => {
+    setupCandidateRig("my-rig");
+    const restoreRoute = routes["/api/rigs/:id/up"]!;
+    routes["/api/rigs/:id/up"] = (req, body) => {
+      const answer = restoreRoute(req, body) as Record<string, unknown>;
+      if (body.plan === true) return answer;
+      return { ...answer, nodes: [
+        { logicalId: "dev.impl", status: "fresh-primed", startupSource: { kind: "spec", specSource: "/lib/t/rig.yaml", specPath: "/lib/t/rig.yaml", previousSpecVersion: "1.0.0", specVersion: "2.0.0" } },
+        { logicalId: "dev.qa", status: "resumed" },
+      ] };
+    };
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "start", "--last"]);
+    });
+    expect(logs.indexOf("      startup files re-read from /lib/t/rig.yaml; agent 1.0.0 -> 2.0.0")).toBe(logs.indexOf("    dev.impl: fresh-primed") + 1);
+  });
+
   // ---- HEADLESS FLAGS ----
 
   it("--last restores all candidates with ZERO prompts", async () => {

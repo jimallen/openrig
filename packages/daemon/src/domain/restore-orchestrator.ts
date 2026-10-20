@@ -34,13 +34,18 @@ import type {
   Session,
   Checkpoint,
   RestoreSnapshotSelection,
+  NodeStartupSnapshot,
+  RestoreStartupSource,
 } from "./types.js";
+import { resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { writeStartupContext } from "./startup-orchestrator.js";
+import { readNodeStartupSnapshot } from "./snapshot-capture.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
-import { validatePreRestore } from "./restore-preconditions.js";
+import { validatePreRestore, startupInputFindings, freshSeatReplaysSnapshotStartup } from "./restore-preconditions.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 
@@ -177,6 +182,37 @@ interface RestoreOrchestratorDeps {
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
+  /** OF-32: re-reads a fresh seat's startup policy from its rig's recorded spec (PodRigInstantiator), the reader
+   *  `rig seat launch --fresh` uses. Without it a rig that records a source cannot start a seat fresh
+   *  (launch_unavailable), exactly as on `rig seat launch --fresh`. */
+  seatStartupSource?: SeatStartupSpecReader;
+}
+
+/** Per-seat restore inputs threaded from restore / launch into each seat's launch. */
+type RestoreSeatOpts = {
+  adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
+  fsOps?: { exists(path: string): boolean };
+  freshLogicalIds?: string[];
+  /** OF-32: where a seat this restore starts fresh takes its startup policy from (default: the rig's spec now). */
+  startupFrom?: StartupFrom;
+};
+
+/** Whether this restore resumes the seat's saved conversation (an exact resume) rather than starting it fresh.
+ *  The one predicate for both the pre-launch startup decision and the post-launch replay containment. */
+function snapshotSeatResumes(session: { restorePolicy?: string | null; resumeType?: string | null } | null, freshRequested: boolean): boolean {
+  const restorePolicy = session?.restorePolicy ?? "resume_if_possible";
+  const resumeType = session?.resumeType ?? null;
+  return restorePolicy === "resume_if_possible" && !!resumeType && resumeType !== "none" && !freshRequested;
+}
+
+/** A fresh seat's chosen startup policy in the shape restore replays (the snapshot's startup-context shape). */
+function asReplayContext(context: FreshStartupContext): NodeStartupSnapshot {
+  return {
+    projectionEntries: context.plan.entries,
+    resolvedStartupFiles: context.resolvedStartupFiles,
+    startupActions: context.startupActions,
+    runtime: context.runtime,
+  };
 }
 
 export class RestoreOrchestrator {
@@ -196,6 +232,7 @@ export class RestoreOrchestrator {
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
+  private seatStartupSource: SeatStartupSpecReader | null;
   private appliedLaunchStore: AppliedLaunchObservationStore;
 
   constructor(deps: RestoreOrchestratorDeps) {
@@ -236,6 +273,7 @@ export class RestoreOrchestrator {
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
+    this.seatStartupSource = deps.seatStartupSource ?? null;
     this.appliedLaunchStore = new AppliedLaunchObservationStore(deps.db);
   }
 
@@ -250,6 +288,10 @@ export class RestoreOrchestrator {
      * resume-policy seats STOP as `awaiting-decision` instead.
      */
     freshLogicalIds?: string[];
+    /** OF-32: where the seats this restore starts fresh take their startup policy from: the rig's spec as it is now
+     *  (`spec`, the default) or the context saved by each seat's last successful launch (`stored`). An exact resume
+     *  never reads either: it keeps the stored context. */
+    startupFrom?: StartupFrom;
     /** Explicit rig launch choice; persisted only after restore preconditions pass. */
     nonInterruptive?: boolean;
     /** Selection evidence from an automatic caller. Direct restore defaults
@@ -303,6 +345,10 @@ export class RestoreOrchestrator {
         fsOps: opts?.fsOps,
         servicesRecord: this.rigRepo.getServicesRecord(rigId),
         freshLogicalIds: opts?.freshLogicalIds,
+        // OF-32: a seat started fresh replays the snapshot's copy of its startup files only when nothing newer exists;
+        // otherwise its source is decided and checked per seat before its launch (restoreNodeUnisolated), and the
+        // snapshot's copy (which may name a release since deleted) cannot block the restore.
+        freshSeatStartup: (node) => this.freshSeatStartupToValidate(rigId, node.logicalId, opts),
       });
       const topology = resolveSnapshotRestoreTopology(snapshot.data);
       // The attempt's roster names its seats by the ids the attempt's results use: the LIVE node ids (a seat removed and
@@ -854,7 +900,7 @@ export class RestoreOrchestrator {
     rigId: string,
     snapshotId: string,
     data: SnapshotData,
-    opts?: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[] },
+    opts?: RestoreSeatOpts,
     warnings?: string[],
   ): Promise<RestoreNodeResult> {
     // One seat's THROWN error (a launcher, adapter, filesystem or database fault, as opposed to a failed launch RESULT)
@@ -918,9 +964,29 @@ export class RestoreOrchestrator {
     }
   }
 
+  /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
+   *  will act (see validatePreRestore's `freshSeatStartup`). */
+  private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined): "resolved_at_launch" | NodeStartupSnapshot | undefined {
+    const live = this.rigRepo.getRig(rigId)?.nodes.find((candidate) => candidate.logicalId === logicalId);
+    const runtime = live?.runtime ?? null;
+    if (!live || !runtime || !opts?.adapters?.[runtime]) return undefined;
+    if (opts.freshLogicalIds?.includes(logicalId)) {
+      return freshSeatReplaysSnapshotStartup({
+        adapterAvailable: true,
+        seatHasSavedContext: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(live.id) !== undefined,
+        rigSpecReread: (opts.startupFrom ?? "spec") === "spec" && !!this.rigRepo.getRigSpecSource(rigId),
+      }) ? undefined : "resolved_at_launch";
+    }
+    try {
+      return readNodeStartupSnapshot(this.db, live.id) ?? undefined;
+    } catch {
+      return undefined; // unreadable: the snapshot's copy is what it replays (restoreNodeUnisolated says so)
+    }
+  }
+
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
-  private freshStartCommand(rigId: string, data: SnapshotData, logicalId: string): string {
-    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name);
+  private freshStartCommand(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom): string {
+    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, startupFrom);
   }
 
   private async restoreNodeUnisolated(
@@ -928,7 +994,7 @@ export class RestoreOrchestrator {
     rigId: string,
     snapshotId: string,
     data: SnapshotData,
-    opts: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[] } | undefined,
+    opts: RestoreSeatOpts | undefined,
     warnings: string[] | undefined,
     progress: SeatRestoreProgress,
   ): Promise<RestoreNodeResult> {
@@ -982,7 +1048,7 @@ export class RestoreOrchestrator {
       ? absentSeatResumeHistory(data.sessions, node.id)
       : null;
     if (priorWithToken) {
-      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name) };
+      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, opts?.startupFrom) };
     }
 
     // Consult live continuity state BEFORE clearing stale state
@@ -1028,7 +1094,7 @@ export class RestoreOrchestrator {
           nodeId,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: ${sourceNote}. No session was started. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId)}; or restore the original session manually.`,
+          error: `Original session unresumable: ${sourceNote}. No session was started. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
         };
       }
     }
@@ -1099,6 +1165,99 @@ export class RestoreOrchestrator {
       }
     }
 
+    // OF-32: a seat this restore starts fresh (anything but an exact resume) takes its startup policy from the same
+    // decision `rig seat launch --fresh` makes: the rig's spec as it is now, or with `--startup-from stored` the
+    // context saved by the seat's last successful launch. It never replays the snapshot's copy while the seat has a
+    // saved context of its own, because the snapshot can be older than that context. Decided before the launch, so a
+    // refusal starts nothing. Without an adapter for the seat's runtime nothing is replayed or saved either way, and
+    // the post-launch checks say so; the decision is skipped.
+    let freshStartup: FreshStartupContext | null = null;
+    // A seat started fresh without being listed with --fresh: its own saved context, replayed as a snapshot copy was.
+    let savedSetup: NodeStartupSnapshot | null = null;
+    // What the restore result (and so restore.completed and `rig up`) says this seat was given, once it is launched.
+    let startupReport: RestoreStartupSource | null = null;
+    const seatRuntime = liveNode.runtime ?? null;
+    const startsFresh = !snapshotSeatResumes(occupantResolution.kind === "resolved" ? occupantResolution.session : null, freshRequested)
+      && !!seatRuntime && !!opts?.adapters?.[seatRuntime];
+    if (startsFresh && !freshRequested) {
+      // OF-32, Jim's scope (2026-10-20): only a seat the operator lists with --fresh re-reads the spec. Every other seat
+      // this restore starts fresh (by restore policy, with no history, a checkpoint rebuild) comes back on its saved
+      // setup exactly as before stage 3: no re-read, no per-seat refusal, the same lenient replay and the same
+      // pre-restore validation. The one difference is the snapshot-hazard fix: the saved setup is the seat's own saved
+      // context, not an older snapshot's copy of it. Only when it has none, or it is not JSON, is the copy replayed.
+      let unreadable: string | null = null;
+      try {
+        savedSetup = readNodeStartupSnapshot(this.db, nodeId);
+      } catch (err) {
+        unreadable = (err as Error).message;
+      }
+      if (savedSetup) {
+        startupReport = { kind: "stored", reason: "not_fresh_listed" };
+      } else if (data.nodeStartupContext?.[node.id]) {
+        startupReport = { kind: "snapshot", reason: unreadable ? "saved_context_unreadable" : "no_saved_context" };
+        if (unreadable) {
+          warnings?.push(`Restore: ${node.logicalId}: its saved startup context cannot be read (${unreadable}). This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
+        }
+      }
+    }
+    if (startsFresh && freshRequested && opts?.adapters) {
+      const rigName = rig?.rig.name ?? data.rig.name;
+      const decided = await resolveFreshSeatStartup(
+        { db: this.db, rigRepo: this.rigRepo, specReader: this.seatStartupSource, runtimeAdapters: opts.adapters },
+        {
+          rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime, cwd: node.cwd ?? ".",
+          sessionName: expectedSessionName ?? node.logicalId, startupFrom: opts.startupFrom ?? "spec",
+          refusalGuidance: `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(node.logicalId, rigName, "stored")}.`,
+        },
+      );
+      let refusal: string | null = null;
+      // startup_context_missing: the seat has no saved context of its own (it never launched in this database), so
+      // the snapshot's copy is the only one and cannot be older than anything: it is replayed as before.
+      // startup_context_malformed: the seat's saved context cannot be read, so nothing newer can be lost; the
+      // snapshot's copy is replayed (as before stage 3), said in a warning, and a successful launch saves a new one.
+      // Refusing here would leave the seat no fresh path at all: `--startup-from stored` reads the same row.
+      const snapshotFallback = !decided.ok && (decided.code === "startup_context_missing" || decided.code === "startup_context_malformed");
+      const chosen: NodeStartupSnapshot | null = decided.ok ? asReplayContext(decided.context)
+        : snapshotFallback ? data.nodeStartupContext?.[node.id] ?? null : null;
+      if (!decided.ok && !snapshotFallback) {
+        refusal = `${decided.message}${decided.guidance ? ` ${decided.guidance}` : ""}`;
+      } else if (chosen) {
+        // The checks pre-restore validation runs on the snapshot's copy, run on what this seat will actually be given.
+        const findings = startupInputFindings({ id: node.id, logicalId: node.logicalId }, chosen, opts.fsOps?.exists ?? (() => true), true);
+        if (findings.blockers.length > 0) {
+          const from = decided.ok && decided.context.source.kind === "spec" ? `read from ${decided.context.source.specSource}`
+            : decided.ok ? "saved at the seat's last successful launch" : "in this snapshot";
+          refusal = `its startup files (${from}) cannot be delivered: ${findings.blockers.map((blocker) => blocker.message).join("; ")}.`;
+        } else {
+          // Pre-restore validation may already have reported the same warning for the snapshot's copy.
+          for (const warning of findings.warnings) if (!warnings?.includes(warning)) warnings?.push(warning);
+        }
+      }
+      if (refusal) {
+        this.restoreNodeState(nodeId, priorState);
+        return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${refusal} No session was started.` };
+      }
+      if (decided.ok) {
+        freshStartup = decided.context;
+        for (const warning of decided.context.sourceWarnings) warnings?.push(`Restore: ${node.logicalId}: ${warning}`);
+        const source = decided.context.source;
+        if (source.kind === "spec") {
+          const previous = this.db.prepare("SELECT resolved_spec_version AS version FROM nodes WHERE id = ?").get(nodeId) as { version: string | null } | undefined;
+          startupReport = {
+            kind: "spec", specSource: source.specSource, specPath: source.specPath,
+            previousSpecVersion: previous?.version ?? null, specVersion: decided.context.resolvedSpec?.version ?? "",
+          };
+        } else {
+          startupReport = { kind: "stored", reason: source.reason };
+        }
+      } else if (chosen) {
+        startupReport = { kind: "snapshot", reason: decided.code === "startup_context_malformed" ? "saved_context_unreadable" : "no_saved_context" };
+        if (decided.code === "startup_context_malformed") {
+          warnings?.push(`Restore: ${node.logicalId}: ${decided.message} This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
+        }
+      }
+    }
+
     // Write transcript boundary marker BEFORE launch (before pipe-pane attaches)
     // so the marker appears before any post-restore terminal output.
     // Uses "restore attempt" language — honest even if launch subsequently fails.
@@ -1136,8 +1295,12 @@ export class RestoreOrchestrator {
       warnings?.push(...launchResult.warnings);
     }
 
-    const restored = await this.postLaunchRestore(entry, nodeId, rigId, data, launchResult.sessionName, launchResult, opts, warnings, priorState);
-    return this.checkRestoredGuidance(restored, entry.node, rigId, data, warnings);
+    const given = freshStartup ? asReplayContext(freshStartup) : savedSetup;
+    const restored = await this.postLaunchRestore(entry, nodeId, rigId, data, launchResult.sessionName, launchResult, opts, warnings, priorState,
+      given ? { replay: given, ...(freshStartup?.resolvedSpec ? { provenance: freshStartup.resolvedSpec } : {}) } : null);
+    // OF-32: name the source on the seat's result, as `rig seat launch --fresh` does on its own.
+    const announced = startupReport ? { ...restored, startupSource: startupReport } : restored;
+    return this.checkRestoredGuidance(announced, entry.node, rigId, data, warnings, given ?? undefined);
   }
 
   /** A seat that came back running should also have its role, culture and SOP guidance. If its
@@ -1150,12 +1313,14 @@ export class RestoreOrchestrator {
     rigId: string,
     data: SnapshotData,
     warnings?: string[],
+    /** OF-32: the startup policy a fresh seat was actually given, when it was not the snapshot's copy. */
+    startupGiven?: NodeStartupSnapshot,
   ): RestoreNodeResult {
     // Every status with a live session; attention_required keeps its status and gains the disclosure.
     if (!["resumed", "fresh-primed", "fresh", "rebuilt", "attention_required"].includes(result.status)) return result;
     let guidance: ReturnType<typeof seatGuidance>;
     try {
-      guidance = seatGuidance(data.nodeStartupContext?.[node.id] ?? null, node.cwd,
+      guidance = seatGuidance(startupGiven ?? data.nodeStartupContext?.[node.id] ?? null, node.cwd,
         this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
     } catch (err) {
       warnings?.push(`Restore: ${node.logicalId}: could not check its guidance: ${(err as Error).message}`);
@@ -1204,9 +1369,11 @@ export class RestoreOrchestrator {
     data: SnapshotData,
     sessionName: string,
     launchResult?: { ok: true; sessionName: string; session: import("./types.js").Session; binding: import("./types.js").Binding },
-    opts?: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[] },
+    opts?: RestoreSeatOpts,
     warnings?: string[],
     priorState?: { binding: import("./types.js").Binding | null; sessions: { id: string; status: string }[] },
+    /** OF-32: the startup policy chosen before launch for a seat started fresh (null: replay the snapshot's copy). */
+    fresh: { replay: NodeStartupSnapshot; provenance?: { name: string; version: string; hash: string } } | null = null,
   ): Promise<RestoreNodeResult> {
     // `node` carries the LIVE seat's id: every database write below is keyed by `node.id`. The snapshot's own records
     // (sessions, checkpoints, startup context) are keyed by `snapshotNodeId`. They differ when the seat was removed and
@@ -1243,11 +1410,11 @@ export class RestoreOrchestrator {
 
     // Check restore policy. OPR.0.3.4.2: a --fresh-listed seat (operation B)
     // deliberately skips the resume attempt; its launch reports `fresh-primed`.
-    const restorePolicy = session?.restorePolicy ?? "resume_if_possible";
     const resumeType = session?.resumeType ?? null;
     const resumeToken = session?.resumeToken ?? null;
     const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
-    const resumeRequested = restorePolicy === "resume_if_possible" && !!resumeType && resumeType !== "none" && !freshRequested;
+    // `&& !!resumeType` is implied by the predicate; it is spelled out so the type checker narrows resumeType below.
+    const resumeRequested = snapshotSeatResumes(session, freshRequested) && !!resumeType;
 
     // OPR.0.3.4.2 — non-resume launches are DELIBERATE blank-slate launches
     // (policy- or --fresh-driven): named `fresh-primed`, the old conflated
@@ -1318,7 +1485,7 @@ export class RestoreOrchestrator {
         // just-created session is a confirmed blank (no resume was possible) —
         // roll back to zero sessions and present the decision honestly.
         await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-        return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId)}; or restore the original session manually.` };
+        return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.` };
       } else {
         const launchedSessionId = launchResult?.session.id;
         if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) {
@@ -1356,7 +1523,7 @@ export class RestoreOrchestrator {
           // a confirmed blank agent (precision guard trigger (i)). Roll back to
           // zero sessions; the stop-and-ask is realized as awaiting-decision.
           await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId)}; or check the harness state manually.` };
+          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
         }
       }
     } else if (resumeRequested && isPodAware) {
@@ -1370,7 +1537,7 @@ export class RestoreOrchestrator {
           nodeId: node.id,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId)}; or restore the original session manually.`,
+          error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
         };
       }
       // OPR.0.4.3.20 FR-7 (Gap 2b) — a pod-aware resume needs the runtime adapter
@@ -1386,7 +1553,7 @@ export class RestoreOrchestrator {
           nodeId: node.id,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: resume requested but runtime continuity could not be verified (no ${node.runtime ?? "runtime"} adapter available). No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId)}; or retry restore with runtime adapters.`,
+          error: `Original session unresumable: resume requested but runtime continuity could not be verified (no ${node.runtime ?? "runtime"} adapter available). No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or retry restore with runtime adapters.`,
         };
       }
     }
@@ -1419,7 +1586,10 @@ export class RestoreOrchestrator {
     // starts (see restoreMissingGuidance above); existing blocks are still never rewritten, and
     // nothing else is replayed.
     const replayContained = resumeRequested && !!resumeToken;
-    const startupRuntime = startupCtx?.runtime ?? node.runtime ?? null;
+    // OF-32: what a seat started fresh is given. The snapshot's copy only when no other source was chosen before the
+    // launch (no adapter, or the seat has no saved context of its own); an exact resume replays nothing from either.
+    const replaySource = fresh?.replay ?? startupCtx;
+    const startupRuntime = replaySource?.runtime ?? node.runtime ?? null;
     const startupAdapter = startupRuntime ? opts?.adapters?.[startupRuntime] : undefined;
 
     // A new pod-aware agent needs a startup context to run StartupOrchestrator.
@@ -1431,25 +1601,25 @@ export class RestoreOrchestrator {
       && baseStatus !== "resumed"
       && startupRuntime !== null
       && startupRuntime !== "terminal"
-      && (!startupCtx || !startupAdapter)
+      && (!replaySource || !startupAdapter)
     ) {
-      const cause = startupCtx ? `no ${startupRuntime} runtime adapter` : "no startup context";
+      const cause = replaySource ? `no ${startupRuntime} runtime adapter` : "no startup context";
       const error = `Harness not started: ${cause} for ${node.logicalId}.`;
       warnings?.push(`Restore: ${error}`);
       return { nodeId: node.id, logicalId: node.logicalId, status: "attention_required", error };
     }
 
     // Attempt restore-safe startup replay if context available
-    if (data.nodeStartupContext && opts?.adapters && launchResult) {
-      if (startupCtx) {
-        const adapter = opts.adapters[startupCtx.runtime];
+    if ((fresh || data.nodeStartupContext) && opts?.adapters && launchResult) {
+      if (replaySource) {
+        const adapter = opts.adapters[replaySource.runtime];
         if (adapter) {
           // Prefilter: check which files/entries still exist
           const existsFn = opts.fsOps?.exists ?? (() => true);
-          const sourceEntries = replayContained ? [] : startupCtx.projectionEntries.map((e) => reanchorShippedProjectionEntry(e, undefined, existsFn));
+          const sourceEntries = replayContained ? [] : replaySource.projectionEntries.map((e) => reanchorShippedProjectionEntry(e, undefined, existsFn));
           // #261: recognized built-in startup files follow the running install.
-          const sourceFiles = replayContained ? [] : startupCtx.resolvedStartupFiles.map((f) => reanchorBuiltinStartupFile(f, undefined, undefined, existsFn));
-          const sourceActions = replayContained ? [] : startupCtx.startupActions;
+          const sourceFiles = replayContained ? [] : replaySource.resolvedStartupFiles.map((f) => reanchorBuiltinStartupFile(f, undefined, undefined, existsFn));
+          const sourceActions = replayContained ? [] : replaySource.startupActions;
           const filteredEntries = sourceEntries.filter((e) => {
             if (!existsFn(e.absolutePath)) {
               warnings?.push(`Restore: missing projection entry ${e.absolutePath} (skipped)`);
@@ -1477,7 +1647,7 @@ export class RestoreOrchestrator {
 
           // Build fresh projection plan (all safe_projection)
           const plan: import("./projection-planner.js").ProjectionPlan = {
-            runtime: startupCtx.runtime,
+            runtime: replaySource.runtime,
             cwd: node.cwd ?? ".",
             entries: filteredEntries.map((e) => ({
               ...e,
@@ -1533,8 +1703,21 @@ export class RestoreOrchestrator {
               resumeType: (isPodAware && resumeRequested) ? resumeType ?? undefined : undefined,
               sessionName: sessionName,
               allowFreshFallback: !(isPodAware && resumeRequested),
+              // OF-32: a seat started fresh saves what it was given only once it has an occupant (below), as
+              // `rig seat launch --fresh` does, so a failed restore launch leaves the seat's saved context as it was.
+              deferStartupContextWrite: !replayContained,
             });
             warnings?.push(...(startupResult.warnings ?? []));
+            if (!replayContained && (startupResult.ok || startupResult.startupStatus === "attention_required")) {
+              try {
+                writeStartupContext(this.db, {
+                  nodeId: node.id, entries: plan.entries, resolvedStartupFiles: filteredFiles, startupActions: sourceActions,
+                  runtime: adapter.runtime, ...(fresh?.provenance ? { provenance: fresh.provenance } : {}),
+                });
+              } catch (error) {
+                return { nodeId: node.id, logicalId: node.logicalId, status: "failed", error: `Restore startup context persistence failed: ${String(error)}` };
+              }
+            }
             if (startupResult.ok) {
               const nativeContinuityProved = isPodAware
                 && resumeRequested
@@ -1552,7 +1735,7 @@ export class RestoreOrchestrator {
                   nodeId: node.id,
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
-                  error: `Original session unresumable: resume attempted but the runtime reported fresh continuity. The blank session was rolled back; no session is running. If that degradation is acceptable, run: ${this.freshStartCommand(rigId, data, node.logicalId)}.`,
+                  error: `Original session unresumable: resume attempted but the runtime reported fresh continuity. The blank session was rolled back; no session is running. If that degradation is acceptable, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}.`,
                 };
               }
               const finalStatus = (isPodAware && resumeRequested)
@@ -1592,7 +1775,7 @@ export class RestoreOrchestrator {
                   nodeId: node.id,
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
-                  error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId)}; or restore the original session manually.`,
+                  error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
                 };
               }
               return {

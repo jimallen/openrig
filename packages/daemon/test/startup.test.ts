@@ -102,6 +102,25 @@ describe("createDaemon startup composition", () => {
     }
   }, 30000); // createDaemon full composition can exceed the 5s default on a cold start
 
+  // OF-32 stage 3: a seat restored fresh re-reads its rig's spec through the production instantiator, the same reader
+  // `rig seat launch --fresh` uses. Without this wiring a recorded rig's fresh seats are refused (launch_unavailable).
+  it("wires the production restore orchestrator to the instantiator's spec re-read", async () => {
+    const cmuxFactory: CmuxTransportFactory = async () => {
+      throw Object.assign(new Error("no socket"), { code: "ENOENT" });
+    };
+    const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec: async () => "" });
+    try {
+      const instantiator = (deps as unknown as { podInstantiator: { readSeatStartupFromSpec: (input: unknown) => Promise<unknown> } }).podInstantiator;
+      const read = vi.spyOn(instantiator, "readSeatStartupFromSpec").mockResolvedValue({ kind: "unrecorded" });
+      const reader = (deps.restoreOrchestrator as unknown as { seatStartupSource: { readSeatStartupFromSpec: (input: unknown) => Promise<unknown> } | null }).seatStartupSource;
+      const input = { rigId: "r", nodeId: "n", adapter: {}, sessionName: "dev-impl@r" };
+      await expect(reader?.readSeatStartupFromSpec(input)).resolves.toEqual({ kind: "unrecorded" });
+      expect(read).toHaveBeenCalledWith(input);
+    } finally {
+      db.close();
+    }
+  }, 30000);
+
   it("wires staged replacement into the production Claude collector adapter", async () => {
     const cmuxFactory: CmuxTransportFactory = async () => {
       throw Object.assign(new Error("no socket"), { code: "ENOENT" });

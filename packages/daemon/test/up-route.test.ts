@@ -166,6 +166,49 @@ describe("Up API route", () => {
     expect(body.nodes[0].status).toBe("fresh-primed");
   });
 
+  // OF-32 stage 3: `rig up <rig> --existing --startup-from stored` reaches the restore as its startupFrom.
+  it.each([["stored", "stored"], ["spec", "spec"], [undefined, undefined]] as const)("POST /api/up forwards startupFrom %s to the restore", async (sent, received) => {
+    const rig = rigRepo.createRig(`startup-from-${sent ?? "none"}`);
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker" });
+    const session = sessionRegistry.registerSession(node.id, `worker@${rig.name}`);
+    db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?").run("relaunch_fresh", session.id);
+    sessionRegistry.updateStatus(session.id, "running");
+    snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+    sessionRegistry.updateStatus(session.id, "exited");
+    const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+    const res = await app.request("/api/up", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceRef: rig.name, ...(sent ? { startupFrom: sent } : {}) }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(restoreSpy).toHaveBeenCalledTimes(1);
+    expect((restoreSpy.mock.calls[0]![1] as { startupFrom?: string }).startupFrom).toBe(received);
+  });
+
+  it.each([
+    ["an unknown value", { startupFrom: "release" }, "must be one of"],
+    ["a new rig from a spec", { startupFrom: "stored" }, "applies only when rig up restores an existing rig"],
+  ] as const)("POST /api/up refuses startupFrom for %s", async (_label, body, text) => {
+    const spec = path.join(tmpDir, "rig.yaml");
+    fs.writeFileSync(spec, VALID_SPEC);
+    // A router that sees the real file, so the spec is classified as a new rig (not a rig name).
+    const disk = createTestApp(db, { upRouterFsOps: {
+      exists: (p: string) => fs.existsSync(p),
+      readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+      readHead: (p: string, n: number) => fs.readFileSync(p).subarray(0, n),
+    } });
+    const restoreSpy = vi.spyOn(disk.restoreOrchestrator, "restore");
+    const boot = vi.spyOn(disk.bootstrapOrchestrator, "bootstrap");
+    const res = await disk.app.request("/api/up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef: spec, ...body }) });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toMatchObject({ code: "invalid_startup_from", error: expect.stringContaining(text) });
+    expect(restoreSpy).not.toHaveBeenCalled();
+    expect(boot).not.toHaveBeenCalled();
+  });
+
   it.each(["cli", "explorer"])("%s up selects the pre-down snapshot for plan and apply after a fresh occupant stops", async (entryPoint) => {
     const rig = rigRepo.createRig("fresh-down-up");
     const node = rigRepo.addNode(rig.id, "worker", { runtime: "claude-code" });

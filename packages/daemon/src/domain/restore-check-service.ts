@@ -8,7 +8,7 @@ import { validatePreRestore } from "./restore-preconditions.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
 import type { SessionLiveness } from "./session-liveness.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
-import type { Snapshot, RigServicesRecord, SeatIdentityVerdict } from "./types.js";
+import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
 
 // --- Types ---
 
@@ -234,6 +234,8 @@ export interface RestoreCheckDeps {
   stateDir?: string;
   /** Relay-backed Claude hook events derived from the shipped hook manifest. */
   getClaudeActivityHookEvents?: () => string[];
+  /** OF-32: the spec source a rig records (null: none). A seat started fresh re-reads it; advice says so. */
+  getRigSpecSource?: (rigId: string) => string | null;
 }
 
 interface RigRollupInput {
@@ -503,9 +505,21 @@ export class RestoreCheckService {
           },
         };
       }
+      // OF-32: predict the restore this check advises (`rig up --existing`, no seat listed with --fresh) as it decides:
+      // a seat it starts fresh comes back on its own saved setup, and replays the snapshot's copy only when it has none
+      // (or it cannot be read). Restore finds the seat by logical id and reads the LIVE node's saved context (a seat
+      // removed and grown back has a new node id); predict it the same way.
+      const liveNodeIdByLogicalId = new Map(this.deps.getNodeInventory(rig.rigId).map((entry) => [entry.logicalId, entry.nodeId]));
       const validation = validatePreRestore(input.snapshot.data, {
         fsOps: { exists: this.deps.exists },
         servicesRecord: input.servicesRecord,
+        freshSeatStartup: (node) => {
+          const liveId = liveNodeIdByLogicalId.get(node.logicalId);
+          const saved = liveId ? this.deps.getStartupContext(liveId) : null;
+          return saved?.status === "ok"
+            ? { projectionEntries: saved.projectionEntries, resolvedStartupFiles: saved.resolvedStartupFiles, startupActions: [], runtime: saved.runtime ?? "" } as unknown as NodeStartupSnapshot
+            : undefined;
+        },
       });
       const { blockers, warnings } = validation;
       return {
@@ -1529,7 +1543,7 @@ export class RestoreCheckService {
         }
         if (input.deadSeatIds.length > 0) {
           const rig = shellQuote(input.rigName);
-          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}. To keep the conversations instead: rig down ${rig}, then rig up ${rig} --existing (this restarts every seat).`);
+          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}.${this.freshStartupNote(input.rigId, "seat", input.rigName)} To keep the conversations instead: rig down ${rig}, then rig up ${rig} --existing (this restarts every seat).`);
         }
         blocked.push({
           scope: "rig",
@@ -1547,7 +1561,7 @@ export class RestoreCheckService {
           rigName: input.rigName,
           action: "restore_from_latest_snapshot",
           command: `rig up --existing ${shellQuote(input.rigName)}`,
-          reason: "Rig has a latest snapshot and one or more seats are not running/ready.",
+          reason: `Rig has a latest snapshot and one or more seats are not running/ready.${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
           safe: false,
           blocking: true,
         });
@@ -1560,7 +1574,7 @@ export class RestoreCheckService {
         rigName: input.rigName,
         action: "restore_from_latest_snapshot",
         command: `rig up --existing ${shellQuote(input.rigName)}`,
-        reason: "Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.",
+        reason: `Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
         safe: false,
         blocking: true,
       });
@@ -1618,6 +1632,28 @@ export class RestoreCheckService {
       return `${actions.length} ${pluralize(actions.length, "rig")} can be recovered by known OpenRig command; ${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${unknown.length} unknown.`;
     }
     return `${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${actions.length} actionable; ${unknown.length} unknown.`;
+  }
+
+  /** OF-32: where a seat started fresh takes its startup files from, for this rig. `rig seat launch --fresh` (and a
+   *  seat listed with `rig up --existing --fresh <seat>`) re-reads the rig's recorded spec as it is now, with
+   *  `--startup-from stored` as the escape. Any other seat `rig up --existing` starts fresh comes back on its saved
+   *  files. A rig that records no source always replays those. Empty when the daemon cannot say (no reader wired). */
+  private freshStartupNote(rigId: string, advice: "seat" | "restore", rigName: string): string {
+    if (!this.deps.getRigSpecSource) return "";
+    let source: string | null;
+    try {
+      source = this.deps.getRigSpecSource(rigId);
+    } catch {
+      return "";
+    }
+    if (source === null) {
+      return advice === "seat"
+        ? " This rig records no spec source, so a seat started fresh replays the startup files saved at its last successful launch."
+        : " Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; this rig records no spec source to re-read.";
+    }
+    return advice === "seat"
+      ? ` A seat started fresh re-reads this rig's spec (${source}) as it is now; add --startup-from stored to give it the startup files saved at its last successful launch instead.`
+      : ` Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; to start a seat on this rig's spec (${source}) as it is now instead, list it: rig up ${shellQuote(rigName)} --existing --fresh <seat>.`;
   }
 
   private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {

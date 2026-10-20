@@ -9,6 +9,7 @@ import type { RigRepository } from "../domain/rig-repository.js";
 import { summarizeSnapshot, type SnapshotRepository } from "../domain/snapshot-repository.js";
 import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
+import { STARTUP_FROM_VALUES, type StartupFrom } from "../domain/seat-startup-source.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
@@ -96,7 +97,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
  *
  * Shared helper used by both /api/up (rig_name) and /api/rigs/:rigId/up (Explorer).
  */
-async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[], plan?: boolean, nonInterruptive?: boolean) {
+async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[], plan?: boolean, nonInterruptive?: boolean, startupFrom?: StartupFrom) {
   const { snapshotRepo, restoreOrchestrator } = deps;
 
   const rig = deps.rigRepo.getRig(rigId);
@@ -156,6 +157,8 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     fsOps: { exists: (p: string) => fs.existsSync(p) },
     // OPR.0.3.4.2 — operation B opt-in seats from `rig up --existing --fresh`.
     freshLogicalIds,
+    // OF-32: where the seats this restore starts fresh take their startup files from (default: the rig's spec now).
+    ...(startupFrom ? { startupFrom } : {}),
     nonInterruptive,
     snapshotSelection,
   });
@@ -211,6 +214,12 @@ upRoutes.post("/", async (c) => {
   const onExisting = body["onExisting"] === "fresh" ? "fresh" as const : undefined;
   // OF-32: a spec library link the CLI resolved to its real path; recorded on the rig when it names the same file.
   const specSourceRef = typeof body["specSourceRef"] === "string" && body["specSourceRef"] ? body["specSourceRef"] : undefined;
+  // OF-32 stage 3: `rig up <rig> --existing --startup-from stored` replays each fresh seat's saved startup files
+  // instead of re-reading the rig's spec. It means something only when this call restores an existing rig.
+  const startupFrom = body["startupFrom"];
+  if (startupFrom !== undefined && !STARTUP_FROM_VALUES.includes(startupFrom as StartupFrom)) {
+    return c.json({ ok: false, code: "invalid_startup_from", error: `startupFrom must be one of: ${STARTUP_FROM_VALUES.join(", ")}.` }, 400);
+  }
 
   if (!sourceRef) {
     return c.json({ error: "sourceRef is required" }, 400);
@@ -238,7 +247,10 @@ upRoutes.post("/", async (c) => {
       const freshLogicalIds = Array.isArray(body["freshLogicalIds"])
         ? (body["freshLogicalIds"] as unknown[]).filter((v): v is string => typeof v === "string")
         : undefined;
-      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds, plan, nonInterruptive) as any;
+      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds, plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
+    }
+    if (startupFrom !== undefined) {
+      return c.json({ ok: false, code: "invalid_startup_from", error: "startupFrom applies only when rig up restores an existing rig (rig up <rig-name> --existing); a new rig has no saved startup files." }, 400);
     }
 
     // File-based: resolve path now
