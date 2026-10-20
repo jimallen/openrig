@@ -288,12 +288,48 @@ describe("OF-42 seat hook-trust copy", () => {
     expect(logs[0]).toContain("replaced");
   });
 
-  it("a seat record switched off while the shared one is not is brought back in line (the seat mirrors the shared record)", async () => {
+  // Disabled wins (re-check of dd6dcb78): Codex supports switching a hook off for ONE seat. That
+  // is Jim's setting; a sync must never turn the hook back on.
+  it("a hook switched off only in this seat stays off across a sync (nothing rewritten, nothing logged)", async () => {
     const home0 = await launch();
     const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
-    await fs.writeFile(sharedConfig, HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH) + `\n${entry(seatKey, BASH_GUARD_HASH)}enabled = false\n`);
+    const seeded = HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH) + `\n${entry(seatKey, BASH_GUARD_HASH)}enabled = false\n`;
+    await fs.writeFile(sharedConfig, seeded);
     await launch();
-    expect(enabledAt(await read(), seatKey)).toBeUndefined();
+    expect(await read()).toBe(seeded);
+    expect(enabledAt(await read(), seatKey)).toBe("false");
+    expect(logs).toEqual([]);
+  });
+
+  it("refreshing a stale seat hash keeps a seat-local enabled = false", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    await fs.writeFile(sharedConfig, HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH) + `\n${entry(seatKey, STALE)}enabled = false\n`);
+    await launch();
     expect(hashAt(await read(), seatKey)).toBe(BASH_GUARD_HASH);
+    expect(enabledAt(await read(), seatKey)).toBe("false");
+    expect(logs).toHaveLength(1);
+  });
+
+  // (a) Codex 0.162.1 reads exactly trusted_hash and a boolean enabled; nothing else is copied.
+  it("copies only trusted_hash and a boolean enabled: other fields and a non-boolean enabled stay out of the seat record", async () => {
+    await fs.writeFile(sharedConfig, HOOKS + `${entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH)}foo = 5\nenabled = "false"\n`);
+    const home = await launch();
+    const block = blockAt(await read(), `${await seatKeyOf(home)}:pre_tool_use:0:0`);
+    expect(block).toBeDefined();
+    expect(block).toContain(`trusted_hash = "${BASH_GUARD_HASH}"`);
+    expect(block).not.toContain("foo");
+    expect(block).not.toContain("enabled");
+  });
+
+  // (c) The post-write check: record-shaped text in a string must not be written into.
+  it("a fake seat-record header inside a string gets no copy and no log (the post-write check)", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const seeded = `junk = '''\n[hooks.state.${JSON.stringify(seatKey)}]\n'''\n\n` + HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH);
+    await fs.writeFile(sharedConfig, seeded);
+    await launch();
+    expect(await read()).toBe(seeded);
+    expect(logs).toEqual([]);
   });
 });

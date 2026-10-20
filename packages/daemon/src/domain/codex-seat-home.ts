@@ -137,8 +137,11 @@ function currentHookHashes(content: string): Map<string, string> {
   return out;
 }
 
-/** The scalar fields of one `[hooks.state."<key>"]` record (trusted_hash, enabled, ...). */
-type HookStateRecord = Record<string, string | number | boolean>;
+/**
+ * The two fields of a `[hooks.state."<key>"]` record that Codex 0.162.1 reads (measured: every other
+ * field is ignored, and a non-boolean `enabled` makes Codex drop every hook in the file).
+ */
+interface HookStateRecord { trusted_hash?: string; enabled?: boolean }
 
 /**
  * Every `[hooks.state."<key>"]` record, read from the PARSED document, so text that merely looks
@@ -157,10 +160,10 @@ function hookStateRecords(content: string): Map<string, HookStateRecord> {
   if (!state || typeof state !== "object") return out;
   for (const [key, value] of Object.entries(state as Record<string, unknown>)) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const { trusted_hash: hash, enabled } = value as Record<string, unknown>;
     const rec: HookStateRecord = {};
-    for (const [field, v] of Object.entries(value as Record<string, unknown>)) {
-      if ((typeof v === "string" || typeof v === "number" || typeof v === "boolean") && /^[A-Za-z0-9_-]+$/.test(field)) rec[field] = v;
-    }
+    if (typeof hash === "string") rec.trusted_hash = hash;
+    if (typeof enabled === "boolean") rec.enabled = enabled;
     out.set(key, rec);
   }
   return out;
@@ -187,8 +190,13 @@ function setHookStateField(content: string, key: string, field: string, value: s
   return lines.join("\n");
 }
 
-const sameFields = (a: HookStateRecord | undefined, b: HookStateRecord): boolean =>
-  !!a && a["trusted_hash"] === b["trusted_hash"] && a["enabled"] === b["enabled"];
+/**
+ * A seat record needs nothing when it holds the shared hash and is off wherever the shared record is
+ * off. "Disabled wins": `enabled = false` flows from shared to seat, but a seat-local
+ * `enabled = false` is Jim's setting for that seat and is never cleared or overwritten.
+ */
+const seatRecordIsCurrent = (seat: HookStateRecord | undefined, shared: HookStateRecord): boolean =>
+  !!seat && seat.trusted_hash === shared.trusted_hash && !(shared.enabled === false && seat.enabled !== false);
 
 export function planCodexHookTrustMirror(
   content: string,
@@ -203,21 +211,20 @@ export function planCodexHookTrustMirror(
   for (const [key, shared] of records) {
     if (!key.startsWith(`${sharedKeySource}:`)) continue;
     const suffix = key.slice(sharedKeySource.length);
-    const sharedHash = shared["trusted_hash"];
+    const sharedHash = shared.trusted_hash;
     const want = current.get(suffix.slice(1));
     if (typeof sharedHash !== "string" || want === undefined || sharedHash !== want) continue; // unverifiable: copy nothing
     const seatKey = `${seatKeySource}${suffix}`;
     const have = records.get(seatKey);
-    // The seat record is the shared record's own, field for field (its hash, and `enabled` so a
-    // hook Jim switched off stays off), never a recomputed value: Codex stays the only arbiter.
-    if (sameFields(have, shared)) continue;
+    // The seat record carries the shared record's own hash (never a recomputed value: Codex stays the
+    // only arbiter) and, when the shared hook is switched off, that `enabled = false` too.
+    if (seatRecordIsCurrent(have, shared)) continue;
     let candidate = upsertCodexHookTrust(next, seatKey, sharedHash);
-    for (const [field, value] of Object.entries(shared)) {
-      if (field !== "trusted_hash") candidate = setHookStateField(candidate, seatKey, field, value);
-    }
-    if (shared["enabled"] === undefined) candidate = setHookStateField(candidate, seatKey, "enabled", undefined);
-    // A seat record the text could not express (an unusual header form) must not break the file.
-    if (!sameFields(hookStateRecords(candidate).get(seatKey), shared)) continue;
+    if (shared.enabled === false) candidate = setHookStateField(candidate, seatKey, "enabled", false);
+    // A seat record the text could not express (an unusual header form, a fake header inside a
+    // string) must not be written into: the parsed result has to be the record we meant.
+    const written = hookStateRecords(candidate).get(seatKey);
+    if (!seatRecordIsCurrent(written, shared)) continue;
     next = candidate;
     copies.push({ key: seatKey, hash: sharedHash, action: have === undefined ? "copied" : "replaced" });
   }
