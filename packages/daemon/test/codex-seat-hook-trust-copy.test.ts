@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { parse as parseToml } from "smol-toml";
 import { ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
 
 // OF-42. A user-authored hook (bash-guard) in the shared ~/.codex/config.toml is trusted by
@@ -387,5 +388,46 @@ describe("OF-42 seat hook-trust copy", () => {
     await fs.writeFile(sharedConfig, file(`# seat note\ntrusted_hash = "${STALE}"\nnote = "x"\n`));
     await launch();
     expect(await read()).toBe(file(`enabled = false\n# seat note\ntrusted_hash = "${BASH_GUARD_HASH}"\nnote = "x"\n`));
+  });
+
+  // The guard must see an INDENTED header-shaped line too (the scanner alone would let a real record be appended).
+  it("an indented header-shaped line inside a string is also not a record and gets nothing written beside it", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const seeded = `junk = '''\n  [hooks.state.${JSON.stringify(seatKey)}]\n'''\n\n` + HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH);
+    await fs.writeFile(sharedConfig, seeded);
+    await launch();
+    expect(await read()).toBe(seeded);
+    expect(logs).toEqual([]);
+  });
+
+  // B1 (security review of b501b808) through the launch-time sync, which also writes OpenRig's own managed-hook records.
+  const managedBlock = "# BEGIN OPENRIG MANAGED ACTIVITY HOOKS\n" +
+    ["SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"].map((e) => `[[hooks.${e}]]\n[[hooks.${e}.hooks]]\ntype = "command"\ncommand = 'node "/r/relay.cjs"'\ntimeout = 5`).join("\n\n") +
+    "\n# END OPENRIG MANAGED ACTIVITY HOOKS\n";
+  const stateHeaders = (c: string) => c.match(/^\[ ?hooks\.state\./gm)?.length ?? 0;
+
+  it("B1: a config with a 4-quote multiline closer ahead of a bracket syncs the managed-hook records once, then not again", async () => {
+    await launch();
+    await fs.writeFile(sharedConfig, "x = ['''a'''']\n" + managedBlock);
+    await launch();
+    const first = await read();
+    await launch();
+    expect(await read()).toBe(first);
+    expect(stateHeaders(first)).toBe(4);
+    expect(() => parseToml(first)).not.toThrow();
+  });
+
+  it("a managed-hook record the writer cannot see (spaced header) is left as it is: nothing is appended that would not parse", async () => {
+    await launch();
+    await fs.writeFile(sharedConfig, managedBlock);
+    await launch();
+    const synced = await read();
+    const header = /^\[hooks\.state\.("[^"]*:session_start:0:0")\]$/m.exec(synced)!;
+    const spaced = synced.replace(header[0], `[ hooks.state.${header[1]} ]`);
+    await fs.writeFile(sharedConfig, spaced);
+    await launch();
+    expect(await read()).toBe(spaced);
+    expect(() => parseToml(spaced)).not.toThrow();
   });
 });

@@ -255,7 +255,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
     let next = content;
     for (const { key, hash } of codexActivityHookTrustRecords(content, keySource)) {
-      next = upsertCodexHookTrust(next, key, hash);
+      next = upsertVerifiedCodexHookTrust(next, key, hash);
     }
     return next;
   }
@@ -1408,6 +1408,36 @@ function upsertCodexFeaturesHooksEnabled(content: string): string {
 }
 
 /**
+ * `upsertCodexHookTrust`, but the edit is kept only when the PARSED result holds exactly the intended record:
+ * the document parses, `[hooks.state."<key>"] trusted_hash` is `hash`, and nothing else changed. Anything
+ * else (a spelling of the header the line match cannot see, a scanner error, an unparseable file) writes
+ * nothing and returns `content` as it was. The text edit is a convenience for keeping Jim's bytes; the
+ * parser decides whether it was safe.
+ */
+export function upsertVerifiedCodexHookTrust(content: string, key: string, hash: string): string {
+  const candidate = upsertCodexHookTrust(content, key, hash);
+  if (candidate === content) return content;
+  try {
+    const without = (doc: unknown): unknown => {
+      const copy = JSON.parse(JSON.stringify(doc)) as { hooks?: { state?: Record<string, unknown> } };
+      if (copy.hooks?.state) {
+        delete copy.hooks.state[key];
+        if (Object.keys(copy.hooks.state).length === 0) delete copy.hooks.state; // an emptied table is no table
+        if (Object.keys(copy.hooks).length === 0) delete copy.hooks;
+      }
+      return copy;
+    };
+    const before = parseToml(content);
+    const after = parseToml(candidate) as { hooks?: { state?: Record<string, { trusted_hash?: unknown }> } };
+    if (after.hooks?.state?.[key]?.trusted_hash !== hash) return content;
+    if (JSON.stringify(without(before)) !== JSON.stringify(without(after))) return content;
+  } catch {
+    return content;
+  }
+  return candidate;
+}
+
+/**
  * For each line, whether it BEGINS at document level — outside every string AND
  * outside every array or inline table. At document level, TOML grammar allows
  * nothing but a table header to start with `[`, so that one bit is the whole
@@ -1439,7 +1469,16 @@ export function lineStartsAtDocumentLevel(content: string): boolean[] {
         i += 2;
         continue;
       }
-      if (content.startsWith(multiline, i)) { multiline = null; i += 3; continue; }
+      if (content.startsWith(multiline, i)) {
+        // TOML allows one or two quote characters of the same kind directly before the closing
+        // delimiter (`'''a''''` holds `a'`). Taking only three left the extras to open a phantom
+        // single-line string and every later line read as nested (OF-42 N10 review B1).
+        const quote = multiline[0]!;
+        i += 3;
+        for (let extra = 0; extra < 2 && content[i] === quote; extra++) i += 1;
+        multiline = null;
+        continue;
+      }
       if (ch === "\n") out.push(false);
       i += 1;
       continue;

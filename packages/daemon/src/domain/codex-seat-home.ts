@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
+import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust, upsertVerifiedCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
  * OPR-fork: codex seats must NOT share one ~/.codex app-server environment.
@@ -230,7 +230,7 @@ export function planCodexHookTrustMirror(
     copies.push({ key: seatKey, hash: sharedHash, action: have === undefined ? "copied" : "replaced" });
   }
   for (const { key, hash } of codexActivityHookTrustRecords(next, seatKeySource)) {
-    next = upsertCodexHookTrust(next, key, hash);
+    next = upsertVerifiedCodexHookTrust(next, key, hash);
   }
   return { content: next, copies };
 }
