@@ -328,7 +328,28 @@ function draftComposerLine(lines: string[], verdict: PaneActivityClassification)
   return lines[last]!.trim();
 }
 
-export function classifyPaneActivity(paneContent: string, options: ClassifyPaneOptions = {}): PaneActivityClassification {
+// A Claude seat launched with --remote-control renders `/rc` right-aligned on the mode footer's line. When
+// another right-aligned notice ("✔ Update installed · Restart to apply") fills the width, the terminal
+// wraps `/rc` onto a line of its OWN below the footer (the 2026-10-20 exec.cos capture, OF-35). It is
+// chrome, not output: the composer is still anchored on the mode footer above it.
+const CLAUDE_WRAPPED_REMOTE_CONTROL_TRAILER = /^\s*\/rc\s*$/;
+
+/** The capture without a wrapped `/rc` indicator, when that is its last non-blank line and the line
+ *  above it is a Claude mode footer. Anything else (a `/rc` elsewhere, or under other text) is
+ *  content and is returned as given. */
+function withoutWrappedRemoteControlTrailer(paneContent: string): string {
+  const lines = paneContent.split("\n");
+  let last = lines.length - 1;
+  while (last >= 0 && lines[last]!.trim().length === 0) last--;
+  if (last < 1 || !CLAUDE_WRAPPED_REMOTE_CONTROL_TRAILER.test(lines[last]!)) return paneContent;
+  let footer = last - 1;
+  while (footer >= 0 && lines[footer]!.trim().length === 0) footer--;
+  if (footer < 0 || !CLAUDE_MODE_FOOTER.test(lines[footer]!.trim())) return paneContent;
+  return lines.slice(0, last).join("\n");
+}
+
+export function classifyPaneActivity(rawPaneContent: string, options: ClassifyPaneOptions = {}): PaneActivityClassification {
+  const paneContent = withoutWrappedRemoteControlTrailer(rawPaneContent);
   const lastNonBlank = trimPaneLines(paneContent);
   if (lastNonBlank.length === 0) {
     return { state: "unknown", reason: "empty_capture", evidence: null };
