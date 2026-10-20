@@ -8,6 +8,10 @@
 // restore says (restore's own text). Rows where restore comes up cleanly are there so the check cannot get stricter
 // by guessing.
 //
+// Not in this table: the active-occupant ambiguity gate. A snapshot with an ambiguous occupant is refused whole before
+// any seat ("No usable snapshot", snapshot-repository selectRestoreUsable), by restore and by the check alike, so the
+// gate behind it is not reachable through restore(); only the restore-side tests that call it directly pin it.
+//
 // Deployed entrypoint: startup.ts constructs RestoreOrchestrator; server.ts mounts routes/restore-check.ts and
 // routes/up.ts, which build the check and the plan from the same module restore calls (restore-seat-gates.ts).
 // A removed seat is reachable in production: `rig remove-node` (RigLifecycleService.removeNode, foreign keys ON)
@@ -84,10 +88,6 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     data.activeOccupantsByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, { kind: "absent" }]));
     data.activeSessionIdByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, null]));
   });
-  const AMBIGUOUS_OCCUPANT = (snapshotId: string) => editSnapshot(snapshotId, (data) => {
-    // Captured with two live occupant candidates: which saved session is the seat's cannot be told.
-    data.activeOccupantsByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, { kind: "ambiguous", candidateIds: data.sessions.map((session: { id: string }) => session.id) }]));
-  });
   const REMOVE_SEAT = async (_snapshotId: string, seat: { rigId: string; nodeId: string }) => {
     const bus = new EventBus(h.db);
     const lifecycle = new RigLifecycleService({
@@ -116,11 +116,6 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     { name: "G8 seat removed since the snapshot: listed", listed: true, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: REMOVE_SEAT, expected: "failed", says: "removed after this snapshot" },
     // Gate order: the runtime gate answers before the token gate, so the runtime's words are the ones restore gives.
     { name: "G9 runtime differs AND no token: restore says the runtime", listed: false, prepare: (s) => DROP_TOKEN(s.nodeId), afterSnapshot: CHANGE_RUNTIME, expected: "awaiting-decision", says: "saved startup runtime matches" },
-    // Which saved session is the seat's cannot be told: restore refuses the whole snapshot before any seat (pre-restore
-    // validation names it), so the seat gate behind it is not reached through restore(); the check is red for that
-    // reason alone and does not also claim the seat.
-    { name: "G12 ambiguous occupant: unlisted", listed: false, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: AMBIGUOUS_OCCUPANT, expected: "restore-ended" },
-    { name: "G13 ambiguous occupant: listed", listed: true, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: AMBIGUOUS_OCCUPANT, expected: "restore-ended" },
     // Pre-restore validation refuses the whole restore (the seat's own saved startup file is gone) before any seat is looked at,
     // so the runtime gate behind it never answers: the check is red for the validation blocker alone and does not also
     // claim the seat.
