@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
 import { predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
+import { predictSeatStops } from "../domain/restore-seat-gates.js";
 import type { SeatStartupSpecReader, StartupFrom } from "../domain/seat-startup-source.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
@@ -154,6 +155,7 @@ export const RESTORE_CHECK_PROBE_TIMEOUT_MS = SESSION_LIVENESS_DEADLINE_MS;
 export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Record<string, RuntimeAdapter | undefined>, specReader: SeatStartupSpecReader | null): RestoreParityDeps {
   return {
     startupToValidate: (rigId, logicalId, listed) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed }),
+    predictSeatStops: (rigId, snapshotData, listed) => predictSeatStops({ db: rigRepo.db, rigRepo }, { rigId, data: snapshotData, ...listed }),
     predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
       { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
       { rigId, ...listed, snapshot: snapshotData, exists: existsSync },

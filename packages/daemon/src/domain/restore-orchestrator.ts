@@ -1,4 +1,5 @@
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
+import { decideSeatPreLaunchGate, readContinuityRow } from "./restore-seat-gates.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -84,7 +85,7 @@ const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 // in the pure leaf module active-occupant.ts, shared with preview, snapshot
 // usability, and lifecycle projection. Imported and re-exported here so the
 // existing export surface and the execution call sites below are unchanged.
-import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, absentSeatResumeHistory, absentSeatResumeHistoryError, freshSeatLaunchCommand } from "./active-occupant.js";
+import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, absentSeatResumeHistory, freshSeatLaunchCommand } from "./active-occupant.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -994,98 +995,35 @@ export class RestoreOrchestrator {
     // logical id but has a new node id, and a write keyed by the old one violates the foreign key to `nodes`.
     const node = entry.node;
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
-    if (!liveNode) {
-      // Removed since the snapshot and not grown back. Restore does not recreate a node (the launcher reports the same
-      // "not found in rig" for it); it reports this seat failed, before anything is started or written, and goes on.
-      return {
-        nodeId: node.id,
-        logicalId: node.logicalId,
-        status: "failed",
-        error: `Node ${node.logicalId} not found in rig: it was removed after this snapshot and has not been added back, so there is no seat to restore it into. Restore does not recreate removed nodes.`,
-      };
+    // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier
+    // occupant's token, `restoring` continuity, resumable seat with no token) are decided by restore-seat-gates.ts,
+    // the function restore-check asks, so the check cannot be greener than this.
+    const continuityRow = liveNode?.podId ? readContinuityRow(this.db, liveNode.podId, liveNode.id) : undefined;
+    const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
+    const gate = decideSeatPreLaunchGate({
+      data, snapshotNodeId: node.id, logicalId: node.logicalId, live: liveNode ?? null, freshRequested,
+      rigName: this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, startupFrom: opts?.startupFrom,
+      continuityStatus: continuityRow?.status ?? null,
+    });
+    if (continuityRow?.status === "degraded" && (gate.kind === "proceed" || (gate.kind === "stop" && gate.gate === "no_token"))) {
+      warnings?.push(`Node ${node.logicalId}: continuity state is 'degraded', proceeding with caution`);
     }
+    if (gate.kind === "stop") {
+      return { nodeId: liveNode?.id ?? node.id, logicalId: node.logicalId, status: gate.status, error: gate.error };
+    }
+    if (gate.kind === "skip_restoring") {
+      warnings?.push(`Node ${node.logicalId}: continuity state is 'restoring', skipping`);
+      return { nodeId: liveNode?.id ?? node.id, logicalId: node.logicalId, status: "fresh" };
+    }
+    // A removed seat stopped above, so a live node is what proceeds.
+    if (!liveNode) throw new Error(`restore gate let ${node.logicalId} through with no live node`);
     const nodeId = liveNode.id;
     progress.nodeId = nodeId;
 
-    // OPR.0.5.7.1 (bought ordering blocker, baton 0efd154d): D1 present-map
-    // ambiguity must be DETECTED before any continuity_state short-circuit —
-    // a pod node in 'restoring' otherwise returns a silent status "fresh"
-    // (classified running downstream) while the occupant truth is ambiguous,
-    // bypassing A1's loud-failure semantics. Resolved/none/legacy states
-    // fall through to absent-history classification and the continuity check.
+    // The pre-launch stop-and-ask classification (OPR.0.3.4.2, OPR.0.4.3.20 FR-7) ran above, before clearStaleState /
+    // launchNode, so `awaiting-decision` means ZERO sessions started and prior state untouched. Only a resolved or
+    // absent occupant reaches here (ambiguity stopped above).
     const occupantResolution = resolveActiveSnapshotSession(data, node.id);
-    if (occupantResolution.kind === "ambiguous") {
-      return {
-        nodeId,
-        logicalId: node.logicalId,
-        status: "failed",
-        error: activeOccupantAmbiguityError(occupantResolution.candidateIds, occupantResolution.detail),
-      };
-    }
-
-    const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
-    const runtimeError = restoreRuntimeCompatibilityError(liveNode.runtime,
-      data.nodeStartupContext?.[node.id]?.runtime);
-    if (runtimeError) {
-      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: runtimeError };
-    }
-
-    // Classify absent-seat history before the continuity short-circuit: a
-    // restoring seat must not report fresh while its forecast awaits a decision.
-    const priorWithToken = occupantResolution.kind === "none" && !freshRequested
-      ? absentSeatResumeHistory(data.sessions, node.id)
-      : null;
-    if (priorWithToken) {
-      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, opts?.startupFrom) };
-    }
-
-    // Consult live continuity state BEFORE clearing stale state
-    if (liveNode.podId) {
-      const continuityRow = this.db.prepare(
-        "SELECT status FROM continuity_state WHERE pod_id = ? AND node_id = ?"
-      ).get(liveNode.podId, nodeId) as { status: string } | undefined;
-      if (continuityRow) {
-        if (continuityRow.status === "restoring") {
-          warnings?.push(`Node ${node.logicalId}: continuity state is 'restoring', skipping`);
-          return { nodeId, logicalId: node.logicalId, status: "fresh" };
-        }
-        if (continuityRow.status === "degraded") {
-          warnings?.push(`Node ${node.logicalId}: continuity state is 'degraded', proceeding with caution`);
-        }
-      }
-    }
-
-    // OPR.0.3.4.2 (A) + OPR.0.4.3.20 FR-7 — PRE-LAUNCH stop-and-ask classification,
-    // BEFORE clearStaleState / launchNode, so `awaiting-decision` means ZERO session
-    // started and prior state is untouched.
-    //
-    // FR-7 (Gap 1): a `resume_if_possible` seat that HAD a session (a snapshot
-    // session row exists) but has NO usable token stops here — whether or not a
-    // resume SOURCE was recorded. The old scope required a recorded source, so a
-    // crashed seat with a session row but no captured token silently fresh-primed
-    // (identity-replaced while looking healthy). A node with NO session row at all
-    // never ran / has nothing to resume → it legitimately fresh-primes (falls
-    // through). The ONLY default fresh-prime is now: no prior session, a genuinely
-    // non-resume policy (relaunch_fresh / checkpoint_only), or explicit `--fresh`.
-    {
-      // OPR.0.5.7.1 D1 — the active occupant was RESOLVED once at the top of
-      // this function (before the continuity consult); ambiguity already
-      // returned there, so only resolved/none reach here.
-      const snapSession = occupantResolution.kind === "resolved" ? occupantResolution.session : null;
-      const policy = snapSession?.restorePolicy ?? "resume_if_possible";
-      const resumeSourceRecorded = !!snapSession?.resumeType && snapSession.resumeType !== "none";
-      if (policy === "resume_if_possible" && snapSession && !snapSession.resumeToken && !freshRequested) {
-        const sourceNote = resumeSourceRecorded
-          ? `resume source '${snapSession?.resumeType}' recorded but no token available`
-          : `no resume token was captured for this seat`;
-        return {
-          nodeId,
-          logicalId: node.logicalId,
-          status: "awaiting-decision",
-          error: `Original session unresumable: ${sourceNote}. No session was started. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
-        };
-      }
-    }
 
     // Capture prior state for compensation
     const priorState = this.captureNodeState(nodeId, rigId);

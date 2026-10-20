@@ -6,6 +6,7 @@ import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import { validatePreRestore } from "./restore-preconditions.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
+import type { SeatStop } from "./restore-seat-gates.js";
 import type { SessionLiveness } from "./session-liveness.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
@@ -187,6 +188,9 @@ export interface RestoreParityDeps {
     { override: "resolved_at_launch" | NodeStartupSnapshot | undefined; replayProblem: string | null };
   /** predictListedSeatRefusals: logical id -> the text restore reports after "Fresh start refused: ". */
   predictListedSeatRefusals(rigId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: "spec" | "stored" }): Promise<Map<string, string>>;
+  /** predictSeatStops (restore-seat-gates.ts): logical id -> why restore stops that seat before its startup files are
+   *  looked at (removed seat, runtime differs from the snapshot's, resumable seat with no token, ...). */
+  predictSeatStops(rigId: string, snapshotData: Snapshot["data"], listed: { freshLogicalIds?: string[]; startupFrom?: "spec" | "stored" }): Map<string, SeatStop>;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -591,6 +595,25 @@ export class RestoreCheckService {
           message: `Restore cannot replay the saved startup context of ${logicalId}: ${problem}. It would end the restore or fail that seat after its launch.`,
           remediation: `List the seat so restore re-reads its spec instead of replaying the saved context: rig up --existing ${rig.name} --fresh ${logicalId}`,
         });
+      }
+      // OF-40: the gates restore runs before it looks at a seat's startup files, asked of the function restore calls.
+      // Restore reaches them only when pre-restore validation passed, so they are predicted only then (a validation
+      // blocker already makes this red, and a snapshot that malformed cannot be walked).
+      if (parity && blockers.length === 0) {
+        for (const [logicalId, stop] of parity.predictSeatStops(rig.rigId, input.snapshot.data, listed)) {
+          blockers.push({
+            code: stop.gate === "node_removed" ? "seat_removed" : "seat_stopped_before_launch",
+            severity: "critical",
+            logicalId,
+            target: "restore-seat-gate",
+            message: `Restore would not start ${logicalId} (${stop.status}): ${stop.error}`,
+            remediation: stop.gate === "node_removed"
+              ? `Add ${logicalId} back to the rig, or restore a snapshot taken after it was removed; restore does not recreate removed nodes`
+              : stop.gate === "runtime_mismatch"
+                ? `Restore a snapshot whose saved startup runtime matches ${logicalId}'s current runtime`
+                : `Decide for ${logicalId} what restore must not guess: ${freshSeatLaunchCommand(logicalId, rig.name, opts.startupFrom)}, or restore the original session manually`,
+          });
+        }
       }
       if (listedRefusals instanceof Error) {
         // The prediction could not be asked. Never green: say so.

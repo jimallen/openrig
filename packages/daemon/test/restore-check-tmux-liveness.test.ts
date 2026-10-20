@@ -77,7 +77,9 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
   function seedRig(rigName: string, dbState: { up: "running" | "exited"; down: "running" | "exited" }): { rigName: string; rigId: string } {
     const rig = rigRepo.createRig(rigName);
     for (const [logical, state] of [["up", dbState.up], ["down", dbState.down]] as const) {
-      const node = rigRepo.addNode(rig.id, logical, { runtime: "terminal" });
+      // A terminal seat is `checkpoint_only` in production (it never has a resume token); the default policy would make
+      // restore stop each seat for a decision (OF-40), which is not what these rows are about.
+      const node = rigRepo.addNode(rig.id, logical, { runtime: "terminal", restorePolicy: "checkpoint_only" });
       const session = sessionRegistry.registerSession(node.id, `${logical}@${rigName}`);
       sessionRegistry.updateStatus(session.id, state);
       if (state === "running") sessionRegistry.updateStartupStatus(session.id, "ready");
