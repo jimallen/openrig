@@ -46,7 +46,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
-import { noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
+import { noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 
@@ -1416,14 +1416,16 @@ export class RestoreOrchestrator {
     const isPodAware = !!node.podId;
 
     const startupCtx = data.nodeStartupContext?.[snapshotNodeId] ?? null;
-    // OF-36: `rig down` copies a seat's saved context verbatim, so this copy can be any JSON. A copy that is not a valid
-    // startup setup is never dereferenced: what a fresh seat replays was chosen before its launch (a usable copy, or a
-    // refusal), a resume's contained replay reads only its runtime, and the resume steps below that read its lists
-    // (activity hooks, missing guidance blocks) take nothing from it.
-    const copyProblem = startupCtx ? startupContextUnusable(startupCtx, null) : null;
-    const resumeCtx = copyProblem ? null : startupCtx;
-    if (copyProblem && resumeRequested) {
-      warnings?.push(`Restore: ${node.logicalId}: this snapshot's copy of its startup context cannot be used (${copyProblem}), so this resume takes nothing from it (no saved activity hooks or missing guidance blocks are put back).`);
+    // OF-36: `rig down` copies a seat's saved context verbatim, so this copy can be any JSON. What a fresh seat replays was
+    // chosen before its launch (a usable copy, or a refusal), and a resume's contained replay reads only its runtime. The
+    // resume steps below read the copy's projection list as they always did (leniently: only its activity-hook entry is
+    // used); a list that is not a list, or a member that is not an object, is not dereferenced.
+    const projection = startupCtx ? (startupCtx as { projectionEntries?: unknown }).projectionEntries : undefined;
+    const resumeCtx = startupCtx && Array.isArray(projection)
+      ? { ...startupCtx, projectionEntries: projection.filter((entry) => !!entry && typeof entry === "object" && !Array.isArray(entry)) }
+      : null;
+    if (startupCtx && !resumeCtx && resumeRequested) {
+      warnings?.push(`Restore: ${node.logicalId}: this snapshot's copy of its startup context has no list of projection entries, so this resume takes nothing from it (no saved activity hooks or missing guidance blocks are put back).`);
     }
     // Restore only the saved activity selection before either native resume path.
     // This also heals settings stripped by older restores. The entry is a marker:
