@@ -8,6 +8,8 @@
 // "No fresh decision / no seat pipeline" is measured as: the spec reader never called, no tmux session created, no
 // startup file delivered, no harness launched, and a fingerprint of the sessions, saved startup contexts, node versions,
 // snapshots and events table identical before and after. Test-only; the harness is a copy of restore-fresh-reread's.
+// Boundary: these rows do not assert how many seats are probed on the live path (probing stops at the first live seat);
+// that is pinned by restore-orchestrator.test.ts "N-2: probing stops at the first live seat (1 probe of 3)".
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -364,5 +366,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
     expect(firstProbe).toBeLessThan(Math.min(...vi.mocked(tmux.createSession).mock.invocationCallOrder));
     // Both seats' sessions were started (positive control for the absence rows above).
     expect(vi.mocked(tmux.createSession)).toHaveBeenCalledTimes(2);
+    // Positive control for the `restore.started` == 0 checks in R1 and R2: a restore that proceeds emits it exactly once.
+    expect(db.prepare("SELECT count(*) AS n FROM events WHERE type = 'restore.started'").get()).toEqual({ n: 1 });
   });
 });
