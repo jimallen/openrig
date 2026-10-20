@@ -52,7 +52,8 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     rigRepo = new RigRepository(db);
     service = new SeatLifecycleService({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: fakeTmux() });
     root = realpathSync(mkdtempSync(join(tmpdir(), "mcp-switch-")));
-    mkdirSync(join(root, "opt"));
+    mkdirSync(join(root, "opt"), { mode: 0o755 });
+    chmodSync(join(root, "opt"), 0o755); // independent of a 002 umask: the placement rule refuses group-writable dirs
     mcpls = join(root, "opt", "mcpls");
     writeFileSync(mcpls, "#!/bin/sh\nexit 0\n");
     chmodSync(mcpls, 0o755);

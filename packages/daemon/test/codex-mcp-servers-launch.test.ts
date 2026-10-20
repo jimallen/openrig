@@ -20,7 +20,9 @@ import type { SeatMcpSelection } from "../src/domain/codex-mcp-servers.js";
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "mcp-launch-")));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 const MCPLS = join(scratch, "opt", "mcpls");
-execFileSync("/bin/mkdir", ["-p", join(scratch, "opt")]);
+// Explicit modes: the placement rule refuses group-writable directories, and a umask of 002 (Ubuntu's default with
+// user-private groups, as on Sparky) would otherwise make the fixtures themselves unsafe.
+execFileSync("/bin/mkdir", ["-p", "-m", "755", join(scratch, "opt")]);
 writeFileSync(MCPLS, "#!/bin/sh\nexit 0\n");
 chmodSync(MCPLS, 0o755);
 // Prints its own argv as JSON: stands in for codex so the rendered command can run through a real shell.
@@ -187,6 +189,7 @@ describe("placement: content another principal controls never chooses the progra
   function exe(path: string, mode = 0o755): string {
     execFileSync("/bin/mkdir", ["-p", join(path, "..")]);
     writeFileSync(path, "#!/bin/sh\nexit 0\n");
+    execFileSync("/bin/chmod", ["-R", "go-w", base]); // independent of the host umask (see the opt/ note above)
     chmodSync(path, mode);
     return path;
   }
