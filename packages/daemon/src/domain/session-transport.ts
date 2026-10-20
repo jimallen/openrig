@@ -334,18 +334,19 @@ function draftComposerLine(lines: string[], verdict: PaneActivityClassification)
 // chrome, not output: the composer is still anchored on the mode footer above it.
 const CLAUDE_WRAPPED_REMOTE_CONTROL_TRAILER = /^\s*\/rc\s*$/;
 
-/** The capture without a wrapped `/rc` indicator, when that is its last non-blank line and the line
- *  above it is a Claude mode footer. Anything else (a `/rc` elsewhere, or under other text) is
- *  content and is returned as given. */
+/** The capture without a wrapped `/rc` indicator, when that is the last non-blank line (ignoring the
+ *  known Claude warning rows that render below the footer, CLAUDE_STATUS_WARNINGS) and the line above it
+ *  is a Claude mode footer. Anything else (a `/rc` elsewhere, under other text, or under an unknown row)
+ *  is content and is returned as given. Only the `/rc` line is removed; the warning rows stay. */
 function withoutWrappedRemoteControlTrailer(paneContent: string): string {
   const lines = paneContent.split("\n");
   let last = lines.length - 1;
-  while (last >= 0 && lines[last]!.trim().length === 0) last--;
+  while (last >= 0 && (lines[last]!.trim().length === 0 || CLAUDE_STATUS_WARNINGS.some((pattern) => pattern.test(lines[last]!.trim())))) last--;
   if (last < 1 || !CLAUDE_WRAPPED_REMOTE_CONTROL_TRAILER.test(lines[last]!)) return paneContent;
   let footer = last - 1;
   while (footer >= 0 && lines[footer]!.trim().length === 0) footer--;
   if (footer < 0 || !CLAUDE_MODE_FOOTER.test(lines[footer]!.trim())) return paneContent;
-  return lines.slice(0, last).join("\n");
+  return [...lines.slice(0, last), ...lines.slice(last + 1)].join("\n");
 }
 
 export function classifyPaneActivity(rawPaneContent: string, options: ClassifyPaneOptions = {}): PaneActivityClassification {
