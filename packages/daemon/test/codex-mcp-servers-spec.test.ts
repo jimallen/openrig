@@ -142,7 +142,7 @@ describe("mcp_servers: disclosure and expansion", () => {
     if (view.state !== "generated") throw new Error(view.reason);
     expect(view.alsoRuns).toContainEqual({
       seat: "verify.ops", kind: "codex_mcp_server", pathOrRef: "/opt/mcpls/bin/mcpls", resolution: "host_at_launch",
-      trigger: 'Codex MCP server "lsp"; off by default, started at each launch of a seat instance switched on with rig seat set-mcp',
+      trigger: 'Codex MCP server "lsp"; off by default, started at each launch of a seat instance switched on with rig seat set-mcp; runs outside Codex\'s sandbox with the user\'s rights',
       sourceRefs: [{ path: "rig.yaml", field: "pods.verify.members.ops.mcp_servers.lsp" }],
     });
   });

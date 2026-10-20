@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import nodePath from "node:path";
+import { parse as parseToml } from "smol-toml";
 
 /**
  * Per-member Codex MCP servers (`mcp_servers` on a codex member of a rig spec).
@@ -10,11 +11,16 @@ import nodePath from "node:path";
  * declaration may contain (validated at spec load, again at the switch, again before a
  * launch renders it), and where its executable may live.
  *
- * Only a stdio server with a fixed command line is accepted. Every key that would let a
- * spec reach further is refused by name: an environment (`env`, `env_vars`), a network
- * transport or its credentials (`url`, `bearer_token_env_var`, `http_headers`,
- * `env_http_headers`), and a working directory (`cwd`). `enabled_tools` is required, so a
- * declaration always names the exact tools the seat gets.
+ * Only a stdio server with a fixed command line is accepted: a SPEC may set command, args,
+ * enabled_tools (required) and two timeouts, and nothing else (env, env_vars, url, headers, cwd and
+ * the other Codex server keys are refused).
+ *
+ * That is a statement about the spec, not by itself about what Codex runs. Codex MERGES a `-c
+ * mcp_servers.<name>={...}` override with a same-named server defined in any other config layer (the
+ * shared config.toml, a trusted project's `.codex/config.toml`, a selected profile); measured by the
+ * security review of 97aa027b: an `env` and `cwd` from the shared file reached the declared server.
+ * So every launch also refuses a server whose NAME is already defined in one of those layers
+ * (codexConfigServerNames; names only, values are never kept).
  */
 export interface CodexMcpServerDeclaration {
   command: string;
@@ -279,16 +285,24 @@ export function prepareSeatMcpLaunchArgs(
   quote: (value: string) => string,
   /** The sandbox this launch actually passes (observed from its posture flags); null when a profile decides. */
   sandbox: string | null,
+  /** Server names other Codex config layers already define; asked only when a server is switched on. */
+  existingNames?: () => ReturnType<typeof codexConfigServerNames>,
 ): { ok: true; arg: string; warnings: string[] } | { ok: false; error: string } {
   if (!selection) return { ok: true, arg: "", warnings: [] };
   if (!selection.ok) return { ok: false, error: `Codex MCP servers for this seat cannot be read: ${selection.error}` };
   const servers = [...selection.servers].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   let arg = "";
   const warnings: string[] = [];
+  const taken = servers.length && existingNames ? existingNames() : { ok: true as const, names: new Map<string, string>() };
+  if (!taken.ok) return { ok: false, error: `Codex MCP servers for this seat cannot start: ${taken.error}` };
   for (const server of servers) {
     const remedy = `turn it off with: rig seat set-mcp <seat> ${server.name} off`;
     const shape = validateMcpServersBlock({ [server.name]: serializeMcpServer(server.declaration) }, "codex", "seat");
     if (shape.length) return { ok: false, error: `Codex MCP server "${server.name}" for this seat is not valid (${shape.join("; ")}); ${remedy}` };
+    const definedIn = taken.names.get(server.name);
+    if (definedIn) {
+      return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: a server named "${server.name}" is already defined in ${definedIn}, and Codex would merge that definition (its env, cwd or transport) into this one; remove or rename it there, or ${remedy}` };
+    }
     const again = `switch it on again to accept the new binary (rig seat set-mcp <seat> ${server.name} on --reason ...), or ${remedy}`;
     const place = mcpServerPlacementProblem(server.declaration, { seatCwd, specDir: server.specDir }, { requireExecutable: true });
     if (place) {
@@ -311,4 +325,40 @@ export function prepareSeatMcpLaunchArgs(
 /** The warning for a server that will run with the user's full rights on a seat whose own commands are sandboxed. */
 export function unsandboxedServerWarning(name: string, why: string): string {
   return `Codex MCP server "${name}" runs outside Codex's sandbox with your full user rights (${why}); it can do what this seat's own commands cannot.`;
+}
+
+/** The Codex config files whose `mcp_servers` tables a `-c mcp_servers.<name>` override would merge with:
+ *  the shared config.toml, a selected profile file, and every `.codex/config.toml` from the seat's working
+ *  directory up to the root (Codex reads a trusted project's; checking all of them is the stricter reading). */
+export function codexConfigLayerFiles(input: { sharedCodexHome: string; seatCwd: string; profileFile?: string | null }): string[] {
+  const files = [nodePath.join(input.sharedCodexHome, "config.toml")];
+  if (input.profileFile) files.push(input.profileFile);
+  let d = nodePath.resolve(input.seatCwd);
+  for (;;) {
+    files.push(nodePath.join(d, ".codex", "config.toml"));
+    const up = nodePath.dirname(d);
+    if (up === d) break;
+    d = up;
+  }
+  return files;
+}
+
+/** Server NAMES already defined in those files (name -> first file defining it). Each existing file is
+ *  parsed and only the keys of its `mcp_servers` table are kept; no value is returned, logged or stored. A
+ *  file that exists but cannot be read or parsed is an error: a same-named server cannot be ruled out. */
+export function codexConfigServerNames(files: string[]): { ok: true; names: Map<string, string> } | { ok: false; error: string } {
+  const names = new Map<string, string>();
+  for (const file of files) {
+    if (!existsSync(file)) continue;
+    let table: unknown;
+    try {
+      table = (parseToml(readFileSync(file, "utf-8")) as Record<string, unknown>)["mcp_servers"];
+    } catch (err) {
+      return { ok: false, error: `${file} cannot be read to rule out a same-named server (${(err as Error).message.split("\n")[0]})` };
+    }
+    if (table && typeof table === "object" && !Array.isArray(table)) {
+      for (const name of Object.keys(table)) if (!names.has(name)) names.set(name, file);
+    }
+  }
+  return { ok: true, names };
 }

@@ -310,7 +310,7 @@ export function describeBundleBehaviour(input: DescribeBundleInput): BundleBehav
         for (const [name, server] of Object.entries(object(member.mcp_servers))) {
           const command = text(object(server).command);
           view.alsoRuns.push({ seat, kind: "codex_mcp_server", pathOrRef: command ?? name, resolution: "host_at_launch",
-            trigger: `Codex MCP server "${name}"; off by default, started at each launch of a seat instance switched on with rig seat set-mcp`,
+            trigger: `Codex MCP server "${name}"; off by default, started at each launch of a seat instance switched on with rig seat set-mcp; runs outside Codex's sandbox with the user's rights`,
             sourceRefs: [{ path: rigPath, field: `pods.${pod.id}.members.${member.id}.mcp_servers.${name}` }] });
         }
       }

@@ -58,7 +58,8 @@ const kinds = ["fresh", "fork", "resume", "restore", "last"] as const;
 type Kind = typeof kinds[number];
 const cwd = "/seat-dir";
 
-function fixture(kind: Kind, selection: SeatMcpSelection | undefined, opts: { posture?: "floor" | "full_bypass"; profile?: string; nodeId?: string } = {}) {
+function fixture(kind: Kind, selection: SeatMcpSelection | undefined, opts: { posture?: "floor" | "full_bypass"; profile?: string; nodeId?: string; names?: Map<string, string> } = {}) {
+  const names = opts.names ? () => ({ ok: true as const, names: opts.names! }) : undefined;
   const tmux = mockTmux();
   const nodeId = opts.nodeId ?? "n1";
   const reader = selection ? vi.fn((id: string) => (id === "n1" ? selection : { ok: true as const, servers: [] })) : undefined;
@@ -66,8 +67,9 @@ function fixture(kind: Kind, selection: SeatMcpSelection | undefined, opts: { po
     tmux, fsOps: mockFs(), listProcesses: () => [], sleep: async () => {},
     verifyProfilePreflight: async (name) => ({ ok: true, profile: name }), resolveGitAddDirs: async () => [],
     ...(reader ? { readSeatMcpServers: reader } : {}),
+    ...(names ? { existingMcpServerNames: names } : {}),
   } as ConstructorParameters<typeof CodexRuntimeAdapter>[0]);
-  const restore = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, exec: async () => "" });
+  const restore = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, exec: async () => "", ...(names ? { existingMcpServerNames: names } : {}) });
   const posture = opts.posture ?? "floor";
   const binding: NodeBinding = {
     id: "b1", nodeId, tmuxSession: "r01-ops", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
@@ -268,4 +270,52 @@ describe("unsandboxed-server warning on every launch path", () => {
       } finally { warn.mockRestore(); }
     });
   }
+});
+
+// Security review of 97aa027b, N2: Codex merges `-c mcp_servers.<name>` with a same-named server from any other
+// config layer, so a launch refuses a name another layer already defines.
+describe("a server name another Codex config layer defines is refused (security review N2)", () => {
+  for (const kind of kinds) {
+    it(`${kind}: refused naming the file, nothing sent; a different name renders`, async () => {
+      const taken = fixture(kind, ON, { names: new Map([["lsp", "/home/u/.codex/config.toml"]]) });
+      const r = await taken.run() as { ok: boolean; error?: string; message?: string };
+      expect(r.ok).toBe(false);
+      expect(r.error ?? r.message).toContain('a server named "lsp" is already defined in /home/u/.codex/config.toml, and Codex would merge that definition');
+      expect(taken.commands()).toEqual([]);
+      const free = fixture(kind, ON, { names: new Map([["other", "/home/u/.codex/config.toml"]]) });
+      await free.run();
+      expect(free.commands()[0]).toContain(EXPECTED);
+    });
+  }
+});
+
+describe("codexConfigLayerFiles / codexConfigServerNames read names only", () => {
+  const layers = join(scratch, "layers");
+  it("finds a same-named server in the shared file, a profile and a project .codex layer above the seat", async () => {
+    const { codexConfigLayerFiles, codexConfigServerNames } = await import("../src/domain/codex-mcp-servers.js");
+    execFileSync("/bin/mkdir", ["-p", join(layers, "home"), join(layers, "proj", ".codex"), join(layers, "proj", "seat")]);
+    writeFileSync(join(layers, "home", "config.toml"), 'model = "x"\n[mcp_servers.lsp]\ncommand = "/bin/true"\nenv = { SECRET = "s3cr3t" }\n');
+    writeFileSync(join(layers, "home", "p.config.toml"), '[mcp_servers.fromprofile]\ncommand = "/bin/true"\n');
+    writeFileSync(join(layers, "proj", ".codex", "config.toml"), '[mcp_servers.fromproject]\ncommand = "/bin/true"\n');
+    const files = codexConfigLayerFiles({ sharedCodexHome: join(layers, "home"), seatCwd: join(layers, "proj", "seat"), profileFile: join(layers, "home", "p.config.toml") });
+    const result = codexConfigServerNames(files);
+    expect(result).toEqual({ ok: true, names: new Map([
+      ["lsp", join(layers, "home", "config.toml")],
+      ["fromprofile", join(layers, "home", "p.config.toml")],
+      ["fromproject", join(layers, "proj", ".codex", "config.toml")],
+    ]) });
+    expect(JSON.stringify([...(result as { names: Map<string, string> }).names])).not.toContain("s3cr3t");
+  });
+  it("an unparseable layer is an error, not an empty answer", async () => {
+    const { codexConfigServerNames } = await import("../src/domain/codex-mcp-servers.js");
+    execFileSync("/bin/mkdir", ["-p", join(layers, "bad")]);
+    writeFileSync(join(layers, "bad", "config.toml"), "[mcp_servers.lsp\n");
+    const r = codexConfigServerNames([join(layers, "bad", "config.toml")]);
+    expect(r.ok).toBe(false);
+  });
+  it("startup wires the same names reader into both Codex launch adapters", () => {
+    const lines = readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8").split("\n");
+    expect(lines.find((l) => l.includes("new CodexRuntimeAdapter("))).toContain("existingMcpServerNames,");
+    expect(lines.find((l) => l.includes("new CodexResumeAdapter("))).toContain("existingMcpServerNames });");
+  });
 });
