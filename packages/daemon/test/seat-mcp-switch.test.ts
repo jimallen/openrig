@@ -128,6 +128,9 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     if (label === "no actor") actor = " ";
     const result = await service.setMcpServer({ seatRef: s.ref, server, state: "on", reason: "pilot", actor });
     expect(result).toMatchObject({ ok: false, code });
+    // The placement guard itself names a missing binary (battery M21: with only the checksum step left, the code
+    // was the same and the row could not tell which guard refused).
+    if (label === "a command that does not exist") expect((result as { message: string }).message).toContain(`its command ${mcpls} does not exist`);
     expect(column(s.node.id)).toBeNull();
     expect(events()).toEqual([]);
   });
