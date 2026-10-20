@@ -160,7 +160,10 @@ export function absentSeatResumeHistory<T extends { id: string; nodeId: string; 
  *  per-seat door: `rig seat launch` touches only that seat and works whether its siblings are live or not.
  *  `rig up --existing <rig> --fresh <seat>` is NOT offered: restore refuses a rig with any live seat
  *  (`rig_not_stopped`, HTTP 409), and a restore that leaves one seat awaiting a decision has normally just
- *  started its siblings. The seat ref is shell-quoted; `<why>` is the operator's audit reason. */
+ *  started its siblings. The seat ref is shell-quoted; `<why>` is the operator's audit reason.
+ *  (The one place `rig up --existing` is named is not a fresh-start suggestion but a measured non-recommendation: the
+ *  malformed-startup-context guidance in seat-startup-source.ts says why `rig down` + `rig up --existing --fresh` does not
+ *  reliably heal an unreadable saved row.) */
 export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: "spec" | "stored"): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
   // OF-32: a fresh seat re-reads its rig's spec by default. An operator who chose `--startup-from stored` for this
