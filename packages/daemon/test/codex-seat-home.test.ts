@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -109,18 +110,29 @@ describe("codex-seat-home", () => {
 
 describe("seat hook trust follows the shared config's trust", () => {
   const entry = (key: string, hash: string) => `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(hash)}\n`;
+  // OF-42: trust is only mirrored when its hash is the one Codex computes now for a hook that
+  // is in the file, so these fixtures carry real hooks. The hashes restate Codex's recipe
+  // (sha256 of the compact sorted-key JSON of the event, matcher and handler) independently.
+  const sha = (json: string) => `sha256:${createHash("sha256").update(json, "utf8").digest("hex")}`;
+  const handler = (cmd: string) => `{"async":false,"command":"${cmd}","timeout":5,"type":"command"}`;
+  const HASH_SS0 = sha(`{"event_name":"session_start","hooks":[${handler("/u/a")}]}`);
+  const HASH_SS1 = sha(`{"event_name":"session_start","hooks":[${handler("/u/b")}]}`);
+  const HASH_STOP = sha(`{"event_name":"stop","hooks":[${handler("/u/s")}]}`);
+  const hook = (event: string, cmd: string) => `[[hooks.${event}]]\n[[hooks.${event}.hooks]]\ntype = "command"\ncommand = "${cmd}"\ntimeout = 5\n\n`;
+  const SS_HOOKS = hook("SessionStart", "/u/a") + hook("SessionStart", "/u/b");
+  const STOP_HOOK = hook("Stop", "/u/s");
 
   it("mirrors each shared-path trust record to the seat's config path with the same hash", async () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
-    await fs.writeFile(sharedConfig,
-      entry(`${sharedConfig}:session_start:0:0`, "sha256:user") +
-      entry(`${sharedConfig}:session_start:1:0`, "sha256:relay") +
+    await fs.writeFile(sharedConfig, SS_HOOKS +
+      entry(`${sharedConfig}:session_start:0:0`, HASH_SS0) +
+      entry(`${sharedConfig}:session_start:1:0`, HASH_SS1) +
       entry("/elsewhere/.codex/hooks.json:stop:0:0", "sha256:other"));
     const home = await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
     const seatKey = path.join(await fs.realpath(home.path), "config.toml");
     const after = await fs.readFile(sharedConfig, "utf-8");
-    expect(after).toContain(entry(`${seatKey}:session_start:0:0`, "sha256:user").trimEnd());
-    expect(after).toContain(entry(`${seatKey}:session_start:1:0`, "sha256:relay").trimEnd());
+    expect(after).toContain(entry(`${seatKey}:session_start:0:0`, HASH_SS0).trimEnd());
+    expect(after).toContain(entry(`${seatKey}:session_start:1:0`, HASH_SS1).trimEnd());
     expect(after).not.toContain(`${seatKey}:stop:0:0`); // another file's trust is not this file's
     expect(after.match(/sha256:other/g)?.length).toBe(1);
 
@@ -130,11 +142,12 @@ describe("seat hook trust follows the shared config's trust", () => {
 
   it("carries over trust given after the seat home already existed", async () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
+    await fs.writeFile(sharedConfig, STOP_HOOK);
     const home = await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
-    await fs.appendFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:later"));
+    await fs.appendFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, HASH_STOP));
     await ensureCodexSeatHome("dev-qa@r", { openrigHome, sharedCodexHome: shared });
     const seatKey = path.join(await fs.realpath(home.path), "config.toml");
-    expect(await fs.readFile(sharedConfig, "utf-8")).toContain(entry(`${seatKey}:stop:0:0`, "sha256:later").trimEnd());
+    expect(await fs.readFile(sharedConfig, "utf-8")).toContain(entry(`${seatKey}:stop:0:0`, HASH_STOP).trimEnd());
   });
 
   it("leaves a seat-owned (non-symlinked) config alone", async () => {
@@ -173,7 +186,7 @@ describe("seat hook trust follows the shared config's trust", () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
     await fs.writeFile(sharedConfig, `[hooks.state."${sharedConfig}:\\U0001F600"]\ntrusted_hash = "sha256:x"\n`);
     await ensureCodexSeatHome("a@r", { openrigHome, sharedCodexHome: shared }); // mirror throws, swallowed
-    await fs.writeFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:ok"));
+    await fs.writeFile(sharedConfig, STOP_HOOK + entry(`${sharedConfig}:stop:0:0`, HASH_STOP));
     const home = await ensureCodexSeatHome("b@r", { openrigHome, sharedCodexHome: shared });
     const seatKey = path.join(await fs.realpath(home.path), "config.toml");
     expect(await fs.readFile(sharedConfig, "utf-8")).toContain(`${seatKey}:stop:0:0`);
@@ -181,7 +194,7 @@ describe("seat hook trust follows the shared config's trust", () => {
 
   it("concurrent seat launches lose no records and leave no temp files", async () => {
     const sharedConfig = await fs.realpath(path.join(shared, "config.toml"));
-    await fs.writeFile(sharedConfig, entry(`${sharedConfig}:stop:0:0`, "sha256:s"));
+    await fs.writeFile(sharedConfig, STOP_HOOK + entry(`${sharedConfig}:stop:0:0`, HASH_STOP));
     await fs.chmod(sharedConfig, 0o600);
     const seats = Array.from({ length: 8 }, (_, i) => `s${i}@r`);
     const homes = await Promise.all(seats.map((s) => ensureCodexSeatHome(s, { openrigHome, sharedCodexHome: shared })));
