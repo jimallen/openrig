@@ -1,5 +1,6 @@
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 import { decideSeatPreLaunchGate, readContinuityRow } from "./restore-seat-gates.js";
+import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -735,35 +736,13 @@ export class RestoreOrchestrator {
   }
 
   /**
-   * Classify ALL DB-running sessions against tmux reality without mutating DB.
-   * Scans every session (not just latest-per-node) to catch older live sessions
-   * behind newer detached rows. Returns structured classification for the caller
-   * to act on: live sessions block restore, stale sessions get marked detached
-   * AFTER the pre_restore snapshot is captured, unknown sessions fail closed.
-   * Probing stops at the first live or unreadable session: either one already refuses the restore, and
-   * on a wedged tmux every further probe would cost another full deadline. The buckets are therefore
-   * complete only when the restore may proceed (no live, no unknown).
+   * Classify ALL DB-running sessions against tmux reality without mutating DB (restore-running-sessions.ts, shared with
+   * restore-check): live sessions block restore, stale sessions get marked detached AFTER the pre_restore snapshot is
+   * captured, unknown sessions fail closed.
    */
-  private async classifyRunningSessions(rigId: string): Promise<{
-    live: string[];
-    stale: string[];
-    unknown: string[];
-  }> {
-    const live: string[] = [];
-    const stale: string[] = [];
-    const unknown: string[] = [];
-
-    for (const session of this.sessionRegistry.getSessionsForRig(rigId)) {
-      if (session.status !== "running") continue;
-      // Shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
-      // A probe that throws fails closed: classified unknown so restore blocks.
-      const liveness = await classifySessionLiveness(this.tmuxAdapter, session.sessionName);
-      if (liveness === "live") { live.push(session.id); break; }
-      else if (liveness === "dead") stale.push(session.id);
-      else { unknown.push(session.id); break; }
-    }
-
-    return { live, stale, unknown };
+  private classifyRunningSessions(rigId: string): Promise<RunningSessionClassification> {
+    // The probe is shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
+    return classifyRunningSessions(this.sessionRegistry.getSessionsForRig(rigId), (sessionName) => classifySessionLiveness(this.tmuxAdapter, sessionName));
   }
 
   private clearStaleState(nodeId: string, rigId: string): void {

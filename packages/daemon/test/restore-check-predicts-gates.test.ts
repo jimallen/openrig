@@ -45,8 +45,8 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snapshotId);
   };
 
-  async function runCheck(listed: boolean, opts: { rigRunning?: boolean } = {}) {
-    const service = createRestoreCheckService(h.rigRepo, h.snapshotRepo, undefined, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst });
+  async function runCheck(listed: boolean, opts: { probe?: boolean } = {}) {
+    const service = createRestoreCheckService(h.rigRepo, h.snapshotRepo, opts.probe ? h.tmux : undefined, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst });
     const result = await service.checkWithLiveness({ rig: "team", noQueue: true, noHooks: true, ...(listed ? { freshLogicalIds: [SEAT] } : {}) } as never);
     const pre = result.checks.find((c) => c.check === "rig.team.restore-preconditions")!;
     return { status: pre.status, evidence: pre.evidence, recovery: result.recovery, verdict: result.verdict, checks: result.checks };
@@ -222,19 +222,38 @@ describe("restore-check and restore agree on the gates restore runs before a sea
       return seat;
     }
 
-    it("a running rig whose latest snapshot has a seat that would stop for a decision still needs no recovery", async () => {
+    // F4: with a tmux probe (production always has one) a live seat means restore would refuse the rig.
+    it("a running rig (probed) whose latest snapshot has a seat that would stop for a decision still needs no recovery", async () => {
       await runningRig((s) => DROP_TOKEN(s.nodeId));
-      const check = await runCheck(false);
+      const check = await runCheck(false, { probe: true });
       expect(check.recovery.status, JSON.stringify(check.recovery)).toBe("not_needed");
       expect(check.status, check.evidence).not.toBe("red");
+      expect(check.evidence).not.toContain("Restore would not start");
     });
 
-    it("a running rig whose latest snapshot has a validation blocker needs no recovery either, and the check still says so", async () => {
+    it("a running rig (probed) whose latest snapshot has a validation blocker needs no recovery either, and the check still says so", async () => {
       await runningRig((s) => { policyFresh(s.nodeId); GONE_OWN_FILE(s.nodeId); });
-      const check = await runCheck(false);
+      const check = await runCheck(false, { probe: true });
       expect(check.status, "an explicit restore-check still assesses its next restore").toBe("red");
       expect(check.evidence).toContain("/nonexistent/of40/role.md");
       expect(check.recovery.status, JSON.stringify(check.recovery)).toBe("not_needed");
+    });
+
+    // Q8: a check built without tmux cannot tell whether a DB-running seat is live, stale or unreadable, so whether restore
+    // would run is UNKNOWN: the gates are not predicted and the check says so (yellow), never green; recovery is as base.
+    it("a check built without tmux says it could not predict the gates of a rig with a running seat (yellow, never green)", async () => {
+      await runningRig((s) => DROP_TOKEN(s.nodeId));
+      const check = await runCheck(false);
+      expect(check.status).toBe("yellow");
+      expect(check.evidence).toContain("tmux was not read");
+      expect(check.evidence).not.toContain("Restore would not start");
+    });
+
+    it("a check built without tmux still counts a validation blocker for recovery, as base did", async () => {
+      await runningRig((s) => { policyFresh(s.nodeId); GONE_OWN_FILE(s.nodeId); });
+      const check = await runCheck(false);
+      expect(check.status).toBe("red");
+      expect(check.recovery.status).toBe("blocked");
     });
 
     it("control: a stopped rig with a seat that would stop for a decision is blocked, in restore's words", async () => {

@@ -7,6 +7,7 @@ import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./bu
 import { validatePreRestore } from "./restore-preconditions.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
 import type { SeatStop } from "./restore-seat-gates.js";
+import { restoreRefusesRig, type RunningSessionClassification } from "./restore-running-sessions.js";
 import type { SessionLiveness } from "./session-liveness.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
@@ -206,6 +207,8 @@ export interface NodeInventoryEntry {
   nodeKind: "agent" | "infrastructure";
   runtime: string | null;
   sessionStatus: string | null;
+  /** The newest session row's raw DB status, before an identity verdict may relabel it. */
+  storedSessionStatus?: string | null;
   startupStatus: string | null;
   storedStartupStatus?: string | null;
   identityVerdict?: SeatIdentityVerdict | null;
@@ -258,6 +261,10 @@ export interface RestoreCheckDeps {
   getRigSpecSource?: (rigId: string) => string | null;
   /** OF-32 follow-up: restore's own decisions about saved startup contexts and listed seats. */
   restoreParity?: RestoreParityDeps;
+  /** OF-40 review: restore's own classification of the rig's DB-running session rows against tmux
+   *  (restore-running-sessions.ts classifyRunningSessions, over every running row, with a liveness probe). Without it
+   *  (no tmux) whether restore would run is UNKNOWN for a rig with a running row, and the gate prediction says so. */
+  classifyRunningSessions?: (rigId: string, probe: (sessionName: string) => Promise<SeatLiveness>) => Promise<RunningSessionClassification>;
 }
 
 interface RigRollupInput {
@@ -296,6 +303,10 @@ interface HostInfraCheckResult {
 
 /** Per rig id: the listed seats restore would refuse (logical id -> restore's refusal text), or why that could not be asked. */
 type ListedRefusals = Map<string, Map<string, string> | Error>;
+/** Per rig: what restore's refusal rule says about running rows (an Error: it could not be asked). Absent: not asked. */
+type RunningClassifications = Map<string, RunningSessionClassification | Error>;
+/** Would the next restore run at all? `refused`: a running row is live or unreadable (rig_not_stopped). */
+type RestoreRuns = "would_run" | "refused" | "unknown";
 
 // --- Service ---
 
@@ -334,7 +345,27 @@ export class RestoreCheckService {
         try { liveness.set(name, await probe(name)); } catch { liveness.set(name, "unreadable"); }
       }));
     }
-    return this.check(opts, liveness, await this.predictListedRefusals(opts));
+    return this.check(opts, liveness, await this.predictListedRefusals(opts), await this.classifyRunning(opts, liveness));
+  }
+
+  /** Per rig, restore's own reading of its DB-running rows (every row, raw status) against tmux. The liveness already
+   *  read for the seats answers the names it covers; any other running row's name is probed. */
+  private async classifyRunning(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness>): Promise<RunningClassifications> {
+    const byRig: RunningClassifications = new Map();
+    const classify = this.deps.classifyRunningSessions;
+    const probe = this.deps.probeSeatLiveness;
+    if (!classify || !probe) return byRig;
+    let rigs: Array<{ rigId: string; name: string }> = [];
+    try { rigs = this.deps.listRigs(); } catch { return byRig; }
+    for (const rig of rigs) {
+      if (opts.rig && rig.name !== opts.rig) continue;
+      try {
+        byRig.set(rig.rigId, await classify(rig.rigId, async (name) => liveness.get(name) ?? probe(name)));
+      } catch (err) {
+        byRig.set(rig.rigId, err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    return byRig;
   }
 
   /** Per rig, the listed seats restore would refuse (OF-32 follow-up). Asked here because the decision re-reads each
@@ -365,7 +396,7 @@ export class RestoreCheckService {
    * `liveness` is the per-session tmux answer gathered by checkWithLiveness();
    * omitted, every seat is judged on DB state alone (the pre-OF-29 behaviour).
    */
-  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map()): RestoreCheckResult {
+  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map(), running: RunningClassifications = new Map()): RestoreCheckResult {
     const checks: CheckEntry[] = [];
     // rev1-r2 no-false-ready: ready-seat caveat signals that default compact
     // COMPUTES but does NOT emit (AC-4 token-safe) still count toward the
@@ -444,10 +475,10 @@ export class RestoreCheckService {
       const allReady = nodes.length > 0 && nodes.every((node) =>
         seatRunningReady(node, liveness)
       );
-      const restoreRefused = restoreRefusesRig(nodes, liveness);
-      restoreRefusedByRig.set(rig.rigId, restoreRefused);
+      const restoreRuns = restoreRunsFor(running.get(rig.rigId), nodes);
+      restoreRefusedByRig.set(rig.rigId, restoreRuns === "refused");
       if (!opts.recoveryOnly || !allReady) {
-        const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRefused);
+        const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
         rigChecks.push(preconditions.check);
         preconditionError = preconditions.error;
@@ -537,7 +568,7 @@ export class RestoreCheckService {
     return this.buildResult(checks, rigRollups, hostInfraCheck.hostInfra, recoveryRigInputs, deferredAssessmentChecks);
   }
 
-  private checkRestorePreconditions(rig: { rigId: string; name: string }, opts: RestoreCheckOpts = {}, listedRefusals?: Map<string, string> | Error, restoreRefused = false): {
+  private checkRestorePreconditions(rig: { rigId: string; name: string }, opts: RestoreCheckOpts = {}, listedRefusals?: Map<string, string> | Error, restoreRuns: RestoreRuns = "would_run"): {
     check: CheckEntry;
     snapshot: { id: string; kind: string } | null;
     error?: string;
@@ -607,7 +638,14 @@ export class RestoreCheckService {
       // Restore reaches them only when it runs at all (it refuses a rig with a live seat, rig_not_stopped, before any
       // seat) and only when pre-restore validation passed (a validation blocker already makes this red, and a snapshot
       // that malformed cannot be walked), so they are predicted only then.
-      if (parity && !restoreRefused && blockers.length === 0) {
+      let gatesNotPredicted = false;
+      if (parity && restoreRuns === "unknown" && blockers.length === 0) {
+        // Whether restore would run (or refuse the rig for a live seat) was not read, so what it would do at each seat
+        // cannot be predicted: never green.
+        gatesNotPredicted = true;
+        warnings.push("restore's seat gates were not predicted: tmux was not read, so whether restore would run or refuse the rig for a running seat is unknown");
+      }
+      if (parity && restoreRuns === "would_run" && blockers.length === 0) {
         for (const [logicalId, stop] of parity.predictSeatStops(rig.rigId, input.snapshot.data, listed)) {
           blockers.push({
             code: stop.gate === "node_removed" ? "seat_removed" : "seat_stopped_before_launch",
@@ -649,7 +687,7 @@ export class RestoreCheckService {
         snapshot: { id: input.snapshot.id, kind: input.snapshot.kind },
         check: {
           check,
-          status: blockers.length > 0 ? "red" : warnings.length > 0 ? "yellow" : "green",
+          status: blockers.length > 0 ? "red" : warnings.length > 0 || gatesNotPredicted ? "yellow" : "green",
           evidence: `Snapshot ${input.snapshot.id}: ${[
             ...blockers.map((blocker) => `${blocker.code}: ${blocker.message}`),
             ...warnings,
@@ -1902,13 +1940,14 @@ export class RestoreCheckService {
 }
 
 /**
- * Restore refuses the whole rig (`rig_not_stopped`, 409) while a seat the DB shows running is live in tmux or its
- * liveness is unreadable; a seat tmux says is dead is stale and does not stop it. Unprobed (no liveness read) counts as
- * running, as the DB says. The same reading `RestoreOrchestrator.restore` makes with classifyRunningSessions.
+ * Would the next restore run at all? Asked of restore's own rule (restore-running-sessions.ts) over the rig's DB-running
+ * rows. Not asked (no tmux wired) or not answerable: a rig with a running seat is `unknown`, never assumed either way; a
+ * rig with no running seat has nothing to refuse it.
  */
-function restoreRefusesRig(nodes: NodeInventoryEntry[], liveness: Map<string, SeatLiveness>): boolean {
-  return nodes.some((node) => node.sessionStatus === "running"
-    && (node.canonicalSessionName ? liveness.get(node.canonicalSessionName) : undefined) !== "dead");
+function restoreRunsFor(classification: RunningSessionClassification | Error | undefined, nodes: NodeInventoryEntry[]): RestoreRuns {
+  if (classification && !(classification instanceof Error)) return restoreRefusesRig(classification) ? "refused" : "would_run";
+  const anyRunning = nodes.some((node) => (node.storedSessionStatus ?? node.sessionStatus) === "running");
+  return anyRunning ? "unknown" : "would_run";
 }
 
 /** DB says running+ready AND tmux has not contradicted it (unprobed counts as DB-only). */

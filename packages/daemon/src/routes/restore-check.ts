@@ -6,6 +6,8 @@ import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
 import { predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
 import { predictSeatStops } from "../domain/restore-seat-gates.js";
+import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
+import { SessionRegistry } from "../domain/session-registry.js";
 import type { SeatStartupSpecReader, StartupFrom } from "../domain/seat-startup-source.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
@@ -253,6 +255,9 @@ export function createRestoreCheckService(
       try { return existsSync(path); } catch { return false; }
     },
     readFile: (path: string) => readFileSync(path, "utf-8"),
+    classifyRunningSessions: tmuxAdapter
+      ? (rigId, probe) => classifyRunningSessions(new SessionRegistry(rigRepo.db).getSessionsForRig(rigId), probe)
+      : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,
   };
   return new RestoreCheckService(serviceDeps);
