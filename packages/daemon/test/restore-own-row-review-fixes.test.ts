@@ -228,6 +228,24 @@ describe("re-check G2 and R3", () => {
   });
 });
 
+// Merge of lane B (OF-40, 9d730639), resolve3 step 3: restore-check's remediation for a seat a pre-launch gate stops
+// (here: no resume token) names the fresh-start command without the restore's snapshot:<id>; the stop's own error text
+// (restore-seat-gates.ts, via OF-36's per-seat check) names it only where that snapshot's copy is usable for the seat.
+describe("merge with lane B: the restore-check stop remediation does not carry snapshot:<id>", () => {
+  it("no-token stop under --startup-from snapshot:<id>: the remediation names the default fresh start", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: false });
+    h.db.prepare("UPDATE sessions SET resume_token = NULL WHERE node_id = ?").run(seat.nodeId);
+    const s1 = await h.down(seat.rigId);
+
+    const check = await runCheck(false, `snapshot:${s1}`);
+
+    expect(check.status).toBe("red");
+    expect(check.remediation).toContain(`Decide for ${SEAT} what restore must not guess: rig seat launch 'dev.impl@team' --fresh --reason "<why>"`);
+    expect(check.remediation).not.toContain("snapshot:");
+  });
+});
+
 describe("tie-break pin (review probe A2): two usable copies with the same created_at go to the later insertion", () => {
   it("A2", async () => {
     h = createRestoreHarness();

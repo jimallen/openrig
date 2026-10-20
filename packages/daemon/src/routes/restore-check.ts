@@ -6,6 +6,9 @@ import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
 import { listedRefusalRemedy, predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
 import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
+import { predictSeatStops } from "../domain/restore-seat-gates.js";
+import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
+import { SessionRegistry } from "../domain/session-registry.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
@@ -154,6 +157,7 @@ export const RESTORE_CHECK_PROBE_TIMEOUT_MS = SESSION_LIVENESS_DEADLINE_MS;
 export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Record<string, RuntimeAdapter | undefined>, specReader: SeatStartupSpecReader | null): RestoreParityDeps {
   return {
     startupToValidate: (rigId, logicalId, listed, selectedCopy) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed, selectedCopy }),
+    predictSeatStops: (rigId, snapshotData, listed) => predictSeatStops({ db: rigRepo.db, rigRepo }, { rigId, data: snapshotData, ...listed }),
     predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
       { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
       { rigId, ...listed, snapshot: snapshotData, exists: existsSync },
@@ -255,6 +259,9 @@ export function createRestoreCheckService(
       try { return existsSync(path); } catch { return false; }
     },
     readFile: (path: string) => readFileSync(path, "utf-8"),
+    classifyRunningSessions: tmuxAdapter
+      ? (rigId, probe) => classifyRunningSessions(new SessionRegistry(rigRepo.db).getSessionsForRig(rigId), probe)
+      : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,
   };
   return new RestoreCheckService(serviceDeps);

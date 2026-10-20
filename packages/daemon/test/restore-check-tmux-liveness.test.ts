@@ -77,7 +77,9 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
   function seedRig(rigName: string, dbState: { up: "running" | "exited"; down: "running" | "exited" }): { rigName: string; rigId: string } {
     const rig = rigRepo.createRig(rigName);
     for (const [logical, state] of [["up", dbState.up], ["down", dbState.down]] as const) {
-      const node = rigRepo.addNode(rig.id, logical, { runtime: "terminal" });
+      // A terminal seat is `checkpoint_only` in production (it never has a resume token); the default policy would make
+      // restore stop each seat for a decision (OF-40), which is not what these rows are about.
+      const node = rigRepo.addNode(rig.id, logical, { runtime: "terminal", restorePolicy: "checkpoint_only" });
       const session = sessionRegistry.registerSession(node.id, `${logical}@${rigName}`);
       sessionRegistry.updateStatus(session.id, state);
       if (state === "running") sessionRegistry.updateStartupStatus(session.id, "ready");
@@ -155,6 +157,37 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     expect(reason).not.toContain("rig seat launch 'up@partly'");
     expect(reason).toContain("new one");
     expect(reason).toContain("rig down partly, then rig up partly --existing (this restarts every seat)");
+  });
+
+  /** Both seats become resumable seats with no token (the default policy), in the DB and in the saved snapshot. */
+  function makeResumable(rigId: string) {
+    db.prepare("UPDATE nodes SET restore_policy = NULL WHERE rig_id = ?").run(rigId);
+    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id IN (SELECT id FROM nodes WHERE rig_id = ?)").run(rigId);
+    db.prepare("UPDATE snapshots SET data = json_set(data, '$.sessions[0].restorePolicy', 'resume_if_possible', '$.sessions[1].restorePolicy', 'resume_if_possible') WHERE rig_id = ?").run(rigId);
+  }
+
+  it("a DB-running seat whose tmux session is dead is stale, so restore would run and its gate stops are reported (OF-40)", async () => {
+    const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "absent", "down@partly": "absent" }).adapter);
+    makeResumable(rigId);
+    const body = await restoreCheck(app, rigName);
+    expect(body.recovery.status).toBe("blocked");
+    const reason = body.recovery.blocked[0].reason as string;
+    expect(reason).toContain("restore-input blockers remain");
+    expect(reason).toContain("Original session unresumable");
+  });
+
+  it("a partly-live rig whose dead seat would stop restore for a decision keeps the tmux-liveness reason, not a generic restore-input block (OF-40)", async () => {
+    const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "present", "down@partly": "absent" }).adapter);
+    // The dead seat is a resumable seat with no token: restore would stop it for a decision, but restore does not run at
+    // all while another seat is live (rig_not_stopped), so that stop is not what recovery should report.
+    makeResumable(rigId);
+    const body = await restoreCheck(app, rigName);
+    expect(body.recovery.status).toBe("blocked");
+    const reason = body.recovery.blocked[0].reason as string;
+    expect(reason).toContain("Seats running in tmux: up@partly");
+    expect(reason).toContain("rig_not_stopped, 409");
+    expect(reason).not.toContain("restore-input blockers");
+    expect(reason).not.toContain("Original session unresumable");
   });
 
   it("DB says running but its tmux session is dead: the seat is treated as down and the rig is recoverable", async () => {
