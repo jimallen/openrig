@@ -141,7 +141,7 @@ function currentHookHashes(content: string): Map<string, string> {
  * The two fields of a `[hooks.state."<key>"]` record that Codex 0.162.1 reads (measured: every other
  * field is ignored, and a non-boolean `enabled` makes Codex drop every hook in the file).
  */
-interface HookStateRecord { trusted_hash?: string; enabled?: boolean }
+export interface HookStateRecord { trusted_hash?: string; enabled?: boolean }
 
 /**
  * Every `[hooks.state."<key>"]` record, read from the PARSED document, so text that merely looks
@@ -196,6 +196,10 @@ function setHookStateField(content: string, key: string, field: string, value: s
 const seatRecordIsCurrent = (seat: HookStateRecord | undefined, shared: HookStateRecord): boolean =>
   !!seat && seat.trusted_hash === shared.trusted_hash && !(shared.enabled === false && seat.enabled !== false);
 
+/** A mirror write is kept only when the PARSED candidate holds the seat record as meant (see seatRecordIsCurrent). */
+export const mirrorWriteIsAccepted = (candidate: string, seatKey: string, shared: HookStateRecord): boolean =>
+  seatRecordIsCurrent(hookStateRecords(candidate).get(seatKey), shared);
+
 export function planCodexHookTrustMirror(
   content: string,
   sharedKeySource: string,
@@ -224,8 +228,7 @@ export function planCodexHookTrustMirror(
     if (shared.enabled === false) candidate = setHookStateField(candidate, seatKey, "enabled", false);
     // A seat record the text could not express (an unusual header form, a fake header inside a
     // string) must not be written into: the parsed result has to be the record we meant.
-    const written = hookStateRecords(candidate).get(seatKey);
-    if (!seatRecordIsCurrent(written, shared)) continue;
+    if (!mirrorWriteIsAccepted(candidate, seatKey, shared)) continue;
     next = candidate;
     copies.push({ key: seatKey, hash: sharedHash, action: have === undefined ? "copied" : "replaced" });
   }

@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseToml } from "smol-toml";
-import { ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
+import { ensureCodexSeatHome, mirrorWriteIsAccepted } from "../src/domain/codex-seat-home.js";
 
 // OF-42. A user-authored hook (bash-guard) in the shared ~/.codex/config.toml is trusted by
 // Jim only under the shared path's key. A seat loads the same file through its own symlink,
@@ -75,6 +75,31 @@ const enabledAt = (content: string, key: string) => /^enabled = (true|false)$/m.
 /** The record as a TOML parser (and so Codex) sees it, whatever the text around it looks like. */
 const parsedRecord = (content: string, key: string) =>
   ((parseToml(content) as { hooks?: { state?: Record<string, { trusted_hash?: string; enabled?: boolean }> } }).hooks?.state ?? {})[key];
+
+// The acceptance rule of a mirror write, on parsed candidates (a correct scanner and the create guard mask it at launch level).
+describe("OF-42 mirrorWriteIsAccepted (the parsed post-write check of the mirror)", () => {
+  const K = "/seat/config.toml:pre_tool_use:0:0";
+  const rec = (body: string) => `[hooks.state.${JSON.stringify(K)}]\n${body}`;
+  const hash = `trusted_hash = "${BASH_GUARD_HASH}"\n`;
+
+  it("accepts the record as meant: current hash, and off where the shared record is off", () => {
+    expect(mirrorWriteIsAccepted(rec(hash), K, { trusted_hash: BASH_GUARD_HASH })).toBe(true);
+    expect(mirrorWriteIsAccepted(rec(hash + "enabled = false\n"), K, { trusted_hash: BASH_GUARD_HASH, enabled: false })).toBe(true);
+  });
+
+  it("rejects a record that exists but holds a stale hash", () => {
+    expect(mirrorWriteIsAccepted(rec(`trusted_hash = "${STALE}"\n`), K, { trusted_hash: BASH_GUARD_HASH })).toBe(false);
+  });
+
+  it("rejects a current-hash record that is not off where the shared record is off", () => {
+    expect(mirrorWriteIsAccepted(rec(hash), K, { trusted_hash: BASH_GUARD_HASH, enabled: false })).toBe(false);
+  });
+
+  it("rejects a candidate with no such record, and one that does not parse", () => {
+    expect(mirrorWriteIsAccepted("a = 1\n", K, { trusted_hash: BASH_GUARD_HASH })).toBe(false);
+    expect(mirrorWriteIsAccepted(rec(hash) + rec(hash), K, { trusted_hash: BASH_GUARD_HASH })).toBe(false);
+  });
+});
 
 describe("OF-42 seat hook-trust copy", () => {
   it("copies the canonical trust of a user hook to the seat key when the hash is the one Codex computes now, and logs it", async () => {

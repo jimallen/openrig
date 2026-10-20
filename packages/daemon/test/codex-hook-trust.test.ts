@@ -16,6 +16,7 @@ import nodeFs from "node:fs";
 import { parse as parseToml } from "smol-toml";
 import {
   CodexRuntimeAdapter,
+  codexHookTrustEditAccepted,
   codexManagedHookGroupIndex,
   computeCodexHookTrust,
   lineStartsAtDocumentLevel,
@@ -218,6 +219,39 @@ describe("OF-42 N10 B1 — a multiline string closed by 4 or 5 quote characters 
     adapter.ensureCodexActivityHooks();
     expect(fs._store[CONFIG]).toBe(first);
     expect(first.match(/^\[hooks\.state\./gm)?.length).toBe(4);
+  });
+});
+
+// The acceptance rule behind upsertVerifiedCodexHookTrust, pinned on the candidates a BROKEN line scanner would
+// produce (a correct scanner never reaches these with a document that still parses, so no launch-level row can).
+// Each rejection below is the only thing between such a candidate and Jim's config.
+describe("OF-42 N10 — codexHookTrustEditAccepted (parsed acceptance of a trust edit)", () => {
+  const K = "/c/config.toml:pre_tool_use:0:0";
+  const H = `[hooks.state.${JSON.stringify(K)}]`;
+
+  it("accepts an in-place hash edit and an appended record", () => {
+    const before = `a = 1\n${H}\ntrusted_hash = "sha256:old"\n`;
+    expect(codexHookTrustEditAccepted(before, before.replace("sha256:old", "sha256:new"), K, "sha256:new")).toBe(true);
+    expect(codexHookTrustEditAccepted("a = 1\n", `a = 1\n\n${H}\ntrusted_hash = "sha256:new"\n`, K, "sha256:new")).toBe(true);
+  });
+
+  it("rejects a fake header edited inside a string outside the record, even though the real record already holds the hash", () => {
+    const before = `junk = '''\n${H}\n'''\n\n${H}\ntrusted_hash = "sha256:new"\n`;
+    const candidate = `junk = '''\n${H}\ntrusted_hash = "sha256:new"\n'''\n\n${H}\ntrusted_hash = "sha256:new"\n`;
+    expect(() => parseToml(candidate)).not.toThrow(); // it parses: only the comparison with the original can refuse it
+    expect(codexHookTrustEditAccepted(before, candidate, K, "sha256:new")).toBe(false);
+  });
+
+  it("rejects a hash-looking line edited inside a string of the record while the real hash stays stale", () => {
+    const before = `${H}\nnote = '''\ntrusted_hash = "sha256:old"\n'''\ntrusted_hash = "sha256:old"\n`;
+    const candidate = `${H}\nnote = '''\ntrusted_hash = "sha256:new"\n'''\ntrusted_hash = "sha256:old"\n`;
+    expect(() => parseToml(candidate)).not.toThrow();
+    expect(codexHookTrustEditAccepted(before, candidate, K, "sha256:new")).toBe(false);
+  });
+
+  it("rejects a candidate that does not parse", () => {
+    const before = `${H}\ntrusted_hash = "sha256:old"\n`;
+    expect(codexHookTrustEditAccepted(before, `${before}\n${H}\ntrusted_hash = "sha256:new"\n`, K, "sha256:new")).toBe(false);
   });
 });
 

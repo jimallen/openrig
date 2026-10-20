@@ -1417,6 +1417,17 @@ function upsertCodexFeaturesHooksEnabled(content: string): string {
 export function upsertVerifiedCodexHookTrust(content: string, key: string, hash: string): string {
   const candidate = upsertCodexHookTrust(content, key, hash);
   if (candidate === content) return content;
+  return codexHookTrustEditAccepted(content, candidate, key, hash) ? candidate : content;
+}
+
+/**
+ * The acceptance rule of `upsertVerifiedCodexHookTrust`, as a pure function of the parsed documents: `candidate`
+ * is acceptable iff it parses, `[hooks.state."<key>"] trusted_hash` is `hash`, and everything outside that
+ * record parses to what it did in `before`. Each condition is an independent backstop against a defect in the
+ * line scanner (a correct scanner never reaches them with a document that still parses), so each is pinned
+ * directly on candidates a broken scanner would produce.
+ */
+export function codexHookTrustEditAccepted(before: string, candidate: string, key: string, hash: string): boolean {
   try {
     const without = (doc: unknown): unknown => {
       const copy = JSON.parse(JSON.stringify(doc)) as { hooks?: { state?: Record<string, unknown> } };
@@ -1427,14 +1438,13 @@ export function upsertVerifiedCodexHookTrust(content: string, key: string, hash:
       }
       return copy;
     };
-    const before = parseToml(content);
+    const parsedBefore = parseToml(before);
     const after = parseToml(candidate) as { hooks?: { state?: Record<string, { trusted_hash?: unknown }> } };
-    if (after.hooks?.state?.[key]?.trusted_hash !== hash) return content;
-    if (JSON.stringify(without(before)) !== JSON.stringify(without(after))) return content;
+    if (after.hooks?.state?.[key]?.trusted_hash !== hash) return false;
+    return JSON.stringify(without(parsedBefore)) === JSON.stringify(without(after));
   } catch {
-    return content;
+    return false;
   }
-  return candidate;
 }
 
 /**
