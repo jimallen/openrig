@@ -165,10 +165,8 @@ export async function resolveFreshSeatStartup(
   } else {
     const startup = readStoredStartupContext(deps.db, input.nodeId, input.cwd);
     if (!startup.ok) {
-      // A saved context that cannot be read leaves `--startup-from stored` nothing to replay. Restore replays its
-      // snapshot's copy instead (and saves a new context once the seat is up), so that is the way back.
       return startup.refusal.code === "startup_context_malformed"
-        ? { ...startup.refusal, guidance: `Stop the seat (rig seat stop ${input.sessionName} --reason "<why>") and start it from its last snapshot with: rig launch ${input.rigId} ${input.logicalId}. That replays the snapshot's copy of its startup files and saves a new context once it is up.` }
+        ? { ...startup.refusal, guidance: malformedContextGuidance(deps, input, startup.unparseable === true) }
         : startup.refusal;
     }
     context = {
@@ -188,6 +186,31 @@ export async function resolveFreshSeatStartup(
   return { ok: true, context };
 }
 
+/**
+ * What the operator can do about a saved startup context that cannot be read (N-C2). Each sentence was measured
+ * against `launchSingleNode` (`rig launch`) and the restore path (`rig up --existing --fresh`), not assumed:
+ *  - `rig launch <rig> <seat>` exact-resumes a seat whose restore policy is resume_if_possible (the default) and
+ *    that has a resume token, delivers nothing, and leaves the context unreadable. It starts the seat from a
+ *    snapshot's copy only under checkpoint_only.
+ *  - `rig up <rig> --existing --fresh <seat> --startup-from stored` starts the seat from the snapshot's copy under
+ *    any restore policy, but needs the whole rig stopped, and it fails with `restore_error` when a column is not JSON.
+ *  - `rig down` cannot snapshot a seat whose column is not JSON, so it is not advised there.
+ * Both replay the snapshot's copy and save what they replayed, so a copy taken after the context broke is still broken.
+ */
+function malformedContextGuidance(
+  deps: { db: Database.Database },
+  input: { rigId: string; logicalId: string; sessionName: string },
+  notJson: boolean,
+): string {
+  const rigName = (deps.db.prepare("SELECT name FROM rigs WHERE id = ?").get(input.rigId) as { name: string } | undefined)?.name ?? input.rigId;
+  const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  const stop = `rig seat stop ${input.sessionName} --reason "<why>"`;
+  if (notJson) {
+    return `A column of the saved startup context is not JSON. Do not stop the rig: rig down cannot snapshot this seat and rig up --existing fails on it (restore_error). After stopping the seat (${stop}), rig launch ${input.rigId} ${input.logicalId} starts it from the last snapshot's copy of its startup files and saves a new context only when the seat's restore policy is checkpoint_only, and only if a snapshot taken before the context broke is usable. Under the default policy (resume_if_possible) it resumes the old conversation instead, delivers nothing and leaves this context unreadable. Restore cannot repair it then; the saved row has to be repaired or removed.`;
+  }
+  return `Do not use rig launch ${input.rigId} ${input.logicalId}: under the default restore policy (resume_if_possible) it resumes the old conversation, delivers nothing and leaves this context unreadable. To start the seat from the snapshot's copy of its startup files instead, stop the whole rig (rig down ${quote(rigName)}), then run: rig up ${quote(rigName)} --existing --fresh ${input.logicalId} --startup-from stored. That replays the snapshot's copy and saves what it replayed as the seat's new context, so a snapshot taken after this context broke carries the damage with it.`;
+}
+
 interface PersistedStartupContextRow {
   projection_entries_json: string;
   resolved_files_json: string;
@@ -200,7 +223,7 @@ export function readStoredStartupContext(
   db: Database.Database,
   nodeId: string,
   cwd: string,
-): { ok: true; context: Omit<FreshStartupContext, "source" | "sourceWarnings" | "resolvedSpec"> } | { ok: false; refusal: FreshStartupRefusal } {
+): { ok: true; context: Omit<FreshStartupContext, "source" | "sourceWarnings" | "resolvedSpec"> } | { ok: false; refusal: FreshStartupRefusal; unparseable?: true } {
   const row = db.prepare(
     "SELECT projection_entries_json, resolved_files_json, startup_actions_json, runtime FROM node_startup_context WHERE node_id = ?",
   ).get(nodeId) as PersistedStartupContextRow | undefined;
@@ -223,7 +246,7 @@ export function readStoredStartupContext(
     rawFiles = JSON.parse(row.resolved_files_json);
     rawActions = JSON.parse(row.startup_actions_json);
   } catch (error) {
-    return malformedStartupContext(nodeId, `JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+    return { ...malformedStartupContext(nodeId, `JSON parse failed: ${error instanceof Error ? error.message : String(error)}`), unparseable: true };
   }
   if (!Array.isArray(rawEntries) || !Array.isArray(rawFiles) || !Array.isArray(rawActions) || !row.runtime?.trim()) {
     return malformedStartupContext(nodeId, "projection entries, resolved files, and startup actions must be arrays and runtime must be non-empty");

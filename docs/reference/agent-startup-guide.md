@@ -267,8 +267,13 @@ event and under the seat in `rig up` and `rig start` output: the spec it re-read
 from and to, its saved files (with why: not listed with `--fresh`, `--startup-from stored`, no recorded source),
 or the snapshot's copy. The snapshot's copy is used only when the seat has no saved
 files of its own, or when its saved files cannot be read; the restore then says so, and the launch saves readable
-files again. `rig seat launch --fresh` cannot use unreadable saved files; its refusal names the way back (stop the
-seat, then `rig launch <rig-id> <seat>`, which restores it from its last snapshot).
+files again. `rig seat launch --fresh` cannot use unreadable saved files, and its refusal says which way back holds. For files that
+are JSON of the wrong shape: `rig launch <rig-id> <seat>` is no way back under the default restore policy
+(`resume_if_possible` resumes the old conversation and leaves the files unreadable), so stop the whole rig and run
+`rig up <rig> --existing --fresh <seat> --startup-from stored`, which starts the seat from the snapshot's copy. For files
+that are not JSON: `rig down` cannot snapshot the seat and `rig up --existing` fails, so only `rig launch <rig-id> <seat>`
+under `checkpoint_only`, from a snapshot taken before the files broke, starts it from the snapshot's copy. Either
+way the copy is saved as the seat's new files, so a snapshot taken after they broke carries the damage.
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
 seat without starting tmux, stopping or launching a process, projecting startup files, or changing

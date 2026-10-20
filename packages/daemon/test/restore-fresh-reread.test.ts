@@ -21,6 +21,7 @@ import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 import { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
+import { readStoredStartupContext } from "../src/domain/seat-startup-source.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
@@ -481,14 +482,99 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
       .some((e: { category: string }) => e.category === "memory")).toBe(false);
   });
 
-  it("`rig seat launch --fresh` names that way back when the saved context cannot be read", async () => {
+  // N-C2. The refusal's guidance is what an operator types next, so each claim in it was measured: `rig launch` (the
+  // path launchSingleNode serves) against the restore path `rig up --existing --fresh <seat> --startup-from stored`,
+  // for a context that is JSON of the wrong shape and for one that is not JSON, under both restore policies.
+  const malformed = (nodeId: string, how: "shape" | "json") => {
+    if (how === "shape") db.prepare("UPDATE node_startup_context SET projection_entries_json = ? WHERE node_id = ?").run(JSON.stringify([{ category: "memory" }]), nodeId);
+    else db.prepare("UPDATE node_startup_context SET resolved_files_json = ? WHERE node_id = ?").run("{not json", nodeId);
+  };
+  const storedReads = (nodeId: string) => { const r = readStoredStartupContext(db, nodeId, "."); return r.ok ? "ok" : r.refusal.code; };
+  const launchWithoutFresh = (rigId: string) => restore.launchSingleNode(rigId, "dev.impl", { adapters: { "claude-code": adapter }, fsOps: { exists: (p: string) => fs.existsSync(p) } } as never);
+
+  it("`rig seat launch --fresh` on a context that is JSON of the wrong shape says rig launch is no way back, and names rig up --fresh", async () => {
     const seat = await launchRig({ record: false });
-    db.prepare("UPDATE node_startup_context SET projection_entries_json = ? WHERE node_id = ?").run(JSON.stringify([{ category: "memory" }]), seat.nodeId);
+    malformed(seat.nodeId, "shape");
 
     const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable" });
 
     expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
-    expect(!result.ok && result.guidance).toBe(`Stop the seat (rig seat stop dev-impl@team --reason "<why>") and start it from its last snapshot with: rig launch ${seat.rigId} dev.impl. That replays the snapshot's copy of its startup files and saves a new context once it is up.`);
+    expect(!result.ok && result.guidance).toBe(`Do not use rig launch ${seat.rigId} dev.impl: under the default restore policy (resume_if_possible) it resumes the old conversation, delivers nothing and leaves this context unreadable. To start the seat from the snapshot's copy of its startup files instead, stop the whole rig (rig down 'team'), then run: rig up 'team' --existing --fresh dev.impl --startup-from stored. That replays the snapshot's copy and saves what it replayed as the seat's new context, so a snapshot taken after this context broke carries the damage with it.`);
+  });
+
+  it("`rig seat launch --fresh` on a context that is not JSON does not send the operator to rig down or rig up", async () => {
+    const seat = await launchRig({ record: false });
+    malformed(seat.nodeId, "json");
+
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable" });
+
+    expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
+    expect(!result.ok && result.guidance).toBe(`A column of the saved startup context is not JSON. Do not stop the rig: rig down cannot snapshot this seat and rig up --existing fails on it (restore_error). After stopping the seat (rig seat stop dev-impl@team --reason "<why>"), rig launch ${seat.rigId} dev.impl starts it from the last snapshot's copy of its startup files and saves a new context only when the seat's restore policy is checkpoint_only, and only if a snapshot taken before the context broke is usable. Under the default policy (resume_if_possible) it resumes the old conversation instead, delivers nothing and leaves this context unreadable. Restore cannot repair it then; the saved row has to be repaired or removed.`);
+  });
+
+  it("the guidance holds, shape-invalid context, default policy: rig launch resumes and leaves the context unreadable", async () => {
+    const seat = await launchRig({ record: false });
+    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id = ?").run(seat.nodeId);
+    await down(seat.rigId);
+    malformed(seat.nodeId, "shape");
+
+    const launched = await launchWithoutFresh(seat.rigId);
+
+    expect(launched.ok, JSON.stringify(launched)).toBe(true);
+    expect(releaseOf(delivered.flat())).toEqual([]);
+    expect(storedReads(seat.nodeId)).toBe("startup_context_malformed");
+  });
+
+  it("the guidance holds, shape-invalid context, default policy: rig down then rig up --fresh --startup-from stored delivers and heals", async () => {
+    const seat = await launchRig({ record: false });
+    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id = ?").run(seat.nodeId);
+    malformed(seat.nodeId, "shape");
+    const snapshotId = await down(seat.rigId);
+
+    const node = seatResult(await restoreFrom(snapshotId, { startupFrom: "stored" }));
+
+    expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(storedReads(seat.nodeId)).toBe("ok");
+  });
+
+  it("the guidance holds, context not JSON, checkpoint_only: rig launch starts it from the snapshot's copy and heals it", async () => {
+    const seat = await launchRig({ record: false });
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    await down(seat.rigId);
+    malformed(seat.nodeId, "json");
+
+    const launched = await launchWithoutFresh(seat.rigId);
+
+    expect(launched.ok, JSON.stringify(launched)).toBe(true);
+    expect(launched.ok && launched.launched.map((n) => n.startupSource)).toEqual([{ kind: "snapshot", reason: "saved_context_unreadable" }]);
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(storedReads(seat.nodeId)).toBe("ok");
+  });
+
+  it("the guidance holds, context not JSON, default policy: rig launch resumes and leaves it unreadable", async () => {
+    const seat = await launchRig({ record: false });
+    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id = ?").run(seat.nodeId);
+    await down(seat.rigId);
+    malformed(seat.nodeId, "json");
+
+    const launched = await launchWithoutFresh(seat.rigId);
+
+    expect(launched.ok, JSON.stringify(launched)).toBe(true);
+    expect(releaseOf(delivered.flat())).toEqual([]);
+    expect(storedReads(seat.nodeId)).toBe("startup_context_malformed");
+  });
+
+  it("the guidance holds, context not JSON: rig up --existing fails with restore_error and starts nothing", async () => {
+    const seat = await launchRig({ record: false });
+    const snapshotId = await down(seat.rigId);
+    malformed(seat.nodeId, "json");
+
+    const restored = await restoreFrom(snapshotId, { startupFrom: "stored" });
+
+    expect(restored).toMatchObject({ ok: false, code: "restore_error" });
+    expect(releaseOf(delivered.flat())).toEqual([]);
+    expect(storedReads(seat.nodeId)).toBe("startup_context_malformed");
   });
 
   // Reviewer's PIN-M7 (review of fc2d5b96, rev-of32s3-pin.test.ts), adopted as written.
