@@ -159,13 +159,28 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     expect(reason).toContain("rig down partly, then rig up partly --existing (this restarts every seat)");
   });
 
+  /** Both seats become resumable seats with no token (the default policy), in the DB and in the saved snapshot. */
+  function makeResumable(rigId: string) {
+    db.prepare("UPDATE nodes SET restore_policy = NULL WHERE rig_id = ?").run(rigId);
+    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id IN (SELECT id FROM nodes WHERE rig_id = ?)").run(rigId);
+    db.prepare("UPDATE snapshots SET data = json_set(data, '$.sessions[0].restorePolicy', 'resume_if_possible', '$.sessions[1].restorePolicy', 'resume_if_possible') WHERE rig_id = ?").run(rigId);
+  }
+
+  it("a DB-running seat whose tmux session is dead is stale, so restore would run and its gate stops are reported (OF-40)", async () => {
+    const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "absent", "down@partly": "absent" }).adapter);
+    makeResumable(rigId);
+    const body = await restoreCheck(app, rigName);
+    expect(body.recovery.status).toBe("blocked");
+    const reason = body.recovery.blocked[0].reason as string;
+    expect(reason).toContain("restore-input blockers remain");
+    expect(reason).toContain("Original session unresumable");
+  });
+
   it("a partly-live rig whose dead seat would stop restore for a decision keeps the tmux-liveness reason, not a generic restore-input block (OF-40)", async () => {
     const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "present", "down@partly": "absent" }).adapter);
     // The dead seat is a resumable seat with no token: restore would stop it for a decision, but restore does not run at
     // all while another seat is live (rig_not_stopped), so that stop is not what recovery should report.
-    db.prepare("UPDATE nodes SET restore_policy = NULL WHERE rig_id = ?").run(rigId);
-    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id IN (SELECT id FROM nodes WHERE rig_id = ?)").run(rigId);
-    db.prepare("UPDATE snapshots SET data = json_set(data, '$.sessions[0].restorePolicy', 'resume_if_possible', '$.sessions[1].restorePolicy', 'resume_if_possible') WHERE rig_id = ?").run(rigId);
+    makeResumable(rigId);
     const body = await restoreCheck(app, rigName);
     expect(body.recovery.status).toBe("blocked");
     const reason = body.recovery.blocked[0].reason as string;
