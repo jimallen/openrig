@@ -169,6 +169,9 @@ for (const recordSpec of [false, true]) {
 describe("OF-36 a listed seat, spec recorded, --startup-from stored, no usable copy: the named rig seat launch --fresh heals", () => {
   const t = useRig({ recordSpec: true });
   it("typed from the seat's refusal", async () => {
+    // The sibling must come back running: with no live session the scratch tmux server exits, and `rig seat launch`
+    // then refuses on the transport probe (tmux_probe_failed), as it does for any fresh launch (Sparky, 381d1b16).
+    t.policyFresh("dev.qa");
     t.corrupt("resolved_files_json", "{}");
     expect((await t.rig(["down", rigName, "--json"])).code).toBe(0);
     const up = await t.run(`rig up '${rigName}' --existing --fresh dev.impl --startup-from stored --json`);
