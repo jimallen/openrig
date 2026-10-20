@@ -342,6 +342,26 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
     expect(h.delivered.at(-1)!.map((f) => f.absolutePath)).toEqual(copyOf(s1).resolvedStartupFiles.map((f) => f.absolutePath));
   });
 
+  // Battery Q2e survived without this row: with no own row, pre-validation must not check the restored snapshot's copy
+  // for a listed seat that names another snapshot (that copy is not what it replays).
+  it("Q2 listed with --startup-from snapshot:<id>, no own row, the restored copy names a missing file: not refused", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: false });
+    const s1 = h.snapshotCapture.captureSnapshot(seat.rigId, "manual").id;
+    const s2 = await h.down(seat.rigId);
+    const data = JSON.parse((h.db.prepare("SELECT data FROM snapshots WHERE id = ?").get(s2) as { data: string }).data);
+    for (const key of Object.keys(data.nodeStartupContext)) {
+      data.nodeStartupContext[key].resolvedStartupFiles = data.nodeStartupContext[key].resolvedStartupFiles.map((f: object) => ({ ...f, absolutePath: path.join(h.root, "gone", "role.md") }));
+    }
+    h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), s2);
+    h.db.prepare("DELETE FROM node_startup_context WHERE node_id = ?").run(seat.nodeId);
+
+    const restore = await runRestore(s2, { listed: true, startupFrom: `snapshot:${s1}` });
+
+    expect(restore.outcome, restore.text).toBe("ok");
+    expect(h.delivered.at(-1)!.map((f) => f.absolutePath)).toEqual(copyOf(s1).resolvedStartupFiles.map((f) => f.absolutePath));
+  });
+
   it("Q2 the accepted spellings of --startup-from", () => {
     expect(["spec", "stored", "snapshot:01ABC", "snapshot:", "snapshot:a b", "snapshot", "SNAPSHOT:01ABC", "file"].map((v) => parseStartupFrom(v)))
       .toEqual(["spec", "stored", "snapshot:01ABC", null, null, null, null, null]);
