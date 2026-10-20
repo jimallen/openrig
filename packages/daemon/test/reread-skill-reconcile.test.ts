@@ -341,6 +341,69 @@ describe("OF-32 N6: a seat that re-reads its spec reconciles the re-read release
     expect(onDisk()).toEqual(["alpha:alpha A", "gamma:gamma A", "work-skill:operator edit"]);
   });
 
+  // Review R2: skills are applied only once the launch has cleared every refusal. A live occupant without --stop is
+  // refused, and that refusal leaves the seat's skills exactly as they were.
+  it("a seat launch refused for its live occupant leaves the skills unchanged", async () => {
+    await launchRig();
+    retarget("bbbbbbb");
+
+    const result = await service.launchFresh({ seatRef: SESSION, fresh: true, stop: false, reason: "release b" });
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe("session_live");
+    expect(alive.has(SESSION)).toBe(true);
+    expect(onDisk()).toEqual(["alpha:alpha A", "gamma:gamma A"]);
+  });
+
+  // Review R1: a re-read seat that restore refuses for its startup files gets no skills either. Release B declares a
+  // required restore-only file that is missing: the re-read passes (it checks what a fresh start delivers), and restore's
+  // own startup-file check refuses the seat.
+  it("a re-read seat restore refuses for a missing startup file leaves the skills unchanged", async () => {
+    const seat = await launchRig();
+    const snapshotId = await down(seat.rigId);
+    const agentB = path.join(root, "releases", "bbbbbbb", "rigs", "team", "agents", "impl", "agent.yaml");
+    fs.writeFileSync(agentB, fs.readFileSync(agentB, "utf-8").replace("  actions: []", "    - path: guidance/restore-only.md\n      delivery_hint: guidance_merge\n      required: true\n      applies_on: [restore]\n  actions: []"));
+    retarget("bbbbbbb");
+
+    const outcome = await restoreFrom(snapshotId, true);
+
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    const node = outcome.ok ? outcome.result.nodes.find((n) => n.logicalId === "dev.impl") : undefined;
+    expect(node?.status, JSON.stringify(node)).toBe("failed");
+    expect(node?.error).toContain("guidance/restore-only.md");
+    expect(onDisk()).toEqual(["alpha:alpha A", "gamma:gamma A"]);
+  });
+
+  // Review nit N-a: the folder changes between the pre-stop check and the apply (an operator edits a managed skill).
+  // The launch has already stopped the old occupant, so the refusal says so and names the stored escape.
+  it("an apply that fails after the stop says the seat is down and names the stored escape", async () => {
+    await launchRig();
+    const workLoadout = resolveSkillLoadout({ catalogRoot: catalog, systemSkills: [], projectRoot: workdir, projectSkills: ["work-skill"] });
+    if (!workLoadout.ok) throw new Error("work loadout");
+    expect(reconcileSkillLoadout({ loadout: workLoadout.loadout, runtime: "claude-code", cwd: workdir, apply: true }).ok).toBe(true);
+    retarget("bbbbbbb");
+    let edited = false;
+    reconciler.mockImplementation((input) => {
+      const result = reconcileSkillLoadout(input);
+      if (input.apply === false && !edited) {
+        edited = true;
+        fs.writeFileSync(path.join(skillsDir(), "work-skill", "SKILL.md"), SKILL("work-skill", "operator edit"));
+      }
+      return result;
+    });
+
+    const result = await freshLaunch();
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe("launch_failed");
+    expect(alive.has(SESSION)).toBe(false);
+    expect(!result.ok && result.message).toContain("work-skill");
+    expect(!result.ok && result.message).toContain("No session was started.");
+    expect(!result.ok && result.message).toContain("This launch had already stopped the seat's previous session, so the seat is not running now.");
+    expect(!result.ok && "guidance" in result && result.guidance).toContain(`rig seat launch 'dev.impl@team' --fresh --startup-from stored --reason "<why>"`);
+    expect(onDisk()).toEqual(["alpha:alpha A", "gamma:gamma A", "work-skill:operator edit"]);
+  });
+
   // --plan is a snapshot: it checks the skills but writes nothing.
   it("rig seat launch --fresh --plan checks the skills without writing them", async () => {
     await launchRig();

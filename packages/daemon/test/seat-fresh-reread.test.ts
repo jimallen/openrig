@@ -149,7 +149,7 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       adapters: { "claude-code": adapter },
       tmuxAdapter: tmux,
       onboardingEnabledResolver: () => false,
-      // The production S04 reconciler, against an empty catalog (never the real ~/.openrig/skills).
+      // The production S04 reconciler, against an explicitly empty catalog.
       skillsRootResolver: () => path.join(root, "no-catalog"),
       skillReconciler: reconciler,
     } as never);
