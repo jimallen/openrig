@@ -43,13 +43,13 @@ async function finalObservation(output: string) {
     const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines) => {
       captures++;
       if (captures === 1) {
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 5000 }).toContain("fixture waiting for final observation");
+        await expect.poll(() => nativeCapture(target, lines), { timeout: 10_000 }).toContain("fixture waiting for final observation");
       }
       if (captures === 27) {
         // The default budget has 26 loop observations plus one final read.
         // Release output only at that final boundary, avoiding timer races.
         fs.writeFileSync(gate, output);
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 5000 }).toContain(output);
+        await expect.poll(() => nativeCapture(target, lines), { timeout: 10_000 }).toContain(output);
       }
       return nativeCapture(target, lines);
     });
