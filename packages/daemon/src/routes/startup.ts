@@ -51,6 +51,14 @@ export function startupRevision(db: Database.Database, node: Node): string {
   return createHash("sha256").update(JSON.stringify({ node: currentNode, history, context })).digest("hex");
 }
 
+/** OF-36 Q1: an auto-rehydrate capture that skips (and logs) a seat whose saved startup context is not JSON, instead of
+ *  throwing out of the route. */
+function captureRehydrate(c: Context, rigId: string) {
+  const { snapshot, warnings } = dep<SnapshotCapture>(c, "snapshotCapture").captureSkippingUnreadable(rigId, "auto-rehydrate");
+  for (const warning of warnings) console.warn(`[startup] ${warning}`);
+  return snapshot;
+}
+
 async function exclusive(c: Context, key: string, action: () => Promise<Response>): Promise<Response> {
   const db = repo(c).db;
   let locks = active.get(db);
@@ -169,7 +177,7 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
       const result = await seatLifecycleService(c).launchFresh({ seatRef: observed.sessionName, fresh: true,
         reason: `TUI explicit fresh consent for ${node.logicalId}, observed revision ${body.revision}`, stop: false });
       await refreshNativeMetadata(c, rig.rig.id);
-      if (result.ok) dep<SnapshotCapture>(c, "snapshotCapture").captureSnapshot(rig.rig.id, "auto-rehydrate");
+      if (result.ok) captureRehydrate(c, rig.rig.id);
       return c.json(result, result.ok ? 200 : 409);
     }
     // Never-occupied builtin seats reuse materialization's existing launch effect.
@@ -183,7 +191,7 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
       const result = await dep<PodRigInstantiator>(c, "podInstantiator").launchBinding({ rigId: rig.rig.id, rigSpec: spec, rigRoot: root, pod,
         member: { ...member, ...(node.model ? { model: node.model } : {}) }, qualifiedId: node.logicalId, nodeId: node.id, cwdOverride: node.cwd ?? undefined });
       await refreshNativeMetadata(c, rig.rig.id);
-      dep<SnapshotCapture>(c, "snapshotCapture").captureSnapshot(rig.rig.id, "auto-rehydrate");
+      captureRehydrate(c, rig.rig.id);
       const after = await observeSeat(c, rig, node);
       const ok = result.status === "launched" && after.state === "running";
       return c.json({ ...result, ok, observed: after, ...(!ok ? { message: after.detail, freshAllowed: false } : {}) }, ok ? 200 : 409);
@@ -193,7 +201,7 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
     if (!snapshot) {
       const eligibility = assessCurrentStateRehydrateEligibility(repo(c).db, selectedRig);
       if (!eligibility.ok) return c.json({ ok: false, code: "startup_source_unavailable", message: eligibility.blockers.join("; ") }, 409);
-      snapshot = dep<SnapshotCapture>(c, "snapshotCapture").captureSnapshot(rig.rig.id, "auto-rehydrate");
+      snapshot = captureRehydrate(c, rig.rig.id);
     }
     const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot)).nodes[0]!;
     if (history.length > 0 && forecast.intendedAction !== "resume-original") return c.json({ ok: false, code: "resume_unavailable", freshAllowed: forecast.freshRequired,

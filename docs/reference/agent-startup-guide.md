@@ -278,13 +278,11 @@ A seat that resumes replays nothing, so a broken copy does not stop it.
 holds. When the rig records a spec source, `rig seat launch '<seat>@<rig>' --fresh --stop --reason "<why>"` (the
 default, which re-reads the spec) heals every kind of unreadable row, leaves the other seats running, and delivers the
 spec's current startup files, not the saved ones; if the spec can no longer start the seat it is refused and changes
-nothing. Otherwise restore is the way back. For files of the wrong shape: `rig down <rig>`, then
-`rig up <rig> --existing --fresh <seat> --startup-from stored` (this restarts every seat). For files that are not JSON,
-do not stop the rig (`rig down` cannot snapshot such a seat, so a following `rig up --existing` has no snapshot of the
-rig as it was stopped): stop only the seat, then `rig launch <rig-id> <seat>`,
-which starts it from a valid copy when the seat starts fresh (for example under `checkpoint_only`); under the default
-`resume_if_possible` policy a seat with a resume token is resumed and its files stay unreadable. If no snapshot holds a
-valid copy, the saved row has to be repaired outside restore.
+nothing. Otherwise restore is the way back: `rig down <rig>`, then
+`rig up <rig> --existing --fresh <seat> --startup-from stored` (this restarts every seat). An automatic snapshot
+(`rig down`, the periodic snapshot, an auto-rehydrate capture) no longer fails because one seat's saved files are not
+JSON: that seat gets no copy, the rest of the rig is captured, and the capture warns (`rig down` lists it under its
+warnings and exits 2). If no snapshot holds a valid copy, the saved row has to be repaired outside restore.
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
 seat without starting tmux, stopping or launching a process, projecting startup files, or changing

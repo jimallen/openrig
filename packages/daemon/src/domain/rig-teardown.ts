@@ -132,8 +132,11 @@ export class RigTeardownOrchestrator {
     }
     // Discovery is best-effort; preserve the durable ledger even if it fails.
     try {
-      const snap = this.deps.snapshotCapture.captureSnapshot(rigId, "auto-pre-down");
+      // OF-36 Q1: a seat whose saved startup context is not JSON is captured with no copy, and warned, instead of
+      // failing the whole rig's snapshot.
+      const { snapshot: snap, warnings } = this.deps.snapshotCapture.captureSkippingUnreadable(rigId, "auto-pre-down");
       result.snapshotId = snap.id;
+      result.errors.push(...warnings);
     } catch (err) {
       result.errors.push(`Snapshot failed: ${(err as Error).message}`);
       // Best-effort — teardown proceeds even if snapshot fails

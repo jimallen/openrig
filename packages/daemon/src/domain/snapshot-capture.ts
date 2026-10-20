@@ -74,8 +74,8 @@ export class SnapshotCapture {
   captureSnapshot(rigId: string, kind: string, opts?: {
     intendedNodeIds?: string[];
     /** N-C3: with this, a seat whose saved startup context has a column that is not JSON is captured with no copy
-     *  (null) and reported here, instead of failing the whole capture. Restore's own pre-restore capture passes it;
-     *  `rig down` and the periodic capture do not (whether they should is a decision for the owner, OF-36). */
+     *  (null) and reported here, instead of failing the whole capture. Every automatic capture passes it, through
+     *  `captureSkippingUnreadable`; the manual `rig snapshot` capture does not. */
     onUnreadableStartupContext?: (nodeId: string, message: string) => void;
   }): Snapshot {
     // 1. Get rig with nodes, edges, bindings
@@ -187,6 +187,26 @@ export class SnapshotCapture {
     this.eventBus.notifySubscribers(persistedEvent);
 
     return snapshot;
+  }
+
+  /**
+   * OF-36 Q1 (Jim, 2026-10-20: "Skip that seat, warn"): an automatic capture (`rig down`'s auto-pre-down, the periodic
+   * capture, every auto-rehydrate capture, restore's pre-restore capture) does not fail the whole rig's snapshot because
+   * one seat's saved startup context has a column that is not JSON. That seat is captured with no copy (null), and a
+   * warning says so. Restore never replays a copy it cannot use: a seat it starts fresh replays the newest valid
+   * snapshot copy, or is refused when there is none (own-startup-replay.ts).
+   */
+  captureSkippingUnreadable(rigId: string, kind: string, opts?: { intendedNodeIds?: string[] }): { snapshot: Snapshot; warnings: string[] } {
+    const warnings: string[] = [];
+    const nodes = this.rigRepo.getRig(rigId)?.nodes ?? [];
+    const snapshot = this.captureSnapshot(rigId, kind, {
+      ...opts,
+      onUnreadableStartupContext: (nodeId, message) => {
+        const logicalId = nodes.find((node) => node.id === nodeId)?.logicalId ?? nodeId;
+        warnings.push(`Snapshot (${kind}) holds no copy of ${logicalId}'s saved startup context: a column of it is not JSON (${message}). The rest of the rig was captured.`);
+      },
+    });
+    return { snapshot, warnings };
   }
 
   private materializedRoster(rigId: string): string[] | null {

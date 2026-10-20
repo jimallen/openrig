@@ -513,8 +513,11 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
   const corrupt = (nodeId: string, column: string, value: string) => { db.prepare(`UPDATE node_startup_context SET ${column} = ? WHERE node_id = ?`).run(value, nodeId); };
   // OF-36 rewrote the restore half of this advice: restore now passes over a copy it cannot use and replays the newest
   // valid one, or refuses the seat (restore-own-row-fallback.test.ts; the commands are run in the CLI integration test).
-  const VIA_RESTORE_SHAPE = (rigId: string) => `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down 'team', then rig up 'team' --existing --fresh 'dev.impl' --startup-from stored (this stops and restarts every seat; the snapshot rig down takes carries the damage and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then the saved row has to be repaired outside restore. Note that rig launch ${rigId} dev.impl on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
-  const VIA_RESTORE_JSON = (rigId: string) => `Do not stop the rig: rig down cannot snapshot this seat, so a following rig up --existing has no snapshot of the rig as it was stopped. Stop only this seat (rig seat stop 'dev-impl@team' --reason "<why>"), then run rig launch ${rigId} dev.impl: a seat that starts fresh there (for example under restore policy checkpoint_only) replays the newest snapshot copy of its startup files that is valid and saves it as its new context, or, if no snapshot holds one, is refused and nothing is started for it. Under the default policy (resume_if_possible) a seat with a resume token is resumed instead: nothing is delivered and the context stays unreadable. If it is resumed or refused, the saved row has to be repaired outside restore.`;
+  // OF-36 Q1: `rig down` snapshots the rig with no copy for a seat whose context is not JSON, so both kinds of damage
+  // get the same restore route; only the clause about rig down's snapshot differs.
+  const VIA_RESTORE = (rigId: string, notJson: boolean) => `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down 'team', then rig up 'team' --existing --fresh 'dev.impl' --startup-from stored (this stops and restarts every seat; the snapshot rig down takes ${notJson ? "holds no copy of this context" : "carries the damage"} and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then the saved row has to be repaired outside restore. Note that rig launch ${rigId} dev.impl on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
+  const VIA_RESTORE_SHAPE = (rigId: string) => VIA_RESTORE(rigId, false);
+  const VIA_RESTORE_JSON = (rigId: string) => VIA_RESTORE(rigId, true);
   const SPEC_ROUTE_ADVICE = (rigId: string, notJson: boolean) => `Start it from the rig's recorded spec instead: rig seat launch 'dev.impl@team' --fresh --stop --reason "<why>". That re-reads the spec and delivers the spec's current startup files, not the saved ones, saves them as the seat's new context, and leaves the other seats running. If the spec can no longer start the seat, that launch is refused and changes nothing. ${notJson ? VIA_RESTORE_JSON(rigId) : VIA_RESTORE_SHAPE(rigId)}`;
 
   const NO_SPEC_SHAPE_ADVICE = (rigId: string) => `The saved startup context is not a valid startup setup, and there is no spec to re-read for this seat. ${VIA_RESTORE_SHAPE(rigId)}`;
@@ -551,14 +554,14 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
   }
 
   for (const [name, column, value] of JSON_VARIANTS) {
-    it(`${name}, no spec recorded: names rig seat stop + rig launch (a seat that starts fresh), and never stopping the rig`, async () => {
+    it(`${name}, no spec recorded: names rig down + rig up --existing --fresh --startup-from stored (rig down now snapshots the rig without this copy)`, async () => {
       const seat = await launchRig({ record: false });
       corrupt(seat.nodeId, column, value);
 
       const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable" });
 
       expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
-      // N-C2 re-check N2: the session name is quoted; N5: no restore_error claim (with no earlier snapshot it is no_snapshot).
+      // N-C2 re-check N5: no restore_error claim. (N2's `rig seat stop` is no longer printed: OF-36 Q1 lets rig down snapshot the rig.)
       expect(!result.ok && result.guidance).toBe(`A column of the saved startup context is not JSON, and there is no spec to re-read for this seat. ${VIA_RESTORE_JSON(seat.rigId)}`);
     });
   }

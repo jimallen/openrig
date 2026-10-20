@@ -87,29 +87,9 @@ describe("N-C2 spec recorded: the named `rig seat launch --fresh --stop` heals e
   }
 });
 
-describe("N-C2 no spec recorded, not JSON, checkpoint_only: the named `rig launch` heals it from an earlier snapshot", () => {
-  const t = useRig({ recordSpec: false });
-  it("rig seat stop, then rig launch <rigId> <seat>", async () => {
-    t.sql("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = (SELECT id FROM nodes WHERE logical_id = 'dev.impl')");
-    const id = await t.rigId();
-    const snap = await sh(`rig snapshot ${id}`, t.ctx.daemon!.readEnv);
-    expect(snap.code, JSON.stringify(snap)).toBe(0);
-    t.corrupt("resolved_files_json", "{not json");
-
-    const refused = await t.refuse();
-    expect(refused.code).not.toBe(0);
-    const stop = refused.text.match(/rig seat stop \S+ --reason "<why>"/);
-    const launch = refused.text.match(/rig launch \S+ dev\.impl/);
-    expect(stop && launch, refused.text).toBeTruthy();
-    expect(refused.text).not.toMatch(/rig seat launch '/);
-
-    const stopped = await sh(`${stop![0]} --json`, t.ctx.daemon!.readEnv);
-    expect(stopped.code, JSON.stringify(stopped)).toBe(0);
-    const launched = await sh(`${launch![0]} --json`, t.ctx.daemon!.readEnv);
-    expect(launched.code, JSON.stringify(launched)).toBe(0);
-    expect(await STORED_READS_OK(t), "the stored launch is no longer refused").toBe(true);
-  }, 400_000);
-});
+// The not-JSON `rig seat stop` + `rig launch` route is no longer advised: OF-36 Q1 lets `rig down` snapshot the rig
+// without that seat's copy, so both kinds of damage take the rig down + rig up route, typed with and without an earlier
+// snapshot in restore-own-row-cli.integration.test.ts.
 
 // The old "why rig down + rig up --existing --fresh is not advised" rows (D5: the restore replayed the snapshot rig down
 // had just taken) no longer hold: OF-36 passes a copy restore cannot use over. The advised route, with and without a

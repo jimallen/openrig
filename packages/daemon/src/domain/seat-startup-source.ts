@@ -246,11 +246,8 @@ export async function resolveFreshSeatStartup(
  *    no snapshot holds a valid copy it refuses that seat and starts nothing for it.
  *    - Wrong shape: `rig down` copies the row verbatim (that copy is passed over), and
  *      `rig up --existing --fresh <seat> --startup-from stored` starts the seat fresh whatever its restore policy.
- *    - Not JSON: `rig down` cannot snapshot the seat, so a following `rig up --existing` has no snapshot of the rig as
- *      it was stopped (what it does instead depends on the older snapshots: N-C2 N5 measured `no_snapshot` with none);
- *      the rig is never advised to be stopped. `rig seat stop` + `rig launch <rig> <seat>` restores
- *      only this seat, and starts it fresh only when its restore policy does (for example checkpoint_only); under the
- *      default policy a seat with a resume token is resumed, nothing is delivered and the row stays unreadable.
+ *      `rig launch <rig> <seat>` alone resumes a seat with a resume token under the default policy.
+ *    - Not JSON (OF-36 Q1): `rig down` snapshots the rig with no copy for this seat, so the same route applies.
  */
 function malformedContextGuidance(
   input: { rigId: string; logicalId: string; sessionName: string },
@@ -258,9 +255,9 @@ function malformedContextGuidance(
 ): string {
   const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
   const repair = "the saved row has to be repaired outside restore";
-  const viaRestore = how.notJson
-    ? `Do not stop the rig: rig down cannot snapshot this seat, so a following rig up --existing has no snapshot of the rig as it was stopped. Stop only this seat (rig seat stop ${quote(input.sessionName)} --reason "<why>"), then run rig launch ${input.rigId} ${input.logicalId}: a seat that starts fresh there (for example under restore policy checkpoint_only) replays the newest snapshot copy of its startup files that is valid and saves it as its new context, or, if no snapshot holds one, is refused and nothing is started for it. Under the default policy (resume_if_possible) a seat with a resume token is resumed instead: nothing is delivered and the context stays unreadable. If it is resumed or refused, ${repair}.`
-    : `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down ${quote(how.rigName)}, then rig up ${quote(how.rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from stored (this stops and restarts every seat; the snapshot rig down takes carries the damage and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then ${repair}. Note that rig launch ${input.rigId} ${input.logicalId} on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
+  // OF-36 Q1: `rig down` now snapshots the rig even when this seat's context is not JSON (that seat gets no copy), so
+  // one restore route serves both kinds of damage.
+  const viaRestore = `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down ${quote(how.rigName)}, then rig up ${quote(how.rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from stored (this stops and restarts every seat; the snapshot rig down takes ${how.notJson ? "holds no copy of this context" : "carries the damage"} and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then ${repair}. Note that rig launch ${input.rigId} ${input.logicalId} on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
   if (how.specRoute) {
     return `Start it from the rig's recorded spec instead: rig seat launch ${quote(`${input.logicalId}@${how.rigName}`)} --fresh --stop --reason "<why>". That re-reads the spec and delivers the spec's current startup files, not the saved ones, saves them as the seat's new context, and leaves the other seats running. If the spec can no longer start the seat, that launch is refused and changes nothing. ${viaRestore}`;
   }

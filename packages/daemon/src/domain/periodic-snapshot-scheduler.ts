@@ -101,7 +101,9 @@ export class PeriodicSnapshotScheduler {
               );
             } catch { /* best-effort — the snapshot still writes below */ }
           }
-          this.deps.snapshotCapture.captureSnapshot(rigId, "auto-periodic");
+          // OF-36 Q1: one seat's unreadable saved startup context no longer costs the rig its periodic snapshot.
+          const { warnings } = this.deps.snapshotCapture.captureSkippingUnreadable(rigId, "auto-periodic");
+          for (const warning of warnings) console.warn(`[periodic-snapshot] ${warning}`);
           this.deps.snapshotRepo.pruneSnapshotsByKind(rigId, "auto-periodic", this.retentionKeep);
         } catch {
           // Per-rig error isolation: one rig's failure never aborts the tick.

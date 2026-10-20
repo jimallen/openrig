@@ -64,51 +64,62 @@ function useRig(opts: { recordSpec: boolean }) {
 
 const BAD_ACTION = JSON.stringify([{ type: "x" }]);
 
-describe("OF-36 rig seat launch's wrong-shape advice, no spec, with a snapshot taken before the break: the named rig down + rig up heals", () => {
-  const t = useRig({ recordSpec: false });
-  it("typed from the refusal", async () => {
-    const before = await t.rig(["snapshot", (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id]);
-    expect(before.code, JSON.stringify(before)).toBe(0);
-    expect(t.snapshotCount(), "positive control: a snapshot exists before the break").toBeGreaterThan(0);
-    t.corrupt("startup_actions_json", BAD_ACTION);
+// OF-36 Q1: `rig down` snapshots the rig even when the seat's context is not JSON (no copy for that seat, and a
+// warning, so it exits 2), so the advice names the same route for both kinds of damage.
+const DAMAGE = [
+  { kind: "wrong shape", column: "startup_actions_json", value: BAD_ACTION, downExit: 0 },
+  { kind: "not JSON", column: "resolved_files_json", value: "{not json", downExit: 2 },
+] as const;
 
-    const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
-    const text = `${refused.stderr}\n${refused.stdout}`;
-    expect(refused.code).not.toBe(0);
-    const down = text.match(/rig down '[^']*'/);
-    const up = text.match(/rig up '[^']*' --existing --fresh '[^']*' --startup-from stored/);
-    expect(down && up, text).toBeTruthy();
+async function adviseAndDown(t: ReturnType<typeof useRig>, downExit: number) {
+  const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
+  const text = `${refused.stderr}\n${refused.stdout}`;
+  expect(refused.code).not.toBe(0);
+  const down = text.match(/rig down '[^']*'/);
+  const up = text.match(/rig up '[^']*' --existing --fresh '[^']*' --startup-from stored/);
+  expect(down && up, text).toBeTruthy();
+  const downRan = await t.run(`${down![0]} --json`);
+  expect(downRan.code, downRan.stdout + downRan.stderr).toBe(downExit);
+  const teardown = JSON.parse(downRan.stdout) as { snapshotId: string | null; errors: string[] };
+  expect(teardown.snapshotId, "rig down snapshotted the rig").toBeTruthy();
+  if (downExit === 2) expect(teardown.errors.join("\n")).toContain("holds no copy of dev.impl's saved startup context: a column of it is not JSON");
+  return up![0];
+}
 
-    expect((await t.run(`${down![0]} --json`)).code).toBe(0);
-    const ran = await t.run(`${up![0]} --json`);
-    const nodes = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string; startupSource?: { snapshotId?: string } }> }).nodes;
-    const seat = nodes.find((n) => n.logicalId === "dev.impl")!;
-    expect(seat.status, ran.stdout).toBe("fresh-primed");
-    expect(seat.startupSource, "replayed another snapshot's copy than rig down's").toMatchObject({ kind: "snapshot", reason: "saved_context_unreadable" });
-    expect(seat.startupSource?.snapshotId, ran.stdout).toBeTruthy();
-    expect(await t.storedReadsOk(), "the stored launch is no longer refused").toBe(true);
-  }, 400_000);
-});
+for (const damage of DAMAGE) {
+  describe(`OF-36 rig seat launch's advice, ${damage.kind}, no spec, with a snapshot taken before the break: the named rig down + rig up heals`, () => {
+    const t = useRig({ recordSpec: false });
+    it("typed from the refusal", async () => {
+      const before = await t.rig(["snapshot", (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id]);
+      expect(before.code, JSON.stringify(before)).toBe(0);
+      expect(t.snapshotCount(), "positive control: a snapshot exists before the break").toBeGreaterThan(0);
+      t.corrupt(damage.column, damage.value);
 
-describe("OF-36 rig seat launch's wrong-shape advice, no spec, no snapshot before the break: the named rig up refuses only this seat", () => {
-  const t = useRig({ recordSpec: false });
-  it("typed from the refusal", async () => {
-    expect(t.snapshotCount(), "control: no snapshot was taken before the break").toBe(0);
-    t.corrupt("startup_actions_json", BAD_ACTION);
-    const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
-    const text = `${refused.stderr}\n${refused.stdout}`;
-    const down = text.match(/rig down '[^']*'/);
-    const up = text.match(/rig up '[^']*' --existing --fresh '[^']*' --startup-from stored/);
-    expect(down && up, text).toBeTruthy();
+      const up = await adviseAndDown(t, damage.downExit);
+      const ran = await t.run(`${up} --json`);
+      const nodes = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string; startupSource?: { snapshotId?: string } }> }).nodes;
+      const seat = nodes.find((n) => n.logicalId === "dev.impl")!;
+      expect(seat.status, ran.stdout).toBe("fresh-primed");
+      expect(seat.startupSource, "replayed another snapshot's copy than rig down's").toMatchObject({ kind: "snapshot", reason: "saved_context_unreadable" });
+      expect(seat.startupSource?.snapshotId, ran.stdout).toBeTruthy();
+      expect(await t.storedReadsOk(), "the stored launch is no longer refused").toBe(true);
+    }, 400_000);
+  });
 
-    expect((await t.run(`${down![0]} --json`)).code).toBe(0);
-    const ran = await t.run(`${up![0]} --json`);
-    const seat = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string; error?: string }> }).nodes.find((n) => n.logicalId === "dev.impl")!;
-    expect(seat.status, ran.stdout).toBe("failed");
-    expect(seat.error).toMatch(/^Fresh start refused: dev\.impl: no snapshot of this rig holds a readable copy of its startup files/);
-    expect((await t.seatStatuses())["dev.impl"], "nothing was started for the seat").not.toBe("running");
-  }, 400_000);
-});
+  describe(`OF-36 rig seat launch's advice, ${damage.kind}, no spec, no snapshot before the break: the named rig up refuses only this seat`, () => {
+    const t = useRig({ recordSpec: false });
+    it("typed from the refusal", async () => {
+      expect(t.snapshotCount(), "control: no snapshot was taken before the break").toBe(0);
+      t.corrupt(damage.column, damage.value);
+      const up = await adviseAndDown(t, damage.downExit);
+      const ran = await t.run(`${up} --json`);
+      const seat = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string; error?: string }> }).nodes.find((n) => n.logicalId === "dev.impl")!;
+      expect(seat.status, ran.stdout).toBe("failed");
+      expect(seat.error).toMatch(/^Fresh start refused: dev\.impl: no snapshot of this rig holds a readable copy of its startup files/);
+      expect((await t.seatStatuses())["dev.impl"], "nothing was started for the seat").not.toBe("running");
+    }, 400_000);
+  });
+}
 
 for (const recordSpec of [false, true]) {
   describe(`OF-36 a plain rig up --existing, ${recordSpec ? "spec recorded" : "no spec"}, no usable copy: refused before it starts anything; restore-check says the same; the named remedy`, () => {
@@ -169,34 +180,6 @@ describe("OF-36 a listed seat, spec recorded, --startup-from stored, no usable c
     const ran = await t.run(named![0].replace("<why>", "of36-probe") + " --json");
     expect(ran.code, JSON.stringify(ran)).toBe(0);
     expect(await t.storedReadsOk(), "the spec re-read saved a readable context").toBe(true);
-  }, 400_000);
-});
-
-describe("OF-36 rig seat launch's not-JSON advice, no spec, checkpoint_only, no snapshot holds a valid copy: the named rig launch refuses the seat", () => {
-  const t = useRig({ recordSpec: false });
-  it("typed from the refusal", async () => {
-    t.policyFresh("dev.impl");
-    const snap = await t.rig(["snapshot", (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id]);
-    expect(snap.code, JSON.stringify(snap)).toBe(0);
-    // The only snapshot's copy of the seat's context cannot be used either.
-    for (const row of t.sql<{ id: string; data: string }>("SELECT id, data FROM snapshots")) {
-      const data = JSON.parse(row.data);
-      for (const key of Object.keys(data.nodeStartupContext ?? {})) if (data.nodeStartupContext[key]) data.nodeStartupContext[key].resolvedStartupFiles = {};
-      t.sql("UPDATE snapshots SET data = ? WHERE id = ?", JSON.stringify(data), row.id);
-    }
-    t.corrupt("resolved_files_json", "{not json");
-
-    const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
-    const text = `${refused.stderr}\n${refused.stdout}`;
-    const stop = text.match(/rig seat stop '[^']*' --reason "<why>"/);
-    const launch = text.match(/rig launch \S+ dev\.impl/);
-    expect(stop && launch, text).toBeTruthy();
-
-    expect((await t.run(stop![0].replace("<why>", "of36-probe") + " --json")).code).toBe(0);
-    const launched = await t.run(`${launch![0]} --json`);
-    expect(`${launched.stdout}\n${launched.stderr}`, JSON.stringify(launched)).toContain("Fresh start refused: dev.impl: no snapshot of this rig holds a readable copy of its startup files");
-    expect((await t.seatStatuses())["dev.impl"], "nothing was started for the seat").not.toBe("running");
-    expect((await t.seatStatuses())["dev.qa"], "the sibling kept running").toBe("running");
   }, 400_000);
 });
 

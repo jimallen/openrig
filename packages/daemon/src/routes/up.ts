@@ -118,6 +118,8 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     staleSnapshot = true;
   }
   let capturedCurrentState = false;
+  // OF-36 Q1: what the auto-rehydrate capture could not copy (a seat whose saved startup context is not JSON).
+  let captureWarnings: string[] = [];
   if (!snapshot) {
     const eligibility = assessCurrentStateRehydrateEligibility(snapshotRepo.db, rig);
     if (!eligibility.ok) {
@@ -155,7 +157,9 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
   }
 
   if (!snapshot) {
-    snapshot = deps.snapshotCapture.captureSnapshot(rigId, "auto-rehydrate");
+    const captured = deps.snapshotCapture.captureSkippingUnreadable(rigId, "auto-rehydrate");
+    snapshot = captured.snapshot;
+    captureWarnings = captured.warnings;
     snapshotSelection = {
       ...summarizeSnapshot(snapshot),
       mode: "automatic",
@@ -191,9 +195,10 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
         snapshotKind: snapshot.kind,
         ...result.result,
         remediation: result.result.blockers?.map((blocker) => blocker.remediation) ?? [],
+        warnings: [...captureWarnings, ...(result.result.warnings ?? [])],
       }, 409);
     }
-    return c.json({ error: result.message, code: result.code }, result.code === "rig_not_stopped" ? 409 : 400);
+    return c.json({ error: result.message, code: result.code, ...(captureWarnings.length > 0 ? { warnings: captureWarnings } : {}) }, result.code === "rig_not_stopped" ? 409 : 400);
   }
 
   // Compute attach command from first running node (same logic as /api/rigs/:id/up)
@@ -213,7 +218,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     warnings: capturedCurrentState
       ? [staleSnapshot
           ? "Existing restore snapshots named an older occupant; captured current DB state as auto-rehydrate snapshot for reboot recovery."
-          : "No restore-usable snapshot existed; captured current DB state as auto-rehydrate snapshot for reboot recovery.", ...result.result.warnings]
+          : "No restore-usable snapshot existed; captured current DB state as auto-rehydrate snapshot for reboot recovery.", ...captureWarnings, ...result.result.warnings]
       : result.result.warnings,
     attachCommand,
   }, 200);
