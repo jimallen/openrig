@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
+import os from "node:os";
 import nodePath from "node:path";
 import { parse as parseToml } from "smol-toml";
 
@@ -154,50 +155,122 @@ function realOrSelf(p: string): string {
   try { return realpathSync(p); } catch { return nodePath.resolve(p); }
 }
 
+/** The file-system reads the trust judgement makes; injectable so a test can present a foreign owner. */
+export interface PathJudgeIo {
+  lstat(p: string): Stats;
+  stat(p: string): Stats;
+  realpath(p: string): string;
+  uid(): number | undefined;
+  /** Directories a sandboxed Codex seat may write (its writable roots besides its cwd). */
+  tempRoots(): string[];
+}
+
+/** /tmp, $TMPDIR and /var/folders, as written and resolved (macOS links /tmp and /var into /private). */
+function defaultTempRoots(): string[] {
+  const roots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", os.tmpdir(), process.env["TMPDIR"] ?? ""].filter(Boolean);
+  const out = new Set<string>();
+  for (const r of roots) {
+    out.add(nodePath.resolve(r));
+    try { out.add(realpathSync(r)); } catch { /* absent on this host */ }
+  }
+  return [...out];
+}
+
+export const DEFAULT_PATH_JUDGE_IO: PathJudgeIo = {
+  lstat: (p) => lstatSync(p),
+  stat: (p) => statSync(p),
+  realpath: (p) => realpathSync(p),
+  uid: () => (typeof process.getuid === "function" ? process.getuid() : undefined),
+  tempRoots: defaultTempRoots,
+};
+
 /**
- * Where a declared server's executable may be. Content another principal controls must never choose the
- * program (security review N3): the command may not lie in the seat's working directory, the directory the
- * spec was read from (an archive could ship it), ANY git work tree (a merge or a peer seat could change it)
- * or ANY `.workspaces` directory (a sibling seat's folder). Both the path as written and the file it
- * resolves to are judged, so a link cannot launder either side. The resolved file and every directory
- * above it must be owned by this user or root and not writable by group or others; a group- or
- * world-writable directory is accepted only with the sticky bit (as /tmp), where others cannot rename or
- * replace the entry below it. `requireExecutable` (the switch and every launch) also demands an existing
- * executable regular file; spec preflight leaves a missing binary to a warning.
+ * Whether a file OpenRig will act on (a server binary, or a spec file named with --spec) could have been
+ * written or swapped by someone other than this user, including a sandboxed seat (security review N3, F1,
+ * F2; Jim, 2026-10-20). Refused when the path as written or as resolved:
+ *  - lies inside the seat's working directory, the spec's directory (binaries only), any git work tree, any
+ *    `.workspaces` directory, or a sandbox-writable root (/tmp, $TMPDIR, /var/folders); or
+ *  - has a component not owned by this user or root, or a non-link component writable by group or others.
+ * Every component of BOTH chains is examined: the written chain with lstat (a link is judged by its owner
+ * and by the directory holding it, so a link in a 0777 directory is refused), the resolved chain with stat.
+ * There is no sticky-bit exemption: a sandboxed seat can write the sticky temp roots.
+ * Returns null when trusted; `missing` when the path does not resolve.
+ */
+export function untrustedPathProblem(
+  file: string,
+  what: string,
+  roots: { seatCwd?: string | null; specDir?: string | null },
+  io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO,
+): { kind: "missing" } | { kind: "untrusted"; why: string } | null {
+  const written = nodePath.resolve(file);
+  let real: string;
+  try { real = io.realpath(file); } catch { return { kind: "missing" }; }
+  const temps = io.tempRoots();
+  for (const p of written === real ? [real] : [written, real]) {
+    const named: Array<[string, string | null | undefined]> = [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]];
+    for (const [label, root] of named) {
+      if (!root) continue;
+      let r = nodePath.resolve(root);
+      try { r = io.realpath(root); } catch { /* compare as written */ }
+      if (inside(p, r) || inside(p, nodePath.resolve(root))) return { kind: "untrusted", why: `${what} ${file} lies inside ${label} (${r}), so content there could choose ${what === "its command" ? "the program" : "what runs"}` };
+    }
+    const temp = temps.find((t) => inside(p, t));
+    if (temp) return { kind: "untrusted", why: `${what} ${file} lies inside the temporary directory ${temp}, which a sandboxed seat can write` };
+    const tree = controlledTree(p);
+    if (tree) return { kind: "untrusted", why: `${what} ${file} lies inside ${tree}, so content there could choose ${what === "its command" ? "the program" : "what runs"}` };
+  }
+  const uid = io.uid();
+  if (uid !== undefined) {
+    for (const [chain, read] of [[written, (p: string) => io.lstat(p)], [real, (p: string) => io.stat(p)]] as const) {
+      let p = chain;
+      for (;;) {
+        let st: Stats;
+        try { st = read(p); } catch { return { kind: "untrusted", why: `${what} ${file}: ${p} cannot be inspected` }; }
+        if (st.uid !== uid && st.uid !== 0) return { kind: "untrusted", why: `${what} ${file} is not protected: ${p} is owned by uid ${st.uid}, not by you or root` };
+        if (!st.isSymbolicLink() && (st.mode & 0o022) !== 0) return { kind: "untrusted", why: `${what} ${file} is not protected: ${p} is writable by group or others` };
+        const up = nodePath.dirname(p);
+        if (up === p) break;
+        p = up;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Where a declared server's executable may be: the trust judgement above, plus (with `requireExecutable`, at
+ * the switch and every launch) an existing executable regular file. Spec preflight passes
+ * `requireExecutable: false` and leaves a missing binary to a warning, since a declared server is off by default.
  */
 export function mcpServerPlacementProblem(
   server: Pick<CodexMcpServerDeclaration, "command">,
   roots: { seatCwd?: string | null; specDir?: string | null },
   opts: { requireExecutable: boolean },
+  io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO,
 ): string | null {
-  const written = nodePath.resolve(server.command);
-  let real: string;
-  let exists = true;
-  try {
-    real = realpathSync(server.command);
-  } catch {
+  const what = "its command";
+  const judged = untrustedPathProblem(server.command, what, roots, io);
+  if (judged?.kind === "missing") {
     if (opts.requireExecutable) return `its command ${server.command} does not exist`;
-    real = written;
-    exists = false;
-  }
-  for (const p of written === real ? [real] : [written, real]) {
-    for (const [label, root] of [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]] as const) {
-      if (!root) continue;
-      const r = realOrSelf(root);
-      if (inside(p, r) || inside(p, nodePath.resolve(root))) {
-        return `its command ${server.command} lies inside ${label} (${r}), so content there could choose the program`;
+    // Not installed yet: judge the places the path names, so a declaration pointing into a seat's
+    // folder or a temp root is refused at preflight even before the binary exists.
+    const written = nodePath.resolve(server.command);
+    const named: Array<[string, string | null | undefined]> = [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]];
+    for (const [label, root] of named) {
+      if (root && (inside(written, nodePath.resolve(root)) || inside(written, realOrSelf(root)))) {
+        return `its command ${server.command} lies inside ${label} (${realOrSelf(root)}), so content there could choose ${what === "its command" ? "the program" : "what runs"}`;
       }
     }
-    const tree = controlledTree(p);
-    if (tree) return `its command ${server.command} lies inside ${tree}, so content there could choose the program`;
+    const temp = io.tempRoots().find((t) => inside(written, t));
+    if (temp) return `its command ${server.command} lies inside the temporary directory ${temp}, which a sandboxed seat can write`;
+    const tree = controlledTree(written);
+    return tree ? `its command ${server.command} lies inside ${tree}, so content there could choose ${what === "its command" ? "the program" : "what runs"}` : null;
   }
-  if (exists) {
-    const unsafe = unsafeOwnership(real);
-    if (unsafe) return `its command ${server.command} is not protected: ${unsafe}`;
-  }
+  if (judged) return judged.why;
   if (opts.requireExecutable) {
     try {
-      if (!statSync(real).isFile()) return `its command ${server.command} is not a regular file`;
+      const real = io.realpath(server.command);
+      if (!io.stat(real).isFile()) return `its command ${server.command} is not a regular file`;
       accessSync(real, constants.X_OK);
     } catch {
       return `its command ${server.command} is not executable`;
@@ -215,24 +288,6 @@ function controlledTree(p: string): string | null {
     const up = nodePath.dirname(d);
     if (up === d) return null;
     d = up;
-  }
-}
-
-/** Why the resolved file or a directory above it could be changed by someone else; null when it cannot. */
-function unsafeOwnership(real: string): string | null {
-  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  if (uid === undefined) return null; // no POSIX ownership to judge (Windows)
-  let p = real;
-  for (;;) {
-    let st;
-    try { st = statSync(p); } catch { return `${p} cannot be inspected`; }
-    if (st.uid !== uid && st.uid !== 0) return `${p} is owned by uid ${st.uid}, not by you or root`;
-    if ((st.mode & 0o022) !== 0 && !(p !== real && st.isDirectory() && (st.mode & 0o1000) !== 0)) {
-      return `${p} is writable by group or others`;
-    }
-    const up = nodePath.dirname(p);
-    if (up === p) return null;
-    p = up;
   }
 }
 

@@ -13,6 +13,7 @@ import { describeBundleBehaviour } from "../src/domain/bundle-behaviour.js";
 import { normalizeMcpServers } from "../src/domain/codex-mcp-servers.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { trustedFixtureDir } from "./helpers/trusted-fixture-dir.js";
 
 const TOOLS = ["get_definition", "get_references", "get_hover"];
 function server(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -98,7 +99,8 @@ describe("mcp_servers: rig preflight judges where the executable lives", () => {
     chmodSync(p, 0o755);
     return p;
   }
-  function tmp(): string { const d = realpathSync(mkdtempSync(join(tmpdir(), "mcp-pf-"))); dirs.push(d); return d; }
+  // Accepted binaries may not live in a temp root: these directories are 0700 in the account's home.
+  function tmp(): string { const d = trustedFixtureDir("pf"); dirs.push(d); return d; }
 
   it("refuses a command inside the spec's own directory (an archive could ship the program)", async () => {
     const rigRoot = tmp();

@@ -92,7 +92,7 @@ export interface SeatRefusal {
     // rig seat set-mcp
     | "missing_actor" | "invalid_mcp_server" | "invalid_mcp_state" | "mcp_unsupported_runtime" | "mcp_unavailable"
     | "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
-    | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "invalid_mcp_spec_file"
+    | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "invalid_mcp_spec_file" | "mcp_spec_file_untrusted"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"

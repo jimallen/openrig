@@ -7,7 +7,7 @@ import { RigSpecSchema } from "./rigspec-schema.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
 import {
-  commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, validateMcpServersBlock,
+  commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, untrustedPathProblem, validateMcpServersBlock,
   type SeatMcpSelection, type SeatMcpServer,
 } from "./codex-mcp-servers.js";
 
@@ -99,7 +99,7 @@ export const declarationSha256 = (declaration: Record<string, unknown>) =>
 export type DeclaredServerRead =
   | { ok: true; entry: StoredSeatMcpServer }
   | { ok: false; code: "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
-      | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch"; message: string };
+      | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "mcp_spec_file_untrusted"; message: string };
 
 /**
  * Read one declared server for one seat from its rig's recorded spec source, as that file is now, and
@@ -127,6 +127,15 @@ export function readDeclaredMcpServer(input: {
     ? { ok: false, code: "mcp_spec_file_unavailable", message: `The spec file ${specSource} cannot be used for MCP servers: ${detail}` }
     : { ok: false, code: "mcp_spec_source_unavailable", message: `This rig's spec source ${specSource} cannot be read for MCP servers: ${detail}` };
   if (!nodePath.isAbsolute(specSource)) return unavailable("it is not an absolute path.");
+  // Security re-check F1: the operator-named file is the trust anchor for what runs, so it is judged like the
+  // binary. A seat can write its own cwd, a peer's .workspaces folder, a git checkout and the temp roots;
+  // none of those may supply a declaration (a floor seat could otherwise name /bin/sh for itself).
+  if (operator) {
+    const judged = untrustedPathProblem(specSource, "the spec file", { seatCwd: input.node.cwd });
+    if (judged?.kind === "untrusted") {
+      return { ok: false, code: "mcp_spec_file_untrusted", message: `The spec file ${specSource} cannot be trusted for MCP servers: ${judged.why}. Name a reviewed spec outside every seat folder, git work tree and temporary directory, owned by you or root and not writable by group or others.` };
+    }
+  }
   let specPath: string;
   let bytes: Buffer;
   try {
@@ -173,6 +182,11 @@ export function readDeclaredMcpServer(input: {
 /**
  * Whether a spec declares this rig: by name, or, for a project rig, by the name `rig up --cwd <project>`
  * gives it (the project folder's slug), judged from the seat's own folder <project>/.workspaces/<pod>-<member>.
+ *
+ * TRUST BOUNDARY: this is a typo guard, not a security boundary. A project-rig spec matches any seat of any
+ * project it could be launched into, and a plain spec's `name` is whatever the file says, so the match binds
+ * nothing about who wrote the file (security re-check of aa8b6af1). What makes an operator-named spec safe to
+ * act on is the file's place and ownership (untrustedPathProblem above), never this comparison.
  */
 function declaresRig(raw: Record<string, unknown>, rigName: string, seatCwd: string | null): boolean {
   if (raw["name"] === rigName) return true;

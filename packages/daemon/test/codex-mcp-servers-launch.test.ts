@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseToml } from "smol-toml";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
+import { trustedFixtureDir } from "./helpers/trusted-fixture-dir.js";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { codexCommandResumeToken, processArgv } from "../src/domain/native-process-lineage.js";
@@ -17,7 +18,8 @@ import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { SeatMcpSelection } from "../src/domain/codex-mcp-servers.js";
 
-const scratch = realpathSync(mkdtempSync(join(tmpdir(), "mcp-launch-")));
+// Accepted binaries may not live in a temp root, so the fixtures live in a 0700 directory in the account's home.
+const scratch = trustedFixtureDir("launch");
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 const MCPLS = join(scratch, "opt", "mcpls");
 // Explicit modes: the placement rule refuses group-writable directories, and a umask of 002 (Ubuntu's default with
@@ -247,13 +249,89 @@ describe("placement: content another principal controls never chooses the progra
     expect(r.error).toContain(`is not protected: ${join(base, "open")} is writable by group or others`);
   });
 
-  it("accepts a binary below a sticky world-writable directory when the entry beneath it is yours", async () => {
+  // Jim, 2026-10-20: no sticky exemption (a sandboxed seat can write the sticky temp roots).
+  it("refuses a binary below a sticky world-writable directory, even when the entry beneath it is yours", async () => {
     const command = exe(join(base, "sticky", "mine", "mcpls"));
     chmodSync(join(base, "sticky", "mine"), 0o700);
     chmodSync(join(base, "sticky"), 0o1777);
     const r = await launch(command);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`is not protected: ${join(base, "sticky")} is writable by group or others`);
+  });
+
+  it("accepts a binary in a 0755 directory of yours (control for the rows above)", async () => {
+    const command = exe(join(base, "fine", "mcpls"));
+    const r = await launch(command);
     expect(r.ok).toBe(true);
     expect(r.commands[0]).toContain(`mcp_servers.lsp={command=${JSON.stringify(command)}`);
+  });
+
+  // Security re-check S2: group write alone (0775, the umask-002 shape) is refused.
+  it("refuses a binary under a group-writable 0775 directory", async () => {
+    const command = exe(join(base, "group", "mcpls"));
+    chmodSync(join(base, "group"), 0o775);
+    const r = await launch(command);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`is not protected: ${join(base, "group")} is writable by group or others`);
+  });
+
+  // Security re-check F2: the as-written chain is judged too. A link in a 0777 directory can be retargeted.
+  it("refuses a link that sits in a world-writable directory, though its target is safe; a link in a safe directory passes", async () => {
+    const target = exe(join(base, "safe-target", "mcpls"));
+    execFileSync("/bin/mkdir", ["-p", "-m", "755", join(base, "linkdir-open"), join(base, "linkdir-safe")]);
+    const open = join(base, "linkdir-open", "mcpls");
+    const safe = join(base, "linkdir-safe", "mcpls");
+    symlinkSync(target, open);
+    symlinkSync(target, safe);
+    chmodSync(join(base, "linkdir-open"), 0o777);
+    const refused = await launch(open);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain(`is not protected: ${join(base, "linkdir-open")} is writable by group or others`);
+    expect((await launch(safe)).ok).toBe(true);
+  });
+});
+
+// Jim, 2026-10-20: the temp roots are refused outright for the binary, as written or resolved.
+describe("placement: temporary directories are refused for the binary", () => {
+  it("refuses a 0700 directory of yours under the system temp directory", async () => {
+    const { mcpServerPlacementProblem } = await import("../src/domain/codex-mcp-servers.js");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "mcp-temp-")));
+    try {
+      const bin = join(dir, "mcpls");
+      writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+      chmodSync(bin, 0o755);
+      expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true })).toMatch(/lies inside the temporary directory .*, which a sandboxed seat can write$/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("refuses $TMPDIR and /var/folders as declared paths, even before the binary exists", async () => {
+    const { mcpServerPlacementProblem } = await import("../src/domain/codex-mcp-servers.js");
+    const fakeTmp = join(scratch, "fake-tmpdir");
+    const prior = process.env["TMPDIR"];
+    process.env["TMPDIR"] = fakeTmp;
+    try {
+      expect(mcpServerPlacementProblem({ command: join(fakeTmp, "x", "mcpls") }, {}, { requireExecutable: false }))
+        .toBe(`its command ${join(fakeTmp, "x", "mcpls")} lies inside the temporary directory ${fakeTmp}, which a sandboxed seat can write`);
+    } finally { if (prior === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = prior; }
+    expect(mcpServerPlacementProblem({ command: "/var/folders/zz/abc/T/mcpls" }, {}, { requireExecutable: false }))
+      .toBe("its command /var/folders/zz/abc/T/mcpls lies inside the temporary directory /var/folders, which a sandboxed seat can write");
+  });
+});
+
+// Security re-check S3: a component owned by someone else is refused (presented through an injected stat,
+// since the suite runs as one uid).
+describe("placement: a foreign owner anywhere on the path is refused", () => {
+  it("refuses when a directory on the resolved chain belongs to another uid; the unmodified reads accept", async () => {
+    const { mcpServerPlacementProblem, DEFAULT_PATH_JUDGE_IO } = await import("../src/domain/codex-mcp-servers.js");
+    const bin = join(scratch, "owned", "mcpls");
+    execFileSync("/bin/mkdir", ["-p", "-m", "755", join(scratch, "owned")]);
+    writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    chmodSync(bin, 0o755);
+    const foreign = join(scratch, "owned");
+    const lie = (st: ReturnType<typeof DEFAULT_PATH_JUDGE_IO.stat>, p: string) => (p === foreign ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: 4242 }) : st);
+    const io = { ...DEFAULT_PATH_JUDGE_IO, stat: (p: string) => lie(DEFAULT_PATH_JUDGE_IO.stat(p), p), lstat: (p: string) => lie(DEFAULT_PATH_JUDGE_IO.lstat(p), p) };
+    expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true }, io))
+      .toBe(`its command ${bin} is not protected: ${foreign} is owned by uid 4242, not by you or root`);
+    expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true }, DEFAULT_PATH_JUDGE_IO)).toBeNull();
   });
 });
 
@@ -293,7 +371,10 @@ describe("a server name another Codex config layer defines is refused (security 
 });
 
 describe("codexConfigLayerFiles / codexConfigServerNames read names only", () => {
-  const layers = join(scratch, "layers");
+  // NOT in the account's home: the layer walk climbs every ancestor of the seat cwd, and from the real home
+  // it would read the operator's own ~/.codex/config.toml. Nothing here needs the trust rule's acceptance.
+  const layers = realpathSync(mkdtempSync(join(tmpdir(), "mcp-layers-")));
+  afterAll(() => rmSync(layers, { recursive: true, force: true }));
   it("finds a same-named server in the shared file, a profile and a project .codex layer above the seat", async () => {
     const { codexConfigLayerFiles, codexConfigServerNames } = await import("../src/domain/codex-mcp-servers.js");
     execFileSync("/bin/mkdir", ["-p", join(layers, "home"), join(layers, "proj", ".codex"), join(layers, "proj", "seat")]);
