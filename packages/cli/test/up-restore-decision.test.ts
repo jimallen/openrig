@@ -146,7 +146,7 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "release"]);
     });
-    expect(logs.join("\n")).toContain(`--startup-from takes spec or stored (got "release")`);
+    expect(logs.join("\n")).toContain(`--startup-from takes spec, stored or snapshot:<snapshot-id> (got "release")`);
     expect(exitCode).toBe(1);
     expect(upBodies).toHaveLength(0);
   });

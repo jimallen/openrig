@@ -403,7 +403,7 @@ describe("rig restore-check", () => {
       spy.mockRestore();
     }
     expect(requestedPaths).toEqual([]);
-    expect(errors.join("\n")).toContain('--startup-from takes spec or stored (got "latest")');
+    expect(errors.join("\n")).toContain('--startup-from takes spec, stored or snapshot:<snapshot-id> (got "latest")');
   });
 
   it("daemon-down produces not_restorable locally without daemon call", async () => {

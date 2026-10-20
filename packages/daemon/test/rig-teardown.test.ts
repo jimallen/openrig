@@ -349,7 +349,8 @@ describe("RigTeardownOrchestrator", () => {
 
     const result = await td.teardown(rigId);
 
-    expect(snapshotCapture.captureSnapshot).toHaveBeenCalledWith(rigId, "auto-pre-down");
+    // OF-36 Q1: rig down captures through the skipping capture (a seat whose context is not JSON gets no copy).
+    expect(snapshotCapture.captureSnapshot).toHaveBeenCalledWith(rigId, "auto-pre-down", expect.objectContaining({ onUnreadableStartupContext: expect.any(Function) }));
     expect(result).toMatchObject({ snapshotId: null, sessionsKilled: 1 });
     expect(result.errors).toEqual(["Resume metadata refresh failed: discovery unavailable", "Snapshot failed: snapshot storage unavailable"]);
   });

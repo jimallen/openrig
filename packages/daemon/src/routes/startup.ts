@@ -1,5 +1,6 @@
 // The TUI's selection/consent boundary. State comes from existing repositories;
 // effects remain owned by kernel materialization, restore, and seat lifecycle.
+import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import { Hono, type Context } from "hono";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -54,7 +55,7 @@ export function startupRevision(db: Database.Database, node: Node): string {
 /** OF-36 Q1: an auto-rehydrate capture that skips (and logs) a seat whose saved startup context is not JSON, instead of
  *  throwing out of the route. */
 function captureRehydrate(c: Context, rigId: string) {
-  const { snapshot, warnings } = dep<SnapshotCapture>(c, "snapshotCapture").captureSkippingUnreadable(rigId, "auto-rehydrate");
+  const { snapshot, warnings } = captureSkippingUnreadable(dep<SnapshotCapture>(c, "snapshotCapture"), rigId, "auto-rehydrate");
   for (const warning of warnings) console.warn(`[startup] ${warning}`);
   return snapshot;
 }

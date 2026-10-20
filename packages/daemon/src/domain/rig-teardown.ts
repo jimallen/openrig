@@ -1,3 +1,4 @@
+import { captureSkippingUnreadable } from "./snapshot-capture.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -134,7 +135,7 @@ export class RigTeardownOrchestrator {
     try {
       // OF-36 Q1: a seat whose saved startup context is not JSON is captured with no copy, and warned, instead of
       // failing the whole rig's snapshot.
-      const { snapshot: snap, warnings } = this.deps.snapshotCapture.captureSkippingUnreadable(rigId, "auto-pre-down");
+      const { snapshot: snap, warnings } = captureSkippingUnreadable(this.deps.snapshotCapture, rigId, "auto-pre-down");
       result.snapshotId = snap.id;
       result.errors.push(...warnings);
     } catch (err) {

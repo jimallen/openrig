@@ -1,3 +1,4 @@
+import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import nodePath from "node:path";
 import { Hono } from "hono";
 import { bootstrapFailureResponse } from "./bootstrap-failure-response.js";
@@ -157,7 +158,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
   }
 
   if (!snapshot) {
-    const captured = deps.snapshotCapture.captureSkippingUnreadable(rigId, "auto-rehydrate");
+    const captured = captureSkippingUnreadable(deps.snapshotCapture, rigId, "auto-rehydrate");
     snapshot = captured.snapshot;
     captureWarnings = captured.warnings;
     snapshotSelection = {

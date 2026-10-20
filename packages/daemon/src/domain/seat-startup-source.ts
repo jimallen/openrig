@@ -25,7 +25,7 @@ export type StartupFrom = "spec" | "stored" | `snapshot:${string}`;
 
 export const STARTUP_FROM_VALUES: readonly ("spec" | "stored")[] = ["spec", "stored"];
 /** Every accepted spelling, for refusal messages. */
-export const STARTUP_FROM_FORMS = "spec, stored, or snapshot:<snapshot-id>";
+export const STARTUP_FROM_FORMS = "one of: spec, stored, snapshot:<snapshot-id>";
 
 /** `--startup-from` / `startupFrom` as given, or null when it is not one of the accepted spellings. */
 export function parseStartupFrom(value: unknown): StartupFrom | null {

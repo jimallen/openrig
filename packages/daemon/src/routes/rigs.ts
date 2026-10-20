@@ -1,3 +1,4 @@
+import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import { inventoryCaptureOptions, type ShadowCapture } from "../domain/shadow-capture.js";
 import { DeliveryGuardError } from "../domain/seat-delivery-guard.js";
 import { Hono } from "hono";
@@ -721,7 +722,7 @@ rigsRoutes.post("/:id/up", async (c) => {
   }
 
   if (!snapshot) {
-    const captured = snapshotCapture.captureSkippingUnreadable(rigId, "auto-rehydrate");
+    const captured = captureSkippingUnreadable(snapshotCapture, rigId, "auto-rehydrate");
     snapshot = captured.snapshot;
     captureWarnings = captured.warnings;
     snapshotSelection = {
