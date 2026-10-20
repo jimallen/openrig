@@ -13,6 +13,20 @@ const { RigRepository } = await load("domain/rig-repository"), { SessionRegistry
 const { EventBus } = await load("domain/event-bus"), { Reconciler } = await load("domain/reconciler");
 const execute = promisify(execFile), socket = join(home, "tmux.sock");
 const native = async args => (await execute("tmux", ["-S", socket, ...args], { timeout: 5000 })).stdout;
+// `tmux kill-server` returns as soon as the server is signalled, while the server is still shutting down. A new-session
+// issued in that window connects to the dying server and fails with "server exited unexpectedly" (measured on tmux 3.4,
+// Linux: 14 of 40 bare kill-server-then-new-session pairs, 0 of 40 when waiting for the server to be gone). Wait until the
+// private server has really gone before the next arrangement starts one.
+const killServer = async () => {
+  await native(["kill-server"]);
+  for (let i = 0; i < 500; i++) {
+    try { await native(["has-session"]); } catch (error) {
+      if (/no server running|No such file or directory|Connection refused/.test(String(error.stderr ?? error.message))) return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("private tmux server did not exit after kill-server");
+};
 const quote = s => "'" + s.replace(/'/g, "'\"'\"'") + "'";
 const shell = async command => (await execute("sh", ["-c", command.replace(/^tmux /, `tmux -S ${quote(socket)} `)], { timeout: 5000 })).stdout;
 const argv = new TmuxAdapter(shell, undefined, args => native(args.slice(1)));
@@ -52,7 +66,7 @@ try {
   // Each arrangement uses real tmux targets through both adapter APIs.
   const literal = "=worker@demo", plain = "worker@demo";
   for (const names of [[literal], [plain], [literal, plain]]) {
-    await native(["kill-server"]);
+    await killServer();
     // Keep the private server live when the literal case removes its only pane.
     await native(["new-session", "-d", "-s", "fixture-anchor", "sleep 120"]);
     for (const name of names) await native(["new-session", "-d", "-s", name, "sleep 120"]);

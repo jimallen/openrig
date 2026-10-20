@@ -96,7 +96,13 @@ it.each(["-fd", "-fdx"])("keeps the configured real relay working after project 
     });
     const relay = path.join(stateDir, "state/claude-activity-hooks/activity-relay.cjs");
     expect(fs.readFileSync(relay)).toEqual(fs.readFileSync(asset));
-    expect(fs.statSync(relay).mode & 0o777).toBe(0o755);
+    // The adapter preserves the SOURCE asset's mode (claude-code-adapter chmod-to-srcMode). A git
+    // checkout filters the committed 0755 through the checkout user's umask (002 -> 0775), so the
+    // host-independent contract is "equals the source asset's mode, and executable"; the exact
+    // committed 0755 is pinned on the git index by claude-activity-hook-delivery.test.ts.
+    const relayMode = fs.statSync(relay).mode & 0o777;
+    expect(relayMode).toBe(fs.statSync(asset).mode & 0o777);
+    expect(relayMode & 0o111).toBe(0o111);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
   }

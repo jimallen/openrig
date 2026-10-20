@@ -74,7 +74,12 @@ it.each(["claude", "codex"])("D: nushell retains the previous literal %s command
   expect(command).not.toContain('"$PATH"'); expect(f.warn).toHaveBeenCalledTimes(1);
 });
 it.each(["fresh", "resume", "fork"] as const)("C: %s uses the probe's separate Node interpreter while preserving user PATH", async kind => {
-  const f = fixture(), nodeBin = path.dirname(process.execPath);
+  // The "separate Node" must live in a directory that is NOT in the user PATH ("/usr/bin:/bin").
+  // dirname(process.execPath) is /usr/bin on a distro-packaged Node (Linux), which would make
+  // the precondition below false for environmental reasons; so give the pane a private
+  // `node` that execs the real interpreter. process.execPath inside it is still the real binary.
+  const f = fixture(), nodeBin = path.join(f.root, "separate-node-bin");
+  mkdirSync(nodeBin); f.exe(path.join(nodeBin, "node"), `#!/bin/sh\nexec ${shellQuote(process.execPath)} "$@"\n`);
   expect(["/usr/bin", "/bin", f.shared, f.runtime]).not.toContain(nodeBin);
   f.exe(path.join(f.runtime, "codex"), `#!/usr/bin/env node\nif(process.argv.includes('--help'))console.log('Usage: codex [OPTIONS]\\n  --no-daemon');else console.log(JSON.stringify({started:true,node:process.execPath,path:process.env.PATH}));\n`);
   // There is no Node in the pane PATH. The capability query really executes this npm-style entry.

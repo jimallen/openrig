@@ -358,6 +358,13 @@ process.exit(result.status ?? 1);
   // only an explicit injectClockNow can set it below — never an inherited value.
   for (const name of TEST_CLOCK_ENV_VARS) delete env[name];
   env.HOME = home;
+  // Host-neutral shell: a login shell of zsh with no startup files in the scratch HOME runs
+  // the zsh-newuser-install wizard, which eats the first keystroke typed into a seat pane
+  // (the stub runner never reports ready). Never inherit the operator's SHELL.
+  env.SHELL = "/bin/bash";
+  // Ubuntu's /etc/bash.bashrc prints a sudo hint on stdout of interactive bash for a
+  // sudo-group user whose HOME has no .hushlogin; seat panes run `bash -i`.
+  writeFileSync(join(home, ".hushlogin"), "");
   env.XDG_CONFIG_HOME = join(home, ".config");
   env.XDG_STATE_HOME = join(home, ".local", "state");
   env.XDG_DATA_HOME = join(home, ".local", "share");

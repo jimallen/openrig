@@ -30,6 +30,8 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
     const rc = path.join(root, "bashrc"), script = path.join(root, "launch");
     const effects: Record<string, string> = {};
     try {
+      // `bash -ic` on Ubuntu prints a sudo hint on stdout unless HOME (= root) has .hushlogin.
+      fs.writeFileSync(path.join(root, ".hushlogin"), "");
       for (const shape of ["alias", "function"]) {
         fs.writeFileSync(rc, shape === "alias" ? "alias claude='printenv PROBE'\n" : "claude() { printenv PROBE; }\n");
         fs.writeFileSync(script, "PROBE='from launch' claude\n");
