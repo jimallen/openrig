@@ -77,7 +77,9 @@ describe("OF-35 classifyPaneActivity: a wrapped `/rc` line below the mode footer
     // not the last line, so the composer is not re-anchored on the footer above it.
     const em = lines(EM_TAIL).filter((l) => l.trim().length > 0); // empty composer, idle footer
     expect(classifyPaneActivity([...em, `${" ".repeat(60)}/rc`, "Run claude doctor"].join("\n"))).toMatchObject({ state: "unknown" });
-    // positive control: the same unknown row without `/rc` is also unknown, so the verdict is the row's, not a strip
+    // NOT a discriminator: the same unknown row without `/rc` is also unknown, so this row cannot tell strip from
+    // no-strip. The discriminating rows are the "unknown rows after `/rc` are never skipped" block and the
+    // opposite-order row below.
     expect(classifyPaneActivity([...em, "Run claude doctor"].join("\n"))).toMatchObject({ state: "unknown" });
   });
 
@@ -133,6 +135,46 @@ describe("OF-35 classifyPaneActivity: a wrapped `/rc` line below the mode footer
         "  ⏵⏵ bypass permissions on (shift+tab to cycle)", rc, FOCUS].join("\n");
       expect(classifyPaneActivity(pane)).toMatchObject({ state: "agent_active" });
     });
+  });
+
+  // Review of 420dc1f5: the strip is NOT inert for an unknown row after `/rc`. Removing the `/rc` line pulls
+  // one more older line into the last-3 window (idle prompt signature) and the 8-line mid-work window, so a
+  // strip that skipped unknown rows would read a false idle / false busy. These panes are MODELLED.
+  describe("unknown rows after `/rc` are never skipped (the strip would change what the windows see)", () => {
+    const rc = `${" ".repeat(60)}/rc`;
+    const X = "Run claude doctor";
+    const FOOTER = "  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+    const em = lines(EM_TAIL).filter((l) => l.trim().length > 0);
+
+    it("unframed `❯` + footer + `/rc` + unknown row: unknown (a strip would put `❯` in the last-3 window: idle_prompt)", () => {
+      expect(classifyPaneActivity(["❯ ", FOOTER, rc, X].join("\n"))).toMatchObject({ state: "unknown" });
+      // idle control: the same block as a complete frame (footer last) is idle, so unknown is the unknown row's doing
+      expect(classifyPaneActivity(["❯ ", FOOTER].join("\n"))).toMatchObject({ state: "agent_idle" });
+    });
+
+    it("a live spinner row at the 8-line window edge: unknown (a strip would pull it in: agent_active/mid_work_pattern)", () => {
+      const spinner = "✻ Reading files… (12s · ↓ 1.2k tokens · esc to interrupt)";
+      const pane = [spinner, "a", ...em, rc, X];
+      expect(pane.length).toBe(em.length + 4);
+      expect(classifyPaneActivity(pane.join("\n"))).toMatchObject({ state: "unknown" });
+    });
+
+    it("two `/rc` lines: neither is a trailer (a skip loop that also skips a second `/rc` would strip the first)", () => {
+      expect(classifyPaneActivity(["❯ ", FOOTER, rc, rc].join("\n"))).toMatchObject({ state: "unknown" });
+    });
+  });
+
+  // The opposite order, MODELLED (no native capture of either order exists): a warning rendered BEFORE the
+  // wrapped `/rc` (footer, warning, /rc). `/rc` is last but the line above it is a warning, not the footer,
+  // so nothing is stripped and the pane stays unknown, as at base. The safe failure; widening it is a decision.
+  it("warning BEFORE `/rc` (footer, warning, /rc) stays unknown; strip applies only to footer, /rc, warning", () => {
+    const em = lines(EM_TAIL).filter((l) => l.trim().length > 0);
+    const rc = `${" ".repeat(60)}/rc`;
+    const FOCUS = "  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…";
+    expect(classifyPaneActivity([...em, FOCUS, rc].join("\n"))).toMatchObject({ state: "unknown", evidence: "/rc" });
+    // idle controls: the warning alone, and the warning AFTER `/rc`, both read idle
+    expect(classifyPaneActivity([...em, FOCUS].join("\n"))).toMatchObject({ state: "agent_idle" });
+    expect(classifyPaneActivity([...em, rc, FOCUS].join("\n"))).toMatchObject({ state: "agent_idle" });
   });
 
   // Bead 2 (OF-35 nit 3, mutant M6 `/\/rc\s*$/` survived). Prose that merely ENDS with `/rc`.
