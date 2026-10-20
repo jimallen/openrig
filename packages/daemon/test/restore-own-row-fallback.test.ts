@@ -199,6 +199,63 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
       expect(check.remediation).toContain("repaired outside restore");
     });
 
+  // With a recorded spec, the refusal's way back is the spec re-read of a listed seat (run in the CLI integration test).
+  it("unlisted, spec recorded, no snapshot holds a readable copy -> the remediation names the listed spec re-read", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    policyFresh(seat.nodeId);
+    const s1 = await h.down(seat.rigId);
+    const row = h.db.prepare("SELECT data FROM snapshots WHERE id = ?").get(s1) as { data: string };
+    const data = JSON.parse(row.data);
+    for (const key of Object.keys(data.nodeStartupContext)) data.nodeStartupContext[key].resolvedStartupFiles = {};
+    h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), s1);
+    setCol(seat.nodeId, "resolved_files_json", "{}");
+
+    const check = await runCheck({ listed: false });
+    const restore = await runRestore(s1, { listed: false });
+
+    expect(restore.outcome).toBe("pre-restore-refused");
+    expectAgreement(check, restore);
+    expect(check.remediation).toContain("Start this seat from the rig's recorded spec instead (the spec's current startup files, not the saved ones): rig up 'team' --existing --fresh 'dev.impl'.");
+  });
+
+  // The seat has no row of its own (it was removed, or never launched here) and the restored snapshot's copy is broken:
+  // the newest usable copy is replayed, and the check says so too.
+  it("unlisted, no own row, the restored snapshot's copy is broken, an earlier one is not -> starts from the earlier copy", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    policyFresh(seat.nodeId);
+    const s1 = await h.down(seat.rigId);
+    setCol(seat.nodeId, "projection_entries_json", "{}");
+    const s2 = downCapture(seat.rigId);
+    h.db.prepare("DELETE FROM node_startup_context WHERE node_id = ?").run(seat.nodeId);
+
+    const check = await runCheck({ listed: false });
+    const restore = await runRestore(s2, { listed: false });
+
+    expect(restore.outcome, restore.text).toBe("ok");
+    expectAgreement(check, restore);
+    expect(restore.warnings.join("\n")).toContain(`it has no saved startup context of its own, and this snapshot's copy cannot be used: projection entries, resolved files, and startup actions must be arrays and runtime must be non-empty. This fresh start replays the copy of its startup files saved in snapshot ${s1}`);
+    expect(check.evidence).toContain(`replays the copy of its startup files saved in snapshot ${s1}`);
+    expect(h.delivered.at(-1)!.map((f) => f.absolutePath)).toEqual(copyOf(s1).resolvedStartupFiles.map((f) => f.absolutePath));
+  });
+
+  // A newer snapshot copy that names another runtime is not usable for the seat: the search passes it over.
+  it("unlisted, a newer snapshot's copy names another runtime -> passed over for the older copy of the seat's runtime", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    policyFresh(seat.nodeId);
+    const s1 = await h.down(seat.rigId);
+    setCol(seat.nodeId, "runtime", "codex");
+    downCapture(seat.rigId); // its copy names codex
+
+    const restore = await runRestore(s1, { listed: false });
+
+    expect(restore.outcome, restore.text).toBe("ok");
+    expect(restore.warnings.join("\n")).toContain(`replays the copy of its startup files saved in snapshot ${s1}`);
+    expect(h.delivered.at(-1)!.map((f) => f.absolutePath)).toEqual(copyOf(s1).resolvedStartupFiles.map((f) => f.absolutePath));
+  });
+
   // --- a seat listed with --fresh on a rig that records no spec (OF-41) ---------------------------------------------
   it.each(SHAPES.map(([name, col, value]) => [name, col, value] as const))(
     "listed, no recorded spec, an earlier snapshot holds a readable copy: %s -> starts from that copy", async (_name, col, value) => {
