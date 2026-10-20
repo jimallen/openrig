@@ -664,6 +664,31 @@ describe("RestoreOrchestrator", () => {
     );
   });
 
+  it("attemptResume passes a seat's switched-on Codex MCP servers to codex resume; a seat with none keeps the exact call", async () => {
+    const codexResume = vi.fn(async () => ({ ok: true as const }));
+    const orch = createOrchestrator({
+      claude: { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as ClaudeResumeAdapter,
+      codex: { canResume: vi.fn(() => true), resume: codexResume } as unknown as CodexResumeAdapter,
+    });
+    const rig = rigRepo.createRig("mcp-restore-test");
+    const on = rigRepo.addNode(rig.id, "verify.ops", { runtime: "codex", cwd: "/work" });
+    const off = rigRepo.addNode(rig.id, "verify.qa", { runtime: "codex", cwd: "/work" });
+    const declaration = { command: "/opt/mcpls", args: ["--x"], enabled_tools: ["get_hover"] };
+    db.prepare("UPDATE nodes SET codex_mcp_servers = ? WHERE id = ?")
+      .run(JSON.stringify({ lsp: { declaration, specDir: "/spec", declaredIn: "/spec/rig.yaml", switchedOnAt: "t", commandPath: "/opt/mcpls", commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }), on.id);
+
+    await (orch as any).attemptResume(on.id, "ops-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
+    await (orch as any).attemptResume(off.id, "qa-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
+
+    expect(codexResume).toHaveBeenNthCalledWith(1, "ops-session", "codex_id", "tok", "/work", null, "full_bypass", "o3",
+      "medium", false, false, true,
+      { ok: true, servers: [{ name: "lsp", specDir: "/spec", declaration: { command: "/opt/mcpls", args: ["--x"], enabledTools: ["get_hover"] }, commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] });
+    // Both seats get the derived team launch default (teamPermissionDefault = true), so the unchanged call is
+    // launchTail's [effort, nonInterruptive, false, true]; the MCP seat's full tail equals it plus the selection.
+    expect(codexResume).toHaveBeenNthCalledWith(2, "qa-session", "codex_id", "tok", "/work", null, "full_bypass", "o3", "medium", false, false, true);
+    expect(codexResume.mock.calls[1]).toHaveLength(11);
+  });
+
   it("nonexistent snapshot -> { ok: false, code: 'snapshot_not_found' }", async () => {
     const orch = createOrchestrator();
     const result = await orch.restore("nonexistent");

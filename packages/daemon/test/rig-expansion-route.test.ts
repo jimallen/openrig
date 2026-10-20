@@ -839,7 +839,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
   // Census derived from the schema's own MEMBER_KEYS: every member key `rig up` accepts is classified
   // here as either single-spelling or dual-spelling. A newly added key fails this test until it is
   // classified (and, if dual, given a shadow row and a camel-only row).
-  const SINGLE_SPELLING = ["cwd", "effort", "id", "label", "mechanic", "model", "profile", "role", "runtime", "startup"];
+  const SINGLE_SPELLING = ["cwd", "effort", "id", "label", "mcp_servers", "mechanic", "model", "profile", "role", "runtime", "startup"];
   it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
     const dual = [...new Set(rows.map((r) => r[0]))].sort();
     expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());

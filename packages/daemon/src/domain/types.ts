@@ -138,6 +138,8 @@ export type RigEvent =
   // their mutation with actor + reason in the same transaction as the mutation itself.
   | { type: "node.model_changed"; rigId: string; nodeId: string; logicalId: string; from: string | null; to: string; reason: string; operator: string | null }
   | { type: "node.effort_changed"; rigId: string; nodeId: string; logicalId: string; from: string | null; to: string | null; reason: string; operator: string | null }
+  // Per-seat Codex MCP servers (rig seat set-mcp): one server switched on or off for one seat instance.
+  | { type: "node.mcp_server_changed"; rigId: string; nodeId: string; logicalId: string; server: string; from: "on" | "off"; to: "on" | "off"; reason: string; actor: string; declaredIn: string | null; declarationSha256: string | null; commandSha256: string | null; warning: string | null; specSource: "recorded" | "operator" | null; specSha256: string | null }
   | { type: "node.permissions_changed"; rigId: string; nodeId: string; from: unknown; to: unknown; actor: string; reason: string; source: "seat_selection"; effect: "future_launches_only" }
   | { type: "session.stopped"; rigId: string; nodeId: string; sessionName: string; reason: string; operator: string | null }
   | { type: "session.cleaned"; rigId: string; nodeId: string; sessionName: string | null; reason: string; operator: string | null; actions: { sessionsExited: string[]; bindingCleared: boolean } }
@@ -1119,6 +1121,9 @@ export interface RigSpecPodMember {
   profile: string;
   runtime: string;
   codexConfigProfile?: string;
+  /** Codex MCP servers this member DECLARES (codex only). Off for every seat instance until one is
+   *  switched on with `rig seat set-mcp`; see codex-mcp-servers.ts for the accepted shape. */
+  mcpServers?: import("./codex-mcp-servers.js").CodexMcpServers;
   model?: string;
   effort?: string;
   /**
@@ -1408,6 +1413,8 @@ export interface ExpansionPodFragment {
     model?: string;
     effort?: string;
     codexConfigProfile?: unknown;
+    /** `mcp_servers`: carried RAW so presence is never erased; expansion refuses it (see rig-expansion-service). */
+    mcpServers?: unknown;
     /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF — threaded through the
      *  expansion ingress exactly like role (never silently dropped). Typed UNKNOWN
      *  (R2 at 4ac243c3): the ingress preserves RAW presence — including null and other

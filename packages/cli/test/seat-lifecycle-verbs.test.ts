@@ -249,6 +249,60 @@ describe("rig seat set-effort", () => {
   });
 });
 
+describe("rig seat set-mcp", () => {
+  const seat = { logicalId: "verify.ops", rigName: "eztrack" };
+
+  it("posts server/state/reason/operator to /api/seat/set-mcp/<seat> and prints what is switched on", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: {
+      ok: true, seat, server: "lsp", from: "off", to: "on", changed: true, declaredIn: "/rel/rig.yaml", switchedOn: ["lsp"],
+      effect: "Saved for this seat's next managed launch, resume, restore or restart; the running process is unchanged and nothing was restarted.",
+    } }, calls);
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "on", "--reason", "mcpls pilot", "--operator", "jim@host"]);
+    });
+    expect(calls).toEqual([{ path: "/api/seat/set-mcp/verify-ops%40eztrack", body: { server: "lsp", state: "on", reason: "mcpls pilot", operator: "jim@host" } }]);
+    expect(exitCode).toBeUndefined();
+    expect(logs.join("\n")).toContain("MCP server lsp for verify.ops@eztrack: on (declared in /rel/rig.yaml).");
+    expect(logs.join("\n")).toContain("Switched on for this seat: lsp.");
+  });
+
+  it("--spec sends the file as an absolute path, and only with on", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: { ok: true, seat, server: "lsp", from: "off", to: "on", changed: true, declaredIn: "/x", switchedOn: ["lsp"], effect: "Saved." } }, calls);
+    await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "on", "--reason", "x", "--operator", "o@h", "--spec", "rigs/rig.yaml"]);
+    });
+    expect(calls[0]!.body).toEqual({ server: "lsp", state: "on", reason: "x", operator: "o@h", specFile: `${process.cwd()}/rigs/rig.yaml` });
+    const { errors, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "off", "--reason", "x", "--spec", "rigs/rig.yaml"]);
+    });
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--spec applies only to on.");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("prints the daemon's unsandboxed-server warning", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const warning = 'Codex MCP server "lsp" runs outside Codex\'s sandbox with your full user rights (this seat\'s launch posture is floor, not full_bypass); it can do what this seat\'s own commands cannot.';
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: { ok: true, seat, server: "lsp", from: "off", to: "on", changed: true, declaredIn: "/r.yaml", switchedOn: ["lsp"], effect: "Saved.", warning } }, calls))
+        .parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "on", "--reason", "x", "--operator", "o@h"]);
+    });
+    expect(logs).toContain(`Warning: ${warning}`);
+  });
+
+  it("refuses a state other than on or off before any request", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const { errors, exitCode } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: {} }, calls)).parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "yes", "--reason", "x"]);
+    });
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("State must be on or off.");
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("rig seat effort", () => {
   const seat = { logicalId: "dev.impl", rigName: "seat-rig" };
 

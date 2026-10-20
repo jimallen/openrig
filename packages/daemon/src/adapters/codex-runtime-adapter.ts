@@ -33,6 +33,7 @@ import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
 import { shellQuote } from "./shell-quote.js";
+import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 
 import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
@@ -68,6 +69,8 @@ interface PreparedCodexLaunch {
   daemonOptOut: boolean;
   daemonArg: string;
   networkArg: string;
+  /** The seat's switched-on Codex MCP servers, one ` -c 'mcp_servers.<name>={...}'` each; "" when none. */
+  mcpArg: string;
 }
 
 export interface CodexAdapterFsOps {
@@ -111,6 +114,13 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // #275: Codex's own answer on whether the plain floor may get network access. Startup wires the
   // real reader; absent keeps every invocation unchanged.
   private readNetworkDefault?: CodexNetworkDefaultReader;
+  // The seat's switched-on Codex MCP servers (rig seat set-mcp), read by node id at every launch.
+  // Absent (unit tests, other embedders) renders nothing: every command stays byte-identical.
+  private readSeatMcpServers?: (nodeId: string) => SeatMcpSelection;
+  // The MCP trust rule's file-system reads. Production never sets it; tests anchor fixtures with it.
+  private mcpTrustIo?: PathJudgeIo;
+  // Server names other Codex config layers define for this launch (shared config, profile, project layers).
+  private existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
   // Issue #121: git metadata dirs for the fresh-launch `--add-dir`s (a linked worktree's `.git` is a file).
   // Default = the real resolver; tests may inject a controlled one.
   private resolveGitAddDirs: CodexGitAddDirResolver;
@@ -137,6 +147,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     verifyProfilePreflight?: (profile: string) => Promise<CodexProfileProbeResult>;
     detectDaemonSupport?: CodexDaemonSupportDetector;
     readNetworkDefault?: CodexNetworkDefaultReader;
+    readSeatMcpServers?: (nodeId: string) => SeatMcpSelection;
+    mcpTrustIo?: PathJudgeIo;
+    existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
     resolveGitAddDirs?: CodexGitAddDirResolver;
     prepareTeamWorkspace?: PrepareCodexTeamWorkspace;
   }) {
@@ -148,6 +161,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.launchPath = deps.launchPath;
     this.detectDaemonSupport = deps.detectDaemonSupport;
     this.readNetworkDefault = deps.readNetworkDefault;
+    this.readSeatMcpServers = deps.readSeatMcpServers;
+    this.mcpTrustIo = deps.mcpTrustIo;
+    this.existingMcpServerNames = deps.existingMcpServerNames;
     this.resolveGitAddDirs = deps.resolveGitAddDirs ?? resolveCodexGitAddDirs;
     this.activityRelayPath = deps.activityRelayPath;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
@@ -379,7 +395,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const updatePrompt: UpdatePromptAttempt = { handled: false };
     const prepared = await this.prepareLaunch(binding, opts.name);
     if (!prepared.ok) return prepared;
-    const { modelArg, effortArg, appliedLaunch, postureArg, queueStateDirArg, daemonArg, networkArg } = prepared;
+    const { modelArg, effortArg, appliedLaunch, postureArg, queueStateDirArg, daemonArg, networkArg, mcpArg } = prepared;
 
     // Fork branch: `codex fork <parent_thread_id>`. Captures the NEW thread id
     // post-fork. Parent thread id is NOT persisted onto the new seat record
@@ -399,7 +415,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       // -s danger-full-access on every seat; otherwise the named profile, or OpenRig's explicit
       // -s workspace-write floor flag.
       // 0.5.2-07 A2-3: the FORK path threads the SPEC model too (fork-instantiate reverted it before).
-      const cmd = `codex${daemonArg}${postureArg}${networkArg}${modelArg}${effortArg} fork${queueStateDirArg} ${shellQuote(parentId)}`;
+      const cmd = `codex${daemonArg}${postureArg}${networkArg}${mcpArg}${modelArg}${effortArg} fork${queueStateDirArg} ${shellQuote(parentId)}`;
       const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
@@ -429,7 +445,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       // 0.5.2-07 A2-3: the pod-aware RESUME path threads the SPEC model too (reverted before — the
       // grounding map assumed codex parity with the claude adapter, but only fresh emitted -m).
       ? this.resumeCore(prepared, opts.resumeToken, binding)
-      : `codex${daemonArg}${postureArg}${networkArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
+      : `codex${daemonArg}${postureArg}${networkArg}${mcpArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
 
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
     if (!textResult.ok) {
@@ -496,13 +512,22 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const posture = codexPostureArg(profileArg, process.env, binding.launchPosture);
     const appliedLaunch = observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg(this.runtime, binding);
+    // Per-seat Codex MCP servers: the seat's own saved choice, decided per launch like the posture.
+    const existing = this.existingMcpServerNames;
+    const mcp = prepareSeatMcpLaunchArgs(this.readSeatMcpServers?.(binding.nodeId), binding.cwd, shellQuote,
+      appliedLaunch.state === "observed" ? appliedLaunch.value : null,
+      existing ? () => existing({ cwd: binding.cwd, sessionName: name, profile: posture.startsWith(" -p ") && profile ? profile : null }) : undefined,
+      this.mcpTrustIo);
+    if (!mcp.ok) return { ok: false, error: mcp.error };
+    for (const warning of mcp.warnings) console.warn(`[openrig] ${name}: ${warning}`);
+    const mcpArg = mcp.arg;
 
     if (running) {
       // The running Codex already loaded its profile; drift in -p is the caller's to compare.
       return { ok: true, model, modelArg, effort, effortArg, profile, appliedLaunch, postureArg,
         queueStateDirArg: running.addDirs.map((dir) => ` --add-dir ${shellQuote(dir)}`).join(""),
         daemonOptOut: running.daemonOptOut, daemonArg: running.daemonOptOut ? " --no-daemon" : "",
-        networkArg: running.networkOverride ? ` -c ${shellQuote(CODEX_NETWORK_DEFAULT_OVERRIDE)}` : "" };
+        networkArg: running.networkOverride ? ` -c ${shellQuote(CODEX_NETWORK_DEFAULT_OVERRIDE)}` : "", mcpArg };
     }
 
     // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A legacy
@@ -533,12 +558,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // #275: on the plain floor, network access unless Codex reports an opt-out or policy.
     const networkArg = await codexNetworkDefaultArg(this.readNetworkDefault, appliedLaunch, binding.cwd, name);
 
-    return { ok: true, model, modelArg, effort, effortArg, profile, appliedLaunch, postureArg, queueStateDirArg, daemonOptOut, daemonArg, networkArg };
+    return { ok: true, model, modelArg, effort, effortArg, profile, appliedLaunch, postureArg, queueStateDirArg, daemonOptOut, daemonArg, networkArg, mcpArg };
   }
 
   private resumeCore(prepared: PreparedCodexLaunch, resumeToken: string, binding: NodeBinding): string {
-    const { profile, queueStateDirArg, model, postureArg, networkArg, daemonOptOut, effort } = prepared;
-    return buildCodexResumeCore(resumeToken, profile, false, queueStateDirArg.trim() || undefined, binding.launchPosture, model, `${postureArg}${networkArg}`, daemonOptOut, effort);
+    const { profile, queueStateDirArg, model, postureArg, networkArg, daemonOptOut, effort, mcpArg } = prepared;
+    return buildCodexResumeCore(resumeToken, profile, false, queueStateDirArg.trim() || undefined, binding.launchPosture, model, `${postureArg}${networkArg}${mcpArg}`, daemonOptOut, effort);
   }
 
   private async seatCommand(binding: NodeBinding, cmd: string): Promise<string> {

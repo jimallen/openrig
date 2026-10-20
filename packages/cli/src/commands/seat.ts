@@ -1,5 +1,6 @@
 import { parseStartupFromArg, STARTUP_FROM_HELP } from "../fresh-seat-advice.js";
 import { Command } from "commander";
+import nodePath from "node:path";
 import { DaemonClient, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
@@ -524,7 +525,7 @@ identity remains unverified; a version number alone cannot clear it.
   // Thin CLI over the daemon's SeatLifecycleService; refusals print message +
   // guidance + match list exactly as the daemon named them.
   const runLifecycleVerb = async (
-    path: "set-model" | "set-effort" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
+    path: "set-model" | "set-effort" | "set-mcp" | "set-permissions" | "launch" | "launch-plan" | "continue" | "stop" | "clean" | "restart" | "restart-plan" | "restart-verify",
     seat: string,
     body: Record<string, unknown>,
     opts: { json?: boolean },
@@ -644,6 +645,51 @@ Examples:
         console.log(String(data["effect"]));
         const running = data["running"] === "yes" ? "running now" : data["running"] === "no" ? "not running now" : `running state unknown (${String(data["runningDetail"] ?? "probe failed")})`;
         console.log(`Seat ${running}. Emitted at launch: not yet. Native effort: not observed.`);
+        if (data["warning"]) console.log(`Warning: ${String(data["warning"])}`);
+      });
+    });
+
+  cmd
+    .command("set-mcp")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .argument("<server>", "MCP server name, as declared under the member's mcp_servers in the rig spec")
+    .argument("<state>", "on or off")
+    .requiredOption("--reason <text>", "Audit reason recorded on the node.mcp_server_changed event")
+    .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
+    .option("--spec <file>", "Read the declaration from this spec file (it must declare this rig); overrides the rig's recorded spec")
+    .option("--json", "JSON output for agents")
+    .description("Switch one declared Codex MCP server on or off for this seat instance only (audited); no restart")
+    .addHelpText("after", `
+A server declared on a rig spec member is off for every seat instance of that member.
+'on' reads the declaration from the rig's recorded spec file as it is now, checks it
+(absolute command, existing executable, outside the seat's directory and the spec's
+directory) and saves it for this seat's next managed launch, resume, restore or
+restart. 'off' removes it. Other seats, the running process and the shared Codex
+config are unchanged.
+Examples:
+  rig seat set-mcp verify-ops@eztrack lsp on --reason "mcpls pilot"
+  rig seat set-mcp verify-ops@eztrack lsp off --reason "pilot rollback" --json`)
+    .action(async (seat: string, server: string, state: string, opts: { reason: string; operator?: string; spec?: string; json?: boolean }) => {
+      if (state !== "on" && state !== "off") {
+        console.error("State must be on or off.");
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.spec !== undefined && state !== "on") {
+        console.error("--spec applies only to on.");
+        process.exitCode = 1;
+        return;
+      }
+      const body = { server, state, reason: opts.reason, operator: opts.operator, ...(opts.spec !== undefined ? { specFile: nodePath.resolve(opts.spec) } : {}) };
+      await runLifecycleVerb("set-mcp", seat, body, opts, (data) => {
+        const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
+        const name = `${s?.logicalId}@${s?.rigName}`;
+        console.log(data["changed"] === false
+          ? `MCP server ${server} for ${name} is already ${state}. No change recorded.`
+          : `MCP server ${server} for ${name}: ${state}${data["declaredIn"] ? ` (declared in ${String(data["declaredIn"])})` : ""}.`);
+        const on = (data["switchedOn"] as string[] | undefined) ?? [];
+        console.log(`Switched on for this seat: ${on.length ? on.join(", ") : "none"}.`);
+        console.log(String(data["effect"]));
         if (data["warning"]) console.log(`Warning: ${String(data["warning"])}`);
       });
     });

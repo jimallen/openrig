@@ -174,6 +174,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       const compactionStrategy = readMemberSpelling(m, "compaction_strategy", "compactionStrategy");
       const mechanic = readMemberSpelling(m, "mechanic", "mechanic");
       const startup = readMemberSpelling(m, "startup", "startup");
+      const mcpServers = readMemberSpelling(m, "mcp_servers", "mcp_servers");
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
@@ -211,6 +212,8 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         ...(compactionStrategy.present ? { compactionStrategy: compactionStrategy.value } : {}),
         ...(mechanic.present ? { mechanic: mechanic.value } : {}),
         ...(startup.present ? { startup: startup.value } : {}),
+        // mcp_servers: carried RAW so the expansion service refuses it by name instead of dropping it.
+        ...(mcpServers.present ? { mcpServers: mcpServers.value } : {}),
         // Presence-governed, never truthiness: null/false/primitive raw values
         // must survive to canonical validation, not vanish at a truthy check.
         ...(hasSessionSource ? { sessionSource } : {}),

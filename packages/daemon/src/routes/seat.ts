@@ -244,16 +244,18 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     transcripts: (c.get("contextUsageStore" as never) as ContextUsageStore | undefined) ?? undefined,
     // OF-32: the instantiator re-reads a fresh seat's startup policy from its rig's spec source.
     seatStartupSource: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? undefined,
+    mcpTrust: (c.get("mcpTrust" as never) as import("../domain/seat-lifecycle-service.js").SeatLifecycleDeps["mcpTrust"] | undefined) ?? undefined,
   });
 }
 
 function seatLifecycleStatus(code: string): 400 | 404 | 409 | 500 | 502 {
   if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required"
-    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from") return 400;
+    || code === "missing_effort" || code === "invalid_effort" || code === "invalid_startup_from"
+    || code === "missing_actor" || code === "invalid_mcp_server" || code === "invalid_mcp_state" || code === "invalid_mcp_spec_file") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed"
-    || code === "effort_unavailable") return 500;
+    || code === "effort_unavailable" || code === "mcp_unavailable") return 500;
   // seat_ambiguous / session_live / session_not_live / no_session / claimed_session /
   // nothing_to_clean — state conflicts, not client syntax errors.
   return 409;
@@ -294,6 +296,23 @@ seatRoutes.post("/set-effort/:seatRef", async (c) => {
     effort: clear ? null : typeof body["effort"] === "string" ? body["effort"] : "",
     reason: typeof body["reason"] === "string" ? body["reason"] : "",
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
+  });
+  if (result.ok) return c.json(result);
+  return c.json(result, seatLifecycleStatus(result.code));
+});
+
+// Per-seat Codex MCP servers: switch one declared server on or off for one seat instance (audited, actor required).
+seatRoutes.post("/set-mcp/:seatRef", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const actor = transportSenderSession(c) ?? (typeof body?.operator === "string" ? body.operator.trim() : undefined);
+  if (!actor) return c.json({ ok: false, code: "missing_actor", message: "Sender identity is required; pass --operator <address> when running outside a managed seat." }, 400);
+  const result = await seatLifecycleService(c).setMcpServer({
+    seatRef: c.req.param("seatRef")!,
+    server: typeof body["server"] === "string" ? body["server"] : "",
+    state: body["state"] === "on" || body["state"] === "off" ? body["state"] : ("" as "on"),
+    reason: typeof body["reason"] === "string" ? body["reason"] : "",
+    actor,
+    ...(typeof body["specFile"] === "string" ? { specFile: body["specFile"] } : {}),
   });
   if (result.ok) return c.json(result);
   return c.json(result, seatLifecycleStatus(result.code));

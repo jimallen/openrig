@@ -20,6 +20,7 @@ import { aliasModelPinAdvisory } from "./spec-validation-advisory.js";
 import { validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
 import { validateStartupBlock, normalizeStartupBlock } from "./startup-validation.js";
 import { COMPOSE_PROJECT_NAME_PATTERN, deriveComposeProjectName } from "./compose-project-name.js";
+import { validateMcpServersBlock, normalizeMcpServers } from "./codex-mcp-servers.js";
 import * as path from "node:path";
 
 // -- Canonical pod-aware RigSpec validation (AgentSpec reboot) --
@@ -52,7 +53,7 @@ const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startu
 export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
-  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref",
+  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers",
 ]);
 const EDGE_KEYS = new Set(["kind", "from", "to"]);
 
@@ -490,6 +491,11 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
     } else if (member["runtime"] !== "codex") {
       errors.push(`${prefix}.codex_config_profile: only valid when runtime is "codex"`);
     }
+  }
+  // Per-member Codex MCP servers: declared here, off for every seat until one instance is switched on
+  // (`rig seat set-mcp`). A malformed declaration is refused at spec load, never rendered for Codex.
+  if (member["mcp_servers"] !== undefined) {
+    errors.push(...validateMcpServersBlock(member["mcp_servers"], member["runtime"], prefix));
   }
   if (member["effort"] !== undefined) {
     if (typeof member["effort"] !== "string" || !member["effort"].trim()) {
@@ -1176,6 +1182,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     startup: m["startup"] ? normalizeStartupBlock(m["startup"]) : undefined,
     sessionSource: normalizeSessionSource(m["session_source"]),
     starterRef: normalizeStarterRef(m["starter_ref"]),
+    mcpServers: normalizeMcpServers(m["mcp_servers"]),
   }));
 
   const edges = Array.isArray(raw["edges"])
