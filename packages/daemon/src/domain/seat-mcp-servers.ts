@@ -6,7 +6,7 @@ import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import {
-  mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, validateMcpServersBlock,
+  commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, validateMcpServersBlock,
   type SeatMcpSelection, type SeatMcpServer,
 } from "./codex-mcp-servers.js";
 
@@ -27,6 +27,9 @@ export interface StoredSeatMcpServer {
   /** The spec file it was read from, after links. */
   declaredIn: string;
   switchedOnAt: string;
+  /** The file the command resolved to at switch-on, and its sha256; every launch recomputes the hash. */
+  commandPath: string;
+  commandSha256: string;
 }
 
 type Stored = Record<string, StoredSeatMcpServer>;
@@ -59,7 +62,10 @@ export function readSeatMcpServers(db: Database.Database, nodeId: string): SeatM
     if (errors.length || typeof entry.specDir !== "string") {
       return { ok: false, error: `stored server "${name}" is invalid (${errors.join("; ") || "no spec directory"})` };
     }
-    servers.push({ name, declaration: normalizeMcpServers({ [name]: entry.declaration })![name]!, specDir: entry.specDir });
+    if (typeof entry.commandSha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.commandSha256)) {
+      return { ok: false, error: `stored server "${name}" has no pinned binary checksum; switch it on again` };
+    }
+    servers.push({ name, declaration: normalizeMcpServers({ [name]: entry.declaration })![name]!, specDir: entry.specDir, commandSha256: entry.commandSha256 });
   }
   return { ok: true, servers };
 }
@@ -139,5 +145,8 @@ export function readDeclaredMcpServer(input: {
   const specDir = nodePath.dirname(specPath);
   const place = mcpServerPlacementProblem(declaration, { seatCwd: node.cwd, specDir }, { requireExecutable: true });
   if (place) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: ${place}.` };
-  return { ok: true, entry: { declaration: serializeMcpServer(declaration), specDir, declaredIn: specPath, switchedOnAt: input.now() } };
+  const commandSha256 = commandBinarySha256(declaration.command);
+  if (!commandSha256) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: its command ${declaration.command} cannot be read to pin its checksum.` };
+  return { ok: true, entry: { declaration: serializeMcpServer(declaration), specDir, declaredIn: specPath, switchedOnAt: input.now(),
+    commandPath: fs.realpathSync(declaration.command), commandSha256 } };
 }

@@ -4,7 +4,8 @@
 // Rows go through SeatLifecycleService, the route and the Codex adapter (surfaces that existed at base), so
 // at the base commit they fail on behaviour, not on a missing import.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -150,6 +151,80 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     const ok = await setup.app.request(`/api/seat/set-mcp/${encodeURIComponent(s.ref)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server: "lsp", state: "on", reason: "pilot", operator: "jim@host" }) });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ ok: true, to: "on", switchedOn: ["lsp"] });
+  });
+
+  /** One fresh managed Codex launch of a seat through the real adapter and the production reader. */
+  async function launchFresh(s: ReturnType<typeof seat>, posture: "floor" | "full_bypass" = "full_bypass") {
+    const { readSeatMcpServers } = await import("../src/domain/seat-mcp-servers.js");
+    const commands: string[] = [];
+    const tmux = mockShellCommand({
+      sendText: vi.fn(async (_t: string, text: string) => { commands.push(text); return { ok: true as const }; }),
+      hasSession: vi.fn(async () => true), getPaneCommand: vi.fn(async () => "codex"),
+      capturePaneContent: vi.fn(async () => "OpenAI Codex (v0.0.0)\n› Ask Codex to do anything"), sendKeys: vi.fn(async () => ({ ok: true as const })),
+      getPanePid: vi.fn(async () => null), listSessions: vi.fn(async () => []), listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []),
+    } as unknown as TmuxAdapter);
+    const fsOps: CodexAdapterFsOps = { readFile: () => { throw new Error("nf"); }, writeFile: () => {}, exists: () => false, mkdirp: () => {}, listFiles: () => [] };
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps, listProcesses: () => [], sleep: async () => {}, resolveGitAddDirs: async () => [],
+      verifyProfilePreflight: async (n) => ({ ok: true, profile: n }), readSeatMcpServers: (id: string) => readSeatMcpServers(db, id) } as ConstructorParameters<typeof CodexRuntimeAdapter>[0]);
+    const binding: NodeBinding = { id: `b-${s.node.id}`, nodeId: s.node.id, tmuxSession: s.ref, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+      updatedAt: "", cwd: s.node.cwd!, launchPosture: posture };
+    const result = await adapter.launchHarness(binding, { name: s.ref }) as { ok: boolean; error?: string };
+    return { ...result, commands };
+  }
+
+  describe("the binary is pinned at switch-on (Jim, 2026-10-20)", () => {
+    const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+    const AGAIN = 'switch it on again to accept the new binary (rig seat set-mcp <seat> lsp on --reason ...)';
+
+    it("stores the resolved binary and its sha256, and records the sha256 in the audit event", async () => {
+      const s = seat("eztrack");
+      await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      expect(JSON.parse(column(s.node.id)!)["lsp"]).toMatchObject({ commandPath: mcpls, commandSha256: sha(mcpls) });
+      expect(events()[0]).toMatchObject({ commandSha256: sha(mcpls) });
+      expect((await launchFresh(s)).ok).toBe(true);
+    });
+
+    it("refuses to render when the binary changed after switch-on", async () => {
+      const s = seat("eztrack");
+      await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      writeFileSync(mcpls, "#!/bin/sh\necho upgraded\n");
+      const r = await launchFresh(s);
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain(`now resolves to a binary whose sha256 (${sha(mcpls)}) differs from the one switched on`);
+      expect(r.error).toContain(AGAIN);
+      expect(r.commands).toEqual([]);
+    });
+
+    it("refuses when a link is retargeted to another binary, and accepts it after switching on again", async () => {
+      const real1 = mcpls;
+      const real2 = join(root, "opt", "mcpls-2");
+      writeFileSync(real2, "#!/bin/sh\necho two\n");
+      chmodSync(real2, 0o755);
+      const link = join(root, "opt", "current");
+      symlinkSync(real1, link);
+      writeSpec(lspBlock().replace(JSON.stringify(mcpls), JSON.stringify(link)));
+      const s = seat("eztrack");
+      await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      rmSync(link);
+      symlinkSync(real2, link);
+      const refused = await launchFresh(s);
+      expect(refused.ok).toBe(false);
+      expect(refused.error).toContain(AGAIN);
+      expect(await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "accept upgrade", actor: "a@r" })).toMatchObject({ ok: true });
+      expect(JSON.parse(column(s.node.id)!)["lsp"]).toMatchObject({ commandPath: real2, commandSha256: sha(real2) });
+      const accepted = await launchFresh(s);
+      expect(accepted.ok).toBe(true);
+      expect(accepted.commands[0]).toContain(`mcp_servers.lsp={command=${JSON.stringify(link)}`);
+    });
+
+    it("refuses the same way when the binary is gone", async () => {
+      const s = seat("eztrack");
+      await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      rmSync(mcpls);
+      const r = await launchFresh(s);
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain(`its command ${mcpls} does not exist; ${AGAIN}`);
+    });
   });
 
   it("end to end: the switched-on seat's next Codex launch renders it; its sibling instance's does not", async () => {

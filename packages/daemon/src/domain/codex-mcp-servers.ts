@@ -1,4 +1,5 @@
-import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import nodePath from "node:path";
 
 /**
@@ -235,6 +236,17 @@ export interface SeatMcpServer {
   declaration: CodexMcpServerDeclaration;
   /** Directory of the spec file the declaration was read from; the command may not lie inside it. */
   specDir: string | null;
+  /** sha256 of the binary the command resolved to when the server was switched on (Jim, 2026-10-20). */
+  commandSha256: string;
+}
+
+/** sha256 (hex) of the file a command resolves to now; null when it cannot be read. */
+export function commandBinarySha256(command: string): string | null {
+  try {
+    return createHash("sha256").update(readFileSync(realpathSync(command))).digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 /** What a launch path is told about a seat: its switched-on servers, or why they cannot be read. */
@@ -274,8 +286,17 @@ export function prepareSeatMcpLaunchArgs(
     const remedy = `turn it off with: rig seat set-mcp <seat> ${server.name} off`;
     const shape = validateMcpServersBlock({ [server.name]: serializeMcpServer(server.declaration) }, "codex", "seat");
     if (shape.length) return { ok: false, error: `Codex MCP server "${server.name}" for this seat is not valid (${shape.join("; ")}); ${remedy}` };
+    const again = `switch it on again to accept the new binary (rig seat set-mcp <seat> ${server.name} on --reason ...), or ${remedy}`;
     const place = mcpServerPlacementProblem(server.declaration, { seatCwd, specDir: server.specDir }, { requireExecutable: true });
-    if (place) return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${place}; ${remedy}` };
+    if (place) {
+      return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${place}; ${/does not exist$/.test(place) ? again : remedy}` };
+    }
+    // The binary pinned at switch-on, recomputed at every launch: an upgrade, an edit or a retargeted link
+    // is refused until an operator switches the server on again.
+    const now = commandBinarySha256(server.declaration.command);
+    if (now !== server.commandSha256) {
+      return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: its command ${server.declaration.command} now resolves to a binary whose sha256 (${now ?? "unreadable"}) differs from the one switched on (${server.commandSha256}); ${again}` };
+    }
     arg += ` -c ${quote(renderCodexMcpOverride(server))}`;
   }
   return { ok: true, arg };

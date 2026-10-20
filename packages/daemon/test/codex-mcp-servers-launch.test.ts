@@ -4,7 +4,8 @@
 // an injected selection reader, so at the base commit they fail on behaviour (the option is ignored).
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseToml } from "smol-toml";
@@ -26,11 +27,12 @@ chmodSync(MCPLS, 0o755);
 const DUMP = join(scratch, "dump-argv.mjs");
 writeFileSync(DUMP, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
 
-const pilot = (over: Partial<SeatMcpSelection & { ok: true }["servers"][number]["declaration"]> = {}) => ({
-  name: "lsp",
-  specDir: join(scratch, "spec"),
-  declaration: { command: MCPLS, args: ["--config", "/x/mcpls.toml", "--workspace-trust", "untrusted"], enabledTools: ["get_definition", "get_hover"], startupTimeoutSec: 30, toolTimeoutSec: 60, ...over },
-});
+// The binary checksum a switch-on would have pinned for this command (zeros when it does not exist).
+const pinned = (command: string) => { try { return createHash("sha256").update(readFileSync(realpathSync(command))).digest("hex"); } catch { return "0".repeat(64); } };
+const pilot = (over: Partial<SeatMcpSelection & { ok: true }["servers"][number]["declaration"]> = {}) => {
+  const declaration = { command: MCPLS, args: ["--config", "/x/mcpls.toml", "--workspace-trust", "untrusted"], enabledTools: ["get_definition", "get_hover"], startupTimeoutSec: 30, toolTimeoutSec: 60, ...over };
+  return { name: "lsp", specDir: join(scratch, "spec"), declaration, commandSha256: pinned(declaration.command) };
+};
 const ON: SeatMcpSelection = { ok: true, servers: [pilot()] };
 const EXPECTED = ` -c 'mcp_servers.lsp={command=${JSON.stringify(MCPLS)},args=["--config","/x/mcpls.toml","--workspace-trust","untrusted"],startup_timeout_sec=30,tool_timeout_sec=60,enabled_tools=["get_definition","get_hover"]}'`;
 
@@ -164,7 +166,7 @@ describe("a selection that is unreadable, malformed or misplaced refuses the lau
       const cases: Array<[SeatMcpSelection, string]> = [
         [{ ok: false, error: "stored value is not JSON" }, "Codex MCP servers for this seat cannot be read: stored value is not JSON"],
         [{ ok: true, servers: [pilot({ args: ["has space"] })] }, 'Codex MCP server "lsp" for this seat is not valid'],
-        [{ ok: true, servers: [pilot({ command: join(scratch, "missing") })] }, `Codex MCP server "lsp" for this seat cannot start: its command ${join(scratch, "missing")} does not exist; turn it off with: rig seat set-mcp <seat> lsp off`],
+        [{ ok: true, servers: [pilot({ command: join(scratch, "missing") })] }, `Codex MCP server "lsp" for this seat cannot start: its command ${join(scratch, "missing")} does not exist; switch it on again to accept the new binary (rig seat set-mcp <seat> lsp on --reason ...), or turn it off with: rig seat set-mcp <seat> lsp off`],
         [{ ok: true, servers: [{ ...pilot(), specDir: join(scratch, "opt") }] }, "lies inside the rig spec's directory"],
       ];
       for (const [selection, message] of cases) {

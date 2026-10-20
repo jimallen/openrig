@@ -413,6 +413,7 @@ export class SeatLifecycleService {
           type: "node.mcp_server_changed", rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
           server: input.server, from, to: input.state, reason: input.reason.trim(), actor: input.actor.trim(),
           declaredIn: entry?.declaredIn ?? null, declarationSha256: entry ? declarationSha256(entry.declaration) : null,
+          commandSha256: entry?.commandSha256 ?? null,
         });
       })();
       if (persisted) this.eventBus.notifySubscribers(persisted);
