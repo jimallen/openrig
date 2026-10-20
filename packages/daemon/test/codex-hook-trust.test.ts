@@ -153,6 +153,39 @@ describe("OPR.0.4.3.33 — upsertCodexHookTrust (idempotent, non-clobbering, sec
   });
 });
 
+// OF-42 N10. The writer locates a record the way the reader does: by where the table really is, never
+// by text that merely looks like its header. Each expected string below is spelled out, not derived
+// from the code under test.
+describe("OF-42 N10 — upsertCodexHookTrust edits the real table, never header-shaped string content", () => {
+  const K = "/c/config.toml:pre_tool_use:0:0";
+  const H = `[hooks.state.${JSON.stringify(K)}]`;
+
+  it.each([
+    ["basic", '"""'],
+    ["literal", "\'\'\'"],
+  ])("a header inside a multiline %s string is left byte-identical and the real table is the one edited", (_name, q) => {
+    const fake = `# top comment\njunk = ${q}\n${H}\ntrusted_hash = "sha256:fake"\n${q}\n`;
+    const real = `\n[other]\nkeep = 1\n\n${H}\ntrusted_hash = "sha256:old"\n\n[after]\nz = 2\n`;
+    expect(upsertCodexHookTrust(fake + real, K, "sha256:new")).toBe(fake + real.replace("sha256:old", "sha256:new"));
+  });
+
+  it("a header-shaped string AFTER the real table does not capture the edit either (not 'the last textual header')", () => {
+    const real = `${H}\ntrusted_hash = "sha256:old"\n\n`;
+    const fake = `junk = """\n${H}\ntrusted_hash = "sha256:fake"\n"""\n`;
+    expect(upsertCodexHookTrust(real + fake, K, "sha256:new")).toBe(real.replace("sha256:old", "sha256:new") + fake);
+  });
+
+  it("a header that exists only inside a string is not a table: a real one is appended after the untouched text", () => {
+    const fake = `junk = """\n${H}\ntrusted_hash = "sha256:fake"\n"""\n`;
+    expect(upsertCodexHookTrust(fake, K, "sha256:new")).toBe(`${fake}\n${H}\ntrusted_hash = "sha256:new"\n`);
+  });
+
+  it("string content inside the real table (a trusted_hash-looking line, a bracketed line) is not the record's field or its end", () => {
+    const table = `${H}\nnote = """\ntrusted_hash = "sha256:decoy"\n[next]\n"""\ntrusted_hash = "sha256:old"\n`;
+    expect(upsertCodexHookTrust(table, K, "sha256:new")).toBe(table.replace('"sha256:old"', '"sha256:new"'));
+  });
+});
+
 describe("OPR.0.4.3.33 — provisioning-seam coupling (ensureCodexActivityHooks pre-trusts our 4 hooks)", () => {
   function makeAdapter(fs: CodexAdapterFsOps): CodexRuntimeAdapter {
     return new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: fs, activityRelayPath: RELAY });

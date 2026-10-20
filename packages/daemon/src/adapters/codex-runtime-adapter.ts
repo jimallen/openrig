@@ -1233,32 +1233,41 @@ export function upsertCodexHookTrust(content: string, key: string, hash: string)
   const header = `[hooks.state.${JSON.stringify(key)}]`;
   const trustLine = `trusted_hash = ${JSON.stringify(hash)}`;
   const lines = content.length > 0 ? content.split("\n") : [];
-  const headerIndex = lines.findIndex((line) => line.trim() === header);
+  const table = findTomlTable(lines, header);
 
-  if (headerIndex === -1) {
+  if (table === null) {
     const trimmed = content.trimEnd();
     const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : "";
     return `${prefix}${header}\n${trustLine}\n`;
   }
 
-  let nextSectionIndex = lines.length;
-  for (let i = headerIndex + 1; i < lines.length; i++) {
-    if (lines[i]!.trim().startsWith("[")) {
-      nextSectionIndex = i;
-      break;
-    }
-  }
-
+  const atDocumentLevel = lineStartsAtDocumentLevel(lines.join("\n"));
   const hashIndex = lines.findIndex(
-    (line, index) => index > headerIndex && index < nextSectionIndex && line.trim().startsWith("trusted_hash"),
+    (line, index) => index > table.headerIndex && index < table.end && atDocumentLevel[index] && line.trim().startsWith("trusted_hash"),
   );
   if (hashIndex >= 0) {
     lines[hashIndex] = trustLine;
   } else {
-    lines.splice(headerIndex + 1, 0, trustLine);
+    lines.splice(table.headerIndex + 1, 0, trustLine);
   }
 
   return `${lines.join("\n").replace(/\n*$/, "\n")}`;
+}
+
+/**
+ * The real `header` line of a document and the line where its table ends: both are found only on
+ * lines that begin at document level (outside every string, array and inline table), so a header-shaped string never stands in for the
+ * table. Null when no real header exists.
+ */
+export function findTomlTable(lines: readonly string[], header: string): { headerIndex: number; end: number } | null {
+  const atDocumentLevel = lineStartsAtDocumentLevel(lines.join("\n"));
+  const headerIndex = lines.findIndex((line, i) => atDocumentLevel[i] && line.trim() === header);
+  if (headerIndex === -1) return null;
+  let end = lines.length;
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    if (atDocumentLevel[i] && lines[i]!.trim().startsWith("[")) { end = i; break; }
+  }
+  return { headerIndex, end };
 }
 
 export function isCodex013xOrLater(version: string): boolean {
@@ -1411,7 +1420,7 @@ function upsertCodexFeaturesHooksEnabled(content: string): string {
  *    header, so a valid fragment was split apart and refused (review50-r2,
  *    2026-09-01). Depth is what separates the two, not the line's own text.
  */
-function lineStartsAtDocumentLevel(content: string): boolean[] {
+export function lineStartsAtDocumentLevel(content: string): boolean[] {
   const out: boolean[] = [true];
   let multiline: '"""' | "'''" | null = null;
   let depth = 0;

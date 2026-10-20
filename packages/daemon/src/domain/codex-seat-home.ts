@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { codexActivityHookTrustRecords, computeCodexHandlerHash, upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
+import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
  * OPR-fork: codex seats must NOT share one ~/.codex app-server environment.
@@ -173,13 +173,11 @@ function hookStateRecords(content: string): Map<string, HookStateRecord> {
 function setHookStateField(content: string, key: string, field: string, value: string | number | boolean | undefined): string {
   const header = `[hooks.state.${JSON.stringify(key)}]`;
   const lines = content.split("\n");
-  const headerIndex = lines.findIndex((line) => line.trim() === header);
-  if (headerIndex === -1) return content;
-  let end = lines.length;
-  for (let i = headerIndex + 1; i < lines.length; i++) {
-    if (lines[i]!.trim().startsWith("[")) { end = i; break; }
-  }
-  const at = lines.findIndex((line, i) => i > headerIndex && i < end && new RegExp(`^\\s*${field}\\s*=`).test(line));
+  const table = findTomlTable(lines, header);
+  if (table === null) return content;
+  const headerIndex = table.headerIndex;
+  const atDocumentLevel = lineStartsAtDocumentLevel(lines.join("\n"));
+  const at = lines.findIndex((line, i) => i > headerIndex && i < table.end && atDocumentLevel[i] && new RegExp(`^\\s*${field}\\s*=`).test(line));
   if (value === undefined) {
     if (at >= 0) lines.splice(at, 1);
   } else if (at >= 0) {
@@ -219,6 +217,9 @@ export function planCodexHookTrustMirror(
     // The seat record carries the shared record's own hash (never a recomputed value: Codex stays the
     // only arbiter) and, when the shared hook is switched off, that `enabled = false` too.
     if (seatRecordIsCurrent(have, shared)) continue;
+    // Header-shaped text for a seat record the parsed document does not hold is a string (or comment) that
+    // mimics one. Nothing is created beside it: that is the OF-42 re-check's accepted fail-closed outcome.
+    if (have === undefined && content.split("\n").some((line) => line.trim() === `[hooks.state.${JSON.stringify(seatKey)}]`)) continue;
     let candidate = upsertCodexHookTrust(next, seatKey, sharedHash);
     if (shared.enabled === false) candidate = setHookStateField(candidate, seatKey, "enabled", false);
     // A seat record the text could not express (an unusual header form, a fake header inside a
