@@ -4,7 +4,7 @@
 // an injected selection reader, so at the base commit they fail on behaviour (the option is ignored).
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseToml } from "smol-toml";
@@ -176,4 +176,76 @@ describe("a selection that is unreadable, malformed or misplaced refuses the lau
       }
     });
   }
+});
+
+// Security review of 97aa027b, N3: where the program may live. Each row launches through the real adapter.
+describe("placement: content another principal controls never chooses the program (security review N3)", () => {
+  function exe(path: string, mode = 0o755): string {
+    execFileSync("/bin/mkdir", ["-p", join(path, "..")]);
+    writeFileSync(path, "#!/bin/sh\nexit 0\n");
+    chmodSync(path, mode);
+    return path;
+  }
+  async function launch(command: string): Promise<{ ok: boolean; error?: string; commands: string[] }> {
+    const f = fixture("fresh", { ok: true, servers: [pilot({ command })] });
+    const result = await f.run() as { ok: boolean; error?: string };
+    return { ...result, commands: f.commands() };
+  }
+  const base = join(scratch, "placement");
+
+  it("refuses a command inside any git work tree", async () => {
+    execFileSync("/bin/mkdir", ["-p", join(base, "repo", ".git")]);
+    const r = await launch(exe(join(base, "repo", "bin", "mcpls")));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`lies inside the git work tree ${join(base, "repo")}`);
+    expect(r.commands).toEqual([]);
+  });
+
+  it("refuses a command inside any .workspaces directory (a sibling seat's folder)", async () => {
+    const r = await launch(exe(join(base, "proj", ".workspaces", "verify-qa", "bin", "mcpls")));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`lies inside the seat workspaces directory ${join(base, "proj", ".workspaces")}`);
+  });
+
+  it("follows a link: a command outside that resolves into a git work tree is refused", async () => {
+    execFileSync("/bin/mkdir", ["-p", join(base, "repo2", ".git"), join(base, "links")]);
+    const target = exe(join(base, "repo2", "bin", "mcpls"));
+    const link = join(base, "links", "mcpls");
+    symlinkSync(target, link);
+    const r = await launch(link);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`lies inside the git work tree ${join(base, "repo2")}`);
+  });
+
+  it("judges the written path too: a link inside a git work tree pointing outside is refused", async () => {
+    execFileSync("/bin/mkdir", ["-p", join(base, "repo3", ".git"), join(base, "repo3", "bin")]);
+    const link = join(base, "repo3", "bin", "mcpls");
+    symlinkSync(MCPLS, link);
+    const r = await launch(link);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`lies inside the git work tree ${join(base, "repo3")}`);
+  });
+
+  it("refuses a binary writable by group or others", async () => {
+    const r = await launch(exe(join(base, "ww", "mcpls"), 0o777));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`is not protected: ${join(base, "ww", "mcpls")} is writable by group or others`);
+  });
+
+  it("refuses a binary under a world-writable directory without the sticky bit", async () => {
+    const command = exe(join(base, "open", "sub", "mcpls"));
+    chmodSync(join(base, "open"), 0o777);
+    const r = await launch(command);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain(`is not protected: ${join(base, "open")} is writable by group or others`);
+  });
+
+  it("accepts a binary below a sticky world-writable directory when the entry beneath it is yours", async () => {
+    const command = exe(join(base, "sticky", "mine", "mcpls"));
+    chmodSync(join(base, "sticky", "mine"), 0o700);
+    chmodSync(join(base, "sticky"), 0o1777);
+    const r = await launch(command);
+    expect(r.ok).toBe(true);
+    expect(r.commands[0]).toContain(`mcp_servers.lsp={command=${JSON.stringify(command)}`);
+  });
 });

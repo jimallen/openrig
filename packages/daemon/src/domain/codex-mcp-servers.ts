@@ -1,4 +1,4 @@
-import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import nodePath from "node:path";
 
 /**
@@ -148,30 +148,45 @@ function realOrSelf(p: string): string {
 }
 
 /**
- * Where a declared server's executable may be. Content the seat or the spec controls must never
- * choose the program: the command, followed through its links, may not lie inside the seat's
- * working directory or inside the directory the spec was read from (an archive could ship it).
- * `requireExecutable` also demands an existing executable regular file (the switch and the launch);
- * spec preflight leaves a missing binary to a warning, since a declared server is off by default.
+ * Where a declared server's executable may be. Content another principal controls must never choose the
+ * program (security review N3): the command may not lie in the seat's working directory, the directory the
+ * spec was read from (an archive could ship it), ANY git work tree (a merge or a peer seat could change it)
+ * or ANY `.workspaces` directory (a sibling seat's folder). Both the path as written and the file it
+ * resolves to are judged, so a link cannot launder either side. The resolved file and every directory
+ * above it must be owned by this user or root and not writable by group or others; a group- or
+ * world-writable directory is accepted only with the sticky bit (as /tmp), where others cannot rename or
+ * replace the entry below it. `requireExecutable` (the switch and every launch) also demands an existing
+ * executable regular file; spec preflight leaves a missing binary to a warning.
  */
 export function mcpServerPlacementProblem(
   server: Pick<CodexMcpServerDeclaration, "command">,
   roots: { seatCwd?: string | null; specDir?: string | null },
   opts: { requireExecutable: boolean },
 ): string | null {
+  const written = nodePath.resolve(server.command);
   let real: string;
+  let exists = true;
   try {
     real = realpathSync(server.command);
   } catch {
     if (opts.requireExecutable) return `its command ${server.command} does not exist`;
-    real = nodePath.resolve(server.command);
+    real = written;
+    exists = false;
   }
-  for (const [label, root] of [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]] as const) {
-    if (!root) continue;
-    const r = realOrSelf(root);
-    if (inside(real, r) || inside(nodePath.resolve(server.command), r)) {
-      return `its command ${server.command} lies inside ${label} (${r}), so content there could choose the program`;
+  for (const p of written === real ? [real] : [written, real]) {
+    for (const [label, root] of [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]] as const) {
+      if (!root) continue;
+      const r = realOrSelf(root);
+      if (inside(p, r) || inside(p, nodePath.resolve(root))) {
+        return `its command ${server.command} lies inside ${label} (${r}), so content there could choose the program`;
+      }
     }
+    const tree = controlledTree(p);
+    if (tree) return `its command ${server.command} lies inside ${tree}, so content there could choose the program`;
+  }
+  if (exists) {
+    const unsafe = unsafeOwnership(real);
+    if (unsafe) return `its command ${server.command} is not protected: ${unsafe}`;
   }
   if (opts.requireExecutable) {
     try {
@@ -182,6 +197,36 @@ export function mcpServerPlacementProblem(
     }
   }
   return null;
+}
+
+/** The nearest enclosing git work tree or `.workspaces` directory of a path, described; null when none. */
+function controlledTree(p: string): string | null {
+  let d = nodePath.dirname(p);
+  for (;;) {
+    if (nodePath.basename(d) === ".workspaces") return `the seat workspaces directory ${d}`;
+    if (existsSync(nodePath.join(d, ".git"))) return `the git work tree ${d}`;
+    const up = nodePath.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+}
+
+/** Why the resolved file or a directory above it could be changed by someone else; null when it cannot. */
+function unsafeOwnership(real: string): string | null {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid === undefined) return null; // no POSIX ownership to judge (Windows)
+  let p = real;
+  for (;;) {
+    let st;
+    try { st = statSync(p); } catch { return `${p} cannot be inspected`; }
+    if (st.uid !== uid && st.uid !== 0) return `${p} is owned by uid ${st.uid}, not by you or root`;
+    if ((st.mode & 0o022) !== 0 && !(p !== real && st.isDirectory() && (st.mode & 0o1000) !== 0)) {
+      return `${p} is writable by group or others`;
+    }
+    const up = nodePath.dirname(p);
+    if (up === p) return null;
+    p = up;
+  }
 }
 
 /** One switched-on server for one seat: the declaration snapshot and the spec directory it came from. */
