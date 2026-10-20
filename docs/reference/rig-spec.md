@@ -410,6 +410,36 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `session_source` | object | no | — | Start the seat from an existing session: `fork` with `native_id`, `rebuild` with `artifact_set`, or `agent_image` with `image_name`. A Claude Code `fork` needs Claude Code 2.0.73 or later. Not valid on terminal members. |
 | `starter_ref` | object | no | — | `{ name }` of an agent starter (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) whose files lead the seat's startup. Not valid on terminal members or with a fork. |
 | `startup` | StartupBlock | no | — | Member-level startup files and actions. Applied only to this member. |
+| `mcp_servers` | map | no | — | Codex only. Declares stdio MCP servers that are OFF for every seat of this member until one seat instance is switched on with `rig seat set-mcp`. See [Codex MCP servers](#codex-mcp-servers-mcp_servers). |
+
+### Codex MCP servers (`mcp_servers`)
+
+```yaml
+mcp_servers:
+  lsp:
+    command: /Users/me/.local/opt/mcpls-0.8.0/bin/mcpls   # absolute, no whitespace
+    args: ["--config", "/Users/me/.local/opt/mcpls-0.8.0/mcpls.toml"]
+    enabled_tools: [get_definition, get_references, get_hover]   # required, non-empty
+    startup_timeout_sec: 30   # optional, 1..3600
+    tool_timeout_sec: 60      # optional, 1..3600
+```
+
+- Only `command`, `args`, `enabled_tools` and the two timeouts are accepted; every other Codex server key (`env`, `cwd`, `url`, headers, `enabled`, ...) is refused. Server names are letters, digits, `_` and `-`, and never an object property name such as `__proto__`. Text may not contain control, format or separator characters.
+- A declaration runs nothing. `rig seat set-mcp <seat> <server> on --reason ...` switches it on for ONE seat instance. It reads the declaration from the rig's recorded spec file, or from `--spec <file>`. It then stores a snapshot and the sha256 of the binary the command resolves to. Every Codex launch of that seat (fresh, resume, restore, fork, restart) renders one `-c 'mcp_servers.<name>={...}'`. `off` removes it.
+- Every launch re-checks the declaration and the binary's place. It refuses to render when the binary's sha256 changed (switch it on again to accept an upgrade). It also refuses when another Codex config layer (the shared `config.toml`, a selected profile, a project `.codex/config.toml`) already defines a server of the same name, because Codex would merge that definition into this one.
+- **Codex does not sandbox MCP server processes.** On a seat whose launch is not full_bypass the server can do what the seat's own commands cannot. `set-mcp on` and every such launch print a warning.
+
+**Trust boundary.** What runs is decided by two files: the server binary and the spec the declaration is read from. A sandboxed seat must not be able to write either. Both are refused, as written and as resolved, when they lie:
+
+- inside the seat's working directory;
+- inside any `.workspaces` directory;
+- inside any git work tree;
+- inside a temporary directory (`/tmp`, `$TMPDIR`, `/var/folders`);
+- on a path where any component is not owned by you or root, or a non-link component is writable by group or others. There is no sticky-bit exemption.
+
+The binary is also refused inside the spec's own directory. The recorded spec source is the file the rig was launched from. A `--spec` file is judged by the rule above.
+
+The rig-name check on a `--spec` file is a typo guard, **not** a security boundary. A `project_rig: true` spec matches any seat of a project it could be launched into, and a plain spec's `name` is whatever the file says. Do not rely on the name match to decide whether a spec is trustworthy.
 
 ### Pi (`runtime: pi`)
 
