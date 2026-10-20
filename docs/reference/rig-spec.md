@@ -429,15 +429,22 @@ mcp_servers:
 - Every launch re-checks the declaration and the binary's place. It refuses to render when the binary's sha256 changed (switch it on again to accept an upgrade). It also refuses when another Codex config layer (the shared `config.toml`, a selected profile, a project `.codex/config.toml`) already defines a server of the same name, because Codex would merge that definition into this one.
 - **Codex does not sandbox MCP server processes.** On a seat whose launch is not full_bypass the server can do what the seat's own commands cannot. `set-mcp on` and every such launch print a warning.
 
-**Trust boundary.** What runs is decided by two files: the server binary and the spec the declaration is read from. A sandboxed seat must not be able to write either. Both are refused, as written and as resolved, when they lie:
+**Trust boundary.** What runs is decided by two files: the server binary, and the spec the declaration is read from. A sandboxed seat must not be able to write either.
 
-- inside the seat's working directory;
-- inside any `.workspaces` directory;
-- inside any git work tree;
-- inside a temporary directory (`/tmp`, `$TMPDIR`, `/var/folders`);
-- on a path where any component is not owned by you or root, or a non-link component is writable by group or others. There is no sticky-bit exemption.
+- **A `--spec` file is accepted only from an allow-list.** It must lie under one of these roots:
+  - the released spec copies (`~/.agents-release`);
+  - the spec library;
+  - the rig's recorded spec directory.
 
-The binary is also refused inside the spec's own directory. The recorded spec source is the file the rig was launched from. A `--spec` file is judged by the rule above.
+  Containment is decided by the identity (device and inode) of the resolved file's directories, so letter case, firmlinks such as `/System/Volumes/Data/...` and links cannot change the answer. Any other location is refused, including places a seat can write that nobody listed (its `--add-dir` state folder, a configured writable root). The file must also be a regular file with exactly one link, and it must pass the binary rules below. For example, `--spec ~/.agents-release/current/rigs/jims-team/rig.yaml` is accepted, while the same file in a `~/.agents` git checkout is refused.
+- **The binary is refused, as written and as resolved, when it lies:**
+  - inside the seat's working directory;
+  - inside the spec's own directory;
+  - inside any `.workspaces` directory (any letter case);
+  - inside any git work tree;
+  - inside a temporary directory (`/tmp`, `$TMPDIR`, `/var/folders`).
+
+  The seat folder, spec folder and temporary directories are compared by identity, not by path text. It is also refused when any component of either path is not owned by you or root, or a non-link component is writable by group or others. There is no sticky-bit exemption.
 
 The rig-name check on a `--spec` file is a typo guard, **not** a security boundary. A `project_rig: true` spec matches any seat of a project it could be launched into, and a plain spec's `name` is whatever the file says. Do not rely on the name match to decide whether a spec is trustworthy.
 

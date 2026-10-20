@@ -170,6 +170,8 @@ export interface RigPreflightInput {
   externalQualifiedIds?: Iterable<string>;
   claudeActivityAssets?: { relayPath?: string; manifestPath?: string };
   inheritedPermissionPolicy?: PreflightSpecContext["inheritedPermissionPolicy"];
+  /** The Codex MCP trust rule's file-system reads; production never passes it. */
+  mcpTrustIo?: PreflightSpecContext["mcpTrustIo"];
 }
 
 /**
@@ -177,6 +179,8 @@ export interface RigPreflightInput {
  * already-parsed+validated spec. (YAML is only the input adapter at the front.)
  */
 export interface PreflightSpecContext {
+  /** The Codex MCP trust rule's file-system reads; production never passes it. */
+  mcpTrustIo?: import("./codex-mcp-servers.js").PathJudgeIo;
   rigRoot: string;
   cwdOverride?: string;
   fsOps: GuardedAgentResolverFsOps;
@@ -265,6 +269,7 @@ export async function rigPreflight(input: RigPreflightInput & { exec?: (cmd: str
     rigRoot: input.rigRoot,
     cwdOverride: input.cwdOverride,
     fsOps: input.fsOps,
+    ...(input.mcpTrustIo ? { mcpTrustIo: input.mcpTrustIo } : {}),
     skillsRoot: input.skillsRoot,
     rigNameOverride: input.rigNameOverride,
     inheritedPermissionPolicy: input.inheritedPermissionPolicy,
@@ -414,12 +419,12 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
       // directory or the spec's own directory is refused. A missing binary is only a warning, because
       // nothing runs it until `rig seat set-mcp`, which (like every launch) requires it to exist.
       for (const [name, server] of Object.entries(member.mcpServers ?? {})) {
-        const placement = mcpServerPlacementProblem(server, { seatCwd: configResult.config.cwd, specDir: preflightCtx.rigRoot }, { requireExecutable: false });
+        const placement = mcpServerPlacementProblem(server, { seatCwd: configResult.config.cwd, specDir: preflightCtx.rigRoot }, { requireExecutable: false }, preflightCtx.mcpTrustIo);
         if (placement) {
           errors.push(`${pod.id}.${member.id}: mcp_servers.${name}: ${placement}`);
           continue;
         }
-        const missing = mcpServerPlacementProblem(server, {}, { requireExecutable: true });
+        const missing = mcpServerPlacementProblem(server, {}, { requireExecutable: true }, preflightCtx.mcpTrustIo);
         if (missing) warnings.push(`${pod.id}.${member.id}: mcp_servers.${name}: ${missing}; it is declared but no seat can switch it on until it exists`);
       }
     }

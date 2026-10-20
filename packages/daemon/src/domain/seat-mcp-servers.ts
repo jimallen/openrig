@@ -7,8 +7,8 @@ import { RigSpecSchema } from "./rigspec-schema.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
 import {
-  commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, untrustedPathProblem, validateMcpServersBlock,
-  type SeatMcpSelection, type SeatMcpServer,
+  commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, specFileTrustProblem, validateMcpServersBlock,
+  type PathJudgeIo, type SeatMcpSelection, type SeatMcpServer,
 } from "./codex-mcp-servers.js";
 
 /**
@@ -117,6 +117,11 @@ export function readDeclaredMcpServer(input: {
   server: string;
   node: { logicalId: string; runtime: string | null; agentRef: string | null; profile: string | null; cwd: string | null };
   now: () => string;
+  /** Roots an operator-named spec must lie under (released copies, spec library); the recorded spec directory
+   *  is added here. Empty: no --spec file is accepted. */
+  trustedSpecRoots?: string[];
+  /** The trust rule's file-system reads; production never passes it. */
+  io?: PathJudgeIo;
 }): DeclaredServerRead {
   const operator = input.operatorSpecFile !== undefined;
   const specSource = operator ? input.operatorSpecFile! : input.specSource;
@@ -127,13 +132,18 @@ export function readDeclaredMcpServer(input: {
     ? { ok: false, code: "mcp_spec_file_unavailable", message: `The spec file ${specSource} cannot be used for MCP servers: ${detail}` }
     : { ok: false, code: "mcp_spec_source_unavailable", message: `This rig's spec source ${specSource} cannot be read for MCP servers: ${detail}` };
   if (!nodePath.isAbsolute(specSource)) return unavailable("it is not an absolute path.");
-  // Security re-check F1: the operator-named file is the trust anchor for what runs, so it is judged like the
-  // binary. A seat can write its own cwd, a peer's .workspaces folder, a git checkout and the temp roots;
-  // none of those may supply a declaration (a floor seat could otherwise name /bin/sh for itself).
+  // The operator-named file decides what runs, and a seat chooses the path it sends, so it must lie under a
+  // trusted spec root (Jim, 2026-10-20, "Allow-list": re-check F1, R1, R2), compared by identity, with one link,
+  // and pass the deny and ownership rules too.
   if (operator) {
-    const judged = untrustedPathProblem(specSource, "the spec file", { seatCwd: input.node.cwd });
-    if (judged?.kind === "untrusted") {
-      return { ok: false, code: "mcp_spec_file_untrusted", message: `The spec file ${specSource} cannot be trusted for MCP servers: ${judged.why}. Name a reviewed spec outside every seat folder, git work tree and temporary directory, owned by you or root and not writable by group or others.` };
+    let recordedDir: string[] = [];
+    if (input.specSource) {
+      try { recordedDir = [nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource)))]; } catch { /* unreadable: not a root */ }
+    }
+    const roots = [...(input.trustedSpecRoots ?? []), ...recordedDir];
+    const problem = specFileTrustProblem(specSource, roots, input.node.cwd, input.io);
+    if (problem) {
+      return { ok: false, code: "mcp_spec_file_untrusted", message: `The spec file ${specSource} cannot be trusted for MCP servers: ${problem}. Name the reviewed release copy (~/.agents-release/...), a spec in the spec library, or the rig's own spec file.` };
     }
   }
   let specPath: string;
@@ -171,7 +181,7 @@ export function readDeclaredMcpServer(input: {
     return { ok: false, code: "mcp_server_undeclared", message: `The spec ${specPath} declares no MCP server "${input.server}" for ${node.logicalId}${declared.length ? ` (it declares: ${declared.join(", ")})` : ""}.` };
   }
   const specDir = nodePath.dirname(specPath);
-  const place = mcpServerPlacementProblem(declaration, { seatCwd: node.cwd, specDir }, { requireExecutable: true });
+  const place = mcpServerPlacementProblem(declaration, { seatCwd: node.cwd, specDir }, { requireExecutable: true }, input.io);
   if (place) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: ${place}.` };
   const commandSha256 = commandBinarySha256(declaration.command);
   if (!commandSha256) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: its command ${declaration.command} cannot be read to pin its checksum.` };

@@ -7,7 +7,7 @@ import type { ResumeResult } from "./claude-resume.js";
 import { assessNativeResumeProbe, buildCodexResumeCore } from "../domain/native-resume-probe.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { shellQuote } from "./shell-quote.js";
-import { prepareSeatMcpLaunchArgs, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
+import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
 import { codexPostureArg } from "./yolo-mode.js";
 import { observeCodexSandbox } from "../domain/permission-drift.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
@@ -32,6 +32,8 @@ interface CodexResumeOptions {
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;
   /** Server names other Codex config layers define for this launch; asked only for a seat with a switched-on server. */
+  /** The MCP trust rule's file-system reads; production never sets it. */
+  mcpTrustIo?: PathJudgeIo;
   existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
 }
 
@@ -108,7 +110,8 @@ export class CodexResumeAdapter {
     const networkArg = await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
     const existing = this.options.existingMcpServerNames;
     const mcp = prepareSeatMcpLaunchArgs(mcpServers, cwd, shellQuote, appliedLaunch.state === "observed" ? appliedLaunch.value : null,
-      existing ? () => existing({ cwd, sessionName: tmuxSessionName, profile: posture.startsWith(" -p ") && codexConfigProfile?.trim() ? codexConfigProfile.trim() : null }) : undefined);
+      existing ? () => existing({ cwd, sessionName: tmuxSessionName, profile: posture.startsWith(" -p ") && codexConfigProfile?.trim() ? codexConfigProfile.trim() : null }) : undefined,
+      this.options.mcpTrustIo);
     if (!mcp.ok) return { ok: false, code: "resume_failed", message: mcp.error };
     for (const warning of mcp.warnings) console.warn(`[openrig] ${tmuxSessionName}: ${warning}`);
     const workspaceArg = teamPermissionDefault && !codexConfigProfile?.trim()

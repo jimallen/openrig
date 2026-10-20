@@ -181,7 +181,7 @@ import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-refer
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
 import { readSeatMcpServers } from "./domain/seat-mcp-servers.js";
-import { codexConfigLayerFiles, codexConfigServerNames } from "./domain/codex-mcp-servers.js";
+import { codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
 import { codexSeatHomePath } from "./domain/codex-seat-home.js";
 import {
   getCompatibleOpenRigPath,
@@ -1431,6 +1431,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     composeAdapter,
     kernelBootTracker,
     specReviewService,
+    // Per-seat Codex MCP servers: an operator-named spec (rig seat set-mcp --spec) must lie under the released spec
+    // copies (~/.agents-release) or a spec library root; the rig's recorded spec directory is added per request.
+    mcpTrust: { specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, nodePath.resolve(import.meta.dirname, "../specs")] }) },
     specLibraryService: (() => {
       const userSpecsRoot = userSpecLibraryRoot;
       const legacySpecsRoot = compatibleSpecLibraryRoot;

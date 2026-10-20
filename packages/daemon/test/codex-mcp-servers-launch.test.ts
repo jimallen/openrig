@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseToml } from "smol-toml";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
-import { trustedFixtureDir } from "./helpers/trusted-fixture-dir.js";
+import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { codexCommandResumeToken, processArgv } from "../src/domain/native-process-lineage.js";
@@ -18,8 +18,8 @@ import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { SeatMcpSelection } from "../src/domain/codex-mcp-servers.js";
 
-// Accepted binaries may not live in a temp root, so the fixtures live in a 0700 directory in the account's home.
-const scratch = trustedFixtureDir("launch");
+// Fixtures stay under the test temp root; TRUST anchors the trust rule there (see mcp-trust-fixture.ts).
+const { dir: scratch, io: TRUST } = mcpTrustFixture("launch");
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 const MCPLS = join(scratch, "opt", "mcpls");
 // Explicit modes: the placement rule refuses group-writable directories, and a umask of 002 (Ubuntu's default with
@@ -72,8 +72,9 @@ function fixture(kind: Kind, selection: SeatMcpSelection | undefined, opts: { po
     verifyProfilePreflight: async (name) => ({ ok: true, profile: name }), resolveGitAddDirs: async () => [],
     ...(reader ? { readSeatMcpServers: reader } : {}),
     ...(names ? { existingMcpServerNames: names } : {}),
+    mcpTrustIo: TRUST,
   } as ConstructorParameters<typeof CodexRuntimeAdapter>[0]);
-  const restore = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, exec: async () => "", ...(names ? { existingMcpServerNames: names } : {}) });
+  const restore = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, exec: async () => "", ...(names ? { existingMcpServerNames: names } : {}), mcpTrustIo: TRUST });
   const posture = opts.posture ?? "floor";
   const binding: NodeBinding = {
     id: "b1", nodeId, tmuxSession: "r01-ops", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
@@ -303,17 +304,24 @@ describe("placement: temporary directories are refused for the binary", () => {
       expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true })).toMatch(/lies inside the temporary directory .*, which a sandboxed seat can write$/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
-  it("refuses $TMPDIR and /var/folders as declared paths, even before the binary exists", async () => {
-    const { mcpServerPlacementProblem } = await import("../src/domain/codex-mcp-servers.js");
+  it("the production temp roots follow $TMPDIR, and a not-yet-installed binary under one is refused", async () => {
+    const { mcpServerPlacementProblem, DEFAULT_PATH_JUDGE_IO } = await import("../src/domain/codex-mcp-servers.js");
     const fakeTmp = join(scratch, "fake-tmpdir");
+    execFileSync("/bin/mkdir", ["-p", "-m", "755", fakeTmp]);
     const prior = process.env["TMPDIR"];
     process.env["TMPDIR"] = fakeTmp;
     try {
-      expect(mcpServerPlacementProblem({ command: join(fakeTmp, "x", "mcpls") }, {}, { requireExecutable: false }))
+      expect(DEFAULT_PATH_JUDGE_IO.tempRoots()).toContain(fakeTmp);
+      // The fixture anchor plus the real temp-root list: only $TMPDIR (the fake one) can match here.
+      const io = { ...TRUST, tempRoots: () => [fakeTmp] };
+      expect(mcpServerPlacementProblem({ command: join(fakeTmp, "x", "mcpls") }, {}, { requireExecutable: false }, io))
         .toBe(`its command ${join(fakeTmp, "x", "mcpls")} lies inside the temporary directory ${fakeTmp}, which a sandboxed seat can write`);
     } finally { if (prior === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = prior; }
+  });
+  it.runIf(process.platform === "darwin")("darwin: a not-yet-installed binary under /var/folders is refused (real reads)", async () => {
+    const { mcpServerPlacementProblem } = await import("../src/domain/codex-mcp-servers.js");
     expect(mcpServerPlacementProblem({ command: "/var/folders/zz/abc/T/mcpls" }, {}, { requireExecutable: false }))
-      .toBe("its command /var/folders/zz/abc/T/mcpls lies inside the temporary directory /var/folders, which a sandboxed seat can write");
+      .toMatch(/^its command \/var\/folders\/zz\/abc\/T\/mcpls lies inside the temporary directory .*, which a sandboxed seat can write$/);
   });
 });
 
@@ -321,17 +329,17 @@ describe("placement: temporary directories are refused for the binary", () => {
 // since the suite runs as one uid).
 describe("placement: a foreign owner anywhere on the path is refused", () => {
   it("refuses when a directory on the resolved chain belongs to another uid; the unmodified reads accept", async () => {
-    const { mcpServerPlacementProblem, DEFAULT_PATH_JUDGE_IO } = await import("../src/domain/codex-mcp-servers.js");
+    const { mcpServerPlacementProblem } = await import("../src/domain/codex-mcp-servers.js");
     const bin = join(scratch, "owned", "mcpls");
     execFileSync("/bin/mkdir", ["-p", "-m", "755", join(scratch, "owned")]);
     writeFileSync(bin, "#!/bin/sh\nexit 0\n");
     chmodSync(bin, 0o755);
     const foreign = join(scratch, "owned");
-    const lie = (st: ReturnType<typeof DEFAULT_PATH_JUDGE_IO.stat>, p: string) => (p === foreign ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: 4242 }) : st);
-    const io = { ...DEFAULT_PATH_JUDGE_IO, stat: (p: string) => lie(DEFAULT_PATH_JUDGE_IO.stat(p), p), lstat: (p: string) => lie(DEFAULT_PATH_JUDGE_IO.lstat(p), p) };
+    const lie = (st: ReturnType<typeof TRUST.stat>, p: string) => (p === foreign ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: 4242 }) : st);
+    const io = { ...TRUST, stat: (p: string) => lie(TRUST.stat(p), p), lstat: (p: string) => lie(TRUST.lstat(p), p) };
     expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true }, io))
       .toBe(`its command ${bin} is not protected: ${foreign} is owned by uid 4242, not by you or root`);
-    expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true }, DEFAULT_PATH_JUDGE_IO)).toBeNull();
+    expect(mcpServerPlacementProblem({ command: bin }, {}, { requireExecutable: true }, TRUST)).toBeNull();
   });
 });
 
@@ -401,5 +409,42 @@ describe("codexConfigLayerFiles / codexConfigServerNames read names only", () =>
     const lines = readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8").split("\n");
     expect(lines.find((l) => l.includes("new CodexRuntimeAdapter("))).toContain("existingMcpServerNames,");
     expect(lines.find((l) => l.includes("new CodexResumeAdapter("))).toContain("existingMcpServerNames });");
+  });
+});
+
+// Security re-check of 53a39e80, R2: the deny checks compare identities, so the spelling a caller picks (letter
+// case or firmlink on macOS, letter case of `.workspaces` anywhere) cannot slip past them.
+describe("placement: deny checks hold under any spelling of the path (re-check R2)", () => {
+  const seatDir = join(scratch, "r2-seat");
+  execFileSync("/bin/mkdir", ["-p", "-m", "755", join(seatDir, "bin"), join(scratch, "r2-proj", ".WORKSPACES", "x")]);
+  for (const p of [join(seatDir, "bin", "mcpls"), join(scratch, "r2-proj", ".WORKSPACES", "x", "mcpls")]) {
+    writeFileSync(p, "#!/bin/sh\nexit 0\n");
+    chmodSync(p, 0o755);
+  }
+  const judge = async (command: string, roots: { seatCwd?: string }, io = TRUST) =>
+    (await import("../src/domain/codex-mcp-servers.js")).mcpServerPlacementProblem({ command }, roots, { requireExecutable: true }, io);
+
+  it("a `.WORKSPACES` directory is a workspaces directory", async () => {
+    expect(await judge(join(scratch, "r2-proj", ".WORKSPACES", "x", "mcpls"), {})).toContain("lies inside the seat workspaces directory");
+  });
+  it.runIf(process.platform === "darwin")("darwin: the seat's cwd in another letter case is still the seat's cwd", async () => {
+    const upper = join(scratch, "R2-SEAT", "bin", "mcpls");
+    expect(await judge(upper, { seatCwd: seatDir })).toContain("lies inside the seat's working directory");
+  });
+  it.runIf(process.platform === "darwin")("darwin: the seat's cwd through the /System/Volumes/Data firmlink is still the seat's cwd", async () => {
+    expect(await judge(`/System/Volumes/Data${join(seatDir, "bin", "mcpls")}`, { seatCwd: seatDir })).toContain("lies inside the seat's working directory");
+  });
+  it.runIf(process.platform === "darwin")("darwin: $TMPDIR spelled /VAR/FOLDERS/... or through the firmlink is still a temp root (real reads)", async () => {
+    const { DEFAULT_PATH_JUDGE_IO } = await import("../src/domain/codex-mcp-servers.js");
+    const d = realpathSync(mkdtempSync(join(tmpdir(), "mcp-r2-")));
+    try {
+      const bin = join(d, "mcpls");
+      writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+      chmodSync(bin, 0o755);
+      expect(bin.startsWith("/private/var/folders/")).toBe(true);
+      for (const spelling of [bin.replace("/private/var/folders/", "/VAR/FOLDERS/"), `/System/Volumes/Data${bin}`]) {
+        expect(await judge(spelling, {}, DEFAULT_PATH_JUDGE_IO)).toMatch(/lies inside the temporary directory .*, which a sandboxed seat can write$/);
+      }
+    } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });

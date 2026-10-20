@@ -244,6 +244,7 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
     transcripts: (c.get("contextUsageStore" as never) as ContextUsageStore | undefined) ?? undefined,
     // OF-32: the instantiator re-reads a fresh seat's startup policy from its rig's spec source.
     seatStartupSource: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? undefined,
+    mcpTrust: (c.get("mcpTrust" as never) as import("../domain/seat-lifecycle-service.js").SeatLifecycleDeps["mcpTrust"] | undefined) ?? undefined,
   });
 }
 

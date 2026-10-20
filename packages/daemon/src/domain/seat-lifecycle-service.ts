@@ -57,6 +57,9 @@ const SEAT_LOOKUP_GUIDANCE = "List seats with: rig ps --nodes";
 const TERMINAL_SESSION_STATUSES = new Set(["superseded", "detached", "exited"]);
 
 export interface SeatLifecycleDeps {
+  /** Per-seat Codex MCP servers: the roots an operator-named spec (--spec) must lie under, and (tests only) the
+   *  trust rule's file-system reads. Absent: no --spec file is accepted. */
+  mcpTrust?: { specRoots?: () => string[]; io?: import("./codex-mcp-servers.js").PathJudgeIo };
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
@@ -245,11 +248,13 @@ export class SeatLifecycleService {
   private readonly transcripts: SeatLifecycleDeps["transcripts"] | null;
   private readonly seatStartupSource: SeatStartupSpecReader | null;
 
+  private readonly mcpTrust?: SeatLifecycleDeps["mcpTrust"];
   constructor(deps: SeatLifecycleDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatLifecycleService: rigRepo must share the same db handle");
     if (deps.db !== deps.sessionRegistry.db) throw new Error("SeatLifecycleService: sessionRegistry must share the same db handle");
     if (deps.db !== deps.eventBus.db) throw new Error("SeatLifecycleService: eventBus must share the same db handle");
     this.db = deps.db;
+    this.mcpTrust = deps.mcpTrust;
     this.rigRepo = deps.rigRepo;
     this.sessionRegistry = deps.sessionRegistry;
     this.eventBus = deps.eventBus;
@@ -400,6 +405,8 @@ export class SeatLifecycleService {
       const read = readDeclaredMcpServer({
         specSource: this.rigRepo.getRigSpecSource(seat.rigId), server: input.server, rigName: seat.rigName,
         ...(input.specFile !== undefined ? { operatorSpecFile: input.specFile } : {}),
+        trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
+        ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
         node: { logicalId: seat.logicalId, runtime: node.runtime, agentRef: node.agent_ref, profile: node.profile, cwd: node.cwd },
         now: () => new Date().toISOString(),
       });

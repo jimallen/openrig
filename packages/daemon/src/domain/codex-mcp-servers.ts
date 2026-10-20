@@ -205,20 +205,8 @@ export function untrustedPathProblem(
   const written = nodePath.resolve(file);
   let real: string;
   try { real = io.realpath(file); } catch { return { kind: "missing" }; }
-  const temps = io.tempRoots();
-  for (const p of written === real ? [real] : [written, real]) {
-    const named: Array<[string, string | null | undefined]> = [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]];
-    for (const [label, root] of named) {
-      if (!root) continue;
-      let r = nodePath.resolve(root);
-      try { r = io.realpath(root); } catch { /* compare as written */ }
-      if (inside(p, r) || inside(p, nodePath.resolve(root))) return { kind: "untrusted", why: `${what} ${file} lies inside ${label} (${r}), so content there could choose ${what === "its command" ? "the program" : "what runs"}` };
-    }
-    const temp = temps.find((t) => inside(p, t));
-    if (temp) return { kind: "untrusted", why: `${what} ${file} lies inside the temporary directory ${temp}, which a sandboxed seat can write` };
-    const tree = controlledTree(p);
-    if (tree) return { kind: "untrusted", why: `${what} ${file} lies inside ${tree}, so content there could choose ${what === "its command" ? "the program" : "what runs"}` };
-  }
+  const located = deniedLocation([written, real], file, what, roots, io);
+  if (located) return { kind: "untrusted", why: located };
   const uid = io.uid();
   if (uid !== undefined) {
     for (const [chain, read] of [[written, (p: string) => io.lstat(p)], [real, (p: string) => io.stat(p)]] as const) {
@@ -252,19 +240,9 @@ export function mcpServerPlacementProblem(
   const judged = untrustedPathProblem(server.command, what, roots, io);
   if (judged?.kind === "missing") {
     if (opts.requireExecutable) return `its command ${server.command} does not exist`;
-    // Not installed yet: judge the places the path names, so a declaration pointing into a seat's
-    // folder or a temp root is refused at preflight even before the binary exists.
-    const written = nodePath.resolve(server.command);
-    const named: Array<[string, string | null | undefined]> = [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]];
-    for (const [label, root] of named) {
-      if (root && (inside(written, nodePath.resolve(root)) || inside(written, realOrSelf(root)))) {
-        return `its command ${server.command} lies inside ${label} (${realOrSelf(root)}), so content there could choose ${what === "its command" ? "the program" : "what runs"}`;
-      }
-    }
-    const temp = io.tempRoots().find((t) => inside(written, t));
-    if (temp) return `its command ${server.command} lies inside the temporary directory ${temp}, which a sandboxed seat can write`;
-    const tree = controlledTree(written);
-    return tree ? `its command ${server.command} lies inside ${tree}, so content there could choose ${what === "its command" ? "the program" : "what runs"}` : null;
+    // Not installed yet: judge the places the path names (by identity of the directories that exist), so a
+    // declaration pointing into a seat's folder or a temp root is refused at preflight before the binary exists.
+    return deniedLocation([nodePath.resolve(server.command)], server.command, what, roots, io);
   }
   if (judged) return judged.why;
   if (opts.requireExecutable) {
@@ -279,16 +257,98 @@ export function mcpServerPlacementProblem(
   return null;
 }
 
-/** The nearest enclosing git work tree or `.workspaces` directory of a path, described; null when none. */
+/**
+ * Location checks compared by IDENTITY, not text (security re-check of 53a39e80, R2). macOS volumes are
+ * case-insensitive and reachable through firmlinks (/System/Volumes/Data/...), so the same directory has many
+ * spellings and a seat chooses the spelling it sends. Every existing ancestor of each candidate path is
+ * stat'ed, and a named root (the seat's cwd, the spec directory, each temp root) matches when its own
+ * dev/ino is among them. `.workspaces` is matched case-insensitively and `.git` by existence, both of which
+ * hold under any spelling of the ancestors.
+ */
+function deniedLocation(paths: string[], file: string, what: string, roots: { seatCwd?: string | null; specDir?: string | null }, io: PathJudgeIo): string | null {
+  const ids = new Set<string>();
+  for (const p of paths) for (const id of ancestorIdentities(p, io)) ids.add(id);
+  const chooses = what === "its command" ? "the program" : "what runs";
+  const named: Array<[string, string | null | undefined]> = [["the seat's working directory", roots.seatCwd], ["the rig spec's directory", roots.specDir]];
+  for (const [label, root] of named) {
+    if (!root) continue;
+    const id = identityOf(root, io);
+    if (id && ids.has(id)) return `${what} ${file} lies inside ${label} (${root}), so content there could choose ${chooses}`;
+  }
+  for (const temp of io.tempRoots()) {
+    const id = identityOf(temp, io);
+    if (id && ids.has(id)) return `${what} ${file} lies inside the temporary directory ${temp}, which a sandboxed seat can write`;
+  }
+  for (const p of paths) {
+    const tree = controlledTree(p);
+    if (tree) return `${what} ${file} lies inside ${tree}, so content there could choose ${chooses}`;
+  }
+  return null;
+}
+
+/** "dev:ino" of a path (links followed); null when it cannot be stat'ed. */
+export function identityOf(p: string, io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO): string | null {
+  try { const st = io.stat(p); return `${st.dev}:${st.ino}`; } catch { return null; }
+}
+
+/** The identities of a path and every ancestor that exists (a missing tail is skipped, so a not-yet-installed
+ *  binary is still judged by the directories it names). */
+function ancestorIdentities(p: string, io: PathJudgeIo): string[] {
+  const out: string[] = [];
+  let d = nodePath.resolve(p);
+  for (;;) {
+    const id = identityOf(d, io);
+    if (id) out.push(id);
+    const up = nodePath.dirname(d);
+    if (up === d) return out;
+    d = up;
+  }
+}
+
+/** The nearest enclosing git work tree or `.workspaces` directory (any letter case) of a path; null when none. */
 function controlledTree(p: string): string | null {
   let d = nodePath.dirname(p);
   for (;;) {
-    if (nodePath.basename(d) === ".workspaces") return `the seat workspaces directory ${d}`;
+    if (nodePath.basename(d).toLowerCase() === ".workspaces") return `the seat workspaces directory ${d}`;
     if (existsSync(nodePath.join(d, ".git"))) return `the git work tree ${d}`;
     const up = nodePath.dirname(d);
     if (up === d) return null;
     d = up;
   }
+}
+
+/**
+ * Whether a spec file named with `rig seat set-mcp --spec` may supply a declaration (Jim, 2026-10-20,
+ * "Allow-list", after the re-check of 53a39e80). Accepted only when ALL hold:
+ *  - its resolved file lies under one of the trusted spec roots (the release copies under ~/.agents-release,
+ *    the spec library, the rig's recorded spec directory), compared by dev/ino of the resolved chain, so no
+ *    spelling of a path (case, firmlink, link) changes the answer and no seat-writable root that nobody
+ *    listed (an --add-dir state folder, a configured writable_root) can qualify;
+ *  - it is a regular file with exactly one link (a hard link elsewhere could be written through);
+ *  - the deny rules and the ownership rule of untrustedPathProblem pass for it as well.
+ */
+export function specFileTrustProblem(
+  file: string,
+  trustedRoots: string[],
+  seatCwd: string | null,
+  io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO,
+): string | null {
+  let real: string;
+  let st: Stats;
+  try { real = io.realpath(file); st = io.stat(real); } catch { return null; } // unreadable: the caller's read reports it
+  if (!st.isFile()) return `the spec file ${file} is not a regular file`;
+  if (st.nlink > 1) return `the spec file ${file} has ${st.nlink} hard links; a link elsewhere could change it`;
+  const chain = new Set(ancestorIdentities(real, io));
+  const anchored = trustedRoots.some((root) => { const id = identityOf(root, io); return id !== null && chain.has(id); });
+  if (!anchored) return `the spec file ${file} is not under a trusted spec root (${trustedRoots.join(", ") || "none configured"})`;
+  const judged = untrustedPathProblem(file, "the spec file", { seatCwd }, io);
+  return judged?.kind === "untrusted" ? judged.why : null;
+}
+
+/** The trusted spec roots for --spec: the released spec copies and the spec library roots. The rig's recorded
+ *  spec directory is added per request by the caller. */
+export function mcpSpecRoots(input: { home: string; specLibraryRoots: string[] }): string[] {
+  return [nodePath.join(input.home, ".agents-release"), ...input.specLibraryRoots];
 }
 
 /** One switched-on server for one seat: the declaration snapshot and the spec directory it came from. */
@@ -342,6 +402,8 @@ export function prepareSeatMcpLaunchArgs(
   sandbox: string | null,
   /** Server names other Codex config layers already define; asked only when a server is switched on. */
   existingNames?: () => ReturnType<typeof codexConfigServerNames>,
+  /** The trust rule's file-system reads; production never passes it (tests anchor fixtures with it). */
+  io: PathJudgeIo = DEFAULT_PATH_JUDGE_IO,
 ): { ok: true; arg: string; warnings: string[] } | { ok: false; error: string } {
   if (!selection) return { ok: true, arg: "", warnings: [] };
   if (!selection.ok) return { ok: false, error: `Codex MCP servers for this seat cannot be read: ${selection.error}` };
@@ -359,7 +421,7 @@ export function prepareSeatMcpLaunchArgs(
       return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: a server named "${server.name}" is already defined in ${definedIn}, and Codex would merge that definition (its env, cwd or transport) into this one; remove or rename it there, or ${remedy}` };
     }
     const again = `switch it on again to accept the new binary (rig seat set-mcp <seat> ${server.name} on --reason ...), or ${remedy}`;
-    const place = mcpServerPlacementProblem(server.declaration, { seatCwd, specDir: server.specDir }, { requireExecutable: true });
+    const place = mcpServerPlacementProblem(server.declaration, { seatCwd, specDir: server.specDir }, { requireExecutable: true }, io);
     if (place) {
       return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${place}; ${/does not exist$/.test(place) ? again : remedy}` };
     }

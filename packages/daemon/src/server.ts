@@ -331,6 +331,8 @@ export interface AppDeps {
   /** W3 single-seat, read-only runtime-policy observer. */
   permissionDriftObserver?: PermissionDriftReader;
   contextUsageStore?: import("./domain/context-usage-store.js").ContextUsageStore;
+  /** Per-seat Codex MCP servers: trusted --spec roots (and, in tests, the trust rule's reads). */
+  mcpTrust?: import("./domain/seat-lifecycle-service.js").SeatLifecycleDeps["mcpTrust"];
   /** 0.5.10 S04 — one on-demand, read-only health projection shared by consumers. */
   healthProjection?: import("./domain/health-detectors.js").HealthProjectionService;
   healthDiagnosis?: HealthDiagnosisService;
@@ -601,6 +603,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("whoamiService" as never, deps.whoamiService);
     c.set("permissionDriftObserver" as never, permissionDriftObserver);
     c.set("contextUsageStore" as never, deps.contextUsageStore);
+    c.set("mcpTrust" as never, deps.mcpTrust);
     c.set("healthProjection" as never, deps.healthProjection);
     c.set("healthDiagnosis" as never, deps.healthDiagnosis);
     c.set("healthPolicy" as never, deps.healthPolicy);

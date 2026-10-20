@@ -33,7 +33,7 @@ import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
 import { shellQuote } from "./shell-quote.js";
-import { prepareSeatMcpLaunchArgs, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
+import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 
 import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
@@ -117,6 +117,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // The seat's switched-on Codex MCP servers (rig seat set-mcp), read by node id at every launch.
   // Absent (unit tests, other embedders) renders nothing: every command stays byte-identical.
   private readSeatMcpServers?: (nodeId: string) => SeatMcpSelection;
+  // The MCP trust rule's file-system reads. Production never sets it; tests anchor fixtures with it.
+  private mcpTrustIo?: PathJudgeIo;
   // Server names other Codex config layers define for this launch (shared config, profile, project layers).
   private existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
   // Issue #121: git metadata dirs for the fresh-launch `--add-dir`s (a linked worktree's `.git` is a file).
@@ -146,6 +148,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     detectDaemonSupport?: CodexDaemonSupportDetector;
     readNetworkDefault?: CodexNetworkDefaultReader;
     readSeatMcpServers?: (nodeId: string) => SeatMcpSelection;
+    mcpTrustIo?: PathJudgeIo;
     existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
     resolveGitAddDirs?: CodexGitAddDirResolver;
     prepareTeamWorkspace?: PrepareCodexTeamWorkspace;
@@ -159,6 +162,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.detectDaemonSupport = deps.detectDaemonSupport;
     this.readNetworkDefault = deps.readNetworkDefault;
     this.readSeatMcpServers = deps.readSeatMcpServers;
+    this.mcpTrustIo = deps.mcpTrustIo;
     this.existingMcpServerNames = deps.existingMcpServerNames;
     this.resolveGitAddDirs = deps.resolveGitAddDirs ?? resolveCodexGitAddDirs;
     this.activityRelayPath = deps.activityRelayPath;
@@ -512,7 +516,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const existing = this.existingMcpServerNames;
     const mcp = prepareSeatMcpLaunchArgs(this.readSeatMcpServers?.(binding.nodeId), binding.cwd, shellQuote,
       appliedLaunch.state === "observed" ? appliedLaunch.value : null,
-      existing ? () => existing({ cwd: binding.cwd, sessionName: name, profile: posture.startsWith(" -p ") && profile ? profile : null }) : undefined);
+      existing ? () => existing({ cwd: binding.cwd, sessionName: name, profile: posture.startsWith(" -p ") && profile ? profile : null }) : undefined,
+      this.mcpTrustIo);
     if (!mcp.ok) return { ok: false, error: mcp.error };
     for (const warning of mcp.warnings) console.warn(`[openrig] ${name}: ${warning}`);
     const mcpArg = mcp.arg;

@@ -2,7 +2,7 @@
 // Every row goes through a surface that existed before this change (schema validate/normalize,
 // codec, rigPreflight, bundle behaviour, the expand route), so at the base commit each row fails on
 // behaviour rather than on a missing import.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import { describeBundleBehaviour } from "../src/domain/bundle-behaviour.js";
 import { normalizeMcpServers } from "../src/domain/codex-mcp-servers.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
-import { trustedFixtureDir } from "./helpers/trusted-fixture-dir.js";
+import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
 
 const TOOLS = ["get_definition", "get_references", "get_hover"];
 function server(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -99,14 +99,16 @@ describe("mcp_servers: rig preflight judges where the executable lives", () => {
     chmodSync(p, 0o755);
     return p;
   }
-  // Accepted binaries may not live in a temp root: these directories are 0700 in the account's home.
-  function tmp(): string { const d = trustedFixtureDir("pf"); dirs.push(d); return d; }
+  // Fixtures stay under the test temp root; PF.io anchors the trust rule there (see mcp-trust-fixture.ts).
+  const PF = mcpTrustFixture("pf");
+  afterAll(() => rmSync(PF.dir, { recursive: true, force: true }));
+  function tmp(): string { const d = mkdtempSync(join(PF.dir, "d-")); chmodSync(d, 0o700); dirs.push(d); return d; }
 
   it("refuses a command inside the spec's own directory (an archive could ship the program)", async () => {
     const rigRoot = tmp();
     const seat = tmp();
     const command = exe(join(rigRoot, "bin"));
-    const result = await rigPreflight({ rigSpecYaml: yaml(command), rigRoot, fsOps: fsOps(), cwdOverride: seat });
+    const result = await rigPreflight({ rigSpecYaml: yaml(command), rigRoot, fsOps: fsOps(), cwdOverride: seat, mcpTrustIo: PF.io });
     expect(result.ready).toBe(false);
     expect(result.errors).toContain(`verify.ops: mcp_servers.lsp: its command ${command} lies inside the rig spec's directory (${rigRoot}), so content there could choose the program`);
   });
@@ -115,7 +117,7 @@ describe("mcp_servers: rig preflight judges where the executable lives", () => {
     const rigRoot = tmp();
     const seat = tmp();
     const command = exe(join(seat, "tools"));
-    const result = await rigPreflight({ rigSpecYaml: yaml(command), rigRoot, fsOps: fsOps(), cwdOverride: seat });
+    const result = await rigPreflight({ rigSpecYaml: yaml(command), rigRoot, fsOps: fsOps(), cwdOverride: seat, mcpTrustIo: PF.io });
     expect(result.ready).toBe(false);
     expect(result.errors.join("\n")).toContain(`verify.ops: mcp_servers.lsp: its command ${command} lies inside the seat's working directory`);
   });
@@ -124,11 +126,11 @@ describe("mcp_servers: rig preflight judges where the executable lives", () => {
     const rigRoot = tmp();
     const elsewhere = tmp();
     const command = exe(elsewhere);
-    const ok = await rigPreflight({ rigSpecYaml: yaml(command), rigRoot, fsOps: fsOps() });
+    const ok = await rigPreflight({ rigSpecYaml: yaml(command), rigRoot, fsOps: fsOps(), mcpTrustIo: PF.io });
     expect(ok.errors).toEqual([]);
     expect(ok.warnings.filter((w) => w.includes("mcp_servers"))).toEqual([]);
     const missing = join(elsewhere, "absent-binary");
-    const warn = await rigPreflight({ rigSpecYaml: yaml(missing), rigRoot, fsOps: fsOps() });
+    const warn = await rigPreflight({ rigSpecYaml: yaml(missing), rigRoot, fsOps: fsOps(), mcpTrustIo: PF.io });
     expect(warn.ready).toBe(true);
     expect(warn.warnings).toContain(`verify.ops: mcp_servers.lsp: its command ${missing} does not exist; it is declared but no seat can switch it on until it exists`);
   });
