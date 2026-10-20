@@ -6,7 +6,9 @@
 //
 // Deployed entrypoints: routes/down.ts -> RigTeardownOrchestrator.teardown; startup.ts -> PeriodicSnapshotScheduler;
 // routes/up.ts, routes/rigs.ts, routes/startup.ts -> auto-rehydrate captures.
+import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { createRestoreHarness, type RestoreHarness } from "./helpers/restore-fresh-harness.js";
@@ -37,7 +39,9 @@ describe("rig down and the periodic capture skip a seat whose saved startup cont
 
     expect(result.snapshotId, JSON.stringify(result)).toBeTruthy();
     expect(copyOf(h.db, result.snapshotId!, seat.nodeId)).toBeNull();
-    expect(result.errors.join("\n")).toContain(WARNING("auto-pre-down", "dev.impl"));
+    // Re-check Q1: a warning, not an error, so `rig down` exits 0 when everything else succeeded.
+    expect(result.warnings?.join("\n")).toContain(WARNING("auto-pre-down", "dev.impl"));
+    expect(result.errors).toEqual([]);
     expect(result.sessionsKilled).toBe(1);
   });
 
@@ -124,5 +128,62 @@ describe("the auto-rehydrate captures skip a seat whose saved startup context is
     expect(snaps).toHaveLength(1);
     expect(copyOf(db, snaps[0]!.id, node.id)).toBeNull();
     expect(warn.mock.calls.flat().join("\n")).toContain(WARNING("auto-rehydrate", "operator.agent"));
+  });
+});
+
+// Re-check Q1e2 / Q1e3 (5ffd9b97): the two other startup-route auto-rehydrate captures, on a rig where ANOTHER seat's
+// saved startup context is not JSON.
+describe("the startup route's other auto-rehydrate captures skip a seat whose saved startup context is not JSON", () => {
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+  afterEach(() => { vi.restoreAllMocks(); db.close(); });
+  const rehydrated = (rigId: string) => db.prepare("SELECT id FROM snapshots WHERE rig_id = ? AND kind = 'auto-rehydrate'").all(rigId) as Array<{ id: string }>;
+  const post = (rigId: string, logicalId: string, body: object) => setup.app.request(`/api/startup/${rigId}/${logicalId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+  it("Q1e2: a never-occupied built-in seat's launch returns the launch result, not 500, and writes the snapshot", async () => {
+    db = createFullTestDb();
+    setup = createTestApp(db, { podInstantiatorFsOps: { exists: fs.existsSync, readFile: (p: string) => fs.readFileSync(p, "utf8") } });
+    vi.mocked(defaultProbeRuntimes).mockResolvedValue({ codex: "ok", claudeCode: "ok" });
+    const kernel = await (await setup.app.request("/api/startup/kernel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ runtime: "codex" }) })).json() as { rigId: string };
+    const rig = setup.rigRepo.getRig(kernel.rigId)!;
+    const other = rig.nodes.find((n) => n.logicalId === "operator.human")!;
+    const seat = rig.nodes.find((n) => n.logicalId === "advisor.lead")!;
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', ?, '[]', ?)").run(other.id, NOT_JSON, other.runtime ?? "codex");
+    setup.tmuxAdapter.probeSession = vi.fn(async () => ({ state: "absent" as const }));
+    vi.spyOn(PodRigInstantiator.prototype, "launchBinding").mockResolvedValue({ status: "launched" } as never);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const res = await post(rig.rig.id, seat.logicalId, { action: "start", revision: startupRevision(db, seat) });
+
+    expect(res.status, await res.clone().text()).not.toBe(500);
+    const snaps = rehydrated(rig.rig.id);
+    expect(snaps).toHaveLength(1);
+    expect(copyOf(db, snaps[0]!.id, other.id)).toBeNull();
+    expect(warn.mock.calls.flat().join("\n")).toContain(WARNING("auto-rehydrate", "operator.human"));
+  });
+
+  it("Q1e3: a resume with no restore-usable snapshot reaches the resume decision, not 500, and writes the snapshot", async () => {
+    db = createFullTestDb();
+    setup = createTestApp(db);
+    vi.mocked(defaultProbeRuntimes).mockResolvedValue({ codex: "ok", claudeCode: "ok" });
+    const rig = setup.rigRepo.createRig("resume-rig");
+    const [seat, other] = ["dev.impl", "dev.qa"].map((logicalId) => {
+      const node = setup.rigRepo.addNode(rig.id, logicalId, { runtime: "codex" });
+      const session = setup.sessionRegistry.registerSession(node.id, `${logicalId.replace(".", "-")}@resume-rig`);
+      setup.sessionRegistry.updateStatus(session.id, "stopped");
+      setup.sessionRegistry.updateStartupStatus(session.id, "failed");
+      db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'codex')").run(node.id);
+      return node;
+    });
+    db.prepare("UPDATE node_startup_context SET resolved_files_json = ? WHERE node_id = ?").run(NOT_JSON, other!.id);
+    setup.tmuxAdapter.probeSession = vi.fn(async () => ({ state: "absent" as const }));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const res = await post(rig.id, seat!.logicalId, { action: "resume", revision: startupRevision(db, seat!) });
+
+    expect(res.status, await res.clone().text()).not.toBe(500);
+    const snaps = rehydrated(rig.id);
+    expect(snaps).toHaveLength(1);
+    expect(copyOf(db, snaps[0]!.id, other!.id)).toBeNull();
   });
 });

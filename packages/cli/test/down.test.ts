@@ -215,6 +215,21 @@ describe("Down CLI", () => {
     expect(exitCode).toBeUndefined(); // 0
   });
 
+  // OF-36 Q1 re-check: a seat the snapshot holds no startup copy for is a warning, not a failure: printed, exit 0.
+  it("down with only warnings prints them and exits 0", async () => {
+    responseOverride = {
+      status: 200,
+      body: { rigId: "rig-1", sessionsKilled: 2, snapshotId: "snap-1", deleted: false, deleteBlocked: false, alreadyStopped: false, errors: [],
+        warnings: ["Snapshot (auto-pre-down) holds no copy of dev.impl's saved startup context: a column of it is not JSON (x). The rest of the rig was captured."] },
+    };
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "down", "rig-1"]);
+    });
+    expect(logs.some((l) => l.includes("warning: Snapshot (auto-pre-down) holds no copy of dev.impl's saved startup context"))).toBe(true);
+    expect(logs.some((l) => l.includes("Snapshot: snap-1"))).toBe(true);
+    expect(exitCode).toBeUndefined(); // 0
+  });
+
   // T2a: down alreadyStopped (no delete) -> exit 1
   it("down alreadyStopped with no delete exits 1", async () => {
     responseOverride = {

@@ -149,6 +149,8 @@ describe("F4: the copy pre-restore validation chose is the copy the seat starts 
     expect(r.outcome).toBe("failed");
     expect(r.text).toMatch(new RegExp(`^Fresh start refused: dev\\.impl: snapshot ${s0}, whose copy of its startup files this restore checked before it started, was removed before the seat's launch`));
     expect(h.delivered).toEqual([]);
+    // Re-check G3: the pre-validation warning that it replays that copy is withdrawn when the seat is refused.
+    expect(r.warnings.join("\n")).not.toContain("This fresh start replays the copy");
   });
 
   it("A14: with an older survivor, the seat is not started from that unchecked copy; the refusal names it as the way back", async () => {
@@ -182,6 +184,47 @@ describe("F4: the copy pre-restore validation chose is the copy the seat starts 
 
     expect(r.outcome).toBe("fresh-primed");
     expect(r.source).toMatchObject({ kind: "snapshot", reason: "saved_context_unreadable", snapshotId: s0 });
+  });
+});
+
+describe("re-check G2 and R3", () => {
+  it("G2: a listed --startup-from snapshot:<id> whose copy names a gone required file is refused naming that snapshot", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: false });
+    const s0 = capture(seat.rigId, "manual");
+    const data = JSON.parse((h.db.prepare("SELECT data FROM snapshots WHERE id = ?").get(s0) as { data: string }).data);
+    for (const key of Object.keys(data.nodeStartupContext)) {
+      data.nodeStartupContext[key].resolvedStartupFiles = data.nodeStartupContext[key].resolvedStartupFiles.map((f: object) => ({ ...f, absolutePath: path.join(h.root, "gone", "role.md") }));
+    }
+    h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), s0);
+    const s1 = await h.down(seat.rigId);
+
+    const out = await h.restore.restore(s1, { adapters: { "claude-code": h.adapter }, fsOps: { exists }, freshLogicalIds: [SEAT], startupFrom: `snapshot:${s0}` } as never);
+    const node = out.ok ? out.result.nodes.find((n) => n.logicalId === SEAT)! : null;
+
+    expect(node?.status).toBe("failed");
+    expect(node?.error).toContain(`its startup files (copied in snapshot ${s0}) cannot be delivered`);
+    expect(node?.error).not.toContain("saved at the seat's last successful launch");
+  });
+
+  it("R3: the snapshot route is not offered for a usable copy whose required file is gone", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    await h.down(seat.rigId);
+    for (const row of h.db.prepare("SELECT id, data FROM snapshots").all() as Array<{ id: string; data: string }>) {
+      const data = JSON.parse(row.data);
+      for (const key of Object.keys(data.nodeStartupContext ?? {})) {
+        data.nodeStartupContext[key].resolvedStartupFiles = data.nodeStartupContext[key].resolvedStartupFiles.map((f: object) => ({ ...f, absolutePath: path.join(h.root, "gone", "role.md") }));
+      }
+      h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), row.id);
+    }
+    fs.unlinkSync(path.join(h.root, "library", "team")); // the listed seat is refused (spec gone)
+
+    const listed = await runCheck(true);
+
+    expect(listed.status).toBe("red");
+    expect(listed.remediation).not.toContain("--startup-from snapshot:");
+    expect(listed.remediation).toContain(`leave ${SEAT} out of --fresh`);
   });
 });
 

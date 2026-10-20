@@ -21,6 +21,9 @@ export interface TeardownResult {
   deleteBlocked: boolean;
   alreadyStopped: boolean;
   errors: string[];
+  /** OF-36 Q1 (Jim, "Skip that seat, warn"): what the teardown did that is worth knowing but is not a failure, such as
+   *  a seat whose saved startup context was not copied into the snapshot. `rig down` prints them and still exits 0. */
+  warnings?: string[];
 }
 
 interface TeardownOptions {
@@ -137,7 +140,7 @@ export class RigTeardownOrchestrator {
       // failing the whole rig's snapshot.
       const { snapshot: snap, warnings } = captureSkippingUnreadable(this.deps.snapshotCapture, rigId, "auto-pre-down");
       result.snapshotId = snap.id;
-      result.errors.push(...warnings);
+      if (warnings.length > 0) result.warnings = warnings;
     } catch (err) {
       result.errors.push(`Snapshot failed: ${(err as Error).message}`);
       // Best-effort — teardown proceeds even if snapshot fails

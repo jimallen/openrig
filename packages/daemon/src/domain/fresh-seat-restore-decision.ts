@@ -162,6 +162,7 @@ export async function decideListedFreshSeat(deps: ListedSeatDecisionDeps, input:
     const findings = startupInputFindings({ id: input.nodeId, logicalId: input.logicalId }, chosen, input.exists, true);
     if (findings.blockers.length > 0) {
       const from = decided.ok && decided.context.source.kind === "spec" ? `read from ${decided.context.source.specSource}`
+        : decided.ok && decided.context.source.kind === "snapshot" ? `copied in snapshot ${decided.context.source.snapshotId}`
         : decided.ok ? "saved at the seat's last successful launch" : copyFrom;
       refusal = `its startup files (${from}) cannot be delivered: ${findings.blockers.map((blocker) => blocker.message).join("; ")}.`;
     } else {

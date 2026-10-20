@@ -68,10 +68,10 @@ const BAD_ACTION = JSON.stringify([{ type: "x" }]);
 // warning, so it exits 2), so the advice names the same route for both kinds of damage.
 const DAMAGE = [
   { kind: "wrong shape", column: "startup_actions_json", value: BAD_ACTION, downExit: 0 },
-  { kind: "not JSON", column: "resolved_files_json", value: "{not json", downExit: 2 },
+  { kind: "not JSON", column: "resolved_files_json", value: "{not json", downExit: 0 },
 ] as const;
 
-async function adviseAndDown(t: ReturnType<typeof useRig>, downExit: number) {
+async function adviseAndDown(t: ReturnType<typeof useRig>, downExit: number, column = "") {
   const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
   const text = `${refused.stderr}\n${refused.stdout}`;
   expect(refused.code).not.toBe(0);
@@ -80,9 +80,10 @@ async function adviseAndDown(t: ReturnType<typeof useRig>, downExit: number) {
   expect(down && up, text).toBeTruthy();
   const downRan = await t.run(`${down![0]} --json`);
   expect(downRan.code, downRan.stdout + downRan.stderr).toBe(downExit);
-  const teardown = JSON.parse(downRan.stdout) as { snapshotId: string | null; errors: string[] };
+  const teardown = JSON.parse(downRan.stdout) as { snapshotId: string | null; errors: string[]; warnings?: string[] };
   expect(teardown.snapshotId, "rig down snapshotted the rig").toBeTruthy();
-  if (downExit === 2) expect(teardown.errors.join("\n")).toContain("holds no copy of dev.impl's saved startup context: a column of it is not JSON");
+  expect(teardown.errors).toEqual([]);
+  if (column === "resolved_files_json") expect((teardown.warnings ?? []).join("\n")).toContain("holds no copy of dev.impl's saved startup context: a column of it is not JSON");
   return up![0];
 }
 
@@ -95,7 +96,7 @@ for (const damage of DAMAGE) {
       expect(t.snapshotCount(), "positive control: a snapshot exists before the break").toBeGreaterThan(0);
       t.corrupt(damage.column, damage.value);
 
-      const up = await adviseAndDown(t, damage.downExit);
+      const up = await adviseAndDown(t, damage.downExit, damage.column);
       const ran = await t.run(`${up} --json`);
       const nodes = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string; startupSource?: { snapshotId?: string } }> }).nodes;
       const seat = nodes.find((n) => n.logicalId === "dev.impl")!;
@@ -111,7 +112,7 @@ for (const damage of DAMAGE) {
     it("typed from the refusal", async () => {
       expect(t.snapshotCount(), "control: no snapshot was taken before the break").toBe(0);
       t.corrupt(damage.column, damage.value);
-      const up = await adviseAndDown(t, damage.downExit);
+      const up = await adviseAndDown(t, damage.downExit, damage.column);
       const ran = await t.run(`${up} --json`);
       const seat = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string; error?: string }> }).nodes.find((n) => n.logicalId === "dev.impl")!;
       expect(seat.status, ran.stdout).toBe("failed");
@@ -294,6 +295,36 @@ for (const route of ["snapshot", "leave-out"] as const) {
       const ran = await t.run(`${line} --json`);
       const seat = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string }> }).nodes.find((n) => n.logicalId === "dev.impl")!;
       expect(seat.status, ran.stdout).toBe("fresh-primed");
+    }, 400_000);
+  });
+}
+
+// Re-check G1 (5ffd9b97): a restore run with --startup-from snapshot:<id> must not hand that id to another seat unless
+// the snapshot holds a copy that seat can use. dev.qa stops awaiting a decision (the stub has no resume token).
+for (const qaCopy of ["broken", "usable"] as const) {
+  describe(`OF-36 G1 --startup-from snapshot:<id>, dev.qa's copy in that snapshot is ${qaCopy}: the command printed for dev.qa holds`, () => {
+    const t = useRig({ recordSpec: false });
+    it("typed from dev.qa's restore error", async () => {
+      t.policyFresh("dev.impl");
+      const id = (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id;
+      expect((await t.rig(["snapshot", id])).code).toBe(0);
+      const s = t.sql<{ id: string; data: string }>("SELECT id, data FROM snapshots ORDER BY rowid DESC LIMIT 1")[0]!;
+      if (qaCopy === "broken") {
+        const data = JSON.parse(s.data);
+        const qaNode = (data.nodes as Array<{ id: string; logicalId: string }>).find((n) => n.logicalId === "dev.qa")!;
+        data.nodeStartupContext[qaNode.id].resolvedStartupFiles = {};
+        t.sql("UPDATE snapshots SET data = ? WHERE id = ?", JSON.stringify(data), s.id);
+      }
+      expect((await t.rig(["down", rigName, "--json"])).code).toBe(0);
+      const up = await t.run(`rig up '${rigName}' --existing --fresh dev.impl --startup-from snapshot:${s.id} --json`);
+      const qa = (JSON.parse(up.stdout) as { nodes: Array<{ logicalId: string; status: string; error?: string }> }).nodes.find((n) => n.logicalId === "dev.qa")!;
+      expect(qa.status, up.stdout).toBe("awaiting-decision");
+      const named = qa.error?.match(/rig seat launch '[^']*' --fresh( --startup-from \S+)? --reason "<why>"/);
+      expect(named, qa.error).toBeTruthy();
+      if (qaCopy === "broken") expect(named![0]).not.toContain("snapshot:");
+      else expect(named![0]).toContain(`--startup-from snapshot:${s.id}`);
+      const ran = await t.run(named![0].replace("<why>", "of36-g1") + " --json");
+      expect(ran.code, JSON.stringify(ran)).toBe(0);
     }, 400_000);
   });
 }

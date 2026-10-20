@@ -136,6 +136,10 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
       }
       const startupFrom = opts.startupFrom as StartupFromArg | undefined;
       const startupFromBody = startupFrom ? { startupFrom } : {};
+      // Re-check G1 (5ffd9b97): `snapshot:<id>` was named for the listed seats; the CLI cannot check it for another seat,
+      // so the advice and accepted fresh starts for seats left awaiting a decision take the default (the daemon's own
+      // per-seat error text names snapshot:<id> only where it checked that snapshot for that seat).
+      const adviceStartupFrom = startupFrom?.startsWith("snapshot:") ? undefined : startupFrom;
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no
       // selection = today exactly. Topology
@@ -720,7 +724,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             }
             if (accepted.length > 0) {
               const rigNameForRef = String(res.data["rigName"] ?? source);
-              const outcomes = await launchAcceptedFreshSeats(client, accepted, rigNameForRef, "operator accepted fresh start at rig up", LONG_RUNNING_UP_TIMEOUT_MS, startupFrom);
+              const outcomes = await launchAcceptedFreshSeats(client, accepted, rigNameForRef, "operator accepted fresh start at rig up", LONG_RUNNING_UP_TIMEOUT_MS, adviceStartupFrom);
               for (const o of outcomes) {
                 if (o.ok) console.log(`  ${o.logicalId}: fresh-primed`);
                 else console.error(`  ${o.logicalId}: fresh start failed${o.httpStatus ? ` (HTTP ${o.httpStatus})` : ""}: ${o.message}`);
@@ -729,12 +733,12 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             } else {
               console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);
               for (const n of awaiting) {
-                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), startupFrom)}`);
+                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
               }
             }
           } else {
             for (const n of awaiting) {
-              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), startupFrom)}`);
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
             }
           }
         }

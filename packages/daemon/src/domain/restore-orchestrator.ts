@@ -37,7 +37,7 @@ import type {
   NodeStartupSnapshot,
   RestoreStartupSource,
 } from "./types.js";
-import { projectRereadSkills, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { projectRereadSkills, readSnapshotStartupCopy, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { asReplayContext, decideListedFreshSeat, startupToValidateForSeat } from "./fresh-seat-restore-decision.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
@@ -198,7 +198,7 @@ type RestoreSeatOpts = {
   startupFrom?: StartupFrom;
   /** Review F4: the snapshot copy pre-restore validation chose (and checked) for a seat, by logical id. The seat's
    *  launch replays exactly that copy, or is refused if its snapshot is gone; it never chooses again. */
-  preValidatedCopies?: Map<string, { snapshotId: string; context: NodeStartupSnapshot }>;
+  preValidatedCopies?: Map<string, { snapshotId: string; context: NodeStartupSnapshot; warning?: string }>;
 };
 
 /** Whether this restore resumes the seat's saved conversation (an exact resume) rather than starting it fresh.
@@ -340,7 +340,7 @@ export class RestoreOrchestrator {
     this.activeRestores.add(rigId);
 
     try {
-      const preValidatedCopies = new Map<string, { snapshotId: string; context: NodeStartupSnapshot }>();
+      const preValidatedCopies = new Map<string, { snapshotId: string; context: NodeStartupSnapshot; warning?: string }>();
       const validation = validatePreRestore(snapshot.data, {
         fsOps: opts?.fsOps,
         servicesRecord: this.rigRepo.getServicesRecord(rigId),
@@ -351,7 +351,7 @@ export class RestoreOrchestrator {
         freshSeatStartup: (node) => {
           const decided = this.freshSeatStartupToValidate(rigId, node.logicalId, opts, snapshot.data.nodeStartupContext?.[node.id] ?? null);
           if (decided && typeof decided === "object" && "replay" in decided && decided.fromSnapshotId) {
-            preValidatedCopies.set(node.logicalId, { snapshotId: decided.fromSnapshotId, context: decided.replay });
+            preValidatedCopies.set(node.logicalId, { snapshotId: decided.fromSnapshotId, context: decided.replay, ...(decided.warning ? { warning: decided.warning } : {}) });
           }
           return decided;
         },
@@ -992,7 +992,17 @@ export class RestoreOrchestrator {
 
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
   private freshStartCommand(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom): string {
-    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, startupFrom);
+    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, this.adviceStartupFrom(rigId, logicalId, startupFrom));
+  }
+
+  /** Re-check G1 (5ffd9b97): the restore's `--startup-from` as advice for THIS seat. `snapshot:<id>` was named for the
+   *  listed seats; it is repeated for a seat only when that snapshot holds a copy this seat can use (the check its
+   *  launch runs, readSnapshotStartupCopy); otherwise the advice names the default (the rig's spec as it is now). */
+  private adviceStartupFrom(rigId: string, logicalId: string, startupFrom?: StartupFrom): StartupFrom | undefined {
+    const snapshotId = startupFromSnapshotId(startupFrom);
+    if (!snapshotId) return startupFrom;
+    const live = this.rigRepo.getRig(rigId)?.nodes.find((node) => node.logicalId === logicalId);
+    return readSnapshotStartupCopy(this.db, { rigId, logicalId, runtime: live?.runtime ?? null, cwd: live?.cwd ?? "." }, snapshotId).ok ? startupFrom : undefined;
   }
 
   private async restoreNodeUnisolated(
@@ -1054,7 +1064,7 @@ export class RestoreOrchestrator {
       ? absentSeatResumeHistory(data.sessions, node.id)
       : null;
     if (priorWithToken) {
-      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, opts?.startupFrom) };
+      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, this.adviceStartupFrom(rigId, node.logicalId, opts?.startupFrom)) };
     }
 
     // Consult live continuity state BEFORE clearing stale state
@@ -1199,6 +1209,9 @@ export class RestoreOrchestrator {
       const carried = opts?.preValidatedCopies?.get(node.logicalId);
       if (carried && !this.db.prepare("SELECT 1 FROM snapshots WHERE id = ?").get(carried.snapshotId)) {
         this.restoreNodeState(nodeId, priorState);
+        // Re-check G3: the pre-validation warning said this seat replays that copy; it does not.
+        const said = carried.warning ? warnings?.indexOf(carried.warning) ?? -1 : -1;
+        if (said >= 0) warnings!.splice(said, 1);
         const rigName = rig?.rig.name ?? data.rig.name;
         const now = newestUsableSnapshotCopy(this.db, rigId, node.logicalId, seatRuntime);
         const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
