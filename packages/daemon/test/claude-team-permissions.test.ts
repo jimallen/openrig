@@ -59,6 +59,11 @@ describe("Claude kernel inspection permissions", () => {
 });
 
 describe("Claude team command permissions", () => {
+  // Switching a Codex MCP server on starts a program for that seat at its next launch: a team Claude seat asks.
+  // (The loop below only covers rules that are present, so removing the rule needs this explicit row.)
+  it("rig seat set-mcp asks", () => {
+    expect(decide("rig seat set-mcp verify-ops@eztrack lsp on --reason pilot", policy)).toBe("ask");
+  });
   for (const rule of TEAM_CLAUDE_ASK) {
     const command = rule.slice(5, -3);
     it(`${command}: real action asks, help does not`, () => {

@@ -135,7 +135,8 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     const s = seat("eztrack");
     const noActor = await setup.app.request(`/api/seat/set-mcp/${encodeURIComponent(s.ref)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server: "lsp", state: "on", reason: "pilot" }) });
     expect(noActor.status).toBe(400);
-    expect(await noActor.json()).toMatchObject({ code: "missing_actor" });
+    // The route refuses before the service runs: its own message, not the service's.
+    expect(await noActor.json()).toEqual({ ok: false, code: "missing_actor", message: "Sender identity is required; pass --operator <address> when running outside a managed seat." });
     const ok = await setup.app.request(`/api/seat/set-mcp/${encodeURIComponent(s.ref)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server: "lsp", state: "on", reason: "pilot", operator: "jim@host" }) });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ ok: true, to: "on", switchedOn: ["lsp"] });

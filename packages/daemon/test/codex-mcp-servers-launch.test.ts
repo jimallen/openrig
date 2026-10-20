@@ -152,6 +152,7 @@ describe("quoting and argv fidelity", () => {
     const on = fixture("resume", ON);
     await on.run();
     const argv = shellArgv(on.commands()[0]!);
+    expect(argv.filter((a) => a.startsWith("mcp_servers.lsp={"))).toHaveLength(1);
     // ps flattens argv with spaces; identity proof re-splits that line.
     expect(codexCommandResumeToken(["/usr/local/bin/codex", ...argv].join(" "))).toBe("thread-7");
   });
