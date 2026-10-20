@@ -356,7 +356,9 @@ describe("GET /api/provider/usage/hosts", () => {
 
 describe("POST /api/provider/usage/hosts/refresh", () => {
   it("a refresh slower than the 5 s read class still succeeds, and its reading reaches the view", async () => {
-    const a = await host("a", { codex: { delayMs: 6_000, secondaryUsed: 85 } });
+    // The host's clock is injected (NOW, 2026-10-13): the harness's default secondary reset is 2026-10-20, and read
+    // against the wall clock it expires on that date and turns the 85% reading "unknown" (OF-37). The 6 s delay stays real.
+    const a = await host("a", { now: () => NOW, codex: { delayMs: 6_000, secondaryUsed: 85 } });
     const hub = await host("hub", { registry: [a.entry()] });
     const started = Date.now();
     const { status, body } = await refreshVia(hub, { provider: "codex" });
