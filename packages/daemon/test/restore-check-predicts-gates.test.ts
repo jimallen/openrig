@@ -8,9 +8,12 @@
 // restore says (restore's own text). Rows where restore comes up cleanly are there so the check cannot get stricter
 // by guessing.
 //
-// Not in this table: the active-occupant ambiguity gate. A snapshot with an ambiguous occupant is refused whole before
-// any seat ("No usable snapshot", snapshot-repository selectRestoreUsable), by restore and by the check alike, so the
-// gate behind it is not reachable through restore(); only the restore-side tests that call it directly pin it.
+// The active-occupant ambiguity gate IS reachable through restore(): a snapshot whose occupant is `ambiguous` with at
+// least two distinct candidate session rows (what capture writes for two running occupants), or a legacy snapshot whose
+// activeSessionIdByNode records an explicit null, is usable, and restore stops the seat `failed`. (An earlier version of
+// this file dropped its ambiguity rows claiming the snapshot was refused whole. That was wrong: those rows named every
+// session of a one-session snapshot as candidates, which fails the two-candidate test and made the snapshot unusable
+// for that reason. G12 to G14 below are the well-formed shapes.)
 //
 // Deployed entrypoint: startup.ts constructs RestoreOrchestrator; server.ts mounts routes/restore-check.ts and
 // routes/up.ts, which build the check and the plan from the same module restore calls (restore-seat-gates.ts).
@@ -42,22 +45,22 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snapshotId);
   };
 
-  async function runCheck(listed: boolean) {
+  async function runCheck(listed: boolean, opts: { rigRunning?: boolean } = {}) {
     const service = createRestoreCheckService(h.rigRepo, h.snapshotRepo, undefined, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst });
     const result = await service.checkWithLiveness({ rig: "team", noQueue: true, noHooks: true, ...(listed ? { freshLogicalIds: [SEAT] } : {}) } as never);
     const pre = result.checks.find((c) => c.check === "rig.team.restore-preconditions")!;
-    return { status: pre.status, evidence: pre.evidence };
+    return { status: pre.status, evidence: pre.evidence, recovery: result.recovery, verdict: result.verdict, checks: result.checks };
   }
 
-  async function runRestore(snapshotId: string, listed: boolean): Promise<{ status: Status; error: string | null }> {
+  async function runRestore(snapshotId: string, listed: boolean): Promise<{ status: Status; error: string | null; warnings: string[] }> {
     try {
       const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists }, ...(listed ? { freshLogicalIds: [SEAT] } : {}) } as never);
-      if (!out.ok) return { status: "restore-ended", error: null };
+      if (!out.ok) return { status: "restore-ended", error: null, warnings: [] };
       const node = out.result.nodes.find((n) => n.logicalId === SEAT)!;
       const stopped = node.status === "awaiting-decision" || node.status === "failed";
-      return { status: stopped ? (node.status as Status) : "ok", error: node.error ?? null };
+      return { status: stopped ? (node.status as Status) : "ok", error: node.error ?? null, warnings: out.result.warnings ?? [] };
     } catch {
-      return { status: "restore-ended", error: null };
+      return { status: "restore-ended", error: null, warnings: [] };
     }
   }
 
@@ -88,6 +91,20 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     data.activeOccupantsByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, { kind: "absent" }]));
     data.activeSessionIdByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, null]));
   });
+  const podOf = (nodeId: string) => (h.db.prepare("SELECT pod_id AS p FROM nodes WHERE id = ?").get(nodeId) as { p: string }).p;
+  const CONTINUITY = (nodeId: string, status: string) => h.db.prepare("INSERT OR REPLACE INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, ?)").run(podOf(nodeId), nodeId, status);
+  /** Two live occupant candidates, as capture writes it (deriveActiveOccupantsByNode): which saved session is the seat's cannot be told. */
+  const AMBIGUOUS_OCCUPANT = (snapshotId: string) => editSnapshot(snapshotId, (data) => {
+    const node = data.nodes.find((candidate: { logicalId: string }) => candidate.logicalId === SEAT);
+    const first = data.sessions.find((session: { nodeId: string }) => session.nodeId === node.id);
+    data.sessions.push({ ...first, id: "01ZZZZZZZZOF40AMBIGUOUS02", sessionName: "dev-impl-second@team" });
+    data.activeOccupantsByNode = { ...(data.activeOccupantsByNode ?? {}), [node.id]: { kind: "ambiguous", candidateIds: [first.id, "01ZZZZZZZZOF40AMBIGUOUS02"] } };
+  });
+  /** A snapshot of the legacy shape: no activeOccupantsByNode, and activeSessionIdByNode records an explicit null. */
+  const LEGACY_NULL_OCCUPANT = (snapshotId: string) => editSnapshot(snapshotId, (data) => {
+    delete data.activeOccupantsByNode;
+    data.activeSessionIdByNode = Object.fromEntries(data.nodes.map((node: { id: string }) => [node.id, null]));
+  });
   const REMOVE_SEAT = async (_snapshotId: string, seat: { rigId: string; nodeId: string }) => {
     const bus = new EventBus(h.db);
     const lifecycle = new RigLifecycleService({
@@ -116,6 +133,13 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     { name: "G8 seat removed since the snapshot: listed", listed: true, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: REMOVE_SEAT, expected: "failed", says: "removed after this snapshot" },
     // Gate order: the runtime gate answers before the token gate, so the runtime's words are the ones restore gives.
     { name: "G9 runtime differs AND no token: restore says the runtime", listed: false, prepare: (s) => DROP_TOKEN(s.nodeId), afterSnapshot: CHANGE_RUNTIME, expected: "awaiting-decision", says: "saved startup runtime matches" },
+    // Which saved session is the seat's cannot be told: restore stops it (failed) before the runtime and token gates, and
+    // --fresh does not get past it. The check is red with restore's words (the gate walk, not validation, says so).
+    { name: "G12 ambiguous occupant, two candidate rows: unlisted", listed: false, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: AMBIGUOUS_OCCUPANT, expected: "failed", says: "Active-occupant ambiguity" },
+    { name: "G13 ambiguous occupant, two candidate rows: listed", listed: true, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: AMBIGUOUS_OCCUPANT, expected: "failed", says: "Active-occupant ambiguity" },
+    { name: "G14 legacy snapshot, explicit-null occupant relation", listed: false, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: LEGACY_NULL_OCCUPANT, expected: "failed", says: "Active-occupant ambiguity" },
+    // A runtime that differs from the snapshot's answers before the `restoring` skip, so a restoring seat is still stopped.
+    { name: "G15 runtime differs AND continuity is restoring: the runtime answers before the skip", listed: false, prepare: (s) => policyFresh(s.nodeId), afterSnapshot: (snapshotId, s) => { CHANGE_RUNTIME(snapshotId); CONTINUITY(s.nodeId, "restoring"); }, expected: "awaiting-decision", says: "saved startup runtime matches" },
     // Pre-restore validation refuses the whole restore (the seat's own saved startup file is gone) before any seat is looked at,
     // so the runtime gate behind it never answers: the check is red for the validation blocker alone and does not also
     // claim the seat.
@@ -145,6 +169,22 @@ describe("restore-check and restore agree on the gates restore runs before a sea
     if (row.expected === "restore-ended") expect(check.evidence).not.toContain("Restore would not start");
   });
 
+  it("G16 a no-token stop keeps the degraded-continuity warning restore gives (and a seat that proceeds keeps it too)", async () => {
+    for (const noToken of [true, false]) {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      if (noToken) DROP_TOKEN(seat.nodeId); else policyFresh(seat.nodeId);
+      const snapshotId = await h.down(seat.rigId);
+      CONTINUITY(seat.nodeId, "degraded");
+
+      const restore = await runRestore(snapshotId, false);
+
+      expect(restore.status, `noToken=${noToken}`).toBe(noToken ? "awaiting-decision" : "ok");
+      expect(restore.warnings.filter((w) => w.includes("continuity state is 'degraded'")), `noToken=${noToken}: ${JSON.stringify(restore.warnings)}`).toHaveLength(1);
+      h.cleanup();
+    }
+  });
+
   it("G10 a pod seat whose continuity is 'restoring' is skipped as fresh by restore; the no-token gate behind it never runs, so the check is not red", async () => {
     h = createRestoreHarness();
     const seat = await h.launchRig();
@@ -158,5 +198,57 @@ describe("restore-check and restore agree on the gates restore runs before a sea
 
     expect(restore.status).toBe("ok");
     expect(check.status, check.evidence).not.toBe("red");
+  });
+
+  // --- recovery: a restore that would not run is not recovery's business -------------------------------------------------
+  // Restore refuses a rig with a live seat (rig_not_stopped), so a stop at a seat gate (or a validation blocker) of the
+  // snapshot is not what a running rig's recovery verdict is about. Before this scoping, one seat that would stop for a
+  // decision turned a RUNNING rig's recovery into "blocked: No exact recovery action is known" and hid the more specific
+  // tmux-liveness reasons. Gate predictions are made only where restore would run; validation blockers, which base
+  // already counted on a running rig (blocked), are counted for recovery only where restore would run too, the same way.
+  describe("recovery follows whether restore would run", () => {
+    async function runningRig(shape: (seat: { rigId: string; nodeId: string }) => void) {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      shape(seat);
+      h.snapshotCapture.captureSnapshot(seat.rigId, "auto-pre-down");
+      return seat;
+    }
+    async function downRig(shape: (seat: { rigId: string; nodeId: string }) => void) {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      shape(seat);
+      await h.down(seat.rigId);
+      return seat;
+    }
+
+    it("a running rig whose latest snapshot has a seat that would stop for a decision still needs no recovery", async () => {
+      await runningRig((s) => DROP_TOKEN(s.nodeId));
+      const check = await runCheck(false);
+      expect(check.recovery.status, JSON.stringify(check.recovery)).toBe("not_needed");
+      expect(check.status, check.evidence).not.toBe("red");
+    });
+
+    it("a running rig whose latest snapshot has a validation blocker needs no recovery either, and the check still says so", async () => {
+      await runningRig((s) => { policyFresh(s.nodeId); GONE_OWN_FILE(s.nodeId); });
+      const check = await runCheck(false);
+      expect(check.status, "an explicit restore-check still assesses its next restore").toBe("red");
+      expect(check.evidence).toContain("/nonexistent/of40/role.md");
+      expect(check.recovery.status, JSON.stringify(check.recovery)).toBe("not_needed");
+    });
+
+    it("control: a stopped rig with a seat that would stop for a decision is blocked, in restore's words", async () => {
+      await downRig((s) => DROP_TOKEN(s.nodeId));
+      const check = await runCheck(false);
+      expect(check.recovery.status).toBe("blocked");
+      expect(check.recovery.blocked[0]!.reason).toContain("Original session unresumable");
+    });
+
+    it("control: a stopped rig with a validation blocker is blocked", async () => {
+      await downRig((s) => { policyFresh(s.nodeId); GONE_OWN_FILE(s.nodeId); });
+      const check = await runCheck(false);
+      expect(check.recovery.status).toBe("blocked");
+      expect(check.recovery.blocked[0]!.reason).toContain("/nonexistent/of40/role.md");
+    });
   });
 });

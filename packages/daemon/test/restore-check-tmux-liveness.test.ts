@@ -159,6 +159,22 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     expect(reason).toContain("rig down partly, then rig up partly --existing (this restarts every seat)");
   });
 
+  it("a partly-live rig whose dead seat would stop restore for a decision keeps the tmux-liveness reason, not a generic restore-input block (OF-40)", async () => {
+    const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "present", "down@partly": "absent" }).adapter);
+    // The dead seat is a resumable seat with no token: restore would stop it for a decision, but restore does not run at
+    // all while another seat is live (rig_not_stopped), so that stop is not what recovery should report.
+    db.prepare("UPDATE nodes SET restore_policy = NULL WHERE rig_id = ?").run(rigId);
+    db.prepare("UPDATE sessions SET restore_policy = 'resume_if_possible' WHERE node_id IN (SELECT id FROM nodes WHERE rig_id = ?)").run(rigId);
+    db.prepare("UPDATE snapshots SET data = json_set(data, '$.sessions[0].restorePolicy', 'resume_if_possible', '$.sessions[1].restorePolicy', 'resume_if_possible') WHERE rig_id = ?").run(rigId);
+    const body = await restoreCheck(app, rigName);
+    expect(body.recovery.status).toBe("blocked");
+    const reason = body.recovery.blocked[0].reason as string;
+    expect(reason).toContain("Seats running in tmux: up@partly");
+    expect(reason).toContain("rig_not_stopped, 409");
+    expect(reason).not.toContain("restore-input blockers");
+    expect(reason).not.toContain("Original session unresumable");
+  });
+
   it("DB says running but its tmux session is dead: the seat is treated as down and the rig is recoverable", async () => {
     const { app, rigName } = build(tmuxWith({ "up@partly": "absent", "down@partly": "absent" }).adapter);
     const body = await restoreCheck(app, rigName);

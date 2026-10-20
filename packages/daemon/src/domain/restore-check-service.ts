@@ -284,6 +284,9 @@ interface RecoveryRigInput {
   deadSeatIds: string[];
   /** Seats whose tmux liveness could not be read. */
   unknownLivenessSeats: string[];
+  /** Restore would refuse this rig whole (`rig_not_stopped`): a seat the DB shows running is live in tmux or unreadable.
+   *  Then what the snapshot says about the next restore is not what recovery reports. */
+  restoreRefused: boolean;
 }
 
 interface HostInfraCheckResult {
@@ -372,6 +375,7 @@ export class RestoreCheckService {
     const rigRollupInputs: RigRollupInput[] = [];
     const recoveryRigInputs: RecoveryRigInput[] = [];
     const restoreInputsByRig = new Map<string, { snapshot: { id: string; kind: string } | null; error?: string }>();
+    const restoreRefusedByRig = new Map<string, boolean>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -440,8 +444,10 @@ export class RestoreCheckService {
       const allReady = nodes.length > 0 && nodes.every((node) =>
         seatRunningReady(node, liveness)
       );
+      const restoreRefused = restoreRefusesRig(nodes, liveness);
+      restoreRefusedByRig.set(rig.rigId, restoreRefused);
       if (!opts.recoveryOnly || !allReady) {
-        const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId));
+        const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRefused);
         checks.push(preconditions.check);
         rigChecks.push(preconditions.check);
         preconditionError = preconditions.error;
@@ -524,13 +530,14 @@ export class RestoreCheckService {
         liveUnrecordedSeats: rollup.liveUnrecordedSeats,
         deadSeatIds: rollup.deadSeatIds,
         unknownLivenessSeats: rollup.unknownLivenessSeats,
+        restoreRefused: restoreRefusedByRig.get(rollup.rigId) ?? false,
       });
     }
 
     return this.buildResult(checks, rigRollups, hostInfraCheck.hostInfra, recoveryRigInputs, deferredAssessmentChecks);
   }
 
-  private checkRestorePreconditions(rig: { rigId: string; name: string }, opts: RestoreCheckOpts = {}, listedRefusals?: Map<string, string> | Error): {
+  private checkRestorePreconditions(rig: { rigId: string; name: string }, opts: RestoreCheckOpts = {}, listedRefusals?: Map<string, string> | Error, restoreRefused = false): {
     check: CheckEntry;
     snapshot: { id: string; kind: string } | null;
     error?: string;
@@ -597,9 +604,10 @@ export class RestoreCheckService {
         });
       }
       // OF-40: the gates restore runs before it looks at a seat's startup files, asked of the function restore calls.
-      // Restore reaches them only when pre-restore validation passed, so they are predicted only then (a validation
-      // blocker already makes this red, and a snapshot that malformed cannot be walked).
-      if (parity && blockers.length === 0) {
+      // Restore reaches them only when it runs at all (it refuses a rig with a live seat, rig_not_stopped, before any
+      // seat) and only when pre-restore validation passed (a validation blocker already makes this red, and a snapshot
+      // that malformed cannot be walked), so they are predicted only then.
+      if (parity && !restoreRefused && blockers.length === 0) {
         for (const [logicalId, stop] of parity.predictSeatStops(rig.rigId, input.snapshot.data, listed)) {
           blockers.push({
             code: stop.gate === "node_removed" ? "seat_removed" : "seat_stopped_before_launch",
@@ -1600,7 +1608,7 @@ export class RestoreCheckService {
 
     const allReady = recoveryInputs.every((input) => !input.snapshotLookupError
       && input.runningReadyNodes === input.expectedNodes
-      && !input.blockingChecks.some((check) => this.classifyRecoveryBlockingCheck(check) === "restore_input"));
+      && this.restoreInputBlockers(input).length === 0);
     if (allReady) {
       return {
         status: "not_needed",
@@ -1625,9 +1633,7 @@ export class RestoreCheckService {
         });
         continue;
       }
-      const restoreInputBlockers = input.blockingChecks.filter((check) =>
-        this.classifyRecoveryBlockingCheck(check) === "restore_input"
-      );
+      const restoreInputBlockers = this.restoreInputBlockers(input);
       if (restoreInputBlockers.length > 0) {
         blocked.push({
           scope: "rig",
@@ -1710,6 +1716,16 @@ export class RestoreCheckService {
       blocked,
       unknown,
     };
+  }
+
+  /** The red checks that stop recovery from advising a restore. A rig restore would refuse whole (a live seat) is not
+   *  stopped by what the snapshot says about the next restore: the liveness reasons below speak for it. */
+  private restoreInputBlockers(input: RecoveryRigInput): CheckEntry[] {
+    return input.blockingChecks.filter((check) => {
+      if (this.classifyRecoveryBlockingCheck(check) !== "restore_input") return false;
+      const aboutNextRestore = check.check.startsWith("rig.") && check.check.endsWith(".restore-preconditions");
+      return !(aboutNextRestore && input.restoreRefused);
+    });
   }
 
   private classifyRecoveryBlockingCheck(check: CheckEntry): "restore_input" | "runtime" | "other" {
@@ -1883,6 +1899,16 @@ export class RestoreCheckService {
       blocking: c.status === "red",
     }));
   }
+}
+
+/**
+ * Restore refuses the whole rig (`rig_not_stopped`, 409) while a seat the DB shows running is live in tmux or its
+ * liveness is unreadable; a seat tmux says is dead is stale and does not stop it. Unprobed (no liveness read) counts as
+ * running, as the DB says. The same reading `RestoreOrchestrator.restore` makes with classifyRunningSessions.
+ */
+function restoreRefusesRig(nodes: NodeInventoryEntry[], liveness: Map<string, SeatLiveness>): boolean {
+  return nodes.some((node) => node.sessionStatus === "running"
+    && (node.canonicalSessionName ? liveness.get(node.canonicalSessionName) : undefined) !== "dead");
 }
 
 /** DB says running+ready AND tmux has not contradicted it (unprobed counts as DB-only). */
