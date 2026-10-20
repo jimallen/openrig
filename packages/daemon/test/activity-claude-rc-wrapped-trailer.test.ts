@@ -72,19 +72,126 @@ describe("OF-35 classifyPaneActivity: a wrapped `/rc` line below the mode footer
     expect(classifyPaneActivity(proseThenRc)).toMatchObject({ state: "unknown", evidence: "/rc" });
   });
 
-  it("only the LAST line is a trailer: a `/rc` line followed by a warning row is not stripped", () => {
-    // Claude's noninteractive warning rows render below the footer. A `/rc` line between the footer and a
-    // warning row is not the last line, so the composer is not re-anchored on the footer above it.
-    const warning = "tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…";
+  it("only the last NON-WARNING line is a trailer: a `/rc` line followed by an unknown row is not stripped", () => {
+    // A row that is not one of Claude's known noninteractive warning rows is content: `/rc` above it is
+    // not the last line, so the composer is not re-anchored on the footer above it.
     const em = lines(EM_TAIL).filter((l) => l.trim().length > 0); // empty composer, idle footer
-    expect(classifyPaneActivity([...em, `${" ".repeat(60)}/rc`, warning].join("\n"))).toMatchObject({ state: "unknown" });
-    // positive control: the same pane without the `/rc` line is a complete frame with a warning row below
-    expect(classifyPaneActivity([...em, warning].join("\n"))).toMatchObject({ state: "agent_idle" });
+    expect(classifyPaneActivity([...em, `${" ".repeat(60)}/rc`, "Run claude doctor"].join("\n"))).toMatchObject({ state: "unknown" });
+    // NOT a discriminator: the same unknown row without `/rc` is also unknown, so this row cannot tell strip from
+    // no-strip. The discriminating rows are the "unknown rows after `/rc` are never skipped" block and the
+    // opposite-order row below.
+    expect(classifyPaneActivity([...em, "Run claude doctor"].join("\n"))).toMatchObject({ state: "unknown" });
   });
 
   it("the last line must be `/rc` alone: text that merely mentions it is not a trailer", () => {
     const mentions = [...lines(without(COS_TAIL, isRc)).filter((l) => l.trim().length > 0), "Run /rc to reconnect"].join("\n");
     expect(classifyPaneActivity(mentions)).toMatchObject({ state: "unknown", evidence: "Run /rc to reconnect" });
+  });
+
+  // Bead 1 (OF-35 nit 2). Claude renders its noninteractive warning rows BELOW the mode footer, so a wrapped
+  // `/rc` can be followed by them. Row text is the three shapes in CLAUDE_STATUS_WARNINGS (retained from
+  // Claude 2.1.220 captures, claude-warning-footer-readiness.test.ts). No native capture of `/rc` WITH a
+  // warning row exists in ~/.openrig/handover/work-9f/of35-evidence (exec.cos/exec.em carry only the update
+  // NOTICE on the footer row), so the footer, `/rc`, warning ORDER is modelled, not observed.
+  describe("a wrapped `/rc` followed by known warning rows (modelled order: footer, /rc, warnings)", () => {
+    const em = lines(EM_TAIL).filter((l) => l.trim().length > 0);
+    const rc = `${" ".repeat(60)}/rc`;
+    const UPDATE = "  ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor";
+    const FOCUS = "  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…";
+    const WEEKLY = "  You've used 96% of your weekly limit · resets 12pm (UTC)";
+    const cases: Array<[string, string[]]> = [
+      ["tmux focus-events", [FOCUS]],
+      ["auto-update failed", [UPDATE]],
+      ["weekly limit", [WEEKLY]],
+      ["auto-update + focus-events", [UPDATE, FOCUS]],
+    ];
+    for (const [name, warnings] of cases) {
+      it(`${name}: reads exactly as the same pane without the \`/rc\` line (agent_idle)`, () => {
+        const withRc = classifyPaneActivity([...em, rc, ...warnings].join("\n"));
+        expect(withRc).toMatchObject({ state: "agent_idle" });
+        expect(withRc).toEqual(classifyPaneActivity([...em, ...warnings].join("\n")));
+      });
+    }
+
+    it("the exec.cos chip pane + warning reads exactly as without `/rc`; the strip adds no lift of its own", () => {
+      // This layout (typed draft + update-notice footer + a warning row) is NOT idle even without `/rc`
+      // (measured: unknown / no_activity_signal): warning rows only anchor a complete frame for some footers.
+      // The wrapped `/rc` must not change that verdict either way, and the chip stays visible to the detector.
+      const body = lines(COS_TAIL).filter((l) => l.trim().length > 0);
+      const withRc = [...body, FOCUS].join("\n");
+      const withoutRc = [...body.filter((l) => !isRc(l)), FOCUS].join("\n");
+      expect(classifyPaneActivity(withRc)).toEqual(classifyPaneActivity(withoutRc));
+      expect(classifyPaneActivity(withRc)).toMatchObject({ state: "unknown" });
+      expect(detectBackgroundJobs(withRc)).toEqual({ count: 1, evidence: "1 shell" });
+    });
+
+    it("never lifts unknown: no footer above `/rc` + a warning stays unknown", () => {
+      expect(classifyPaneActivity(["Some output", "", rc, FOCUS].join("\n"))).toMatchObject({ state: "unknown" });
+    });
+
+    it("a live work row above still reads active through `/rc` + warning", () => {
+      const RULE = "─".repeat(40);
+      const pane = ["✻ Reading files… (12s · ↓ 1.2k tokens · esc to interrupt)", "", RULE, "❯ ", RULE,
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle)", rc, FOCUS].join("\n");
+      expect(classifyPaneActivity(pane)).toMatchObject({ state: "agent_active" });
+    });
+  });
+
+  // Review of 420dc1f5: the strip is NOT inert for an unknown row after `/rc`. Removing the `/rc` line pulls
+  // one more older line into the last-3 window (idle prompt signature) and the 8-line mid-work window, so a
+  // strip that skipped unknown rows would read a false idle / false busy. These panes are MODELLED.
+  describe("unknown rows after `/rc` are never skipped (the strip would change what the windows see)", () => {
+    const rc = `${" ".repeat(60)}/rc`;
+    const X = "Run claude doctor";
+    const FOOTER = "  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+    const em = lines(EM_TAIL).filter((l) => l.trim().length > 0);
+
+    it("unframed `❯` + footer + `/rc` + unknown row: unknown (a strip would put `❯` in the last-3 window: idle_prompt)", () => {
+      expect(classifyPaneActivity(["❯ ", FOOTER, rc, X].join("\n"))).toMatchObject({ state: "unknown" });
+      // idle control: the same block as a complete frame (footer last) is idle, so unknown is the unknown row's doing
+      expect(classifyPaneActivity(["❯ ", FOOTER].join("\n"))).toMatchObject({ state: "agent_idle" });
+    });
+
+    it("a live spinner row at the 8-line window edge: unknown (a strip would pull it in: agent_active/mid_work_pattern)", () => {
+      const spinner = "✻ Reading files… (12s · ↓ 1.2k tokens · esc to interrupt)";
+      const pane = [spinner, "a", ...em, rc, X];
+      expect(pane.length).toBe(em.length + 4);
+      expect(classifyPaneActivity(pane.join("\n"))).toMatchObject({ state: "unknown" });
+    });
+
+    it("two `/rc` lines: neither is a trailer (a skip loop that also skips a second `/rc` would strip the first)", () => {
+      expect(classifyPaneActivity(["❯ ", FOOTER, rc, rc].join("\n"))).toMatchObject({ state: "unknown" });
+    });
+  });
+
+  // The opposite order, MODELLED (no native capture of either order exists): a warning rendered BEFORE the
+  // wrapped `/rc` (footer, warning, /rc). `/rc` is last but the line above it is a warning, not the footer,
+  // so nothing is stripped and the pane stays unknown, as at base. The safe failure; widening it is a decision.
+  it("warning BEFORE `/rc` (footer, warning, /rc) stays unknown; strip applies only to footer, /rc, warning", () => {
+    const em = lines(EM_TAIL).filter((l) => l.trim().length > 0);
+    const rc = `${" ".repeat(60)}/rc`;
+    const FOCUS = "  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…";
+    expect(classifyPaneActivity([...em, FOCUS, rc].join("\n"))).toMatchObject({ state: "unknown", evidence: "/rc" });
+    // idle controls: the warning alone, and the warning AFTER `/rc`, both read idle
+    expect(classifyPaneActivity([...em, FOCUS].join("\n"))).toMatchObject({ state: "agent_idle" });
+    expect(classifyPaneActivity([...em, rc, FOCUS].join("\n"))).toMatchObject({ state: "agent_idle" });
+  });
+
+  // Bead 2 (OF-35 nit 3, mutant M6 `/\/rc\s*$/` survived). Prose that merely ENDS with `/rc`.
+  it("prose that ends with `/rc` under a footer is not a trailer: it stays the last line (evidence names it)", () => {
+    const prose = "  see /rc";
+    const pane = [...lines(EM_TAIL).filter((l) => l.trim().length > 0), prose].join("\n");
+    expect(classifyPaneActivity(pane)).toMatchObject({ state: "unknown", evidence: "see /rc" });
+  });
+
+  // Bead 3 (OF-35 nit 1). KNOWN, deliberately unchanged: same class as OF-34 FP-b (a stale footer is
+  // trusted). A bare mode footer followed by a lone `/rc`, with no composer rule above, reads idle exactly
+  // as the bare footer alone does. It cannot arise from typed input (that renders as `❯ /rc`).
+  it("KNOWN (not fixed, FP-b class): bare mode footer + lone `/rc`, no composer, reads agent_idle like the footer alone", () => {
+    const footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+    const bare = classifyPaneActivity(footer);
+    expect(bare).toMatchObject({ state: "agent_idle", reason: "idle_status_bar" });
+    expect(classifyPaneActivity([footer, `${" ".repeat(60)}/rc`].join("\n"))).toEqual(bare);
   });
 
   it("a question on the pane above a wrapped `/rc` still reads attention (the trailer never hides a dialog)", () => {
