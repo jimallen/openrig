@@ -244,3 +244,53 @@ describe("OF-36 Q2 rig up --existing --fresh <seat> --startup-from snapshot:<id>
     expect(await t.storedReadsOk()).toBe(true);
   }, 400_000);
 });
+
+// Review F1 (4728c079): every route restore-check's remediation names for a listed seat restore would refuse, typed.
+describe("OF-36 F1 no spec, no usable copy: the check does not offer leaving the seat out; the routes it names hold", () => {
+  const t = useRig({ recordSpec: false });
+  it("typed from the check", async () => {
+    t.policyFresh("dev.impl");
+    t.policyFresh("dev.qa");
+    t.corrupt("resolved_files_json", "{}");
+    expect((await t.rig(["down", rigName, "--json"])).code).toBe(0);
+    const check = await t.rig(["restore-check", "--rig", rigName, "--fresh", "dev.impl", "--full", "--json"]);
+    const pre = (JSON.parse(check.stdout) as { checks: Array<{ check: string; status: string; remediation: string }> }).checks.find((c) => c.check === `rig.${rigName}.restore-preconditions`)!;
+    expect(pre.status, check.stdout).toBe("red");
+    expect(pre.remediation).not.toContain("leave dev.impl out of --fresh");
+    expect(pre.remediation).toContain("Leaving dev.impl out of --fresh does not help");
+
+    // "does not help": the restore with the seat left out is refused as a whole.
+    const leftOut = await t.run(`rig up '${rigName}' --existing --json`);
+    expect(leftOut.code).not.toBe(0);
+    expect(leftOut.stdout + leftOut.stderr).toContain("pre_restore_validation_failed");
+    // "as it is restores the other seats and starts nothing for dev.impl".
+    const asIs = await t.run(`rig up '${rigName}' --existing --fresh dev.impl --json`);
+    const nodes = (JSON.parse(asIs.stdout) as { nodes: Array<{ logicalId: string; status: string }> }).nodes;
+    expect(nodes.find((n) => n.logicalId === "dev.qa")!.status, asIs.stdout).toBe("fresh-primed");
+    expect(nodes.find((n) => n.logicalId === "dev.impl")!.status).toBe("failed");
+    expect((await t.seatStatuses())["dev.impl"]).not.toBe("running");
+  }, 400_000);
+});
+
+for (const route of ["snapshot", "leave-out"] as const) {
+  describe(`OF-36 F1 spec gone, a usable older copy: the check's ${route} route starts the seat`, () => {
+    const t = useRig({ recordSpec: true });
+    it("typed from the check", async () => {
+      t.policyFresh("dev.impl");
+      t.policyFresh("dev.qa");
+      expect((await t.rig(["down", rigName, "--json"])).code).toBe(0);
+      t.sql("UPDATE rigs SET spec_source_path = '/nonexistent-of36-f1/rig.yaml' WHERE name = ?", rigName);
+      const check = await t.rig(["restore-check", "--rig", rigName, "--fresh", "dev.impl", "--full", "--json"]);
+      const pre = (JSON.parse(check.stdout) as { checks: Array<{ check: string; status: string; remediation: string }> }).checks.find((c) => c.check === `rig.${rigName}.restore-preconditions`)!;
+      expect(pre.status, check.stdout).toBe("red");
+      const snapshotRoute = pre.remediation.match(/rig up '[^']*' --existing --fresh '[^']*' --startup-from snapshot:[A-Za-z0-9_-]+/);
+      expect(snapshotRoute, pre.remediation).toBeTruthy();
+      expect(pre.remediation).toContain("leave dev.impl out of --fresh");
+
+      const line = route === "snapshot" ? snapshotRoute![0] : `rig up '${rigName}' --existing`;
+      const ran = await t.run(`${line} --json`);
+      const seat = (JSON.parse(ran.stdout) as { nodes: Array<{ logicalId: string; status: string }> }).nodes.find((n) => n.logicalId === "dev.impl")!;
+      expect(seat.status, ran.stdout).toBe("fresh-primed");
+    }, 400_000);
+  });
+}
