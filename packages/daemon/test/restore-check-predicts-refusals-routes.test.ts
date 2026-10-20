@@ -70,6 +70,25 @@ describe("refusal prediction through the routes", () => {
     expect(pre(plain).evidence).not.toContain("fresh_start_refused");
   });
 
+  // The rig-status route folds the same restore-check, and must ask restore's decisions too: a rig whose saved startup
+  // context restore cannot replay is blocked there, not "actionable" because the snapshot's clean copy looked fine.
+  it("GET /api/rigs/:id/status folds a blocked restore-check for a saved context restore cannot replay", async () => {
+    const rig = setup.rigRepo.createRig("status-rig");
+    const node = setup.rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const session = setup.sessionRegistry.registerSession(node.id, "worker@status-rig");
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only', status = 'exited' WHERE id = ?").run(session.id);
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(node.id);
+    setup.snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+    const status = async () => (await (await setup.app.request(`/api/rigs/${rig.id}/status`)).json()).src as string[];
+
+    expect(await status()).toContain("restore-check: actionable");
+    // The saved list of startup files has an empty member: the readiness probe reads it as fine (it drops the member), but restore
+    // ends in restore_error replaying it.
+    db.prepare("UPDATE node_startup_context SET resolved_files_json = '[null]' WHERE node_id = ?").run(node.id);
+
+    expect(await status()).toContain("restore-check: blocked");
+  });
+
   it("GET /api/restore-check rejects a --startup-from it does not know", async () => {
     const res = await setup.app.request("/api/restore-check?fresh=worker&startupFrom=latest");
 
