@@ -225,6 +225,8 @@ Exit codes:
     .option("--rig <name>", "Check one rig only")
     .option("--no-queue", "Skip queue file checks")
     .option("--no-hooks", "Skip hook checks")
+    .option("--fresh <seats...>", "Predict `rig up --existing <rig> --fresh <seats...>`: name each listed seat restore would refuse (a spec or startup file that can no longer start it)")
+    .option("--startup-from <source>", "With --fresh: spec (default) or stored, as for `rig up --startup-from`")
     .addHelpText("after", `
 Default: compact summary with per-rig readiness counts and NOT-READY seats only.
 Ready seats are counted but their detail is omitted to save tokens.
@@ -242,7 +244,12 @@ Examples:
   rig restore-check --full --json         Complete JSON (the firehose)
   rig restore-check --ready               Include ready seats in output
   rig restore-check --rig my-rig          Check one rig only`)
-    .action(async (opts: { json?: boolean; full?: boolean; ready?: boolean; rig?: string; queue?: boolean; hooks?: boolean }) => {
+    .action(async (opts: { json?: boolean; full?: boolean; ready?: boolean; rig?: string; queue?: boolean; hooks?: boolean; fresh?: string[]; startupFrom?: string }) => {
+      if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
+        console.error(`--startup-from takes spec or stored (got "${opts.startupFrom}").`);
+        process.exitCode = 2;
+        return;
+      }
       const deps = getDepsF();
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (status.state !== "running" || status.healthy === false) {
@@ -315,6 +322,8 @@ Examples:
         if (opts.rig) params.set("rig", opts.rig);
         if (opts.queue === false) params.set("noQueue", "true");
         if (opts.hooks === false) params.set("noHooks", "true");
+        if (opts.fresh && opts.fresh.length > 0) params.set("fresh", opts.fresh.join(","));
+        if (opts.startupFrom) params.set("startupFrom", opts.startupFrom);
         const query = params.toString();
         const path = `/api/restore-check${query ? `?${query}` : ""}`;
 

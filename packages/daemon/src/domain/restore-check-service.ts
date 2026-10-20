@@ -171,6 +171,22 @@ export interface RestoreCheckOpts {
   includeReady?: boolean;
   /** Composed status polls need preconditions only for rigs needing recovery. */
   recoveryOnly?: boolean;
+  /** OF-32 follow-up: predict `rig up --existing <rig> --fresh <seats...>`: the seats the operator would list. Needs
+   *  `restoreParity`; each listed seat restore would refuse is a blocker, with restore's own refusal text. */
+  freshLogicalIds?: string[];
+  /** With `freshLogicalIds`: `--startup-from` (default spec). */
+  startupFrom?: "spec" | "stored";
+}
+
+/** What restore decides, asked of the same functions restore calls (fresh-seat-restore-decision.ts,
+ *  own-startup-replay.ts). Optional so the service stays framework-free; production wires it
+ *  (routes/restore-check.ts). Without it the check judges a seat's saved context from `getStartupContext` alone. */
+export interface RestoreParityDeps {
+  /** startupToValidateForSeat, for this seat and these listed seats. */
+  startupToValidate(rigId: string, logicalId: string, listed: { freshLogicalIds?: string[]; startupFrom?: "spec" | "stored" }):
+    { override: "resolved_at_launch" | NodeStartupSnapshot | undefined; replayProblem: string | null };
+  /** predictListedSeatRefusals: logical id -> the text restore reports after "Fresh start refused: ". */
+  predictListedSeatRefusals(rigId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: "spec" | "stored" }): Promise<Map<string, string>>;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -236,6 +252,8 @@ export interface RestoreCheckDeps {
   getClaudeActivityHookEvents?: () => string[];
   /** OF-32: the spec source a rig records (null: none). A seat started fresh re-reads it; advice says so. */
   getRigSpecSource?: (rigId: string) => string | null;
+  /** OF-32 follow-up: restore's own decisions about saved startup contexts and listed seats. */
+  restoreParity?: RestoreParityDeps;
 }
 
 interface RigRollupInput {
@@ -268,6 +286,9 @@ interface HostInfraCheckResult {
   check: CheckEntry;
   hostInfra: HostInfraAssertion;
 }
+
+/** Per rig id: the listed seats restore would refuse (logical id -> restore's refusal text), or why that could not be asked. */
+type ListedRefusals = Map<string, Map<string, string> | Error>;
 
 // --- Service ---
 
@@ -306,14 +327,38 @@ export class RestoreCheckService {
         try { liveness.set(name, await probe(name)); } catch { liveness.set(name, "unreadable"); }
       }));
     }
-    return this.check(opts, liveness);
+    return this.check(opts, liveness, await this.predictListedRefusals(opts));
+  }
+
+  /** Per rig, the listed seats restore would refuse (OF-32 follow-up). Asked here because the decision re-reads each
+   *  seat's spec, which is asynchronous; check() itself stays synchronous. A read failure here is reported by
+   *  checkRestorePreconditions as the same unavailable-inputs result, not guessed at. */
+  private async predictListedRefusals(opts: RestoreCheckOpts): Promise<ListedRefusals> {
+    const byRig: ListedRefusals = new Map();
+    const parity = this.deps.restoreParity;
+    const listed = opts.freshLogicalIds ?? [];
+    if (!parity || listed.length === 0) return byRig;
+    let rigs: Array<{ rigId: string; name: string }> = [];
+    try { rigs = this.deps.listRigs(); } catch { return byRig; /* check() reports the same read failure as unknown */ }
+    for (const rig of rigs) {
+      if (opts.rig && rig.name !== opts.rig) continue;
+      try {
+        const input = this.deps.getRestoreInputs(rig.rigId);
+        if ("unavailable" in input || "currentStateRehydrate" in input) continue; // checkRestorePreconditions reports these
+        byRig.set(rig.rigId, await parity.predictListedSeatRefusals(rig.rigId, input.snapshot.data, { freshLogicalIds: listed, startupFrom: opts.startupFrom ?? "spec" }));
+      } catch (err) {
+        // Never read as "nothing refused": an unanswered prediction is reported yellow by checkRestorePreconditions.
+        byRig.set(rig.rigId, err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    return byRig;
   }
 
   /**
    * `liveness` is the per-session tmux answer gathered by checkWithLiveness();
    * omitted, every seat is judged on DB state alone (the pre-OF-29 behaviour).
    */
-  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map()): RestoreCheckResult {
+  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map()): RestoreCheckResult {
     const checks: CheckEntry[] = [];
     // rev1-r2 no-false-ready: ready-seat caveat signals that default compact
     // COMPUTES but does NOT emit (AC-4 token-safe) still count toward the
@@ -392,7 +437,7 @@ export class RestoreCheckService {
         seatRunningReady(node, liveness)
       );
       if (!opts.recoveryOnly || !allReady) {
-        const preconditions = this.checkRestorePreconditions(rig);
+        const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId));
         checks.push(preconditions.check);
         rigChecks.push(preconditions.check);
         preconditionError = preconditions.error;
@@ -481,7 +526,7 @@ export class RestoreCheckService {
     return this.buildResult(checks, rigRollups, hostInfraCheck.hostInfra, recoveryRigInputs, deferredAssessmentChecks);
   }
 
-  private checkRestorePreconditions(rig: { rigId: string; name: string }): {
+  private checkRestorePreconditions(rig: { rigId: string; name: string }, opts: RestoreCheckOpts = {}, listedRefusals?: Map<string, string> | Error): {
     check: CheckEntry;
     snapshot: { id: string; kind: string } | null;
     error?: string;
@@ -510,10 +555,25 @@ export class RestoreCheckService {
       // (or it cannot be read). Restore finds the seat by logical id and reads the LIVE node's saved context (a seat
       // removed and grown back has a new node id); predict it the same way.
       const liveNodeIdByLogicalId = new Map(this.deps.getNodeInventory(rig.rigId).map((entry) => [entry.logicalId, entry.nodeId]));
+      const parity = this.deps.restoreParity;
+      const listed = { freshLogicalIds: opts.freshLogicalIds, startupFrom: opts.startupFrom };
+      // Seats whose saved startup context restore cannot replay (it ends the restore or fails the seat), by logical id.
+      const unreplayable = new Map<string, string>();
       const validation = validatePreRestore(input.snapshot.data, {
         fsOps: { exists: this.deps.exists },
         servicesRecord: input.servicesRecord,
+        ...(parity && opts.freshLogicalIds?.length ? { freshLogicalIds: opts.freshLogicalIds } : {}),
         freshSeatStartup: (node) => {
+          if (parity) {
+            // The same function restore validates with: for a seat this restore starts fresh, its own saved context as
+            // restore reads it (a JSON row of the wrong shape is a row, not "no context"; N-C4).
+            const decided = parity.startupToValidate(rig.rigId, node.logicalId, listed);
+            if (decided.replayProblem) {
+              unreplayable.set(node.logicalId, decided.replayProblem);
+              return undefined;
+            }
+            return decided.override;
+          }
           const liveId = liveNodeIdByLogicalId.get(node.logicalId);
           const saved = liveId ? this.deps.getStartupContext(liveId) : null;
           return saved?.status === "ok"
@@ -522,6 +582,38 @@ export class RestoreCheckService {
         },
       });
       const { blockers, warnings } = validation;
+      for (const [logicalId, problem] of unreplayable) {
+        blockers.push({
+          code: "saved_startup_context_unreplayable",
+          severity: "critical",
+          logicalId,
+          target: "node_startup_context",
+          message: `Restore cannot replay the saved startup context of ${logicalId}: ${problem}. It would end the restore or fail that seat after its launch.`,
+          remediation: `List the seat so restore re-reads its spec instead of replaying the saved context: rig up --existing ${rig.name} --fresh ${logicalId}`,
+        });
+      }
+      if (listedRefusals instanceof Error) {
+        // The prediction could not be asked. Never green: say so.
+        return {
+          snapshot: { id: input.snapshot.id, kind: input.snapshot.kind },
+          check: {
+            check, status: blockers.length > 0 ? "red" : "yellow",
+            evidence: `Snapshot ${input.snapshot.id}: could not predict which listed seats restore would refuse: ${listedRefusals.message}${blockers.length > 0 ? `; ${blockers.map((blocker) => `${blocker.code}: ${blocker.message}`).join("; ")}` : ""}`,
+            remediation: "Retry; or run the restore and read the refusal it gives",
+            remediationSafe: true,
+          },
+        };
+      }
+      for (const [logicalId, refusal] of listedRefusals ?? []) {
+        blockers.push({
+          code: "fresh_start_refused",
+          severity: "critical",
+          logicalId,
+          target: "fresh-start",
+          message: `Fresh start refused for ${logicalId}: ${refusal} No session would be started.`,
+          remediation: `Fix the cause above, or leave ${logicalId} out of --fresh`,
+        });
+      }
       return {
         snapshot: { id: input.snapshot.id, kind: input.snapshot.kind },
         check: {

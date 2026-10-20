@@ -361,6 +361,38 @@ describe("rig restore-check", () => {
     expect(requestedPaths.some((p) => p.includes("noHooks=true"))).toBe(true);
   });
 
+  // OF-32 follow-up: the check can be asked to predict `rig up --existing --fresh <seats>`.
+  it("--fresh <seats...> and --startup-from pass through to the daemon route query", async () => {
+    const { deps, requestedPaths } = makeDeps();
+    const cmd = restoreCheckCommand(deps);
+    await cmd.parseAsync(["node", "rig", "--rig", "r", "--fresh", "dev.impl", "dev.qa", "--startup-from", "stored", "--json"]);
+
+    const query = new URLSearchParams(requestedPaths[0]!.split("?")[1]);
+    expect(query.get("fresh")).toBe("dev.impl,dev.qa");
+    expect(query.get("startupFrom")).toBe("stored");
+  });
+
+  it("without --fresh the query names no fresh seat", async () => {
+    const { deps, requestedPaths } = makeDeps();
+    await restoreCheckCommand(deps).parseAsync(["node", "rig", "--json"]);
+
+    expect(requestedPaths[0]).not.toContain("fresh=");
+    expect(requestedPaths[0]).not.toContain("startupFrom=");
+  });
+
+  it("--startup-from takes spec or stored, checked before anything is sent", async () => {
+    const { deps, requestedPaths } = makeDeps();
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => { errors.push(a.join(" ")); });
+    try {
+      await restoreCheckCommand(deps).parseAsync(["node", "rig", "--fresh", "dev.impl", "--startup-from", "latest", "--json"]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(requestedPaths).toEqual([]);
+    expect(errors.join("\n")).toContain('--startup-from takes spec or stored (got "latest")');
+  });
+
   it("daemon-down produces not_restorable locally without daemon call", async () => {
     const { getDaemonStatus } = await import("../src/daemon-lifecycle.js");
     (getDaemonStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: "stopped", healthy: false });

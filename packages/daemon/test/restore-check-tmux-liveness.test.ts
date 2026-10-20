@@ -98,7 +98,10 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     rigRepo = setupRef.rigRepo;
     sessionRegistry = setupRef.sessionRegistry;
     snapshotRepo = setupRef.snapshotRepo;
-    return { app: createApp(setupRef), ...seedRig("partly", dbState) };
+    // The deployed daemon wires its runtime adapters into the routes, and restore replays a fresh seat's own saved
+    // setup only for a seat whose runtime has an adapter; the check asks restore's own decision, so it needs one too.
+    const runtimeAdapters = { terminal: { runtime: "terminal" } } as never;
+    return { app: createApp({ ...setupRef, runtimeAdapters }), ...seedRig("partly", dbState) };
   }
 
   async function restoreCheck(app: Hono, rigName: string) {

@@ -639,7 +639,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         } else if (res.data["wouldCaptureCurrentState"] === true) {
           console.log(`Snapshot: none usable — apply would first capture current DB state as an auto-rehydrate snapshot.`);
         }
-        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reason?: string; tokenState?: string; provenance?: string | null; lastVerified?: string | null; freshRequired?: boolean; runtimePrompt?: string }>) ?? [];
+        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reason?: string; tokenState?: string; provenance?: string | null; lastVerified?: string | null; freshRequired?: boolean; runtimePrompt?: string; wouldRefuse?: string }>) ?? [];
         for (const n of planNodes) {
           console.log(`  ${n.logicalId}: ${n.intendedAction}${n.reason ? ` — ${n.reason}` : ""}`);
           // OPR.0.4.3.20 FR-6 — per-seat token truth: present/missing/stale/unverified
@@ -652,7 +652,11 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             const prompt = n.runtimePrompt ? `; ${n.runtimePrompt}` : "";
             console.log(`      token: ${n.tokenState}${reverify}${prov}${verified}${fresh}${prompt}`);
           }
+          // OF-32 follow-up: a seat listed with --fresh that apply would refuse before launching it, in restore's own words.
+          if (n.wouldRefuse) console.log(`      would be refused: Fresh start refused: ${n.wouldRefuse} No session would be started.`);
         }
+        const predictionError = res.data["refusalPredictionError"] as string | undefined;
+        if (predictionError) console.log(`Could not predict which listed seats apply would refuse: ${predictionError}`);
         console.log("No changes made.");
         return;
       }

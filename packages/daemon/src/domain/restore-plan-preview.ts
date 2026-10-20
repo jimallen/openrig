@@ -15,6 +15,8 @@ import type Database from "better-sqlite3";
 import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, activeOccupantAmbiguityError, absentSeatResumeHistory, absentSeatResumeHistoryError, type ActiveOccupantResolution } from "./active-occupant.js";
 import type { RigWithRelations, Snapshot } from "./types.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
+import { predictListedSeatRefusals, type ListedSeatDecisionDeps } from "./fresh-seat-restore-decision.js";
+import type { StartupFrom } from "./seat-startup-source.js";
 
 /** OPR.0.4.3.20 FR-6 — a present token whose last verification is older than this
  *  is surfaced as `stale` (age-based staleness — the "stale while running" signal
@@ -48,6 +50,10 @@ export interface RestorePlanPreviewNode {
   /** A runtime prompt the operator should expect at restore (Claude session
    *  picker, Codex auth/update) — a forecast, not an incidental surprise. */
   runtimePrompt?: string;
+  /** A seat listed with --fresh that apply mode would REFUSE before launching it, in restore's own words (the text
+   *  restore reports after "Fresh start refused: "). Decided by the function restore calls
+   *  (fresh-seat-restore-decision.ts), so the plan is never looser than the restore. Absent: nothing predicted. */
+  wouldRefuse?: string;
 }
 
 export interface RestorePlanPreview {
@@ -64,6 +70,8 @@ export interface RestorePlanPreview {
   nodes: RestorePlanPreviewNode[];
   /** Always false — the contract this preview exists to keep. */
   mutated: false;
+  /** Set when the refusal prediction for the listed seats could not be made; absent otherwise. */
+  refusalPredictionError?: string;
 }
 
 export interface PreviewSessionRow {
@@ -225,6 +233,21 @@ export function collectPreviewSessionRows(
 }
 
 /**
+ * The listed seats apply mode would refuse before launching them, by logical id, asked of the function restore calls
+ * (read-only: it re-reads each listed seat's spec and checks the files it names; it starts, stops and writes nothing).
+ */
+export function predictedPlanRefusals(
+  deps: ListedSeatDecisionDeps & { rigRepo: ListedSeatDecisionDeps["rigRepo"] & { getRig(rigId: string): RigWithRelations | null }; exists: (path: string) => boolean },
+  rig: RigWithRelations,
+  snapshot: Snapshot | null,
+  freshLogicalIds: string[] | undefined,
+  startupFrom: StartupFrom,
+): Promise<Map<string, string>> {
+  if (!freshLogicalIds || freshLogicalIds.length === 0) return Promise.resolve(new Map());
+  return predictListedSeatRefusals(deps, { rigId: rig.rig.id, freshLogicalIds, startupFrom, snapshot: snapshot?.data ?? null, exists: deps.exists });
+}
+
+/**
  * Forecast per-seat restore actions from current inventory and saved occupancy.
  * Report token state and guidance without launching or changing any sessions.
  */
@@ -235,6 +258,8 @@ export function buildRestorePlanPreview(
   freshLogicalIds?: string[],
   nowMs: number = Date.now(),
   recorded: Record<string, string | null> = {},
+  /** Listed seats apply mode would refuse (see `predictedPlanRefusals`), by logical id. */
+  refusals: ReadonlyMap<string, string> = new Map(),
 ): RestorePlanPreview {
   // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own
   // when previewing a snapshot; for the live no-snapshot case, the SAME
@@ -277,6 +302,8 @@ export function buildRestorePlanPreview(
       // by a fresh request, so --fresh must not be suggested as their remedy.
       freshRequired: runtimeError || resolution.kind === "ambiguous" ? false : tokenState === "missing",
       ...(runtimePrompt ? { runtimePrompt } : {}),
+      // Only a seat that is actually listed can be refused (a refusal for an unlisted seat is never predicted).
+      ...(freshRequested && refusals.has(node.logicalId) ? { wouldRefuse: refusals.get(node.logicalId)! } : {}),
     };
   });
   return {

@@ -37,7 +37,8 @@ import type {
   NodeStartupSnapshot,
   RestoreStartupSource,
 } from "./types.js";
-import { resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import type { FreshStartupContext, SeatStartupSpecReader, StartupFrom } from "./seat-startup-source.js";
+import { asReplayContext, decideListedFreshSeat, startupToValidateForSeat } from "./fresh-seat-restore-decision.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
 import { readNodeStartupSnapshot } from "./snapshot-capture.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
@@ -45,7 +46,7 @@ import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
-import { validatePreRestore, startupInputFindings, freshSeatReplaysSnapshotStartup } from "./restore-preconditions.js";
+import { validatePreRestore, startupInputFindings } from "./restore-preconditions.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 
@@ -203,16 +204,6 @@ function snapshotSeatResumes(session: { restorePolicy?: string | null; resumeTyp
   const restorePolicy = session?.restorePolicy ?? "resume_if_possible";
   const resumeType = session?.resumeType ?? null;
   return restorePolicy === "resume_if_possible" && !!resumeType && resumeType !== "none" && !freshRequested;
-}
-
-/** A fresh seat's chosen startup policy in the shape restore replays (the snapshot's startup-context shape). */
-function asReplayContext(context: FreshStartupContext): NodeStartupSnapshot {
-  return {
-    projectionEntries: context.plan.entries,
-    resolvedStartupFiles: context.resolvedStartupFiles,
-    startupActions: context.startupActions,
-    runtime: context.runtime,
-  };
 }
 
 export class RestoreOrchestrator {
@@ -975,21 +966,10 @@ export class RestoreOrchestrator {
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
    *  will act (see validatePreRestore's `freshSeatStartup`). */
   private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined): "resolved_at_launch" | NodeStartupSnapshot | undefined {
-    const live = this.rigRepo.getRig(rigId)?.nodes.find((candidate) => candidate.logicalId === logicalId);
-    const runtime = live?.runtime ?? null;
-    if (!live || !runtime || !opts?.adapters?.[runtime]) return undefined;
-    if (opts.freshLogicalIds?.includes(logicalId)) {
-      return freshSeatReplaysSnapshotStartup({
-        adapterAvailable: true,
-        seatHasSavedContext: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(live.id) !== undefined,
-        rigSpecReread: (opts.startupFrom ?? "spec") === "spec" && !!this.rigRepo.getRigSpecSource(rigId),
-      }) ? undefined : "resolved_at_launch";
-    }
-    try {
-      return readNodeStartupSnapshot(this.db, live.id) ?? undefined;
-    } catch {
-      return undefined; // unreadable: the snapshot's copy is what it replays (restoreNodeUnisolated says so)
-    }
+    // Shared with restore-check (startupToValidateForSeat), so the check validates what restore validates.
+    return startupToValidateForSeat({ db: this.db, rigRepo: this.rigRepo }, {
+      rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom,
+    }).override;
   }
 
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
@@ -1210,37 +1190,18 @@ export class RestoreOrchestrator {
     }
     if (startsFresh && freshRequested && opts?.adapters) {
       const rigName = rig?.rig.name ?? data.rig.name;
-      const decided = await resolveFreshSeatStartup(
+      // The decision itself (source, snapshot-copy fallback, refusal text) is shared with restore-check and the plan,
+      // which ask the same function what this restore would refuse (fresh-seat-restore-decision.ts).
+      const { decided, chosen, refusal, warnings: findingWarnings } = await decideListedFreshSeat(
         { db: this.db, rigRepo: this.rigRepo, specReader: this.seatStartupSource, runtimeAdapters: opts.adapters },
         {
-          rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime, cwd: node.cwd ?? ".",
+          rigId, nodeId, logicalId: node.logicalId, rigName, runtime: seatRuntime, cwd: node.cwd ?? ".",
           sessionName: expectedSessionName ?? node.logicalId, startupFrom: opts.startupFrom ?? "spec",
-          refusalGuidance: `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(node.logicalId, rigName, "stored")}.`,
+          snapshotCopy: data.nodeStartupContext?.[node.id] ?? null, exists: opts.fsOps?.exists ?? (() => true),
         },
       );
-      let refusal: string | null = null;
-      // startup_context_missing: the seat has no saved context of its own (it never launched in this database), so
-      // the snapshot's copy is the only one and cannot be older than anything: it is replayed as before.
-      // startup_context_malformed: the seat's saved context cannot be read, so nothing newer can be lost; the
-      // snapshot's copy is replayed (as before stage 3), said in a warning, and a successful launch saves a new one.
-      // Refusing here would leave the seat no fresh path at all: `--startup-from stored` reads the same row.
-      const snapshotFallback = !decided.ok && (decided.code === "startup_context_missing" || decided.code === "startup_context_malformed");
-      const chosen: NodeStartupSnapshot | null = decided.ok ? asReplayContext(decided.context)
-        : snapshotFallback ? data.nodeStartupContext?.[node.id] ?? null : null;
-      if (!decided.ok && !snapshotFallback) {
-        refusal = `${decided.message}${decided.guidance ? ` ${decided.guidance}` : ""}`;
-      } else if (chosen) {
-        // The checks pre-restore validation runs on the snapshot's copy, run on what this seat will actually be given.
-        const findings = startupInputFindings({ id: node.id, logicalId: node.logicalId }, chosen, opts.fsOps?.exists ?? (() => true), true);
-        if (findings.blockers.length > 0) {
-          const from = decided.ok && decided.context.source.kind === "spec" ? `read from ${decided.context.source.specSource}`
-            : decided.ok ? "saved at the seat's last successful launch" : "in this snapshot";
-          refusal = `its startup files (${from}) cannot be delivered: ${findings.blockers.map((blocker) => blocker.message).join("; ")}.`;
-        } else {
-          // Pre-restore validation may already have reported the same warning for the snapshot's copy.
-          for (const warning of findings.warnings) if (!warnings?.includes(warning)) warnings?.push(warning);
-        }
-      }
+      // Pre-restore validation may already have reported the same warning for the snapshot's copy.
+      for (const warning of findingWarnings) if (!warnings?.includes(warning)) warnings?.push(warning);
       if (refusal) {
         this.restoreNodeState(nodeId, priorState);
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${refusal} No session was started.` };
