@@ -111,14 +111,19 @@ describe("every fresh-start suggestion is a command that works in the state it i
   // (a resume that concludes failed, a runtime that reports fresh continuity, a defence-in-depth no-token check).
   // They are pinned by census instead: every `--fresh` suggestion in the orchestrator is built by the one builder.
   it("census: no restore-orchestrator message tells the operator to re-run `--fresh` through `rig up`", () => {
-    const source = readFileSync(new URL("../src/domain/restore-orchestrator.ts", import.meta.url), "utf8");
+    // OF-40: the no-token stop moved with the seat gates to restore-seat-gates.ts, the function restore-check also asks;
+    // the census reads both files, so the population stays the 7 messages and the moved one is still held to the rule.
+    const read = (file: string) => readFileSync(new URL(`../src/domain/${file}`, import.meta.url), "utf8")
+      .split("\n").filter((line) => line.includes("Original session unresumable"));
     // Positional predicate: every awaiting-decision message opens with the same fixed words.
-    const messages = source.split("\n").filter((line) => line.includes("Original session unresumable"));
-    expect(messages.length, "positive control: the population is the 7 stop-for-decision messages at e493aa62").toBe(7);
-    for (const line of messages) {
+    const inOrchestrator = read("restore-orchestrator.ts");
+    const inGates = read("restore-seat-gates.ts");
+    expect(inOrchestrator.length + inGates.length, "positive control: the population is the 7 stop-for-decision messages at e493aa62").toBe(7);
+    expect(inGates.length, "positive control: one of them (the no-token stop) lives in the shared seat gates").toBe(1);
+    for (const line of [...inOrchestrator, ...inGates]) {
       expect(line, line).not.toMatch(/Re-run with --fresh/);
       // OF-32 stage 3: and every one carries the restore's `--startup-from` choice, so the stored escape is not lost.
-      expect(line, line).toMatch(/this\.freshStartCommand\(rigId, data, node\.logicalId, opts\?\.startupFrom\)/);
+      expect(line, line).toMatch(/this\.freshStartCommand\(rigId, data, node\.logicalId, opts\?\.startupFrom\)|freshSeatLaunchCommand\(logicalId, input\.rigName, input\.startupFrom\)/);
     }
   });
 });
