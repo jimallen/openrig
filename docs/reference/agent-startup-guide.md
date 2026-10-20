@@ -254,16 +254,18 @@ sources (or not from a spec file, such as a bundle install), and a seat the spec
 fresh start. The result and the `seat.fresh_launched` event name the source used. A resumed seat does not read the
 spec again: a resumed conversation already holds the text it was given.
 
-`rig up <rig> --existing` applies the same rule seat by seat. A seat it resumes keeps its saved startup files. A seat
-it starts fresh (one listed with `--fresh <seat>`, or one whose restore policy or history starts it fresh) reads the
+`rig up <rig> --existing` re-reads the spec only for a seat you list with `--fresh <seat>`: that seat reads the
 rig's spec as it is now, exactly as `rig seat launch --fresh` does, or replays its saved files when you pass
-`--startup-from stored`. A seat whose spec can no longer start it is reported `failed` with the reason and the
-per-seat command to start it from its saved files, and nothing is started for it; its siblings are restored. A
-restore never writes a snapshot's older copy of the startup files over the seat's newer saved files, so restoring an
+`--startup-from stored`. A listed seat whose spec can no longer start it is reported `failed` with the reason and the
+per-seat command to start it from its saved files, and nothing is started for it; its siblings are restored. A seat
+it resumes keeps its saved startup files, and so does every other seat it starts fresh (by restore policy, with no
+history, or rebuilt from a checkpoint): it comes back on its own saved setup exactly as before, without reading the
+spec and without a new refusal. A restore never writes a snapshot's older copy of the startup files over the seat's newer saved files, so restoring an
 older snapshot after a fresh launch picked up a new release does not take the seat back to the old release. Each
 seat a restore starts fresh names its source in the restore result (`startupSource`), in the `restore.completed`
 event and under the seat in `rig up` and `rig start` output: the spec it re-read and the agent version it moved
-from and to, its saved files, or the snapshot's copy. The snapshot's copy is used only when the seat has no saved
+from and to, its saved files (with why: not listed with `--fresh`, `--startup-from stored`, no recorded source),
+or the snapshot's copy. The snapshot's copy is used only when the seat has no saved
 files of its own, or when its saved files cannot be read; the restore then says so, and the launch saves readable
 files again. `rig seat launch --fresh` cannot use unreadable saved files; its refusal names the way back (stop the
 seat, then `rig launch <rig-id> <seat>`, which restores it from its last snapshot).

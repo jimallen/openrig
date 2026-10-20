@@ -10,6 +10,7 @@ describe("describeRestoreStartupSource", () => {
     [{ kind: "stored", reason: "requested" }, "startup files replayed from the seat's last successful launch (--startup-from stored)"],
     [{ kind: "stored", reason: "not_in_spec" }, "startup files replayed from the seat's last successful launch (the rig's spec does not declare this seat)"],
     [{ kind: "stored", reason: "no_recorded_source" }, "startup files replayed from the seat's last successful launch (this rig records no spec source)"],
+    [{ kind: "stored", reason: "not_fresh_listed" }, "startup files replayed from the seat's last successful launch (not listed with --fresh, so the spec was not re-read)"],
     [{ kind: "snapshot", reason: "no_saved_context" }, "startup files replayed from this snapshot (the seat has no saved startup files of its own)"],
     [{ kind: "snapshot", reason: "saved_context_unreadable" }, "startup files replayed from this snapshot (the seat's saved startup files cannot be read)"],
   ] as const)("%j", (source, line) => {

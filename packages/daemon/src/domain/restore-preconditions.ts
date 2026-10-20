@@ -10,11 +10,12 @@ export function validatePreRestore(
     fsOps?: { exists(path: string): boolean };
     servicesRecord?: RigServicesRecord | null;
     freshLogicalIds?: string[];
-    /** OF-32: whether a seat this restore starts fresh replays the snapshot's copy of its startup context. Restore
-     *  decides a fresh seat's source per seat before its launch (the rig's spec as it is now, or the seat's own saved
-     *  context) and checks that source there, so a seat answered `false` is not checked against the snapshot's copy
-     *  here. Omitted: every fresh seat replays the snapshot's copy (the behaviour before OF-32 stage 3). */
-    replaysSnapshotStartup?: (node: { id: string; logicalId: string }) => boolean;
+    /** OF-32: for a seat this restore starts fresh, what it will replay when that is not the snapshot's copy.
+     *  `"resolved_at_launch"`: a seat listed with `--fresh`, whose source is decided and checked per seat before its
+     *  launch, so nothing is checked here. A context: the seat's own saved context, which it replays instead of an
+     *  older snapshot copy, checked here exactly as the snapshot's copy was. `undefined` (or the option omitted): the
+     *  snapshot's copy, as before OF-32 stage 3. */
+    freshSeatStartup?: (node: { id: string; logicalId: string }) => "resolved_at_launch" | NodeStartupSnapshot | undefined;
   },
 ): { blockers: RestoreValidationBlocker[]; warnings: string[] } {
   const blockers: RestoreValidationBlocker[] = [];
@@ -103,8 +104,7 @@ export function validatePreRestore(
       });
     }
 
-    const startupCtx = data.nodeStartupContext?.[node.id] ?? null;
-    if (!startupCtx) continue;
+    const snapshotCtx = data.nodeStartupContext?.[node.id] ?? null;
 
     // OPR.0.5.7.1 D6a — validate replay files IFF the node will CONSUME
     // replay (desk static ruling on e42420990): none => fresh path,
@@ -129,7 +129,10 @@ export function validatePreRestore(
       else if (!!sess.resumeType && sess.resumeType !== "none") consumesReplay = false;
       else consumesReplay = true;
     }
-    if (consumesReplay && opts.replaysSnapshotStartup && !opts.replaysSnapshotStartup(node)) continue;
+    const override = consumesReplay ? opts.freshSeatStartup?.(node) : undefined;
+    if (override === "resolved_at_launch") continue;
+    const startupCtx = override ?? snapshotCtx;
+    if (!startupCtx) continue;
     const findings = startupInputFindings(node, startupCtx, exists, consumesReplay);
     blockers.push(...findings.blockers);
     warnings.push(...findings.warnings);

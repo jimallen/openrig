@@ -241,20 +241,97 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     expect(eventSeat().startupSource).toEqual(specB());
   });
 
-  it("a seat whose restore policy starts it fresh re-reads too, without --fresh", async () => {
+  // Jim's scope (2026-10-20): only a seat listed with --fresh re-reads the spec. A seat the restore starts fresh for
+  // another reason (its restore policy, no history, a checkpoint rebuild) comes back on its saved setup, as at base.
+  it.each(["relaunch_fresh", "checkpoint_only"])("a seat fresh by restore policy %s, not listed with --fresh, does not re-read: its version is unchanged", async (policy) => {
     const seat = await launchRig();
-    db.prepare("UPDATE sessions SET restore_policy = 'relaunch_fresh' WHERE node_id = ?").run(seat.nodeId);
+    db.prepare("UPDATE sessions SET restore_policy = ? WHERE node_id = ?").run(policy, seat.nodeId);
     const snapshotId = await down(seat.rigId);
     retarget("bbbbbbb");
+    const reads = vi.spyOn(inst, "readSeatStartupFromSpec");
 
     const node = seatResult(await restoreFrom(snapshotId, { fresh: false }));
 
     expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
+    expect(reads).not.toHaveBeenCalled();
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(releaseOf(storedFiles(seat.nodeId))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    // The output stays honest about where its files came from.
+    expect(node.startupSource).toEqual({ kind: "stored", reason: "not_fresh_listed" });
+    expect(eventSeat().startupSource).toEqual({ kind: "stored", reason: "not_fresh_listed" });
+  });
+
+  // The reviewer's probes PA2 / PA3 (rev-of32s3-probes.test.ts): both came up at base and must come up again for a seat
+  // not listed with --fresh. Listed with --fresh, the same seat re-reads and is refused before its launch.
+  const changedProfile = () => {
+    const relB = path.join(root, "releases", "bbbbbbb", "rigs", "team");
+    fs.writeFileSync(path.join(relB, "rig.yaml"), RIG().replace("profile: default", "profile: other"));
+    fs.writeFileSync(path.join(relB, "agents", "impl", "agent.yaml"), AGENT("2.0.0").replace("  default: {}", "  default: {}\n  other: {}"));
+    retarget("bbbbbbb");
+  };
+  const linkGone = () => fs.unlinkSync(path.join(root, "library", "team"));
+  it.each([
+    ["PA2 its spec now declares another profile", changedProfile, "profile other (seat: default)"],
+    ["PA3 its recorded spec link is gone", linkGone, "no longer exists"],
+  ] as const)("%s: a policy-fresh seat still comes up on its saved setup; listed with --fresh it is refused", async (_label, damage, reason) => {
+    const seat = await launchRig();
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    const snapshotId = await down(seat.rigId);
+    damage();
+
+    const routine = seatResult(await restoreFrom(snapshotId, { fresh: false }));
+    expect(routine.status, JSON.stringify(routine)).toBe("fresh-primed");
+    expect(routine.error).toBeUndefined();
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+
+    await down(seat.rigId);
+    const listed = seatResult(await restoreFrom(snapshotId));
+    expect(listed.status).toBe("failed");
+    expect(listed.error).toContain(reason);
+    expect(listed.error).toContain("No session was started");
+  });
+
+  // The snapshot-hazard fix holds for every fresh seat, listed or not: a policy-fresh seat restored from an older
+  // snapshot comes back on its own newer saved setup, not the snapshot's copy.
+  it("the snapshot hazard is fixed for a seat not listed with --fresh too", async () => {
+    const seat = await launchRig();
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    const oldSnapshot = snapshotCapture.captureSnapshot(seat.rigId, "manual").id;
+    retarget("bbbbbbb");
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+    expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
+    await down(seat.rigId);
+    retarget("ccccccc");
+
+    const node = seatResult(await restoreFrom(oldSnapshot, { fresh: false }));
+
+    expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
     expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
+    expect(releaseOf(storedFiles(seat.nodeId))).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
-    // Review PA1: a routine restore that moves a policy-fresh seat to a new release announces it.
-    expect(node.startupSource).toEqual(specB());
-    expect(eventSeat().startupSource).toEqual(specB());
+  });
+
+  // The reviewer's PC1: at base a fresh restore reinstalled a skill entry from the saved selection. A seat not listed
+  // with --fresh still does (its saved setup is replayed as before); a --fresh seat follows `rig seat launch --fresh`.
+  it.each([[false, true], [true, false]] as const)("listed with --fresh %s: the saved skill entry is projected %s", async (listed, projectedSkill) => {
+    const seat = await launchRig({ record: false });
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    const skillDir = path.join(root, "skills-src", "probe-skill");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: probe-skill\ndescription: probe\n---\n");
+    const row = db.prepare("SELECT projection_entries_json FROM node_startup_context WHERE node_id = ?").get(seat.nodeId) as { projection_entries_json: string };
+    const entries = JSON.parse(row.projection_entries_json) as unknown[];
+    entries.push({ category: "skill", effectiveId: "probe-skill", sourceSpec: "agent", sourcePath: path.dirname(skillDir), resourcePath: "probe-skill", absolutePath: skillDir });
+    db.prepare("UPDATE node_startup_context SET projection_entries_json = ? WHERE node_id = ?").run(JSON.stringify(entries), seat.nodeId);
+    const projected: string[] = [];
+    adapter.project = async (plan) => { projected.push(...plan.entries.map((e) => `${e.category}:${e.effectiveId}`)); return { projected: [], skipped: [], failed: [] }; };
+    const snapshotId = await down(seat.rigId);
+
+    const node = seatResult(await restoreFrom(snapshotId, { fresh: listed }));
+
+    expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
+    expect(projected.includes("skill:probe-skill")).toBe(projectedSkill);
   });
 
   it("an exact resume never re-reads and keeps the saved context", async () => {
@@ -408,7 +485,8 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     fs.unlinkSync(path.join(root, "library", "team"));
     const before = { binding: sessionRegistry.getBindingForNode(seat.nodeId)?.tmuxSession ?? null,
       statuses: db.prepare("SELECT id, status FROM sessions WHERE node_id = ? ORDER BY id").all(seat.nodeId) };
-    const node = seatResult(await restoreFrom(snapshotId, { fresh: false }));
+    // Jim's scope: only a --fresh seat can be refused before its launch, so the pin restores it listed.
+    const node = seatResult(await restoreFrom(snapshotId));
     expect(node.status).toBe("failed");
     expect(node.error).toContain("Fresh start refused");
     const after = { binding: sessionRegistry.getBindingForNode(seat.nodeId)?.tmuxSession ?? null,

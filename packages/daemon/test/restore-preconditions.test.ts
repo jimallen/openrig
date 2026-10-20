@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { validatePreRestore, freshSeatReplaysSnapshotStartup } from "../src/domain/restore-preconditions.js";
 import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry } from "../src/domain/restore-check-service.js";
-import type { SnapshotData, RigServicesRecord } from "../src/domain/types.js";
+import type { SnapshotData, RigServicesRecord, NodeStartupSnapshot } from "../src/domain/types.js";
 
 function data(): SnapshotData {
   return {
@@ -160,21 +160,28 @@ describe("which fresh seats replay the snapshot's startup copy", () => {
     expect(freshSeatReplaysSnapshotStartup({ adapterAvailable, seatHasSavedContext, rigSpecReread })).toBe(expected);
   });
 
-  it.each([[true, 1], [false, 0]] as const)("a fresh seat answered %s is validated against the snapshot's copy (%s blockers)", (replays, count) => {
+  // The snapshot copy names /files/notes.md (missing); the seat's own saved context names /files/saved.md.
+  const saved = { runtime: "claude-code", projectionEntries: [], startupActions: [],
+    resolvedStartupFiles: [{ path: "saved.md", ownerRoot: "/owner", absolutePath: "/files/saved.md", required: true }] } as unknown as NodeStartupSnapshot;
+  it.each([
+    ["the snapshot's copy (undefined)", undefined, ["/files/notes.md"]],
+    ["resolved at launch (a --fresh seat)", "resolved_at_launch", []],
+    ["the seat's own saved context", saved, ["/files/saved.md"]],
+  ] as const)("a fresh seat whose source is %s is validated against exactly that", (_label, answer, missingPaths) => {
     const asked: string[] = [];
     const result = validatePreRestore(data(), {
-      fsOps: { exists: (path) => path !== "/files/notes.md" },
-      replaysSnapshotStartup: (seat) => { asked.push(seat.logicalId); return replays; },
+      fsOps: { exists: (path) => path !== "/files/notes.md" && path !== "/files/saved.md" },
+      freshSeatStartup: (seat) => { asked.push(seat.logicalId); return answer; },
     });
     expect(asked).toEqual(["seat"]);
-    expect(result.blockers.filter((b) => b.code === "required_startup_file_missing")).toHaveLength(count);
+    expect(result.blockers.filter((b) => b.code === "required_startup_file_missing").map((b) => b.path)).toEqual(missingPaths);
   });
 
   it("an exact resume is never asked: it consumes no replay, whatever the answer", () => {
     const resumed = { ...data(), sessions: [{ id: "s1", nodeId: "node-1", sessionName: "seat@test-rig", status: "running", resumeType: "claude_name", resumeToken: "tok", restorePolicy: "resume_if_possible" }],
       activeSessionIdByNode: { "node-1": "s1" } } as unknown as SnapshotData;
     const asked: string[] = [];
-    const result = validatePreRestore(resumed, { fsOps: { exists: () => false }, replaysSnapshotStartup: (seat) => { asked.push(seat.logicalId); return true; } });
+    const result = validatePreRestore(resumed, { fsOps: { exists: () => false }, freshSeatStartup: (seat) => { asked.push(seat.logicalId); return undefined; } });
     expect(asked).toEqual([]);
     expect(result.blockers.filter((b) => b.code === "required_startup_file_missing")).toHaveLength(0);
   });

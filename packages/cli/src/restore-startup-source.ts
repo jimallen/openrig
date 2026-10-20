@@ -2,7 +2,7 @@
  *  seat's restore result (`startupSource`); `rig up` and `rig start` print one line for it under the seat. */
 export type RestoreStartupSourceReport =
   | { kind: "spec"; specSource: string; specPath: string; previousSpecVersion: string | null; specVersion: string }
-  | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" }
+  | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" | "not_fresh_listed" }
   | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" };
 
 export function describeRestoreStartupSource(source: RestoreStartupSourceReport): string {
@@ -14,7 +14,8 @@ export function describeRestoreStartupSource(source: RestoreStartupSourceReport)
     return `startup files re-read from ${where}; ${version}`;
   }
   if (source.kind === "stored") {
-    const why = source.reason === "requested" ? "--startup-from stored"
+    const why = source.reason === "not_fresh_listed" ? "not listed with --fresh, so the spec was not re-read"
+      : source.reason === "requested" ? "--startup-from stored"
       : source.reason === "not_in_spec" ? "the rig's spec does not declare this seat"
         : "this rig records no spec source";
     return `startup files replayed from the seat's last successful launch (${why})`;

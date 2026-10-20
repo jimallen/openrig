@@ -123,7 +123,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
     .option("--existing", "Treat <source> as an existing rig name; bypass library-spec name resolution")
     .option("--on-existing <choice>", "For a project rig whose project already has a stopped rig: resume (bring that rig back) or fresh (archive it and start a new one). Without it, rig up asks on a terminal")
     .option("--fresh <seats...>", "Deliberately fresh-prime the named seats (logical ids) instead of resuming their original sessions (operation B; reported as fresh-primed)")
-    .option("--startup-from <source>", "With an existing rig: where the seats this restore starts fresh (not resumed) take their startup files from: spec (default; the rig's spec as it is now) or stored (the files saved at each seat's last successful launch). A resumed seat keeps its saved files either way")
+    .option("--startup-from <source>", "With an existing rig: where the seats you list with --fresh (and any seat you accept a fresh start for) take their startup files from: spec (default; the rig's spec as it is now) or stored (the files saved at the seat's last successful launch). Every other seat comes back on its saved files")
     .option("--json", "JSON output for agents")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
     .action(async (source: string, opts: { nonInterruptive?: boolean; plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string; preset?: string; seat?: string[]; onExisting?: string; startupFrom?: string }) => {

@@ -470,8 +470,9 @@ export interface RestoreValidationBlocker {
 export type RestoreStartupSource =
   /** Re-read from the rig's recorded spec as it is now. The seat's agent spec version before this launch, and the one read. */
   | { kind: "spec"; specSource: string; specPath: string; previousSpecVersion: string | null; specVersion: string }
-  /** The context saved by the seat's last successful launch. */
-  | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" }
+  /** The context saved by the seat's last successful launch. `not_fresh_listed`: the restore started the seat fresh
+   *  without its being listed with --fresh, so it comes back on its saved setup and the spec is not re-read. */
+  | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" | "not_fresh_listed" }
   /** This snapshot's copy: the seat has no saved context of its own, or it cannot be read. */
   | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" };
 

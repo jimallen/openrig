@@ -13,6 +13,20 @@ import type { PersistedEvent } from "./types.js";
 import type { CheckpointStore } from "./checkpoint-store.js";
 import type { Snapshot, SnapshotData } from "./types.js";
 import { RigNotFoundError } from "./errors.js";
+
+/** A node's saved startup context (node_startup_context) exactly as a snapshot copies it; null when it has none.
+ *  Throws when a column is not JSON. OF-32: restore reads a seat's own saved context through this too, so a seat it
+ *  starts fresh replays its saved setup in the same shape a snapshot would have held it. */
+export function readNodeStartupSnapshot(db: Database.Database, nodeId: string): import("./types.js").NodeStartupSnapshot | null {
+  const ctx = db.prepare("SELECT * FROM node_startup_context WHERE node_id = ?")
+    .get(nodeId) as { projection_entries_json: string; resolved_files_json: string; startup_actions_json: string; runtime: string } | undefined;
+  return ctx ? {
+    projectionEntries: JSON.parse(ctx.projection_entries_json),
+    resolvedStartupFiles: JSON.parse(ctx.resolved_files_json),
+    startupActions: JSON.parse(ctx.startup_actions_json),
+    runtime: ctx.runtime,
+  } : null;
+}
 import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
 
 interface SnapshotCaptureDeps {
@@ -103,14 +117,7 @@ export class SnapshotCapture {
 
     const nodeStartupContext: Record<string, import("./types.js").NodeStartupSnapshot | null> = {};
     for (const node of rig.nodes) {
-      const ctx = this.db.prepare("SELECT * FROM node_startup_context WHERE node_id = ?")
-        .get(node.id) as { projection_entries_json: string; resolved_files_json: string; startup_actions_json: string; runtime: string } | undefined;
-      nodeStartupContext[node.id] = ctx ? {
-        projectionEntries: JSON.parse(ctx.projection_entries_json),
-        resolvedStartupFiles: JSON.parse(ctx.resolved_files_json),
-        startupActions: JSON.parse(ctx.startup_actions_json),
-        runtime: ctx.runtime,
-      } : null;
+      nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
     }
 
     // 4b. Get env receipt from services record if services exist

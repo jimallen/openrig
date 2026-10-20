@@ -278,8 +278,9 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
   });
 
   it.each([
-    ["records a spec source", "/library/team/rig.yaml", "Seats it starts fresh (not resumed) re-read this rig's spec (/library/team/rig.yaml) as it is now; add --startup-from stored"],
-    ["records no spec source", null, "This rig records no spec source, so seats it starts fresh replay the startup files saved at their last successful launch."],
+    // Jim's scope (2026-10-20): `rig up --existing` re-reads only a seat listed with --fresh; the advice says how.
+    ["records a spec source", "/library/team/rig.yaml", "Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; to start a seat on this rig's spec (/library/team/rig.yaml) as it is now instead, list it: rig up partly --existing --fresh <seat>."],
+    ["records no spec source", null, "Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; this rig records no spec source to re-read."],
   ] as const)("rig up --existing advice for a rig that %s says where its fresh seats' startup files come from", async (_label, source, text) => {
     const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "absent", "down@partly": "absent" }).adapter, { up: "exited", down: "exited" });
     if (source) rigRepo.setRigSpecSource(rigId, source);
@@ -311,6 +312,28 @@ describe("restore-check advice follows tmux liveness (OF-29)", () => {
     const check = (await restoreCheck(app, rigName)).checks.find((c: { check: string }) => c.check === `rig.${rigName}.restore-preconditions`);
     expect(check.status, check.evidence).toBe(status);
     if (status === "red") expect(check.evidence).toContain(missing);
+  });
+
+  // Jim's scope: a seat `rig up --existing` starts fresh without --fresh replays its own saved setup, so the prediction
+  // checks that setup (here: it names a file that is gone, while the snapshot's copy names none) as restore does.
+  it("restore-preconditions checks a fresh seat's own saved setup, which it replays, not the snapshot's copy", async () => {
+    const { app, rigName, rigId } = build(tmuxWith({ "up@partly": "absent", "down@partly": "absent" }).adapter, { up: "exited", down: "exited" });
+    const down = rigRepo.getRig(rigId)!.nodes.find((n) => n.logicalId === "down")!;
+    db.prepare("UPDATE sessions SET restore_policy = 'relaunch_fresh' WHERE node_id = ?").run(down.id);
+    const missing = "/tmp/of32-gone-release/saved-role.md";
+    db.prepare("UPDATE node_startup_context SET resolved_files_json = ? WHERE node_id = ?").run(JSON.stringify([
+      { path: "saved-role.md", absolutePath: missing, ownerRoot: "/tmp/of32-gone-release", deliveryHint: "guidance_merge", required: true, appliesOn: ["fresh_start", "restore"] },
+    ]), down.id);
+    const full = rigRepo.getRig(rigId)!;
+    const sessions = sessionRegistry.getSessionsForRig(rigId);
+    snapshotRepo.createSnapshot(rigId, "auto-pre-down", {
+      rig: full.rig, nodes: full.nodes, edges: full.edges, sessions, checkpoints: {},
+      activeSessionIdByNode: Object.fromEntries(sessions.map((s) => [s.nodeId, s.id])),
+      nodeStartupContext: { [down.id]: { projectionEntries: [], runtime: "terminal", startupActions: [], resolvedStartupFiles: [] } },
+    });
+    const check = (await restoreCheck(app, rigName)).checks.find((c: { check: string }) => c.check === `rig.${rigName}.restore-preconditions`);
+    expect(check.status, check.evidence).toBe("red");
+    expect(check.evidence).toContain(missing);
   });
 
   // Review N3: restore finds a seat by logical id and reads the LIVE node's saved context; a seat removed and grown
