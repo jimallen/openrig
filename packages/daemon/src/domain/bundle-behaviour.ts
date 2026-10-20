@@ -305,6 +305,14 @@ export function describeBundleBehaviour(input: DescribeBundleInput): BundleBehav
           if (raw) startup(normalizeAgentSpec({ name: "overlay", version: "1", startup: raw }).startup, rigRoot, [{ path: rigPath, field }]);
         }
         if (member.session_source || member.starter_ref) unknown(seat, "Prior conversation, starter and rebuild inputs are resolved at launch.", sourceRefs, seat);
+        // Declared Codex MCP servers: a program Codex starts for the seat, on the installing host, at
+        // every launch of a seat instance that an operator switched on (`rig seat set-mcp`). Off by default.
+        for (const [name, server] of Object.entries(object(member.mcp_servers))) {
+          const command = text(object(server).command);
+          view.alsoRuns.push({ seat, kind: "codex_mcp_server", pathOrRef: command ?? name, resolution: "host_at_launch",
+            trigger: `Codex MCP server "${name}"; off by default, started at each launch of a seat instance switched on with rig seat set-mcp`,
+            sourceRefs: [{ path: rigPath, field: `pods.${pod.id}.members.${member.id}.mcp_servers.${name}` }] });
+        }
       }
     }
     if (rig.services) {

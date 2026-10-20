@@ -1116,6 +1116,9 @@ export interface RigSpecPodMember {
   profile: string;
   runtime: string;
   codexConfigProfile?: string;
+  /** Codex MCP servers this member DECLARES (codex only). Off for every seat instance until one is
+   *  switched on with `rig seat set-mcp`; see codex-mcp-servers.ts for the accepted shape. */
+  mcpServers?: import("./codex-mcp-servers.js").CodexMcpServers;
   model?: string;
   effort?: string;
   /**
@@ -1405,6 +1408,8 @@ export interface ExpansionPodFragment {
     model?: string;
     effort?: string;
     codexConfigProfile?: unknown;
+    /** `mcp_servers`: carried RAW so presence is never erased; expansion refuses it (see rig-expansion-service). */
+    mcpServers?: unknown;
     /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF — threaded through the
      *  expansion ingress exactly like role (never silently dropped). Typed UNKNOWN
      *  (R2 at 4ac243c3): the ingress preserves RAW presence — including null and other

@@ -139,6 +139,7 @@ import { resolveNodeConfig, type ResolutionContext } from "./profile-resolver.js
 import { getOpenRigInstallCwdError, resolveAuthoredCwd, resolveLaunchCwd } from "./cwd-resolution.js";
 import nodePath from "node:path";
 import { checkCultureFile } from "./culture-file-guard.js";
+import { mcpServerPlacementProblem } from "./codex-mcp-servers.js";
 import { validateClaudeActivityHookDelivery, CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import {
   resolvePermissionPolicyAttachment,
@@ -406,6 +407,20 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
       const cwdError = getOpenRigInstallCwdError(configResult.config.cwd, preflightCtx.cwdOverride);
       if (cwdError) {
         errors.push(`${pod.id}.${member.id}: ${cwdError}`);
+      }
+
+      // Declared Codex MCP servers (off until one seat instance is switched on). The schema already
+      // refused a malformed block; here the executable's PLACE is judged: one inside the seat's
+      // directory or the spec's own directory is refused. A missing binary is only a warning, because
+      // nothing runs it until `rig seat set-mcp`, which (like every launch) requires it to exist.
+      for (const [name, server] of Object.entries(member.mcpServers ?? {})) {
+        const placement = mcpServerPlacementProblem(server, { seatCwd: configResult.config.cwd, specDir: preflightCtx.rigRoot }, { requireExecutable: false });
+        if (placement) {
+          errors.push(`${pod.id}.${member.id}: mcp_servers.${name}: ${placement}`);
+          continue;
+        }
+        const missing = mcpServerPlacementProblem(server, {}, { requireExecutable: true });
+        if (missing) warnings.push(`${pod.id}.${member.id}: mcp_servers.${name}: ${missing}; it is declared but no seat can switch it on until it exists`);
       }
     }
   }

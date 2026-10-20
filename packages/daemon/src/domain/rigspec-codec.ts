@@ -1,4 +1,5 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { serializeMcpServer } from "./codex-mcp-servers.js";
 import type {
   RigSpec,
   LegacyRigSpec,
@@ -176,6 +177,11 @@ export class RigSpecCodec {
         //  same `ref.value` slot — the YAML serializer handles array emission.)
         if (m.starterRef) {
           member["starter_ref"] = { name: m.starterRef.name };
+        }
+        // Parse carries mcp_servers (schema normalize), so serialize must too: a bundle or draft
+        // re-serialized from the typed spec would otherwise erase the declaration silently.
+        if (m.mcpServers) {
+          member["mcp_servers"] = Object.fromEntries(Object.entries(m.mcpServers).map(([name, d]) => [name, serializeMcpServer(d)]));
         }
         return member;
       });

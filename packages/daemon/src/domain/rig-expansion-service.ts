@@ -41,6 +41,13 @@ export class RigExpansionService {
     const pod = request.pod;
     const specObject = this.buildExpansionSpecObject(rig.rig.name, pod, request.crossPodEdges);
 
+    // A declared Codex MCP server is read by `rig seat set-mcp` from the rig's recorded spec file, which an
+    // expansion fragment never reaches; accepting it here would record a declaration nothing can use.
+    const withMcp = pod.members.filter((m) => "mcpServers" in m && m.mcpServers !== undefined).map((m) => m.id);
+    if (withMcp.length > 0) {
+      return { ok: false, code: "validation_failed", error: `mcp_servers cannot be added by expansion (member ${withMcp.join(", ")}): declare the server in the rig's spec file, which rig seat set-mcp reads` };
+    }
+
     // 3. Materialize topology (suppress rig.imported event)
     const materializeResult = await this.deps.podInstantiator.materializeStructured(
       specObject,
