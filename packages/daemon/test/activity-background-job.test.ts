@@ -430,3 +430,51 @@ describe("OF-34 node detail: backgroundJobActivity", () => {
     expect(out[0]!.agentActivity).toMatchObject({ state: "running", reason: "background_job" });
   });
 });
+
+// ---- FP-b / FP-c (OF-34 review): the stale-footer family, pinned as KNOWN false positives ----
+// detectBackgroundJobs reads the bottom-most mode footer inside the last 12 non-blank lines. If that
+// footer is a stale chip footer and nothing newer repainted below it (no live footer), the chip is read
+// as a live job, so a Stop-hook idle is lifted to running/background_job until the next repaint.
+// FP-c is the OF-34b widening of FP-b: a PADDED stale footer (`· 1 shell … /rc`) now counts too.
+//
+// Investigated 2026-10-19 (fpc-stale-footer-job): no position-based discriminator separates live from
+// stale in the fixtures available, so the behaviour is deliberately NOT changed. The candidates:
+//   (A) "the footer must be the last non-blank line": breaks the LIVE rows below, where Claude's
+//       noninteractive warning rows (auto-update, tmux focus-events, weekly limit) render BELOW the
+//       footer (structure retained from the Claude 2.1.220 captures in claude-warning-footer-readiness).
+//   (B) "a ─── rule must sit directly above the footer": the stale footer has its rule too.
+//   (C) "no composer rule or ❯ line below the footer": the stale footers below have none either, so it
+//       changes nothing for them and only guards a case (a newer composer) that the bottom-most-wins
+//       rule already handles.
+// The stale tails and the warning trailers are MODELLED (no native capture of a stale-footer-only pane
+// exists in this repository; live eztrack panes were not captured for this bead). When a real
+// discriminator is found, the two FALSE-POSITIVE rows must be flipped to toBeNull, not deleted.
+describe("OF-34 FP-b/FP-c: a stale chip footer with no live footer below it is read as a job (known false positive)", () => {
+  const PADDED = `  ⏵⏵ bypass permissions on · 1 shell${" ".repeat(165)}/rc`;
+  const UNPADDED = "  ⏵⏵ bypass permissions on · 1 shell";
+  const SPLASH = ["", "  Claude Code v2.1.289", "  ~/work/openrig"]; // a footer-less redraw below the old footer
+  const stale = (footer: string) => [claudePane({ footer }), ...SPLASH].join("\n");
+  const WARNINGS = [
+    "  ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor",
+    "  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…",
+  ];
+  const live = (footer: string) => [claudePane({ footer }), ...WARNINGS].join("\n");
+
+  it("KNOWN FALSE POSITIVE (FP-b): an unpadded stale footer above a footer-less redraw reads as a job", () => {
+    expect(detectBackgroundJobs(stale(UNPADDED))).toEqual({ count: 1, evidence: "1 shell" });
+  });
+
+  it("KNOWN FALSE POSITIVE (FP-c): a padded stale footer above a footer-less redraw reads as a job", () => {
+    expect(detectBackgroundJobs(stale(PADDED))).toEqual({ count: 1, evidence: "1 shell" });
+  });
+
+  it("why 'last non-blank line' is not the discriminator: a LIVE chip footer with warning rows rendered below it still counts", () => {
+    expect(detectBackgroundJobs(live(UNPADDED))).toEqual({ count: 1, evidence: "1 shell" });
+    expect(detectBackgroundJobs(live(PADDED))).toEqual({ count: 1, evidence: "1 shell" });
+  });
+
+  it("a newer chipless footer below a stale padded one still wins (null): the one stale shape that is already handled", () => {
+    const repaint = `${claudePane({ footer: PADDED.trimStart() })}\n${claudePane({ footer: "⏵⏵ bypass permissions on (shift+tab to cycle)" })}`;
+    expect(detectBackgroundJobs(repaint)).toBeNull();
+  });
+});
