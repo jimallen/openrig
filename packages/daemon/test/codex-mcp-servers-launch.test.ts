@@ -251,3 +251,21 @@ describe("placement: content another principal controls never chooses the progra
     expect(r.commands[0]).toContain(`mcp_servers.lsp={command=${JSON.stringify(command)}`);
   });
 });
+
+// Jim, 2026-10-20: a server on a seat that is not full_bypass is allowed, and every launch that renders it says so.
+describe("unsandboxed-server warning on every launch path", () => {
+  for (const kind of kinds) {
+    it(`${kind}: logged once under the floor, never under full_bypass`, async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await fixture(kind, ON, { posture: "floor" }).run();
+        const floor = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("runs outside Codex's sandbox"));
+        expect(floor).toHaveLength(1);
+        expect(floor[0]).toContain(`Codex MCP server "lsp" runs outside Codex's sandbox with your full user rights (this launch's sandbox is workspace-write, not danger-full-access)`);
+        warn.mockClear();
+        await fixture(kind, ON, { posture: "full_bypass" }).run();
+        expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("runs outside Codex's sandbox"))).toEqual([]);
+      } finally { warn.mockRestore(); }
+    });
+  }
+});

@@ -680,6 +680,7 @@ Examples:
         const on = (data["switchedOn"] as string[] | undefined) ?? [];
         console.log(`Switched on for this seat: ${on.length ? on.join(", ") : "none"}.`);
         console.log(String(data["effect"]));
+        if (data["warning"]) console.log(`Warning: ${String(data["warning"])}`);
       });
     });
 

@@ -267,6 +267,16 @@ describe("rig seat set-mcp", () => {
     expect(logs.join("\n")).toContain("Switched on for this seat: lsp.");
   });
 
+  it("prints the daemon's unsandboxed-server warning", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const warning = 'Codex MCP server "lsp" runs outside Codex\'s sandbox with your full user rights (this seat\'s launch posture is floor, not full_bypass); it can do what this seat\'s own commands cannot.';
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps({ status: 200, data: { ok: true, seat, server: "lsp", from: "off", to: "on", changed: true, declaredIn: "/r.yaml", switchedOn: ["lsp"], effect: "Saved.", warning } }, calls))
+        .parseAsync(["node", "rig", "seat", "set-mcp", "verify-ops@eztrack", "lsp", "on", "--reason", "x", "--operator", "o@h"]);
+    });
+    expect(logs).toContain(`Warning: ${warning}`);
+  });
+
   it("refuses a state other than on or off before any request", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const { errors, exitCode } = await captureLogs(async () => {

@@ -277,11 +277,14 @@ export function prepareSeatMcpLaunchArgs(
   selection: SeatMcpSelection | undefined,
   seatCwd: string,
   quote: (value: string) => string,
-): { ok: true; arg: string } | { ok: false; error: string } {
-  if (!selection) return { ok: true, arg: "" };
+  /** The sandbox this launch actually passes (observed from its posture flags); null when a profile decides. */
+  sandbox: string | null,
+): { ok: true; arg: string; warnings: string[] } | { ok: false; error: string } {
+  if (!selection) return { ok: true, arg: "", warnings: [] };
   if (!selection.ok) return { ok: false, error: `Codex MCP servers for this seat cannot be read: ${selection.error}` };
   const servers = [...selection.servers].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   let arg = "";
+  const warnings: string[] = [];
   for (const server of servers) {
     const remedy = `turn it off with: rig seat set-mcp <seat> ${server.name} off`;
     const shape = validateMcpServersBlock({ [server.name]: serializeMcpServer(server.declaration) }, "codex", "seat");
@@ -298,6 +301,14 @@ export function prepareSeatMcpLaunchArgs(
       return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: its command ${server.declaration.command} now resolves to a binary whose sha256 (${now ?? "unreadable"}) differs from the one switched on (${server.commandSha256}); ${again}` };
     }
     arg += ` -c ${quote(renderCodexMcpOverride(server))}`;
+    // Measured (design report M9, review N1): Codex does not sandbox MCP server processes. Jim's rule:
+    // allow on a seat that is not full_bypass, and say so at every launch.
+    if (sandbox !== "danger-full-access") warnings.push(unsandboxedServerWarning(server.name, `this launch's sandbox is ${sandbox ?? "decided by a Codex profile"}, not danger-full-access`));
   }
-  return { ok: true, arg };
+  return { ok: true, arg, warnings };
+}
+
+/** The warning for a server that will run with the user's full rights on a seat whose own commands are sandboxed. */
+export function unsandboxedServerWarning(name: string, why: string): string {
+  return `Codex MCP server "${name}" runs outside Codex's sandbox with your full user rights (${why}); it can do what this seat's own commands cannot.`;
 }

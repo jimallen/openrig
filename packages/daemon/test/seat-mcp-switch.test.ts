@@ -172,6 +172,44 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     return { ...result, commands };
   }
 
+  describe("a seat that is not full_bypass: allowed, with a warning (Jim, 2026-10-20)", () => {
+    const fullBypass = (rigId: string) => rigRepo.setRigPolicyProvenance(rigId,
+      { origin: "builtin", resolvedTarget: "policies/builtin/yolo.policy.md", declaringDir: null, launchPosture: "full_bypass" });
+    const WARN = 'Codex MCP server "lsp" runs outside Codex\'s sandbox with your full user rights';
+
+    it("switch-on on a floor seat succeeds, says so, and the audit event records the warning", async () => {
+      const s = seat("eztrack");
+      const r = await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      const expected = `${WARN} (this seat's launch posture is floor, not full_bypass); it can do what this seat's own commands cannot.`;
+      expect(r).toMatchObject({ ok: true, to: "on", warning: expected });
+      expect(events()[0]).toMatchObject({ warning: expected });
+    });
+
+    it("switch-on on a full_bypass seat carries no warning", async () => {
+      const s = seat("eztrack");
+      fullBypass(s.rig.id);
+      const r = await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      expect(r.ok && "warning" in r).toBe(false);
+      expect(events()[0]).toMatchObject({ warning: null });
+    });
+
+    it("every launch that renders it on a sandboxed posture logs the warning; a full_bypass launch does not", async () => {
+      const s = seat("eztrack");
+      await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const floor = await launchFresh(s, "floor");
+        expect(floor.ok).toBe(true);
+        expect(floor.commands[0]).toContain("mcp_servers.lsp=");
+        expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes(WARN)))
+          .toEqual([`[openrig] ${s.ref}: ${WARN} (this launch's sandbox is workspace-write, not danger-full-access); it can do what this seat's own commands cannot.`]);
+        warn.mockClear();
+        await launchFresh(s, "full_bypass");
+        expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes(WARN))).toEqual([]);
+      } finally { warn.mockRestore(); }
+    });
+  });
+
   describe("the binary is pinned at switch-on (Jim, 2026-10-20)", () => {
     const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
     const AGAIN = 'switch it on again to accept the new binary (rig seat set-mcp <seat> lsp on --reason ...)';

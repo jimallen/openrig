@@ -505,8 +505,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const appliedLaunch = observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg(this.runtime, binding);
     // Per-seat Codex MCP servers: the seat's own saved choice, decided per launch like the posture.
-    const mcp = prepareSeatMcpLaunchArgs(this.readSeatMcpServers?.(binding.nodeId), binding.cwd, shellQuote);
+    const mcp = prepareSeatMcpLaunchArgs(this.readSeatMcpServers?.(binding.nodeId), binding.cwd, shellQuote,
+      appliedLaunch.state === "observed" ? appliedLaunch.value : null);
     if (!mcp.ok) return { ok: false, error: mcp.error };
+    for (const warning of mcp.warnings) console.warn(`[openrig] ${name}: ${warning}`);
     const mcpArg = mcp.arg;
 
     if (running) {

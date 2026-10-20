@@ -1,5 +1,5 @@
 import { readDeclaredMcpServer, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
-import { MCP_SERVER_NAME, isPrototypeName } from "./codex-mcp-servers.js";
+import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./codex-mcp-servers.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -372,7 +372,7 @@ export class SeatLifecycleService {
    * this runs for that seat.
    */
   async setMcpServer(input: { seatRef: string; server: string; state: "on" | "off"; reason: string; actor: string }): Promise<
-    | { ok: true; seat: SeatDescriptor; server: string; from: "on" | "off"; to: "on" | "off"; changed: boolean; declaredIn: string | null; switchedOn: string[]; effect: string }
+    | { ok: true; seat: SeatDescriptor; server: string; from: "on" | "off"; to: "on" | "off"; changed: boolean; declaredIn: string | null; switchedOn: string[]; effect: string; warning?: string }
     | SeatRefusal
   > {
     const required = this.requireReason(input.reason);
@@ -401,6 +401,21 @@ export class SeatLifecycleService {
       if (!read.ok) return { ok: false, code: read.code, message: read.message };
       entry = read.entry;
     }
+    // Jim's rule (2026-10-20): a seat that is not full_bypass may switch a server on, with a warning, because
+    // Codex does not sandbox MCP servers. Posture is resolved as an in-place restart resolves it.
+    let warning: string | null = null;
+    if (input.state === "on") {
+      let posture: string;
+      try {
+        posture = new NativePermissionStore(this.db).launchOverride(seat.nodeId, "codex").launchPosture
+          ?? this.rigRepo.getNodePolicyProvenance(seat.nodeId)?.launchPosture
+          ?? this.rigRepo.getRigPolicyProvenance(seat.rigId)?.launchPosture
+          ?? "floor";
+      } catch {
+        posture = "unresolved";
+      }
+      if (posture !== "full_bypass") warning = unsandboxedServerWarning(input.server, `this seat's launch posture is ${posture}, not full_bypass`);
+    }
     // `on` always rewrites the snapshot (it re-reads the spec as it is now); `off` on an off server is a no-op.
     const changed = input.state === "on" || from === "on";
     if (changed) {
@@ -413,7 +428,7 @@ export class SeatLifecycleService {
           type: "node.mcp_server_changed", rigId: seat.rigId, nodeId: seat.nodeId, logicalId: seat.logicalId,
           server: input.server, from, to: input.state, reason: input.reason.trim(), actor: input.actor.trim(),
           declaredIn: entry?.declaredIn ?? null, declarationSha256: entry ? declarationSha256(entry.declaration) : null,
-          commandSha256: entry?.commandSha256 ?? null,
+          commandSha256: entry?.commandSha256 ?? null, warning,
         });
       })();
       if (persisted) this.eventBus.notifySubscribers(persisted);
@@ -423,6 +438,7 @@ export class SeatLifecycleService {
       ok: true, seat, server: input.server, from, to: input.state, changed, declaredIn: entry?.declaredIn ?? null,
       switchedOn: switchedOnNames(this.db, seat.nodeId) ?? [],
       effect: `Saved for this seat's next managed launch, resume, restore or restart; the running process is unchanged and nothing was restarted. An in-place restart reports the change as drift (config mcp_servers.${input.server}).`,
+      ...(warning ? { warning } : {}),
     };
   }
 

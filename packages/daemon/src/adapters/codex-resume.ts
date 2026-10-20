@@ -104,8 +104,9 @@ export class CodexResumeAdapter {
     const appliedLaunch = observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg("codex", { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture });
     const networkArg = await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
-    const mcp = prepareSeatMcpLaunchArgs(mcpServers, cwd, shellQuote);
+    const mcp = prepareSeatMcpLaunchArgs(mcpServers, cwd, shellQuote, appliedLaunch.state === "observed" ? appliedLaunch.value : null);
     if (!mcp.ok) return { ok: false, code: "resume_failed", message: mcp.error };
+    for (const warning of mcp.warnings) console.warn(`[openrig] ${tmuxSessionName}: ${warning}`);
     const workspaceArg = teamPermissionDefault && !codexConfigProfile?.trim()
       && appliedLaunch.state === "observed" && appliedLaunch.value === "workspace-write"
       ? codexTeamWorkspaceArg(this.options.prepareTeamWorkspace, tmuxSessionName) : "";
