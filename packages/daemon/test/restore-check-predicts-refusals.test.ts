@@ -19,7 +19,7 @@ import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusa
 import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
 import type { StartupFrom } from "../src/domain/seat-startup-source.js";
 
-type Outcome = "ok" | "refused-before-launch" | "failed-after-launch" | "restore-ended";
+type Outcome = "ok" | "seat-refused" | "pre-restore-refused" | "failed-after-launch" | "restore-ended";
 
 describe("restore-check and restore agree, seat state by seat state", () => {
   let h: RestoreHarness;
@@ -59,11 +59,11 @@ describe("restore-check and restore agree, seat state by seat state", () => {
         ...(opts.listed ? { freshLogicalIds: [SEAT] } : {}),
         ...(opts.startupFrom ? { startupFrom: opts.startupFrom } : {}),
       } as never);
-      if (!out.ok) return { outcome: out.code === "restore_error" ? "restore-ended" : "refused-before-launch", refusal: null };
+      if (!out.ok) return { outcome: out.code === "restore_error" ? "restore-ended" : "pre-restore-refused", refusal: null };
       const node = out.result.nodes.find((n) => n.logicalId === SEAT)!;
       if (node.status !== "failed") return { outcome: "ok", refusal: null };
       const refused = /^Fresh start refused: (.*) No session was started\.$/s.exec(node.error ?? "");
-      return refused ? { outcome: "refused-before-launch", refusal: refused[1]! } : { outcome: "failed-after-launch", refusal: null };
+      return refused ? { outcome: "seat-refused", refusal: refused[1]! } : { outcome: "failed-after-launch", refusal: null };
     } catch {
       return { outcome: "restore-ended", refusal: null };
     }
@@ -73,38 +73,40 @@ describe("restore-check and restore agree, seat state by seat state", () => {
   interface ListedRow { name: string; startupFrom?: StartupFrom; record?: boolean; policyFresh?: boolean; noAdapters?: boolean; prepare(snapshotId: string, seat: { rigId: string; nodeId: string }): void; expected: Outcome }
   const LISTED: ListedRow[] = [
     { name: "L1 clean: spec re-read gives the seat its files", prepare: () => undefined, expected: "ok" },
-    { name: "L2 the recorded spec link is gone", prepare: () => fs.unlinkSync(path.join(h.root, "library", "team")), expected: "refused-before-launch" },
+    { name: "L2 the recorded spec link is gone", prepare: () => fs.unlinkSync(path.join(h.root, "library", "team")), expected: "seat-refused" },
     {
       name: "L3 the spec now declares another profile", prepare: () => {
         const relB = path.join(h.root, "releases", "bbbbbbb", "rigs", "team");
         fs.writeFileSync(path.join(relB, "rig.yaml"), fs.readFileSync(path.join(relB, "rig.yaml"), "utf-8").replace("profile: default", "profile: other"));
         h.retarget("bbbbbbb");
-      }, expected: "refused-before-launch",
+      }, expected: "seat-refused",
     },
     {
       name: "L4 the spec's required startup file is gone", prepare: () => {
         h.retarget("bbbbbbb");
         fs.rmSync(path.join(h.root, "releases", "bbbbbbb", "rigs", "team", "agents", "impl", "guidance", "role.md"));
-      }, expected: "refused-before-launch",
+      }, expected: "seat-refused",
     },
     { name: "L5 spec link gone but --startup-from stored", startupFrom: "stored", prepare: () => fs.unlinkSync(path.join(h.root, "library", "team")), expected: "ok" },
-    { name: "L6 stored, and the saved context's required file is gone", startupFrom: "stored", prepare: (_s, seat) => setCol(seat.nodeId, "resolved_files_json", JSON.stringify(ownFiles(seat.nodeId).map((f) => ({ ...f, absolutePath: gone() })))), expected: "refused-before-launch" },
+    { name: "L6 stored, and the saved context's required file is gone", startupFrom: "stored", prepare: (_s, seat) => setCol(seat.nodeId, "resolved_files_json", JSON.stringify(ownFiles(seat.nodeId).map((f) => ({ ...f, absolutePath: gone() })))), expected: "seat-refused" },
     { name: "L7 stored, saved context unreadable, snapshot copy fine: falls back to the copy", startupFrom: "stored", prepare: (_s, seat) => setCol(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }])), expected: "ok" },
     {
       name: "L8 stored, saved context unreadable, snapshot copy's required file gone: refused from the copy", startupFrom: "stored",
-      prepare: (snapshotId, seat) => { setCol(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }])); breakSnapshotCopy(snapshotId); }, expected: "refused-before-launch",
+      prepare: (snapshotId, seat) => { setCol(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }])); breakSnapshotCopy(snapshotId); }, expected: "seat-refused",
     },
-    { name: "L9 no recorded spec source, saved context's required file gone", record: false, prepare: (_s, seat) => setCol(seat.nodeId, "resolved_files_json", JSON.stringify(ownFiles(seat.nodeId).map((f) => ({ ...f, absolutePath: gone() })))), expected: "refused-before-launch" },
+    { name: "L9 no recorded spec source, saved context's required file gone", record: false, prepare: (_s, seat) => setCol(seat.nodeId, "resolved_files_json", JSON.stringify(ownFiles(seat.nodeId).map((f) => ({ ...f, absolutePath: gone() })))), expected: "seat-refused" },
     { name: "L10 no recorded spec source, saved context fine", record: false, prepare: () => undefined, expected: "ok" },
-    { name: "L11 policy-fresh seat, spec link gone, listed", policyFresh: true, prepare: () => fs.unlinkSync(path.join(h.root, "library", "team")), expected: "refused-before-launch" },
+    { name: "L11 policy-fresh seat, spec link gone, listed", policyFresh: true, prepare: () => fs.unlinkSync(path.join(h.root, "library", "team")), expected: "seat-refused" },
     // The seat's own saved context is what a listed seat without a spec re-read replays; the snapshot's copy is not
     // checked at all (its source is decided at launch), so a broken copy must not turn the check red.
     { name: "L12 no recorded spec source, snapshot copy's required file gone, saved context fine", record: false, prepare: (snapshotId) => breakSnapshotCopy(snapshotId), expected: "ok" },
     // The reverse: with no saved context and no spec re-read, the snapshot's copy IS what the seat replays, so pre-restore
     // validation checks it for a listed seat even though the seat would otherwise resume.
-    { name: "L13 no recorded spec source, no saved context, snapshot copy's required file gone", record: false, prepare: (snapshotId, seat) => { breakSnapshotCopy(snapshotId); h.db.prepare("DELETE FROM node_startup_context WHERE node_id = ?").run(seat.nodeId); }, expected: "refused-before-launch" },
+    { name: "L13 no recorded spec source, no saved context, snapshot copy's required file gone", record: false, prepare: (snapshotId, seat) => { breakSnapshotCopy(snapshotId); h.db.prepare("DELETE FROM node_startup_context WHERE node_id = ?").run(seat.nodeId); }, expected: "pre-restore-refused" },
     // No adapter for the seat's runtime: restore decides nothing for a listed seat, so the check must predict nothing.
     { name: "L14 no runtime adapter: restore decides nothing, the spec link being gone is not a refusal", noAdapters: true, prepare: () => fs.unlinkSync(path.join(h.root, "library", "team")), expected: "ok" },
+    // Listed, and no adapter: restore still validates the snapshot's copy for a listed seat before anything starts.
+    { name: "L15 no runtime adapter, snapshot copy's required file gone: pre-restore validation refuses the restore", noAdapters: true, prepare: (snapshotId) => breakSnapshotCopy(snapshotId), expected: "pre-restore-refused" },
   ];
 
   it.each(LISTED.map((row) => [row.name, row] as const))("listed seat: %s", async (_name, row) => {
@@ -233,7 +235,7 @@ describe("restore-check and restore agree, seat state by seat state", () => {
     const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(h.db, rig, snapshot), [SEAT], Date.now(), readFreshOccupantRelations(h.db, rig.rig.id), refusals);
     const restore = await runRestore(snapshotId, { listed: true });
 
-    expect(restore.outcome).toBe("refused-before-launch");
+    expect(restore.outcome).toBe("seat-refused");
     const planned = plan.nodes.find((n) => n.logicalId === SEAT)!;
     expect(planned.wouldRefuse).toBe(restore.refusal);
   });
