@@ -17,7 +17,10 @@ export interface DaemonClientOptions {
 
 export class StartupRequestError extends Error {
   constructor(readonly status: number, readonly result: Record<string, unknown>) {
+    // OF-38: a refusal's `guidance` is the operator's next step (for a refused fresh re-read, the CLI command that starts
+    // the seat on its saved startup files); the notice shows it with the message, as it shows the warnings.
     super([String(result.message ?? result.error ?? `Startup request returned HTTP ${status}`),
+      ...(typeof result.guidance === "string" && result.guidance !== "" ? [result.guidance] : []),
       ...(Array.isArray(result.warnings) ? result.warnings.filter((w): w is string => typeof w === "string") : []),
     ].join("\n"));
   }

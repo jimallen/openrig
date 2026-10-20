@@ -226,6 +226,20 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
     expect(await res.json()).toMatchObject({ ok: false, code: "startup_source_unavailable" });
   });
 
+  // OF-38: the HTTP launch routes serve the CLI (and raw HTTP callers), which can pass startupFrom, so a refused re-read
+  // keeps the flag wording. Only the TUI's explicit-fresh action asks for the command form.
+  it.each(["launch", "launch-plan"] as const)("OF-38: %s keeps the flag wording for a refused re-read", async (route) => {
+    setup = createTestApp(db, { wireRuntimeAdapters: true });
+    const seat = seedSeat();
+    setup.rigRepo.setRigSpecSource(seat.rig.id, "/library/team/rig.yaml");
+    vi.spyOn(PodRigInstantiator.prototype, "readSeatStartupFromSpec").mockResolvedValue({
+      kind: "refused", code: "startup_source_unavailable", specSource: "/library/team/rig.yaml", message: "fixture: gone",
+    });
+    const res = await post(route, seat.sessionName, { fresh: true, reason: "r" });
+    expect(await res.json()).toMatchObject({ ok: false, code: "startup_source_unavailable",
+      guidance: "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch." });
+  });
+
   // OF-32: where a fresh launch takes its startup files from reaches the service; anything else is refused.
   it.each([["launch", "launchFresh"], ["launch-plan", "planFresh"]] as const)("%s forwards startupFrom and refuses an unknown value", async (route, method) => {
     const spy = vi.spyOn(SeatLifecycleService.prototype, method).mockResolvedValue({ ok: false, code: "fixture", message: "fixture" } as never);
