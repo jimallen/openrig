@@ -130,6 +130,16 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     expect(events()).toEqual([]);
   });
 
+  it("a prototype-named server is refused by the switch, and storage keeps any name as its own entry", async () => {
+    const s = seat("eztrack");
+    expect(await service.setMcpServer({ seatRef: s.ref, server: "__proto__", state: "on", reason: "x", actor: "a@r" }))
+      .toMatchObject({ ok: false, code: "invalid_mcp_server" });
+    const { writeSeatMcpServer, switchedOnNames } = await import("../src/domain/seat-mcp-servers.js");
+    const entry = { declaration: { command: mcpls, enabled_tools: ["get_hover"] }, specDir: "/s", declaredIn: "/s/rig.yaml", switchedOnAt: "t" };
+    expect(writeSeatMcpServer(db, s.node.id, "__proto__", entry as never)).toBe(true);
+    expect(switchedOnNames(db, s.node.id)).toEqual(["__proto__"]);
+  });
+
   it("the route requires a sender identity and passes the switch through", async () => {
     const setup = createTestApp(db);
     const s = seat("eztrack");

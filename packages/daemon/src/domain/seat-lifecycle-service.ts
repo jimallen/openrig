@@ -1,5 +1,5 @@
 import { readDeclaredMcpServer, switchedOnNames, writeSeatMcpServer, declarationSha256, type StoredSeatMcpServer } from "./seat-mcp-servers.js";
-import { MCP_SERVER_NAME } from "./codex-mcp-servers.js";
+import { MCP_SERVER_NAME, isPrototypeName } from "./codex-mcp-servers.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
@@ -378,7 +378,7 @@ export class SeatLifecycleService {
     const required = this.requireReason(input.reason);
     if (required) return required;
     if (!input.actor?.trim()) return { ok: false, code: "missing_actor", message: "Sender identity is required for the MCP server audit; pass --operator <address> outside a managed seat." };
-    if (!MCP_SERVER_NAME.test(input.server ?? "")) return { ok: false, code: "invalid_mcp_server", message: `"${input.server}" isn't an MCP server name: use the name declared under the member's mcp_servers.` };
+    if (!MCP_SERVER_NAME.test(input.server ?? "") || isPrototypeName(input.server)) return { ok: false, code: "invalid_mcp_server", message: `"${input.server}" isn't an MCP server name: use the name declared under the member's mcp_servers.` };
     if (input.state !== "on" && input.state !== "off") return { ok: false, code: "invalid_mcp_state", message: "State must be on or off." };
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;

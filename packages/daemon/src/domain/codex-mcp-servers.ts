@@ -30,6 +30,9 @@ const TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 const ALLOWED_KEYS = ["command", "args", "enabled_tools", "startup_timeout_sec", "tool_timeout_sec"] as const;
 /** Codex server keys a spec may not set, named so the refusal says why. */
 export const REFUSED_MCP_KEYS = ["env", "env_vars", "url", "bearer_token_env_var", "http_headers", "env_http_headers", "cwd"] as const;
+/** Seconds. Below one second Codex rounds a startup timeout to 0 (measured by the security review:
+ *  5e-324 arrived as startup_timeout_sec 0), so tiny and denormal values are refused, not just <= 0. */
+const MIN_TIMEOUT_SEC = 1;
 const MAX_TIMEOUT_SEC = 3600;
 /** OpenRig proves a running Codex's identity from its `ps` line, which flattens argv on whitespace
  *  (native-process-lineage tokens). The rendered `-c` value must stay ONE token there, or the resume
@@ -40,12 +43,19 @@ function isMapping(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Text Codex receives byte for byte: no control characters (C0, DEL) and well-formed UTF-16, so the
- *  TOML rendering below never needs anything but JSON's escapes. */
+/** Text Codex receives byte for byte and an operator can read: no control characters (C0, DEL, C1),
+ *  no format characters (bidi overrides, zero-width, BOM, soft hyphen), no line or paragraph separators
+ *  (U+2028/2029), no private-use code points and no lone surrogates. What remains needs nothing but
+ *  JSON's escapes to be a TOML basic string. */
+const NON_PRINTING = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}]/u;
 function cleanText(value: string): boolean {
-  // eslint-disable-next-line no-control-regex
-  return !/[\u0000-\u001f\u007f]/.test(value)
-    && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value);
+  return !NON_PRINTING.test(value);
+}
+
+/** A server name that is also a property of every object (`__proto__`, `constructor`, `toString`, ...)
+ *  would be lost or hijack an ordinary object map; it is refused outright. */
+export function isPrototypeName(name: string): boolean {
+  return name === "__proto__" || Object.prototype.hasOwnProperty.call(Object.prototype, name);
 }
 
 /** Shape errors for one member's `mcp_servers` block (empty = valid). Reads nothing from disk. */
@@ -59,6 +69,7 @@ export function validateMcpServersBlock(raw: unknown, runtime: unknown, prefix: 
   for (const name of names) {
     const sp = `${at}.${name}`;
     if (!MCP_SERVER_NAME.test(name)) errors.push(`${at}: server name "${name}" must be 1-64 letters, digits, underscores or hyphens`);
+    else if (isPrototypeName(name)) errors.push(`${at}: server name "${name}" is reserved (an object property name)`);
     const server = raw[name];
     if (!isMapping(server)) { errors.push(`${sp}: must be a mapping`); continue; }
     for (const key of Object.keys(server)) {
@@ -70,7 +81,7 @@ export function validateMcpServersBlock(raw: unknown, runtime: unknown, prefix: 
     }
     const command = server["command"];
     if (typeof command !== "string" || !command.trim()) errors.push(`${sp}.command: required non-empty string`);
-    else if (!cleanText(command)) errors.push(`${sp}.command: must not contain control characters`);
+    else if (!cleanText(command)) errors.push(`${sp}.command: must not contain control, format or separator characters`);
     else if (/\s/.test(command)) errors.push(`${sp}.command: ${NO_WHITESPACE}`);
     else if (!nodePath.isAbsolute(command)) errors.push(`${sp}.command: must be an absolute path (got "${command}")`);
     const args = server["args"];
@@ -78,7 +89,7 @@ export function validateMcpServersBlock(raw: unknown, runtime: unknown, prefix: 
       if (!Array.isArray(args)) errors.push(`${sp}.args: must be a list of strings`);
       else args.forEach((a, i) => {
         if (typeof a !== "string") errors.push(`${sp}.args[${i}]: must be a string`);
-        else if (!cleanText(a)) errors.push(`${sp}.args[${i}]: must not contain control characters`);
+        else if (!cleanText(a)) errors.push(`${sp}.args[${i}]: must not contain control, format or separator characters`);
         else if (/\s/.test(a)) errors.push(`${sp}.args[${i}]: ${NO_WHITESPACE}`);
       });
     }
@@ -90,8 +101,8 @@ export function validateMcpServersBlock(raw: unknown, runtime: unknown, prefix: 
     });
     for (const key of ["startup_timeout_sec", "tool_timeout_sec"] as const) {
       const v = server[key];
-      if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > MAX_TIMEOUT_SEC)) {
-        errors.push(`${sp}.${key}: must be a number of seconds greater than 0 and at most ${MAX_TIMEOUT_SEC}`);
+      if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v) || v < MIN_TIMEOUT_SEC || v > MAX_TIMEOUT_SEC)) {
+        errors.push(`${sp}.${key}: must be a number of seconds from ${MIN_TIMEOUT_SEC} to ${MAX_TIMEOUT_SEC}`);
       }
     }
   }
@@ -101,7 +112,8 @@ export function validateMcpServersBlock(raw: unknown, runtime: unknown, prefix: 
 /** The typed form of a block that validateMcpServersBlock accepted. */
 export function normalizeMcpServers(raw: unknown): CodexMcpServers | undefined {
   if (!isMapping(raw)) return undefined;
-  const out: CodexMcpServers = {};
+  // Null prototype: a key can only ever be an own entry, whatever its name.
+  const out = Object.create(null) as CodexMcpServers;
   for (const [name, value] of Object.entries(raw)) {
     const s = value as Record<string, unknown>;
     out[name] = {

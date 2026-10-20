@@ -75,9 +75,10 @@ export function writeSeatMcpServer(db: Database.Database, nodeId: string, name: 
   const column = readColumn(db, nodeId);
   if (!column.present) return false;
   const parsed = parseStored(column.value);
-  const stored: Stored = parsed.ok ? { ...parsed.stored } : {};
-  if (entry) stored[name] = entry; else delete stored[name];
-  const value = Object.keys(stored).length ? JSON.stringify(stored) : null;
+  // A Map, so no server name can reach an object's prototype (assigning `__proto__` would store nothing).
+  const stored = new Map<string, StoredSeatMcpServer>(parsed.ok ? Object.entries(parsed.stored) : []);
+  if (entry) stored.set(name, entry); else stored.delete(name);
+  const value = stored.size ? JSON.stringify(Object.fromEntries(stored)) : null;
   return db.prepare("UPDATE nodes SET codex_mcp_servers = ? WHERE id = ?").run(value, nodeId).changes > 0;
 }
 

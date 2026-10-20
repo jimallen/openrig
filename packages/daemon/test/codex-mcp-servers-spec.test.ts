@@ -10,6 +10,7 @@ import { RigSpecSchema as PodRigSpecSchema } from "../src/domain/rigspec-schema.
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
 import { describeBundleBehaviour } from "../src/domain/bundle-behaviour.js";
+import { normalizeMcpServers } from "../src/domain/codex-mcp-servers.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 
@@ -56,7 +57,7 @@ describe("mcp_servers: the declaration a codex member may carry", () => {
 
   it("refuses a control character in an argument (Codex must receive every byte as declared)", () => {
     expect(errorsOf(spec({ mcp_servers: { lsp: server({ args: ["ok", "line\nbreak"] }) } })))
-      .toContain("pods[0].members[0].mcp_servers.lsp.args[1]: must not contain control characters");
+      .toContain("pods[0].members[0].mcp_servers.lsp.args[1]: must not contain control, format or separator characters");
   });
 
   it("refuses whitespace in the command or an argument (the seat's ps line must split back exactly)", () => {
@@ -161,5 +162,56 @@ describe("mcp_servers: disclosure and expansion", () => {
       expect(body).toMatchObject({ code: "validation_failed", error: "mcp_servers cannot be added by expansion (member ops): declare the server in the rig's spec file, which rig seat set-mcp reads" });
       expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ?").get(rig.id)).toMatchObject({ c: 0 });
     } finally { db.close(); }
+  });
+});
+
+// Security review of 97aa027b, N5: the validator's edges, each pinned so a loosening fails a row.
+describe("mcp_servers: hardening (security review N5)", () => {
+  // Every field of Codex 0.162.1's RawMcpServerConfig (codex-rs config/src/mcp_types.rs at tag rust-v0.162.1).
+  const CODEX_FIELDS = ["command", "args", "env", "env_vars", "cwd", "http_headers", "env_http_headers", "url", "bearer_token",
+    "bearer_token_env_var", "http_headers_helper", "environment_id", "auth", "startup_timeout_sec", "startup_timeout_ms",
+    "tool_timeout_sec", "enabled", "required", "startup_readiness", "supports_parallel_tool_calls", "tool_input_schema_max_bytes",
+    "omit_tools_from", "default_tools_approval_mode", "enabled_tools", "disabled_tools", "scopes", "oauth", "oauth_resource", "_name", "tools"];
+  const ALLOWED = ["command", "args", "enabled_tools", "startup_timeout_sec", "tool_timeout_sec"];
+  it("the census is the 30 fields, and exactly five of them are allowed", () => {
+    expect(new Set(CODEX_FIELDS).size).toBe(30);
+    expect(ALLOWED.every((k) => CODEX_FIELDS.includes(k))).toBe(true);
+    expect(errorsOf(spec({ mcp_servers: { lsp: server() } }))).toEqual([]);
+  });
+  it.each(CODEX_FIELDS.filter((k) => !ALLOWED.includes(k)))("refuses Codex field %s", (key) => {
+    const errors = errorsOf(spec({ mcp_servers: { lsp: server({ [key]: "x" }) } }));
+    expect(errors.filter((e) => e.startsWith(`pods[0].members[0].mcp_servers.lsp.${key}: `))).toHaveLength(1);
+  });
+
+  it.each(["__proto__", "constructor", "toString", "hasOwnProperty"])("refuses the object-property name %s", (name) => {
+    const raw = JSON.parse(`{"version":"0.2","name":"r","pods":[{"id":"verify","label":"V","members":[{"id":"ops","agent_ref":"local:agents/impl","profile":"default","runtime":"codex","cwd":".","mcp_servers":{${JSON.stringify(name)}:${JSON.stringify(server())}}}],"edges":[]}],"edges":[]}`);
+    expect(errorsOf(raw)).toContain(`pods[0].members[0].mcp_servers: server name "${name}" is reserved (an object property name)`);
+  });
+  it("normalize keeps a __proto__ key as an own entry instead of setting a prototype", () => {
+    const raw = JSON.parse(`{"__proto__":${JSON.stringify(server())}}`) as Record<string, unknown>;
+    expect(Object.keys(normalizeMcpServers(raw)!)).toEqual(["__proto__"]);
+  });
+
+  it.each([[0, false], [5e-324, false], [0.5, false], [1, true], [3600, true], [3601, false]])("startup and tool timeouts of %s seconds: accepted=%s", (v, ok) => {
+    for (const key of ["startup_timeout_sec", "tool_timeout_sec"]) {
+      const errors = errorsOf(spec({ mcp_servers: { lsp: server({ [key]: v }) } }));
+      expect(errors.includes(`pods[0].members[0].mcp_servers.lsp.${key}: must be a number of seconds from 1 to 3600`)).toBe(!ok);
+      if (ok) expect(errors).toEqual([]);
+    }
+  });
+
+  it("refuses an empty enabled_tools list", () => {
+    expect(errorsOf(spec({ mcp_servers: { lsp: server({ enabled_tools: [] }) } })))
+      .toContain("pods[0].members[0].mcp_servers.lsp.enabled_tools: must be a non-empty list of tool names");
+  });
+
+  it.each([["NEL U+0085", "\u0085"], ["C1 U+009F", "\u009f"], ["LINE SEPARATOR U+2028", " "], ["PARAGRAPH SEPARATOR U+2029", " "],
+    ["ZERO WIDTH SPACE U+200B", "​"], ["RLO U+202E", "‮"], ["BOM U+FEFF", "﻿"], ["SOFT HYPHEN U+00AD", "­"], ["private use U+E000", ""]])(
+    "refuses %s in an argument", (_label, ch) => {
+      expect(errorsOf(spec({ mcp_servers: { lsp: server({ args: [`a${ch}b`] }) } })))
+        .toContain("pods[0].members[0].mcp_servers.lsp.args[0]: must not contain control, format or separator characters");
+    });
+  it("still accepts printable non-ASCII text", () => {
+    expect(errorsOf(spec({ mcp_servers: { lsp: server({ args: ["ü-ñ", "日本", "🦀"] }) } }))).toEqual([]);
   });
 });
