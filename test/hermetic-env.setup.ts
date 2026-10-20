@@ -84,6 +84,24 @@ if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
   })) process.env[key] = path.join(userHome, suffix);
 }
 
+// (2b) Host-independent process basics. A developer Mac and a Linux box differ in exactly
+// these, and each difference has failed daemon tests for environmental reasons only:
+//   SHELL  — tmux starts its panes in $SHELL. An account whose login shell is zsh with no
+//            startup files in the (fixture) HOME gets the zsh-newuser-install wizard, which
+//            swallows the first keystroke of a stub runner. Pin a shell with no wizard.
+//   umask  — 002 (user-private-group accounts) turns a created 0o755 into 0o775. Pin 022.
+//   .hushlogin — Ubuntu's /etc/bash.bashrc prints a sudo hint on STDOUT of every
+//            interactive `bash -ic` for a sudo-group user whose HOME lacks .hushlogin.
+//   TMPDIR — macOS's os.tmpdir() is /var/folders/..., a symlink to /private/var/folders/...; tests
+//            that compare a path they created with one a child process reports (cwd, realpath,
+//            git toplevel) see two spellings of one directory. Hand out the real path. A no-op on Linux.
+if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
+  try { process.env["TMPDIR"] = fs.realpathSync(os.tmpdir()); } catch { /* keep the inherited value */ }
+  if (fs.existsSync("/bin/bash")) process.env["SHELL"] = "/bin/bash";
+  try { process.umask(0o022); } catch { /* worker_threads cannot set umask; the forks pool (vitest default) can */ }
+  fs.writeFileSync(path.join(`${fixtureHome}-user-home`, ".hushlogin"), "");
+}
+
 // (3) ASSERT — capture the resolved home + fail loud if it is not fixture-scoped.
 const { OPENRIG_HOME } = await import("../packages/cli/src/openrig-compat.js");
 const { assertFixtureScopedHome } = await import("../packages/cli/test/live-daemon-guard.js");

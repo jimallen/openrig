@@ -74,7 +74,12 @@ it.each(["claude", "codex"])("D: nushell retains the previous literal %s command
   expect(command).not.toContain('"$PATH"'); expect(f.warn).toHaveBeenCalledTimes(1);
 });
 it.each(["fresh", "resume", "fork"] as const)("C: %s uses the probe's separate Node interpreter while preserving user PATH", async kind => {
-  const f = fixture(), nodeBin = path.dirname(process.execPath);
+  // The "separate Node" must live in a directory that is NOT in the user PATH ("/usr/bin:/bin").
+  // dirname(process.execPath) is /usr/bin on a distro-packaged Node (Linux), which would make
+  // the precondition below false for environmental reasons; so give the pane a private
+  // `node` that execs the real interpreter. process.execPath inside it is still the real binary.
+  const f = fixture(), nodeBin = path.join(f.root, "separate-node-bin");
+  mkdirSync(nodeBin); f.exe(path.join(nodeBin, "node"), `#!/bin/sh\nexec ${shellQuote(process.execPath)} "$@"\n`);
   expect(["/usr/bin", "/bin", f.shared, f.runtime]).not.toContain(nodeBin);
   f.exe(path.join(f.runtime, "codex"), `#!/usr/bin/env node\nif(process.argv.includes('--help'))console.log('Usage: codex [OPTIONS]\\n  --no-daemon');else console.log(JSON.stringify({started:true,node:process.execPath,path:process.env.PATH}));\n`);
   // There is no Node in the pane PATH. The capability query really executes this npm-style entry.
@@ -90,7 +95,12 @@ it.each(["fresh", "resume", "fork"] as const)("C: %s uses the probe's separate N
   const result = await adapter.launchHarness(binding, { name: "seat", ...(kind === "resume" ? { resumeToken: "old" } : kind === "fork" ? { forkSource: { kind: "native_id", value: "parent" } } : {}) });
   expect(result.ok).toBe(true);
   const command = (f.tmux.sendShellCommand.mock.calls.at(-1) as unknown as string[])[1]!;
-  const userPath = "/usr/bin:/bin";
+  // The user's PATH carries a DECOY `node` ahead of any real one. On a host whose real Node lives in /usr/bin (distro
+  // packages) the command would otherwise find it through `#!/usr/bin/env node` even if the launch did not pin the probe's
+  // interpreter, and `observed.node === process.execPath` would hold either way. Here an unpinned launch runs the decoy.
+  const decoyBin = path.join(f.root, "decoy-node-bin"); mkdirSync(decoyBin);
+  f.exe(path.join(decoyBin, "node"), "#!/bin/sh\necho decoy-node-on-user-path\nexit 97\n");
+  const userPath = `${decoyBin}:/usr/bin:/bin`;
   const { stdout } = await exec("/bin/bash", ["--noprofile", "--norc", "-c", command], { cwd: f.cwd, env: { ...f.env, PATH: userPath }, timeout: 5000 });
   const observed = JSON.parse(stdout); expect(observed.started).toBe(true); expect(observed.node).toBe(process.execPath);
   expect(observed.path.split(":").slice(1).join(":")).toBe(userPath);

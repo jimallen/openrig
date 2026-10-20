@@ -30,6 +30,8 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
     const rc = path.join(root, "bashrc"), script = path.join(root, "launch");
     const effects: Record<string, string> = {};
     try {
+      // `bash -ic` on Ubuntu prints a sudo hint on stdout unless HOME (= root) has .hushlogin.
+      fs.writeFileSync(path.join(root, ".hushlogin"), "");
       for (const shape of ["alias", "function"]) {
         fs.writeFileSync(rc, shape === "alias" ? "alias claude='printenv PROBE'\n" : "claude() { printenv PROBE; }\n");
         fs.writeFileSync(script, "PROBE='from launch' claude\n");
@@ -64,6 +66,10 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
     fs.writeFileSync(cli, "#!/bin/sh\nprintf 'paired-rig'\n", { mode: 0o755 });
     const cells: Array<{ shape: string; route: string; kind: string; started: boolean; exit: number; issues: string[] }> = [];
     try {
+      // Every cell ends with kill-session of the server's only session, and a tmux server with no session exits. The next cell's
+      // new-session then races that exit and fails with "server exited unexpectedly" (seen on the Mac under a full-suite load).
+      // An anchor session keeps the one server alive for all 36 cells.
+      await tm(["new-session", "-d", "-s", "fixture-anchor", "sleep 600"]);
       for (const shape of ["executable", "alias", "function"]) for (const route of ["corrected", "fallback", "legacy"]) {
         for (const kind of ["fresh", "fork", "launch-resume", "restore-resume"]) {
           const name = `${shape}-${route}-${kind}`, dir = path.join(root, name), bin = path.join(dir, "bin");

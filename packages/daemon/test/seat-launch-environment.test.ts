@@ -26,6 +26,8 @@ function fixture() {
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "current bin's"); const userBin = path.join(root, "user-bin");
   for (const dir of [bin, userBin, path.join(root, "workspace"), path.join(root, "home")]) mkdirSync(dir);
+  // `bash -ic` on Ubuntu prints a sudo hint on stdout unless HOME has .hushlogin; stdout is parsed as JSON below.
+  writeFileSync(path.join(root, "home", ".hushlogin"), "");
   const writeExe = (file: string, body: string) => writeFileSync(file, body, { mode: 0o700 });
   writeExe(path.join(userBin, "rig"), "#!/bin/sh\necho wrong-rig\n");
   writeExe(path.join(userBin, "codex"), "#!/bin/sh\necho wrong-codex\n");

@@ -124,3 +124,14 @@ it("uses the default export writer to preserve the saved spec after a partial wr
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+// Production computes a NEW file's mode from the process umask (0o666 & ~umask); the shared test setup pins 022, so
+// without these rows no test sees any other umask. Each row sets its own umask and restores it.
+it.skipIf(process.platform === "win32").each([
+  [0o077, 0o600], [0o022, 0o644], [0o002, 0o664],
+])("creates a new file with mode 0666 & ~umask (umask %o -> %o)", (mask, expected) => {
+  dir = fs.mkdtempSync(join(tmpdir(), "export-atomic-umask-"));
+  const target = join(dir, "new.yaml");
+  const before = process.umask(mask);
+  try { writeTextAtomically(target, "name: new\n", "export"); } finally { process.umask(before); }
+  expect(fs.statSync(target).mode & 0o777).toBe(expected);
+});

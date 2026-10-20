@@ -160,7 +160,11 @@ setInterval(() => {}, 1000);
       const binding = { tmuxSession: session, cwd } as never;
       expect(await readiness.checkReady(binding)).toEqual({ ready: true });
       await run("tmux", ["-S", socket, "send-keys", "-t", session, "C-c"]);
-      for (let attempt = 0; attempt < 100 && (await tmux.getPaneCommand(session)) === "node"; attempt++) {
+      // The pane's foreground command is not a reliable "runner is gone" signal: it can read as something other than
+      // "node" before the process is reaped, and checkReady then still reports { ready: true } (6 of 90 loaded runs, each in
+      // 0.3-0.5 s, so never a slow exit). Poll checkReady itself, bounded well inside this test's 10 s budget, and keep the
+      // exact assertion below: the runner must END at runner_exited, not merely stop being ready.
+      for (let attempt = 0; attempt < 300 && (await readiness.checkReady(binding)).ready; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       expect(await readiness.checkReady(binding)).toMatchObject({ ready: false, code: "runner_exited" });
