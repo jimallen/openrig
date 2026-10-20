@@ -1,4 +1,6 @@
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
+import { decideSeatPreLaunchGate, readContinuityRow } from "./restore-seat-gates.js";
+import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -37,16 +39,16 @@ import type {
   NodeStartupSnapshot,
   RestoreStartupSource,
 } from "./types.js";
-import { projectRereadSkills, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { projectRereadSkills, readSnapshotStartupCopy, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { asReplayContext, decideListedFreshSeat, startupToValidateForSeat } from "./fresh-seat-restore-decision.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
-import { readNodeStartupSnapshot } from "./snapshot-capture.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
-import { validatePreRestore, startupInputFindings } from "./restore-preconditions.js";
+import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
+import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 
@@ -84,7 +86,7 @@ const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 // in the pure leaf module active-occupant.ts, shared with preview, snapshot
 // usability, and lifecycle projection. Imported and re-exported here so the
 // existing export surface and the execution call sites below are unchanged.
-import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, absentSeatResumeHistory, absentSeatResumeHistoryError, freshSeatLaunchCommand } from "./active-occupant.js";
+import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, absentSeatResumeHistory, freshSeatLaunchCommand } from "./active-occupant.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -196,6 +198,9 @@ type RestoreSeatOpts = {
   freshLogicalIds?: string[];
   /** OF-32: where a seat this restore starts fresh takes its startup policy from (default: the rig's spec now). */
   startupFrom?: StartupFrom;
+  /** Review F4: the snapshot copy pre-restore validation chose (and checked) for a seat, by logical id. The seat's
+   *  launch replays exactly that copy, or is refused if its snapshot is gone; it never chooses again. */
+  preValidatedCopies?: Map<string, { snapshotId: string; context: NodeStartupSnapshot; warning?: string }>;
 };
 
 /** Whether this restore resumes the seat's saved conversation (an exact resume) rather than starting it fresh.
@@ -337,6 +342,7 @@ export class RestoreOrchestrator {
     this.activeRestores.add(rigId);
 
     try {
+      const preValidatedCopies = new Map<string, { snapshotId: string; context: NodeStartupSnapshot; warning?: string }>();
       const validation = validatePreRestore(snapshot.data, {
         fsOps: opts?.fsOps,
         servicesRecord: this.rigRepo.getServicesRecord(rigId),
@@ -344,7 +350,13 @@ export class RestoreOrchestrator {
         // OF-32: a seat started fresh replays the snapshot's copy of its startup files only when nothing newer exists;
         // otherwise its source is decided and checked per seat before its launch (restoreNodeUnisolated), and the
         // snapshot's copy (which may name a release since deleted) cannot block the restore.
-        freshSeatStartup: (node) => this.freshSeatStartupToValidate(rigId, node.logicalId, opts),
+        freshSeatStartup: (node) => {
+          const decided = this.freshSeatStartupToValidate(rigId, node.logicalId, opts, snapshot.data.nodeStartupContext?.[node.id] ?? null);
+          if (decided && typeof decided === "object" && "replay" in decided && decided.fromSnapshotId) {
+            preValidatedCopies.set(node.logicalId, { snapshotId: decided.fromSnapshotId, context: decided.replay, ...(decided.warning ? { warning: decided.warning } : {}) });
+          }
+          return decided;
+        },
       });
       const topology = resolveSnapshotRestoreTopology(snapshot.data);
       // The attempt's roster names its seats by the ids the attempt's results use: the LIVE node ids (a seat removed and
@@ -376,7 +388,15 @@ export class RestoreOrchestrator {
 
       // 2. Capture pre-restore snapshot BEFORE any DB mutations —
       // DB still reflects original session state (running for stale sessions)
-      const preRestoreSnapshot = this.snapshotCapture.captureSnapshot(rigId, "pre_restore");
+      // N-C3: a seat whose saved startup context is not JSON is restorable (pre-restore validation found what it replays
+      // instead), so this capture records no copy for it rather than ending the restore.
+      const captureWarnings: string[] = [];
+      const preRestoreSnapshot = this.snapshotCapture.captureSnapshot(rigId, "pre_restore", {
+        onUnreadableStartupContext: (nodeId, message) => {
+          const logicalId = rig.nodes.find((n) => n.id === nodeId)?.logicalId ?? nodeId;
+          captureWarnings.push(`Restore: ${logicalId}: the pre-restore snapshot holds no copy of its saved startup context, which is not JSON (${message}).`);
+        },
+      });
 
       if (opts?.nonInterruptive !== undefined) this.rigRepo.setRigNonInterruptive(rigId, opts.nonInterruptive);
 
@@ -435,11 +455,11 @@ export class RestoreOrchestrator {
 
       // 5. Execute restore with compensating pattern per node
       const nodeResults: RestoreNodeResult[] = [];
-      const restoreWarnings: string[] = [...validation.warnings];
+      const restoreWarnings: string[] = [...validation.warnings, ...captureWarnings];
       if (this.rigRepo.getRigNonInterruptive(rigId)) restoreWarnings.push(nonInterruptiveSummary(true));
       else if (opts?.nonInterruptive === false) restoreWarnings.push(nonInterruptiveSummary(false));
       for (const entry of plan) {
-        const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, opts, restoreWarnings);
+        const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, { ...opts, preValidatedCopies }, restoreWarnings);
         nodeResults.push(result);
       }
 
@@ -734,35 +754,13 @@ export class RestoreOrchestrator {
   }
 
   /**
-   * Classify ALL DB-running sessions against tmux reality without mutating DB.
-   * Scans every session (not just latest-per-node) to catch older live sessions
-   * behind newer detached rows. Returns structured classification for the caller
-   * to act on: live sessions block restore, stale sessions get marked detached
-   * AFTER the pre_restore snapshot is captured, unknown sessions fail closed.
-   * Probing stops at the first live or unreadable session: either one already refuses the restore, and
-   * on a wedged tmux every further probe would cost another full deadline. The buckets are therefore
-   * complete only when the restore may proceed (no live, no unknown).
+   * Classify ALL DB-running sessions against tmux reality without mutating DB (restore-running-sessions.ts, shared with
+   * restore-check): live sessions block restore, stale sessions get marked detached AFTER the pre_restore snapshot is
+   * captured, unknown sessions fail closed.
    */
-  private async classifyRunningSessions(rigId: string): Promise<{
-    live: string[];
-    stale: string[];
-    unknown: string[];
-  }> {
-    const live: string[] = [];
-    const stale: string[] = [];
-    const unknown: string[] = [];
-
-    for (const session of this.sessionRegistry.getSessionsForRig(rigId)) {
-      if (session.status !== "running") continue;
-      // Shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
-      // A probe that throws fails closed: classified unknown so restore blocks.
-      const liveness = await classifySessionLiveness(this.tmuxAdapter, session.sessionName);
-      if (liveness === "live") { live.push(session.id); break; }
-      else if (liveness === "dead") stale.push(session.id);
-      else { unknown.push(session.id); break; }
-    }
-
-    return { live, stale, unknown };
+  private classifyRunningSessions(rigId: string): Promise<RunningSessionClassification> {
+    // The probe is shared with restore-check's advice (classifySessionLiveness) so the two cannot drift.
+    return classifyRunningSessions(this.sessionRegistry.getSessionsForRig(rigId), (sessionName) => classifySessionLiveness(this.tmuxAdapter, sessionName));
   }
 
   private clearStaleState(nodeId: string, rigId: string): void {
@@ -965,16 +963,26 @@ export class RestoreOrchestrator {
 
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
    *  will act (see validatePreRestore's `freshSeatStartup`). */
-  private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined): "resolved_at_launch" | NodeStartupSnapshot | undefined {
+  private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined, selectedCopy: NodeStartupSnapshot | null): FreshSeatStartupOverride {
     // Shared with restore-check (startupToValidateForSeat), so the check validates what restore validates.
     return startupToValidateForSeat({ db: this.db, rigRepo: this.rigRepo }, {
-      rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom,
-    }).override;
+      rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom, selectedCopy,
+    });
   }
 
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
   private freshStartCommand(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom): string {
-    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, startupFrom);
+    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, this.adviceStartupFrom(rigId, logicalId, startupFrom));
+  }
+
+  /** Re-check G1 (5ffd9b97): the restore's `--startup-from` as advice for THIS seat. `snapshot:<id>` was named for the
+   *  listed seats; it is repeated for a seat only when that snapshot holds a copy this seat can use (the check its
+   *  launch runs, readSnapshotStartupCopy); otherwise the advice names the default (the rig's spec as it is now). */
+  private adviceStartupFrom(rigId: string, logicalId: string, startupFrom?: StartupFrom): StartupFrom | undefined {
+    const snapshotId = startupFromSnapshotId(startupFrom);
+    if (!snapshotId) return startupFrom;
+    const live = this.rigRepo.getRig(rigId)?.nodes.find((node) => node.logicalId === logicalId);
+    return readSnapshotStartupCopy(this.db, { rigId, logicalId, runtime: live?.runtime ?? null, cwd: live?.cwd ?? "." }, snapshotId).ok ? startupFrom : undefined;
   }
 
   private async restoreNodeUnisolated(
@@ -994,98 +1002,35 @@ export class RestoreOrchestrator {
     // logical id but has a new node id, and a write keyed by the old one violates the foreign key to `nodes`.
     const node = entry.node;
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
-    if (!liveNode) {
-      // Removed since the snapshot and not grown back. Restore does not recreate a node (the launcher reports the same
-      // "not found in rig" for it); it reports this seat failed, before anything is started or written, and goes on.
-      return {
-        nodeId: node.id,
-        logicalId: node.logicalId,
-        status: "failed",
-        error: `Node ${node.logicalId} not found in rig: it was removed after this snapshot and has not been added back, so there is no seat to restore it into. Restore does not recreate removed nodes.`,
-      };
+    // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier
+    // occupant's token, `restoring` continuity, resumable seat with no token) are decided by restore-seat-gates.ts,
+    // the function restore-check asks, so the check cannot be greener than this.
+    const continuityRow = liveNode?.podId ? readContinuityRow(this.db, liveNode.podId, liveNode.id) : undefined;
+    const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
+    const gate = decideSeatPreLaunchGate({
+      data, snapshotNodeId: node.id, logicalId: node.logicalId, live: liveNode ?? null, freshRequested,
+      rigName: this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, startupFrom: this.adviceStartupFrom(rigId, node.logicalId, opts?.startupFrom),
+      continuityStatus: continuityRow?.status ?? null,
+    });
+    if (continuityRow?.status === "degraded" && (gate.kind === "proceed" || (gate.kind === "stop" && gate.gate === "no_token"))) {
+      warnings?.push(`Node ${node.logicalId}: continuity state is 'degraded', proceeding with caution`);
     }
+    if (gate.kind === "stop") {
+      return { nodeId: liveNode?.id ?? node.id, logicalId: node.logicalId, status: gate.status, error: gate.error };
+    }
+    if (gate.kind === "skip_restoring") {
+      warnings?.push(`Node ${node.logicalId}: continuity state is 'restoring', skipping`);
+      return { nodeId: liveNode?.id ?? node.id, logicalId: node.logicalId, status: "fresh" };
+    }
+    // A removed seat stopped above, so a live node is what proceeds.
+    if (!liveNode) throw new Error(`restore gate let ${node.logicalId} through with no live node`);
     const nodeId = liveNode.id;
     progress.nodeId = nodeId;
 
-    // OPR.0.5.7.1 (bought ordering blocker, baton 0efd154d): D1 present-map
-    // ambiguity must be DETECTED before any continuity_state short-circuit —
-    // a pod node in 'restoring' otherwise returns a silent status "fresh"
-    // (classified running downstream) while the occupant truth is ambiguous,
-    // bypassing A1's loud-failure semantics. Resolved/none/legacy states
-    // fall through to absent-history classification and the continuity check.
+    // The pre-launch stop-and-ask classification (OPR.0.3.4.2, OPR.0.4.3.20 FR-7) ran above, before clearStaleState /
+    // launchNode, so `awaiting-decision` means ZERO sessions started and prior state untouched. Only a resolved or
+    // absent occupant reaches here (ambiguity stopped above).
     const occupantResolution = resolveActiveSnapshotSession(data, node.id);
-    if (occupantResolution.kind === "ambiguous") {
-      return {
-        nodeId,
-        logicalId: node.logicalId,
-        status: "failed",
-        error: activeOccupantAmbiguityError(occupantResolution.candidateIds, occupantResolution.detail),
-      };
-    }
-
-    const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
-    const runtimeError = restoreRuntimeCompatibilityError(liveNode.runtime,
-      data.nodeStartupContext?.[node.id]?.runtime);
-    if (runtimeError) {
-      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: runtimeError };
-    }
-
-    // Classify absent-seat history before the continuity short-circuit: a
-    // restoring seat must not report fresh while its forecast awaits a decision.
-    const priorWithToken = occupantResolution.kind === "none" && !freshRequested
-      ? absentSeatResumeHistory(data.sessions, node.id)
-      : null;
-    if (priorWithToken) {
-      return { nodeId, logicalId: node.logicalId, status: "awaiting-decision", error: absentSeatResumeHistoryError(node.logicalId, priorWithToken.resumeType, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, opts?.startupFrom) };
-    }
-
-    // Consult live continuity state BEFORE clearing stale state
-    if (liveNode.podId) {
-      const continuityRow = this.db.prepare(
-        "SELECT status FROM continuity_state WHERE pod_id = ? AND node_id = ?"
-      ).get(liveNode.podId, nodeId) as { status: string } | undefined;
-      if (continuityRow) {
-        if (continuityRow.status === "restoring") {
-          warnings?.push(`Node ${node.logicalId}: continuity state is 'restoring', skipping`);
-          return { nodeId, logicalId: node.logicalId, status: "fresh" };
-        }
-        if (continuityRow.status === "degraded") {
-          warnings?.push(`Node ${node.logicalId}: continuity state is 'degraded', proceeding with caution`);
-        }
-      }
-    }
-
-    // OPR.0.3.4.2 (A) + OPR.0.4.3.20 FR-7 — PRE-LAUNCH stop-and-ask classification,
-    // BEFORE clearStaleState / launchNode, so `awaiting-decision` means ZERO session
-    // started and prior state is untouched.
-    //
-    // FR-7 (Gap 1): a `resume_if_possible` seat that HAD a session (a snapshot
-    // session row exists) but has NO usable token stops here — whether or not a
-    // resume SOURCE was recorded. The old scope required a recorded source, so a
-    // crashed seat with a session row but no captured token silently fresh-primed
-    // (identity-replaced while looking healthy). A node with NO session row at all
-    // never ran / has nothing to resume → it legitimately fresh-primes (falls
-    // through). The ONLY default fresh-prime is now: no prior session, a genuinely
-    // non-resume policy (relaunch_fresh / checkpoint_only), or explicit `--fresh`.
-    {
-      // OPR.0.5.7.1 D1 — the active occupant was RESOLVED once at the top of
-      // this function (before the continuity consult); ambiguity already
-      // returned there, so only resolved/none reach here.
-      const snapSession = occupantResolution.kind === "resolved" ? occupantResolution.session : null;
-      const policy = snapSession?.restorePolicy ?? "resume_if_possible";
-      const resumeSourceRecorded = !!snapSession?.resumeType && snapSession.resumeType !== "none";
-      if (policy === "resume_if_possible" && snapSession && !snapSession.resumeToken && !freshRequested) {
-        const sourceNote = resumeSourceRecorded
-          ? `resume source '${snapSession?.resumeType}' recorded but no token available`
-          : `no resume token was captured for this seat`;
-        return {
-          nodeId,
-          logicalId: node.logicalId,
-          status: "awaiting-decision",
-          error: `Original session unresumable: ${sourceNote}. No session was started. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
-        };
-      }
-    }
 
     // Capture prior state for compensation
     const priorState = this.captureNodeState(nodeId, rigId);
@@ -1172,27 +1117,50 @@ export class RestoreOrchestrator {
       // this restore starts fresh (by restore policy, with no history, a checkpoint rebuild) comes back on its saved
       // setup exactly as before stage 3: no re-read, no per-seat refusal, the same lenient replay and the same
       // pre-restore validation. The one difference is the snapshot-hazard fix: the saved setup is the seat's own saved
-      // context, not an older snapshot's copy of it. Only when it has none, or it is not JSON, is the copy replayed.
-      let unreadable: string | null = null;
-      try {
-        savedSetup = readNodeStartupSnapshot(this.db, nodeId);
-      } catch (err) {
-        unreadable = (err as Error).message;
+      // context, not an older snapshot's copy of it. When it has none, the snapshot's copy is replayed. OF-36: when it
+      // cannot be used (not JSON, the wrong shape, another runtime), or it has none and this snapshot's copy cannot be
+      // used, the newest usable snapshot copy is replayed; when no snapshot holds one, nothing is started for the seat.
+      // The same decision as pre-restore validation (startupToValidateForSeat), which refuses a whole restore() first;
+      // a `rig launch` target has no pre-restore validation, so this is where it is refused.
+      // Review F4: a copy pre-restore validation chose is replayed exactly; if its snapshot is gone the seat is refused.
+      const carried = opts?.preValidatedCopies?.get(node.logicalId);
+      if (carried && !this.db.prepare("SELECT 1 FROM snapshots WHERE id = ?").get(carried.snapshotId)) {
+        this.restoreNodeState(nodeId, priorState);
+        // Re-check G3: the pre-validation warning said this seat replays that copy; it does not.
+        const said = carried.warning ? warnings?.indexOf(carried.warning) ?? -1 : -1;
+        if (said >= 0) warnings!.splice(said, 1);
+        const rigName = rig?.rig.name ?? data.rig.name;
+        const now = newestUsableSnapshotCopy(this.db, rigId, node.logicalId, seatRuntime);
+        const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+        const next = now
+          ? `To start it from the newest snapshot copy that can be used now (snapshot ${now.snapshotId}, ${now.kind}, taken ${now.createdAt}): rig seat launch ${quote(`${node.logicalId}@${rigName}`)} --fresh --startup-from snapshot:${now.snapshotId} --reason "<why>".`
+          : noUsableCopyRemedy({ scope: "seat", rigName, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(nodeId) !== undefined });
+        return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${node.logicalId}: snapshot ${carried.snapshotId}, whose copy of its startup files this restore checked before it started, was removed before the seat's launch, so restore does not choose another copy unchecked. ${next} No session was started.` };
       }
-      if (savedSetup) {
+      const pick: SeatStartupForRestore = carried
+        ? { kind: "fallback", context: carried.context, from: { snapshotId: carried.snapshotId, kind: "", createdAt: "", context: carried.context }, why: "", warning: "" }
+        : seatStartupForRestore(this.db, { rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime }, data.nodeStartupContext?.[node.id] ?? null);
+      if (pick.kind === "none_usable") {
+        this.restoreNodeState(nodeId, priorState);
+        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: pick.ownRow });
+        return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${noUsableCopyMessage(node.logicalId, pick.why)} ${remedy} No session was started.` };
+      }
+      savedSetup = pick.context;
+      if (pick.kind === "own") {
         startupReport = { kind: "stored", reason: "not_fresh_listed" };
-      } else if (data.nodeStartupContext?.[node.id]) {
-        startupReport = { kind: "snapshot", reason: unreadable ? "saved_context_unreadable" : "no_saved_context" };
-        if (unreadable) {
-          warnings?.push(`Restore: ${node.logicalId}: its saved startup context cannot be read (${unreadable}). This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
-        }
+      } else if (pick.kind === "fallback") {
+        startupReport = { kind: "snapshot", reason: "saved_context_unreadable", ...(pick.from.snapshotId !== snapshotId ? { snapshotId: pick.from.snapshotId } : {}) };
+        // Pre-restore validation may already have reported it (always, for a carried copy).
+        if (pick.warning && !warnings?.includes(pick.warning)) warnings?.push(pick.warning);
+      } else if (pick.context) {
+        startupReport = { kind: "snapshot", reason: "no_saved_context" };
       }
     }
     if (startsFresh && freshRequested && opts?.adapters) {
       const rigName = rig?.rig.name ?? data.rig.name;
       // The decision itself (source, snapshot-copy fallback, refusal text) is shared with restore-check and the plan,
       // which ask the same function what this restore would refuse (fresh-seat-restore-decision.ts).
-      const { decided, chosen, refusal: decidedRefusal, warnings: findingWarnings } = await decideListedFreshSeat(
+      const { decided, chosen, refusal: decidedRefusal, warnings: findingWarnings, copyFromSnapshotId } = await decideListedFreshSeat(
         { db: this.db, rigRepo: this.rigRepo, specReader: this.seatStartupSource, runtimeAdapters: opts.adapters },
         {
           rigId, nodeId, logicalId: node.logicalId, rigName, runtime: seatRuntime, cwd: node.cwd ?? ".",
@@ -1220,14 +1188,19 @@ export class RestoreOrchestrator {
             kind: "spec", specSource: source.specSource, specPath: source.specPath,
             previousSpecVersion: previous?.version ?? null, specVersion: decided.context.resolvedSpec?.version ?? "",
           };
+        } else if (source.kind === "snapshot") {
+          startupReport = { kind: "snapshot", reason: "requested", snapshotId: source.snapshotId };
         } else {
           startupReport = { kind: "stored", reason: source.reason };
         }
       } else if (chosen) {
-        startupReport = { kind: "snapshot", reason: decided.code === "startup_context_malformed" ? "saved_context_unreadable" : "no_saved_context" };
-        if (decided.code === "startup_context_malformed") {
-          warnings?.push(`Restore: ${node.logicalId}: ${decided.message} This fresh start replays this snapshot's copy instead; a successful launch saves a new one.`);
-        }
+        // A snapshot's copy, chosen before the launch (OF-36: not necessarily this snapshot's), is what is replayed.
+        savedSetup = chosen;
+        // The decision's warnings (pushed above) name the snapshot whose copy is replayed when it is not this one.
+        startupReport = {
+          kind: "snapshot", reason: decided.code === "startup_context_malformed" ? "saved_context_unreadable" : "no_saved_context",
+          ...(copyFromSnapshotId && copyFromSnapshotId !== snapshotId ? { snapshotId: copyFromSnapshotId } : {}),
+        };
       }
     }
 
@@ -1399,13 +1372,24 @@ export class RestoreOrchestrator {
     const isPodAware = !!node.podId;
 
     const startupCtx = data.nodeStartupContext?.[snapshotNodeId] ?? null;
+    // OF-36: `rig down` copies a seat's saved context verbatim, so this copy can be any JSON. What a fresh seat replays was
+    // chosen before its launch (a usable copy, or a refusal), and a resume's contained replay reads only its runtime. The
+    // resume steps below read the copy's projection list as they always did (leniently: only its activity-hook entry is
+    // used); a list that is not a list, or a member that is not an object, is not dereferenced.
+    const projection = startupCtx ? (startupCtx as { projectionEntries?: unknown }).projectionEntries : undefined;
+    const resumeCtx = startupCtx && Array.isArray(projection)
+      ? { ...startupCtx, projectionEntries: projection.filter((entry) => !!entry && typeof entry === "object" && !Array.isArray(entry)) }
+      : null;
+    if (startupCtx && !resumeCtx && resumeRequested) {
+      warnings?.push(`Restore: ${node.logicalId}: this snapshot's copy of its startup context has no list of projection entries, so this resume takes nothing from it (no saved activity hooks or missing guidance blocks are put back).`);
+    }
     // Restore only the saved activity selection before either native resume path.
     // This also heals settings stripped by older restores. The entry is a marker:
     // the adapter uses its current relay/manifest, not the old install's path.
     // No current profile resolution, guidance, skills or startup replay belongs here.
     const activityAdapter = opts?.adapters?.["claude-code"];
-    if (resumeRequested && resumeToken && launchResult && startupCtx?.runtime === "claude-code" && activityAdapter) {
-      const entries = startupCtx.projectionEntries.filter(e =>
+    if (resumeRequested && resumeToken && launchResult && resumeCtx?.runtime === "claude-code" && activityAdapter) {
+      const entries = resumeCtx.projectionEntries.filter(e =>
         e.category === "runtime_resource" && e.resourceType === "claude_activity_hooks");
       if (entries.length > 0) try {
         const result = await activityAdapter.project({
@@ -1431,7 +1415,7 @@ export class RestoreOrchestrator {
     if (resumeRequested && resumeToken && launchResult) {
       let guidance: ReturnType<typeof seatGuidance> = null;
       try {
-        guidance = seatGuidance(startupCtx, node.cwd, this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
+        guidance = seatGuidance(resumeCtx, node.cwd, this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
       } catch (err) {
         // Guidance never blocks the exact resume; the post-launch check discloses the gap.
         warnings?.push(`Restore guidance: ${node.logicalId}: could not read its saved guidance selection: ${(err as Error).message}`);

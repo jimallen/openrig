@@ -1184,6 +1184,7 @@ export class SeatLifecycleService {
         startupPolicyHash: startup.hash,
         startupSource: startup.source.kind,
         ...(startup.source.kind === "spec" ? { specSource: startup.source.specSource } : {}),
+        ...(startup.source.kind === "snapshot" ? { snapshotId: startup.source.snapshotId } : {}),
         reason: input.reason.trim(),
         operator: input.operator ?? null,
         status: attentionRequired ? "attention_required" : "ready",

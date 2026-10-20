@@ -1,3 +1,4 @@
+import { parseStartupFromArg, STARTUP_FROM_HELP } from "../fresh-seat-advice.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -226,7 +227,7 @@ Exit codes:
     .option("--no-queue", "Skip queue file checks")
     .option("--no-hooks", "Skip hook checks")
     .option("--fresh <seats...>", "Predict `rig up --existing <rig> --fresh <seats...>`: name each listed seat restore would refuse (a spec or startup file that can no longer start it)")
-    .option("--startup-from <source>", "With --fresh: spec (default) or stored, as for `rig up --startup-from`")
+    .option("--startup-from <source>", "With --fresh: spec (default), stored or snapshot:<snapshot-id>, as for `rig up --startup-from`")
     .addHelpText("after", `
 Default: compact summary with per-rig readiness counts and NOT-READY seats only.
 Ready seats are counted but their detail is omitted to save tokens.
@@ -245,8 +246,8 @@ Examples:
   rig restore-check --ready               Include ready seats in output
   rig restore-check --rig my-rig          Check one rig only`)
     .action(async (opts: { json?: boolean; full?: boolean; ready?: boolean; rig?: string; queue?: boolean; hooks?: boolean; fresh?: string[]; startupFrom?: string }) => {
-      if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
-        console.error(`--startup-from takes spec or stored (got "${opts.startupFrom}").`);
+      if (opts.startupFrom !== undefined && parseStartupFromArg(opts.startupFrom) === null) {
+        console.error(`--startup-from takes ${STARTUP_FROM_HELP} (got "${opts.startupFrom}").`);
         process.exitCode = 2;
         return;
       }

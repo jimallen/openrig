@@ -1,3 +1,4 @@
+import { captureSkippingUnreadable } from "./snapshot-capture.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -20,6 +21,9 @@ export interface TeardownResult {
   deleteBlocked: boolean;
   alreadyStopped: boolean;
   errors: string[];
+  /** OF-36 Q1 (Jim, "Skip that seat, warn"): what the teardown did that is worth knowing but is not a failure, such as
+   *  a seat whose saved startup context was not copied into the snapshot. `rig down` prints them and still exits 0. */
+  warnings?: string[];
 }
 
 interface TeardownOptions {
@@ -132,8 +136,11 @@ export class RigTeardownOrchestrator {
     }
     // Discovery is best-effort; preserve the durable ledger even if it fails.
     try {
-      const snap = this.deps.snapshotCapture.captureSnapshot(rigId, "auto-pre-down");
+      // OF-36 Q1: a seat whose saved startup context is not JSON is captured with no copy, and warned, instead of
+      // failing the whole rig's snapshot.
+      const { snapshot: snap, warnings } = captureSkippingUnreadable(this.deps.snapshotCapture, rigId, "auto-pre-down");
       result.snapshotId = snap.id;
+      if (warnings.length > 0) result.warnings = warnings;
     } catch (err) {
       result.errors.push(`Snapshot failed: ${(err as Error).message}`);
       // Best-effort — teardown proceeds even if snapshot fails

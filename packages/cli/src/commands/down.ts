@@ -14,6 +14,8 @@ interface TeardownResult {
   deleteBlocked: boolean;
   alreadyStopped: boolean;
   errors: string[];
+  /** OF-36 Q1: not failures (a seat the snapshot holds no startup copy for); printed, exit code unaffected. */
+  warnings?: string[];
 }
 
 interface DownAgentEntry {
@@ -193,6 +195,7 @@ rig up <rig> --existing brings it back, resuming each seat's conversation where 
       }
 
       const result = res.data as TeardownResult;
+      for (const w of result.warnings ?? []) console.error(`  warning: ${w}`);
 
       // Exit code: errors first, then deleted, then alreadyStopped
       if (result.errors.length > 0) {

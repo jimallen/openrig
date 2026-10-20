@@ -390,6 +390,9 @@ describe("Restore check routes", () => {
     const session = sessionRegistry.registerSession(node.id, "dev-impl@recoverable-rig");
     sessionRegistry.updateStatus(session.id, "stopped");
     sessionRegistry.updateStartupStatus(session.id, "failed");
+    // The seat's session captured its resume token: a resumable seat WITHOUT one is stopped by restore for a decision
+    // (OF-40), and the check says so; this row is about a seat restore can resume.
+    sessionRegistry.updateResumeToken(session.id, "claude_session_id", "native-uuid");
     insertStartupContextRow(db, node.id);
     seedCurrentSnapshot(rig.id);
 

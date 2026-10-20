@@ -1,4 +1,4 @@
-import { STARTUP_FROM_VALUES, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
+import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
 import { OutboxHandler } from "../domain/outbox-handler.js";
 import { Hono } from "hono";
 import type { RigRepository } from "../domain/rig-repository.js";
@@ -310,9 +310,9 @@ seatRoutes.get("/effort/:seatRef", async (c) => {
 function startupFromOf(body: Record<string, unknown>): StartupFrom | undefined | null {
   const value = body["startupFrom"];
   if (value === undefined) return undefined;
-  return typeof value === "string" && (STARTUP_FROM_VALUES as readonly string[]).includes(value) ? value as StartupFrom : null;
+  return parseStartupFrom(value);
 }
-const INVALID_STARTUP_FROM = { ok: false, code: "invalid_startup_from", message: `startupFrom must be one of: ${STARTUP_FROM_VALUES.join(", ")}.` } as const;
+const INVALID_STARTUP_FROM = { ok: false, code: "invalid_startup_from", message: `startupFrom must be ${STARTUP_FROM_FORMS}.` } as const;
 
 // A distinct route fails closed against older daemons that do not support previews.
 seatRoutes.post("/launch-plan/:seatRef", async (c) => {

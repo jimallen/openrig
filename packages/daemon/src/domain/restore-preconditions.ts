@@ -3,6 +3,19 @@ import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { resolveActiveSnapshotSession } from "./active-occupant.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 
+/** OF-32/OF-36: what a seat this restore starts fresh replays, when that is not simply the snapshot's copy
+ *  (fresh-seat-restore-decision.ts `startupToValidateForSeat`). */
+export type FreshSeatStartupOverride =
+  /** A seat listed with `--fresh`: its source is decided and checked per seat before its launch. */
+  | "resolved_at_launch"
+  /** The snapshot's copy, as before OF-32 stage 3. */
+  | undefined
+  /** What the seat replays instead of the snapshot's copy (its own saved context, or the newest usable snapshot copy;
+   *  `fromSnapshotId` names that copy's snapshot, which restore carries to the seat's launch: review F4). */
+  | { replay: NodeStartupSnapshot; warning?: string; fromSnapshotId?: string }
+  /** The seat has nothing restore can replay: restore starts nothing. */
+  | { refuse: RestoreValidationBlocker };
+
 // Shared read-only validation. Keep restore's refusal order and replay eligibility here.
 export function validatePreRestore(
   data: SnapshotData,
@@ -15,7 +28,7 @@ export function validatePreRestore(
      *  launch, so nothing is checked here. A context: the seat's own saved context, which it replays instead of an
      *  older snapshot copy, checked here exactly as the snapshot's copy was. `undefined` (or the option omitted): the
      *  snapshot's copy, as before OF-32 stage 3. */
-    freshSeatStartup?: (node: { id: string; logicalId: string }) => "resolved_at_launch" | NodeStartupSnapshot | undefined;
+    freshSeatStartup?: (node: { id: string; logicalId: string }) => FreshSeatStartupOverride;
   },
 ): { blockers: RestoreValidationBlocker[]; warnings: string[] } {
   const blockers: RestoreValidationBlocker[] = [];
@@ -131,7 +144,12 @@ export function validatePreRestore(
     }
     const override = consumesReplay ? opts.freshSeatStartup?.(node) : undefined;
     if (override === "resolved_at_launch") continue;
-    const startupCtx = override ?? snapshotCtx;
+    if (override && "refuse" in override) {
+      add(override.refuse);
+      continue;
+    }
+    if (override?.warning) warnings.push(override.warning);
+    const startupCtx = override ? override.replay : snapshotCtx;
     if (!startupCtx) continue;
     const findings = startupInputFindings(node, startupCtx, exists, consumesReplay);
     blockers.push(...findings.blockers);
@@ -177,7 +195,11 @@ export function startupInputFindings(
   const blockers: RestoreValidationBlocker[] = [];
   const warnings: string[] = [];
 
-  for (const storedFile of consumesReplay ? startupCtx.resolvedStartupFiles ?? [] : []) {
+  // OF-36: a snapshot copies a seat's saved context verbatim, so a copy can be any JSON. Restore never replays a copy
+  // that is not a valid startup setup (own-startup-replay.ts); here a copy it will not replay (a resuming seat, or no
+  // adapter) must not end the restore either, so only list members that are objects are inspected.
+  const members = <T>(list: unknown): T[] => (Array.isArray(list) ? list.filter((member) => !!member && typeof member === "object" && !Array.isArray(member)) : []) as T[];
+  for (const storedFile of consumesReplay ? members<NodeStartupSnapshot["resolvedStartupFiles"][number]>(startupCtx.resolvedStartupFiles) : []) {
     // Validate the file replay will actually deliver (#261: built-ins follow the running install).
     const file = reanchorBuiltinStartupFile(storedFile, undefined, undefined, exists);
     if (!file.required) {
@@ -221,7 +243,7 @@ export function startupInputFindings(
   // gate from blocking the attempt entirely. Missing REQUIRED startup
   // files and genuinely-fatal blockers (malformed snapshot, missing nodes)
   // stay critical above.
-  for (const storedEntry of startupCtx.projectionEntries ?? []) {
+  for (const storedEntry of members<NodeStartupSnapshot["projectionEntries"][number]>(startupCtx.projectionEntries)) {
     const entry = reanchorShippedProjectionEntry(storedEntry, undefined, exists);
     if (pathLike(entry.sourcePath) && !exists(entry.sourcePath)) {
       warnings.push(`projection_drift: source root missing for ${node.logicalId}: ${entry.sourcePath} (projection will be skipped at startup; session continuity is unaffected)`);

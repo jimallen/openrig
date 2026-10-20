@@ -1,3 +1,4 @@
+import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import nodePath from "node:path";
 import { Hono } from "hono";
 import { bootstrapFailureResponse } from "./bootstrap-failure-response.js";
@@ -9,7 +10,7 @@ import type { RigRepository } from "../domain/rig-repository.js";
 import { summarizeSnapshot, type SnapshotRepository } from "../domain/snapshot-repository.js";
 import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
-import { STARTUP_FROM_VALUES, type StartupFrom } from "../domain/seat-startup-source.js";
+import { STARTUP_FROM_FORMS, parseStartupFrom, type StartupFrom } from "../domain/seat-startup-source.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { existsSync } from "node:fs";
 import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals } from "../domain/restore-plan-preview.js";
@@ -118,6 +119,8 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     staleSnapshot = true;
   }
   let capturedCurrentState = false;
+  // OF-36 Q1: what the auto-rehydrate capture could not copy (a seat whose saved startup context is not JSON).
+  let captureWarnings: string[] = [];
   if (!snapshot) {
     const eligibility = assessCurrentStateRehydrateEligibility(snapshotRepo.db, rig);
     if (!eligibility.ok) {
@@ -155,7 +158,9 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
   }
 
   if (!snapshot) {
-    snapshot = deps.snapshotCapture.captureSnapshot(rigId, "auto-rehydrate");
+    const captured = captureSkippingUnreadable(deps.snapshotCapture, rigId, "auto-rehydrate");
+    snapshot = captured.snapshot;
+    captureWarnings = captured.warnings;
     snapshotSelection = {
       ...summarizeSnapshot(snapshot),
       mode: "automatic",
@@ -191,9 +196,10 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
         snapshotKind: snapshot.kind,
         ...result.result,
         remediation: result.result.blockers?.map((blocker) => blocker.remediation) ?? [],
+        warnings: [...captureWarnings, ...(result.result.warnings ?? [])],
       }, 409);
     }
-    return c.json({ error: result.message, code: result.code }, result.code === "rig_not_stopped" ? 409 : 400);
+    return c.json({ error: result.message, code: result.code, ...(captureWarnings.length > 0 ? { warnings: captureWarnings } : {}) }, result.code === "rig_not_stopped" ? 409 : 400);
   }
 
   // Compute attach command from first running node (same logic as /api/rigs/:id/up)
@@ -213,7 +219,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     warnings: capturedCurrentState
       ? [staleSnapshot
           ? "Existing restore snapshots named an older occupant; captured current DB state as auto-rehydrate snapshot for reboot recovery."
-          : "No restore-usable snapshot existed; captured current DB state as auto-rehydrate snapshot for reboot recovery.", ...result.result.warnings]
+          : "No restore-usable snapshot existed; captured current DB state as auto-rehydrate snapshot for reboot recovery.", ...captureWarnings, ...result.result.warnings]
       : result.result.warnings,
     attachCommand,
   }, 200);
@@ -235,8 +241,8 @@ upRoutes.post("/", async (c) => {
   // OF-32 stage 3: `rig up <rig> --existing --startup-from stored` replays each fresh seat's saved startup files
   // instead of re-reading the rig's spec. It means something only when this call restores an existing rig.
   const startupFrom = body["startupFrom"];
-  if (startupFrom !== undefined && !STARTUP_FROM_VALUES.includes(startupFrom as StartupFrom)) {
-    return c.json({ ok: false, code: "invalid_startup_from", error: `startupFrom must be one of: ${STARTUP_FROM_VALUES.join(", ")}.` }, 400);
+  if (startupFrom !== undefined && parseStartupFrom(startupFrom) === null) {
+    return c.json({ ok: false, code: "invalid_startup_from", error: `startupFrom must be ${STARTUP_FROM_FORMS}.` }, 400);
   }
 
   if (!sourceRef) {

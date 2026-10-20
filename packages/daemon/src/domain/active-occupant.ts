@@ -164,15 +164,15 @@ export function absentSeatResumeHistory<T extends { id: string; nodeId: string; 
  *  (The one place `rig up --existing` is named is not a fresh-start suggestion but a measured non-recommendation: the
  *  malformed-startup-context guidance in seat-startup-source.ts says why `rig down` + `rig up --existing --fresh` does not
  *  reliably heal an unreadable saved row.) */
-export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: "spec" | "stored"): string {
+export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: import("./seat-startup-source.js").StartupFrom): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
   // OF-32: a fresh seat re-reads its rig's spec by default. An operator who chose `--startup-from stored` for this
   // restore is told the same escape for the seats it could not start.
-  return `rig seat launch ${seat} --fresh${startupFrom === "stored" ? " --startup-from stored" : ""} --reason "<why>"`;
+  return `rig seat launch ${seat} --fresh${startupFrom && startupFrom !== "spec" ? ` --startup-from ${startupFrom}` : ""} --reason "<why>"`;
 }
 
 /** The stop-for-decision explanation for such a seat, worded once for apply and preview. */
-export function absentSeatResumeHistoryError(logicalId: string, resumeType: string | null, rigName: string, startupFrom?: "spec" | "stored"): string {
+export function absentSeatResumeHistoryError(logicalId: string, resumeType: string | null, rigName: string, startupFrom?: import("./seat-startup-source.js").StartupFrom): string {
   return `Original session not resumed: the seat had no running occupant when this snapshot was taken, but an earlier occupant left a '${resumeType}' resume token. No session was started. The recorded token has not been verified and may be stale or belong to another runtime. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(logicalId, rigName, startupFrom)}.`;
 }
 

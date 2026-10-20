@@ -1,3 +1,4 @@
+import { parseStartupFromArg, STARTUP_FROM_HELP } from "../fresh-seat-advice.js";
 import { Command } from "commander";
 import { DaemonClient, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
@@ -280,7 +281,7 @@ function printSeatError(error: SeatStatusError, fallback: string): void {
 }
 
 /** OF-32: where a fresh launch took (or would take) its startup files from. */
-type StartupSourceReport = { kind: "spec"; specSource: string; specPath: string } | { kind: "stored"; reason: string };
+type StartupSourceReport = { kind: "spec"; specSource: string; specPath: string } | { kind: "stored"; reason: string } | { kind: "snapshot"; snapshotId: string };
 
 function describeStartupSource(source: StartupSourceReport): string {
   if (source.kind === "spec") {
@@ -288,6 +289,7 @@ function describeStartupSource(source: StartupSourceReport): string {
       ? `Startup files: re-read from ${source.specSource}.`
       : `Startup files: re-read from ${source.specSource} (now ${source.specPath}).`;
   }
+  if (source.kind === "snapshot") return `Startup files: replayed from snapshot ${source.snapshotId}'s copy (--startup-from snapshot:${source.snapshotId}).`;
   const why = source.reason === "requested" ? "--startup-from stored"
     : source.reason === "not_in_spec" ? "the rig's spec does not declare this seat"
       : "this rig records no spec source";
@@ -710,7 +712,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--reason <text>", "Audit reason (required when executing, optional with --plan)")
     .option("--plan", "Preview this fresh launch without changing any seat or starting tmux")
     .option("--stop", "Stop the current live managed occupant before launching fresh")
-    .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; stored: replay the startup files saved by the seat's last successful launch")
+    .option("--startup-from <source>", "spec (default): re-read the rig's spec as it is now; snapshot:<snapshot-id>: replay that snapshot's copy of the seat's startup files (checked before anything is stopped); stored: replay the startup files saved by the seat's last successful launch")
     .option("--operator <address>", "Operator recorded on the audit event")
     .option("--json", "JSON output for agents")
     .description("Launch a deliberate fresh occupant for exactly one existing seat")
@@ -740,8 +742,8 @@ Examples:
   rig seat launch dev.impl --fresh --stop --reason "replace managed occupant" --json
   rig seat launch dev.impl --fresh --stop --startup-from stored --reason "keep the running persona"`)
     .action(async (seat: string, opts: { fresh: boolean; reason?: string; plan?: boolean; stop?: boolean; startupFrom?: string; operator?: string; json?: boolean }) => {
-      if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
-        const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes spec or stored (got "${opts.startupFrom}").` };
+      if (opts.startupFrom !== undefined && parseStartupFromArg(opts.startupFrom) === null) {
+        const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes ${STARTUP_FROM_HELP} (got "${opts.startupFrom}").` };
         if (opts.json) console.log(JSON.stringify(error, null, 2));
         else console.error(error.message);
         process.exitCode = 1;

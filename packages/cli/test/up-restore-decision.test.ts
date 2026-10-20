@@ -146,7 +146,7 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     const { logs, exitCode } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "release"]);
     });
-    expect(logs.join("\n")).toContain(`--startup-from takes spec or stored (got "release")`);
+    expect(logs.join("\n")).toContain(`--startup-from takes spec, stored or snapshot:<snapshot-id> (got "release")`);
     expect(exitCode).toBe(1);
     expect(upBodies).toHaveLength(0);
   });
@@ -179,6 +179,26 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(posted.body).toMatchObject({ fresh: true, startupFrom: "stored" });
   });
 
+  // OF-36 re-check G1 / R5: snapshot:<id> was named for the listed seats; the CLI cannot check it for another seat, so
+  // neither its advice line nor an accepted fresh start for a seat left awaiting a decision carries it. (The fake daemon
+  // refuses a fresh-listed /api/up, so the restore here lists no seat; the CLI path that prints the advice is the same.)
+  it("under --startup-from snapshot:<id>, the headless advice and an accepted fresh start for an awaiting seat do not name the snapshot", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [{ logicalId: "dev.qa", status: "awaiting-decision", error: "no token available" }], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "snapshot:01SNAP"]);
+    });
+    expect(printedSeatLaunchCommands(logs.join("\n")), logs.join("\n")).toEqual([`rig seat launch 'dev.qa@myrig' --fresh --reason "<why>"`]);
+    expect(upBodies.at(-1)).toMatchObject({ startupFrom: "snapshot:01SNAP" });
+
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "myrig", "--existing", "--startup-from", "snapshot:01SNAP"]);
+    });
+    expect(seatPosts.at(-1)).toEqual({ path: "/api/seat/launch/dev.qa%40myrig", body: { fresh: true, reason: "operator accepted fresh start at rig up" } });
+  });
+
   // OF-32 stage 3 review must-fix 1: each seat the restore started fresh says where its startup files came from.
   it("rig up --existing prints, under each fresh seat, where its startup files came from and any agent version move", async () => {
     respond = () => ({
@@ -196,7 +216,7 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     const at = (line: string) => logs.indexOf(line);
     expect(at("    startup files re-read from /lib/team/rig.yaml (now /rel/b/rigs/team/rig.yaml); agent 1.0.0 -> 2.0.0")).toBe(at("  dev.impl: fresh-primed") + 1);
     expect(at("    startup files replayed from the seat's last successful launch (this rig records no spec source)")).toBe(at("  dev.qa: fresh-primed") + 1);
-    expect(at("    startup files replayed from this snapshot (the seat's saved startup files cannot be read)")).toBe(at("  dev.ops: fresh-primed") + 1);
+    expect(at("    startup files replayed from this snapshot (the seat's saved startup files cannot be used)")).toBe(at("  dev.ops: fresh-primed") + 1);
     expect(logs[at("  dev.lead: resumed") + 1] ?? "").not.toContain("startup files");
   });
 

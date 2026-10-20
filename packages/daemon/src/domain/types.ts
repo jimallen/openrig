@@ -147,7 +147,7 @@ export type RigEvent =
   // a request that waited behind it, or a restart that never recorded a result, is refused rather than repeated.
   | { type: "seat.restart_in_place_started"; rigId: string; nodeId: string; logicalId: string; sessionName: string; pane: string; paneShape: "shell_backed" | "direct_native"; oldPid: number; oldStartedAt: string | null; codexHome: string; reason: string; operator: string | null }
   | { type: "seat.restart_in_place_finished"; rigId: string; nodeId: string; logicalId: string; sessionName: string; outcome: "restarted_account_unverified" | "not_started" | "incomplete" | "native_unknown"; newPid: number | null; newStartedAt: string | null; codexHome: string; paneHeld: boolean; accountLinesAtRestart: Record<string, number> | null; finishedAt: string }
-  | { type: "seat.fresh_launched"; rigId: string; nodeId: string; logicalId: string; sessionName: string; sessionId: string; supersededSessionIds: string[]; retiringGeneration: string | null; newGeneration: string; nativeSessionId: string | null; nativeSessionIdReason?: string; model: string | null; effort?: string | null; startupPolicyHash: string; startupSource?: "spec" | "stored"; specSource?: string; reason: string; operator: string | null; status: "ready" | "attention_required" }
+  | { type: "seat.fresh_launched"; rigId: string; nodeId: string; logicalId: string; sessionName: string; sessionId: string; supersededSessionIds: string[]; retiringGeneration: string | null; newGeneration: string; nativeSessionId: string | null; nativeSessionIdReason?: string; model: string | null; effort?: string | null; startupPolicyHash: string; startupSource?: "spec" | "stored" | "snapshot"; specSource?: string; snapshotId?: string; reason: string; operator: string | null; status: "ready" | "attention_required" }
   | { type: "seat.fresh_launch_failed"; rigId: string; nodeId: string; logicalId: string; sessionName: string; sessionId: string; supersededSessionIds: string[]; retiringGeneration: string | null; newGeneration: string | null; model: string | null; effort?: string | null; startupPolicyHash: string; reason: string; operator: string | null; errors: string[] }
   | { type: "snapshot.created"; rigId: string; snapshotId: string; kind: string }
   | { type: "restore.started"; rigId: string; snapshotId: string; snapshotSelection?: RestoreSnapshotSelection; intendedRoster?: Array<{ nodeId: string; logicalId: string }>; excludedNodes?: RestoreExcludedNode[] }
@@ -473,8 +473,11 @@ export type RestoreStartupSource =
   /** The context saved by the seat's last successful launch. `not_fresh_listed`: the restore started the seat fresh
    *  without its being listed with --fresh, so it comes back on its saved setup and the spec is not re-read. */
   | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" | "not_fresh_listed" }
-  /** This snapshot's copy: the seat has no saved context of its own, or it cannot be read. */
-  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" };
+  /** A snapshot's copy: the seat has no saved context of its own, or it cannot be used (not JSON, the wrong shape,
+   *  another runtime). `snapshotId` (OF-36): the copy came from another snapshot than the restored one, the newest
+   *  whose copy can be used; absent when it is the restored snapshot's own copy. `requested` (OF-36 Q2): the operator
+   *  named it with `--startup-from snapshot:<id>`. */
+  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" | "requested"; snapshotId?: string };
 
 export interface RestoreNodeResult {
   nodeId: string;

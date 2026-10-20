@@ -71,7 +71,13 @@ export class SnapshotCapture {
     this.checkpointStore = deps.checkpointStore;
   }
 
-  captureSnapshot(rigId: string, kind: string, opts?: { intendedNodeIds?: string[] }): Snapshot {
+  captureSnapshot(rigId: string, kind: string, opts?: {
+    intendedNodeIds?: string[];
+    /** N-C3: with this, a seat whose saved startup context has a column that is not JSON is captured with no copy
+     *  (null) and reported here, instead of failing the whole capture. Every automatic capture passes it, through
+     *  `captureSkippingUnreadable`; the manual `rig snapshot` capture does not. */
+    onUnreadableStartupContext?: (nodeId: string, message: string) => void;
+  }): Snapshot {
     // 1. Get rig with nodes, edges, bindings
     const rig = this.rigRepo.getRig(rigId);
     if (!rig) {
@@ -117,7 +123,17 @@ export class SnapshotCapture {
 
     const nodeStartupContext: Record<string, import("./types.js").NodeStartupSnapshot | null> = {};
     for (const node of rig.nodes) {
-      nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
+      const onUnreadable = opts?.onUnreadableStartupContext;
+      if (!onUnreadable) {
+        nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
+        continue;
+      }
+      try {
+        nodeStartupContext[node.id] = readNodeStartupSnapshot(this.db, node.id);
+      } catch (err) {
+        nodeStartupContext[node.id] = null;
+        onUnreadable(node.id, (err as Error).message);
+      }
     }
 
     // 4b. Get env receipt from services record if services exist
@@ -188,4 +204,31 @@ export class SnapshotCapture {
       throw new Error(`Cannot capture snapshot from malformed authoritative topology roster: ${(error as Error).message}`);
     }
   }
+}
+
+/**
+ * OF-36 Q1 (Jim, 2026-10-20: "Skip that seat, warn"): an automatic capture (`rig down`'s auto-pre-down, the periodic
+ * capture, every auto-rehydrate capture) does not fail the whole rig's snapshot because one seat's saved startup
+ * context has a column that is not JSON. That seat is captured with no copy (null), and a warning says so. Restore
+ * never replays a copy it cannot use: a seat it starts fresh replays the newest valid snapshot copy, or is refused when
+ * there is none (own-startup-replay.ts). A free function over `captureSnapshot`, so any capture seam works with it.
+ */
+export function captureSkippingUnreadable(
+  capture: Pick<SnapshotCapture, "captureSnapshot"> & { db?: Database.Database },
+  rigId: string,
+  kind: string,
+  opts?: { intendedNodeIds?: string[] },
+): { snapshot: Snapshot; warnings: string[] } {
+  const warnings: string[] = [];
+  const snapshot = capture.captureSnapshot(rigId, kind, {
+    ...opts,
+    onUnreadableStartupContext: (nodeId, message) => {
+      let logicalId = nodeId;
+      try {
+        logicalId = (capture.db?.prepare("SELECT logical_id FROM nodes WHERE id = ?").get(nodeId) as { logical_id: string } | undefined)?.logical_id ?? nodeId;
+      } catch { /* the node id names it */ }
+      warnings.push(`Snapshot (${kind}) holds no copy of ${logicalId}'s saved startup context: a column of it is not JSON (${message}). The rest of the rig was captured.`);
+    },
+  });
+  return { snapshot, warnings };
 }

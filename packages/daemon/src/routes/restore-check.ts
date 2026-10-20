@@ -4,8 +4,11 @@ import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
-import { predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
-import type { SeatStartupSpecReader, StartupFrom } from "../domain/seat-startup-source.js";
+import { listedRefusalRemedy, predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
+import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
+import { predictSeatStops } from "../domain/restore-seat-gates.js";
+import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
+import { SessionRegistry } from "../domain/session-registry.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
@@ -153,10 +156,15 @@ export const RESTORE_CHECK_PROBE_TIMEOUT_MS = SESSION_LIVENESS_DEADLINE_MS;
 /** Restore's own decisions, for the check and the plan: the functions RestoreOrchestrator calls. */
 export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Record<string, RuntimeAdapter | undefined>, specReader: SeatStartupSpecReader | null): RestoreParityDeps {
   return {
-    startupToValidate: (rigId, logicalId, listed) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed }),
+    startupToValidate: (rigId, logicalId, listed, selectedCopy) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed, selectedCopy }),
+    predictSeatStops: (rigId, snapshotData, listed) => predictSeatStops({ db: rigRepo.db, rigRepo }, { rigId, data: snapshotData, ...listed }),
     predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
       { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
       { rigId, ...listed, snapshot: snapshotData, exists: existsSync },
+    ),
+    listedRefusalRemedy: (rigId, logicalId, snapshotData, listed) => listedRefusalRemedy(
+      { db: rigRepo.db, rigRepo, runtimeAdapters },
+      { rigId, logicalId, snapshot: snapshotData, ...listed, exists: existsSync },
     ),
   };
 }
@@ -251,6 +259,9 @@ export function createRestoreCheckService(
       try { return existsSync(path); } catch { return false; }
     },
     readFile: (path: string) => readFileSync(path, "utf-8"),
+    classifyRunningSessions: tmuxAdapter
+      ? (rigId, probe) => classifyRunningSessions(new SessionRegistry(rigRepo.db).getSessionsForRig(rigId), probe)
+      : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,
   };
   return new RestoreCheckService(serviceDeps);
@@ -274,10 +285,10 @@ restoreCheckRoutes.get("/", async (c) => {
     return c.json({ error: "fresh needs rig=<name>: a restore targets one rig, and the same seat name in another rig would be predicted too.", code: "fresh_requires_rig" }, 400);
   }
   const startupFromQuery = c.req.query("startupFrom");
-  if (startupFromQuery !== undefined && startupFromQuery !== "spec" && startupFromQuery !== "stored") {
-    return c.json({ error: "startupFrom must be one of: spec, stored.", code: "invalid_startup_from" }, 400);
+  const startupFrom: StartupFrom | undefined = startupFromQuery === undefined ? undefined : parseStartupFrom(startupFromQuery) ?? undefined;
+  if (startupFromQuery !== undefined && startupFrom === undefined) {
+    return c.json({ error: `startupFrom must be ${STARTUP_FROM_FORMS}.`, code: "invalid_startup_from" }, 400);
   }
-  const startupFrom: StartupFrom | undefined = startupFromQuery;
 
   try {
     const service = createRestoreCheckService(deps.rigRepo, deps.snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined, {
