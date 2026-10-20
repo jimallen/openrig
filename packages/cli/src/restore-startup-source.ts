@@ -4,7 +4,7 @@ export type RestoreStartupSourceReport =
   | { kind: "spec"; specSource: string; specPath: string; previousSpecVersion: string | null; specVersion: string }
   | { kind: "stored"; reason: "requested" | "no_recorded_source" | "not_in_spec" | "not_fresh_listed" }
   /** `snapshotId` (OF-36): another snapshot than the restored one (the newest whose copy can be used). */
-  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable"; snapshotId?: string };
+  | { kind: "snapshot"; reason: "no_saved_context" | "saved_context_unreadable" | "requested"; snapshotId?: string };
 
 export function describeRestoreStartupSource(source: RestoreStartupSourceReport): string {
   if (source.kind === "spec") {
@@ -21,6 +21,7 @@ export function describeRestoreStartupSource(source: RestoreStartupSourceReport)
         : "this rig records no spec source";
     return `startup files replayed from the seat's last successful launch (${why})`;
   }
+  if (source.reason === "requested" && source.snapshotId) return `startup files replayed from snapshot ${source.snapshotId} (--startup-from snapshot:${source.snapshotId})`;
   const from = source.snapshotId ? `snapshot ${source.snapshotId}, the newest whose copy can be used` : "this snapshot";
   return source.reason === "saved_context_unreadable"
     ? `startup files replayed from ${from} (the seat's saved startup files cannot be used)`

@@ -278,7 +278,13 @@ A seat that resumes replays nothing, so a broken copy does not stop it.
 holds. When the rig records a spec source, `rig seat launch '<seat>@<rig>' --fresh --stop --reason "<why>"` (the
 default, which re-reads the spec) heals every kind of unreadable row, leaves the other seats running, and delivers the
 spec's current startup files, not the saved ones; if the spec can no longer start the seat it is refused and changes
-nothing. Otherwise restore is the way back: `rig down <rig>`, then
+nothing. `--startup-from snapshot:<snapshot-id>` (on `rig seat launch --fresh`, and on `rig up <rig> --existing
+--fresh <seat>`) replays that snapshot's copy of the seat's startup files instead. The copy is checked before anything
+is stopped or launched, by the same rule as the saved files (a valid startup setup for the seat's runtime); a snapshot
+of another rig, one that does not hold the seat, or a copy that cannot be used is refused, and the refusal names the
+newest snapshot whose copy can be used. When the saved files cannot be read and some snapshot holds a valid copy, the
+refusal of `rig seat launch --fresh --startup-from stored` names that command for the newest one: it heals only this
+seat and leaves the others running. Otherwise restore is the way back: `rig down <rig>`, then
 `rig up <rig> --existing --fresh <seat> --startup-from stored` (this restarts every seat). An automatic snapshot
 (`rig down`, the periodic snapshot, an auto-rehydrate capture) no longer fails because one seat's saved files are not
 JSON: that seat gets no copy, the rest of the rig is captured, and the capture warns (`rig down` lists it under its

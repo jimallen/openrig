@@ -12,7 +12,7 @@ import { prepareDaemonAutoStart } from "../daemon-auto-start.js";
 import type { StartOptions } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
+import { freshSeatLaunchCommand, parseStartupFromArg, STARTUP_FROM_HELP, type StartupFromArg } from "../fresh-seat-advice.js";
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
@@ -123,18 +123,18 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
     .option("--existing", "Treat <source> as an existing rig name; bypass library-spec name resolution")
     .option("--on-existing <choice>", "For a project rig whose project already has a stopped rig: resume (bring that rig back) or fresh (archive it and start a new one). Without it, rig up asks on a terminal")
     .option("--fresh <seats...>", "Deliberately fresh-prime the named seats (logical ids) instead of resuming their original sessions (operation B; reported as fresh-primed)")
-    .option("--startup-from <source>", "With an existing rig: where the seats you list with --fresh (and any seat you accept a fresh start for) take their startup files from: spec (default; the rig's spec as it is now) or stored (the files saved at the seat's last successful launch). Every other seat comes back on its saved files")
+    .option("--startup-from <source>", "With an existing rig: where the seats you list with --fresh (and any seat you accept a fresh start for) take their startup files from: spec (default; the rig's spec as it is now), stored (the files saved at the seat's last successful launch) or snapshot:<snapshot-id> (that snapshot's copy of each listed seat's files, checked before the seat is started). Every other seat comes back on its saved files")
     .option("--json", "JSON output for agents")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
     .action(async (source: string, opts: { nonInterruptive?: boolean; plan?: boolean; yes?: boolean; cwd?: string; target?: string; existing?: boolean; fresh?: string[]; json?: boolean; host?: string; preset?: string; seat?: string[]; onExisting?: string; startupFrom?: string }) => {
       // OF-32 stage 3: the restore's escape from re-reading the spec, checked before anything is sent.
-      if (opts.startupFrom !== undefined && opts.startupFrom !== "spec" && opts.startupFrom !== "stored") {
-        const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes spec or stored (got "${opts.startupFrom}").` };
+      if (opts.startupFrom !== undefined && parseStartupFromArg(opts.startupFrom) === null) {
+        const error = { ok: false, code: "invalid_startup_from", message: `--startup-from takes ${STARTUP_FROM_HELP} (got "${opts.startupFrom}").` };
         if (opts.json) console.log(JSON.stringify(error)); else console.error(error.message);
         process.exitCode = 1;
         return;
       }
-      const startupFrom = opts.startupFrom as "spec" | "stored" | undefined;
+      const startupFrom = opts.startupFrom as StartupFromArg | undefined;
       const startupFromBody = startupFrom ? { startupFrom } : {};
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no

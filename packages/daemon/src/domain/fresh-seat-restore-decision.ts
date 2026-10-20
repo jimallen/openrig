@@ -4,7 +4,7 @@
 // what restore WOULD decide (`predictListedSeatRefusals`), so a prediction cannot be looser than the restore it
 // predicts: they run one code path over the same inputs.
 import type Database from "better-sqlite3";
-import { resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { resolveFreshSeatStartup, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
 import { freshSeatReplaysSnapshotStartup, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
 import { noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
@@ -47,6 +47,8 @@ export function startupToValidateForSeat(
   const runtime = live?.runtime ?? null;
   if (!rig || !live || !runtime || !input.adapters?.[runtime]) return undefined;
   if (input.freshLogicalIds?.includes(input.logicalId)) {
+    // OF-36 Q2: `--startup-from snapshot:<id>` names the copy; it is read and checked per seat before its launch.
+    if (startupFromSnapshotId(input.startupFrom)) return "resolved_at_launch";
     const replaysCopy = freshSeatReplaysSnapshotStartup({
       adapterAvailable: true,
       seatHasSavedContext: deps.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(live.id) !== undefined,

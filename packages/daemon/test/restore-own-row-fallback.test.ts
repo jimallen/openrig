@@ -19,7 +19,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRestoreHarness, type RestoreHarness } from "./helpers/restore-fresh-harness.js";
 import { createRestoreCheckService } from "../src/routes/restore-check.js";
-import { readStoredStartupContext } from "../src/domain/seat-startup-source.js";
+import { parseStartupFrom, readStoredStartupContext } from "../src/domain/seat-startup-source.js";
 import type { StartupFrom } from "../src/domain/seat-startup-source.js";
 
 type Outcome = "ok" | "seat-refused" | "pre-restore-refused" | "failed-after-launch" | "restore-ended" | "awaiting" | "attention";
@@ -319,6 +319,33 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
       expect(refused.text).toContain("no snapshot of this rig holds a readable copy of its startup files, and its saved startup context cannot be used: a column is not JSON");
       expectAgreement(check2, refused);
     });
+
+  // --- OF-36 Q2: `--startup-from snapshot:<id>`, predicted by the check exactly as restore decides it ---------------
+  it("Q2 listed with --startup-from snapshot:<id>: a usable copy comes up and the check is not red; a foreign snapshot is refused and the check says so", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: false });
+    const s1 = h.snapshotCapture.captureSnapshot(seat.rigId, "manual").id;
+    setCol(seat.nodeId, "projection_entries_json", "{}");
+    const s2 = await h.down(seat.rigId);
+    const foreign = h.snapshotCapture.captureSnapshot(h.rigRepo.createRig("other").id, "manual").id;
+
+    const refusedCheck = await runCheck({ listed: true, startupFrom: `snapshot:${foreign}` });
+    const refused = await runRestore(s2, { listed: true, startupFrom: `snapshot:${foreign}` });
+    expect(refused.outcome, refused.text).toBe("seat-refused");
+    expect(refused.text).toMatch(new RegExp(`^Snapshot ${foreign} belongs to another rig`));
+    expectAgreement(refusedCheck, refused);
+
+    const okCheck = await runCheck({ listed: true, startupFrom: `snapshot:${s1}` });
+    const ok = await runRestore(s2, { listed: true, startupFrom: `snapshot:${s1}` });
+    expect(ok.outcome, ok.text).toBe("ok");
+    expectAgreement(okCheck, ok);
+    expect(h.delivered.at(-1)!.map((f) => f.absolutePath)).toEqual(copyOf(s1).resolvedStartupFiles.map((f) => f.absolutePath));
+  });
+
+  it("Q2 the accepted spellings of --startup-from", () => {
+    expect(["spec", "stored", "snapshot:01ABC", "snapshot:", "snapshot:a b", "snapshot", "SNAPSHOT:01ABC", "file"].map((v) => parseStartupFrom(v)))
+      .toEqual(["spec", "stored", "snapshot:01ABC", null, null, null, null, null]);
+  });
 
   // --- a `rig launch` target (launchSingleNode): no pre-restore validation, so the seat itself is refused -------------
   const launchSeat = (rigId: string) => h.restore.launchSingleNode(rigId, SEAT, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);

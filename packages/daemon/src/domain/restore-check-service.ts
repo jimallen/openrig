@@ -175,7 +175,7 @@ export interface RestoreCheckOpts {
    *  `restoreParity`; each listed seat restore would refuse is a blocker, with restore's own refusal text. */
   freshLogicalIds?: string[];
   /** With `freshLogicalIds`: `--startup-from` (default spec). */
-  startupFrom?: "spec" | "stored";
+  startupFrom?: import("./seat-startup-source.js").StartupFrom;
 }
 
 /** What restore decides, asked of the same functions restore calls (fresh-seat-restore-decision.ts,
@@ -184,10 +184,10 @@ export interface RestoreCheckOpts {
 export interface RestoreParityDeps {
   /** startupToValidateForSeat, for this seat and these listed seats; `selectedCopy` is the checked snapshot's copy of
    *  the seat's startup context. Its `{ refuse }` is restore's own pre-restore refusal (OF-36). */
-  startupToValidate(rigId: string, logicalId: string, listed: { freshLogicalIds?: string[]; startupFrom?: "spec" | "stored" }, selectedCopy: NodeStartupSnapshot | null):
+  startupToValidate(rigId: string, logicalId: string, listed: { freshLogicalIds?: string[]; startupFrom?: import("./seat-startup-source.js").StartupFrom }, selectedCopy: NodeStartupSnapshot | null):
     import("./restore-preconditions.js").FreshSeatStartupOverride;
   /** predictListedSeatRefusals: logical id -> the text restore reports after "Fresh start refused: ". */
-  predictListedSeatRefusals(rigId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: "spec" | "stored" }): Promise<Map<string, string>>;
+  predictListedSeatRefusals(rigId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: import("./seat-startup-source.js").StartupFrom }): Promise<Map<string, string>>;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---

@@ -200,3 +200,47 @@ describe("N-C2 N6: the recorded spec is gone and the saved row cannot be used: t
     expect((await t.seatStatuses())["dev.impl"], "the refusals stopped nothing").toBe("running");
   }, 400_000);
 });
+
+// OF-36 Q2 (Jim, 2026-10-20): `--startup-from snapshot:<id>`, typed from the advice that names it.
+describe("OF-36 Q2 the advice's snapshot route: rig seat launch --fresh --stop --startup-from snapshot:<id> heals only this seat", () => {
+  const t = useRig({ recordSpec: false });
+  it("typed from the refusal", async () => {
+    const snap = await t.rig(["snapshot", (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id]);
+    expect(snap.code, JSON.stringify(snap)).toBe(0);
+    t.corrupt("startup_actions_json", BAD_ACTION);
+    const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
+    const text = `${refused.stderr}\n${refused.stdout}`;
+    const named = text.match(/rig seat launch '[^']*' --fresh --stop --startup-from snapshot:[A-Za-z0-9_-]+ --reason "<why>"/);
+    expect(named, text).toBeTruthy();
+
+    const ran = await t.run(named![0].replace("<why>", "of36-q2") + " --json");
+    expect(ran.code, JSON.stringify(ran)).toBe(0);
+    expect(await t.storedReadsOk(), "the row is readable again").toBe(true);
+    expect((await t.seatStatuses())["dev.qa"], "the sibling kept running").toBe("running");
+  }, 400_000);
+});
+
+describe("OF-36 Q2 rig up --existing --fresh <seat> --startup-from snapshot:<id>, and the refusals", () => {
+  const t = useRig({ recordSpec: false });
+  it("typed", async () => {
+    const bad = await t.run(`rig seat launch '${impl}' --fresh --stop --startup-from snapshot: --reason x --json`);
+    expect(bad.code).not.toBe(0);
+    expect(bad.stdout + bad.stderr).toContain("--startup-from takes spec, stored or snapshot:<snapshot-id>");
+
+    const id = (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id;
+    expect((await t.rig(["snapshot", id])).code).toBe(0);
+    const s1 = t.sql<{ id: string }>("SELECT id FROM snapshots ORDER BY rowid DESC LIMIT 1")[0]!.id;
+    t.corrupt("projection_entries_json", "{}");
+    const missing = await t.run(`rig seat launch '${impl}' --fresh --stop --startup-from snapshot:01NOSUCHSNAPSHOT --reason x --json`);
+    expect(missing.code).not.toBe(0);
+    expect(missing.stdout + missing.stderr).toContain("Snapshot 01NOSUCHSNAPSHOT does not exist.");
+    expect((await t.seatStatuses())["dev.impl"], "the refusal stopped nothing").toBe("running");
+
+    expect((await t.rig(["down", rigName, "--json"])).code).toBe(0);
+    const up = await t.run(`rig up '${rigName}' --existing --fresh dev.impl --startup-from snapshot:${s1} --json`);
+    const seat = (JSON.parse(up.stdout) as { nodes: Array<{ logicalId: string; status: string; startupSource?: unknown }> }).nodes.find((n) => n.logicalId === "dev.impl")!;
+    expect(seat.status, up.stdout).toBe("fresh-primed");
+    expect(seat.startupSource).toEqual({ kind: "snapshot", reason: "requested", snapshotId: s1 });
+    expect(await t.storedReadsOk()).toBe(true);
+  }, 400_000);
+});

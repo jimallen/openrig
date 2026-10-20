@@ -1234,6 +1234,8 @@ export class RestoreOrchestrator {
             kind: "spec", specSource: source.specSource, specPath: source.specPath,
             previousSpecVersion: previous?.version ?? null, specVersion: decided.context.resolvedSpec?.version ?? "",
           };
+        } else if (source.kind === "snapshot") {
+          startupReport = { kind: "snapshot", reason: "requested", snapshotId: source.snapshotId };
         } else {
           startupReport = { kind: "stored", reason: source.reason };
         }

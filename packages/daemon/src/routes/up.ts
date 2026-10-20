@@ -9,7 +9,7 @@ import type { RigRepository } from "../domain/rig-repository.js";
 import { summarizeSnapshot, type SnapshotRepository } from "../domain/snapshot-repository.js";
 import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
-import { STARTUP_FROM_VALUES, type StartupFrom } from "../domain/seat-startup-source.js";
+import { STARTUP_FROM_FORMS, parseStartupFrom, type StartupFrom } from "../domain/seat-startup-source.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { existsSync } from "node:fs";
 import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals } from "../domain/restore-plan-preview.js";
@@ -240,8 +240,8 @@ upRoutes.post("/", async (c) => {
   // OF-32 stage 3: `rig up <rig> --existing --startup-from stored` replays each fresh seat's saved startup files
   // instead of re-reading the rig's spec. It means something only when this call restores an existing rig.
   const startupFrom = body["startupFrom"];
-  if (startupFrom !== undefined && !STARTUP_FROM_VALUES.includes(startupFrom as StartupFrom)) {
-    return c.json({ ok: false, code: "invalid_startup_from", error: `startupFrom must be one of: ${STARTUP_FROM_VALUES.join(", ")}.` }, 400);
+  if (startupFrom !== undefined && parseStartupFrom(startupFrom) === null) {
+    return c.json({ ok: false, code: "invalid_startup_from", error: `startupFrom must be ${STARTUP_FROM_FORMS}.` }, 400);
   }
 
   if (!sourceRef) {

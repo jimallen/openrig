@@ -21,3 +21,14 @@ describe("describeRestoreStartupSource", () => {
     expect(describeRestoreStartupSource(source)).toBe(line);
   });
 });
+
+describe("OF-36 Q2 --startup-from snapshot:<id>", () => {
+  it("names the requested snapshot", () => {
+    expect(describeRestoreStartupSource({ kind: "snapshot", reason: "requested", snapshotId: "01SNAP" })).toBe("startup files replayed from snapshot 01SNAP (--startup-from snapshot:01SNAP)");
+  });
+  it("parses the accepted spellings, and the fresh-start command repeats the choice", async () => {
+    const { parseStartupFromArg, freshSeatLaunchCommand } = await import("../src/fresh-seat-advice.js");
+    expect(["spec", "stored", "snapshot:01ABC", "snapshot:", "snapshot:a b", "snapshot"].map(parseStartupFromArg)).toEqual(["spec", "stored", "snapshot:01ABC", null, null, null]);
+    expect(freshSeatLaunchCommand("dev.impl", "team", "snapshot:01ABC")).toBe(`rig seat launch 'dev.impl@team' --fresh --startup-from snapshot:01ABC --reason "<why>"`);
+  });
+});

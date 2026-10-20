@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
 import { predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
-import type { SeatStartupSpecReader, StartupFrom } from "../domain/seat-startup-source.js";
+import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
@@ -274,10 +274,10 @@ restoreCheckRoutes.get("/", async (c) => {
     return c.json({ error: "fresh needs rig=<name>: a restore targets one rig, and the same seat name in another rig would be predicted too.", code: "fresh_requires_rig" }, 400);
   }
   const startupFromQuery = c.req.query("startupFrom");
-  if (startupFromQuery !== undefined && startupFromQuery !== "spec" && startupFromQuery !== "stored") {
-    return c.json({ error: "startupFrom must be one of: spec, stored.", code: "invalid_startup_from" }, 400);
+  const startupFrom: StartupFrom | undefined = startupFromQuery === undefined ? undefined : parseStartupFrom(startupFromQuery) ?? undefined;
+  if (startupFromQuery !== undefined && startupFrom === undefined) {
+    return c.json({ error: `startupFrom must be ${STARTUP_FROM_FORMS}.`, code: "invalid_startup_from" }, 400);
   }
-  const startupFrom: StartupFrom | undefined = startupFromQuery;
 
   try {
     const service = createRestoreCheckService(deps.rigRepo, deps.snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined, {

@@ -31,7 +31,7 @@ export async function launchAcceptedFreshSeats(
   reason: string,
   timeoutMs: number,
   /** OF-32: the restore's `--startup-from` choice, so a seat started fresh after a failed resume follows it too. */
-  startupFrom?: "spec" | "stored",
+  startupFrom?: import("./fresh-seat-advice.js").StartupFromArg,
 ): Promise<FreshSeatOutcome[]> {
   const outcomes: FreshSeatOutcome[] = [];
   for (const logicalId of logicalIds) {
