@@ -10,8 +10,9 @@ export type FreshSeatStartupOverride =
   | "resolved_at_launch"
   /** The snapshot's copy, as before OF-32 stage 3. */
   | undefined
-  /** What the seat replays instead of the snapshot's copy (its own saved context, or the newest usable snapshot copy). */
-  | { replay: NodeStartupSnapshot; warning?: string }
+  /** What the seat replays instead of the snapshot's copy (its own saved context, or the newest usable snapshot copy;
+   *  `fromSnapshotId` names that copy's snapshot, which restore carries to the seat's launch: review F4). */
+  | { replay: NodeStartupSnapshot; warning?: string; fromSnapshotId?: string }
   /** The seat has nothing restore can replay: restore starts nothing. */
   | { refuse: RestoreValidationBlocker };
 

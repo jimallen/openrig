@@ -6,9 +6,10 @@
 import type Database from "better-sqlite3";
 import { resolveFreshSeatStartup, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
-import { freshSeatReplaysSnapshotStartup, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
-import { noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
+import { freshSeatReplaysSnapshotStartup, startupInputFindings, validatePreRestore, type FreshSeatStartupOverride } from "./restore-preconditions.js";
+import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
 import { readNodeStartupSnapshot } from "./snapshot-capture.js";
+import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 import { deriveCanonicalSessionName, deriveSessionName } from "./session-name.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { NodeStartupSnapshot, SnapshotData } from "./types.js";
@@ -57,11 +58,14 @@ export function startupToValidateForSeat(
     // A copy that cannot be used is not replayed: the seat's launch takes the newest usable one, or refuses the seat.
     return replaysCopy && !(input.selectedCopy && startupContextUnusable(input.selectedCopy, null)) ? undefined : "resolved_at_launch";
   }
+  // Review F3 (4728c079): a seat restore's runtime gate stops (the restored copy names another runtime than the seat's)
+  // replays nothing, so nothing is chosen, warned or refused for it here; restore stops it awaiting a decision.
+  if (restoreRuntimeCompatibilityError(runtime, input.selectedCopy?.runtime)) return "resolved_at_launch";
   const pick = seatStartupForRestore(deps.db, { rigId: input.rigId, nodeId: live.id, logicalId: input.logicalId, runtime }, input.selectedCopy);
   switch (pick.kind) {
     case "own": return { replay: pick.context };
     case "snapshot": return undefined;
-    case "fallback": return { replay: pick.context, warning: pick.warning };
+    case "fallback": return { replay: pick.context, warning: pick.warning, fromSnapshotId: pick.from.snapshotId };
     case "none_usable": return {
       refuse: {
         code: "saved_startup_context_unusable",
@@ -70,7 +74,7 @@ export function startupToValidateForSeat(
         logicalId: input.logicalId,
         target: "node_startup_context",
         message: `${noUsableCopyMessage(input.logicalId, pick.why)} Restore would start this seat fresh, so it starts nothing.`,
-        remediation: noUsableCopyRemedy({ scope: "restore", rigName: rig.rig.name, logicalId: input.logicalId, specRecorded: !!deps.rigRepo.getRigSpecSource(input.rigId) }),
+        remediation: noUsableCopyRemedy({ scope: "restore", rigName: rig.rig.name, logicalId: input.logicalId, specRecorded: !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow }),
       },
     };
   }
@@ -140,7 +144,7 @@ export async function decideListedFreshSeat(deps: ListedSeatDecisionDeps, input:
     if (pick.kind === "none_usable") {
       refusal = `${noUsableCopyMessage(input.logicalId, pick.why)} ${noUsableCopyRemedy({
         scope: "seat", rigName: input.rigName, logicalId: input.logicalId,
-        specRecorded: input.startupFrom === "stored" && !!deps.rigRepo.getRigSpecSource(input.rigId),
+        specRecorded: input.startupFrom === "stored" && !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow,
       })}`;
     } else {
       chosen = pick.context;
@@ -165,6 +169,50 @@ export async function decideListedFreshSeat(deps: ListedSeatDecisionDeps, input:
     }
   }
   return { decided, snapshotFallback, chosen, refusal, warnings, copyFromSnapshotId };
+}
+
+/**
+ * Review F1 (4728c079): what the operator can do about a listed seat restore would refuse, every route checked against
+ * the same decisions restore makes (so none of them loops back):
+ *  - start it from a snapshot copy that can be used and whose required files exist: `--startup-from snapshot:<id>`;
+ *  - leave it out of `--fresh`, offered only when the restore that leaves it out would not refuse the rig for this seat
+ *    (pre-restore validation over the same snapshot, the seat unlisted);
+ *  - otherwise say that leaving it out does not help, and that the listed restore still restores the other seats.
+ */
+export function listedRefusalRemedy(
+  deps: { db: Database.Database; rigRepo: { getRig(rigId: string): LiveRig | null; getRigSpecSource(rigId: string): string | null }; runtimeAdapters: Record<string, RuntimeAdapter | undefined> },
+  input: { rigId: string; logicalId: string; snapshot: SnapshotData | null; freshLogicalIds: string[]; startupFrom: StartupFrom; exists: (path: string) => boolean },
+): string {
+  const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  const rig = deps.rigRepo.getRig(input.rigId);
+  const live = rig?.nodes.find((node) => node.logicalId === input.logicalId);
+  const rigName = rig?.rig.name ?? input.rigId;
+  const routes: string[] = [];
+  const best = live ? newestUsableSnapshotCopy(deps.db, input.rigId, input.logicalId, live.runtime ?? null) : null;
+  if (best && input.startupFrom !== `snapshot:${best.snapshotId}`
+    && startupInputFindings({ id: live!.id, logicalId: input.logicalId }, best.context, input.exists, true).blockers.length === 0) {
+    const others = input.freshLogicalIds.length > 1 ? " (--startup-from applies to every seat listed with --fresh)" : "";
+    routes.push(`start ${input.logicalId} from snapshot ${best.snapshotId}'s copy of its startup files (${best.kind}, taken ${best.createdAt}): rig up ${quote(rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from snapshot:${best.snapshotId}${others}`);
+  }
+  let leaveOutRefusal: string | null = null;
+  if (input.snapshot) {
+    const unlisted = input.freshLogicalIds.filter((id) => id !== input.logicalId);
+    const validation = validatePreRestore(input.snapshot, {
+      fsOps: { exists: input.exists },
+      freshLogicalIds: unlisted,
+      freshSeatStartup: (node) => startupToValidateForSeat(deps, {
+        rigId: input.rigId, logicalId: node.logicalId, adapters: deps.runtimeAdapters, freshLogicalIds: unlisted,
+        startupFrom: input.startupFrom, selectedCopy: input.snapshot!.nodeStartupContext?.[node.id] ?? null,
+      }),
+    });
+    const blocker = validation.blockers.find((candidate) => candidate.logicalId === input.logicalId);
+    if (blocker) leaveOutRefusal = `${blocker.code}: ${blocker.message}`;
+  }
+  if (!leaveOutRefusal) routes.push(`leave ${input.logicalId} out of --fresh`);
+  const head = `Fix the cause above${routes.map((route) => `, or ${route}`).join("")}.`;
+  return leaveOutRefusal
+    ? `${head} Leaving ${input.logicalId} out of --fresh does not help: that restore is refused before it starts anything (${leaveOutRefusal}). Restoring with --fresh ${input.logicalId} as it is restores the other seats and starts nothing for ${input.logicalId}.`
+    : head;
 }
 
 /**

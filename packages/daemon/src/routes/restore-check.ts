@@ -4,7 +4,7 @@ import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
-import { predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
+import { listedRefusalRemedy, predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
 import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
@@ -157,6 +157,10 @@ export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Recor
     predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
       { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
       { rigId, ...listed, snapshot: snapshotData, exists: existsSync },
+    ),
+    listedRefusalRemedy: (rigId, logicalId, snapshotData, listed) => listedRefusalRemedy(
+      { db: rigRepo.db, rigRepo, runtimeAdapters },
+      { rigId, logicalId, snapshot: snapshotData, ...listed, exists: existsSync },
     ),
   };
 }

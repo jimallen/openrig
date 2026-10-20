@@ -99,8 +99,9 @@ export type SeatStartupForRestore =
   | { kind: "snapshot"; context: NodeStartupSnapshot | null }
   /** What the seat would replay cannot be used; this is the newest usable copy, and the warning says so. */
   | { kind: "fallback"; context: NodeStartupSnapshot; from: UsableSnapshotCopy; why: string; warning: string }
-  /** What the seat would replay cannot be used, and no snapshot holds a usable copy. */
-  | { kind: "none_usable"; why: string };
+  /** What the seat would replay cannot be used, and no snapshot holds a usable copy. `ownRow`: the seat has a saved
+   *  row of its own (one that cannot be used); false when it has none at all. */
+  | { kind: "none_usable"; why: string; ownRow: boolean };
 
 /**
  * What a seat restore starts fresh replays (the rule at the top of this file). `selectedCopy`: the restored snapshot's
@@ -125,7 +126,7 @@ export function seatStartupForRestore(
     why = `its saved startup context cannot be used: ${own.why}`;
   }
   const from = newestUsableSnapshotCopy(db, seat.rigId, seat.logicalId, seat.runtime);
-  if (!from) return { kind: "none_usable", why };
+  if (!from) return { kind: "none_usable", why, ownRow: own.kind !== "none" };
   return {
     kind: "fallback", context: from.context, from, why,
     warning: `Restore: ${seat.logicalId}: ${why}. This fresh start replays the copy of its startup files saved in snapshot ${from.snapshotId} (${from.kind}, ${from.createdAt}), the newest snapshot of this rig whose copy can be used; a successful launch saves it as the seat's new context.`,
@@ -147,9 +148,11 @@ export function noUsableCopyMessage(logicalId: string, why: string): string {
  * rig records a spec source. Otherwise the seat's source was already the stored row because the rig records no spec
  * or its spec does not declare the seat.
  */
-export function noUsableCopyRemedy(how: { scope: "restore" | "seat"; rigName: string; logicalId: string; specRecorded: boolean }): string {
+export function noUsableCopyRemedy(how: { scope: "restore" | "seat"; rigName: string; logicalId: string; specRecorded: boolean; ownRow: boolean }): string {
   const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
-  const repair = "the saved row has to be repaired outside restore";
+  // Review F2 (4728c079): a seat with no saved row has nothing to repair.
+  const repair = how.ownRow ? "the saved row has to be repaired outside restore"
+    : "nothing can start it from saved files (it has no saved startup context of its own, and no snapshot holds a usable copy)";
   if (how.scope === "restore") {
     const listed = `rig up ${quote(how.rigName)} --existing --fresh ${quote(how.logicalId)}`;
     return how.specRecorded

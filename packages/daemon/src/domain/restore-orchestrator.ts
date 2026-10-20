@@ -46,7 +46,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
-import { noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore } from "./own-startup-replay.js";
+import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 
@@ -196,6 +196,9 @@ type RestoreSeatOpts = {
   freshLogicalIds?: string[];
   /** OF-32: where a seat this restore starts fresh takes its startup policy from (default: the rig's spec now). */
   startupFrom?: StartupFrom;
+  /** Review F4: the snapshot copy pre-restore validation chose (and checked) for a seat, by logical id. The seat's
+   *  launch replays exactly that copy, or is refused if its snapshot is gone; it never chooses again. */
+  preValidatedCopies?: Map<string, { snapshotId: string; context: NodeStartupSnapshot }>;
 };
 
 /** Whether this restore resumes the seat's saved conversation (an exact resume) rather than starting it fresh.
@@ -337,6 +340,7 @@ export class RestoreOrchestrator {
     this.activeRestores.add(rigId);
 
     try {
+      const preValidatedCopies = new Map<string, { snapshotId: string; context: NodeStartupSnapshot }>();
       const validation = validatePreRestore(snapshot.data, {
         fsOps: opts?.fsOps,
         servicesRecord: this.rigRepo.getServicesRecord(rigId),
@@ -344,7 +348,13 @@ export class RestoreOrchestrator {
         // OF-32: a seat started fresh replays the snapshot's copy of its startup files only when nothing newer exists;
         // otherwise its source is decided and checked per seat before its launch (restoreNodeUnisolated), and the
         // snapshot's copy (which may name a release since deleted) cannot block the restore.
-        freshSeatStartup: (node) => this.freshSeatStartupToValidate(rigId, node.logicalId, opts, snapshot.data.nodeStartupContext?.[node.id] ?? null),
+        freshSeatStartup: (node) => {
+          const decided = this.freshSeatStartupToValidate(rigId, node.logicalId, opts, snapshot.data.nodeStartupContext?.[node.id] ?? null);
+          if (decided && typeof decided === "object" && "replay" in decided && decided.fromSnapshotId) {
+            preValidatedCopies.set(node.logicalId, { snapshotId: decided.fromSnapshotId, context: decided.replay });
+          }
+          return decided;
+        },
       });
       const topology = resolveSnapshotRestoreTopology(snapshot.data);
       // The attempt's roster names its seats by the ids the attempt's results use: the LIVE node ids (a seat removed and
@@ -447,7 +457,7 @@ export class RestoreOrchestrator {
       if (this.rigRepo.getRigNonInterruptive(rigId)) restoreWarnings.push(nonInterruptiveSummary(true));
       else if (opts?.nonInterruptive === false) restoreWarnings.push(nonInterruptiveSummary(false));
       for (const entry of plan) {
-        const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, opts, restoreWarnings);
+        const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, { ...opts, preValidatedCopies }, restoreWarnings);
         nodeResults.push(result);
       }
 
@@ -1185,10 +1195,24 @@ export class RestoreOrchestrator {
       // used, the newest usable snapshot copy is replayed; when no snapshot holds one, nothing is started for the seat.
       // The same decision as pre-restore validation (startupToValidateForSeat), which refuses a whole restore() first;
       // a `rig launch` target has no pre-restore validation, so this is where it is refused.
-      const pick = seatStartupForRestore(this.db, { rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime }, data.nodeStartupContext?.[node.id] ?? null);
+      // Review F4: a copy pre-restore validation chose is replayed exactly; if its snapshot is gone the seat is refused.
+      const carried = opts?.preValidatedCopies?.get(node.logicalId);
+      if (carried && !this.db.prepare("SELECT 1 FROM snapshots WHERE id = ?").get(carried.snapshotId)) {
+        this.restoreNodeState(nodeId, priorState);
+        const rigName = rig?.rig.name ?? data.rig.name;
+        const now = newestUsableSnapshotCopy(this.db, rigId, node.logicalId, seatRuntime);
+        const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+        const next = now
+          ? `To start it from the newest snapshot copy that can be used now (snapshot ${now.snapshotId}, ${now.kind}, taken ${now.createdAt}): rig seat launch ${quote(`${node.logicalId}@${rigName}`)} --fresh --startup-from snapshot:${now.snapshotId} --reason "<why>".`
+          : noUsableCopyRemedy({ scope: "seat", rigName, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(nodeId) !== undefined });
+        return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${node.logicalId}: snapshot ${carried.snapshotId}, whose copy of its startup files this restore checked before it started, was removed before the seat's launch, so restore does not choose another copy unchecked. ${next} No session was started.` };
+      }
+      const pick: SeatStartupForRestore = carried
+        ? { kind: "fallback", context: carried.context, from: { snapshotId: carried.snapshotId, kind: "", createdAt: "", context: carried.context }, why: "", warning: "" }
+        : seatStartupForRestore(this.db, { rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime }, data.nodeStartupContext?.[node.id] ?? null);
       if (pick.kind === "none_usable") {
         this.restoreNodeState(nodeId, priorState);
-        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId) });
+        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: pick.ownRow });
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${noUsableCopyMessage(node.logicalId, pick.why)} ${remedy} No session was started.` };
       }
       savedSetup = pick.context;
@@ -1196,8 +1220,8 @@ export class RestoreOrchestrator {
         startupReport = { kind: "stored", reason: "not_fresh_listed" };
       } else if (pick.kind === "fallback") {
         startupReport = { kind: "snapshot", reason: "saved_context_unreadable", ...(pick.from.snapshotId !== snapshotId ? { snapshotId: pick.from.snapshotId } : {}) };
-        // Pre-restore validation may already have reported it.
-        if (!warnings?.includes(pick.warning)) warnings?.push(pick.warning);
+        // Pre-restore validation may already have reported it (always, for a carried copy).
+        if (pick.warning && !warnings?.includes(pick.warning)) warnings?.push(pick.warning);
       } else if (pick.context) {
         startupReport = { kind: "snapshot", reason: "no_saved_context" };
       }

@@ -188,6 +188,8 @@ export interface RestoreParityDeps {
     import("./restore-preconditions.js").FreshSeatStartupOverride;
   /** predictListedSeatRefusals: logical id -> the text restore reports after "Fresh start refused: ". */
   predictListedSeatRefusals(rigId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: import("./seat-startup-source.js").StartupFrom }): Promise<Map<string, string>>;
+  /** Review F1: the remediation for a listed seat restore would refuse (listedRefusalRemedy); optional for older wiring. */
+  listedRefusalRemedy?(rigId: string, logicalId: string, snapshotData: Snapshot["data"] | null, listed: { freshLogicalIds: string[]; startupFrom: import("./seat-startup-source.js").StartupFrom }): string;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -596,7 +598,8 @@ export class RestoreCheckService {
           logicalId,
           target: "fresh-start",
           message: `Fresh start refused for ${logicalId}: ${refusal} No session would be started.`,
-          remediation: `Fix the cause above, or leave ${logicalId} out of --fresh`,
+          remediation: parity?.listedRefusalRemedy?.(rig.rigId, logicalId, input.snapshot.data, { freshLogicalIds: opts.freshLogicalIds ?? [], startupFrom: opts.startupFrom ?? "spec" })
+            ?? `Fix the cause above, or leave ${logicalId} out of --fresh`,
         });
       }
       return {

@@ -266,7 +266,9 @@ seat a restore starts fresh names its source in the restore result (`startupSour
 event and under the seat in `rig up` and `rig start` output: the spec it re-read and the agent version it moved
 from and to, its saved files (with why: not listed with `--fresh`, `--startup-from stored`, no recorded source),
 or a snapshot's copy. A snapshot's copy is used only when the seat has no saved files of its own, or when its saved
-files cannot be used: not JSON, the wrong shape, or another runtime than the seat's. Snapshots copy the saved files as
+files cannot be used: not JSON, or the wrong shape; or, for a seat not listed with `--fresh`, another runtime than the
+seat's (a listed seat that would replay saved files naming another runtime, with `--startup-from stored` or on a rig
+with no spec to re-read for it, is refused with `startup_context_runtime_mismatch` instead). Snapshots copy the saved files as
 they are, so a snapshot taken after they broke carries the same damage: restore passes any copy it cannot use over and
 replays the newest snapshot copy that is valid (normally one taken before the break), says which snapshot in its
 warnings and under the seat, and the launch saves it as the seat's new files. When no snapshot holds a valid copy,
