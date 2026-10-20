@@ -13,10 +13,13 @@
 // fail-safe (gate reappears + Layer-2 keystroke floor), never a false-trusted run.
 import { describe, it, expect, vi } from "vitest";
 import nodeFs from "node:fs";
+import { parse as parseToml } from "smol-toml";
 import {
   CodexRuntimeAdapter,
+  codexHookTrustEditAccepted,
   codexManagedHookGroupIndex,
   computeCodexHookTrust,
+  lineStartsAtDocumentLevel,
   upsertCodexHookTrust,
   type CodexAdapterFsOps,
 } from "../src/adapters/codex-runtime-adapter.js";
@@ -150,6 +153,135 @@ describe("OPR.0.4.3.33 — upsertCodexHookTrust (idempotent, non-clobbering, sec
     expect(out).toContain(`trusted_hash = ${JSON.stringify(HASH)}`);
     // the OTHER state entry's hash was NOT touched
     expect(out.match(/sha256:other/g)?.length).toBe(1);
+  });
+});
+
+// OF-42 N10. The writer locates a record the way the reader does: by where the table really is, never
+// by text that merely looks like its header. Each expected string below is spelled out, not derived
+// from the code under test.
+describe("OF-42 N10 — upsertCodexHookTrust edits the real table, never header-shaped string content", () => {
+  const K = "/c/config.toml:pre_tool_use:0:0";
+  const H = `[hooks.state.${JSON.stringify(K)}]`;
+
+  it.each([
+    ["basic", '"""'],
+    ["literal", "\'\'\'"],
+  ])("a header inside a multiline %s string is left byte-identical and the real table is the one edited", (_name, q) => {
+    const fake = `# top comment\njunk = ${q}\n${H}\ntrusted_hash = "sha256:fake"\n${q}\n`;
+    const real = `\n[other]\nkeep = 1\n\n${H}\ntrusted_hash = "sha256:old"\n\n[after]\nz = 2\n`;
+    expect(upsertCodexHookTrust(fake + real, K, "sha256:new")).toBe(fake + real.replace("sha256:old", "sha256:new"));
+  });
+
+  it("a header-shaped string AFTER the real table does not capture the edit either (not 'the last textual header')", () => {
+    const real = `${H}\ntrusted_hash = "sha256:old"\n\n`;
+    const fake = `junk = """\n${H}\ntrusted_hash = "sha256:fake"\n"""\n`;
+    expect(upsertCodexHookTrust(real + fake, K, "sha256:new")).toBe(real.replace("sha256:old", "sha256:new") + fake);
+  });
+
+  it("a header that exists only inside a string is not a table: a real one is appended after the untouched text", () => {
+    const fake = `junk = """\n${H}\ntrusted_hash = "sha256:fake"\n"""\n`;
+    expect(upsertCodexHookTrust(fake, K, "sha256:new")).toBe(`${fake}\n${H}\ntrusted_hash = "sha256:new"\n`);
+  });
+
+  it("string content inside the real table (a trusted_hash-looking line, a bracketed line) is not the record's field or its end", () => {
+    const table = `${H}\nnote = """\ntrusted_hash = "sha256:decoy"\n[next]\n"""\ntrusted_hash = "sha256:old"\n`;
+    expect(upsertCodexHookTrust(table, K, "sha256:new")).toBe(table.replace('"sha256:old"', '"sha256:new"'));
+  });
+});
+
+// OF-42 N10 review B1. TOML lets a multiline string end with one or two quote characters directly before its
+// closing delimiter (a literal string of three quotes, `a`, three quotes and one more quote holds `a'`). The scanner
+// closed at the first three and read the extras as a new string, so every later line looked nested and no real
+// header could be found.
+describe("OF-42 N10 B1 — a multiline string closed by 4 or 5 quote characters does not desync the scanner", () => {
+  it.each([
+    ["'''a''''"], ["'''a'''''"], ['"""a""""'], ['"""a"""""'],
+  ])("x = [%s] leaves every later line at document level", (value) => {
+    const doc = `x = [${value}]\n[p]\nk = 1\n`;
+    expect(lineStartsAtDocumentLevel(doc)).toEqual([true, true, true, true]);
+  });
+
+  it("the same holds inside an inline table", () => {
+    expect(lineStartsAtDocumentLevel('x = {a = """b""""}\n[p]\n')).toEqual([true, true, true]);
+  });
+
+  it("a real record after such a line is edited in place, not duplicated", () => {
+    const K = "/c/config.toml:stop:0:0";
+    const doc = `x = ['''a'''']\n[hooks.state.${JSON.stringify(K)}]\ntrusted_hash = "sha256:old"\n`;
+    expect(upsertCodexHookTrust(doc, K, "sha256:new")).toBe(doc.replace("sha256:old", "sha256:new"));
+  });
+
+  it("the managed-hook write is a byte no-op on the second run when the config holds such a line", () => {
+    const fs = mockCodexFs({ [RELAY]: "// relay", [CONFIG]: "x = ['''a'''']\n" });
+    const adapter = new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: fs, activityRelayPath: RELAY });
+    adapter.ensureCodexActivityHooks();
+    const first = fs._store[CONFIG]!;
+    adapter.ensureCodexActivityHooks();
+    expect(fs._store[CONFIG]).toBe(first);
+    expect(first.match(/^\[hooks\.state\./gm)?.length).toBe(4);
+  });
+});
+
+// The acceptance rule behind upsertVerifiedCodexHookTrust, pinned on the candidates a BROKEN line scanner would
+// produce (a correct scanner never reaches these with a document that still parses, so no launch-level row can).
+// Each rejection below is the only thing between such a candidate and Jim's config.
+describe("OF-42 N10 — codexHookTrustEditAccepted (parsed acceptance of a trust edit)", () => {
+  const K = "/c/config.toml:pre_tool_use:0:0";
+  const H = `[hooks.state.${JSON.stringify(K)}]`;
+
+  it("accepts an in-place hash edit and an appended record", () => {
+    const before = `a = 1\n${H}\ntrusted_hash = "sha256:old"\n`;
+    expect(codexHookTrustEditAccepted(before, before.replace("sha256:old", "sha256:new"), K, "sha256:new")).toBe(true);
+    expect(codexHookTrustEditAccepted("a = 1\n", `a = 1\n\n${H}\ntrusted_hash = "sha256:new"\n`, K, "sha256:new")).toBe(true);
+  });
+
+  it("rejects a fake header edited inside a string outside the record, even though the real record already holds the hash", () => {
+    const before = `junk = '''\n${H}\n'''\n\n${H}\ntrusted_hash = "sha256:new"\n`;
+    const candidate = `junk = '''\n${H}\ntrusted_hash = "sha256:new"\n'''\n\n${H}\ntrusted_hash = "sha256:new"\n`;
+    expect(() => parseToml(candidate)).not.toThrow(); // it parses: only the comparison with the original can refuse it
+    expect(codexHookTrustEditAccepted(before, candidate, K, "sha256:new")).toBe(false);
+  });
+
+  it("rejects a hash-looking line edited inside a string of the record while the real hash stays stale", () => {
+    const before = `${H}\nnote = '''\ntrusted_hash = "sha256:old"\n'''\ntrusted_hash = "sha256:old"\n`;
+    const candidate = `${H}\nnote = '''\ntrusted_hash = "sha256:new"\n'''\ntrusted_hash = "sha256:old"\n`;
+    expect(() => parseToml(candidate)).not.toThrow();
+    expect(codexHookTrustEditAccepted(before, candidate, K, "sha256:new")).toBe(false);
+  });
+
+  it("rejects a candidate that does not parse", () => {
+    const before = `${H}\ntrusted_hash = "sha256:old"\n`;
+    expect(codexHookTrustEditAccepted(before, `${before}\n${H}\ntrusted_hash = "sha256:new"\n`, K, "sha256:new")).toBe(false);
+  });
+});
+
+// The structures a line-local writer has to respect inside the real record.
+describe("OF-42 N10 — table extent and nesting inside the record being edited", () => {
+  const K = "/c/config.toml:pre_tool_use:0:0";
+  const H = `[hooks.state.${JSON.stringify(K)}]`;
+
+  it("a record with no trusted_hash gets one of its own: the next table's trusted_hash is not its field", () => {
+    const doc = `${H}\nnote = 1\n\n[other]\ntrusted_hash = "sha256:other"\n`;
+    expect(upsertCodexHookTrust(doc, K, "sha256:new")).toBe(`${H}\ntrusted_hash = "sha256:new"\nnote = 1\n\n[other]\ntrusted_hash = "sha256:other"\n`);
+  });
+
+  it("a multi-line array inside the record is part of it: its bracketed rows do not end the table", () => {
+    const doc = `${H}\nnote = [\n  [1, 2],\n  [3],\n]\ntrusted_hash = "sha256:old"\n`;
+    expect(upsertCodexHookTrust(doc, K, "sha256:new")).toBe(doc.replace("sha256:old", "sha256:new"));
+  });
+
+  // Defence in depth: the managed-hook write has no mirror-style planner around it, so the write itself
+  // must refuse a result that does not parse to the intended record.
+  it("a record spelled in a form the exact-header match cannot see is left alone, never duplicated (managed-hook write)", () => {
+    const sessionKey = "/home/test/.codex/config.toml:session_start:0:0";
+    const decoy = `[ hooks.state.${JSON.stringify(sessionKey)} ]\ntrusted_hash = "sha256:stale"\n`;
+    const fs = mockCodexFs({ [RELAY]: "// relay", [CONFIG]: decoy });
+    new CodexRuntimeAdapter({ tmux: mockTmux(), fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
+    const state = (parseToml(fs._store[CONFIG]!) as { hooks: { state: Record<string, { trusted_hash: string }> } }).hooks.state;
+    expect(state[sessionKey]!.trusted_hash).toBe("sha256:stale");
+    for (const ev of EVENTS.filter((e) => e !== "SessionStart")) {
+      expect(state[PROVISIONAL_FIXTURE[ev].key]!.trusted_hash).toBe(PROVISIONAL_FIXTURE[ev].hash);
+    }
   });
 });
 

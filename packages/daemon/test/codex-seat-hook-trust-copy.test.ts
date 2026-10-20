@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
+import { parse as parseToml } from "smol-toml";
+import { parse as parseToml } from "smol-toml";
+import { ensureCodexSeatHome, mirrorWriteIsAccepted } from "../src/domain/codex-seat-home.js";
 
 // OF-42. A user-authored hook (bash-guard) in the shared ~/.codex/config.toml is trusted by
 // Jim only under the shared path's key. A seat loads the same file through its own symlink,
@@ -69,6 +71,35 @@ const blockAt = (content: string, key: string): string | undefined => {
 };
 const hashAt = (content: string, key: string) => /trusted_hash = "([^"]+)"/.exec(blockAt(content, key) ?? "")?.[1];
 const enabledAt = (content: string, key: string) => /^enabled = (true|false)$/m.exec(blockAt(content, key) ?? "")?.[1];
+
+/** The record as a TOML parser (and so Codex) sees it, whatever the text around it looks like. */
+const parsedRecord = (content: string, key: string) =>
+  ((parseToml(content) as { hooks?: { state?: Record<string, { trusted_hash?: string; enabled?: boolean }> } }).hooks?.state ?? {})[key];
+
+// The acceptance rule of a mirror write, on parsed candidates (a correct scanner and the create guard mask it at launch level).
+describe("OF-42 mirrorWriteIsAccepted (the parsed post-write check of the mirror)", () => {
+  const K = "/seat/config.toml:pre_tool_use:0:0";
+  const rec = (body: string) => `[hooks.state.${JSON.stringify(K)}]\n${body}`;
+  const hash = `trusted_hash = "${BASH_GUARD_HASH}"\n`;
+
+  it("accepts the record as meant: current hash, and off where the shared record is off", () => {
+    expect(mirrorWriteIsAccepted(rec(hash), K, { trusted_hash: BASH_GUARD_HASH })).toBe(true);
+    expect(mirrorWriteIsAccepted(rec(hash + "enabled = false\n"), K, { trusted_hash: BASH_GUARD_HASH, enabled: false })).toBe(true);
+  });
+
+  it("rejects a record that exists but holds a stale hash", () => {
+    expect(mirrorWriteIsAccepted(rec(`trusted_hash = "${STALE}"\n`), K, { trusted_hash: BASH_GUARD_HASH })).toBe(false);
+  });
+
+  it("rejects a current-hash record that is not off where the shared record is off", () => {
+    expect(mirrorWriteIsAccepted(rec(hash), K, { trusted_hash: BASH_GUARD_HASH, enabled: false })).toBe(false);
+  });
+
+  it("rejects a candidate with no such record, and one that does not parse", () => {
+    expect(mirrorWriteIsAccepted("a = 1\n", K, { trusted_hash: BASH_GUARD_HASH })).toBe(false);
+    expect(mirrorWriteIsAccepted(rec(hash) + rec(hash), K, { trusted_hash: BASH_GUARD_HASH })).toBe(false);
+  });
+});
 
 describe("OF-42 seat hook-trust copy", () => {
   it("copies the canonical trust of a user hook to the seat key when the hash is the one Codex computes now, and logs it", async () => {
@@ -331,5 +362,97 @@ describe("OF-42 seat hook-trust copy", () => {
     await launch();
     expect(await read()).toBe(seeded);
     expect(logs).toEqual([]);
+  });
+  // N10 (re-check of 64ddc376): the writer found the first TEXTUAL header, a fake in a string, so the
+  // shared disable never reached the real seat record.
+  it("N10: a shared enabled = false reaches the REAL seat record when a header-shaped string precedes it", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const fake = `junk = '''\n[hooks.state.${JSON.stringify(seatKey)}]\n'''\n\n`;
+    const rest = HOOKS + `${entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH)}enabled = false\n\n` + entry(seatKey, BASH_GUARD_HASH);
+    await fs.writeFile(sharedConfig, fake + rest);
+    await launch();
+    const after = await read();
+    expect(parsedRecord(after, seatKey)).toEqual({ trusted_hash: BASH_GUARD_HASH, enabled: false });
+    expect(after.startsWith(fake)).toBe(true); // the string is byte-identical
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("replaced");
+  });
+
+  it("N10: the same fake header with a stale real seat record gets its hash refreshed in the real record", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const fake = `junk = '''\n[hooks.state.${JSON.stringify(seatKey)}]\n'''\n\n`;
+    await fs.writeFile(sharedConfig, fake + HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH) + "\n" + entry(seatKey, STALE));
+    await launch();
+    const after = await read();
+    expect(parsedRecord(after, seatKey)).toEqual({ trusted_hash: BASH_GUARD_HASH });
+    expect(after.startsWith(fake)).toBe(true);
+  });
+
+  it("N10: an enabled-looking line inside a string of the real seat record is not the record's enabled flag", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const seatRecord = `[hooks.state.${JSON.stringify(seatKey)}]\nnote = """\nenabled = true\n"""\ntrusted_hash = "${BASH_GUARD_HASH}"\n`;
+    await fs.writeFile(sharedConfig, HOOKS + `${entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH)}enabled = false\n\n` + seatRecord);
+    await launch();
+    expect(parsedRecord(await read(), seatKey)).toMatchObject({ trusted_hash: BASH_GUARD_HASH, enabled: false });
+  });
+
+  // Everything outside the edited record survives byte for byte: comments, blank lines, order, the
+  // neighbouring tables, and the other lines of the edited record itself.
+  it("a sync changes only the seat record: the rest of Jim's file is byte-identical, comments and order included", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const sharedKey = `${sharedConfig}:pre_tool_use:0:0`;
+    const file = (seatBody: string) =>
+      `# Jim's config -- keep this comment\nmodel = "gpt-5" # inline\n\n` + HOOKS +
+      `# trusted by Jim\n[hooks.state.${JSON.stringify(sharedKey)}]\ntrusted_hash = "${BASH_GUARD_HASH}"\nenabled = false\n\n` +
+      `[projects."/some/where"]\ntrust_level = "trusted"   # spacing kept\n\n` +
+      `# the seat's own record\n[hooks.state.${JSON.stringify(seatKey)}]\n${seatBody}\n[tui]\ntheme = "dark"\n# last comment\n`;
+    await fs.writeFile(sharedConfig, file(`# seat note\ntrusted_hash = "${STALE}"\nnote = "x"\n`));
+    await launch();
+    expect(await read()).toBe(file(`enabled = false\n# seat note\ntrusted_hash = "${BASH_GUARD_HASH}"\nnote = "x"\n`));
+  });
+
+  // The guard must see an INDENTED header-shaped line too (the scanner alone would let a real record be appended).
+  it("an indented header-shaped line inside a string is also not a record and gets nothing written beside it", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    const seeded = `junk = '''\n  [hooks.state.${JSON.stringify(seatKey)}]\n'''\n\n` + HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH);
+    await fs.writeFile(sharedConfig, seeded);
+    await launch();
+    expect(await read()).toBe(seeded);
+    expect(logs).toEqual([]);
+  });
+
+  // B1 (security review of b501b808) through the launch-time sync, which also writes OpenRig's own managed-hook records.
+  const managedBlock = "# BEGIN OPENRIG MANAGED ACTIVITY HOOKS\n" +
+    ["SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"].map((e) => `[[hooks.${e}]]\n[[hooks.${e}.hooks]]\ntype = "command"\ncommand = 'node "/r/relay.cjs"'\ntimeout = 5`).join("\n\n") +
+    "\n# END OPENRIG MANAGED ACTIVITY HOOKS\n";
+  const stateHeaders = (c: string) => c.match(/^\[ ?hooks\.state\./gm)?.length ?? 0;
+
+  it("B1: a config with a 4-quote multiline closer ahead of a bracket syncs the managed-hook records once, then not again", async () => {
+    await launch();
+    await fs.writeFile(sharedConfig, "x = ['''a'''']\n" + managedBlock);
+    await launch();
+    const first = await read();
+    await launch();
+    expect(await read()).toBe(first);
+    expect(stateHeaders(first)).toBe(4);
+    expect(() => parseToml(first)).not.toThrow();
+  });
+
+  it("a managed-hook record the writer cannot see (spaced header) is left as it is: nothing is appended that would not parse", async () => {
+    await launch();
+    await fs.writeFile(sharedConfig, managedBlock);
+    await launch();
+    const synced = await read();
+    const header = /^\[hooks\.state\.("[^"]*:session_start:0:0")\]$/m.exec(synced)!;
+    const spaced = synced.replace(header[0], `[ hooks.state.${header[1]} ]`);
+    await fs.writeFile(sharedConfig, spaced);
+    await launch();
+    expect(await read()).toBe(spaced);
+    expect(() => parseToml(spaced)).not.toThrow();
   });
 });

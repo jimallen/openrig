@@ -255,7 +255,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
     let next = content;
     for (const { key, hash } of codexActivityHookTrustRecords(content, keySource)) {
-      next = upsertCodexHookTrust(next, key, hash);
+      next = upsertVerifiedCodexHookTrust(next, key, hash);
     }
     return next;
   }
@@ -1233,32 +1233,41 @@ export function upsertCodexHookTrust(content: string, key: string, hash: string)
   const header = `[hooks.state.${JSON.stringify(key)}]`;
   const trustLine = `trusted_hash = ${JSON.stringify(hash)}`;
   const lines = content.length > 0 ? content.split("\n") : [];
-  const headerIndex = lines.findIndex((line) => line.trim() === header);
+  const table = findTomlTable(lines, header);
 
-  if (headerIndex === -1) {
+  if (table === null) {
     const trimmed = content.trimEnd();
     const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : "";
     return `${prefix}${header}\n${trustLine}\n`;
   }
 
-  let nextSectionIndex = lines.length;
-  for (let i = headerIndex + 1; i < lines.length; i++) {
-    if (lines[i]!.trim().startsWith("[")) {
-      nextSectionIndex = i;
-      break;
-    }
-  }
-
+  const atDocumentLevel = lineStartsAtDocumentLevel(lines.join("\n"));
   const hashIndex = lines.findIndex(
-    (line, index) => index > headerIndex && index < nextSectionIndex && line.trim().startsWith("trusted_hash"),
+    (line, index) => index > table.headerIndex && index < table.end && atDocumentLevel[index] && line.trim().startsWith("trusted_hash"),
   );
   if (hashIndex >= 0) {
     lines[hashIndex] = trustLine;
   } else {
-    lines.splice(headerIndex + 1, 0, trustLine);
+    lines.splice(table.headerIndex + 1, 0, trustLine);
   }
 
   return `${lines.join("\n").replace(/\n*$/, "\n")}`;
+}
+
+/**
+ * The real `header` line of a document and the line where its table ends: both are found only on
+ * lines that begin at document level (outside every string, array and inline table), so a header-shaped string never stands in for the
+ * table. Null when no real header exists.
+ */
+export function findTomlTable(lines: readonly string[], header: string): { headerIndex: number; end: number } | null {
+  const atDocumentLevel = lineStartsAtDocumentLevel(lines.join("\n"));
+  const headerIndex = lines.findIndex((line, i) => atDocumentLevel[i] && line.trim() === header);
+  if (headerIndex === -1) return null;
+  let end = lines.length;
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    if (atDocumentLevel[i] && lines[i]!.trim().startsWith("[")) { end = i; break; }
+  }
+  return { headerIndex, end };
 }
 
 export function isCodex013xOrLater(version: string): boolean {
@@ -1399,6 +1408,46 @@ function upsertCodexFeaturesHooksEnabled(content: string): string {
 }
 
 /**
+ * `upsertCodexHookTrust`, but the edit is kept only when the PARSED result holds exactly the intended record:
+ * the document parses, `[hooks.state."<key>"] trusted_hash` is `hash`, and nothing else changed. Anything
+ * else (a spelling of the header the line match cannot see, a scanner error, an unparseable file) writes
+ * nothing and returns `content` as it was. The text edit is a convenience for keeping Jim's bytes; the
+ * parser decides whether it was safe.
+ */
+export function upsertVerifiedCodexHookTrust(content: string, key: string, hash: string): string {
+  const candidate = upsertCodexHookTrust(content, key, hash);
+  if (candidate === content) return content;
+  return codexHookTrustEditAccepted(content, candidate, key, hash) ? candidate : content;
+}
+
+/**
+ * The acceptance rule of `upsertVerifiedCodexHookTrust`, as a pure function of the parsed documents: `candidate`
+ * is acceptable iff it parses, `[hooks.state."<key>"] trusted_hash` is `hash`, and everything outside that
+ * record parses to what it did in `before`. Each condition is an independent backstop against a defect in the
+ * line scanner (a correct scanner never reaches them with a document that still parses), so each is pinned
+ * directly on candidates a broken scanner would produce.
+ */
+export function codexHookTrustEditAccepted(before: string, candidate: string, key: string, hash: string): boolean {
+  try {
+    const without = (doc: unknown): unknown => {
+      const copy = JSON.parse(JSON.stringify(doc)) as { hooks?: { state?: Record<string, unknown> } };
+      if (copy.hooks?.state) {
+        delete copy.hooks.state[key];
+        if (Object.keys(copy.hooks.state).length === 0) delete copy.hooks.state; // an emptied table is no table
+        if (Object.keys(copy.hooks).length === 0) delete copy.hooks;
+      }
+      return copy;
+    };
+    const parsedBefore = parseToml(before);
+    const after = parseToml(candidate) as { hooks?: { state?: Record<string, { trusted_hash?: unknown }> } };
+    if (after.hooks?.state?.[key]?.trusted_hash !== hash) return false;
+    return JSON.stringify(without(parsedBefore)) === JSON.stringify(without(after));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * For each line, whether it BEGINS at document level — outside every string AND
  * outside every array or inline table. At document level, TOML grammar allows
  * nothing but a table header to start with `[`, so that one bit is the whole
@@ -1411,7 +1460,7 @@ function upsertCodexFeaturesHooksEnabled(content: string): string {
  *    header, so a valid fragment was split apart and refused (review50-r2,
  *    2026-09-01). Depth is what separates the two, not the line's own text.
  */
-function lineStartsAtDocumentLevel(content: string): boolean[] {
+export function lineStartsAtDocumentLevel(content: string): boolean[] {
   const out: boolean[] = [true];
   let multiline: '"""' | "'''" | null = null;
   let depth = 0;
@@ -1430,7 +1479,16 @@ function lineStartsAtDocumentLevel(content: string): boolean[] {
         i += 2;
         continue;
       }
-      if (content.startsWith(multiline, i)) { multiline = null; i += 3; continue; }
+      if (content.startsWith(multiline, i)) {
+        // TOML allows one or two quote characters of the same kind directly before the closing
+        // delimiter (`'''a''''` holds `a'`). Taking only three left the extras to open a phantom
+        // single-line string and every later line read as nested (OF-42 N10 review B1).
+        const quote = multiline[0]!;
+        i += 3;
+        for (let extra = 0; extra < 2 && content[i] === quote; extra++) i += 1;
+        multiline = null;
+        continue;
+      }
       if (ch === "\n") out.push(false);
       i += 1;
       continue;
