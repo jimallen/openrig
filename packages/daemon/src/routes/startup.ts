@@ -167,7 +167,9 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
     if (body.action === "start" && history.length > 0) return c.json({ ok: false, code: "history_present", message: "This seat has prior history. Choose resume, or explicitly confirm a fresh conversation." }, 409);
     if (body.action === "fresh") {
       const result = await seatLifecycleService(c).launchFresh({ seatRef: observed.sessionName, fresh: true,
-        reason: `TUI explicit fresh consent for ${node.logicalId}, observed revision ${body.revision}`, stop: false });
+        reason: `TUI explicit fresh consent for ${node.logicalId}, observed revision ${body.revision}`, stop: false,
+        // OF-38: this action cannot pass startupFrom, so a refused re-read names the CLI command, not the flag.
+        storedEscape: "command" });
       await refreshNativeMetadata(c, rig.rig.id);
       if (result.ok) dep<SnapshotCapture>(c, "snapshotCapture").captureSnapshot(rig.rig.id, "auto-rehydrate");
       return c.json(result, result.ok ? 200 : 409);

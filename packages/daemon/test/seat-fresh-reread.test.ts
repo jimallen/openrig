@@ -302,6 +302,27 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
   });
 
+  // OF-38: the TUI's explicit-fresh action cannot pass `startupFrom`, so a refusal there must not tell the operator to
+  // "run again with --startup-from stored". It names the CLI command that starts the seat on the stored files instead.
+  // The CLI and the HTTP seat route can pass the option, and keep the flag wording.
+  it.each([
+    ["the release folder was deleted", () => fs.rmSync(path.join(root, "releases", "bbbbbbb"), { recursive: true }), "no longer exists"],
+    ["a required startup file is missing", () => fs.rmSync(path.join(releaseB, "agents", "impl", "guidance", "role.md")), "required startup file guidance/role.md"],
+    ["the spec no longer parses", () => fs.writeFileSync(path.join(releaseB, "rig.yaml"), "pods: [unclosed"), "parse"],
+  ] as const)("OF-38: when %s, a surface that cannot pass --startup-from is told the CLI command, not the flag", async (_label, damage, reason) => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    damage();
+    const command = `rig seat launch 'dev.impl@team' --fresh --startup-from stored --reason "<why>"`;
+
+    const tui = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: false, reason: "tui", storedEscape: "command" });
+    const cli = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "cli" });
+
+    expect(!tui.ok && tui.message).toContain(reason);
+    expect(!tui.ok && "guidance" in tui && tui.guidance).toBe(`Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${command}.`);
+    expect(!cli.ok && "guidance" in cli && cli.guidance).toBe("Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.");
+  });
+
   it("control: an agent folder linked to a sibling inside the spec tree is accepted", async () => {
     const seat = await launchRig();
     retarget("bbbbbbb");

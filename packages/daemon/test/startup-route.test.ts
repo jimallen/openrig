@@ -83,6 +83,8 @@ describe("startup consent and effect boundary", () => {
     const second = await post(rig.id, revision);
     expect(await second.json()).toMatchObject({ code: "operation_in_progress" });
     expect(launch).toHaveBeenCalledWith(expect.objectContaining({ seatRef: "operator-agent@selected", fresh: true, stop: false, reason: expect.stringContaining(revision) }));
+    // OF-38: this action cannot pass --startup-from, so a refusal must name the CLI command, not the flag.
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({ storedEscape: "command" }));
     finish({ ok: false, code: "startup_context_missing", message: "fixture refuses launch" } as never);
     await first;
     expect(launch).toHaveBeenCalledTimes(1);

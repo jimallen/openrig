@@ -121,6 +121,8 @@ export interface SeatRefusal {
   matches?: Array<{ rig_name: string; logical_id: string; current_occupant: string | null }>;
 }
 
+/** OF-38: how a refused fresh re-read names the stored escape: the `--startup-from stored` flag (the caller can pass it) or the CLI command that does (it cannot). */
+export type StoredEscape = "flag" | "command";
 export type RestartInPlaceResult = InPlaceRestartReport | InPlaceRestartRefusal | SeatRefusal;
 export type VerifyRestartInPlaceResult = InPlaceVerifyResult | SeatRefusal;
 
@@ -696,7 +698,7 @@ export class SeatLifecycleService {
    * Reads only: callers receive no reservation or launch guarantee. Execution repeats
    * this resolution under its lifecycle lock rather than trusting an earlier plan.
    */
-  private async resolveFreshLaunch(resolved: ResolvedSeat, seatRef: string, startupFrom: StartupFrom = "spec") {
+  private async resolveFreshLaunch(resolved: ResolvedSeat, seatRef: string, startupFrom: StartupFrom = "spec", storedEscape: StoredEscape = "flag") {
     const seat = this.describe(resolved);
     const rig = this.rigRepo.getRig(seat.rigId);
     const node = rig?.nodes.find((candidate) => candidate.id === seat.nodeId);
@@ -717,7 +719,10 @@ export class SeatLifecycleService {
       {
         rigId: seat.rigId, nodeId: node.id, logicalId: seat.logicalId, runtime: node.runtime ?? null, cwd: node.cwd ?? ".",
         sessionName: canonicalSessionName, startupFrom,
-        refusalGuidance: "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.",
+        refusalGuidance: storedEscape === "command"
+          // OF-38: a surface that cannot pass `startupFrom` (the TUI's explicit-fresh action) is told the CLI command.
+          ? `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`
+          : "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.",
       },
     );
     // FreshStartupRefusal's codes are a subset of SeatRefusal's.
@@ -821,7 +826,7 @@ export class SeatLifecycleService {
    * Errors are reduced to safe codes;
    * startup text, credentials and process output are not included in the response.
    */
-  async planFresh(input: { seatRef: string; fresh: boolean; stop?: boolean; startupFrom?: StartupFrom }) {
+  async planFresh(input: { seatRef: string; fresh: boolean; stop?: boolean; startupFrom?: StartupFrom; storedEscape?: StoredEscape }) {
     const refusal = (error: SeatRefusal) => ({
       ...error, planOnly: true as const, complete: error.code !== "tmux_probe_failed", launchable: false as const,
       // Parser/probe errors can embed persisted startup content or process output.
@@ -830,7 +835,7 @@ export class SeatLifecycleService {
     if (!input.fresh) return refusal({ ok: false, code: "fresh_required", message: "--plan requires --fresh." });
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return refusal(resolved);
-    const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom);
+    const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom, input.storedEscape);
     if ("code" in prepared) return refusal(prepared);
     const { seat, rig, node, startup, canonicalSessionName } = prepared;
     const blockers: Array<{ code: string; message: string; guidance?: string }> = [];
@@ -895,6 +900,8 @@ export class SeatLifecycleService {
     operator?: string | null;
     /** OF-32: "spec" (default) re-reads the rig's spec source; "stored" replays the context saved by the last successful launch. */
     startupFrom?: StartupFrom;
+    /** OF-38: how a refused re-read names the stored escape: "flag" (default) for a caller that can pass `startupFrom`, "command" for one that cannot. */
+    storedEscape?: StoredEscape;
   }): Promise<LaunchFreshResult> {
     const required = this.requireReason(input.reason);
     if (required) return required;
@@ -911,7 +918,7 @@ export class SeatLifecycleService {
     if (guard && !guard.ownsLifecycle(resolved.nodeId)) {
       return guard.lifecycle([resolved.nodeId], () => this.launchFresh(input));
     }
-    const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom);
+    const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom, input.storedEscape);
     if ("code" in prepared) return prepared;
     const { seat, node, adapter, startup, canonicalSessionName, nodeLauncher, startupOrchestrator } = prepared;
     const withSourceWarnings = (warnings?: string[]) => {
