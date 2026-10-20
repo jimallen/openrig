@@ -341,6 +341,24 @@ describe("OF-32 N6: a seat that re-reads its spec reconciles the re-read release
     expect(onDisk()).toEqual(["alpha:alpha A", "gamma:gamma A", "work-skill:operator edit"]);
   });
 
+  // OF-38: the same skill conflict, reached from the TUI's explicit-fresh action (which cannot pass --startup-from).
+  it("OF-38: an operator-edited skill, from a surface that cannot pass --startup-from, names the CLI command", async () => {
+    await launchRig();
+    const workLoadout = resolveSkillLoadout({ catalogRoot: catalog, systemSkills: [], projectRoot: workdir, projectSkills: ["work-skill"] });
+    if (!workLoadout.ok) throw new Error("work loadout");
+    expect(reconcileSkillLoadout({ loadout: workLoadout.loadout, runtime: "claude-code", cwd: workdir, apply: true }).ok).toBe(true);
+    fs.writeFileSync(path.join(skillsDir(), "work-skill", "SKILL.md"), SKILL("work-skill", "operator edit"));
+    retarget("bbbbbbb");
+
+    const result = await service.launchFresh({ seatRef: SESSION, fresh: true, stop: false, reason: "tui", storedEscape: "command" });
+
+    expect(!result.ok && result.code).toBe("startup_source_unavailable");
+    expect(!result.ok && result.message).toContain("work-skill");
+    const guidance = !result.ok && "guidance" in result ? result.guidance : undefined;
+    expect(guidance).toContain(`rig seat launch 'dev.impl@team' --fresh --startup-from stored --reason "<why>"`);
+    expect(guidance).not.toContain("run again with");
+  });
+
   // Review R2: skills are applied only once the launch has cleared every refusal. A live occupant without --stop is
   // refused, and that refusal leaves the seat's skills exactly as they were.
   it("a seat launch refused for its live occupant leaves the skills unchanged", async () => {

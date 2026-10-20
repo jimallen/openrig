@@ -134,6 +134,16 @@ describe("TUI startup choices", () => {
     expect(screen.lines.join("\n")).toContain("Confirm this fresh start");
     expect(screen.lines.join("\n")).toContain("Decline; leave stopped");
   });
+  it("OF-38: a refused fresh start shows the daemon's guidance, the CLI command for the saved startup files, in the notice", async () => {
+    const f = fixture(); await chooseOperator(f);
+    const command = `rig seat launch 'operator.agent@kernel' --fresh --startup-from stored --reason "<why>"`;
+    f.response(async () => new Response(JSON.stringify({ ok: false, code: "startup_source_unavailable",
+      message: "This rig's spec source /specs/kernel.yaml no longer matches this seat: it no longer exists.",
+      guidance: `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${command}.` }), { status: 409 }));
+    await f.controller.key("f"); await f.controller.key("y");
+    expect(f.posts).toHaveLength(1);
+    expect(f.controller.state.notice).toBe(`This rig's spec source /specs/kernel.yaml no longer matches this seat: it no longer exists.\nRestore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${command}.`);
+  });
   it("one confirmation sends the exact seat/revision once despite repeated input", async () => {
     const f = fixture(); await chooseOperator(f);
     let finish!: (value: Response) => void;
