@@ -59,6 +59,13 @@ describe("mcp_servers: the declaration a codex member may carry", () => {
       .toContain("pods[0].members[0].mcp_servers.lsp.args[1]: must not contain control characters");
   });
 
+  it("refuses whitespace in the command or an argument (the seat's ps line must split back exactly)", () => {
+    const errors = errorsOf(spec({ mcp_servers: { lsp: server({ command: "/opt/my tools/mcpls", args: ["a b"] }) } }));
+    const why = "must not contain whitespace (a seat's process line must split back into the arguments it was launched with)";
+    expect(errors).toContain(`pods[0].members[0].mcp_servers.lsp.command: ${why}`);
+    expect(errors).toContain(`pods[0].members[0].mcp_servers.lsp.args[0]: ${why}`);
+  });
+
   it("refuses a server name Codex could not take as a bare key", () => {
     expect(errorsOf(spec({ mcp_servers: { "l.sp": server() } })))
       .toContain('pods[0].members[0].mcp_servers: server name "l.sp" must be 1-64 letters, digits, underscores or hyphens');

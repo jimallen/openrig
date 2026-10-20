@@ -7,6 +7,7 @@ import type { ResumeResult } from "./claude-resume.js";
 import { assessNativeResumeProbe, buildCodexResumeCore } from "../domain/native-resume-probe.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { shellQuote } from "./shell-quote.js";
+import { prepareSeatMcpLaunchArgs, type SeatMcpSelection } from "../domain/codex-mcp-servers.js";
 import { codexPostureArg } from "./yolo-mode.js";
 import { observeCodexSandbox } from "../domain/permission-drift.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
@@ -64,6 +65,9 @@ export class CodexResumeAdapter {
     nonInterruptive?: boolean,
     kernelAuthority?: boolean,
     teamPermissionDefault?: boolean,
+    // The seat's switched-on Codex MCP servers (rig seat set-mcp). Restore passes it only for a seat that
+    // has one, so every other call keeps its exact shape; absent renders nothing.
+    mcpServers?: SeatMcpSelection,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Codex resume not available" };
@@ -100,6 +104,8 @@ export class CodexResumeAdapter {
     const appliedLaunch = observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg("codex", { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture });
     const networkArg = await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
+    const mcp = prepareSeatMcpLaunchArgs(mcpServers, cwd, shellQuote);
+    if (!mcp.ok) return { ok: false, code: "resume_failed", message: mcp.error };
     const workspaceArg = teamPermissionDefault && !codexConfigProfile?.trim()
       && appliedLaunch.state === "observed" && appliedLaunch.value === "workspace-write"
       ? codexTeamWorkspaceArg(this.options.prepareTeamWorkspace, tmuxSessionName) : "";
@@ -110,7 +116,7 @@ export class CodexResumeAdapter {
       workspaceArg.trim() || undefined,
       resolvedPosture,
       model,
-      `${postureArg}${networkArg}`,
+      `${postureArg}${networkArg}${mcp.arg}`,
       daemonSupport?.kind === "supported",
       effort,
     );
