@@ -677,7 +677,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     transcriptStore, serviceOrchestrator,
     // OF-32: a seat restored fresh re-reads its rig's spec through the same reader `rig seat launch --fresh` uses.
     // The instantiator is built further down; a restore only runs once the daemon is serving.
-    seatStartupSource: { readSeatStartupFromSpec: (input) => podInstantiator.readSeatStartupFromSpec(input) },
+    seatStartupSource: {
+      readSeatStartupFromSpec: (input) => podInstantiator.readSeatStartupFromSpec(input),
+      projectSeatSkills: (skills) => podInstantiator.projectSeatSkills(skills),
+    },
   });
 
   // Connect to cmux at startup — degrades gracefully if absent

@@ -317,7 +317,7 @@ import { StartupOrchestrator } from "./startup-orchestrator.js";
 import { PodRepository } from "./pod-repository.js";
 import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, StartupAction, StartupFile } from "./types.js";
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile } from "./runtime-adapter.js";
-import type { SeatStartupRead } from "./seat-startup-source.js";
+import type { SeatSkillProjection, SeatSkillProjectionResult, SeatStartupRead } from "./seat-startup-source.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import fs from "node:fs";
 import { resolveConcreteHint } from "./runtime-adapter.js";
@@ -376,12 +376,13 @@ interface PodInstantiatorDeps {
    *  rather than falling back to a different system selector. */
   systemWorldResolver?: () => SystemWorldResolution;
   /** S04 — exact-byte catalog projection before a harness starts. Optional
-   *  for old tests/embedders; production wires the shared reconciler. */
+   *  for old tests/embedders; production wires the shared reconciler. `apply: false` is the
+   *  check a fresh re-read runs before it stops anything (OF-32 N6); it writes nothing. */
   skillReconciler?: (input: {
     loadout: SkillLoadout;
     runtime: SkillRuntime;
     cwd: string;
-    apply: true;
+    apply: boolean;
     topologyOwner?: string;
   }) => ReconcileSkillLoadoutResult;
   /** S20 P4 — materializes the selected Claude continuity policy by
@@ -1997,6 +1998,53 @@ export class PodRigInstantiator {
     } catch { /* best-effort on launch refresh only */ }
   }
 
+  /** The S04 skill loadout a seat's launch reconciles, or null when there is nothing to reconcile (no loadout, no
+   *  reconciler wired, or a runtime the managed catalog does not project for). The topology owner is the seat's
+   *  canonical session name: the same owner at first launch and at every re-read. */
+  private seatSkillProjection(
+    config: { skillLoadout?: SkillLoadout; runtime: string; cwd: string },
+    canonicalSessionName: string,
+  ): SeatSkillProjection | null {
+    if (!config.skillLoadout || !this.deps.skillReconciler) return null;
+    if (config.runtime !== "claude-code" && config.runtime !== "codex") return null;
+    return { loadout: config.skillLoadout, runtime: config.runtime, cwd: config.cwd, topologyOwner: canonicalSessionName };
+  }
+
+  /**
+   * One seat's S04 skill reconcile, shared by first launch and the OF-32 re-read. `apply: false` checks and writes
+   * nothing. Plugin skills never stop a seat that launched before them: if they cannot be projected, the seat starts
+   * with the rest of its loadout and says why.
+   */
+  private reconcileSeatSkills(skills: SeatSkillProjection, apply: boolean): SeatSkillProjectionResult {
+    const reconciler = this.deps.skillReconciler;
+    if (!reconciler) return { ok: true, warnings: [] };
+    const warnings: string[] = [];
+    const reconcile = (selected: SkillLoadout) => reconciler({
+      loadout: selected, runtime: skills.runtime, cwd: skills.cwd, apply, topologyOwner: skills.topologyOwner,
+    });
+    const loadout = skills.loadout;
+    let projection = reconcile(loadout);
+    if (!projection.ok && loadout.entries.some((entry) => entry.pluginId)) {
+      const withoutPlugins = reconcile({ ...loadout, entries: loadout.entries.filter((entry) => !entry.pluginId) });
+      if (withoutPlugins.ok) {
+        warnings.push(`plugin_skills_not_projected: ${projection.errors.map((error) => `${error.code}: ${error.message}`).join("; ")}`);
+        projection = withoutPlugins;
+      }
+    }
+    if (!projection.ok) {
+      return { ok: false, error: projection.errors.map((error) => `${error.code}: ${error.message}`).join("; ") };
+    }
+    for (const receipt of projection.receipts.filter(isKeptPluginSkill)) {
+      warnings.push(`plugin_skill_kept: ${receipt.id}: ${receipt.detail.slice("kept: ".length)} (${receipt.target})`);
+    }
+    return { ok: true, warnings };
+  }
+
+  /** OF-32 N6: apply the skill loadout a re-read checked, once the caller has cleared the way to launch. */
+  projectSeatSkills(skills: SeatSkillProjection): SeatSkillProjectionResult {
+    return this.reconcileSeatSkills(skills, true);
+  }
+
   private async launchExistingAgentMember(input: {
     rigId: string;
     rigSpec: PodRigSpec;
@@ -2064,39 +2112,11 @@ export class PodRigInstantiator {
 
     const canonicalSessionName = deriveCanonicalSessionName(input.pod.id, input.member.id, input.rigSpec.name);
     const keptSkillWarnings: string[] = [];
-    if (
-      configResult.config.skillLoadout
-      && this.deps.skillReconciler
-      && (configResult.config.runtime === "claude-code" || configResult.config.runtime === "codex")
-    ) {
-      const reconcile = (selected: SkillLoadout) => this.deps.skillReconciler!({
-        loadout: selected,
-        runtime: configResult.config.runtime as SkillRuntime,
-        cwd: configResult.config.cwd,
-        apply: true,
-        topologyOwner: canonicalSessionName,
-      });
-      const loadout = configResult.config.skillLoadout;
-      let projection = reconcile(loadout);
-      // Plugin skills never stop a seat that launched before them: if they cannot be
-      // projected, the seat starts with the rest of its loadout and says why.
-      if (!projection.ok && loadout.entries.some((entry) => entry.pluginId)) {
-        const withoutPlugins = reconcile({ ...loadout, entries: loadout.entries.filter((entry) => !entry.pluginId) });
-        if (withoutPlugins.ok) {
-          keptSkillWarnings.push(`plugin_skills_not_projected: ${projection.errors.map((error) => `${error.code}: ${error.message}`).join("; ")}`);
-          projection = withoutPlugins;
-        }
-      }
-      if (!projection.ok) {
-        return {
-          status: "failed",
-          error: projection.errors.map((error) => `${error.code}: ${error.message}`).join("; "),
-          sessionName: canonicalSessionName,
-        };
-      }
-      for (const receipt of projection.receipts.filter(isKeptPluginSkill)) {
-        keptSkillWarnings.push(`plugin_skill_kept: ${receipt.id}: ${receipt.detail.slice("kept: ".length)} (${receipt.target})`);
-      }
+    const skills = this.seatSkillProjection(configResult.config, canonicalSessionName);
+    if (skills) {
+      const projected = this.reconcileSeatSkills(skills, true);
+      if (!projected.ok) return { status: "failed", error: projected.error, sessionName: canonicalSessionName };
+      keptSkillWarnings.push(...projected.warnings);
     }
     // Forward per-seat silenceWindowSeconds from the resolved profile.
     // Currently inert: the live SeatActivityService poller uses the
@@ -2732,6 +2752,11 @@ export class PodRigInstantiator {
     // A required file a fresh start would deliver must exist now, not fail after the live occupant is stopped.
     const missing = resolvedStartupFiles.find((f) => f.required && f.appliesOn.includes("fresh_start") && !fs.existsSync(f.absolutePath));
     if (missing) return unavailable(`its required startup file ${missing.path} (${missing.absolutePath}) does not exist.`);
+    // OF-32 N6: the re-read release's skills, reconciled as first launch reconciles them. Checked here, before anything
+    // is stopped; the caller applies them once it has cleared the way to launch.
+    const skills = this.seatSkillProjection(config.config, deriveCanonicalSessionName(pod.id, member.id, rigSpec.name));
+    const skillCheck = skills ? this.reconcileSeatSkills(skills, false) : null;
+    if (skills && skillCheck && !skillCheck.ok) return unavailable(`its skills cannot be projected into ${skills.cwd} (${skillCheck.error}).`);
     return {
       kind: "spec",
       specSource,
@@ -2741,6 +2766,7 @@ export class PodRigInstantiator {
       startupActions: startup.startupActions,
       resolvedSpec: { name: config.config.resolvedSpecName, version: config.config.resolvedSpecVersion, hash: config.config.resolvedSpecHash },
       warnings: [...(config.config.skillWarnings ?? []), ...startup.conflictWarnings, ...preflight.warnings],
+      skills,
     };
   }
 

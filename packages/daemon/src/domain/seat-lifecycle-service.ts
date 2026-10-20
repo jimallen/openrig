@@ -10,7 +10,7 @@ import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js"
 import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
 import { writeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
-import { readStoredStartupContext, resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { projectRereadSkills, readStoredStartupContext, resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
@@ -1006,6 +1006,13 @@ export class SeatLifecycleService {
         code: "unmanaged_session_collision",
         message: `Canonical tmux session "${canonicalSessionName}" appeared before launch; refusing to overwrite it.`,
       };
+    }
+
+    // OF-32 N6: a re-read seat gets its release's skills as first launch does. The re-read already checked them before
+    // any stop, so a failure here is a change in the cwd since then; nothing has been launched.
+    const skills = projectRereadSkills(this.seatStartupSource, startup);
+    if (!skills.ok) {
+      return { ok: false, code: "launch_failed", message: `${skills.message} No session was started.` };
     }
 
     // Historical rows remain append-only but no longer look current.

@@ -20,6 +20,7 @@ import type { ProjectionPlan } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { reanchorShippedSpecPath } from "../src/domain/builtin-startup-files.js";
 import { guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
+import { reconcileSkillLoadout } from "../src/domain/skill-catalog.js";
 
 const RIG = (name = "team", agentRef = "local:agents/impl", extra = "") => `version: "0.2"
 name: ${name}
@@ -82,6 +83,7 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
   let projected: ProjectionPlan[];
   let inst: PodRigInstantiator;
   let service: SeatLifecycleService;
+  let reconciler: ReturnType<typeof vi.fn<typeof reconcileSkillLoadout>>;
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of32-fresh-")));
@@ -129,6 +131,7 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     } as unknown as TmuxAdapter;
     delivered = [];
     projected = [];
+    reconciler = vi.fn(reconcileSkillLoadout);
     adapter = {
       runtime: "claude-code",
       listInstalled: async () => [],
@@ -146,6 +149,9 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       adapters: { "claude-code": adapter },
       tmuxAdapter: tmux,
       onboardingEnabledResolver: () => false,
+      // The production S04 reconciler, against an empty catalog (never the real ~/.openrig/skills).
+      skillsRootResolver: () => path.join(root, "no-catalog"),
+      skillReconciler: reconciler,
     } as never);
     service = new SeatLifecycleService({
       db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, nodeLauncher, startupOrchestrator,
@@ -203,9 +209,17 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(JSON.parse(event.payload)).toMatchObject({ startupSource: "spec", specSource: linkSpec });
     // The seat keeps its own working folder; the spec's `cwd: .` does not move it.
     expect(projected.at(-1)?.cwd).toBe(workdir);
-    // As on the stored path, the live skill set is not reinstalled from the catalog (first launch did project it).
+    // OF-32 N6, the one sanctioned change of this pin. Stage 2 pinned "the live skill set is not reinstalled": a re-read
+    // projected no skill at all, so a release that added or changed a skill was delivered only in part. The plan's
+    // skill entries still stay out of the adapter's projection (S04's reconciler owns the live skill set, as on the
+    // stored path); what changed is that the re-read now runs that reconciler, as first launch does: checked before
+    // the stop (apply false), applied before the launch (apply true), same cwd and same owner as first launch.
+    // Delivery itself is pinned in reread-skill-reconcile.test.ts.
     expect(seat.firstLaunchPlan?.entries.some((e) => e.category === "skill")).toBe(true);
     expect(projected.at(-1)?.entries.some((e) => e.category === "skill")).toBe(false);
+    expect(reconciler.mock.calls.map(([call]) => `${call.apply}:${call.cwd}:${call.topologyOwner}`)).toEqual([
+      `true:${workdir}:dev-impl@team`, `false:${workdir}:dev-impl@team`, `true:${workdir}:dev-impl@team`,
+    ]);
   });
 
   it("the new context row and the agent provenance are written together or not at all", async () => {

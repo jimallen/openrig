@@ -16,6 +16,7 @@ import type { StartupAction } from "./types.js";
 import { resolveStartupProof } from "./startup-resolver.js";
 import { serializeStartupContext } from "./startup-orchestrator.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
+import type { SkillLoadout, SkillRuntime } from "./skill-catalog.js";
 
 /** What the operator asked a fresh launch to start from. */
 export type StartupFrom = "spec" | "stored";
@@ -40,11 +41,30 @@ export type SeatStartupRead =
       startupActions: StartupAction[];
       resolvedSpec: { name: string; version: string; hash: string };
       warnings: string[];
+      /** OF-32 N6: the re-read's S04 skill loadout, already checked (nothing written); null when nothing reconciles. */
+      skills: SeatSkillProjection | null;
     };
 
-/** The seam a fresh launch asks for a re-read; PodRigInstantiator implements it. Reads only; writes nothing. */
+/** One seat's S04 managed-skill loadout as a launch reconciles it: first launch, and a fresh re-read of its spec. */
+export interface SeatSkillProjection {
+  loadout: SkillLoadout;
+  runtime: SkillRuntime;
+  cwd: string;
+  /** The seat's canonical session name: one owner across first launch and every re-read. */
+  topologyOwner: string;
+}
+
+export type SeatSkillProjectionResult = { ok: true; warnings: string[] } | { ok: false; error: string };
+
+/**
+ * The seam a fresh launch asks for a re-read; PodRigInstantiator implements it. `readSeatStartupFromSpec` reads only
+ * and writes nothing. `projectSeatSkills` writes the skills a re-read checked; a caller runs it only for a context it
+ * re-read (source `spec`), after its last refusal and before the launch, so a seat that replays its stored context
+ * never reconciles.
+ */
 export interface SeatStartupSpecReader {
   readSeatStartupFromSpec(input: { rigId: string; nodeId: string; adapter: RuntimeAdapter; sessionName: string }): Promise<SeatStartupRead>;
+  projectSeatSkills(skills: SeatSkillProjection): SeatSkillProjectionResult;
 }
 
 /** OF-32: where a fresh launch took its startup policy from, as reported to the operator and the audit event. */
@@ -64,6 +84,21 @@ export interface FreshStartupContext {
   resolvedSpec?: { name: string; version: string; hash: string };
   /** Operator-facing notes about the source (no recorded source; re-read warnings). */
   sourceWarnings: string[];
+  /** OF-32 N6: set only on a re-read: the skills its launch reconciles through `SeatStartupSpecReader.projectSeatSkills`. */
+  skills?: SeatSkillProjection;
+}
+
+/**
+ * OF-32 N6: reconcile a re-read context's skills, as first launch does, just before its launch. Does nothing for a
+ * context replayed from storage (it carries no skills). On success the reconciler's warnings join the source warnings.
+ */
+export function projectRereadSkills(specReader: SeatStartupSpecReader | null, context: FreshStartupContext): { ok: true } | { ok: false; message: string } {
+  if (!context.skills) return { ok: true };
+  if (!specReader) return { ok: false, message: "This daemon cannot project a re-read seat's skills." };
+  const projected = specReader.projectSeatSkills(context.skills);
+  if (!projected.ok) return { ok: false, message: `Its skills could not be projected into ${context.skills.cwd}: ${projected.error}.` };
+  context.sourceWarnings.push(...projected.warnings);
+  return { ok: true };
 }
 
 /** Every way the source decision can refuse. Nothing has been launched, stopped or written when it does. */
@@ -133,7 +168,8 @@ export async function resolveFreshSeatStartup(
       return { ok: false, code: read.code, message: read.message, guidance: input.refusalGuidance };
     }
     if (read.kind === "spec") {
-      // S04 owns the live ambient skill set, as on the stored path: a fresh seat does not reinstall catalog skills.
+      // The plan's skill entries stay out of the adapter's projection, as on the stored path: S04's reconciler owns the
+      // live skill set. A re-read reaches it through `read.skills` instead (OF-32 N6), as first launch does.
       const entries = read.plan.entries.filter((entry) => entry.category !== "skill");
       try {
         resolveStartupProof(read.startupActions, "fresh_start");
@@ -149,7 +185,8 @@ export async function resolveFreshSeatStartup(
         hash: createHash("sha256").update(JSON.stringify([row.projectionEntriesJson, row.resolvedFilesJson, row.startupActionsJson, read.plan.runtime])).digest("hex"),
         source: { kind: "spec", specSource: read.specSource, specPath: read.specPath },
         resolvedSpec: read.resolvedSpec,
-        sourceWarnings: read.warnings,
+        sourceWarnings: [...read.warnings],
+        ...(read.skills ? { skills: read.skills } : {}),
       };
     } else if (read.kind === "undeclared") {
       storedReason = "not_in_spec";
