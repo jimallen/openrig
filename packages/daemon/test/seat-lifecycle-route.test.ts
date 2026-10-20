@@ -231,6 +231,7 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
   it.each(["launch", "launch-plan"] as const)("OF-38: %s keeps the flag wording for a refused re-read", async (route) => {
     setup = createTestApp(db, { wireRuntimeAdapters: true });
     const seat = seedSeat();
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(seat.node.id);
     setup.rigRepo.setRigSpecSource(seat.rig.id, "/library/team/rig.yaml");
     vi.spyOn(PodRigInstantiator.prototype, "readSeatStartupFromSpec").mockResolvedValue({
       kind: "refused", code: "startup_source_unavailable", specSource: "/library/team/rig.yaml", message: "fixture: gone",
