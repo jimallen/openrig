@@ -10,6 +10,7 @@ import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js"
 import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
 import { writeStartupContext, type StartupOrchestrator } from "./startup-orchestrator.js";
+import { freshSeatLaunchCommand } from "./active-occupant.js";
 import { projectRereadSkills, readStoredStartupContext, resolveFreshSeatStartup, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
@@ -963,6 +964,7 @@ export class SeatLifecycleService {
       }
     }
     if ("code" in canonicalProbe) return canonicalProbe;
+    let stoppedOccupant = false;
     if (canonicalProbe.state === "present") {
       const currentSession = await this.validateFreshCollision(resolved, canonicalSessionName, input.stop === true);
       if ("code" in currentSession) return currentSession;
@@ -974,6 +976,7 @@ export class SeatLifecycleService {
         false,
       );
       if (!stopped.ok) return stopped;
+      stoppedOccupant = true;
       // Stopping the server's last session ends tmux's server, and every probe
       // below would then be transport_unavailable, never absence. Restore an
       // empty server (no session is invented; a no-op while the server is up)
@@ -1009,10 +1012,15 @@ export class SeatLifecycleService {
     }
 
     // OF-32 N6: a re-read seat gets its release's skills as first launch does. The re-read already checked them before
-    // any stop, so a failure here is a change in the cwd since then; nothing has been launched.
+    // any stop, so a failure here is a change in the cwd since then. Nothing has been launched, but an occupant this
+    // launch stopped stays stopped: say so, and name the way back that does not reconcile skills.
     const skills = projectRereadSkills(this.seatStartupSource, startup);
     if (!skills.ok) {
-      return { ok: false, code: "launch_failed", message: `${skills.message} No session was started.` };
+      return {
+        ok: false, code: "launch_failed",
+        message: `${skills.message} No session was started.${stoppedOccupant ? " This launch had already stopped the seat's previous session, so the seat is not running now." : ""}`,
+        guidance: `To start it on the startup files saved at its last successful launch, which leaves its skills as they are, run: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`,
+      };
     }
 
     // Historical rows remain append-only but no longer look current.
