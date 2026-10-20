@@ -278,6 +278,13 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
       await refusedAndNothingStored(s, file, `the spec file ${file} ${NOT_UNDER}`);
     });
 
+    it("the rig's recorded spec directory is a trusted root even when no other root is configured", async () => {
+      const s = seat("eztrack"); // records root/spec/rig.yaml as the rig's spec source
+      const file = goodSpec(); // a sibling of the recorded spec
+      const bare = new SeatLifecycleService({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: fakeTmux(), mcpTrust: { io: TRUST, specRoots: () => [] } });
+      expect(await bare.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "x", actor: "a@r", specFile: file })).toMatchObject({ ok: true, declaredIn: file });
+    });
+
     it("refuses a spec with more than one hard link, even under a trusted root", async () => {
       const s = seat("eztrack", { spec: false });
       const file = goodSpec();
