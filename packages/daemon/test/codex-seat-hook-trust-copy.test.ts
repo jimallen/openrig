@@ -58,8 +58,17 @@ afterEach(async () => { await fs.rm(tmp, { recursive: true, force: true }); });
 const launch = (session = "dev-impl@r") => ensureCodexSeatHome(session, { openrigHome, sharedCodexHome: shared, log } as never);
 const seatKeyOf = async (home: { path: string }) => path.join(await fs.realpath(home.path), "config.toml");
 const read = () => fs.readFile(sharedConfig, "utf-8");
-const hashAt = (content: string, key: string) =>
-  new RegExp(`^\\[hooks\\.state\\.${JSON.stringify(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]\\ntrusted_hash = "([^"]+)"`, "m").exec(content)?.[1];
+/** The text of the `[hooks.state."<key>"]` table (header excluded), or undefined when absent. */
+const blockAt = (content: string, key: string): string | undefined => {
+  const lines = content.split("\n");
+  const i = lines.findIndex((l) => l.trim() === `[hooks.state.${JSON.stringify(key)}]`);
+  if (i < 0) return undefined;
+  const body: string[] = [];
+  for (let j = i + 1; j < lines.length && !lines[j]!.trim().startsWith("["); j++) body.push(lines[j]!);
+  return body.join("\n");
+};
+const hashAt = (content: string, key: string) => /trusted_hash = "([^"]+)"/.exec(blockAt(content, key) ?? "")?.[1];
+const enabledAt = (content: string, key: string) => /^enabled = (true|false)$/m.exec(blockAt(content, key) ?? "")?.[1];
 
 describe("OF-42 seat hook-trust copy", () => {
   it("copies the canonical trust of a user hook to the seat key when the hash is the one Codex computes now, and logs it", async () => {
@@ -229,5 +238,62 @@ describe("OF-42 seat hook-trust copy", () => {
     await fs.writeFile(sharedConfig, odd + entry(`${sharedConfig}:stop:0:0`, PROBE_STOP_HASH));
     const home = await launch();
     expect(await read()).not.toContain(`${await seatKeyOf(home)}:stop`);
+  });
+
+  // N1 (security review): the seat record is the shared record's OWN hash. Even if the single
+  // comparison against the recomputed hash were lost, an edited hook must still never read as
+  // approved at the seat, because the seat would carry the stale hash that Codex rejects.
+  it("an edited hook is never given a seat hash equal to the hash Codex computes for it now (command, timeout and matcher edits)", async () => {
+    const variants: Array<[string, string]> = [
+      [HOOKS.replace("/opt/bash-guard", "/opt/bash-guard-v2"), sha('{"event_name":"pre_tool_use","hooks":[{"async":false,"command":"/opt/bash-guard-v2","timeout":5,"type":"command"}],"matcher":"Bash"}')],
+      [HOOKS.replace("timeout = 5", "timeout = 8"), sha('{"event_name":"pre_tool_use","hooks":[{"async":false,"command":"/opt/bash-guard","timeout":8,"type":"command"}],"matcher":"Bash"}')],
+      [HOOKS.replace('matcher = "Bash"', 'matcher = "Write"'), sha('{"event_name":"pre_tool_use","hooks":[{"async":false,"command":"/opt/bash-guard","timeout":5,"type":"command"}],"matcher":"Write"}')],
+    ];
+    for (const [edited, currentHash] of variants) {
+      expect(currentHash).not.toBe(BASH_GUARD_HASH);
+      await fs.writeFile(sharedConfig, edited + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH));
+      const home = await launch();
+      const seatKey = await seatKeyOf(home);
+      const seatHash = hashAt(await read(), `${seatKey}:pre_tool_use:0:0`);
+      expect(seatHash).not.toBe(currentHash);
+    }
+  });
+
+  // F1 (security review): shared records are read from the parsed document, not by scanning lines.
+  it("a record-shaped text inside a multiline string is not a trust record and is never mirrored", async () => {
+    const fake = `junk = '''\n[hooks.state."${sharedConfig}:pre_tool_use:0:0"]\ntrusted_hash = "${BASH_GUARD_HASH}"\n'''\n\n`;
+    await fs.writeFile(sharedConfig, fake + HOOKS);
+    const home = await launch();
+    expect(await read()).not.toContain(`${await seatKeyOf(home)}:pre_tool_use`);
+    expect(logs).toEqual([]);
+  });
+
+  // F2 (security review): a hook Jim approved and then switched off must stay off in the seats.
+  it("a shared record with enabled = false is copied with enabled = false", async () => {
+    await fs.writeFile(sharedConfig, HOOKS + `${entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH)}enabled = false\n`);
+    const home = await launch();
+    const after = await read();
+    const seatKey = `${await seatKeyOf(home)}:pre_tool_use:0:0`;
+    expect(hashAt(after, seatKey)).toBe(BASH_GUARD_HASH);
+    expect(enabledAt(after, seatKey)).toBe("false");
+  });
+
+  it("a seat record that is current in hash but enabled while the shared one is switched off is brought in line, and logged", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    await fs.writeFile(sharedConfig, HOOKS + `${entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH)}enabled = false\n\n` + entry(seatKey, BASH_GUARD_HASH));
+    await launch();
+    expect(enabledAt(await read(), seatKey)).toBe("false");
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("replaced");
+  });
+
+  it("a seat record switched off while the shared one is not is brought back in line (the seat mirrors the shared record)", async () => {
+    const home0 = await launch();
+    const seatKey = `${await seatKeyOf(home0)}:pre_tool_use:0:0`;
+    await fs.writeFile(sharedConfig, HOOKS + entry(`${sharedConfig}:pre_tool_use:0:0`, BASH_GUARD_HASH) + `\n${entry(seatKey, BASH_GUARD_HASH)}enabled = false\n`);
+    await launch();
+    expect(enabledAt(await read(), seatKey)).toBeUndefined();
+    expect(hashAt(await read(), seatKey)).toBe(BASH_GUARD_HASH);
   });
 });

@@ -137,43 +137,89 @@ function currentHookHashes(content: string): Map<string, string> {
   return out;
 }
 
+/** The scalar fields of one `[hooks.state."<key>"]` record (trusted_hash, enabled, ...). */
+type HookStateRecord = Record<string, string | number | boolean>;
+
+/**
+ * Every `[hooks.state."<key>"]` record, read from the PARSED document, so text that merely looks
+ * like a record (inside a multiline string, a comment) is never mistaken for one. An unparseable
+ * file yields no records: nothing can be verified, so nothing is copied.
+ */
+function hookStateRecords(content: string): Map<string, HookStateRecord> {
+  const out = new Map<string, HookStateRecord>();
+  let state: unknown;
+  try {
+    const hooks = (parseToml(content) as Record<string, unknown>)["hooks"];
+    state = hooks && typeof hooks === "object" ? (hooks as Record<string, unknown>)["state"] : undefined;
+  } catch {
+    return out;
+  }
+  if (!state || typeof state !== "object") return out;
+  for (const [key, value] of Object.entries(state as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const rec: HookStateRecord = {};
+    for (const [field, v] of Object.entries(value as Record<string, unknown>)) {
+      if ((typeof v === "string" || typeof v === "number" || typeof v === "boolean") && /^[A-Za-z0-9_-]+$/.test(field)) rec[field] = v;
+    }
+    out.set(key, rec);
+  }
+  return out;
+}
+
+/** Set (or, for undefined, remove) one scalar field inside an existing `[hooks.state."<key>"]` table. */
+function setHookStateField(content: string, key: string, field: string, value: string | number | boolean | undefined): string {
+  const header = `[hooks.state.${JSON.stringify(key)}]`;
+  const lines = content.split("\n");
+  const headerIndex = lines.findIndex((line) => line.trim() === header);
+  if (headerIndex === -1) return content;
+  let end = lines.length;
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    if (lines[i]!.trim().startsWith("[")) { end = i; break; }
+  }
+  const at = lines.findIndex((line, i) => i > headerIndex && i < end && new RegExp(`^\\s*${field}\\s*=`).test(line));
+  if (value === undefined) {
+    if (at >= 0) lines.splice(at, 1);
+  } else if (at >= 0) {
+    lines[at] = `${field} = ${JSON.stringify(value)}`;
+  } else {
+    lines.splice(headerIndex + 1, 0, `${field} = ${JSON.stringify(value)}`);
+  }
+  return lines.join("\n");
+}
+
+const sameFields = (a: HookStateRecord | undefined, b: HookStateRecord): boolean =>
+  !!a && a["trusted_hash"] === b["trusted_hash"] && a["enabled"] === b["enabled"];
+
 export function planCodexHookTrustMirror(
   content: string,
   sharedKeySource: string,
   seatKeySource: string,
 ): { content: string; copies: CodexHookTrustCopy[] } {
   if (sharedKeySource === seatKeySource) return { content, copies: [] };
-  const prefix = `[hooks.state.${JSON.stringify(sharedKeySource).slice(0, -1)}:`;
-  const lines = content.split("\n");
-  const hashOf = (from: number): string | undefined => {
-    for (let j = from + 1; j < lines.length && !lines[j]!.trim().startsWith("["); j++) {
-      const m = /^\s*trusted_hash\s*=\s*"([^"]+)"\s*$/.exec(lines[j]!);
-      if (m) return m[1]!;
-    }
-    return undefined;
-  };
-  const seatHashes = new Map<string, string>();
-  lines.forEach((line, i) => {
-    const t = line.trim();
-    if (!t.startsWith(`[hooks.state.${JSON.stringify(seatKeySource).slice(0, -1)}:`) || !t.endsWith(`"]`)) return;
-    const h = hashOf(i);
-    if (h) seatHashes.set(JSON.parse(t.slice("[hooks.state.".length, -1)) as string, h);
-  });
+  const records = hookStateRecords(content);
   const current = currentHookHashes(content);
   const copies: CodexHookTrustCopy[] = [];
   let next = content;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.trim();
-    if (!line.startsWith(prefix) || !line.endsWith(`"]`)) continue;
-    const suffix = (JSON.parse(line.slice("[hooks.state.".length, -1)) as string).slice(sharedKeySource.length);
-    const sharedHash = hashOf(i);
+  for (const [key, shared] of records) {
+    if (!key.startsWith(`${sharedKeySource}:`)) continue;
+    const suffix = key.slice(sharedKeySource.length);
+    const sharedHash = shared["trusted_hash"];
     const want = current.get(suffix.slice(1));
-    if (!sharedHash || want === undefined || sharedHash !== want) continue; // unverifiable: copy nothing
+    if (typeof sharedHash !== "string" || want === undefined || sharedHash !== want) continue; // unverifiable: copy nothing
     const seatKey = `${seatKeySource}${suffix}`;
-    const have = seatHashes.get(seatKey);
-    if (have === want) continue;
-    next = upsertCodexHookTrust(next, seatKey, want);
-    copies.push({ key: seatKey, hash: want, action: have === undefined ? "copied" : "replaced" });
+    const have = records.get(seatKey);
+    // The seat record is the shared record's own, field for field (its hash, and `enabled` so a
+    // hook Jim switched off stays off), never a recomputed value: Codex stays the only arbiter.
+    if (sameFields(have, shared)) continue;
+    let candidate = upsertCodexHookTrust(next, seatKey, sharedHash);
+    for (const [field, value] of Object.entries(shared)) {
+      if (field !== "trusted_hash") candidate = setHookStateField(candidate, seatKey, field, value);
+    }
+    if (shared["enabled"] === undefined) candidate = setHookStateField(candidate, seatKey, "enabled", undefined);
+    // A seat record the text could not express (an unusual header form) must not break the file.
+    if (!sameFields(hookStateRecords(candidate).get(seatKey), shared)) continue;
+    next = candidate;
+    copies.push({ key: seatKey, hash: sharedHash, action: have === undefined ? "copied" : "replaced" });
   }
   for (const { key, hash } of codexActivityHookTrustRecords(next, seatKeySource)) {
     next = upsertCodexHookTrust(next, key, hash);
