@@ -292,6 +292,24 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     expect(listed.error).toContain("No session was started");
   });
 
+  // A seat not listed is validated before the restore exactly as at base, but on what it will replay: its own saved
+  // setup. A required file that setup names is gone, so the whole restore is not attempted (base's D1/D4 gate).
+  it("a seat not listed with --fresh is pre-validated on its own saved setup, as base validated what it replayed", async () => {
+    const seat = await launchRig();
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    const snapshotId = await down(seat.rigId);
+    const gone = path.join(root, "gone", "role.md");
+    const saved = storedFiles(seat.nodeId).map((f) => (f.path === "guidance/role.md" ? { ...f, absolutePath: gone } : f));
+    db.prepare("UPDATE node_startup_context SET resolved_files_json = ? WHERE node_id = ?").run(JSON.stringify(saved), seat.nodeId);
+
+    const outcome = await restoreFrom(snapshotId, { fresh: false });
+
+    expect(outcome.ok).toBe(false);
+    expect(!outcome.ok && outcome.code).toBe("pre_restore_validation_failed");
+    expect(!outcome.ok && "result" in outcome && JSON.stringify(outcome.result)).toContain(gone);
+    expect(delivered).toEqual([]);
+  });
+
   // The snapshot-hazard fix holds for every fresh seat, listed or not: a policy-fresh seat restored from an older
   // snapshot comes back on its own newer saved setup, not the snapshot's copy.
   it("the snapshot hazard is fixed for a seat not listed with --fresh too", async () => {
