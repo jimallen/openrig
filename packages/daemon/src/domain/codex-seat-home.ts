@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { codexActivityHookTrustRecords, upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
+import { parse as parseToml } from "smol-toml";
+import { codexActivityHookTrustRecords, computeCodexHandlerHash, upsertCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
  * OPR-fork: codex seats must NOT share one ~/.codex app-server environment.
@@ -84,40 +85,111 @@ export function codexSeatHomePath(openrigHome: string, sessionName: string): str
  * config.toml through its own CODEX_HOME symlink is a different trust key from the
  * shared path (measured: Codex 0.162.1 writes seat-path keys).
  *
- * - Every `[hooks.state."<shared>:<suffix>"]` record is copied to `<seat>:<suffix>` with the
- *   SAME hash, but only when the seat has no record there yet: trust given inside the seat
- *   (a newer hash) is never rolled back to the shared one. The file behind both keys is one
- *   file, so this carries over trust already given and never invents any.
+ * OF-42: trust moves from the shared key to the seat key only when it can be VERIFIED.
+ * The hash Codex stores covers the event and the hook definition (never the path), so
+ * OpenRig recomputes it from the file's current hooks and compares:
+ *
+ * - A `[hooks.state."<shared>:<suffix>"]` record is copied to `<seat>:<suffix>` only when its
+ *   stored hash equals the hash Codex computes now for the hook at that position. A stale
+ *   record (the hook was edited since it was trusted), a record whose position holds no
+ *   hook, and a hook with no record are all left alone: nothing is ever created that the
+ *   shared key does not hold, and nothing unverifiable is copied.
+ * - A seat record that already equals the current hash is left alone. A seat record whose
+ *   hash differs from the current one is stale by the same rule and is replaced, but only
+ *   from a verified shared record. A seat record the shared key cannot vouch against is
+ *   never touched, so trust given inside the seat for a newer definition survives.
  * - OpenRig's own managed hooks are computed for the seat key directly, so they follow a
  *   relay change after an upgrade.
  */
-export function mirrorCodexHookTrust(content: string, sharedKeySource: string, seatKeySource: string): string {
-  if (sharedKeySource === seatKeySource) return content;
+export interface CodexHookTrustCopy {
+  key: string;
+  hash: string;
+  action: "copied" | "replaced";
+}
+
+function codexEventLabel(event: string): string {
+  return event.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+/** `<event_label>:<group>:<handler>` -> the hash Codex computes for that authored hook now. */
+function currentHookHashes(content: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let hooks: unknown;
+  try {
+    hooks = (parseToml(content) as Record<string, unknown>)["hooks"];
+  } catch {
+    return out; // unparseable file: nothing can be verified
+  }
+  if (!hooks || typeof hooks !== "object") return out;
+  for (const [event, groups] of Object.entries(hooks as Record<string, unknown>)) {
+    if (event === "state" || !Array.isArray(groups)) continue;
+    const label = codexEventLabel(event);
+    groups.forEach((group, gi) => {
+      const g = group as { matcher?: unknown; hooks?: unknown };
+      if (!g || !Array.isArray(g.hooks)) return;
+      g.hooks.forEach((handler, hi) => {
+        if (!handler || typeof handler !== "object") return;
+        const hash = computeCodexHandlerHash(label, { matcher: g.matcher, handler: handler as Record<string, unknown> });
+        if (hash) out.set(`${label}:${gi}:${hi}`, hash);
+      });
+    });
+  }
+  return out;
+}
+
+export function planCodexHookTrustMirror(
+  content: string,
+  sharedKeySource: string,
+  seatKeySource: string,
+): { content: string; copies: CodexHookTrustCopy[] } {
+  if (sharedKeySource === seatKeySource) return { content, copies: [] };
   const prefix = `[hooks.state.${JSON.stringify(sharedKeySource).slice(0, -1)}:`;
   const lines = content.split("\n");
-  const has = (key: string) => lines.some((line) => line.trim() === `[hooks.state.${JSON.stringify(key)}]`);
+  const hashOf = (from: number): string | undefined => {
+    for (let j = from + 1; j < lines.length && !lines[j]!.trim().startsWith("["); j++) {
+      const m = /^\s*trusted_hash\s*=\s*"([^"]+)"\s*$/.exec(lines[j]!);
+      if (m) return m[1]!;
+    }
+    return undefined;
+  };
+  const seatHashes = new Map<string, string>();
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (!t.startsWith(`[hooks.state.${JSON.stringify(seatKeySource).slice(0, -1)}:`) || !t.endsWith(`"]`)) return;
+    const h = hashOf(i);
+    if (h) seatHashes.set(JSON.parse(t.slice("[hooks.state.".length, -1)) as string, h);
+  });
+  const current = currentHookHashes(content);
+  const copies: CodexHookTrustCopy[] = [];
   let next = content;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim();
     if (!line.startsWith(prefix) || !line.endsWith(`"]`)) continue;
     const suffix = (JSON.parse(line.slice("[hooks.state.".length, -1)) as string).slice(sharedKeySource.length);
-    if (has(`${seatKeySource}${suffix}`)) continue;
-    for (let j = i + 1; j < lines.length && !lines[j]!.trim().startsWith("["); j++) {
-      const m = /^\s*trusted_hash\s*=\s*"([^"]+)"\s*$/.exec(lines[j]!);
-      if (m) { next = upsertCodexHookTrust(next, `${seatKeySource}${suffix}`, m[1]!); break; }
-    }
+    const sharedHash = hashOf(i);
+    const want = current.get(suffix.slice(1));
+    if (!sharedHash || want === undefined || sharedHash !== want) continue; // unverifiable: copy nothing
+    const seatKey = `${seatKeySource}${suffix}`;
+    const have = seatHashes.get(seatKey);
+    if (have === want) continue;
+    next = upsertCodexHookTrust(next, seatKey, want);
+    copies.push({ key: seatKey, hash: want, action: have === undefined ? "copied" : "replaced" });
   }
   for (const { key, hash } of codexActivityHookTrustRecords(next, seatKeySource)) {
     next = upsertCodexHookTrust(next, key, hash);
   }
-  return next;
+  return { content: next, copies };
+}
+
+export function mirrorCodexHookTrust(content: string, sharedKeySource: string, seatKeySource: string): string {
+  return planCodexHookTrustMirror(content, sharedKeySource, seatKeySource).content;
 }
 
 // One writer per config file in this process; the write itself is temp + rename so a Codex
 // starting in another seat never reads a truncated file.
 const configWrites = new Map<string, Promise<unknown>>();
 
-async function syncSeatHookTrust(home: string): Promise<boolean> {
+async function syncSeatHookTrust(home: string, log: (message: string) => void): Promise<boolean> {
   const seatConfig = path.join(home, "config.toml");
   const stat = await fs.lstat(seatConfig).catch(() => null);
   if (!stat?.isSymbolicLink()) return false; // a seat-owned config carries its own trust
@@ -125,12 +197,14 @@ async function syncSeatHookTrust(home: string): Promise<boolean> {
   const seatKeySource = path.join(await fs.realpath(home), "config.toml");
   const run = (configWrites.get(sharedKeySource) ?? Promise.resolve()).catch(() => undefined).then(async () => {
     const content = await fs.readFile(sharedKeySource, "utf-8");
-    const next = mirrorCodexHookTrust(content, sharedKeySource, seatKeySource);
+    const { content: next, copies } = planCodexHookTrustMirror(content, sharedKeySource, seatKeySource);
     if (next === content) return false;
     const { mode } = await fs.stat(sharedKeySource);
     const tmp = `${sharedKeySource}.openrig-${process.pid}-${createHash("sha256").update(seatKeySource).digest("hex").slice(0, 8)}`;
     await fs.writeFile(tmp, next, { mode });
     await fs.rename(tmp, sharedKeySource);
+    // Logged after the rename, so a line never names trust that was not written.
+    for (const c of copies) log(`[openrig] codex seat hook trust ${c.action}: ${c.key} ${c.hash} (from ${sharedKeySource})`);
     return true;
   });
   configWrites.set(sharedKeySource, run);
@@ -225,7 +299,7 @@ async function seedSeatPackages(home: string, shared: string): Promise<string[]>
  */
 export async function ensureCodexSeatHome(
   sessionName: string,
-  opts?: { openrigHome?: string; sharedCodexHome?: string },
+  opts?: { openrigHome?: string; sharedCodexHome?: string; log?: (message: string) => void },
 ): Promise<CodexSeatHome> {
   const openrigHome = opts?.openrigHome ?? process.env["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
   const shared = opts?.sharedCodexHome ?? process.env["CODEX_HOME_DEFAULT"] ?? path.join(os.homedir(), ".codex");
@@ -246,7 +320,7 @@ export async function ensureCodexSeatHome(
   }
   linked.push(...(await seedSeatPackages(home, shared)));
   // Every launch, not only on creation: trust given after the home was made carries over too.
-  await syncSeatHookTrust(home).catch(() => false);
+  await syncSeatHookTrust(home, opts?.log ?? ((message) => console.log(message))).catch(() => false);
 
   // Profile fragments are COPIED (see module doc): per-seat canonical path,
   // per-seat identity edits stay seat-local.

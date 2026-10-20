@@ -1157,6 +1157,34 @@ export function computeCodexHookTrust(
 }
 
 /**
+ * OF-42: the trust hash Codex computes for ANY authored command hook (a user's own hook such
+ * as bash-guard, not only OpenRig's four). The hash covers the event and the hook definition,
+ * never the config path, so one value serves every key source that loads the same file.
+ * Mirrors `computeCodexHookTrust`; null when the definition holds a field this reproduction
+ * does not model (an unmodelled field would change Codex's hash, so no value is better than a
+ * wrong one).
+ */
+export function computeCodexHandlerHash(
+  eventLabel: string,
+  group: { matcher?: unknown; handler: Record<string, unknown> },
+): string | null {
+  const MODELLED = new Set(["type", "command", "commandWindows", "timeout", "async", "statusMessage"]);
+  const h = group.handler;
+  if (h["type"] !== "command" || typeof h["command"] !== "string") return null;
+  if (Object.keys(h).some((k) => !MODELLED.has(k))) return null;
+  if (group.matcher != null && typeof group.matcher !== "string") return null;
+  // Measured on Codex 0.162.1 (hash Codex itself wrote for `[[hooks.Stop.hooks]]` with no
+  // timeout): an absent timeout hashes as 600, not as an omitted field. A group with several
+  // handlers hashes each handler alone, as `{event_name, matcher?, hooks:[that handler]}`.
+  const handler: Record<string, unknown> = { type: "command", command: h["command"], async: h["async"] ?? false, timeout: h["timeout"] ?? 600 };
+  for (const k of ["commandWindows", "statusMessage"] as const) if (h[k] != null) handler[k] = h[k];
+  const identity: Record<string, unknown> = { event_name: eventLabel, hooks: [handler] };
+  if (group.matcher != null) identity["matcher"] = group.matcher;
+  const hex = createHash("sha256").update(JSON.stringify(canonicalizeJsonValue(identity)), "utf8").digest("hex");
+  return `sha256:${hex}`;
+}
+
+/**
  * Positional group index Codex assigns to OUR managed `[[hooks.<event>]]` group: the number of
  * `[[hooks.<event>]]` array-of-tables headers that precede the managed block in the same file.
  * Null when the managed block is absent (nothing of ours to trust).
