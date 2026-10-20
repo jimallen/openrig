@@ -11,7 +11,9 @@ import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import { STARTUP_FROM_VALUES, type StartupFrom } from "../domain/seat-startup-source.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
-import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/restore-plan-preview.js";
+import { existsSync } from "node:fs";
+import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals } from "../domain/restore-plan-preview.js";
+import type { SeatStartupSpecReader } from "../domain/seat-startup-source.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { loadTopologyManifest } from "../domain/topology/topology-manifest.js";
 import { MultiRigLauncher } from "../domain/topology/multi-rig-launcher.js";
@@ -83,6 +85,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     snapshotCapture: c.get("snapshotCapture" as never) as SnapshotCapture,
     restoreOrchestrator: c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined,
     runtimeAdapters: c.get("runtimeAdapters" as never) as Record<string, import("../domain/runtime-adapter.js").RuntimeAdapter> | undefined,
+    podInstantiator: c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined,
   };
 }
 
@@ -133,7 +136,22 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
   // snapshot capture (itself a mutation) is reported as would-happen, never
   // performed.
   if (plan) {
-    return c.json(buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id)), 200);
+    // OF-32 follow-up: a listed seat restore would refuse is named here, by the function restore calls.
+    let refusals = new Map<string, string>();
+    let refusalPredictionError: string | undefined;
+    try {
+      refusals = await predictedPlanRefusals(
+        { db: snapshotRepo.db, rigRepo: deps.rigRepo, specReader: deps.podInstantiator ?? null, runtimeAdapters: deps.runtimeAdapters ?? {}, exists: existsSync },
+        rig, snapshot ?? null, freshLogicalIds, startupFrom ?? "spec",
+      );
+    } catch (err) {
+      // Never read as "nothing refused": the plan says the prediction could not be made.
+      refusalPredictionError = err instanceof Error ? err.message : String(err);
+    }
+    return c.json({
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals),
+      ...(refusalPredictionError ? { refusalPredictionError } : {}),
+    }, 200);
   }
 
   if (!snapshot) {

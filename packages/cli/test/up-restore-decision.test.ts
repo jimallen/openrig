@@ -476,6 +476,42 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(output).toContain("No changes made.");
   });
 
+  // OF-32 follow-up: the plan names a listed seat apply would refuse, in restore's own words, and says when it could not predict.
+  it("--plan --fresh prints a refusal the daemon predicted, and nothing for a seat it did not", async () => {
+    respond = () => ({
+      status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig",
+      snapshot: { id: "snap-9", kind: "auto-pre-down", createdAt: "2026-06-11T00:00:00Z" },
+      wouldCaptureCurrentState: false,
+      nodes: [
+        { logicalId: "dev.impl", intendedAction: "fresh-primed", reason: "listed in --fresh", wouldRefuse: "This rig's spec source /lib/team/rig.yaml cannot be used for a fresh launch: the file no longer exists." },
+        { logicalId: "dev.qa", intendedAction: "fresh-primed", reason: "listed in --fresh" },
+      ],
+      mutated: false,
+    });
+
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan", "--fresh", "dev.impl", "dev.qa"]);
+    });
+
+    const output = logs.join("\n");
+    expect(output).toContain("would be refused: Fresh start refused: This rig's spec source /lib/team/rig.yaml cannot be used for a fresh launch: the file no longer exists. No session would be started.");
+    expect(output.match(/would be refused/g)).toHaveLength(1);
+    expect(output).toContain("No changes made.");
+  });
+
+  it("--plan says so when the daemon could not predict the listed seats' refusals", async () => {
+    respond = () => ({
+      status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig", snapshot: null, wouldCaptureCurrentState: true,
+      nodes: [{ logicalId: "dev.impl", intendedAction: "fresh-primed" }], mutated: false, refusalPredictionError: "spec reader exploded",
+    });
+
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan", "--fresh", "dev.impl"]);
+    });
+
+    expect(logs.join("\n")).toContain("Could not predict which listed seats apply would refuse: spec reader exploded");
+  });
+
   it("HONEST TIMEOUT (apply mode): DaemonConnectionError renders in-progress/unknown + verify command, never a bare failure", async () => {
     const throwingClient = {
       get: async () => { throw new DaemonConnectionError("request timed out after 120000ms"); },

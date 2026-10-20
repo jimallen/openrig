@@ -748,8 +748,41 @@ describe("RestoreOrchestrator", () => {
     expect(result.code).toBe("rig_not_stopped");
     expect(result.message).toContain("tmux did not answer");
     expect(result.message).toContain("Retry");
+    // OF-33 NIT-A changed this pin on purpose: the refusal now also names `rig down`, but only as the step for an
+    // operator whose own `tmux ls` shows seats running. It still never says the rig HAS live sessions.
     expect(result.message).not.toContain("live sessions");
-    expect(result.message).not.toContain("rig down");
+    expect(result.message).not.toContain("Stop the rig with 'rig down' before restoring, or use");
+  });
+
+  // OF-33 NIT-A / NIT-B (review of the OF-33 fix, 9f). A restore retried in a loop against a wedged tmux must also
+  // learn that some seats may still be live, so it considers `rig down` rather than only retrying; and the message
+  // of a MIXED rig (one seat live, one probe unreadable) is pinned in both orders. Probing stops at the first seat
+  // that is live or unreadable, so the first scripted answer decides the wording.
+  it("NIT-A: the 'tmux did not answer' refusal also says some seats may still be live and when to use 'rig down'", async () => {
+    const snapId = seedRunningSeats("nita", 2);
+    const result = await createOrchestrator({ tmux: scriptedTmux(["throw"]).tmux }).restore(snapId);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("rig_not_stopped");
+    expect(result.message).toContain("some seats may still be live");
+    expect(result.message).toContain("if tmux shows seats still running, stop the rig with 'rig down'");
+    expect(result.message).toContain("Nothing was changed");
+    expect(result.message).toContain("'tmux ls'");
+  });
+
+  it.each([
+    ["NIT-B live first, then an unreadable probe: the genuine live-seat refusal", ["live", "throw"] as ProbeAnswer[], "has live sessions", "tmux did not answer"],
+    ["NIT-B unreadable first, then a live seat: the unreadable refusal (retry decides the rest)", ["throw", "live"] as ProbeAnswer[], "tmux did not answer", "has live sessions"],
+  ])("%s", async (_label, answers, present, absent) => {
+    const snapId = seedRunningSeats(`mixed-${answers[0]}`, 2);
+    const { tmux, calls } = scriptedTmux(answers);
+    const result = await createOrchestrator({ tmux }).restore(snapId);
+    expect(calls).toHaveLength(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("rig_not_stopped");
+    expect(result.message).toContain(present);
+    expect(result.message).not.toContain(absent);
   });
 
   it("N-1 control: a genuinely live seat still gets the 'has live sessions ... rig down' refusal", async () => {

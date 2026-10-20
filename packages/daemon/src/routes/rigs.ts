@@ -29,6 +29,8 @@ import { buildRestorePlanPreview, collectPreviewSessionRows } from "../domain/re
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { composeRigStatus, type SeatLifecycleInput } from "../domain/rig-status-compose.js";
 import { createRestoreCheckService } from "./restore-check.js";
+import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
+import type { SeatStartupSpecReader } from "../domain/seat-startup-source.js";
 import type { KernelBootTracker, KernelState } from "../domain/kernel-boot-tracker.js";
 import type { RecoveryPlan } from "../domain/restore-check-service.js";
 import type { ContextUsageStore } from "../domain/context-usage-store.js";
@@ -301,7 +303,10 @@ rigsRoutes.get("/:id/status", async (c) => {
   // contributes nothing (fold still reads plan + lifecycle) rather than 500-ing.
   let recovery: RecoveryPlan | null = null;
   try {
-    recovery = (await createRestoreCheckService(repo, snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)
+    recovery = (await createRestoreCheckService(repo, snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined, {
+      runtimeAdapters: (c.get("runtimeAdapters" as never) as Record<string, RuntimeAdapter> | undefined) ?? {},
+      specReader: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? null,
+    })
       .checkWithLiveness({ rig: rig.rig.name, noQueue: true, noHooks: true, recoveryOnly: true }))
       .recovery;
   } catch {

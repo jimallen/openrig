@@ -3,7 +3,10 @@ import { dirname, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import { OPENRIG_HOME } from "../openrig-compat.js";
-import { RestoreCheckService, type RestoreCheckDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
+import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
+import { predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
+import type { SeatStartupSpecReader, StartupFrom } from "../domain/seat-startup-source.js";
+import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import { deriveRelayEvents } from "../domain/claude-activity-hooks.js";
 import { getNodeInventory } from "../domain/node-inventory.js";
 import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-store.js";
@@ -147,6 +150,17 @@ function getStartupContext(db: Database.Database, nodeId: string): StartupContex
 /** Per-probe deadline: a hung tmux must not stall the polled status route. Shared with the orchestrator. */
 export const RESTORE_CHECK_PROBE_TIMEOUT_MS = SESSION_LIVENESS_DEADLINE_MS;
 
+/** Restore's own decisions, for the check and the plan: the functions RestoreOrchestrator calls. */
+export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Record<string, RuntimeAdapter | undefined>, specReader: SeatStartupSpecReader | null): RestoreParityDeps {
+  return {
+    startupToValidate: (rigId, logicalId, listed) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed }),
+    predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
+      { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
+      { rigId, ...listed, snapshot: snapshotData, exists: existsSync },
+    ),
+  };
+}
+
 /**
  * OPR.0.4.3.22 — build a RestoreCheckService wired to the live daemon
  * repositories. Extracted so the rig-status compose route can consume the SAME
@@ -157,7 +171,14 @@ export function createRestoreCheckService(
   rigRepo: RigRepository,
   snapshotRepo: SnapshotRepository,
   tmuxAdapter?: TmuxAdapter,
-  opts?: { probeTimeoutMs?: number },
+  opts?: {
+    probeTimeoutMs?: number;
+    /** The runtime adapters restore is given (the app's `runtimeAdapters`) and the seam it re-reads a seat's spec
+     *  through (`podInstantiator`). With them the check asks restore's own decisions (restoreParity) what restore would
+     *  validate and refuse; without them it judges a seat's saved context from `getStartupContext` alone. */
+    runtimeAdapters?: Record<string, RuntimeAdapter | undefined>;
+    specReader?: SeatStartupSpecReader | null;
+  },
 ): RestoreCheckService {
   const probeTimeoutMs = opts?.probeTimeoutMs ?? RESTORE_CHECK_PROBE_TIMEOUT_MS;
   const serviceDeps: RestoreCheckDeps = {
@@ -230,6 +251,7 @@ export function createRestoreCheckService(
       try { return existsSync(path); } catch { return false; }
     },
     readFile: (path: string) => readFileSync(path, "utf-8"),
+    restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,
   };
   return new RestoreCheckService(serviceDeps);
 }
@@ -244,9 +266,29 @@ restoreCheckRoutes.get("/", async (c) => {
   // OPR.0.4.0.29 FR-2: --ready stays compact but INCLUDES ready-seat detail.
   const includeReady = c.req.query("ready") === "1";
 
+  // OF-32 follow-up: `fresh=a,b` predicts `rig up --existing --fresh a b`; `startupFrom` is its `--startup-from`.
+  const freshLogicalIds = (c.req.query("fresh") ?? "").split(",").map((id) => id.trim()).filter((id) => id.length > 0);
+  // A restore targets one rig (`rig up <rig> --fresh <seats>`); a seat name is looked up in the rigs being checked, so
+  // without a rig filter another rig's seat of the same name would be predicted (and turn red) too.
+  if (freshLogicalIds.length > 0 && !rigFilter) {
+    return c.json({ error: "fresh needs rig=<name>: a restore targets one rig, and the same seat name in another rig would be predicted too.", code: "fresh_requires_rig" }, 400);
+  }
+  const startupFromQuery = c.req.query("startupFrom");
+  if (startupFromQuery !== undefined && startupFromQuery !== "spec" && startupFromQuery !== "stored") {
+    return c.json({ error: "startupFrom must be one of: spec, stored.", code: "invalid_startup_from" }, 400);
+  }
+  const startupFrom: StartupFrom | undefined = startupFromQuery;
+
   try {
-    const service = createRestoreCheckService(deps.rigRepo, deps.snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined);
-    const result = await service.checkWithLiveness({ rig: rigFilter, noQueue, noHooks, compact, includeReady });
+    const service = createRestoreCheckService(deps.rigRepo, deps.snapshotRepo, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined, {
+      runtimeAdapters: (c.get("runtimeAdapters" as never) as Record<string, RuntimeAdapter> | undefined) ?? {},
+      specReader: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? null,
+    });
+    const result = await service.checkWithLiveness({
+      rig: rigFilter, noQueue, noHooks, compact, includeReady,
+      ...(freshLogicalIds.length > 0 ? { freshLogicalIds } : {}),
+      ...(startupFrom ? { startupFrom } : {}),
+    });
 
     if (compact) {
       const compactResult = {
