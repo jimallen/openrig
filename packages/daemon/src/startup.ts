@@ -148,7 +148,7 @@ import { openRigContextLibraryRoots } from "./domain/instance-initialization.js"
 import { resolveSystemWorld } from "./domain/system-world.js";
 import { AgentImageLibraryService } from "./domain/agent-images/agent-image-library-service.js";
 import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
-import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
+import { SettingsStore as ContextPackSettingsStore, isSettingsValidKey } from "./domain/user-settings/settings-store.js";
 import { WhoamiService } from "./domain/whoami-service.js";
 import { NodeCmuxService } from "./domain/node-cmux-service.js";
 import { createAppWithWebSocket, type AppDeps } from "./server.js";
@@ -229,6 +229,8 @@ interface DaemonResult {
   contextMonitor: import("./domain/context-monitor.js").ContextMonitor;
   // OPR.0.4.3.21 — returned so index.ts can stop() it on graceful shutdown.
   eventLoopMonitor: import("./domain/event-loop-monitor.js").EventLoopMonitor;
+  /** RSI human-gate banner service; absent unless `rsi.stewardSession` is configured. index.ts starts and stops it. */
+  humanGateNotifier?: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   injectWebSocket: (server: any) => void;
 }
@@ -2602,5 +2604,21 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket };
+  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Inert until the `rsi.stewardSession` setting exists and is
+  // set: that key and the rsi_notifications table both come from RSI lane B1, so this is a no-op before it merges.
+  let humanGateNotifier: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier | undefined;
+  const rsiStewardKey: string = "rsi.stewardSession";
+  if (dbPath !== ":memory:" && isSettingsValidKey(rsiStewardKey)) {
+    const steward = healthSettingsStore.resolveOne(rsiStewardKey).value;
+    if (typeof steward === "string" && steward.trim() !== "") {
+      const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
+      humanGateNotifier = new rsiNotifier.HumanGateNotifier({
+        listBlocked: rsiNotifier.sqliteBlockedRows(db),
+        store: rsiNotifier.sqliteNotificationStore(db),
+        spawner: rsiNotifier.defaultBannerSpawner,
+        findExecutable: rsiNotifier.defaultFindExecutable,
+      });
+    }
+  }
+  return { app, db, deps, contextMonitor, eventLoopMonitor, humanGateNotifier, injectWebSocket };
 }

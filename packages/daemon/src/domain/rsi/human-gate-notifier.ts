@@ -1,0 +1,275 @@
+import { spawn } from "node:child_process";
+import { accessSync, constants as fsConstants } from "node:fs";
+import path from "node:path";
+import type Database from "better-sqlite3";
+import { isHumanSeatSession } from "../human-route-enforcer.js";
+
+/**
+ * Notification context (rsi-design-9k-rev2 section 3.1 and 3.7): a macOS banner for each RSI
+ * item that waits on a human gate.
+ *
+ * Reads queue state, never writes it. The notifier's only writes go to its own table,
+ * `rsi_notifications`, which RSI lane B1 creates in its migration:
+ *   rsi_notifications(qitem_id TEXT PRIMARY KEY, first_notified_at TEXT NOT NULL, last_notified_at TEXT NOT NULL)
+ * Until that migration is merged the notifier cannot run; startup wiring is also inert until B1
+ * adds the `rsi.stewardSession` setting.
+ */
+
+export const RSI_TAG = "rsi";
+export const NOTIFIER_INTERVAL_MS = 60_000;
+/** At most one reminder per item per 24 h. */
+export const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** At least 10 minutes between banners; items suppressed by the gap fold into the next banner. */
+export const MIN_BANNER_GAP_MS = 10 * 60 * 1000;
+/** Hard cap on banners in any rolling 24 h. */
+export const MAX_BANNERS_PER_DAY = 12;
+export const NOTIFICATION_GROUP = "openrig-rsi";
+export const NOTIFICATION_TITLE = "OpenRig RSI";
+const SPAWN_TIMEOUT_MS = 5_000;
+const MAX_FIELD_CHARS = 120;
+const MAX_MESSAGE_CHARS = 300;
+
+/** A blocked queue row as the notifier reads it. Filtering to the human-gate RSI set is the notifier's job. */
+export interface BlockedQueueRow {
+  qitemId: string;
+  state: string;
+  blockedOn: string | null;
+  tags: string[];
+  summary: string | null;
+}
+
+export interface NotificationRow { qitemId: string; firstNotifiedAt: string; lastNotifiedAt: string }
+
+export interface NotificationStore {
+  list(): NotificationRow[];
+  /** Insert, or move last_notified_at while keeping first_notified_at. */
+  record(qitemIds: string[], at: string): void;
+  deleteOlderThan(qitemIds: string[], cutoff: string): void;
+}
+
+export type BannerSpawner = (command: string, args: string[]) => Promise<{ ok: boolean }>;
+
+export type NotifierTickResult =
+  | { status: "noop-platform" }
+  | { status: "idle"; waiting: number }
+  | { status: "coalesced"; waiting: number; pending: number }
+  | { status: "capped"; waiting: number; pending: number }
+  | { status: "sent"; waiting: number; notified: string[]; command: string }
+  | { status: "failed"; waiting: number; command: string }
+  | { status: "error"; errorClass: string };
+
+export interface HumanGateNotifierDeps {
+  /** Every row in state `blocked`. Must be read-only. */
+  listBlocked: () => BlockedQueueRow[];
+  store: NotificationStore;
+  spawner: BannerSpawner;
+  /** Absolute path of an installed binary, or null. */
+  findExecutable: (name: string) => string | null;
+  clock?: () => Date;
+  platform?: NodeJS.Platform;
+  log?: (line: string) => void;
+  intervalMs?: number;
+}
+
+/** The set the banner is about: parked on a human seat AND tagged rsi. */
+export function selectWaitingRsiItems(rows: BlockedQueueRow[]): BlockedQueueRow[] {
+  return rows.filter((r) => r.state === "blocked" && isHumanSeatSession(r.blockedOn) && r.tags.includes(RSI_TAG));
+}
+
+function clean(text: string, max: number): string {
+  // Control characters out; the text is shown, never interpreted, but a banner is not a log.
+  // eslint-disable-next-line no-control-regex
+  const flat = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+function tagValue(tags: string[], prefix: string): string | null {
+  const hit = tags.find((t) => t.startsWith(prefix));
+  return hit ? hit.slice(prefix.length) : null;
+}
+
+export function composeBannerMessage(waiting: BlockedQueueRow[], lead: BlockedQueueRow): string {
+  const stage = clean(tagValue(lead.tags, "rsi:stage:") ?? "unstaged", MAX_FIELD_CHARS);
+  const fp = clean(tagValue(lead.tags, "rsi:fp:") ?? "unknown", MAX_FIELD_CHARS);
+  const head = `${waiting.length} RSI item(s) waiting · ${stage} ${fp} · rsi-decide ${clean(lead.qitemId, MAX_FIELD_CHARS)}`;
+  const summary = lead.summary ? clean(lead.summary, MAX_FIELD_CHARS) : "";
+  return clean(summary ? `${head} · ${summary}` : head, MAX_MESSAGE_CHARS);
+}
+
+/**
+ * The argv for one banner. terminal-notifier when installed (its `-group` makes a banner replace
+ * the previous one); otherwise osascript with the text as argv items of a fixed script. No shell
+ * and no string-built AppleScript: the message never becomes script source.
+ */
+export function bannerCommand(
+  terminalNotifierPath: string | null,
+  title: string,
+  message: string,
+): { command: string; args: string[] } {
+  if (terminalNotifierPath) {
+    return { command: terminalNotifierPath, args: ["-title", title, "-message", message, "-group", NOTIFICATION_GROUP] };
+  }
+  return {
+    command: "osascript",
+    args: [
+      "-e", "on run argv",
+      "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+      "-e", "end run",
+      "--", message, title,
+    ],
+  };
+}
+
+export class HumanGateNotifier {
+  private readonly clock: () => Date;
+  private readonly platform: NodeJS.Platform;
+  private readonly log: (line: string) => void;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private running = false;
+  /** Last spawn attempt, kept in memory as well as in the table: a failed spawn records nothing, and must not retry every tick. */
+  private lastAttemptMs = 0;
+  /** Outcome of the last spawn, so the first banner proves delivery from the daemon process. */
+  lastResult: { at: string; command: string; ok: boolean } | null = null;
+
+  constructor(private readonly deps: HumanGateNotifierDeps) {
+    this.clock = deps.clock ?? (() => new Date());
+    this.platform = deps.platform ?? process.platform;
+    this.log = deps.log ?? ((line) => console.warn(line));
+  }
+
+  start(): void {
+    if (this.timer) return;
+    if (this.platform !== "darwin") {
+      this.log(`[rsi-notifier] no-op on platform ${this.platform}; banners are macOS-only`);
+      return;
+    }
+    this.timer = setInterval(() => { void this.tick(); }, this.deps.intervalMs ?? NOTIFIER_INTERVAL_MS);
+    this.timer.unref?.();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  async tick(): Promise<NotifierTickResult> {
+    if (this.platform !== "darwin") return { status: "noop-platform" };
+    if (this.running) return { status: "error", errorClass: "ReentrantTick" };
+    this.running = true;
+    try {
+      return await this.tickOnce();
+    } catch (err) {
+      // A foreign error contributes its class only: its message may carry queue content.
+      const errorClass = err instanceof Error ? err.constructor.name : typeof err;
+      this.log(`[rsi-notifier] tick failed class=${errorClass}`);
+      return { status: "error", errorClass };
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async tickOnce(): Promise<NotifierTickResult> {
+    const nowMs = this.clock().getTime();
+    const nowIso = new Date(nowMs).toISOString();
+    const waiting = selectWaitingRsiItems(this.deps.listBlocked());
+    const rows = this.deps.store.list();
+    const byId = new Map(rows.map((r) => [r.qitemId, r]));
+    const waitingIds = new Set(waiting.map((w) => w.qitemId));
+
+    // Rows older than a day for items that no longer wait carry no gap or cap information; drop them.
+    const dayAgo = nowMs - REMINDER_INTERVAL_MS;
+    const stale = rows.filter((r) => !waitingIds.has(r.qitemId) && Date.parse(r.lastNotifiedAt) <= dayAgo).map((r) => r.qitemId);
+    if (stale.length > 0) this.deps.store.deleteOlderThan(stale, new Date(dayAgo + 1).toISOString());
+
+    const pending = waiting.filter((w) => {
+      const row = byId.get(w.qitemId);
+      return !row || Date.parse(row.lastNotifiedAt) <= nowMs - REMINDER_INTERVAL_MS;
+    });
+    if (pending.length === 0) return { status: "idle", waiting: waiting.length };
+
+    const lastBannerMs = Math.max(this.lastAttemptMs, ...rows.map((r) => Date.parse(r.lastNotifiedAt)).filter(Number.isFinite));
+    if (nowMs - lastBannerMs < MIN_BANNER_GAP_MS) {
+      return { status: "coalesced", waiting: waiting.length, pending: pending.length };
+    }
+    const bannerTimes = new Set(rows.map((r) => Date.parse(r.lastNotifiedAt)).filter((t) => Number.isFinite(t) && t > dayAgo));
+    if (this.lastAttemptMs > dayAgo) bannerTimes.add(this.lastAttemptMs);
+    if (bannerTimes.size >= MAX_BANNERS_PER_DAY) {
+      return { status: "capped", waiting: waiting.length, pending: pending.length };
+    }
+
+    // New entries lead over reminders, so the named item is the one that just arrived.
+    const lead = pending.find((p) => !byId.has(p.qitemId)) ?? pending[0]!;
+    const message = composeBannerMessage(waiting, lead);
+    const { command, args } = bannerCommand(this.deps.findExecutable("terminal-notifier"), NOTIFICATION_TITLE, message);
+    this.lastAttemptMs = nowMs;
+    const result = await this.deps.spawner(command, args);
+    this.lastResult = { at: nowIso, command: path.basename(command), ok: result.ok };
+    if (!result.ok) {
+      this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)}`);
+      return { status: "failed", waiting: waiting.length, command: path.basename(command) };
+    }
+    const notified = pending.map((p) => p.qitemId);
+    this.deps.store.record(notified, nowIso);
+    return { status: "sent", waiting: waiting.length, notified, command: path.basename(command) };
+  }
+}
+
+/** Reads `blocked` rows from the daemon database. SELECT only. */
+export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[] {
+  const stmt = db.prepare("SELECT qitem_id, state, blocked_on, tags, summary FROM queue_items WHERE state = 'blocked'");
+  return () => (stmt.all() as Array<{ qitem_id: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null }>)
+    .map((r) => ({ qitemId: r.qitem_id, state: r.state, blockedOn: r.blocked_on, tags: parseTags(r.tags), summary: r.summary }));
+}
+
+function parseTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The notifier's own table. The only write path of the notifier. */
+export function sqliteNotificationStore(db: Database.Database): NotificationStore {
+  const list = db.prepare("SELECT qitem_id, first_notified_at, last_notified_at FROM rsi_notifications");
+  const upsert = db.prepare(
+    "INSERT INTO rsi_notifications (qitem_id, first_notified_at, last_notified_at) VALUES (?, ?, ?) " +
+    "ON CONFLICT(qitem_id) DO UPDATE SET last_notified_at = excluded.last_notified_at",
+  );
+  const del = db.prepare("DELETE FROM rsi_notifications WHERE qitem_id = ? AND last_notified_at < ?");
+  return {
+    list: () => (list.all() as Array<{ qitem_id: string; first_notified_at: string; last_notified_at: string }>)
+      .map((r) => ({ qitemId: r.qitem_id, firstNotifiedAt: r.first_notified_at, lastNotifiedAt: r.last_notified_at })),
+    record: (ids, at) => db.transaction(() => { for (const id of ids) upsert.run(id, at, at); })(),
+    deleteOlderThan: (ids, cutoff) => db.transaction(() => { for (const id of ids) del.run(id, cutoff); })(),
+  };
+}
+
+/** No shell: argv array, stdio ignored, killed after a bound. */
+export const defaultBannerSpawner: BannerSpawner = (command, args) =>
+  new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => { if (!settled) { settled = true; resolve({ ok }); } };
+    try {
+      const child = spawn(command, args, { stdio: "ignore", shell: false });
+      const timer = setTimeout(() => { child.kill(); done(false); }, SPAWN_TIMEOUT_MS);
+      timer.unref?.();
+      child.on("error", () => { clearTimeout(timer); done(false); });
+      child.on("exit", (code) => { clearTimeout(timer); done(code === 0); });
+    } catch {
+      done(false);
+    }
+  });
+
+const EXTRA_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+export function defaultFindExecutable(name: string): string | null {
+  const dirs = [...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean), ...EXTRA_BIN_DIRS];
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    try { accessSync(candidate, fsConstants.X_OK); return candidate; } catch { /* next */ }
+  }
+  return null;
+}
