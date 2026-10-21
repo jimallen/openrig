@@ -823,6 +823,30 @@ function readRigWorkspaceJson(db: Database.Database, rigId: string): WorkspaceSp
   }
 }
 
+/** OF-45: the three saved startup columns of a node-detail read, each parsed and held to "a list of objects". */
+function readSavedStartupColumns(row: StartupContextRow):
+  { ok: true; files: Array<{ path: string; deliveryHint: string; required: boolean }>; actions: Array<{ type: string; value: string }>; projectionEntries: unknown[] }
+  | { ok: false; reason: string } {
+  const columns = [
+    ["resolved_files_json", row.resolved_files_json],
+    ["startup_actions_json", row.startup_actions_json],
+    ["projection_entries_json", row.projection_entries_json],
+  ] as const;
+  const lists: unknown[][] = [];
+  for (const [name, text] of columns) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { return { ok: false, reason: `${name} is not JSON` }; }
+    if (!Array.isArray(parsed)) return { ok: false, reason: `${name} is not a list` };
+    lists.push(parsed.filter((member) => !!member && typeof member === "object" && !Array.isArray(member)));
+  }
+  return {
+    ok: true,
+    files: lists[0] as Array<{ path: string; deliveryHint: string; required: boolean }>,
+    actions: lists[1] as Array<{ type: string; value: string }>,
+    projectionEntries: lists[2]!,
+  };
+}
+
 /**
  * Get detailed node information including startup files, resources, and events.
  * The adapter dependency is optional — when provided, uses live listInstalled;
@@ -870,9 +894,16 @@ export function getNodeDetail(
     "SELECT * FROM node_startup_context WHERE node_id = ?"
   ).get(nodeId) as StartupContextRow | undefined;
 
-  const startupFiles = ctxRow ? JSON.parse(ctxRow.resolved_files_json) : [];
-  const startupActions = ctxRow ? JSON.parse(ctxRow.startup_actions_json) : [];
-  const projectionEntries = ctxRow ? JSON.parse(ctxRow.projection_entries_json) : [];
+  // OF-45: one seat's unreadable saved row must not fail the whole node-detail route. Same split OF-36 draws: a column
+  // that is not JSON, and a column that parses but is not what this read dereferences, are both "unreadable"; the row is
+  // served as no startup info with the reason marked, and the rest of the node still renders. The read stays lenient
+  // like the OF-36 resume-path correction (4728c079): the strict startup-setup rule (parseStartupContextShape) is for
+  // launching from a row; holding a display to it would blank lenient rows that render today.
+  const startupRead = ctxRow ? readSavedStartupColumns(ctxRow) : null;
+  const startupUnreadable = startupRead && !startupRead.ok ? startupRead.reason : null;
+  const startupFiles = startupRead?.ok ? startupRead.files : [];
+  const startupActions = startupRead?.ok ? startupRead.actions : [];
+  const projectionEntries = startupRead?.ok ? startupRead.projectionEntries : [];
 
   // Installed resources: override (from async adapter call) > projection fallback
   let installedResources: NodeDetailEntry["installedResources"];
@@ -983,6 +1014,7 @@ export function getNodeDetail(
     binding,
     startupFiles,
     startupActions,
+    startupUnreadable,
     installedResources,
     recentEvents,
     infrastructureStartupCommand,

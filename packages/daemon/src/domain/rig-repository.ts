@@ -142,6 +142,30 @@ interface NodeOptions {
   resolvedSpecHash?: string;
 }
 
+/** OF-45: a node's saved package list. One damaged row (not JSON, or not a list of strings) reads as no packages
+ *  instead of failing getRig, and with it every route that loads the rig, node-detail included. */
+function readSavedPackageRefs(text: string | null | undefined): string[] {
+  if (!text) return [];
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) && parsed.every((ref) => typeof ref === "string") ? parsed as string[] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** OF-45: a node's saved session source. One damaged row (not JSON, or not an object) reads as no session source
+ *  instead of failing getRig. */
+function readSavedSessionSource(text: string | null | undefined): SessionSourceSpec | null {
+  if (!text) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as SessionSourceSpec : null;
+  } catch {
+    return null;
+  }
+}
+
 export class RigRepository {
   readonly db: Database.Database;
   /** OPR.0.5.6.24 — born-armed (advisor-ruled birth-property principle):
@@ -779,14 +803,12 @@ export class RigRepository {
       surfaceHint: row.surface_hint ?? null,
       workspace: row.workspace ?? null,
       restorePolicy: row.restore_policy ?? null,
-      packageRefs: row.package_refs ? JSON.parse(row.package_refs) as string[] : [],
+      packageRefs: readSavedPackageRefs(row.package_refs),
       podId: row.pod_id ?? null,
       agentRef: row.agent_ref ?? null,
       profile: row.profile ?? null,
       label: row.label ?? null,
-      sessionSource: row.session_source_json
-        ? JSON.parse(row.session_source_json) as SessionSourceSpec
-        : null,
+      sessionSource: readSavedSessionSource(row.session_source_json),
       resolvedSpecName: row.resolved_spec_name ?? null,
       resolvedSpecVersion: row.resolved_spec_version ?? null,
       resolvedSpecHash: row.resolved_spec_hash ?? null,

@@ -876,6 +876,9 @@ export interface NodeDetailEntry extends NodeInventoryEntry {
   binding: Binding | null;
   startupFiles: Array<{ path: string; deliveryHint: string; required: boolean }>;
   startupActions: Array<{ type: string; value: string }>;
+  /** OF-45: why the seat's saved startup row cannot be read (not JSON, or not a valid startup setup); null when it can.
+   *  When set, startupFiles, startupActions and the projection-based installedResources are empty, not guessed. */
+  startupUnreadable: string | null;
   installedResources: Array<{ id: string; category: string; targetPath: string }>;
   recentEvents: Array<{ type: string; createdAt: string; payload: Record<string, unknown> }>;
   infrastructureStartupCommand: string | null;
