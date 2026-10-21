@@ -10,6 +10,7 @@ import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { captureSkippingUnreadable } from "../src/domain/snapshot-capture.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const closers: Array<() => void> = [];
 afterEach(() => { for (const close of closers.splice(0)) close(); });
@@ -21,7 +22,7 @@ const DAMAGE = [
 
 // -- first-start retry guard (rigspec-instantiator.ts retryFirstStart) ------------------------------------------------
 // Copy of retry-first-start.test.ts's failedAdd: a seat whose first start failed in projection, cleaned, ready to retry.
-const root = "/fixture/first-start";
+const root = existingRigRoot("first-start");
 const skillIds = ["development-team", "systematic-debugging", "test-driven-development", "verification-before-completion"];
 const member = { id: "pi", agent_ref: "local:agent", profile: "default", runtime: "pi", model: "provider/model", cwd: root };
 

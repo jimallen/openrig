@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
+import nodePath from "node:path";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigExpansionService } from "../src/domain/rig-expansion-service.js";
 import type { ExpansionRequest } from "../src/domain/types.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 describe("RigExpansionService", () => {
   let db: Database.Database;
@@ -59,6 +62,9 @@ describe("RigExpansionService", () => {
   });
 
   it("accepts labels and summaries with YAML-significant characters", async () => {
+    // A cwd with quotes and a colon must survive the YAML round trip; preflight also needs it to exist (OF-63).
+    const QUOTED_CWD = nodePath.join(existingRigRoot("quoted-cwd"), '"quoted":path');
+    fs.mkdirSync(QUOTED_CWD, { recursive: true });
     const rig = seedRig();
     const result = await service.expand({
       rigId: rig.id,
@@ -72,7 +78,7 @@ describe("RigExpansionService", () => {
             runtime: "terminal",
             agentRef: "builtin:terminal",
             profile: "none",
-            cwd: '/tmp/"quoted":path',
+            cwd: QUOTED_CWD,
             label: 'Worker: "A"',
           },
         ],

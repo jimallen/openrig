@@ -22,6 +22,7 @@ import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -54,7 +55,7 @@ function mockFs(files: Record<string, string>): AgentResolverFsOps {
   };
 }
 
-const RIG_ROOT = "/project/rigs/my-rig";
+const RIG_ROOT = existingRigRoot("my-rig");
 
 function agentYaml(name: string): string {
   return `name: ${name}\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;
@@ -213,17 +214,18 @@ describe("PodRigInstantiator", () => {
   });
 
   it("uses cwdOverride for launched nodes without changing spec-relative agent resolution", async () => {
+    const OVERRIDE_CWD = existingRigRoot("override-project"); // a launch folder must exist (OF-63)
     const { db, rigRepo, sessionRegistry, inst, adapter } = setup();
     const yaml = RigSpecCodec.serialize(makeRigSpec());
-    const result = await inst.instantiate(yaml, RIG_ROOT, { cwdOverride: "/workspace/project" });
+    const result = await inst.instantiate(yaml, RIG_ROOT, { cwdOverride: OVERRIDE_CWD });
     expect(result.ok).toBe(true);
     if (result.ok) {
       const rig = rigRepo.getRig(result.result.rigId)!;
-      expect(rig.nodes[0]!.cwd).toBe("/workspace/project");
+      expect(rig.nodes[0]!.cwd).toBe(OVERRIDE_CWD);
       const sessions = sessionRegistry.getSessionsForRig(result.result.rigId);
       expect(sessions[0]!.startupStatus).toBe("ready");
       const planArg = (adapter.project as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-      expect(planArg.cwd).toBe("/workspace/project");
+      expect(planArg.cwd).toBe(OVERRIDE_CWD);
     }
     db.close();
   });
@@ -977,6 +979,24 @@ profiles:
       expect(result.errors.some((e: string) => e.includes("member name") && e.includes("!"))).toBe(true);
       expect(result.errors.some((e: string) => e.includes("rig name") && e.includes(" "))).toBe(true);
     }
+    db.close();
+  });
+
+  // OF-63: `rig up` (apply) refuses a seat whose cwd is missing, before any rig record or tmux session exists.
+  it("OF-63: refuses a seat whose cwd does not exist at preflight, creating no rig and no session", async () => {
+    const { db, inst, tmux } = setup({ [`${RIG_ROOT}/agents/impl/agent.yaml`]: agentYaml("impl") });
+    const missing = nodePath.join(fs.realpathSync(os.tmpdir()), `of63-missing-${process.pid}`);
+    const yaml = RigSpecCodec.serialize(makeRigSpec({
+      pods: [{ id: "dev", label: "Dev", members: [{ id: "impl", agentRef: "local:agents/impl", profile: "default", runtime: "claude-code", cwd: missing }], edges: [] }],
+    }));
+    const result = await inst.instantiate(yaml, RIG_ROOT);
+    expect(result.ok).toBe(false);
+    if (result.ok || !("errors" in result)) throw new Error(`expected a preflight refusal, got ${JSON.stringify(result)}`);
+    expect(result.code).toBe("preflight_failed");
+    expect(result.errors.some((e: string) => e.includes("dev.impl") && e.includes(missing) && e.includes("does not exist"))).toBe(true);
+    expect(db.prepare("select count(*) as n from rigs").get()).toEqual({ n: 0 });
+    expect(fs.existsSync(missing)).toBe(false);
+    expect(tmux.createSession).not.toHaveBeenCalled();
     db.close();
   });
 

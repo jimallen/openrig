@@ -18,8 +18,9 @@ import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
-const RIG_ROOT = "/project/rigs/my-rig";
+const RIG_ROOT = existingRigRoot("my-rig");
 const RELAY_FIX = "/fixtures/activity-relay.cjs";
 const MANIFEST_FIX = "/fixtures/claude.json";
 const GOOD_MANIFEST = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/activity-relay.cjs"', timeout: 5 }] }] } });

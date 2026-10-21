@@ -6,6 +6,7 @@ import { SpecReviewService } from "../src/domain/spec-review-service.js";
 import { SpecLibraryService } from "../src/domain/spec-library-service.js";
 import { rigPreflight, type RigPreflightInput } from "../src/domain/rigspec-preflight.js";
 import { parseAgentSpec, validateAgentSpec } from "../src/domain/agent-manifest.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const SPECS_ROOT = resolve(import.meta.dirname, "../specs");
 
@@ -259,7 +260,7 @@ describe("Starter specs", () => {
       const input: RigPreflightInput = {
         rigSpecYaml: yaml,
         rigRoot: dirname(join(SPECS_ROOT, file)),
-        cwdOverride: "/workspace/project",
+        cwdOverride: existingRigRoot("workspace-project"),
         fsOps,
       };
 
@@ -291,7 +292,7 @@ describe("Starter specs", () => {
       const input: RigPreflightInput = {
         rigSpecYaml: yaml,
         rigRoot: dirname(join(SPECS_ROOT, file)),
-        cwdOverride: "/workspace/project",
+        cwdOverride: existingRigRoot("workspace-project"),
         fsOps,
       };
 

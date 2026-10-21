@@ -35,6 +35,7 @@ import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.
 import { claudePostureFlag, codexPostureArg, piTrust } from "../src/adapters/yolo-mode.js";
 import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const CUSTOM_POLICY = `---
 policy_schema_version: 1
@@ -47,7 +48,7 @@ launch_posture: full_bypass
 # Operator full
 `;
 
-const DECLARING_ROOT = "/project/rigs/original-root";
+const DECLARING_ROOT = existingRigRoot("original-root");
 
 function agentYaml(name: string): string {
   return `name: ${name}\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;
@@ -178,7 +179,7 @@ describe("F1 — rig-level custom provenance is RESTART-COMPLETE", () => {
     const rigId = (outcome as { ok: true; result: { rigId: string } }).result.rigId;
 
     // add_member through the STRUCTURED path with a DIFFERENT operation root
-    const OTHER_ROOT = "/somewhere/else/entirely";
+    const OTHER_ROOT = existingRigRoot("somewhere-else-entirely");
     const addOutcome = await setup.podInstantiator.addMemberToPod(
       rigId, "dev",
       { id: "late", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." },
@@ -297,7 +298,7 @@ describe("F3 — unreadable custom content at restore uses the PERSISTED posture
     await orch.restore(snapId);
     const call = (claudeResume.resume as ReturnType<typeof vi.fn>).mock.calls.find((c) => c[2] === "tok-f3");
     expect(call, "impl seat resume should have been attempted").toBeDefined();
-    // /project/rigs/original-root/... does not exist on THIS filesystem → unreadable.
+    // DECLARING_ROOT exists (OF-63: a launch folder must) but has no policies/operator-full.md → unreadable.
     // The persisted posture must carry — never a silent floor.
     expect(call![4]).toBe("full_bypass");
     db2.close();
@@ -631,10 +632,10 @@ describe("ABSENCE = locked floor at every lifecycle surface (R2 HIGH at 954d97a0
         podInstantiatorFsOps: fsOps(),
       });
       const bare = { version: "0.2", name: "bare-rig", pods: [{ id: "dev", label: "Dev", members: [{ id: "impl", agent_ref: "local:agents/impl", profile: "default", runtime: "claude-code", cwd: "." }], edges: [] }], edges: [] };
-      const outcome = await setup.podInstantiator.materializeStructured(bare, "/rig");
+      const outcome = await setup.podInstantiator.materializeStructured(bare, existingRigRoot("rig"));
       expect(outcome.ok).toBe(true);
       const rigId = (outcome as { ok: true; result: { rigId: string } }).result.rigId;
-      const added = await setup.podInstantiator.addMemberToPod(rigId, "dev", { id: "late", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." }, "/rig");
+      const added = await setup.podInstantiator.addMemberToPod(rigId, "dev", { id: "late", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "." }, existingRigRoot("rig"));
       expect(added.ok).toBe(true);
       expect(bindings).toHaveLength(1);
       expect(bindings[0]!.launchPosture).toBe("floor"); // explicit, not undefined

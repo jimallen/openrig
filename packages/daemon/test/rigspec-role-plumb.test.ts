@@ -5,6 +5,7 @@ import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { getNodeInventory } from "../src/domain/node-inventory.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 // OPR.0.4.6.FAC1 commit 1 — the role dimension exists end-to-end
 // (AC-4 substrate; BR-4; P2-1 sibling-layer sweep).
@@ -25,7 +26,7 @@ import type { RigSpec } from "../src/domain/types.js";
 //   - role is rejected on terminal members (a terminal node is not an
 //     agent seat).
 
-const RIG_ROOT = "/project/rigs/role-rig";
+const RIG_ROOT = existingRigRoot("role-rig");
 
 function agentYaml(name: string): string {
   return `name: ${name}\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;

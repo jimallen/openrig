@@ -20,6 +20,7 @@ import { nonInterruptiveArgs, nonInterruptiveNotice } from "../src/adapters/non-
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -33,7 +34,7 @@ function fixture(runtime: string) {
   } as unknown as TmuxAdapter);
   const fsOps = { readFile: () => { throw new Error("not found"); }, writeFile: vi.fn(),
     exists: () => false, mkdirp: vi.fn(), copyFile: vi.fn(), listFiles: () => [] };
-  const binding = { id: "b", nodeId: "n", cwd: "/work/fixture", tmuxSession: "dev@test",
+  const binding = { id: "b", nodeId: "n", cwd: existingRigRoot("work-fixture"), tmuxSession: "dev@test",
     launchPosture: "full_bypass", nonInterruptive: true } as NodeBinding;
   return { tmux, fsOps, binding };
 }
@@ -240,7 +241,7 @@ pods:
     edges: []
 edges: []
 `;
-      const result = await setup.podInstantiator.instantiate(spec, "/work/fixture", { nonInterruptive: request });
+      const result = await setup.podInstantiator.instantiate(spec, existingRigRoot("work-fixture"), { nonInterruptive: request });
       expect(result.ok, JSON.stringify(result)).toBe(true);
       expect(bindings).toHaveLength(2);
       expect(bindings.map(b => [b.nonInterruptive, b.launchPosture])).toEqual([[expected, "full_bypass"], [expected, "floor"]]);
@@ -257,7 +258,7 @@ edges: []
       const node = rig.nodes.find(n => n.logicalId === "dev.impl")!;
       const session = setup.sessionRegistry.getSessionsForRig(rigId).find(s => s.nodeId === node.id)!;
       const replay = { rigId, nodeId: node.id, sessionId: session.id, binding: { ...bindings[0]!, nonInterruptive: false },
-        adapter, plan: { runtime: "claude-code", cwd: "/work/fixture", entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
+        adapter, plan: { runtime: "claude-code", cwd: existingRigRoot("work-fixture"), entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
         resolvedStartupFiles: [], startupActions: [], isRestore: true, resumeToken: "retained-history" };
       await setup.startupOrchestrator.startNode(replay);
       expect(bindings.at(-1)!.nonInterruptive).toBe(expected);

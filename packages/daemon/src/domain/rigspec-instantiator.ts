@@ -18,7 +18,7 @@ import { deriveCanonicalSessionName, validateSessionComponents } from "./session
 import { LegacyRigSpecSchema as RigSpecSchema } from "./rigspec-schema.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { LegacyRigSpecCodec as RigSpecCodec } from "./rigspec-codec.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import type { LegacyRigSpec as RigSpec, LegacyRigSpecEdge as RigSpecEdge, InstantiateOutcome, InstantiateResult } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
-import { resolveLaunchCwd } from "./cwd-resolution.js";
+import { getSeatCwdFault, resolveLaunchCwd, seatCwdFixAdvice } from "./cwd-resolution.js";
 
 // Only these edge kinds constrain launch order
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
@@ -2752,7 +2752,18 @@ export class PodRigInstantiator {
         inheritedPermissionPolicy: this.inheritedPermissionPolicy(input.rigId), exec: this.deps.exec,
       },
     );
-    if (!preflight.ready) return unavailable(`it does not pass the launch preflight (${preflight.errors.join("; ")}).`);
+    if (!preflight.ready) {
+      const refused = unavailable(`it does not pass the launch preflight (${preflight.errors.join("; ")}).`);
+      // A missing seat folder is not a spec problem: restoring the spec cannot fix it, and the stored-files route skips
+      // this check, so it would start the seat in $HOME. Say what does fix it.
+      const fault = node.cwd ? getSeatCwdFault(node.cwd) : null;
+      if (refused.kind === "refused" && node.cwd && fault) {
+        // The fresh preflight judges the seat's recorded folder, not the spec's cwd, and no command changes that record:
+        // the only fix is on disk.
+        refused.guidance = `${seatCwdFixAdvice(node.cwd, fault)}, then run the fresh launch again. The seat's saved startup files are not a way around this: that route does not check the folder and would start the seat in $HOME.`;
+      }
+      return refused;
+    }
     const resolvedStartupFiles = [...starterFiles, ...startup.resolvedStartupFiles];
     // A required file a fresh start would deliver must exist now, not fail after the live occupant is stopped.
     const missing = resolvedStartupFiles.find((f) => f.required && f.appliesOn.includes("fresh_start") && !fs.existsSync(f.absolutePath));

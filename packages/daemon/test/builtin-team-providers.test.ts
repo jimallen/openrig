@@ -12,6 +12,7 @@ import { resolveAgentRef } from "../src/domain/agent-resolver.js";
 import { resolveNodeConfig } from "../src/domain/profile-resolver.js";
 import { selectVariant } from "../src/domain/kernel-boot.js";
 import { planProjection } from "../src/domain/projection-planner.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const specs = resolve(import.meta.dirname, "../specs");
 const fsOps = { readFile: (p: string) => readFileSync(p, "utf8"), exists: existsSync };
@@ -50,7 +51,7 @@ describe("built-in team names and resource resolution", () => {
       const spec = RigSpecSchema.normalize(RigSpecCodec.parse(found.yaml) as Record<string, unknown>);
       expect(spec.pods.flatMap((pod) => pod.members.map((member) => [`${pod.id}.${member.id}`, member.runtime]))).toEqual(seats);
       if (name === "starter") expect(spec.pods[0]!.edges).toEqual([{ kind: "delegates_to", from: "build", to: "review" }]);
-      const cwd = join(tmpdir(), "builtin-team-repository");
+      const cwd = existingRigRoot("builtin-team-repository"); // the launch folder must exist (OF-63)
       const preflight = await rigPreflight({ rigSpecYaml: found.yaml, rigRoot: root, cwdOverride: cwd, fsOps });
       expect(preflight.errors).toEqual([]);
       expect(preflight.ready).toBe(true);

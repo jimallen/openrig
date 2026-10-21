@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
-const root = "/fixture/first-start";
+const root = existingRigRoot("first-start");
 const skillIds = ["development-team", "systematic-debugging", "test-driven-development", "verification-before-completion"];
 const member = { id: "pi", agent_ref: "local:agent", profile: "default", runtime: "pi", model: "provider/model", cwd: root };
 const closers: Array<() => void> = [];

@@ -301,6 +301,8 @@ function makeRigYaml(overrides?: Partial<PodRigSpec>): string {
 }
 
 const RIG_ROOT = "/project/rigs/my-rig";
+// OF-63: preflight now refuses a seat cwd that is not an existing directory; these fixtures are about other checks, so they launch into one that exists.
+const EXISTING_CWD = os.tmpdir();
 
 describe("Rebooted rig preflight", () => {
   it("resolves a selector-only profile from the configured managed skill catalog", async () => {
@@ -389,7 +391,7 @@ profiles:
     const files: Record<string, string> = {
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
     };
-    const result = await rigPreflight({ rigSpecYaml: makeRigYaml(), rigRoot: RIG_ROOT, fsOps: mockFs(files) });
+    const result = await rigPreflight({ rigSpecYaml: makeRigYaml(), rigRoot: RIG_ROOT, cwdOverride: EXISTING_CWD, fsOps: mockFs(files) });
     expect(result.ready).toBe(true);
     expect(result.errors).toEqual([]);
   });
@@ -461,7 +463,7 @@ profiles:
         edges: [],
       }],
     });
-    const result = await rigPreflight({ rigSpecYaml: rigYaml, rigRoot: RIG_ROOT, fsOps: mockFs(files) });
+    const result = await rigPreflight({ rigSpecYaml: rigYaml, rigRoot: RIG_ROOT, cwdOverride: EXISTING_CWD, fsOps: mockFs(files) });
     expect(result.ready, `preflight must accept runtime: stub; errors: ${JSON.stringify(result.errors)}`).toBe(true);
     expect(result.errors).toEqual([]);
   });
@@ -506,7 +508,7 @@ profiles:
       [`${RIG_ROOT}/agents/impl/agent.yaml`]: `name: impl\nversion: "1.0.0"\nimports:\n  - ref: local:../lib\nresources:\n  skills:\n    - id: shared\n      path: skills/shared\nprofiles:\n  default:\n    uses:\n      skills: [shared]`,
       [`${RIG_ROOT}/agents/lib/agent.yaml`]: `name: lib\nversion: "1.0.0"\nresources:\n  skills:\n    - id: shared\n      path: skills/shared\nprofiles: {}`,
     };
-    const result = await rigPreflight({ rigSpecYaml: makeRigYaml(), rigRoot: RIG_ROOT, fsOps: mockFs(files) });
+    const result = await rigPreflight({ rigSpecYaml: makeRigYaml(), rigRoot: RIG_ROOT, cwdOverride: EXISTING_CWD, fsOps: mockFs(files) });
     expect(result.ready).toBe(true);
     expect(result.warnings.some((w) => w.includes("collision"))).toBe(true);
   });
@@ -530,7 +532,7 @@ profiles:
     const result = await rigPreflight({
       rigSpecYaml: makeRigYaml(),
       rigRoot: builtinRoot,
-      cwdOverride: "/workspace/project",
+      cwdOverride: EXISTING_CWD,
       fsOps: mockFs(files),
     });
     expect(result.ready).toBe(true);

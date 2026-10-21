@@ -18,6 +18,7 @@ import { PeriodicSnapshotScheduler } from "../src/domain/periodic-snapshot-sched
 import { startupRevision } from "../src/routes/startup.js";
 import { defaultProbeRuntimes } from "../src/domain/kernel-boot.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 vi.mock("../src/domain/kernel-boot.js", async (original) => ({ ...await original<typeof import("../src/domain/kernel-boot.js")>(), defaultProbeRuntimes: vi.fn(async () => ({ codex: "ok", claudeCode: "ok" })) }));
 
 const NOT_JSON = "{not json";
@@ -136,11 +137,12 @@ describe("the auto-rehydrate captures skip a seat whose saved startup context is
 describe("the startup route's other auto-rehydrate captures skip a seat whose saved startup context is not JSON", () => {
   let db: Database.Database;
   let setup: ReturnType<typeof createTestApp>;
-  afterEach(() => { vi.restoreAllMocks(); db.close(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); db.close(); });
   const rehydrated = (rigId: string) => db.prepare("SELECT id FROM snapshots WHERE rig_id = ? AND kind = 'auto-rehydrate'").all(rigId) as Array<{ id: string }>;
   const post = (rigId: string, logicalId: string, body: object) => setup.app.request(`/api/startup/${rigId}/${logicalId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   it("Q1e2: a never-occupied built-in seat's launch returns the launch result, not 500, and writes the snapshot", async () => {
+    vi.stubEnv("OPENRIG_WORKSPACE_ROOT", existingRigRoot("kernel-workspace")); // the kernel launches into workspace.root, which must exist (OF-63)
     db = createFullTestDb();
     setup = createTestApp(db, { podInstantiatorFsOps: { exists: fs.existsSync, readFile: (p: string) => fs.readFileSync(p, "utf8") } });
     vi.mocked(defaultProbeRuntimes).mockResolvedValue({ codex: "ok", claudeCode: "ok" });

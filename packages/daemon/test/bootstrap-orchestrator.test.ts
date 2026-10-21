@@ -362,6 +362,24 @@ describe("BootstrapOrchestrator", () => {
       expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
     });
 
+    it("OF-63: plan mode does not call a project rig's own not-yet-created workspace folders missing, but does for an ordinary spec's missing --cwd", async () => {
+      const fsOps = { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p), realpath: (p: string) => fs.realpathSync(p), readPersonaFile: (p: string) => fs.readFileSync(p, "utf-8") };
+      const orch = buildOrchestrator({ podInstantiator: { db, instantiate: vi.fn(), deps: { fsOps } } });
+      const project = path.join(tmpDir, "plan-cwd-project");
+      fs.mkdirSync(project);
+      const preflightErrors = (r: Awaited<ReturnType<typeof orch.bootstrap>>) =>
+        ((r.stages.find((s) => s.stage === "preflight")?.detail as { errors?: string[] } | undefined)?.errors) ?? ["<no preflight stage>"];
+      const projectPlan = await orch.bootstrap({ mode: "plan", sourceRef: writeSpec(projectSpec()), cwdOverride: project });
+      // Positive control: the preflight stage ran and passed, so the empty "does not exist" list below is not an absent stage.
+      expect(projectPlan.stages.find((s) => s.stage === "preflight")?.status, JSON.stringify(projectPlan.stages)).toBe("ok");
+      expect(preflightErrors(projectPlan).filter((e) => e.includes("does not exist"))).toEqual([]);
+      expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+      // Negative control: the same plan for an ordinary spec pointed at a --cwd that does not exist is refused.
+      const missing = path.join(tmpDir, "no-such-project");
+      const ordinaryPlan = await orch.bootstrap({ mode: "plan", sourceRef: writeSpec(projectSpec("")), cwdOverride: missing });
+      expect(preflightErrors(ordinaryPlan).some((e) => e.includes("does not exist") && e.includes(missing))).toBe(true);
+    });
+
     it("an ordinary spec keeps --cwd for every member", async () => {
       const instantiate = vi.fn(async () => ({ ok: true as const, result: { rigId: "o-rig", specName: "team", specVersion: "0.2", nodes: [] } }));
       const orch = buildOrchestrator({ podInstantiator: { db, instantiate } });

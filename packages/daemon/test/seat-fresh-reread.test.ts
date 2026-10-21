@@ -302,6 +302,47 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
   });
 
+  // OF-63: the seat's recorded working folder is part of the first-launch preflight too (tmux would start the seat in $HOME).
+  // The usual advice (restore the spec, or use --startup-from stored) is wrong here: restoring the spec cannot create the
+  // folder, and the stored route skips this check, so following it would start the seat in $HOME. The refusal says what fixes it.
+  it("OF-63: a deleted seat working folder refuses before stopping anything, and the guidance names the folder instead of offering --startup-from stored", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    fs.rmSync(workdir, { recursive: true });
+    const stopped = vi.mocked(tmux.killSession).mock.calls.length;
+
+    const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+
+    expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+    expect(!result.ok && result.message).toContain("work' does not exist; a seat launched there would silently start in $HOME");
+    const guidance = (!result.ok && result.guidance) || "";
+    expect(guidance).toContain(`Create the folder ${workdir}, then run the fresh launch again`);
+    expect(guidance).not.toContain("change the seat");
+    expect(guidance).not.toContain("run again with --startup-from stored");
+    expect(guidance).not.toContain("Restore or fix the spec");
+    expect(plan).toMatchObject({ ok: false, code: "startup_source_unavailable", launchable: false });
+    expect(vi.mocked(tmux.killSession).mock.calls.length).toBe(stopped);
+    expect(alive.has(seat.sessionName)).toBe(true);
+    expect(delivered).toEqual([]);
+  });
+
+  // The fix depends on what is wrong with the folder: create it only when it is absent.
+  it("OF-63: when the seat folder is a file, the guidance names what is wrong and does not say to create it", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    fs.rmSync(workdir, { recursive: true });
+    fs.writeFileSync(workdir, "x");
+
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+
+    expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+    const guidance = (!result.ok && result.guidance) || "";
+    expect(guidance).toContain(`Fix ${workdir}: it is not a directory, then run the fresh launch again`);
+    expect(guidance).not.toContain("Create the folder");
+    expect(guidance).not.toContain("change the seat");
+  });
+
   // OF-38: the TUI's explicit-fresh action cannot pass `startupFrom`, so a refusal there must not tell the operator to
   // "run again with --startup-from stored". It names the CLI command that starts the seat on the stored files instead.
   // The CLI and the HTTP seat route can pass the option, and keep the flag wording.

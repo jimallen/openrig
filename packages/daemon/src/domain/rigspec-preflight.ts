@@ -136,7 +136,7 @@ import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
 import { resolveAgentRef, type GuardedAgentResolverFsOps } from "./agent-resolver.js";
 import { resolveNodeConfig, type ResolutionContext } from "./profile-resolver.js";
-import { getOpenRigInstallCwdError, resolveAuthoredCwd, resolveLaunchCwd } from "./cwd-resolution.js";
+import { getOpenRigInstallCwdError, getSeatCwdPresenceError, resolveAuthoredCwd, resolveLaunchCwd } from "./cwd-resolution.js";
 import nodePath from "node:path";
 import { checkCultureFile } from "./culture-file-guard.js";
 import { mcpServerPlacementProblem } from "./codex-mcp-servers.js";
@@ -161,6 +161,8 @@ export interface RigPreflightInput {
   rigSpecYaml: string;
   rigRoot: string;
   cwdOverride?: string;
+  /** See PreflightSpecContext.cwdsCreatedByLaunch. */
+  cwdsCreatedByLaunch?: readonly string[];
   fsOps: GuardedAgentResolverFsOps;
   /** Config-resolved managed skill catalog root. Must match runtime resolution. */
   skillsRoot?: string;
@@ -179,6 +181,9 @@ export interface RigPreflightInput {
  * already-parsed+validated spec. (YAML is only the input adapter at the front.)
  */
 export interface PreflightSpecContext {
+  /** Seat directories the launch itself creates before any seat starts (a project rig's workspace folders). A plan
+   *  runs before that step, so these alone may be missing at preflight time. */
+  cwdsCreatedByLaunch?: readonly string[];
   /** The Codex MCP trust rule's file-system reads; production never passes it. */
   mcpTrustIo?: import("./codex-mcp-servers.js").PathJudgeIo;
   rigRoot: string;
@@ -241,6 +246,12 @@ export function permissionPolicyDiscoveryWarnings(
   return warnings;
 }
 
+/** A seat's cwd must be an existing directory, except one the launch is about to create (see cwdsCreatedByLaunch). */
+function seatCwdPresenceError(resolvedCwd: string, ctx: PreflightSpecContext): string | null {
+  const willBeCreated = (ctx.cwdsCreatedByLaunch ?? []).some((dir) => nodePath.resolve(dir) === nodePath.resolve(resolvedCwd));
+  return willBeCreated ? null : getSeatCwdPresenceError(resolvedCwd);
+}
+
 /**
  * Rebooted rig preflight: validates rig spec, resolves all agent refs + profiles,
  * checks runtimes and cwd. Pure domain, no side effects beyond filesystem reads.
@@ -268,6 +279,7 @@ export async function rigPreflight(input: RigPreflightInput & { exec?: (cmd: str
   return preflightValidatedSpec(rigSpec, {
     rigRoot: input.rigRoot,
     cwdOverride: input.cwdOverride,
+    cwdsCreatedByLaunch: input.cwdsCreatedByLaunch,
     fsOps: input.fsOps,
     ...(input.mcpTrustIo ? { mcpTrustIo: input.mcpTrustIo } : {}),
     skillsRoot: input.skillsRoot,
@@ -330,6 +342,9 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
         const terminalCwdError = getOpenRigInstallCwdError(terminalCwd, preflightCtx.cwdOverride);
         if (terminalCwdError) {
           errors.push(`${pod.id}.${member.id}: ${terminalCwdError}`);
+        } else {
+          const presence = seatCwdPresenceError(terminalCwd, preflightCtx);
+          if (presence) errors.push(`${pod.id}.${member.id}: ${presence}`);
         }
         continue;
       }
@@ -412,6 +427,9 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
       const cwdError = getOpenRigInstallCwdError(configResult.config.cwd, preflightCtx.cwdOverride);
       if (cwdError) {
         errors.push(`${pod.id}.${member.id}: ${cwdError}`);
+      } else {
+        const presence = seatCwdPresenceError(configResult.config.cwd, preflightCtx);
+        if (presence) errors.push(`${pod.id}.${member.id}: ${presence}`);
       }
 
       // Declared Codex MCP servers (off until one seat instance is switched on). The schema already

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { MEMBER_KEYS } from "../src/domain/rigspec-schema.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 describe("POST /api/rigs/:rigId/expand", () => {
   let db: Database.Database;
@@ -390,7 +391,7 @@ describe("POST /api/rigs/:rigId/expand", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rigRoot: "/project/rigs/role-rig",
+          rigRoot: existingRigRoot("role-rig"),
           pod: {
             id: "rp",
             label: "RolePersist",
@@ -607,7 +608,7 @@ describe("POST /api/rigs/:rigId/expand", () => {
 // shapes to absent, so expand returned 201 and created a seat WITHOUT its role / starter where up
 // refused the same input.
 describe("POST /api/rigs/:rigId/expand - present-invalid role / starter_ref reject exactly as rig up does", () => {
-  const RIG_ROOT = "/project/rigs/role-rig";
+  const RIG_ROOT = existingRigRoot("role-rig");
   const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
   let db: Database.Database;
   let setup: ReturnType<typeof createTestApp>;
@@ -689,7 +690,7 @@ describe("POST /api/rigs/:rigId/expand - present-invalid role / starter_ref reje
 // strategy, its continuity mechanic and its startup block. They ride RAW (presence-preserving) so
 // the ONE canonical RigSpec validator owns the checks and rejects exactly as `rig up` does.
 describe("POST /api/rigs/:rigId/expand - compaction_strategy / mechanic / startup", () => {
-  const RIG_ROOT = "/project/rigs/cms-rig";
+  const RIG_ROOT = existingRigRoot("cms-rig");
   const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
   let db: Database.Database;
   let setup: ReturnType<typeof createTestApp>;
@@ -782,7 +783,7 @@ describe("POST /api/rigs/:rigId/expand - compaction_strategy / mechanic / startu
 // one and expand created the seat where `rig up` refuses the same snake_case value. Now the
 // snake_case value wins for all seven, so expand rejects exactly what `rig up` rejects.
 describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case value is never shadowed by a valid camelCase one", () => {
-  const RIG_ROOT = "/project/rigs/dual-rig";
+  const RIG_ROOT = existingRigRoot("dual-rig");
   const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []';
   let db: Database.Database;
   let setup: ReturnType<typeof createTestApp>;
