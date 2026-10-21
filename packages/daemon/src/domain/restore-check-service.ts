@@ -1739,12 +1739,19 @@ export class RestoreCheckService {
         const ownName = names.filter((name) => owners[name] === undefined);
         const heldName = names.filter((name) => owners[name] !== undefined);
         const kill = ownName.map((name) => `tmux kill-session -t ${shellQuote(`=${name}`)}`).join("; ");
-        const held = heldName.map((name) => `${name} is held by ${owners[name]}, another seat's live session: do not kill it from here, it would end that seat; this rig's older running row for it rig down ${shellQuote(input.rigName)} still ends this rig's older running row for it without touching that session, which is what lets restore run`).join("; ");
+        // A holder in ANOTHER rig keeps its session when this rig goes down. A holder in THIS rig is stopped with the rig, and which
+        // row's kill ends the shared name depends on ownership, so the advice promises no more than the rows end.
+        const held = heldName.map((name) => owners[name]!.endsWith(`@${input.rigName}`)
+          ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${shellQuote(input.rigName)} ends this rig's older running row for it and stops the rest of the rig, that seat included, which is what lets restore run`
+          : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${shellQuote(input.rigName)} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
+        const downEnds = ownName.length > 0
+          ? `rig down ${shellQuote(input.rigName)} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. `
+          : "";
         blocked.push({
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down ${shellQuote(input.rigName)} ends ${names.length === 1 ? "it" : "them"} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions; a session another seat holds is never killed. ${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. ${downEnds}${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
         });
         continue;
       }

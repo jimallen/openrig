@@ -842,6 +842,21 @@ describe("SeatLifecycleService", () => {
       expect(row(older.session.id)).toMatchObject({ status: "running" });
     });
 
+    it("a kill that finds the older session already gone (it vanished after the probe) is stale cleanup: no stop intent, no session.stopped, killed:false", async () => {
+      const { older, newerSession } = olderLiveSeat({ status: "exited", alive: false });
+      (tmux.adapter as unknown as { killSession: unknown }).killSession = async () => ({ ok: false as const, code: "session_not_found", message: "can't find session" });
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "raced" });
+
+      expect(result).toMatchObject({ ok: true, latestSessionStopped: false });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: false, staleCleanup: true }]);
+      expect(row(older.session.id)).toEqual({ status: "exited", intentionally_stopped: 0 });
+      expect(row(newerSession.id)).toMatchObject({ status: "exited" });
+      expect(eventsOfType(db, "session.stopped")).toEqual([]);
+      expect(eventsOfType(db, "session.cleaned")).toHaveLength(1);
+    });
+
     it("OF-54 F4: an older kill that fails after the latest was stopped says the latest WAS stopped", async () => {
       const { older, newerSession } = olderLiveSeat({ status: "running", alive: true });
       sessionRegistry.updateBinding(older.node.id, { attachmentType: "tmux", tmuxSession: NEWER, tmuxPane: "%2" });

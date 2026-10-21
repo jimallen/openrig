@@ -726,14 +726,15 @@ export class SeatLifecycleService {
     ).all(nodeId, exceptId) as LatestSessionRow[]);
   }
 
-  private async killOlder(plan: OlderPlan): Promise<Map<string, { ok: boolean; message?: string }>> {
-    const results = new Map<string, { ok: boolean; message?: string }>();
+  /** `gone` is a kill that found no tmux session (it vanished between the probe and the kill): nothing was killed. */
+  private async killOlder(plan: OlderPlan): Promise<Map<string, { ok: boolean; message?: string; gone?: boolean }>> {
+    const results = new Map<string, { ok: boolean; message?: string; gone?: boolean }>();
     for (const { row, kill } of plan) {
       if (!kill) continue;
       const result = await this.tmuxAdapter.killSession(row.session_name);
       results.set(row.id, result && !result.ok && result.code !== "session_not_found"
         ? { ok: false, message: result.message ?? result.code }
-        : { ok: true });
+        : { ok: true, gone: result?.ok === false });
     }
     return results;
   }
@@ -747,7 +748,7 @@ export class SeatLifecycleService {
     plan: OlderPlan,
     reason: string,
     operator: string | null | undefined,
-    kills: Map<string, { ok: boolean; message?: string }>,
+    kills: Map<string, { ok: boolean; message?: string; gone?: boolean }>,
     stoppedLatest: string | null,
   ): OlderSessionEnded[] | SeatRefusal {
     const seat = this.describe(resolved);
@@ -762,9 +763,11 @@ export class SeatLifecycleService {
           failed.push({ name: row.session_name, message: outcome.message });
           continue; // a failed kill leaves that row running: it is still live
         }
-        if (kill || covered) {
+        // A kill that found no session (it vanished after the probe) ended nothing: stale cleanup, like a probe-absent row.
+        const killed = kill && outcome?.gone !== true;
+        if (killed || covered) {
           this.sessionRegistry.markIntentionallyStopped(row.id);
-          ended.push({ sessionId: row.id, sessionName: row.session_name, killed: kill, staleCleanup: false });
+          ended.push({ sessionId: row.id, sessionName: row.session_name, killed, staleCleanup: false });
           persisted.push(this.eventBus.persistWithinTransaction({
             type: "session.stopped", rigId: seat.rigId, nodeId: seat.nodeId,
             sessionName: row.session_name, reason: reason.trim(), operator: operator ?? null,
