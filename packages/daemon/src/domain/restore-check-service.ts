@@ -1731,20 +1731,20 @@ export class RestoreCheckService {
       // OF-47: the seats' newest rows show nothing live, but restore reads every running row. Whatever it refuses on, the
       // advice must not be the command it refuses.
       if (input.restoreRunningRows === "live") {
-        // `rig down` and `rig seat stop` act on each seat's NEWEST session row only (measured on the real teardown
-        // orchestrator: Q3 kills 0 and restore still refuses), so neither ends an older live row. Ending the session
-        // in tmux does: the row stays `running` in the DB, restore reads it as stale and proceeds.
+        // `rig down` ends an older live row (teardown kills its session when no other node owns the name, and ends the row
+        // either way), so it is the remedy; `rig seat stop <seat>` ends that one seat's live sessions the same way. Ending
+        // the session in tmux by hand also works: the row stays `running` in the DB, restore reads it as stale and proceeds.
         const names = input.restoreRunningRowNames;
         const owners = input.restoreRunningRowOwners;
         const ownName = names.filter((name) => owners[name] === undefined);
         const heldName = names.filter((name) => owners[name] !== undefined);
         const kill = ownName.map((name) => `tmux kill-session -t ${shellQuote(`=${name}`)}`).join("; ");
-        const held = heldName.map((name) => `${name} is held by ${owners[name]}, another seat's live session: do not kill it from here, it would end that seat; this rig's older running row for it needs manual attention (restore stays refused while the name is live, and no command here frees it)`).join("; ");
+        const held = heldName.map((name) => `${name} is held by ${owners[name]}, another seat's live session: do not kill it from here, it would end that seat; this rig's older running row for it rig down ${shellQuote(input.rigName)} still ends this rig's older running row for it without touching that session, which is what lets restore run`).join("; ");
         blocked.push({
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down and rig seat stop do not end it (they act on each seat's newest session row only). ${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down ${shellQuote(input.rigName)} ends ${names.length === 1 ? "it" : "them"} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions; a session another seat holds is never killed. ${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
         });
         continue;
       }

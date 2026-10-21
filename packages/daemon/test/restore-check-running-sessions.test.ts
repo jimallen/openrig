@@ -75,15 +75,16 @@ describe("restore-check and restore agree on whether the rig would run, over eve
     adviceLacks?: (s: Seat) => string[];
     checkStatus?: "red" | "yellow" | "green";
   }
-  /** The advice for a live older running row, restated independently of the code: the session by name, the command that
-   *  ends it (rig down and rig seat stop act on each seat's NEWEST row only, so neither is the remedy), and why. */
+  /** The advice for a live older running row, restated independently of the code: the session by name, the commands that
+   *  end it (OF-54: rig down ends an older live row, rig seat stop ends one seat's, and the manual kill still works), and
+   *  never the pre-OF-54 claim that they act on the newest row only. */
   const liveAdvice = (s: Seat) => [
     `live: ${s.sessionName};`,
     `tmux kill-session -t '=${s.sessionName}'`,
-    "rig down and rig seat stop do not end it",
+    "rig down team ends it (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions",
     "rig capture -- " + s.sessionName,
   ];
-  const liveAdviceLacks = () => ["rig down team", "tmux ls"];
+  const liveAdviceLacks = () => ["do not end it", "newest session row only", "tmux ls"];
   const ROWS: Row[] = [
     // Q1 / Q2: an applicable session_missing verdict relabels the running row, but restore reads the raw status.
     { name: "Q1 identity verdict session_missing on the DB-running row, tmux LIVE: restore refuses", pre: (s) => dropToken(s.nodeId), tmux: (s) => { sessionMissingVerdict(s); tmuxSays({ [s.sessionName]: "present" }); }, restore: "refused", predictsGate: false, recovery: "blocked", reasonLacks: "restore-input blockers" },
@@ -103,7 +104,7 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       h.sessionRegistry.updateStatus(newer.id, "exited");
       namesake(s.sessionName, false);
     }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true,
-      adviceHas: (s) => [`${s.sessionName} is held by dev.other@other, another seat's live session: do not kill it from here`, "needs manual attention"], adviceLacks: () => ["tmux kill-session", "end it yourself"] },
+      adviceHas: (s) => [`${s.sessionName} is held by dev.other@other, another seat's live session: do not kill it from here`, "rig down team still ends this rig's older running row for it without touching that session"], adviceLacks: () => ["tmux kill-session", "end it yourself", "needs manual attention", "no command here frees it"] },
     // N2 control: the namesake sits in an ARCHIVED rig (teardown ignores those owners too), so the kill command is still given.
     { name: "N2 control: the same name in an ARCHIVED rig does not hold it, the kill command is still given", pre: (s) => {
       dropToken(s.nodeId);

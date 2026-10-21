@@ -920,9 +920,12 @@ Examples:
     .description("Stop exactly one LIVE managed seat (kills only that seat's tmux session; audited)")
     .addHelpText("after", `
 Siblings are untouched. The seat's older still-live sessions are ended too (a
-tmux session that another seat owns is never killed). A dead seat with no older
-live session is refused (use rig seat clean); an adopted session is refused (use
-rig unclaim). Stopping ends that agent's session and any
+tmux session that another seat owns is never killed). An older live session whose
+tmux session is already gone, or belongs to another seat, is marked exited as stale
+cleanup with no stop recorded; if the latest session is also gone, its record and
+the seat's binding are left for rig seat clean. A dead seat with no older live
+session is refused (use rig seat clean); an adopted session is refused (use rig
+unclaim). Stopping ends that agent's session and any
 work in progress: check it first (rig capture <seat>) and stop only a seat you
 own or were asked to stop. rig seat launch <seat> --fresh --reason <text> starts
 a fresh occupant there; it does not resume the stopped conversation.
@@ -935,16 +938,29 @@ rig stopped. Examples:
       await runLifecycleVerb("stop", seat, { reason: opts.reason, operator: opts.operator }, opts, (data) => {
         const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
         // An older daemon sends neither field: its reply means the latest session was stopped.
-        const older = Array.isArray(data["olderSessionsEnded"]) ? data["olderSessionsEnded"] as Array<{ sessionName?: string; killed?: boolean }> : [];
-        if (data["latestSessionStopped"] !== false) {
+        const older = Array.isArray(data["olderSessionsEnded"])
+          ? data["olderSessionsEnded"] as Array<{ sessionName?: string; killed?: boolean; staleCleanup?: boolean }> : [];
+        const latestStopped = data["latestSessionStopped"] !== false;
+        if (latestStopped) {
           console.log(`Stopped ${String(data["sessionName"])} (seat ${s?.logicalId}@${s?.rigName}).`);
         } else {
-          console.log(`Seat ${s?.logicalId}@${s?.rigName}: its latest session ${String(data["sessionName"])} was already gone from tmux; only older live sessions were ended.`);
+          console.log(`Seat ${s?.logicalId}@${s?.rigName}: its latest session ${String(data["sessionName"])} was already gone from tmux, so nothing was stopped there.`);
         }
         for (const row of older) {
-          console.log(`Also ended older live session ${String(row.sessionName)}${row.killed ? "" : " (its tmux session was already gone or belongs to another seat, so none was killed)"}.`);
+          const name = String(row.sessionName);
+          if (row.staleCleanup) {
+            console.log(`Marked older session ${name} exited as stale cleanup: its tmux session was already gone or belongs to another seat, so nothing was killed and no stop was recorded.`);
+          } else if (row.killed) {
+            console.log(`Also ended older live session ${name} (its tmux session was killed).`);
+          } else {
+            console.log(`Also ended older live session ${name} (it shares the stopped latest session's tmux session).`);
+          }
         }
-        console.log("Session marked exited, binding cleared; siblings untouched. Relaunch via the normal launch surface.");
+        if (latestStopped) {
+          console.log("Session marked exited, binding cleared; siblings untouched. Relaunch via the normal launch surface.");
+        } else {
+          console.log("The latest session's record and the seat's binding were left as they were. Run rig seat clean to return the seat to launchable; siblings untouched.");
+        }
       });
     });
 
