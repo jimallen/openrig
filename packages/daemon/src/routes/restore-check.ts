@@ -272,11 +272,14 @@ export function createRestoreCheckService(
         const sessionNames = Object.fromEntries(refusingRows.map((s) => [s.id, s.sessionName]));
         // The probe is global by tmux name: a live name may belong to ANOTHER seat or rig. Teardown asks the same question
         // (findOtherSessionOwner, archived rigs ignored) before it kills; the advice must too.
-        const sessionOwners = Object.fromEntries(refusingRows.flatMap((s) => {
+        const owners = refusingRows.flatMap((s) => {
           const owner = findOtherSessionOwner(rigRepo.db, s.sessionName, s.nodeId, { ignoreArchived: true });
-          return owner ? [[s.id, `${owner.logical_id}@${owner.rig_name}`]] : [];
-        }));
-        return { ...classification, sessionNames, sessionOwners };
+          return owner ? [[s.id, owner] as const] : [];
+        });
+        const sessionOwners = Object.fromEntries(owners.map(([id, owner]) => [id, `${owner.logical_id}@${owner.rig_name}`]));
+        // Rig names are not unique: the advice decides "a seat of this same rig" on the owner's rig id.
+        const sessionOwnerRigIds = Object.fromEntries(owners.map(([id, owner]) => [id, owner.rig_id]));
+        return { ...classification, sessionNames, sessionOwners, sessionOwnerRigIds };
       }
       : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,

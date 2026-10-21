@@ -662,6 +662,33 @@ export class SessionRegistry {
     }));
   }
 
+  /** OF-54 — the live (running / idle / unknown) rows that are NOT their node's latest session: an older occupant
+   *  that outlived a newer row (the newer row exited, or is a dead running row). `getLatestLiveSessions` cannot
+   *  see them, so `rig down` left them running and restore kept refusing `rig_not_stopped`. "Latest" is the same
+   *  definition `getLatestLiveSessions` uses (created_at, then id). */
+  getOlderLiveSessions(rigId: string): LatestLiveSession[] {
+    const rows = this.db.prepare(`
+      SELECT n.id as node_id, s.id as session_id, s.session_name, s.status, n.runtime, n.cwd, s.resume_type, s.resume_token
+      FROM nodes n
+      JOIN sessions s ON s.node_id = n.id
+      WHERE n.rig_id = ?
+        AND s.id <> (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.created_at DESC, s2.id DESC LIMIT 1)
+        AND s.status IN ('running', 'idle', 'unknown')
+      ORDER BY s.created_at, s.id
+    `).all(rigId) as Array<{ node_id: string; session_id: string; session_name: string; status: string; runtime: string | null; cwd: string | null; resume_type: string | null; resume_token: string | null }>;
+
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      sessionId: r.session_id,
+      sessionName: r.session_name,
+      status: r.status,
+      runtime: r.runtime,
+      resumeType: r.resume_type,
+      resumeToken: r.resume_token,
+      cwd: r.cwd,
+    }));
+  }
+
   getBindingForNode(nodeId: string): Binding | null {
     const row = this.db
       .prepare("SELECT * FROM bindings WHERE node_id = ?")

@@ -7,6 +7,7 @@ import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter, SessionProbe } from "../adapters/tmux.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { findOtherSessionOwner } from "./session-owner.js";
 import type { NodeInventoryEntry, PersistedEvent } from "./types.js";
 import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js";
 import { deriveSessionName, parseSessionName } from "./session-name.js";
@@ -188,8 +189,22 @@ export type SetEffortResult =
     }
   | SeatRefusal;
 
+/** OF-54: an older live session row of the seat that stop ended. `killed` is false when the row's tmux session was
+ *  already absent, or belongs to another node (the tmux session is then left alone and only this row is ended).
+ *  `staleCleanup` is true when nothing this stop did ended the session (it was already gone, or another node owns the
+ *  name): the row was marked exited as cleanup and NO stop intent was recorded for it. A row that shares the latest
+ *  session's name is ended by that session's kill, so it is `killed:false, staleCleanup:false`. */
+export interface OlderSessionEnded { sessionId: string; sessionName: string; killed: boolean; staleCleanup: boolean }
+
+type OlderPlan = Array<{ row: LatestSessionRow; kill: boolean; covered: boolean }>;
+
 export type StopSeatResult =
-  | { ok: true; seat: SeatDescriptor; sessionName: string; sessionId: string }
+  | {
+      ok: true; seat: SeatDescriptor; sessionName: string; sessionId: string;
+      /** False when the latest session was already absent from tmux and stop only ended older live rows. */
+      latestSessionStopped: boolean;
+      olderSessionsEnded: OlderSessionEnded[];
+    }
   | SeatRefusal;
 
 export type CleanSeatResult =
@@ -642,7 +657,34 @@ export class SeatLifecycleService {
     // (KI-5.3-8 fabricated-absence class, destructive direction).
     const probed = await this.probeLiveness(session.session_name, "stop refuses rather than kill blind");
     if ("code" in probed) return probed;
-    if (probed.state === "absent") {
+
+    // OF-54: the seat's OLDER live rows. Everything that can refuse is decided here, before anything is killed.
+    const older = this.olderLiveSessions(resolved.nodeId, session.id);
+    for (const row of older) {
+      if (row.origin === "claimed") {
+        return {
+          ok: false,
+          code: "claimed_session",
+          message: `Session "${row.session_name}" (an older live session of this seat) was adopted (origin=claimed), not launched by OpenRig — stop refuses to end it.`,
+          guidance: "Release an adopted session with: rig unclaim",
+        };
+      }
+    }
+    const olderPlan: OlderPlan = [];
+    for (const row of older) {
+      // The name is only a historical label: another live node owning it means that tmux session is not this seat's to kill.
+      const foreign = findOtherSessionOwner(this.db, row.session_name, resolved.nodeId, { ignoreArchived: true }) !== null;
+      let present = false;
+      if (!foreign && row.session_name !== session.session_name) {
+        const olderProbe = await this.probeLiveness(row.session_name, "stop refuses rather than kill or end an older session blind");
+        if ("code" in olderProbe) return olderProbe;
+        present = olderProbe.state === "present";
+      }
+      // The latest session's own kill ends a row that shares its tmux name.
+      olderPlan.push({ row, kill: present, covered: probed.state === "present" && row.session_name === session.session_name });
+    }
+
+    if (probed.state === "absent" && older.length === 0) {
       return {
         ok: false,
         code: "session_not_live",
@@ -651,7 +693,114 @@ export class SeatLifecycleService {
       };
     }
 
-    return this.stopManagedTmuxSeat(resolved, session, input.reason, input.operator, true);
+    if (probed.state === "absent") {
+      // Only older rows are live; the latest row's own record is left for `rig seat clean`.
+      const ended = this.endOlderLiveSessions(resolved, olderPlan, input.reason, input.operator, await this.killOlder(olderPlan), null);
+      if ("code" in ended) return ended;
+      return { ok: true, seat, sessionName: session.session_name, sessionId: session.id, latestSessionStopped: false, olderSessionsEnded: ended };
+    }
+
+    const stopped = await this.stopManagedTmuxSeat(resolved, session, input.reason, input.operator, true);
+    if (!stopped.ok || older.length === 0) return stopped;
+    const ended = this.endOlderLiveSessions(resolved, olderPlan, input.reason, input.operator, await this.killOlder(olderPlan), session.session_name);
+    if ("code" in ended) return ended;
+    return { ...stopped, olderSessionsEnded: ended };
+  }
+
+  /** Whether `rig seat stop` on this seat would end the tmux session `name`: it is the latest row's session or an older
+   *  live row's session no other node owns, and stop is not refused outright by an adopted (claimed) live row. */
+  private stopEndsSession(nodeId: string, name: string): boolean {
+    const latest = this.latestSession(nodeId);
+    if (!latest) return false;
+    const olderLive = this.olderLiveSessions(nodeId, latest.id);
+    if (latest.origin === "claimed" || olderLive.some((row) => row.origin === "claimed")) return false;
+    return latest.session_name === name
+      || (olderLive.some((row) => row.session_name === name)
+        && findOtherSessionOwner(this.db, name, nodeId, { ignoreArchived: true }) === null);
+  }
+
+  /** The seat's live-status (running / idle / unknown) rows other than `exceptId`, oldest first. */
+  private olderLiveSessions(nodeId: string, exceptId: string): LatestSessionRow[] {
+    return (this.db.prepare(
+      "SELECT id, session_name, status, origin FROM sessions WHERE node_id = ? AND id <> ? AND status IN ('running', 'idle', 'unknown') ORDER BY created_at, id",
+    ).all(nodeId, exceptId) as LatestSessionRow[]);
+  }
+
+  /** `gone` is a kill that found no tmux session (it vanished between the probe and the kill): nothing was killed. */
+  private async killOlder(plan: OlderPlan): Promise<Map<string, { ok: boolean; message?: string; gone?: boolean }>> {
+    const results = new Map<string, { ok: boolean; message?: string; gone?: boolean }>();
+    for (const { row, kill } of plan) {
+      if (!kill) continue;
+      const result = await this.tmuxAdapter.killSession(row.session_name);
+      results.set(row.id, result && !result.ok && result.code !== "session_not_found"
+        ? { ok: false, message: result.message ?? result.code }
+        : { ok: true, gone: result?.ok === false });
+    }
+    return results;
+  }
+
+  /** Ends the planned older rows. `stoppedLatest` is the latest session's name when this same stop already stopped it
+   *  (so a failure here can say so), null when it did not. A row stop really ended (killed, or sharing the stopped latest
+   *  session's name) records a stop intent and a session.stopped event; a row nothing of ours ended is stale cleanup:
+   *  marked exited with no stop intent, under one session.cleaned event. */
+  private endOlderLiveSessions(
+    resolved: ResolvedSeat,
+    plan: OlderPlan,
+    reason: string,
+    operator: string | null | undefined,
+    kills: Map<string, { ok: boolean; message?: string; gone?: boolean }>,
+    stoppedLatest: string | null,
+  ): OlderSessionEnded[] | SeatRefusal {
+    const seat = this.describe(resolved);
+    const ended: OlderSessionEnded[] = [];
+    const failed: Array<{ name: string; message: string | undefined }> = [];
+    const persisted: PersistedEvent[] = [];
+    this.db.transaction(() => {
+      const stale: string[] = [];
+      for (const { row, kill, covered } of plan) {
+        const outcome = kills.get(row.id);
+        if (kill && outcome && !outcome.ok) {
+          failed.push({ name: row.session_name, message: outcome.message });
+          continue; // a failed kill leaves that row running: it is still live
+        }
+        // A kill that found no session (it vanished after the probe) ended nothing: stale cleanup, like a probe-absent row.
+        const killed = kill && outcome?.gone !== true;
+        if (killed || covered) {
+          this.sessionRegistry.markIntentionallyStopped(row.id);
+          ended.push({ sessionId: row.id, sessionName: row.session_name, killed, staleCleanup: false });
+          persisted.push(this.eventBus.persistWithinTransaction({
+            type: "session.stopped", rigId: seat.rigId, nodeId: seat.nodeId,
+            sessionName: row.session_name, reason: reason.trim(), operator: operator ?? null,
+          }));
+        } else {
+          this.sessionRegistry.updateStatus(row.id, "exited");
+          ended.push({ sessionId: row.id, sessionName: row.session_name, killed: false, staleCleanup: true });
+          stale.push(row.session_name);
+        }
+      }
+      if (stale.length > 0) {
+        persisted.push(this.eventBus.persistWithinTransaction({
+          type: "session.cleaned", rigId: seat.rigId, nodeId: seat.nodeId, sessionName: stale[0] ?? null,
+          reason: reason.trim(), operator: operator ?? null, actions: { sessionsExited: stale, bindingCleared: false },
+        }));
+      }
+    })();
+    this.tmuxAdapter.deliveryGuard?.rebindLifecycle(resolved.nodeId);
+    for (const event of persisted) this.eventBus.notifySubscribers(event);
+    if (failed.length > 0) {
+      const names = failed.map((f) => `"${f.name}"`).join(", ");
+      return {
+        ok: false,
+        code: "tmux_probe_failed",
+        message: `tmux kill-session for older session ${failed.map((f) => `"${f.name}" failed: ${f.message}`).join("; ")}. `
+          + (stoppedLatest !== null
+            ? `The seat's latest session "${stoppedLatest}" WAS stopped before this failure (marked exited, binding cleared, session.stopped recorded). `
+            : "")
+          + (ended.length > 0 ? `Older sessions already ended: ${ended.map((e) => e.sessionName).join(", ")}. ` : "")
+          + `${names} ${failed.length === 1 ? "is" : "are"} still running; run rig seat stop again to end ${failed.length === 1 ? "it" : "them"}.`,
+      };
+    }
+    return ended;
   }
 
   async cleanSeat(input: { seatRef: string; reason: string; operator?: string | null }): Promise<CleanSeatResult> {
@@ -697,13 +846,16 @@ export class SeatLifecycleService {
       if ("code" in probed) return probed;
       if (probed.state === "present") {
         const latest = this.latestSession(resolved.nodeId);
+        // OF-54: stop now also ends the seat's older live rows, but only where it would kill: not a claimed row, and
+        // not a name another live node owns. That is the one case where "stop it" is true of a non-latest name.
+        const stoppable = this.stopEndsSession(resolved.nodeId, name);
         return {
           ok: false,
           code: "session_live",
           message: `Session "${name}" is alive in tmux (checked: tmux has-session, against EVERY session row clean would mutate) — clean only operates on dead seats.`,
-          guidance: latest?.session_name === name && latest.origin !== "claimed"
+          guidance: stoppable
             ? "Stop a live seat first with: rig seat stop"
-            : `Check that session (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer needed, then retry; rig seat stop targets the seat's latest session, not a selected historical session.`,
+            : `Check that session (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`,
         };
       }
     }
@@ -907,7 +1059,9 @@ export class SeatLifecycleService {
       if (probe.state === "present") return {
         ok: false, code: "session_live",
         message: `Historical session "${name}" is still live; fresh launch refuses to change this seat.`,
-        guidance: "rig seat stop targets the seat's latest session, not a selected historical session; it may stop the current occupant instead.",
+        guidance: this.stopEndsSession(nodeId, name)
+          ? "End it with: rig seat stop (it ends this seat's current occupant and its older live sessions, this one included), then retry the fresh launch."
+          : `Check that session (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`,
       };
     }
     return null;
@@ -1475,7 +1629,7 @@ export class SeatLifecycleService {
     tx();
     this.tmuxAdapter.deliveryGuard?.rebindLifecycle(resolved.nodeId);
     if (persisted) this.eventBus.notifySubscribers(persisted);
-    return { ok: true, seat, sessionName: session.session_name, sessionId: session.id };
+    return { ok: true, seat, sessionName: session.session_name, sessionId: session.id, latestSessionStopped: true, olderSessionsEnded: [] };
   }
 
   private nonTerminalSessions(nodeId: string): LatestSessionRow[] {

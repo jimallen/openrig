@@ -359,6 +359,50 @@ describe("rig seat stop", () => {
     expect(logs.join("\n")).toContain("siblings untouched");
   });
 
+  const stopReply = (data: Record<string, unknown>) => ({
+    status: 200,
+    data: { ok: true, seat: { logicalId: "dev.impl", rigName: "seat-rig" }, sessionName: "dev-impl-v2@seat-rig", sessionId: "S2", ...data },
+  });
+  const runStop = async (data: Record<string, unknown>) => {
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(makeDeps(stopReply(data), [])).parseAsync(["node", "rig", "seat", "stop", "dev-impl@seat-rig", "--reason", "x"]);
+    });
+    return logs.join("\n");
+  };
+
+  it("OF-54 F2: when only older sessions were ended it says so, claims no binding was cleared, and points at rig seat clean", async () => {
+    const text = await runStop({
+      latestSessionStopped: false,
+      olderSessionsEnded: [{ sessionId: "S1", sessionName: "dev-impl@seat-rig", killed: true, staleCleanup: false }],
+    });
+    expect(text).toContain("latest session dev-impl-v2@seat-rig was already gone from tmux, so nothing was stopped there");
+    expect(text).not.toContain("Stopped dev-impl-v2@seat-rig");
+    expect(text).toContain("Also ended older live session dev-impl@seat-rig (its tmux session was killed).");
+    expect(text).toContain("The latest session's record and the seat's binding were left as they were. Run rig seat clean");
+    expect(text).not.toContain("binding cleared");
+    expect(text).not.toContain("Relaunch via the normal launch surface");
+  });
+
+  it("OF-54 F5: a stale older session is reported as cleanup with no stop recorded", async () => {
+    const text = await runStop({
+      latestSessionStopped: false,
+      olderSessionsEnded: [{ sessionId: "S1", sessionName: "dev-impl@seat-rig", killed: false, staleCleanup: true }],
+    });
+    expect(text).toContain("Marked older session dev-impl@seat-rig exited as stale cleanup");
+    expect(text).toContain("nothing was killed and no stop was recorded");
+    expect(text).not.toContain("Also ended older live session");
+  });
+
+  it("an older session ended by the latest session's kill is named as such, and the latest line still says binding cleared", async () => {
+    const text = await runStop({
+      latestSessionStopped: true,
+      olderSessionsEnded: [{ sessionId: "S1", sessionName: "dev-impl-v2@seat-rig", killed: false, staleCleanup: false }],
+    });
+    expect(text).toContain("Stopped dev-impl-v2@seat-rig");
+    expect(text).toContain("Also ended older live session dev-impl-v2@seat-rig (it shares the stopped latest session's tmux session).");
+    expect(text).toContain("Session marked exited, binding cleared");
+  });
+
   it("--json passes the refusal through verbatim and exits 1", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const refusal = { ok: false, code: "session_not_live", message: "not alive", guidance: "rig seat clean" };

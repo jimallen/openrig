@@ -305,6 +305,8 @@ interface RecoveryRigInput {
   restoreRunningRowNames: string[];
   /** Of those names, the ones another seat (or rig) owns: tmux name -> that seat's `logical@rig`. Never to be killed from here. */
   restoreRunningRowOwners: Record<string, string>;
+  /** Of those owners, the owner's rig id (rig names are not unique). A missing id is read as "may be this rig". */
+  restoreRunningRowOwnerRigIds: Record<string, string>;
 }
 
 interface HostInfraCheckResult {
@@ -317,7 +319,7 @@ type ListedRefusals = Map<string, Map<string, string> | Error>;
 /** Per rig: what restore's refusal rule says about running rows (an Error: it could not be asked). Absent: not asked. */
 type RunningClassifications = Map<string, NamedRunningClassification | Error>;
 /** OF-47: restore's classification (session ids) plus the tmux names of the rows it refuses on, for advice that names them. */
-type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string> };
+type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string>; sessionOwnerRigIds?: Record<string, string> };
 /** Would the next restore run at all? `refused`: a running row is live or unreadable (rig_not_stopped). */
 type RestoreRuns = "would_run" | "refused" | "unknown";
 
@@ -423,6 +425,7 @@ export class RestoreCheckService {
     const restoreRunningRowsByRig = new Map<string, RecoveryRigInput["restoreRunningRows"]>();
     const restoreRunningRowNamesByRig = new Map<string, string[]>();
     const restoreRunningRowOwnersByRig = new Map<string, Record<string, string>>();
+    const restoreRunningRowOwnerRigIdsByRig = new Map<string, Record<string, string>>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -496,6 +499,7 @@ export class RestoreCheckService {
       restoreRunningRowsByRig.set(rig.rigId, restoreRunningRowsFor(running.get(rig.rigId)));
       restoreRunningRowNamesByRig.set(rig.rigId, refusingRowNames(running.get(rig.rigId)));
       restoreRunningRowOwnersByRig.set(rig.rigId, refusingRowOwners(running.get(rig.rigId)));
+      restoreRunningRowOwnerRigIdsByRig.set(rig.rigId, refusingRowOwnerRigIds(running.get(rig.rigId)));
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
@@ -584,6 +588,7 @@ export class RestoreCheckService {
         restoreRunningRows: restoreRunningRowsByRig.get(rollup.rigId) ?? "not_asked",
         restoreRunningRowNames: restoreRunningRowNamesByRig.get(rollup.rigId) ?? [],
         restoreRunningRowOwners: restoreRunningRowOwnersByRig.get(rollup.rigId) ?? {},
+        restoreRunningRowOwnerRigIds: restoreRunningRowOwnerRigIdsByRig.get(rollup.rigId) ?? {},
       });
     }
 
@@ -1731,20 +1736,29 @@ export class RestoreCheckService {
       // OF-47: the seats' newest rows show nothing live, but restore reads every running row. Whatever it refuses on, the
       // advice must not be the command it refuses.
       if (input.restoreRunningRows === "live") {
-        // `rig down` and `rig seat stop` act on each seat's NEWEST session row only (measured on the real teardown
-        // orchestrator: Q3 kills 0 and restore still refuses), so neither ends an older live row. Ending the session
-        // in tmux does: the row stays `running` in the DB, restore reads it as stale and proceeds.
+        // `rig down` ends an older live row (teardown kills its session when no other node owns the name, and ends the row
+        // either way), so it is the remedy; `rig seat stop <seat>` ends that one seat's live sessions the same way. Ending
+        // the session in tmux by hand also works: the row stays `running` in the DB, restore reads it as stale and proceeds.
         const names = input.restoreRunningRowNames;
         const owners = input.restoreRunningRowOwners;
+        const ownerRigIds = input.restoreRunningRowOwnerRigIds;
         const ownName = names.filter((name) => owners[name] === undefined);
         const heldName = names.filter((name) => owners[name] !== undefined);
         const kill = ownName.map((name) => `tmux kill-session -t ${shellQuote(`=${name}`)}`).join("; ");
-        const held = heldName.map((name) => `${name} is held by ${owners[name]}, another seat's live session: do not kill it from here, it would end that seat; this rig's older running row for it needs manual attention (restore stays refused while the name is live, and no command here frees it)`).join("; ");
+        // A holder in ANOTHER rig keeps its session when this rig goes down. For a holder in THIS rig (decided by rig id: rig names
+        // are not unique) teardown may kill nothing: each row's owner lookup finds the other seat, so the shared session can survive.
+        // The advice promises only what the rows end. An owner whose rig is unknown is read as possibly this rig.
+        const held = heldName.map((name) => (ownerRigIds[name] === undefined || ownerRigIds[name] === input.rigId)
+          ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${shellQuote(input.rigName)} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer wanted`
+          : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${shellQuote(input.rigName)} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
+        const downEnds = ownName.length > 0
+          ? `rig down ${shellQuote(input.rigName)} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. `
+          : "";
         blocked.push({
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down and rig seat stop do not end it (they act on each seat's newest session row only). ${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. ${downEnds}${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
         });
         continue;
       }
@@ -2019,6 +2033,17 @@ function refusingRowOwners(classification: NamedRunningClassification | Error | 
     const name = classification.sessionNames?.[id];
     const owner = classification.sessionOwners?.[id];
     return name !== undefined && owner !== undefined ? [[name, owner]] : [];
+  }));
+}
+
+/** OF-54: the rig id of each owner `refusingRowOwners` names (tmux name -> rig id). */
+function refusingRowOwnerRigIds(classification: NamedRunningClassification | Error | undefined): Record<string, string> {
+  if (!classification || classification instanceof Error) return {};
+  const ids = classification.live.length > 0 ? classification.live : classification.unknown;
+  return Object.fromEntries(ids.flatMap((id) => {
+    const name = classification.sessionNames?.[id];
+    const rigId = classification.sessionOwnerRigIds?.[id];
+    return name !== undefined && rigId !== undefined ? [[name, rigId]] : [];
   }));
 }
 

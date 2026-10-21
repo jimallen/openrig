@@ -366,7 +366,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     if (mode === "history") expect(result.blockers).toEqual(expect.arrayContaining([
       expect.objectContaining({
         message: 'Historical session "old@fresh-rig" is still live; fresh launch refuses to change this seat.',
-        guidance: "rig seat stop targets the seat's latest session, not a selected historical session; it may stop the current occupant instead.",
+        guidance: "End it with: rig seat stop (it ends this seat's current occupant and its older live sessions, this one included), then retry the fresh launch.",
       }),
     ]));
     expect(db.serialize()).toEqual(before);
@@ -527,6 +527,27 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(alive.has(adoptedName)).toBe(true);
   });
 
+  it("OF-54 F3: a historical live session another node owns is not advised as stoppable", async () => {
+    const seat = seedSeat({ clean: true });
+    const historical = sessionRegistry.registerSession(seat.node.id, "old-impl@fresh-rig");
+    sessionRegistry.updateStatus(historical.id, "running");
+    const current = sessionRegistry.registerSession(seat.node.id, seat.sessionName);
+    sessionRegistry.updateStatus(current.id, "running");
+    sessionRegistry.updateBinding(seat.node.id, { tmuxSession: seat.sessionName, tmuxPane: "%old" });
+    alive.add(seat.sessionName);
+    livePanes.set(seat.sessionName, "%old");
+    alive.add(historical.sessionName);
+    const otherNode = rigRepo.addNode(rigRepo.createRig("other-rig").id, "dev.other", { runtime: "claude-code", cwd: "/project" });
+    sessionRegistry.updateStatus(sessionRegistry.registerSession(otherNode.id, historical.sessionName).id, "running");
+
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "history gate" });
+
+    expect(result).toMatchObject({ ok: false, code: "session_live" });
+    if (result.ok) throw new Error("expected refusal");
+    expect(result.guidance).toBe(`Check that session (rig capture -- '${historical.sessionName}') and end it yourself if it is no longer needed, then retry; rig seat stop ends only the seat's own live sessions, not this one.`);
+    expect(killed).toEqual([]);
+  });
+
   it("checks historical occupants before stopping the current managed seat", async () => {
     const seat = seedSeat({ clean: true });
     const historical = sessionRegistry.registerSession(seat.node.id, "old-impl@fresh-rig");
@@ -542,7 +563,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(result).toMatchObject({
       ok: false, code: "session_live",
       message: `Historical session "${historical.sessionName}" is still live; fresh launch refuses to change this seat.`,
-      guidance: "rig seat stop targets the seat's latest session, not a selected historical session; it may stop the current occupant instead.",
+      guidance: "End it with: rig seat stop (it ends this seat's current occupant and its older live sessions, this one included), then retry the fresh launch.",
     });
     expect(killed).toEqual([]);
     expect(db.serialize()).toEqual(before);

@@ -93,9 +93,11 @@ export class RigTeardownOrchestrator {
 
     // 2. Get latest session per node
     const liveSessions = this.getLatestLiveSessions(rigId);
+    // OF-54: a seat's older rows can still be live when its newest row is not (or is a dead running row).
+    const olderLiveSessions = this.deps.sessionRegistry.getOlderLiveSessions(rigId);
 
     // 3. Check if already stopped
-    if (liveSessions.length === 0) {
+    if (liveSessions.length === 0 && olderLiveSessions.length === 0) {
       // Additional intent is best-effort; keep down's existing result if it cannot be recorded.
       await this.recordAlreadyStoppedIntent(rigId).catch(() => {});
       this.cleanupManagedGuidanceFiles(rigId, currentLiveGuidanceTargets());
@@ -148,10 +150,14 @@ export class RigTeardownOrchestrator {
 
     // 5. Kill each live session
     let killFailures = 0;
-    for (const session of liveSessions) {
+    const olderIds = new Set(olderLiveSessions.map(session => session.sessionId));
+    for (const session of [...liveSessions, ...olderLiveSessions]) {
+      const older = olderIds.has(session.sessionId);
       // An archived rig may retain a stale row for a name now owned by a live rig.
       // That name cannot identify the archived rig's tmux session for a kill.
-      const ownedByAnotherRig = archived.archived_at !== null && findOtherSessionOwner(
+      // An OLDER row's name is only a historical label: any other live owner of that name
+      // (OF-54) means the tmux session is not this seat's to kill, whatever the rig's state.
+      const ownedByAnotherRig = (older || archived.archived_at !== null) && findOtherSessionOwner(
         this.db, session.sessionName, session.nodeId, { ignoreArchived: true },
       ) !== null;
       let absent = ownedByAnotherRig;
@@ -181,7 +187,9 @@ export class RigTeardownOrchestrator {
         // rotation intact even when its stale row is removed.
         if (!ownedByAnotherRig) stopTranscriptRotation(session.sessionName);
         // Success or already gone — update DB atomically
-        this.atomicNodeCleanup(session);
+        // An older row never owns the node's binding: the newest row's kill outcome decides that.
+        if (older) this.deps.sessionRegistry.markIntentionallyStopped(session.sessionId);
+        else this.atomicNodeCleanup(session);
         this.cleanupManagedGuidanceFileForNode(rigId, session.runtime, session.cwd, currentLiveGuidanceTargets());
         if (killResult.ok) result.sessionsKilled++;
       } else {
@@ -305,7 +313,7 @@ export class RigTeardownOrchestrator {
     }
     // A failed kill or inconclusive probe leaves this rig's session live.
     // Its file may also be shared with a sibling that stopped successfully.
-    for (const session of this.getLatestLiveSessions(rigId)) {
+    for (const session of [...this.getLatestLiveSessions(rigId), ...this.deps.sessionRegistry.getOlderLiveSessions(rigId)]) {
       const target = this.guidanceTargetPath(rigId, session.runtime, session.cwd);
       if (target) targets.add(this.guidancePathKey(target));
     }
