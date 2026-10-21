@@ -15,6 +15,8 @@ import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRestoreHarness, type RestoreHarness } from "./helpers/restore-fresh-harness.js";
 import { createRestoreCheckService } from "../src/routes/restore-check.js";
+import { EventBus } from "../src/domain/event-bus.js";
+import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 
 const SEAT = "dev.impl";
 
@@ -59,11 +61,23 @@ describe("restore-check and restore agree on whether the rig would run, over eve
     /** OF-47: the seat checks' own remediation (not only the recovery plan) offers "Restore or relaunch" (restore runs)
      *  or does not (restore refuses the rig). */
     seatRemediationOffersRestore?: boolean;
+    /** OF-47: words the recovery reasons must carry / must not carry, from the seat (the live session's name, the command). */
+    adviceHas?: (s: Seat) => string[];
+    adviceLacks?: (s: Seat) => string[];
     checkStatus?: "red" | "yellow" | "green";
   }
+  /** The advice for a live older running row, restated independently of the code: the session by name, the command that
+   *  ends it (rig down and rig seat stop act on each seat's NEWEST row only, so neither is the remedy), and why. */
+  const liveAdvice = (s: Seat) => [
+    `live: ${s.sessionName};`,
+    `tmux kill-session -t '=${s.sessionName}'`,
+    "rig down and rig seat stop do not end it",
+    "rig capture -- " + s.sessionName,
+  ];
+  const liveAdviceLacks = () => ["rig down team", "tmux ls"];
   const ROWS: Row[] = [
     // Q1 / Q2: an applicable session_missing verdict relabels the running row, but restore reads the raw status.
-    { name: "Q1 identity verdict session_missing on the DB-running row, tmux LIVE: restore refuses", pre: (s) => dropToken(s.nodeId), tmux: (s) => { sessionMissingVerdict(s); tmuxSays({ [s.sessionName]: "present" }); }, restore: "refused", predictsGate: false, recovery: "blocked", reasonLacks: "restore-input blockers", seatRemediationOffersRestore: false },
+    { name: "Q1 identity verdict session_missing on the DB-running row, tmux LIVE: restore refuses", pre: (s) => dropToken(s.nodeId), tmux: (s) => { sessionMissingVerdict(s); tmuxSays({ [s.sessionName]: "present" }); }, restore: "refused", predictsGate: false, recovery: "blocked", reasonLacks: "restore-input blockers" },
     { name: "Q2 identity verdict session_missing on the DB-running row, tmux probe THROWS: restore refuses, liveness unknown", pre: (s) => dropToken(s.nodeId), tmux: (s) => { sessionMissingVerdict(s); tmuxSays({ [s.sessionName]: "throw" }); }, restore: "refused", predictsGate: false, recovery: "unknown", seatRemediationOffersRestore: false },
     // Q3 (OF-47): an older row still running (and live) under a newer exited one: only the all-rows reading sees it.
     // Recovery must read the same classification, so it never advises `rig up --existing`, which restore refuses.
@@ -71,25 +85,25 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       dropToken(s.nodeId);
       const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
       h.sessionRegistry.updateStatus(newer.id, "exited");
-    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", reasonHas: "rig_not_stopped", reasonLacks: "restore-input blockers", noRestoreCommand: true, seatRemediationOffersRestore: false },
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", reasonHas: "rig_not_stopped", reasonLacks: "restore-input blockers", noRestoreCommand: true, seatRemediationOffersRestore: false, adviceHas: liveAdvice, adviceLacks: liveAdviceLacks },
     // T6 (OF-47): two rows running on one seat, the older one live, the newest dead. The seat's newest row reads dead
     // (so a per-seat reading advises a restore), but restore probes every running row and refuses on the live one.
     { name: "T6 two running rows on one seat, older LIVE, newest dead: restore refuses, recovery advises no restore command", pre: (s) => {
       const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
       h.sessionRegistry.updateStatus(newer.id, "running");
-    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", reasonHas: "rig_not_stopped", noRestoreCommand: true, seatRemediationOffersRestore: false },
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", reasonHas: "rig_not_stopped", noRestoreCommand: true, seatRemediationOffersRestore: false, adviceHas: liveAdvice, adviceLacks: liveAdviceLacks },
     // T6c (OF-47): as T6 but the newest row also reads running/ready, so the seat's own check calls it a stale DB state
     // (running/ready, tmux absent) and its remediation must not offer the restore that restore refuses.
     { name: "T6c two running rows on one seat, older LIVE, newest running/ready but dead: restore refuses, seat remediation offers no restore", pre: (s) => {
       const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
       h.sessionRegistry.updateStatus(newer.id, "running");
       h.db.prepare("UPDATE sessions SET startup_status = 'ready' WHERE id = ?").run(newer.id);
-    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true, seatRemediationOffersRestore: false },
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true, seatRemediationOffersRestore: false, adviceHas: liveAdvice, adviceLacks: liveAdviceLacks },
     // T6b (OF-47): as T6 but the older running row's tmux answer is unreadable: restore fails closed, so recovery is unknown.
     { name: "T6b two running rows on one seat, older row's tmux probe THROWS, newest dead: restore refuses, recovery unknown", pre: (s) => {
       const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
       h.sessionRegistry.updateStatus(newer.id, "running");
-    }, tmux: (s) => tmuxSays({ [s.sessionName]: "throw" }), restore: "refused", predictsGate: false, recovery: "unknown", noRestoreCommand: true, seatRemediationOffersRestore: false },
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "throw" }), restore: "refused", predictsGate: false, recovery: "unknown", noRestoreCommand: true, seatRemediationOffersRestore: false, adviceHas: (s) => [`could not be read for ${s.sessionName},`], adviceLacks: () => ["could not be answered", "tmux kill-session"] },
     // N3: an unreadable DB-running seat means restore refuses (fail closed).
     { name: "Q6 DB running, tmux probe THROWS, no-token seat: restore refuses, recovery unknown", pre: (s) => dropToken(s.nodeId), tmux: (s) => tmuxSays({ [s.sessionName]: "throw" }), restore: "refused", predictsGate: false, recovery: "unknown" },
     { name: "Q7 DB running, tmux LIVE, no-token seat: restore refuses, nothing to recover", pre: (s) => dropToken(s.nodeId), tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "not_needed" },
@@ -123,12 +137,57 @@ describe("restore-check and restore agree on whether the rig would run, over eve
     const reasons = JSON.stringify([...result.recovery.blocked, ...result.recovery.unknown].map((r) => r.reason));
     if (row.reasonHas) expect(reasons).toContain(row.reasonHas);
     if (row.reasonLacks) expect(reasons).not.toContain(row.reasonLacks);
+    for (const word of row.adviceHas?.(seat) ?? []) expect(reasons, `the advice names ${word}`).toContain(word);
+    for (const word of row.adviceLacks?.(seat) ?? []) expect(reasons, `the advice must not carry ${word}`).not.toContain(word);
     if (row.seatRemediationOffersRestore !== undefined) {
       const seatRemediations = result.checks.filter((c) => c.check.startsWith("seat.") && c.status !== "green").map((c) => c.remediation);
       expect(seatRemediations.length, "the population of non-green seat checks the remediation claim is read from").toBeGreaterThan(0);
       expect(seatRemediations.some((r) => /Restore or relaunch/.test(r)), JSON.stringify(seatRemediations)).toBe(row.seatRemediationOffersRestore);
     }
     if (row.noRestoreCommand) expect(result.recovery.actions, "recovery must not propose a restore command restore refuses").toEqual([]);
+  });
+
+  // OF-47 end to end: follow the advice, then restore must not answer rig_not_stopped. The command the advice gives is read
+  // out of the recovery plan itself and run against the same tmux double restore reads (`tmux kill-session -t '=<name>'`
+  // is `killSession(<name>)` there; tmux accepted the `=` exact-match form on a private socket when this was written).
+  describe("following the advice for an older live running row lets restore run", () => {
+    const SHAPES = ROWS.filter((r) => /^(Q3|T6) /.test(r.name));
+    it("the population: both shapes the bead names", () => expect(SHAPES.map((r) => r.name.split(" ")[0])).toEqual(["Q3", "T6"]));
+    it.each(SHAPES.map((row) => [row.name, row] as const))("%s", async (_name, row) => {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      row.pre?.(seat);
+      const snapshotId = (h.snapshotCapture.captureSnapshot(seat.rigId, "auto-pre-down") as { id: string }).id;
+      await row.tmux(seat);
+      const service = createRestoreCheckService(h.rigRepo, h.snapshotRepo, h.tmux, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst });
+      const before = await service.checkWithLiveness({ rig: "team", noQueue: true, noHooks: true } as never);
+      const reason = before.recovery.blocked.map((r) => r.reason).join(" ");
+      const commands = [...reason.matchAll(/tmux kill-session -t '=([^']+)'/g)].map((m) => m[1]!);
+      expect(commands, reason).toEqual([seat.sessionName]);
+      // The advice's command works as a command (restore sees the row stale) ...
+      for (const name of commands) await h.tmux.killSession(name);
+      tmuxSays({});
+      // ... and restore no longer refuses; the check, asked again, advises the restore.
+      const out: any = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
+      expect(out.ok ? "ran" : out.code, JSON.stringify(out.ok ? "" : out.message)).not.toBe("rig_not_stopped");
+      const after = await service.checkWithLiveness({ rig: "team", noQueue: true, noHooks: true } as never);
+      expect(JSON.stringify(after.recovery), "the live-row advice is gone once the row is not live").not.toContain("tmux kill-session");
+      // Q3's seat has no resume token, so restore (now running) stops that seat at its own gate: blocked, not refused.
+      if (row.name.startsWith("T6 ")) expect(after.recovery.actions.map((a) => a.command), JSON.stringify(after.recovery)).toEqual(["rig up --existing team"]);
+    });
+    // What the advice used to say. Measured here so the sentence stays out: the real teardown acts on each seat's newest
+    // row, so for these shapes it ends nothing live and restore still refuses.
+    it.each(SHAPES.map((row) => [row.name, row] as const))("%s: rig down does not end the older live row (so the advice must not send the operator there)", async (_name, row) => {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      row.pre?.(seat);
+      const snapshotId = (h.snapshotCapture.captureSnapshot(seat.rigId, "auto-pre-down") as { id: string }).id;
+      await row.tmux(seat);
+      const down = await new RigTeardownOrchestrator({ db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, tmuxAdapter: h.tmux, snapshotCapture: h.snapshotCapture, eventBus: new EventBus(h.db) }).teardown(seat.rigId);
+      expect(await h.tmux.hasSession(seat.sessionName), JSON.stringify(down)).toBe(true);
+      const out: any = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
+      expect(out.ok ? "ran" : out.code).toBe("rig_not_stopped");
+    });
   });
 
   // OF-47: the two ends of the classification dependency. Same seat as Q10 (token present, tmux dead), where restore runs
@@ -148,6 +207,9 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       const result = await recoveryWith(async () => { throw new Error("classification failed (injected)"); });
       expect(result.recovery.status, JSON.stringify(result.recovery)).toBe("unknown");
       expect(result.recovery.actions).toEqual([]);
+      const reasons = JSON.stringify(result.recovery.unknown.map((r) => r.reason));
+      expect(reasons).toContain("could not be answered");
+      expect(reasons).not.toContain("could not be read for");
     });
     it("T8 control: the rule was never asked (no classification wired): the seats' own liveness is all there is, recovery stays actionable", async () => {
       const result = await recoveryWith(undefined);

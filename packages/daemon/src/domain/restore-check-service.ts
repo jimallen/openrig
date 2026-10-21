@@ -267,7 +267,7 @@ export interface RestoreCheckDeps {
   /** OF-40 review: restore's own classification of the rig's DB-running session rows against tmux
    *  (restore-running-sessions.ts classifyRunningSessions, over every running row, with a liveness probe). Without it
    *  (no tmux) whether restore would run is UNKNOWN for a rig with a running row, and the gate prediction says so. */
-  classifyRunningSessions?: (rigId: string, probe: (sessionName: string) => Promise<SeatLiveness>) => Promise<RunningSessionClassification>;
+  classifyRunningSessions?: (rigId: string, probe: (sessionName: string) => Promise<SeatLiveness>) => Promise<NamedRunningClassification>;
 }
 
 interface RigRollupInput {
@@ -301,6 +301,8 @@ interface RecoveryRigInput {
    *  follow instead of each seat's newest row. `live`/`unreadable`: restore refuses (rig_not_stopped); `unanswered`: the
    *  rule was asked and failed. `none`: restore runs. `not_asked`: no tmux is wired, so no liveness is read at all. */
   restoreRunningRows: "none" | "live" | "unreadable" | "unanswered" | "not_asked";
+  /** The tmux names of the running rows restore refuses on (the first live, or the first unreadable one: probing stops there). */
+  restoreRunningRowNames: string[];
 }
 
 interface HostInfraCheckResult {
@@ -311,7 +313,9 @@ interface HostInfraCheckResult {
 /** Per rig id: the listed seats restore would refuse (logical id -> restore's refusal text), or why that could not be asked. */
 type ListedRefusals = Map<string, Map<string, string> | Error>;
 /** Per rig: what restore's refusal rule says about running rows (an Error: it could not be asked). Absent: not asked. */
-type RunningClassifications = Map<string, RunningSessionClassification | Error>;
+type RunningClassifications = Map<string, NamedRunningClassification | Error>;
+/** OF-47: restore's classification (session ids) plus the tmux names of the rows it refuses on, for advice that names them. */
+type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string> };
 /** Would the next restore run at all? `refused`: a running row is live or unreadable (rig_not_stopped). */
 type RestoreRuns = "would_run" | "refused" | "unknown";
 
@@ -415,6 +419,7 @@ export class RestoreCheckService {
     const restoreInputsByRig = new Map<string, { snapshot: { id: string; kind: string } | null; error?: string }>();
     const restoreRefusedByRig = new Map<string, boolean>();
     const restoreRunningRowsByRig = new Map<string, RecoveryRigInput["restoreRunningRows"]>();
+    const restoreRunningRowNamesByRig = new Map<string, string[]>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -486,6 +491,7 @@ export class RestoreCheckService {
       const restoreRuns = restoreRunsFor(running.get(rig.rigId), nodes);
       restoreRefusedByRig.set(rig.rigId, restoreRuns === "refused");
       restoreRunningRowsByRig.set(rig.rigId, restoreRunningRowsFor(running.get(rig.rigId)));
+      restoreRunningRowNamesByRig.set(rig.rigId, refusingRowNames(running.get(rig.rigId)));
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
@@ -572,6 +578,7 @@ export class RestoreCheckService {
         unknownLivenessSeats: rollup.unknownLivenessSeats,
         restoreRefused: restoreRefusedByRig.get(rollup.rigId) ?? false,
         restoreRunningRows: restoreRunningRowsByRig.get(rollup.rigId) ?? "not_asked",
+        restoreRunningRowNames: restoreRunningRowNamesByRig.get(rollup.rigId) ?? [],
       });
     }
 
@@ -1715,20 +1722,34 @@ export class RestoreCheckService {
       // OF-47: the seats' newest rows show nothing live, but restore reads every running row. Whatever it refuses on, the
       // advice must not be the command it refuses.
       if (input.restoreRunningRows === "live") {
+        // `rig down` and `rig seat stop` act on each seat's NEWEST session row only (measured on the real teardown
+        // orchestrator: Q3 kills 0 and restore still refuses), so neither ends an older live row. Ending the session
+        // in tmux does: the row stays `running` in the DB, restore reads it as stale and proceeds.
+        const names = input.restoreRunningRowNames;
+        const kill = names.map((name) => `tmux kill-session -t ${shellQuote(`=${name}`)}`).join("; ");
         blocked.push({
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): a session row the DB shows running is live in tmux, although no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while any running row is live. Inspect with rig ps --nodes; to restart every seat and keep the conversations: rig down ${shellQuote(input.rigName)}, then rig up ${shellQuote(input.rigName)} --existing.`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down and rig seat stop do not end it (they act on each seat's newest session row only). Check it first (rig capture -- ${names.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. Probing stops at the first live row, so rerun rig restore-check afterwards; rig up ${shellQuote(input.rigName)} --existing is advised once no running row is live.`,
         });
         continue;
       }
-      if (input.restoreRunningRows === "unreadable" || input.restoreRunningRows === "unanswered") {
+      if (input.restoreRunningRows === "unreadable") {
         unknown.push({
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `No restore command is advised: ${input.restoreRunningRows === "unreadable" ? "tmux liveness could not be read for a session row the DB shows running (an older running row may sit behind a newer one)" : "restore's own reading of the rig's running session rows could not be answered"}. Restore fails closed (rig_not_stopped, 409) on a running row it cannot read. Check tmux (tmux ls), then rerun rig restore-check.`,
+          reason: `No restore command is advised: tmux liveness could not be read for ${input.restoreRunningRowNames.join(", ")}, a session row the DB shows running (an older running row may sit behind a newer one). Restore fails closed (rig_not_stopped, 409) on a running row it cannot read. Check tmux (tmux ls), then rerun rig restore-check.`,
+        });
+        continue;
+      }
+      if (input.restoreRunningRows === "unanswered") {
+        unknown.push({
+          scope: "rig",
+          rigId: input.rigId,
+          rigName: input.rigName,
+          reason: `No restore command is advised: restore's own reading of the rig's running session rows could not be answered, so whether restore would refuse this rig (rig_not_stopped, 409) is unknown. Rerun rig restore-check.`,
         });
         continue;
       }
@@ -1964,14 +1985,21 @@ export class RestoreCheckService {
  * rows. Not asked (no tmux wired) or not answerable: a rig with a running seat is `unknown`, never assumed either way; a
  * rig with no running seat has nothing to refuse it.
  */
-function restoreRunsFor(classification: RunningSessionClassification | Error | undefined, nodes: NodeInventoryEntry[]): RestoreRuns {
+function restoreRunsFor(classification: NamedRunningClassification | Error | undefined, nodes: NodeInventoryEntry[]): RestoreRuns {
   if (classification && !(classification instanceof Error)) return restoreRefusesRig(classification) ? "refused" : "would_run";
   const anyRunning = nodes.some((node) => (node.storedSessionStatus ?? node.sessionStatus) === "running");
   return anyRunning ? "unknown" : "would_run";
 }
 
+/** OF-47: the tmux names of the running rows restore refuses on (live first, else unreadable). */
+function refusingRowNames(classification: NamedRunningClassification | Error | undefined): string[] {
+  if (!classification || classification instanceof Error) return [];
+  const ids = classification.live.length > 0 ? classification.live : classification.unknown;
+  return ids.map((id) => classification.sessionNames?.[id]).filter((name): name is string => name !== undefined);
+}
+
 /** OF-47: the recovery advice's reading of restore's own rule over the rig's running rows. */
-function restoreRunningRowsFor(classification: RunningSessionClassification | Error | undefined): RecoveryRigInput["restoreRunningRows"] {
+function restoreRunningRowsFor(classification: NamedRunningClassification | Error | undefined): RecoveryRigInput["restoreRunningRows"] {
   if (classification === undefined) return "not_asked";
   if (classification instanceof Error) return "unanswered";
   if (classification.live.length > 0) return "live";

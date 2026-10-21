@@ -260,7 +260,14 @@ export function createRestoreCheckService(
     },
     readFile: (path: string) => readFileSync(path, "utf-8"),
     classifyRunningSessions: tmuxAdapter
-      ? (rigId, probe) => classifyRunningSessions(new SessionRegistry(rigRepo.db).getSessionsForRig(rigId), probe)
+      ? async (rigId, probe) => {
+        const sessions = new SessionRegistry(rigRepo.db).getSessionsForRig(rigId);
+        const classification = await classifyRunningSessions(sessions, probe);
+        // OF-47: the advice names the sessions restore refuses on, so it carries their tmux names (restore needs only ids).
+        const refusing = new Set([...classification.live, ...classification.unknown]);
+        const sessionNames = Object.fromEntries(sessions.filter((s) => refusing.has(s.id)).map((s) => [s.id, s.sessionName]));
+        return { ...classification, sessionNames };
+      }
       : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,
   };
