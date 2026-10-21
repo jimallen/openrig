@@ -119,7 +119,40 @@ describe("shell launch transport", () => {
     const f = fixture();
     vi.spyOn(f.adapter, "getPaneCommand").mockResolvedValue(shell);
     expect(await f.adapter.sendShellCommand("pane", "claude", undefined, { sourceInPane: true })).toEqual({ ok: true });
-    expect(vi.mocked(f.fileOps.writeFile).mock.calls[1]![1]).toBe(`( . '/tmp/launch '\"'\"'quoted'\"'\"'.sh' )`);
+    expect(vi.mocked(f.fileOps.writeFile).mock.calls[1]![1]).toBe(`. '/tmp/launch '\"'\"'quoted'\"'\"'.sh'`);
+  });
+
+  // OF-64: the launch line is typed into an interactive shell whose line editor may rewrite it.
+  // Measured on Sparky (zsh 5.9, hlissner/zsh-autopair): `( . '/p' )` became `( . '/p' ) )`.
+  const LINE_EDITOR_SENSITIVE = /[()'"`\\$;&|<>*?[\]{}!#~ ]/;
+  it.each(["bash", "zsh", "sh", "dash", "ksh"])("types a sourced launch line with no paired or quoting characters after the dot (%s)", async shell => {
+    const f = fixture(undefined, "/tmp/openrig-tmux-send-1234-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.txt");
+    vi.spyOn(f.adapter, "getPaneCommand").mockResolvedValue(shell);
+    expect(await f.adapter.sendShellCommand("pane", "claude", undefined, { sourceInPane: true })).toEqual({ ok: true });
+    const typed = vi.mocked(f.fileOps.writeFile).mock.calls[1]![1];
+    expect(typed).toBe(`. ${f.scriptPath}`);
+    expect(typed.slice(2)).not.toMatch(LINE_EDITOR_SENSITIVE);
+  });
+
+  it("keeps subshell isolation inside the staged script instead of typed parentheses", async () => {
+    const f = fixture(undefined, "/tmp/openrig-tmux-send-1.txt");
+    vi.spyOn(f.adapter, "getPaneCommand").mockResolvedValue("zsh");
+    const command = "FOO=bar claude";
+    expect(await f.adapter.sendShellCommand("pane", command, undefined, { sourceInPane: true })).toEqual({ ok: true });
+    expect(f.files.get(f.scriptPath)).toBe(`/bin/rm -f -- '/tmp/openrig-tmux-send-1.txt'\n(\n${command}\n)\n`);
+  });
+
+  it("types the /bin/sh launch line without quotes when the staging path is plain", async () => {
+    const f = fixture(undefined, "/tmp/openrig-tmux-send-1.txt");
+    expect(await f.adapter.sendShellCommand("pane", "codex")).toEqual({ ok: true });
+    expect(vi.mocked(f.fileOps.writeFile).mock.calls[1]![1]).toBe("/bin/sh /tmp/openrig-tmux-send-1.txt");
+  });
+
+  it.each(["/tmp/with space/x.txt", "/tmp/a(b).txt", "/tmp/it's.txt", "/tmp/a$b.txt", "/tmp/a;b.txt"])("still quotes a staging path outside the plain set (%s)", async scriptPath => {
+    const f = fixture(undefined, scriptPath);
+    vi.spyOn(f.adapter, "getPaneCommand").mockResolvedValue("zsh");
+    expect(await f.adapter.sendShellCommand("pane", "claude", undefined, { sourceInPane: true })).toEqual({ ok: true });
+    expect(vi.mocked(f.fileOps.writeFile).mock.calls[1]![1]).toBe(`. ${shellQuote(scriptPath)}`);
   });
 
   it("keeps long PATH/quoted arguments out of terminal input and retains script until consumption", async () => {
@@ -141,9 +174,9 @@ describe("shell launch transport", () => {
     const command = `OPENRIG_HOME='/instance' claude --model '${"m".repeat(4096)}'`;
     expect(await f.adapter.sendShellCommand("pane", command, undefined, { sourceInPane: true })).toEqual({ ok: true });
     const invocation = vi.mocked(f.fileOps.writeFile).mock.calls[1]![1];
-    expect(invocation).toBe(`( . '/tmp/launch '\"'\"'quoted'\"'\"'.sh' )`);
+    expect(invocation).toBe(`. '/tmp/launch '\"'\"'quoted'\"'\"'.sh'`);
     expect(Buffer.byteLength(invocation)).toBeLessThan(512);
-    expect(f.files.get(f.scriptPath)).toBe(`/bin/rm -f -- '/tmp/launch '\"'\"'quoted'\"'\"'.sh'\n${command}\n`);
+    expect(f.files.get(f.scriptPath)).toBe(`/bin/rm -f -- '/tmp/launch '\"'\"'quoted'\"'\"'.sh'\n(\n${command}\n)\n`);
     expect(f.commands.at(-1)).toBe("tmux send-keys -t 'pane' 'Enter'");
   });
 
