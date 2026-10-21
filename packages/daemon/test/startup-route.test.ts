@@ -74,6 +74,33 @@ describe("startup consent and effect boundary", () => {
     expect(await response.json()).toMatchObject({ ok: false, code: "transport_unavailable" });
     expect(launch).not.toHaveBeenCalled();
   });
+  // OF-44 N1: the TUI list (GET) and its resume action (POST) forecast from the same plan. A seat whose continuity is
+  // 'restoring' is skipped by restore, so the action must not launch it as a resume (the GET already says fresh-primed).
+  describe("resume of a seat with a resumable snapshot", () => {
+    async function resumableSeat(continuity: string | null) {
+      const { rig, node, session } = seat();
+      db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES ('pod-1', ?, 'operator', 'Operator')").run(rig.id);
+      db.prepare("UPDATE nodes SET pod_id = 'pod-1' WHERE id = ?").run(node.id);
+      setup.sessionRegistry.updateStatus(session.id, "running");
+      setup.sessionRegistry.updateResumeToken(session.id, "codex_id", "tok-1", "adoption");
+      setup.snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      if (continuity) db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES ('pod-1', ?, ?)").run(node.id, continuity);
+      return { rig, node: setup.rigRepo.getRig(rig.id)!.nodes[0]! };
+    }
+    it.each([["restoring", true], [null, false]])("continuity %s: resume is refused before launch = %s", async (continuity, refused) => {
+      const { rig, node } = await resumableSeat(continuity);
+      const { RestoreOrchestrator } = await import("../src/domain/restore-orchestrator.js");
+      const launch = vi.spyOn(RestoreOrchestrator.prototype, "launchSingleNode").mockResolvedValue({ ok: true, launched: [{ nodeId: node.id, logicalId: node.logicalId, status: "resumed" }] } as never);
+      const response = await post(rig.id, startupRevision(db, node), "resume");
+      const body = await response.json();
+      if (refused) {
+        expect(body).toMatchObject({ ok: false, code: "resume_unavailable" });
+        expect(launch).not.toHaveBeenCalled();
+      } else {
+        expect(launch, JSON.stringify(body)).toHaveBeenCalledTimes(1);
+      }
+    });
+  });
   it("serializes repeated fresh requests and passes exact scope to the existing lifecycle", async () => {
     const { rig, node } = seat(); const revision = startupRevision(db, node);
     let finish!: (value: never) => void;

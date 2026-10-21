@@ -129,7 +129,10 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
 
   // Under restore-original, ANY awaiting-decision seat blocks the whole action —
   // restore-original NEVER silently fresh-primes (the honesty contract).
-  const blockedSeats = planNodes.filter((n) => n.intendedAction === "awaiting-decision");
+  // A seat restore reports `failed` (removed since the snapshot, occupant cannot be told) has nothing to decide: restore
+  // goes on with the other seats and reports it failed, so it is listed as "will fail" and does not block.
+  const failingSeats = planNodes.filter((n) => n.restoreStatus === "failed");
+  const blockedSeats = planNodes.filter((n) => n.intendedAction === "awaiting-decision" && n.restoreStatus !== "failed");
   const isBlocked = policy === "restore-original" && blockedSeats.length > 0;
   const canExecute = !isBlocked && planNodes.length > 0 && !planMut.isPending && !launchMut.isPending;
 
@@ -187,6 +190,13 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
           </div>
         ) : null}
 
+        {failingSeats.length > 0 && policy === "restore-original" ? (
+          <p data-testid="launch-will-fail-note" className="font-mono text-[9px] leading-relaxed text-warning">
+            {failingSeats.length} seat(s) will fail and be reported as failed ({failingSeats.map((n) => n.logicalId).join(", ")}); the
+            other seats are restored.
+          </p>
+        ) : null}
+
         {planMut.isPending ? (
           <p data-testid="launch-plan-loading" className="font-mono text-[10px] text-secondary py-4">
             Fetching read-only plan…
@@ -215,7 +225,9 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
                       <span className={cn(tokenTone[s.tokenState])}>{s.tokenState}</span>
                     </TableCell>
                     <TableCell className="py-2" data-testid={`plan-verdict-${s.logicalId}`}>
-                      <StatusPip status={verdictPip[s.intendedAction]} variant="pill" label={s.intendedAction} />
+                      {s.restoreStatus === "failed"
+                        ? <StatusPip status="error" variant="pill" label="will fail" />
+                        : <StatusPip status={verdictPip[s.intendedAction]} variant="pill" label={s.intendedAction} />}
                     </TableCell>
                     <TableCell className="py-2 font-mono text-[9px] text-secondary">
                       {s.runtimePrompt ?? s.reason ?? "—"}

@@ -154,7 +154,44 @@ describe("rig up --plan and restore agree on the pre-launch gates", () => {
       expect(node.reason).toContain("continuity state is 'restoring'");
     } else {
       expect(node.intendedAction, "restore launched it; the plan does not ask for a decision").toBe(row.action);
+      // And against what restore actually reported, not only the table's constant: a fresh start is `fresh-primed`; a resume
+      // attempt is anything else (here `attention_required`, since the harness has no real resume adapter).
+      expect(node.intendedAction === "fresh-primed", `restore reported ${restore.status}`).toBe(restore.status === "fresh-primed");
       expect(node.restoreStatus).toBeUndefined();
+    }
+  });
+
+  // N4: the no-snapshot path. `rig up --existing --plan` with no usable snapshot forecasts from the live rows an auto-rehydrate
+  // capture WOULD copy; apply captures that snapshot and restores it. Same gates, so the same answers.
+  const LIVE_ROWS: Array<{ name: string; prepare(seat: { rigId: string; nodeId: string }): void; expected: "launched" | "skipped" | "awaiting-decision"; action?: "resume-original" | "fresh-primed" }> = [
+    { name: "L0 control: resumable seat", prepare: () => undefined, expected: "launched", action: "resume-original" },
+    { name: "L1 policy checkpoint_only starts fresh", prepare: (s) => policyFresh(s.nodeId), expected: "launched", action: "fresh-primed" },
+    { name: "L2 resume_if_possible with no token", prepare: (s) => DROP_TOKEN(s.nodeId), expected: "awaiting-decision" },
+    { name: "L3 token with no recorded resume source", prepare: (s) => TOKEN_NO_SOURCE(s.nodeId), expected: "launched", action: "fresh-primed" },
+    { name: "L4 continuity restoring", prepare: (s) => CONTINUITY(s.nodeId, "restoring"), expected: "skipped" },
+  ];
+  it.each(LIVE_ROWS.map((row) => [row.name, row] as const))("no snapshot: %s", async (_name, row) => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    row.prepare(seat);
+    // The plan, from live rows (no snapshot), as `rig up --plan` computes it.
+    const rig = h.rigRepo.getRig(seat.rigId)!;
+    const node = buildRestorePlanPreview(rig, null, collectPreviewSessionRows(h.db, rig, null), undefined, Date.now(), {}, new Map(), readPreviewContinuity(h.db, rig)).nodes.find((n) => n.logicalId === SEAT)!;
+    // Apply: capture the current state, take the seat down in tmux (restore refuses a live rig), restore that capture.
+    const captured = h.snapshotCapture.captureSnapshot(seat.rigId, "auto-rehydrate");
+    await h.tmux.killSession(seat.sessionName);
+    const restore = await runRestore(captured.id, false);
+
+    expect(restore.outcome === "stopped" ? restore.status : restore.outcome, "the table's own expectation of restore").toBe(row.expected);
+    if (restore.outcome === "stopped") {
+      expect(node.intendedAction).toBe("awaiting-decision");
+      expect(node.restoreStatus).toBe(restore.status);
+    } else if (restore.outcome === "skipped") {
+      expect(node.intendedAction).toBe("fresh-primed");
+      expect(node.reason).toContain("continuity state is 'restoring'");
+    } else {
+      expect(node.intendedAction).toBe(row.action);
+      expect(node.intendedAction === "fresh-primed", `restore reported ${restore.status}`).toBe(restore.status === "fresh-primed");
     }
   });
 

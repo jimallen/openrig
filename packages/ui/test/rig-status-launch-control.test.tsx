@@ -201,6 +201,39 @@ describe("LaunchRecoveryModal — plan-before-mutation + the LOCK + honesty", ()
     expect(mockFetch.mock.calls.some((c) => String(c[0]).endsWith("/up"))).toBe(false);
   });
 
+  // OF-44: the plan now lists a seat removed since the snapshot (restoreStatus failed). Restore goes on with the other seats and
+  // reports that one failed, so it must not take "Restore original" away and leave only Fresh for ALL seats.
+  const planWith = (second: Record<string, unknown>) => ({
+    ...MIXED_PLAN,
+    nodes: [MIXED_PLAN.nodes[0], second],
+  });
+  async function openWith(plan: unknown) {
+    mockFetch.mockImplementation((rawUrl?: unknown) => {
+      const url = typeof rawUrl === "string" ? rawUrl : String((rawUrl as { url?: string })?.url ?? "");
+      return jsonResponse(url.includes("/launch-plan") ? plan : {});
+    });
+    renderWithClient(<LaunchRecoveryModal rigId="rig1" rigName="openrig-delivery" open onOpenChange={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("launch-plan-table")).toBeTruthy());
+  }
+
+  it("a seat restore reports failed (removed since the snapshot) is listed as will-fail and leaves Restore original available", async () => {
+    await openWith(planWith({ logicalId: "dev.gone", intendedAction: "awaiting-decision", restoreStatus: "failed", tokenState: "present", freshRequired: false, reason: "Node dev.gone not found in rig" }));
+    const execute = screen.getByTestId("launch-execute") as HTMLButtonElement;
+    expect(execute.disabled).toBe(false);
+    expect(execute.textContent).toContain("Restore original");
+    expect(screen.queryByTestId("launch-blocked-banner")).toBeNull();
+    expect(screen.getByTestId("plan-verdict-dev.gone").textContent).toContain("will fail");
+    expect(screen.getByTestId("launch-will-fail-note").textContent).toContain("dev.gone");
+    expect(screen.getByTestId("plan-verdict-orch.advisor").textContent).toContain("resume-original");
+  });
+
+  it("control: a seat that needs a decision (restoreStatus awaiting-decision) still blocks Restore original", async () => {
+    await openWith(planWith({ logicalId: "dev1.guard", intendedAction: "awaiting-decision", restoreStatus: "awaiting-decision", tokenState: "missing", freshRequired: true }));
+    expect((screen.getByTestId("launch-execute") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("launch-blocked-banner")).toBeTruthy();
+    expect(screen.queryByTestId("launch-will-fail-note")).toBeNull();
+  });
+
   it("choosing fresh re-fetches the forecast, labels it identity-changing, enables execute, and posts freshLogicalIds to /up", async () => {
     mockFetch.mockImplementation((rawUrl?: unknown, init?: RequestInit) => {
       const url = typeof rawUrl === "string" ? rawUrl : String((rawUrl as { url?: string })?.url ?? "");

@@ -41,6 +41,8 @@ interface PlanPreviewNode {
   lastVerified?: string | null;
   freshRequired?: boolean;
   runtimePrompt?: string;
+  /** The status restore reports when it stops this seat before launching it (absent on older daemons). */
+  restoreStatus?: "failed" | "awaiting-decision";
 }
 
 interface PlanPreviewResponse {
@@ -545,9 +547,11 @@ Examples:
   return cmd;
 }
 
-function summarizeReadiness(c: StartCandidate): string {
+export function summarizeReadiness(c: StartCandidate): string {
   if (!c.preview) return "";
-  const actions = c.preview.nodes.map((n) => n.intendedAction);
+  // A seat restore reports failed (removed since the snapshot) has nothing to ask: the rest is still ready to resume.
+  const actions = c.preview.nodes.filter((n) => n.restoreStatus !== "failed").map((n) => n.intendedAction);
+  if (actions.length === 0) return "[mixed]";
   if (actions.every((a) => a === "resume-original")) return "[ready to resume]";
   if (actions.some((a) => a === "awaiting-decision")) return "[will ask before fresh]";
   if (actions.every((a) => a === "fresh-primed")) return "[fresh start]";
