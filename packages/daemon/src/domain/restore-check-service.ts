@@ -244,7 +244,7 @@ export interface RestoreCheckDeps {
   /** Exact ordinary-restore input; never captures an auto-rehydrate snapshot. */
   getRestoreInputs: (rigId: string) =>
     | { snapshot: Pick<Snapshot, "id" | "kind" | "data">; servicesRecord: RigServicesRecord | null }
-    | { currentStateRehydrate: CurrentStateRehydrateEligibility; reason: string }
+    | { currentStateRehydrate: CurrentStateRehydrateEligibility & { occupantStops?: string[] }; reason: string }
     | { unavailable: string };
   /** Probe daemon health: returns { healthy: boolean; evidence: string } */
   probeDaemonHealth: () => { healthy: boolean; evidence: string };
@@ -303,6 +303,8 @@ interface RecoveryRigInput {
   restoreRunningRows: "none" | "live" | "unreadable" | "unanswered" | "not_asked";
   /** The tmux names of the running rows restore refuses on (the first live, or the first unreadable one: probing stops there). */
   restoreRunningRowNames: string[];
+  /** Of those names, the ones another seat (or rig) owns: tmux name -> that seat's `logical@rig`. Never to be killed from here. */
+  restoreRunningRowOwners: Record<string, string>;
 }
 
 interface HostInfraCheckResult {
@@ -315,7 +317,7 @@ type ListedRefusals = Map<string, Map<string, string> | Error>;
 /** Per rig: what restore's refusal rule says about running rows (an Error: it could not be asked). Absent: not asked. */
 type RunningClassifications = Map<string, NamedRunningClassification | Error>;
 /** OF-47: restore's classification (session ids) plus the tmux names of the rows it refuses on, for advice that names them. */
-type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string> };
+type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string> };
 /** Would the next restore run at all? `refused`: a running row is live or unreadable (rig_not_stopped). */
 type RestoreRuns = "would_run" | "refused" | "unknown";
 
@@ -420,6 +422,7 @@ export class RestoreCheckService {
     const restoreRefusedByRig = new Map<string, boolean>();
     const restoreRunningRowsByRig = new Map<string, RecoveryRigInput["restoreRunningRows"]>();
     const restoreRunningRowNamesByRig = new Map<string, string[]>();
+    const restoreRunningRowOwnersByRig = new Map<string, Record<string, string>>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -492,6 +495,7 @@ export class RestoreCheckService {
       restoreRefusedByRig.set(rig.rigId, restoreRuns === "refused");
       restoreRunningRowsByRig.set(rig.rigId, restoreRunningRowsFor(running.get(rig.rigId)));
       restoreRunningRowNamesByRig.set(rig.rigId, refusingRowNames(running.get(rig.rigId)));
+      restoreRunningRowOwnersByRig.set(rig.rigId, refusingRowOwners(running.get(rig.rigId)));
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
@@ -579,6 +583,7 @@ export class RestoreCheckService {
         restoreRefused: restoreRefusedByRig.get(rollup.rigId) ?? false,
         restoreRunningRows: restoreRunningRowsByRig.get(rollup.rigId) ?? "not_asked",
         restoreRunningRowNames: restoreRunningRowNamesByRig.get(rollup.rigId) ?? [],
+        restoreRunningRowOwners: restoreRunningRowOwnersByRig.get(rollup.rigId) ?? {},
       });
     }
 
@@ -595,7 +600,11 @@ export class RestoreCheckService {
       const input = this.deps.getRestoreInputs(rig.rigId);
       if ("unavailable" in input) throw new Error(input.unavailable);
       if ("currentStateRehydrate" in input) {
-        const { ok, blockers } = input.currentStateRehydrate;
+        // OF-47: restore's seat gate on which saved session is the seat's (active-occupant ambiguity) applies to the
+        // snapshot restore will capture from current state. Like every seat gate it is predicted only when restore runs.
+        const occupantStops = restoreRuns === "would_run" ? input.currentStateRehydrate.occupantStops ?? [] : [];
+        const blockers = [...input.currentStateRehydrate.blockers, ...occupantStops];
+        const ok = input.currentStateRehydrate.ok && occupantStops.length === 0;
         return {
           snapshot: null,
           check: {
@@ -1726,12 +1735,16 @@ export class RestoreCheckService {
         // orchestrator: Q3 kills 0 and restore still refuses), so neither ends an older live row. Ending the session
         // in tmux does: the row stays `running` in the DB, restore reads it as stale and proceeds.
         const names = input.restoreRunningRowNames;
-        const kill = names.map((name) => `tmux kill-session -t ${shellQuote(`=${name}`)}`).join("; ");
+        const owners = input.restoreRunningRowOwners;
+        const ownName = names.filter((name) => owners[name] === undefined);
+        const heldName = names.filter((name) => owners[name] !== undefined);
+        const kill = ownName.map((name) => `tmux kill-session -t ${shellQuote(`=${name}`)}`).join("; ");
+        const held = heldName.map((name) => `${name} is held by ${owners[name]}, another seat's live session: do not kill it from here, it would end that seat; this rig's older running row for it needs manual attention (restore stays refused while the name is live, and no command here frees it)`).join("; ");
         blocked.push({
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down and rig seat stop do not end it (they act on each seat's newest session row only). Check it first (rig capture -- ${names.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. Probing stops at the first live row, so rerun rig restore-check afterwards; rig up ${shellQuote(input.rigName)} --existing is advised once no running row is live.`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. rig down and rig seat stop do not end it (they act on each seat's newest session row only). ${held ? `${held}. ` : ""}${kill ? `Check it first (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}); if it is not needed, end it yourself: ${kill}. ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing.`,
         });
         continue;
       }
@@ -1996,6 +2009,17 @@ function refusingRowNames(classification: NamedRunningClassification | Error | u
   if (!classification || classification instanceof Error) return [];
   const ids = classification.live.length > 0 ? classification.live : classification.unknown;
   return ids.map((id) => classification.sessionNames?.[id]).filter((name): name is string => name !== undefined);
+}
+
+/** OF-47: of the refusing rows' tmux names, the ones another seat owns (name -> `logical@rig`). */
+function refusingRowOwners(classification: NamedRunningClassification | Error | undefined): Record<string, string> {
+  if (!classification || classification instanceof Error) return {};
+  const ids = classification.live.length > 0 ? classification.live : classification.unknown;
+  return Object.fromEntries(ids.flatMap((id) => {
+    const name = classification.sessionNames?.[id];
+    const owner = classification.sessionOwners?.[id];
+    return name !== undefined && owner !== undefined ? [[name, owner]] : [];
+  }));
 }
 
 /** OF-47: the recovery advice's reading of restore's own rule over the rig's running rows. */

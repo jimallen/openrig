@@ -7,6 +7,9 @@ import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, typ
 import { listedRefusalRemedy, predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
 import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
 import { predictSeatStops } from "../domain/restore-seat-gates.js";
+import { findOtherSessionOwner } from "../domain/session-owner.js";
+import { activeOccupantAmbiguityError, deriveRehydrateOccupantsByNode } from "../domain/active-occupant.js";
+import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
 import { SessionRegistry } from "../domain/session-registry.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
@@ -245,7 +248,7 @@ export function createRestoreCheckService(
       const selected = snapshotRepo.selectRestoreUsable(rigId);
       if (!selected.ok || !snapshotMatchesCurrentOccupants(snapshotRepo.db, rig, selected.snapshot)) {
         return {
-          currentStateRehydrate: assessCurrentStateRehydrateEligibility(snapshotRepo.db, rig),
+          currentStateRehydrate: withOccupantStops(snapshotRepo.db, rig, assessCurrentStateRehydrateEligibility(snapshotRepo.db, rig)),
           reason: selected.ok ? "Selected snapshot names an older occupant" : selected.message,
         };
       }
@@ -265,8 +268,15 @@ export function createRestoreCheckService(
         const classification = await classifyRunningSessions(sessions, probe);
         // OF-47: the advice names the sessions restore refuses on, so it carries their tmux names (restore needs only ids).
         const refusing = new Set([...classification.live, ...classification.unknown]);
-        const sessionNames = Object.fromEntries(sessions.filter((s) => refusing.has(s.id)).map((s) => [s.id, s.sessionName]));
-        return { ...classification, sessionNames };
+        const refusingRows = sessions.filter((s) => refusing.has(s.id));
+        const sessionNames = Object.fromEntries(refusingRows.map((s) => [s.id, s.sessionName]));
+        // The probe is global by tmux name: a live name may belong to ANOTHER seat or rig. Teardown asks the same question
+        // (findOtherSessionOwner, archived rigs ignored) before it kills; the advice must too.
+        const sessionOwners = Object.fromEntries(refusingRows.flatMap((s) => {
+          const owner = findOtherSessionOwner(rigRepo.db, s.sessionName, s.nodeId, { ignoreArchived: true });
+          return owner ? [[s.id, `${owner.logical_id}@${owner.rig_name}`]] : [];
+        }));
+        return { ...classification, sessionNames, sessionOwners };
       }
       : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,
@@ -388,3 +398,20 @@ restoreCheckRoutes.get("/", async (c) => {
     }, 500);
   }
 });
+
+/**
+ * OF-47: restore's own occupant rule, asked of the current state. With no usable snapshot, `rig up --existing` captures an
+ * auto-rehydrate snapshot and restore resolves each seat's occupant from it (deriveRehydrateOccupantsByNode, the capture's
+ * own derivation); a seat with several running rows is then failed as an active-occupant ambiguity. The eligibility
+ * assessment alone says nothing about that, so the check would call it actionable. Same functions, same wording.
+ */
+function withOccupantStops(db: import("better-sqlite3").Database, rig: NonNullable<ReturnType<RigRepository["getRig"]>>, eligibility: { ok: boolean; blockers: string[] }): { ok: boolean; blockers: string[]; occupantStops: string[] } {
+  const sessions = new SessionRegistry(db).getSessionsForRig(rig.rig.id);
+  const states = deriveRehydrateOccupantsByNode(sessions, rig.nodes.map((n) => n.id), readFreshOccupantRelations(db, rig.rig.id));
+  const occupantStops: string[] = [];
+  for (const node of rig.nodes) {
+    const state = states[node.id];
+    if (state?.kind === "ambiguous") occupantStops.push(`Restore would not start ${node.logicalId} (failed): ${activeOccupantAmbiguityError(state.candidateIds)}`);
+  }
+  return { ...eligibility, occupantStops };
+}
