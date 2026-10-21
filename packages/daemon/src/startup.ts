@@ -1164,6 +1164,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     configuredCatalogPath(healthSettingsStore));
   const passiveCeremony = new PassiveCeremonySource(healthSettingsStore.resolveOne("workspace.root").value as string, queueRepoInstance, healthPolicy, undefined, healthCheckpoints, { reader: operatingPosture, instanceId: OPENRIG_HOME });
   // RSI telemetry detectors read through their own read-only handle; an in-memory database cannot be opened that way.
+  // THE ONE RSI source array: the health projection below AND the health-finding wake both consume it.
+  // Add every RSI source here; a source given only to the projection is served by `rig health` but
+  // never wakes the steward (rsi-health-finding-wake.test.ts pins every RSI detector id to a source).
   const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
   const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath })];
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
@@ -2283,7 +2286,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const { ensureRsiStewardJobs } = await import("./domain/rsi/health-finding-wake.js");
       try {
         const stewardSession = new ContextPackSettingsStore().resolveOne("rsi.steward_session").value;
-        ensureRsiStewardJobs(watchdogJobsRepoInstance, typeof stewardSession === "string" ? stewardSession : "");
+        const rsiJobs = ensureRsiStewardJobs(watchdogJobsRepoInstance, typeof stewardSession === "string" ? stewardSession : "");
+        if (!rsiJobs.armed && rsiJobs.reason === "rsi_steward_invalid") {
+          console.error(`[rsi] rsi.steward_session '${String(stewardSession)}' is not a '<member>@<rig>' session; RSI jobs disarmed (${rsiJobs.disarmed.length})`);
+        }
       } catch (err) {
         console.error("[rsi] steward job registration failed", err);
       }

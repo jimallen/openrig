@@ -13,6 +13,10 @@ import type { Migration } from "../migrate.js";
  *
  * rsi_notifications — the notifier's own per-item banner state (§3.7):
  *   (qitem_id, first_notified_at, last_notified_at), exactly as the design names it.
+ *
+ * rsi_notification_banners — one row per banner the notifier attempted (§3.7 rate limit):
+ *   the per-day cap counts these rows. A per-item last_notified_at cannot: one banner covers
+ *   several items, and a reminder overwrites the earlier time.
  */
 export const rsiWakeStateSchema: Migration = {
   name: "113_rsi_wake_state.sql",
@@ -32,5 +36,14 @@ export const rsiWakeStateSchema: Migration = {
       first_notified_at TEXT NOT NULL,
       last_notified_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS rsi_notification_banners (
+      id INTEGER PRIMARY KEY,
+      sent_at TEXT NOT NULL,
+      item_count INTEGER NOT NULL,
+      ok INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rsi_notification_banners_sent_at
+      ON rsi_notification_banners(sent_at);
   `,
 };

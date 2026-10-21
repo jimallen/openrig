@@ -30,7 +30,9 @@ export const RSI_WAKE_BUDGET_EXHAUSTED = "rsi_wake_budget_exhausted" as const;
 /** Loud: a wake was due but the latest weekly provider window is at or above the brake. */
 export const RSI_BUDGET_BRAKE = "rsi_budget_brake" as const;
 
-/** Sends per UTC day, counted from this job's own `sent` history rows. */
+/** DELIVERED wakes per UTC day: this job's own history rows with `delivery_status = 'ok'`.
+ * A failed delivery (the engine records it as outcome `sent`, status `failed`) and a retained
+ * one (outcome `skipped`) spend nothing: the budget bounds steward wakes, not attempts. */
 export const RSI_WAKE_DAILY_BUDGET = 4;
 /** Weekly provider-window utilisation (percent) at which wakes stop. */
 export const RSI_BRAKE_PERCENT = 90;
@@ -232,9 +234,26 @@ export interface HealthFindingWakeDeps {
   now?: () => Date;
 }
 
-export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Policy {
+/** Which RSI source answers for each detector id. Built from the ONE RSI source array that
+ * startup also gives the health projection; a detector missing here never wakes the steward. */
+export function rsiDetectorSourceMap(sources: readonly RsiFindingSource[]): ReadonlyMap<string, string> {
+  const map = new Map<string, string>();
+  for (const source of sources) {
+    if (!source.name) continue;
+    for (const detector of source.detectors ?? []) map.set(detector, source.name);
+  }
+  return map;
+}
+
+export type HealthFindingWakePolicy = Policy & {
+  /** Detector id -> source name, as this wake maps records (exposed for the wiring conformance test). */
+  readonly detectorSources: ReadonlyMap<string, string>;
+};
+
+export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): HealthFindingWakePolicy {
   return {
     name: HEALTH_FINDING_WAKE_POLICY,
+    detectorSources: rsiDetectorSourceMap(deps.sources),
     async evaluate(job: PolicyJob): Promise<PolicyEvaluation> {
       const now = (deps.now ?? (() => new Date()))();
       const scan = scanFindingState(deps.db, deps.projection, deps.sources, now);
@@ -254,11 +273,11 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Policy
         return { action: "skip", reason: RSI_BUDGET_BRAKE, notes: { ...notes, weeklyWindow: window, brakePercent: RSI_BRAKE_PERCENT } };
       }
 
-      const sentToday = (deps.db.prepare(
-        "SELECT count(*) AS n FROM watchdog_history WHERE job_id = ? AND outcome = 'sent' AND evaluated_at >= ?",
+      const deliveredToday = (deps.db.prepare(
+        "SELECT count(*) AS n FROM watchdog_history WHERE job_id = ? AND outcome = 'sent' AND delivery_status = 'ok' AND evaluated_at >= ?",
       ).get(job.jobId, utcDayStart(now)) as { n: number }).n;
-      if (sentToday >= RSI_WAKE_DAILY_BUDGET) {
-        return { action: "skip", reason: RSI_WAKE_BUDGET_EXHAUSTED, notes: { ...notes, sentToday, dailyBudget: RSI_WAKE_DAILY_BUDGET } };
+      if (deliveredToday >= RSI_WAKE_DAILY_BUDGET) {
+        return { action: "skip", reason: RSI_WAKE_BUDGET_EXHAUSTED, notes: { ...notes, deliveredToday, dailyBudget: RSI_WAKE_DAILY_BUDGET } };
       }
 
       const receipt: HealthFindingWakeReceipt = {
@@ -278,19 +297,39 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Policy
   };
 }
 
+export const RSI_STEWARD_UNSET_REASON = "rsi_steward_unset";
+export const RSI_STEWARD_INVALID_REASON = "rsi_steward_invalid";
+
+export type RsiStewardJobs =
+  | { armed: true; wake: WatchdogJob; report: WatchdogJob }
+  | { armed: false; reason: typeof RSI_STEWARD_UNSET_REASON | typeof RSI_STEWARD_INVALID_REASON; disarmed: string[] };
+
 /**
- * Boot registration of the steward's two jobs (§3.4): the hourly wake and the daily report.
- * An empty or blank `stewardSession` registers NOTHING, so an install that never sets
- * `rsi.steward_session` (every test daemon, every other user) stays inert. Idempotent.
+ * Boot reconciliation of the steward's two jobs (§3.4): the hourly wake and the daily report.
+ * - A canonical `<member>@<rig>` steward arms (or retargets) both, idempotently.
+ * - Empty, blank or invalid (no `@`) arms nothing AND disarms every nonterminal row at the two
+ *   anchors with markTerminal, so an install that unsets the key stops being woken. Terminal,
+ *   not stop(): ensureAutoRegistration treats a stopped row as a durable operator opt-out and
+ *   would never re-arm it; a terminal row is replaced by a fresh active one when the key is set
+ *   again. The re-armed rows are new jobs, so they hold no receipt: their first scan wakes once
+ *   for every fingerprint still active.
  */
 export function ensureRsiStewardJobs(
-  jobsRepo: Pick<WatchdogJobsRepository, "ensureAutoRegistration">,
+  jobsRepo: Pick<WatchdogJobsRepository, "ensureAutoRegistration" | "findAutoRegistration" | "markTerminal">,
   stewardSession: string,
-): { wake: WatchdogJob; report: WatchdogJob } | null {
+): RsiStewardJobs {
   const steward = stewardSession.trim();
-  if (steward === "") return null;
-  if (!steward.includes("@")) {
-    throw new Error(`rsi.steward_session must be a canonical '<member>@<rig>' session (got '${steward}')`);
+  if (steward === "" || !steward.includes("@")) {
+    const reason = steward === "" ? RSI_STEWARD_UNSET_REASON : RSI_STEWARD_INVALID_REASON;
+    const disarmed: string[] = [];
+    for (const [policy, anchor] of [[HEALTH_FINDING_WAKE_POLICY, RSI_WAKE_ANCHOR], ["periodic-reminder", RSI_DAILY_REPORT_ANCHOR]] as const) {
+      const row = jobsRepo.findAutoRegistration(policy, anchor, null);
+      if (row) {
+        jobsRepo.markTerminal(row.jobId, reason);
+        disarmed.push(row.jobId);
+      }
+    }
+    return { armed: false, reason, disarmed };
   }
   const wake = jobsRepo.ensureAutoRegistration({
     policy: HEALTH_FINDING_WAKE_POLICY,
@@ -310,5 +349,5 @@ export function ensureRsiStewardJobs(
     scanIntervalSeconds: null,
     specYaml: stringifyYaml({ policy: "periodic-reminder", target: { session: steward }, message: RSI_DAILY_REPORT_MESSAGE }),
   });
-  return { wake, report };
+  return { armed: true, wake, report };
 }
