@@ -858,6 +858,29 @@ describe("RigTeardownOrchestrator", () => {
       expect(row(otherSession.id)).toMatchObject({ status: "running" });
     });
 
+    it("OF-54 N3 oracle: two seats of one rig whose older rows share a tmux name defer to each other: down kills nothing, ends both rows, the session survives", async () => {
+      // The restore-check advice for a same-rig holder is checked against this: it may promise that the rows end (restore can
+      // run) but not that the shared session is stopped.
+      const { rigId, nodeId, olderId } = olderLiveSeat("exited");
+      sessionRegistry.updateBinding(nodeId, { tmuxSession: OLD });
+      const peer = rigRepo.addNode(rigId, "peer", { runtime: "claude-code", cwd: tmpDir });
+      const peerOlder = sessionRegistry.registerSession(peer.id, OLD);
+      sessionRegistry.updateStatus(peerOlder.id, "running");
+      const peerNewer = sessionRegistry.registerSession(peer.id, "r01-peer-new");
+      sessionRegistry.updateStatus(peerNewer.id, "exited");
+      db.prepare("UPDATE sessions SET created_at = '2020-01-01 00:00:00' WHERE id = ?").run(peerOlder.id);
+      db.prepare("UPDATE sessions SET created_at = '2021-01-01 00:00:00' WHERE id = ?").run(peerNewer.id);
+      const tmux = tmuxWith([OLD]);
+
+      const result = await buildTeardown(tmux).teardown(rigId);
+
+      expect(tmux.killSession).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ sessionsKilled: 0, errors: [] });
+      expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(row(peerOlder.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(runningRows(rigId)).toBe(0);
+    });
+
     it("a failed kill leaves the older row running, blocks delete, and keeps its managed guidance", async () => {
       const { rigId, olderId } = olderLiveSeat("exited");
       const guidance = path.join(tmpDir, "CLAUDE.md");

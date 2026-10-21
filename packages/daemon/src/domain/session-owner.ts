@@ -4,6 +4,8 @@ export interface SessionOwnerRow {
   node_id: string;
   logical_id: string;
   rig_name: string;
+  /** The owner's rig by id: rig names are not unique, so "same rig" is decided on this. */
+  rig_id: string;
 }
 
 /**
@@ -25,7 +27,7 @@ export function findOtherSessionOwner(
   const excluded = [nodeId, ...(opts?.excludeNodeIds ?? [])];
   const notExcluded = `n.id NOT IN (${excluded.map(() => "?").join(", ")})`;
   const bindingOwner = db.prepare(`
-    SELECT n.id AS node_id, n.logical_id, r.name AS rig_name
+    SELECT n.id AS node_id, n.logical_id, r.name AS rig_name, r.id AS rig_id
     FROM bindings b
     JOIN nodes n ON n.id = b.node_id
     JOIN rigs r ON r.id = n.rig_id
@@ -35,7 +37,7 @@ export function findOtherSessionOwner(
   if (bindingOwner) return bindingOwner;
 
   return db.prepare(`
-    SELECT n.id AS node_id, n.logical_id, r.name AS rig_name
+    SELECT n.id AS node_id, n.logical_id, r.name AS rig_name, r.id AS rig_id
     FROM sessions s
     JOIN nodes n ON n.id = s.node_id
     JOIN rigs r ON r.id = n.rig_id
