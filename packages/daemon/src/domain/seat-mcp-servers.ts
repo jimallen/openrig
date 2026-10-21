@@ -7,8 +7,8 @@ import { RigSpecSchema } from "./rigspec-schema.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
 import {
-  commandBinarySha256, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, specFileTrustProblem, validateMcpServersBlock,
-  type PathJudgeIo, type SeatMcpSelection, type SeatMcpServer,
+  commandBinarySha256, mcpArgFilePins, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, specFileTrustProblem, validateMcpServersBlock,
+  type McpArgFilePin, type PathJudgeIo, type SeatMcpSelection, type SeatMcpServer,
 } from "./codex-mcp-servers.js";
 
 /**
@@ -31,6 +31,8 @@ export interface StoredSeatMcpServer {
   /** The file the command resolved to at switch-on, and its sha256; every launch recomputes the hash. */
   commandPath: string;
   commandSha256: string;
+  /** The files named in the declaration's args (config files), pinned at switch-on like the binary (OF-50). */
+  argFiles: McpArgFilePin[];
   /** Where the declaration came from: the rig's recorded spec source, or a file the operator named (--spec). */
   specSource: "recorded" | "operator";
   /** sha256 of the spec file's bytes as read at switch-on. */
@@ -70,7 +72,13 @@ export function readSeatMcpServers(db: Database.Database, nodeId: string): SeatM
     if (typeof entry.commandSha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.commandSha256)) {
       return { ok: false, error: `stored server "${name}" has no pinned binary checksum; switch it on again` };
     }
-    servers.push({ name, declaration: normalizeMcpServers({ [name]: entry.declaration })![name]!, specDir: entry.specDir, commandSha256: entry.commandSha256 });
+    // An entry stored before OF-50 has no pins for the files its args name. Refused, not warned: it cannot be told
+    // apart from a server whose config file was never pinned, and a launch would run unverified config.
+    const files = (entry as { argFiles?: unknown }).argFiles;
+    if (!Array.isArray(files) || !files.every((f) => f && typeof f.arg === "string" && typeof f.realPath === "string" && /^[0-9a-f]{64}$/.test(f.sha256))) {
+      return { ok: false, error: `stored server "${name}" has no pinned config files (it was switched on before they were pinned); switch it on again` };
+    }
+    servers.push({ name, declaration: normalizeMcpServers({ [name]: entry.declaration })![name]!, specDir: entry.specDir, commandSha256: entry.commandSha256, argFiles: files as McpArgFilePin[] });
   }
   return { ok: true, servers };
 }
@@ -185,8 +193,10 @@ export function readDeclaredMcpServer(input: {
   if (place) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: ${place}.` };
   const commandSha256 = commandBinarySha256(declaration.command);
   if (!commandSha256) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: its command ${declaration.command} cannot be read to pin its checksum.` };
+  const argFiles = mcpArgFilePins(declaration.args);
+  if (!argFiles.ok) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: ${argFiles.error}.` };
   return { ok: true, entry: { declaration: serializeMcpServer(declaration), specDir, declaredIn: specPath, switchedOnAt: input.now(),
-    commandPath: fs.realpathSync(declaration.command), commandSha256, specSource: operator ? "operator" : "recorded", specSha256 } };
+    commandPath: fs.realpathSync(declaration.command), commandSha256, argFiles: argFiles.pins, specSource: operator ? "operator" : "recorded", specSha256 } };
 }
 
 /**
