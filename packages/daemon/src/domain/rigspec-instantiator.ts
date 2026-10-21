@@ -1249,6 +1249,11 @@ export class PodRigInstantiator {
     const member = pod.members[0]!;
     // These overrides were not retained on the old node. Refuse to guess them or
     // introduce new startup/session-source behavior in a recovery request.
+    // OF-45: a damaged saved session source is not "no source": the seat may have been declared fork/rebuild/agent_image,
+    // and a fresh relaunch without it would silently change the seat. Refuse until the row is repaired.
+    if (node.sessionSourceUnreadable) {
+      return refuse(`First-start retry refused: this seat's saved session source is damaged (${node.sessionSourceUnreadable}), so it cannot be known whether the seat declared one. Repair the row first.`);
+    }
     if (member.startup || member.starterRef || member.sessionSource || member.compactionStrategy || member.mechanic || node.sessionSource) {
       return refuse("First-start retry does not accept unretained member startup, continuity or session-source overrides.");
     }

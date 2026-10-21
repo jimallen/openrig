@@ -5,7 +5,7 @@ import type {
   LegacyRigSpec, LegacyRigSpecNode, LegacyRigSpecEdge,
   RigSpec, RigSpecPod, RigSpecPodMember, RigSpecPodEdge, RigSpecCrossPodEdge,
 } from "./types.js";
-import { RigNotFoundError } from "./errors.js";
+import { RigNotFoundError, UnreadableNodeRowError } from "./errors.js";
 
 interface RigSpecExporterDeps {
   rigRepo: RigRepository;
@@ -36,6 +36,15 @@ export class RigSpecExporter {
     const rig = this.rigRepo.getRig(rigId);
     if (!rig) {
       throw new RigNotFoundError(rigId);
+    }
+
+    // OF-45: a node whose saved package_refs / session_source_json is damaged would export with that field silently
+    // missing, a spec that cannot recreate the seat. Refuse, naming the seat and the column.
+    for (const node of rig.nodes) {
+      const damage = [node.sessionSourceUnreadable, node.packageRefsUnreadable].filter((reason): reason is string => !!reason);
+      if (damage.length > 0) {
+        throw new UnreadableNodeRowError(`Cannot export node '${node.logicalId}': its saved row is damaged (${damage.join("; ")}), so the exported spec would silently drop it. Repair the row, then export again.`);
+      }
     }
 
     // Detect pod-aware: any node has a non-null podId, or pods exist explicitly.
