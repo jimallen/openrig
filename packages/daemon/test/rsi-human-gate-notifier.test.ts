@@ -286,6 +286,9 @@ describe("rate limits", () => {
     h.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES ('2099-01-01T00:00:00.000Z', 1, 1)").run();
     h.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES ('not-a-date', 1, 1)").run();
     insertQueueRow(h.db, "q-a");
+    // A future-stamped row for the waiting item's own episode must not read as "already notified".
+    const episode = (h.db.prepare("SELECT MAX(transition_id) AS e FROM queue_transitions WHERE qitem_id = 'q-a'").get() as { e: number }).e;
+    h.db.prepare("INSERT INTO rsi_notifications (qitem_id, first_notified_at, last_notified_at) VALUES (?, '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z')").run(`q-a@${episode}`);
     expect((await h.notifier.tick()).status).toBe("sent");
   });
 });
