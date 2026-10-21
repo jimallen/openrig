@@ -252,6 +252,7 @@ function evidenceText(evidence: HealthEvidenceReference): string {
     case "context-usage": return `node ${value(evidence, "nodeId")} · session ${value(evidence, "sessionId")} · used ${value(evidence, "usedPercentage")}% · available ${value(evidence, "available")} · fresh ${value(evidence, "fresh")}`;
     case "occupant-model": return `node ${value(evidence, "nodeId")} · generation ${value(evidence, "occupantGeneration")} · runtime ${value(evidence, "runtime")} · model ${value(evidence, "model")}`;
     case "lifecycle-receipt": return `receipt ${value(evidence, "receiptId")} · ${value(evidence, "operation")} · ${value(evidence, "outcome")}`;
+    case "telemetry-span": return `${value(evidence, "detectorId")} · ${value(evidence, "class")} · ${value(evidence, "count")} found · control ${value(evidence, "controlTotal")} · population ${value(evidence, "population")} · rows ${value(evidence, "firstSeq")}–${value(evidence, "lastSeq")} · fingerprint ${value(evidence, "fingerprint")}`;
   }
 }
 

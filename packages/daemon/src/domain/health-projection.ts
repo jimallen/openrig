@@ -78,6 +78,23 @@ export type HealthEvidenceReference =
       receiptId: string;
       operation: string;
       outcome: string;
+    })
+  /** A counted span of one telemetry source. `fingerprint` is the finding's stable identity
+   * (rsi/fingerprint.ts): the record id changes with every episode, the fingerprint does not.
+   * `controlTotal` and `population` are the controls the count is read against; firstSeq and
+   * lastSeq are the source-table ordinals of the first and last supporting row. */
+  | (EvidenceBase & {
+      type: "telemetry-span";
+      detectorId: string;
+      class: string;
+      fingerprint: string;
+      count: number;
+      controlTotal: number;
+      population: number;
+      firstSeq: number;
+      lastSeq: number;
+      firstSeen: string;
+      lastSeen: string;
     });
 
 export interface HealthQueryBounds {

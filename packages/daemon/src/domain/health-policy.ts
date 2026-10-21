@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { RSI_DETECTORS } from "./rsi/detector-ids.js";
 
 export const HEALTH_DETECTORS = ["process.ceremony-amplification", "process.review-carousel", "process.redundant-wake-storm", "governance.stale-directive", "governance.scope-admission-drift", "context.pressure"] as const;
+/** Ids a policy may list in `disabledDetectors`: the health detectors plus the RSI telemetry detectors. */
+export const DISABLEABLE_DETECTORS: readonly string[] = [...HEALTH_DETECTORS, ...RSI_DETECTORS];
 export interface HealthPolicy {
   schema: "openrig.health-policy/v0alpha1";
   disabledDetectors: string[];
@@ -41,8 +44,9 @@ function number(value: unknown, min: number, max: number): void {
 export function validateHealthPolicy(value: unknown): HealthPolicy {
   const p = object(value, ["schema", "disabledDetectors", "thresholds", "observationWindowSeconds", "freshnessSeconds", "diagnosis", "human"]);
   if (p.schema !== DEFAULT_HEALTH_POLICY.schema) throw new Error("Unsupported health policy schema");
-  for (const list of [p.disabledDetectors, (p.diagnosis as HealthPolicy["diagnosis"])?.detectors]) {
-    if (!Array.isArray(list) || list.some((x) => !HEALTH_DETECTORS.includes(x)) || new Set(list).size !== list.length) throw new Error("Unknown or duplicate detector");
+  // RSI ids are disableable but never diagnosis targets: the two contexts stay separate.
+  for (const [list, allowed] of [[p.disabledDetectors, DISABLEABLE_DETECTORS], [(p.diagnosis as HealthPolicy["diagnosis"])?.detectors, HEALTH_DETECTORS]] as const) {
+    if (!Array.isArray(list) || list.some((x) => !(allowed as readonly unknown[]).includes(x)) || new Set(list).size !== list.length) throw new Error("Unknown or duplicate detector");
   }
   const t = object(p.thresholds, ["ceremonyTransitions", "ceremonyRatio", "reviewReturns", "redundantWakes"]);
   Object.values(t).forEach((v) => number(v, 1, 100000));

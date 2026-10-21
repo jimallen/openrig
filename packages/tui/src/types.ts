@@ -278,7 +278,7 @@ export type HealthScope =
   | { type: "slice"; projectId: string; missionId: string; sliceId: string };
 
 export interface HealthEvidenceReference {
-  type: "queue-transition" | "watchdog-history" | "work-graph" | "topology-activity" | "context-usage" | "occupant-model" | "lifecycle-receipt";
+  type: "queue-transition" | "watchdog-history" | "work-graph" | "topology-activity" | "context-usage" | "occupant-model" | "lifecycle-receipt" | "telemetry-span";
   sourceOrder: number;
   observedAt: string | null;
   [key: string]: unknown;
