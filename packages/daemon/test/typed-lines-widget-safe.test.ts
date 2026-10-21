@@ -19,37 +19,37 @@ import type { SessionRegistry } from "../src/domain/session-registry.js";
 const WIDGET_CHARS = ["(", ")", "[", "]", "{", "}", '"', "'", "`"];
 const TYPED_SHAPE = /^(\. |\/bin\/sh )\/[A-Za-z0-9_./-]+$/;
 
-function harness(paneShell = "zsh") {
+function harness(paneShell: string | ((typedSoFar: string[], scriptFor: (line: string) => string) => string) = "zsh", tmpPrefix = "/tmp") {
   const writes: Array<{ path: string; content: string }> = [];
   const commands: string[] = [];
   let n = 0;
   const fileOps: TmuxFileOps = {
-    tmpName: () => `/tmp/of65-${n++}.txt`,
+    tmpName: () => `${tmpPrefix}/of65-${n++}.txt`,
     bufferName: () => `buf${n++}`,
     writeFile: vi.fn(async (path, content) => { writes.push({ path, content }); }),
     unlink: vi.fn(async () => {}),
   };
   const exec = vi.fn(async (command: string) => {
     commands.push(command);
-    if (command.includes("#{pane_current_command}")) return paneShell;
+    if (command.includes("#{pane_current_command}")) return typeof paneShell === "string" ? paneShell : paneShell(typed(), scriptFor);
     if (command.includes("capture-pane")) return "user@host % ";
     return "";
   });
   const tmux = new TmuxAdapter(exec, fileOps);
   /** The text each load-buffer put in front of the pane shell: the typed bytes. */
-  const typed = (): string[] => commands.flatMap(command => {
+  function typed(): string[] { return commands.flatMap(command => {
     const m = /load-buffer -b '[^']*' '([^']*)'/.exec(command);
     return m ? [writes.find(w => w.path === m[1])!.content] : [];
-  });
+  }); }
   const sendKeysArgs = (): string[] => commands.flatMap(command => {
     const m = /send-keys -t '[^']*' (.*)$/.exec(command);
     return m ? [m[1]!] : [];
   });
-  const scriptFor = (typedLine: string): string => {
+  function scriptFor(typedLine: string): string {
     const path = typedLine.split(" ").at(-1)!;
     // A sourced script holds the command in a second file the subshell sources.
     return (writes.find(w => w.path === `${path}.cmd`) ?? writes.find(w => w.path === path)!).content;
-  };
+  }
   return { tmux, typed, sendKeysArgs, scriptFor, commands };
 }
 
@@ -86,6 +86,18 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
       const command = `runner a${char}b`;
       expect(await h.tmux.sendShellCommand("seat@rig", command, undefined, { stageIfLong: true, execInScript: true })).toEqual({ ok: true });
       expectOnlySafeTyping(h);
+    });
+
+    // KNOWN GAP (accepted, not fixed here): when the staged invocation would pass the 512-byte bound
+    // (a very long TMPDIR) a Pi command under 1024 bytes is typed raw, widget characters included,
+    // as it was before OF-65. Refusing it instead would stop launches that work today (quotes alone
+    // overtype under autopair), so the gap is recorded rather than closed. A change that refuses
+    // must change this row on purpose.
+    it("KNOWN GAP: under a TMPDIR too long to stage, a short quoted Pi command is still typed raw", async () => {
+      const h = harness("zsh", "/tmp/" + "a".repeat(512));
+      const command = `node '/opt/rig/pi-runner.js' --model 'm (x)'`;
+      expect(await h.tmux.sendShellCommand("seat@rig", command, undefined, { stageIfLong: true, execInScript: true })).toEqual({ ok: true });
+      expect(h.typed()).toEqual([command]);
     });
 
     it("control: a short command with no widget character is still typed as it stands", async () => {
@@ -137,15 +149,39 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
   });
 
   describe("resume-metadata refresher claude probe", () => {
-    it("types only the staged-script source line into the probe session", async () => {
-      const h = harness();
-      const refresher = new ResumeMetadataRefresher({
-        sessionRegistry: {} as unknown as SessionRegistry, tmuxAdapter: h.tmux, sleep: async () => {}, homeDir: "/tmp",
-      });
-      await (refresher as unknown as { defaultProbeClaudeResume(s: string, t: string, c: string): Promise<string> })
-        .defaultProbeClaudeResume("seat@rig", "tok-1", "/tmp");
-      expectOnlySafeTyping(h, /^\. \/tmp\/of65-\d+\.txt$/);
-      expect(h.scriptFor(h.typed()[0]!)).toContain("claude --resume 'tok-1' --name 'seat@rig'");
+    const probe = (h: ReturnType<typeof harness>) => (new ResumeMetadataRefresher({
+      sessionRegistry: {} as unknown as SessionRegistry, tmuxAdapter: h.tmux, sleep: async () => {}, homeDir: "/tmp",
+    }) as unknown as { defaultProbeClaudeResume(s: string, t: string, c: string): Promise<string> })
+      .defaultProbeClaudeResume("seat@rig", "tok-1", "/tmp");
+
+    it("types claude itself, holding only shell-quoted words (no bracket, brace, parenthesis or backtick)", async () => {
+      const h = harness("claude");
+      await probe(h);
+      expect(h.typed()).toEqual(["claude --resume 'tok-1' --name 'seat@rig'"]);
+      for (const c of WIDGET_CHARS.filter(c => c !== "'" && c !== '"')) expect(h.typed()[0]).not.toContain(c);
+      expect(h.sendKeysArgs()).toEqual(["'Enter'"]);
+    });
+
+    // The probe's verdict reads the pane's foreground command. What tmux reports for each launch
+    // shape was measured on a private socket (OF-65 review): typed claude -> claude; `. file` (a
+    // sourced subshell) -> the shell; `/bin/sh file` -> sh; `/bin/sh file` that execs claude -> claude.
+    const foreground = (shell: string) => (typed: string[], scriptFor: (line: string) => string) => {
+      const line = typed.at(-1) ?? "";
+      if (line.startsWith("claude ")) return "claude";
+      if (line.startsWith("/bin/sh ") && /^exec /m.test(scriptFor(line))) return "claude";
+      return line.startsWith("/bin/sh ") ? "sh" : shell;
+    };
+
+    it.each(["bash", "zsh"])("a resumable session reads as resumable while the pane reports what each launch shape reports (%s)", async shell => {
+      const h = harness(foreground(shell));
+      expect(await probe(h)).toBe("resumable");
+    });
+
+    it("control: a pane that keeps reporting the shell reads as not resumable", async () => {
+      // Pins the consequence the probe must avoid, so the row above cannot pass for a reason other
+      // than the foreground command: with the same probe, a pane stuck on the shell is "failed".
+      const h = harness("zsh");
+      expect(await probe(h)).toBe("not_resumable");
     });
   });
 

@@ -143,32 +143,10 @@ describe("ClaudeResumeAdapter", () => {
       expect(sendText.mock.calls[0]![1]).toBe("OPENRIG_RESUME_LAUNCH='tok; rm -rf /' CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --resume 'tok; rm -rf /'");
     });
 
-    it("sendKeys(Enter) fails after sendText -> C-c sent to clear buffer", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
-      const sendKeys = vi.fn()
-        .mockResolvedValueOnce({ ok: false as const, code: "session_not_found", message: "err" }) // Enter fails
-        .mockResolvedValueOnce({ ok: true as const }); // C-c succeeds
-      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText, sendKeys }));
-
-      const result = await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo");
-
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.code).toBe("resume_failed");
-      // C-c cleanup was attempted
-      expect(sendKeys).toHaveBeenCalledTimes(2);
-      expect(sendKeys.mock.calls[1]![1]).toEqual(["C-c"]);
-    });
-
-    it("sendText fails -> NO C-c attempt", async () => {
-      const sendText = vi.fn(async () => ({ ok: false as const, code: "session_not_found", message: "err" }));
-      const sendKeys = vi.fn(async () => ({ ok: true as const }));
-      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText, sendKeys }));
-
-      await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo");
-
-      // sendKeys should NOT have been called at all (no Enter, no C-c)
-      expect(sendKeys).not.toHaveBeenCalled();
-    });
+    // The Enter-failure -> C-c cleanup and the no-Enter-after-a-failed-paste rule belong to
+    // TmuxAdapter.sendShellCommand, which the launch goes through; they are pinned against the
+    // production method in tmux-shell-command.test.ts ("removes the unconsumed script when ... fails").
+    // A row here would only exercise the shared mockShellCommand helper.
 
     it("returns retry_fresh when Claude prints no conversation found and drops back to shell", async () => {
       const getPaneCommand = vi.fn(async () => "zsh");
