@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 
@@ -17,7 +18,7 @@ function mockTmux(overrides?: {
   capturePaneContent?: (target: string, lines?: number) => Promise<string | null>;
   getPanePid?: (target: string) => Promise<number | null>;
 }) {
-  return {
+  return mockShellCommand({
     sendText: overrides?.sendText ?? vi.fn(async () => ({ ok: true as const })),
     sendKeys: overrides?.sendKeys ?? vi.fn(async () => ({ ok: true as const })),
     getPaneCommand: overrides?.getPaneCommand ?? vi.fn(async () => "claude"),
@@ -29,7 +30,7 @@ function mockTmux(overrides?: {
     listWindows: async () => [],
     listPanes: async () => [],
     hasSession: async () => false,
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 describe("ClaudeResumeAdapter", () => {

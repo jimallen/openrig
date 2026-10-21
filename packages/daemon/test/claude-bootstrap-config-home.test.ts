@@ -2,6 +2,7 @@
 // provider or real user configuration. The fake reads the selected state; this
 // proves OpenRig's routing, not Claude ingestion or successful login.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -84,6 +85,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     const alternateBefore = fs.readFileSync(f.statePath, "utf8");
     let pending = "";
     f.tmux.sendText = async (_target, text) => { pending = text; return { ok: true }; };
+    mockShellCommand(f.tmux);
     f.tmux.sendKeys = async () => {
       f.launches.push(JSON.parse(execFileSync("/bin/sh", ["-c", pending], {
         encoding: "utf8", cwd: f.cwd, env: { HOME: f.env.HOME, PATH: f.env.PATH + ":/usr/bin:/bin" },
@@ -211,6 +213,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
 function classicLaunch(f: ReturnType<typeof fixture>, childEnv: Record<string, string>) {
   let pending = "";
   f.tmux.sendText = async (_target, text) => { pending = text; return { ok: true }; };
+  mockShellCommand(f.tmux);
   f.tmux.sendKeys = async () => {
     f.launches.push(JSON.parse(execFileSync("/bin/sh", ["-c", pending], {
       encoding: "utf8", cwd: f.cwd, env: { ...childEnv, PATH: f.env.PATH + ":/usr/bin:/bin" },

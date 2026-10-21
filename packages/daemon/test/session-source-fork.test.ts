@@ -231,7 +231,7 @@ describe("session_source codec roundtrip", () => {
 // ============================================================================
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     sendText: vi.fn(async () => ({ ok: true as const })),
     hasSession: vi.fn(async () => true),
     getPaneCommand: vi.fn(async () => "claude"),
@@ -242,7 +242,7 @@ function mockTmux(): TmuxAdapter {
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 function mockClaudeFs(captured?: string): ClaudeAdapterFsOps {

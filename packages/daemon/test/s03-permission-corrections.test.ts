@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { execFile } from "node:child_process";
 import { Hono } from "hono";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
@@ -21,7 +22,7 @@ const binding: NodeBinding = { id: "binding", nodeId: "node", attachmentType: "t
   tmuxPane: "%1", cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/seat/older-cli", permissionMode: "auto" };
 function transport() {
   const sendText = vi.fn(async (_target: string, _text: string) => ({ ok: false as const, message: "offline stop before submission" }));
-  return { sendText, tmux: { sendText, sendKeys: () => { throw Error("forbidden input"); } } as unknown as TmuxAdapter };
+  return { sendText, tmux: mockShellCommand({ sendText, sendKeys: () => { throw Error("forbidden input"); } } as unknown as TmuxAdapter) };
 }
 function daemonHelp() {
   vi.stubEnv("PATH", "/daemon/new-cli/bin");

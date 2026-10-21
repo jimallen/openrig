@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { buildNativeResumeCommand } from "../src/domain/native-resume-probe.js";
@@ -19,7 +20,7 @@ const FLOOR = "--permission-mode acceptEdits";
 const RENDERER = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1";
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     sendText: vi.fn(async () => ({ ok: true as const })),
     hasSession: vi.fn(async () => true),
     getPaneCommand: vi.fn(async () => "claude"),
@@ -31,7 +32,7 @@ function mockTmux(): TmuxAdapter {
     listPanes: vi.fn(async () => []),
     getPanePid: vi.fn(async () => null),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 const fsOps = {
