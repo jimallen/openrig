@@ -81,15 +81,32 @@ export function getSeatCwdPresenceError(
   resolvedCwd: string,
   stat: (path: string) => { isDirectory(): boolean } = statSync,
 ): string | null {
+  const fault = getSeatCwdFault(resolvedCwd, stat);
+  if (!fault) return null;
+  return fault.kind === "missing"
+    ? `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory or change the seat's cwd (preflight does not create it)`
+    : `cwd '${resolvedCwd}' ${fault.what}`;
+}
+
+/** What is wrong with a seat's resolved cwd, as a kind a caller can branch on. `what` completes "cwd '<path>' ...". */
+export type SeatCwdFault = { kind: "missing" } | { kind: "not_directory" | "not_accessible"; what: string };
+
+export function getSeatCwdFault(
+  resolvedCwd: string,
+  stat: (path: string) => { isDirectory(): boolean } = statSync,
+): SeatCwdFault | null {
   let found: { isDirectory(): boolean };
   try {
     found = stat(resolvedCwd);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") {
-      return `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory or change the seat's cwd (preflight does not create it)`;
-    }
-    return `cwd '${resolvedCwd}' is not accessible (${code ?? (err as Error).message})`;
+    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "missing" };
+    return { kind: "not_accessible", what: `is not accessible (${code ?? (err as Error).message})` };
   }
-  return found.isDirectory() ? null : `cwd '${resolvedCwd}' is not a directory`;
+  return found.isDirectory() ? null : { kind: "not_directory", what: "is not a directory" };
+}
+
+/** What the person does about a fault in a seat's recorded folder: create it only when it is absent, otherwise fix what is wrong. */
+export function seatCwdFixAdvice(path: string, fault: SeatCwdFault): string {
+  return fault.kind === "missing" ? `Create the folder ${path}` : `Fix ${path}: it ${fault.what}`;
 }

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
-import { getSeatCwdPresenceError } from "../src/domain/cwd-resolution.js";
+import { getSeatCwdFault, getSeatCwdPresenceError, seatCwdFixAdvice } from "../src/domain/cwd-resolution.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RigSpec as PodRigSpec } from "../src/domain/types.js";
@@ -134,6 +134,18 @@ describe("rig up preflight: seat cwd must be an existing directory (OF-63)", () 
     } finally {
       fs.chmodSync(parent, 0o755);
     }
+  });
+
+  it("OF-63 fresh guidance: says to create the folder only when it is absent; otherwise names what is wrong", () => {
+    const gone = Object.assign(new Error("gone"), { code: "ENOENT" });
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    const missing = getSeatCwdFault("/s/x", () => { throw gone; })!;
+    const locked = getSeatCwdFault("/s/x", () => { throw denied; })!;
+    const file = getSeatCwdFault("/s/x", () => ({ isDirectory: () => false }))!;
+    expect(seatCwdFixAdvice("/s/x", missing)).toBe("Create the folder /s/x");
+    expect(seatCwdFixAdvice("/s/x", file)).toBe("Fix /s/x: it is not a directory");
+    expect(seatCwdFixAdvice("/s/x", locked)).toBe("Fix /s/x: it is not accessible (EACCES)");
+    expect(getSeatCwdFault("/s/x", () => ({ isDirectory: () => true }))).toBeNull();
   });
 
   it("never creates the missing directory", async () => {
