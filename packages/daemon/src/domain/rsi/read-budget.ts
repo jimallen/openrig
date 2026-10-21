@@ -38,25 +38,31 @@ export class RsiReadBudget {
  * The per-source time budget applied to EVERY RSI source by the registry (registry.ts), not only
  * to the sources that also check a budget between rows (D1-D3). better-sqlite3 cannot interrupt a
  * running statement, and a file read is one call, so this wrapper cannot stop a read: it MEASURES
- * it. A read that took the whole budget or more keeps its findings (they were really found), and
- * each of its available coverage rows is marked `partial: true` with an `over-budget` note, so the
- * read is never presented as a complete one. An `unavailable` row is already partial and is left
- * as it is. A source that reported no coverage gets one row, so an over-budget read is never
- * invisible. `name` and `detectors` are the inner source's, so disabling its detectors still skips
- * the read, and the wake's detector-to-source map is unchanged.
+ * it. SLOW IS NOT INCOMPLETE (coordinator ruling on integ21c review N1): a read that took the whole
+ * budget or more but finished keeps its findings AND its own `partial` value, so B1 resolves and
+ * activates on it as on any complete read. Each available coverage row gets the note
+ * `over budget: <elapsed> ms (budget <budgetMs>)`; an `unavailable` row is left as it is. A read that was really
+ * cut short (D1-D3's between-rows check) is still `partial`, because the inner source says so.
+ * A source that reported no coverage gets one complete row carrying the note, stamped with the
+ * source's clock (`now`), so an over-budget read is never invisible. `name` and `detectors` are the
+ * inner source's, so disabling its detectors still skips the read, and the wake's
+ * detector-to-source map is unchanged.
  */
 export class BudgetedRsiSource implements HealthObservationSource {
   readonly name?: string;
   readonly detectors?: readonly string[];
   private readonly budgetMs: number;
   private readonly clock: () => number;
+  private readonly now: () => Date;
   private lastCoverage: HealthSourceCoverage[] = [];
 
-  constructor(readonly inner: HealthObservationSource, options: RsiReadBudgetOptions = {}) {
+  /** `now` is the source's wall clock (the registry passes the one it gives the sources). */
+  constructor(readonly inner: HealthObservationSource, options: RsiReadBudgetOptions & { now?: () => Date } = {}) {
     this.name = inner.name;
     this.detectors = inner.detectors;
     this.budgetMs = options.budgetMs ?? RSI_DEFAULT_READ_BUDGET_MS;
     this.clock = options.nowMs ?? (() => performance.now());
+    this.now = options.now ?? (() => new Date());
   }
 
   coverage(): readonly HealthSourceCoverage[] {
@@ -73,12 +79,11 @@ export class BudgetedRsiSource implements HealthObservationSource {
       this.lastCoverage = coverage;
       return observations;
     }
-    const note = `over-budget: the read took ${Math.round(elapsedMs)} ms of a ${this.budgetMs} ms budget; `
-      + "a running statement cannot be interrupted, so it ran to completion";
+    const note = `over budget: ${Math.round(elapsedMs)} ms (budget ${this.budgetMs})`;
     this.lastCoverage = coverage.length === 0
-      ? [{ source: this.name ?? "rsi-source", evaluatedAt: new Date().toISOString(), unit: "reads", limit: 1, total: 1, evaluated: 1,
-        omitted: 0, partial: true, order: "single read", note }]
-      : coverage.map((row) => row.status === "unavailable" ? row : { ...row, partial: true, note: row.note === undefined ? note : `${row.note}; ${note}` });
+      ? [{ source: this.name ?? "rsi-source", evaluatedAt: this.now().toISOString(), unit: "reads", limit: 1, total: 1, evaluated: 1,
+        omitted: 0, partial: false, order: "single read", note }]
+      : coverage.map((row) => row.status === "unavailable" ? row : { ...row, note: row.note === undefined ? note : `${row.note}; ${note}` });
     return observations;
   }
 }

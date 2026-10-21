@@ -148,6 +148,29 @@ describe("rig up preflight: seat cwd must be an existing directory (OF-63)", () 
     expect(getSeatCwdFault("/s/x", () => ({ isDirectory: () => true }))).toBeNull();
   });
 
+  // OF-79 N2-1: "Create the folder" only when creating it would work. A path under a file (ENOTDIR) or a dangling symbolic
+  // link cannot be created where it is (mkdir fails on both), so the advice names what is wrong instead.
+  it("OF-79: a path under a file, or a dangling symbolic link, is not 'missing': the advice says what is wrong, never 'Create'", () => {
+    const file = nodePath.join(tmp, "a-file");
+    fs.writeFileSync(file, "x");
+    const underFile = nodePath.join(file, "seat");
+    const link = nodePath.join(tmp, "dangling");
+    fs.symlinkSync(nodePath.join(tmp, "no-such-target"), link);
+    const absent = nodePath.join(tmp, "absent");
+
+    const underFileFault = getSeatCwdFault(underFile)!;
+    const linkFault = getSeatCwdFault(link)!;
+    expect(seatCwdFixAdvice(underFile, underFileFault)).toBe(`Fix ${underFile}: it has a parent that is not a directory`);
+    expect(seatCwdFixAdvice(link, linkFault)).toBe(`Fix ${link}: it is a symbolic link whose target does not exist`);
+    expect(getSeatCwdPresenceError(underFile)).toBe(`cwd '${underFile}' has a parent that is not a directory`);
+    expect(getSeatCwdPresenceError(link)).toBe(`cwd '${link}' is a symbolic link whose target does not exist`);
+    // Control: a path with nothing at it is still missing, and creating it is still the advice.
+    expect(seatCwdFixAdvice(absent, getSeatCwdFault(absent)!)).toBe(`Create the folder ${absent}`);
+    // And mkdir really fails on both, which is why "Create" would be wrong.
+    expect(() => fs.mkdirSync(underFile, { recursive: true })).toThrow();
+    expect(() => fs.mkdirSync(link)).toThrow();
+  });
+
   it("never creates the missing directory", async () => {
     const missing = nodePath.join(tmp, "must-stay-missing");
     await run(rigYaml([agentSeat(missing), terminalSeat(missing)]));

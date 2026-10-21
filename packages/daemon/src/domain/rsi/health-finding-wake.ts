@@ -298,6 +298,17 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
 export const RSI_STEWARD_UNSET_REASON = "rsi_steward_unset";
 export const RSI_STEWARD_INVALID_REASON = "rsi_steward_invalid";
 
+/**
+ * THE steward validity rule, shared by B1 (ensureRsiStewardJobs) and B2 (the human-gate notifier,
+ * armed in startup.ts): blank is `unset`, a value without `@` is `invalid`, anything else is
+ * `valid`. Only `valid` arms; an invalid value disarms both.
+ */
+export function rsiStewardValidity(stewardSession: string): "unset" | "invalid" | "valid" {
+  const steward = stewardSession.trim();
+  if (steward === "") return "unset";
+  return steward.includes("@") ? "valid" : "invalid";
+}
+
 export type RsiStewardJobs =
   | { armed: true; wake: WatchdogJob; report: WatchdogJob }
   | { armed: false; reason: typeof RSI_STEWARD_UNSET_REASON | typeof RSI_STEWARD_INVALID_REASON; disarmed: string[] };
@@ -305,20 +316,25 @@ export type RsiStewardJobs =
 /**
  * Boot reconciliation of the steward's two jobs (§3.4): the hourly wake and the daily report.
  * - A canonical `<member>@<rig>` steward arms (or retargets) both, idempotently.
- * - Empty, blank or invalid (no `@`) arms nothing AND disarms every nonterminal row at the two
- *   anchors with markTerminal, so an install that unsets the key stops being woken. Terminal,
- *   not stop(): ensureAutoRegistration treats a stopped row as a durable operator opt-out and
- *   would never re-arm it; a terminal row is replaced by a fresh active one when the key is set
- *   again. The re-armed rows are new jobs, so they hold no receipt: their first scan wakes once
- *   for every fingerprint still active.
+ * - Empty, blank or invalid (no `@`, see `rsiStewardValidity`) arms nothing AND disarms every
+ *   nonterminal row at the two anchors with markTerminal, so an install that unsets the key stops
+ *   being woken. Terminal, not stop(): ensureAutoRegistration treats a stopped row as a durable
+ *   operator opt-out and would never re-arm it; a terminal row is replaced by a fresh active one
+ *   when the key is set again. The re-armed rows are new jobs, so they hold no receipt: their
+ *   first scan sends ONE wake, and that one wake names every fingerprint still active.
+ * - CONSEQUENCE (accepted; B1 review R4): a wake or report job an operator STOPPED is a nonterminal
+ *   row, so unsetting the key turns it terminal as well, and setting the key again arms a fresh,
+ *   active job. Unset-then-set therefore re-arms a job an operator had stopped. To keep the steward
+ *   quiet, leave the key unset, or stop the job again after setting the key.
  */
 export function ensureRsiStewardJobs(
   jobsRepo: Pick<WatchdogJobsRepository, "ensureAutoRegistration" | "findAutoRegistration" | "markTerminal">,
   stewardSession: string,
 ): RsiStewardJobs {
+  const validity = rsiStewardValidity(stewardSession);
   const steward = stewardSession.trim();
-  if (steward === "" || !steward.includes("@")) {
-    const reason = steward === "" ? RSI_STEWARD_UNSET_REASON : RSI_STEWARD_INVALID_REASON;
+  if (validity !== "valid") {
+    const reason = validity === "unset" ? RSI_STEWARD_UNSET_REASON : RSI_STEWARD_INVALID_REASON;
     const disarmed: string[] = [];
     for (const [policy, anchor] of [[HEALTH_FINDING_WAKE_POLICY, RSI_WAKE_ANCHOR], ["periodic-reminder", RSI_DAILY_REPORT_ANCHOR]] as const) {
       const row = jobsRepo.findAutoRegistration(policy, anchor, null);

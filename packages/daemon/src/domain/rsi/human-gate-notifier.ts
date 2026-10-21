@@ -11,9 +11,10 @@ import { isHumanSeatSession } from "../human-route-enforcer.js";
  * Reads queue state, never writes it. The notifier's only writes go to its own table,
  * `rsi_notifications`, which RSI lane B1 creates in its migration:
  *   rsi_notifications(qitem_id TEXT PRIMARY KEY, first_notified_at TEXT NOT NULL, last_notified_at TEXT NOT NULL)
- * Until that migration is merged the notifier cannot run; startup wiring is also inert until B1
- * adds the `rsi.steward_session` setting. The notifier is armed once, at daemon boot: changing
- * `rsi.steward_session` needs a daemon restart.
+ * (migration 113). startup.ts arms the notifier only when `rsi.steward_session` is valid by B1's
+ * own rule (`rsiStewardValidity`, health-finding-wake.ts), so an invalid value disarms the wake and
+ * the notifier alike. The notifier is armed once, at daemon boot: changing `rsi.steward_session`
+ * needs a daemon restart.
  *
  * Residual risk, accepted (Jim's D8(a): approvals can be forged): `source_session` is a label, not an
  * authenticated identity. The daemon takes the X-OpenRig-Session header (or a body sourceSession)

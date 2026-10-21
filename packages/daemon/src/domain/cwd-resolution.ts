@@ -1,5 +1,5 @@
 import nodePath from "node:path";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
 const ENV_REF = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
@@ -84,23 +84,38 @@ export function getSeatCwdPresenceError(
   const fault = getSeatCwdFault(resolvedCwd, stat);
   if (!fault) return null;
   return fault.kind === "missing"
-    ? `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory or change the seat's cwd (preflight does not create it)`
+    ? `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory${SEAT_CWD_CHANGE_HINT} (preflight does not create it)`
     : `cwd '${resolvedCwd}' ${fault.what}`;
 }
 
-/** What is wrong with a seat's resolved cwd, as a kind a caller can branch on. `what` completes "cwd '<path>' ...". */
+/** The part of the missing-folder refusal that offers editing the spec's cwd. True for a first launch (`rig up`),
+ *  where the spec's cwd decides the folder; NOT for a fresh launch, which judges the seat's recorded folder that no
+ *  command changes, so the fresh-launch refusal removes it (rigspec-instantiator.ts). */
+export const SEAT_CWD_CHANGE_HINT = " or change the seat's cwd";
+
+/** What is wrong with a seat's resolved cwd, as a kind a caller can branch on. `what` completes "cwd '<path>' ...".
+ *  `missing` means nothing is at the path, so creating the folder fixes it. A path that cannot be created where it
+ *  is (a parent that is a file, a symbolic link whose target is gone) is `not_directory`, with what is wrong. */
 export type SeatCwdFault = { kind: "missing" } | { kind: "not_directory" | "not_accessible"; what: string };
 
 export function getSeatCwdFault(
   resolvedCwd: string,
   stat: (path: string) => { isDirectory(): boolean } = statSync,
+  lstat: (path: string) => { isSymbolicLink(): boolean } = lstatSync,
 ): SeatCwdFault | null {
   let found: { isDirectory(): boolean };
   try {
     found = stat(resolvedCwd);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "missing" };
+    // A parent component is a file: mkdir of this path fails too, so "create it" would be wrong advice.
+    if (code === "ENOTDIR") return { kind: "not_directory", what: "has a parent that is not a directory" };
+    if (code === "ENOENT") {
+      // stat follows links: a dangling symbolic link reads as ENOENT, and mkdir over it fails as well.
+      let link = false;
+      try { link = lstat(resolvedCwd).isSymbolicLink(); } catch { /* nothing at the path: missing */ }
+      return link ? { kind: "not_directory", what: "is a symbolic link whose target does not exist" } : { kind: "missing" };
+    }
     return { kind: "not_accessible", what: `is not accessible (${code ?? (err as Error).message})` };
   }
   return found.isDirectory() ? null : { kind: "not_directory", what: "is not a directory" };

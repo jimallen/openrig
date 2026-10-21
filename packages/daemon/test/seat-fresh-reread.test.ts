@@ -316,6 +316,9 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
 
     expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
     expect(!result.ok && result.message).toContain("work' does not exist; a seat launched there would silently start in $HOME");
+    // OF-79 N2-2: no command changes the seat's recorded folder, so the refusal message must not offer it either.
+    expect(!result.ok && result.message).toContain("Create the directory (preflight does not create it)");
+    expect(!result.ok && result.message).not.toContain("change the seat");
     const guidance = (!result.ok && result.guidance) || "";
     expect(guidance).toContain(`Create the folder ${workdir}, then run the fresh launch again`);
     expect(guidance).not.toContain("change the seat");

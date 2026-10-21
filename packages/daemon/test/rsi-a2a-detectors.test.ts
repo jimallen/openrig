@@ -890,6 +890,25 @@ describe("anchor text is validated at parse and never echoed", () => {
     expect(refusedReasons(f.d1())).toEqual(["bad-fingerprint", "bad-fingerprint", "bad-fingerprint"]);
   });
 
+  // OF-79 N1-2: a bad-fingerprint refusal is named by index only; its raw text reaches neither the coverage note nor a finding.
+  it("never echoes a malformed fingerprint: not in the refusal, the coverage note, or the finding it rides on", () => {
+    const f = fixture();
+    const raws = [`${RSI_STARTUP_FAILURE_CLASS}/class:caféRAWMARK`, "no-slash-rawmark", `${RSI_STARTUP_FAILURE_CLASS}/${"rawmark".repeat(40)}`];
+    f.writeFixes(raws.map((fingerprint) => ({ ...good, fingerprint })));
+    for (const h of ["01", "02", "03"]) f.startupFailed(GETCWD, `2031-03-03 ${h}:00:00`);
+    const source = f.d1();
+
+    const found = records(source);
+
+    expect(found).toHaveLength(1); // positive control: a finding carries the anchor note
+    expect(source.refusedAnchors()).toEqual(raws.map((_, index) => ({ index, detectorId: null, fingerprint: null, ref: null, reason: "bad-fingerprint" })));
+    expect(noteOf(source)).toContain("refused anchor #2: bad-fingerprint");
+    const served = JSON.stringify({ coverage: source.coverage(), found }).toLowerCase();
+    expect(served).toContain("refused anchor #0: bad-fingerprint");
+    expect(served).not.toContain("rawmark");
+    expect(served).not.toContain("no-slash");
+  });
+
   it("lists a refusal only on the source that owns the detector", () => {
     const f = fixture();
     f.writeFixes([
@@ -967,6 +986,23 @@ describe("D3 and a deleted or re-created rig name", () => {
     anchored(f);
     f.rig("g1", "foo", "2031-02-15 00:00:00"); // generation 2 was created and deleted after the fix: no row remains
     rigDeleted(f, "2031-03-03 00:00:00");
+    f.job("parked-owner-consumer", "parked-owner-consumer@foo", "active", "2031-02-01 00:00:00");
+    const source = f.d3();
+
+    const [record] = records(source);
+
+    expect(span(record!)).toMatchObject({ class: "regression-after:abc1234", count: 1 });
+    expect(source.historicalFixed()).toEqual([]);
+  });
+
+  // OF-79 N1-1: the deletion instant is the LATEST created_at, not the newest row by seq. Here the newer row (higher seq)
+  // carries the older stamp, as after a clock step back; the later deletion still makes the instant unknown.
+  it("uses the latest deletion INSTANT (max created_at), not the newest deletion row, when the clock stepped back", () => {
+    const f = fixture();
+    anchored(f);
+    f.rig("g1", "foo", "2031-02-15 00:00:00");
+    rigDeleted(f, "2031-03-03 00:00:00"); // after the archive, lower seq
+    rigDeleted(f, "2031-02-10 00:00:00"); // before the archive, higher seq
     f.job("parked-owner-consumer", "parked-owner-consumer@foo", "active", "2031-02-01 00:00:00");
     const source = f.d3();
 

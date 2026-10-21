@@ -11,7 +11,8 @@ import { ContextHighWaterSource, ProviderWeeklyWindowSource, RetentionLagSource 
 export interface A2bSourceOptions {
   dbPath: string;
   instanceId: string;
-  /** False when the daemon runs no retention sweep: a surviving old row is then expected, not a defect. */
+  /** False when the daemon runs no retention sweep: a surviving old row is then expected, not a defect,
+   * and D10 reports a complete zero-count read noted `retention disabled` (it is still registered). */
   retentionEnabled: boolean;
   /** Live `retention.usage_samples_days`; read on every scan. */
   retentionDays?: () => number;
@@ -35,9 +36,9 @@ export function createA2bSources(options: A2bSourceOptions): HealthObservationSo
     createPermissionStallSource(deps),
     createWatchdogDeliveryFailureSource(deps),
     new ProjectReportSource(deps),
+    // D10 always registers (integ21c review N2): with retention off it reads as a complete zero.
+    new RetentionLagSource({ ...deps, retentionEnabled: options.retentionEnabled,
+      retentionDays: options.retentionDays ?? (() => RETENTION_DEFAULTS.usageSamplesRetentionDays) }),
   ];
-  if (options.retentionEnabled) {
-    sources.push(new RetentionLagSource({ ...deps, retentionDays: options.retentionDays ?? (() => RETENTION_DEFAULTS.usageSamplesRetentionDays) }));
-  }
   return sources;
 }

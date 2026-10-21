@@ -20,8 +20,8 @@ import { rsiFingerprint } from "./fingerprint.js";
  *
  * TIME BUDGET: every source exposes a plain `read()`, and the RSI registry (registry.ts) wraps
  * each one in A2a's `BudgetedRsiSource` (read-budget.ts). better-sqlite3 cannot interrupt a running
- * statement, so the wrapper measures the read and marks an over-budget read `partial` with a note;
- * it cannot cut a statement short. The grouped statements are bounded by the window (and an index),
+ * statement, so the wrapper measures the read and notes an over-budget read on its coverage; it
+ * cannot cut a statement short, and a slow read that finished is not marked partial. The grouped statements are bounded by the window (and an index),
  * not by a row cap.
  *
  * This is also the ONE finding builder for every RSI counted source (A2a's D1-D3 use it too).
@@ -132,6 +132,8 @@ export interface SourceResult {
   total: number;
   unit: string;
   order: string;
+  /** Served verbatim on the coverage row (daemon-authored text only). */
+  note?: string;
 }
 
 export interface RsiFindingSourceDeps {
@@ -172,7 +174,7 @@ export abstract class RsiFindingSource implements HealthObservationSource {
     this.lastCoverage = [{
       source: this.name, evaluatedAt, unit: result.unit, limit, total: result.total, evaluated: result.findings.length,
       omitted: Math.max(0, result.total - result.findings.length), partial: result.total > result.findings.length,
-      order: result.order,
+      order: result.order, ...(result.note !== undefined ? { note: result.note } : {}),
     }];
     return result.findings.map((finding) => buildTelemetryFinding(finding, evaluatedAt));
   }

@@ -231,7 +231,7 @@ interface DaemonResult {
   contextMonitor: import("./domain/context-monitor.js").ContextMonitor;
   // OPR.0.4.3.21 — returned so index.ts can stop() it on graceful shutdown.
   eventLoopMonitor: import("./domain/event-loop-monitor.js").EventLoopMonitor;
-  /** RSI human-gate banner service; absent unless `rsi.stewardSession` is configured. index.ts starts and stops it. */
+  /** RSI human-gate banner service; absent unless `rsi.steward_session` holds a valid `<member>@<rig>` session. index.ts starts and stops it. */
   humanGateNotifier?: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   injectWebSocket: (server: any) => void;
@@ -1173,7 +1173,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Every RSI source comes from the one registry (domain/rsi/registry.ts); add a source THERE, never here.
   // A source given only to the projection is served by `rig health` but never wakes the steward
   // (rsi-health-finding-wake.test.ts pins every RSI detector id to a source in both).
-  // D10 is armed only when the retention sweep is, with the sweep's own retention resolution (index.ts).
+  // D10 always registers; with the retention sweep off it reads as a complete zero ("retention disabled"). It uses the
+  // sweep's own retention resolution (index.ts).
   const { createRsiSources } = await import("./domain/rsi/registry.js");
   const { RETENTION_DEFAULTS } = await import("./domain/queue-retention.js");
   const rsiTelemetrySources = createRsiSources({ dbPath, openrigHome: OPENRIG_HOME, slowOpLogPath,
@@ -2612,13 +2613,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Armed only when `rsi.steward_session` (RSI lane B1's key) is set.
+  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Armed only when `rsi.steward_session` (RSI lane B1's key) is
+  // VALID by B1's own rule (rsiStewardValidity): an invalid value disarms the wake and the notifier alike.
   // Optional machinery never stops the daemon booting: a failure here (for example the rsi_notifications table
   // missing after a partial rollback) logs its class once and leaves the notifier off.
   let humanGateNotifier: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier | undefined;
   try {
     const steward = healthSettingsStore.resolveOne("rsi.steward_session").value;
-    if (typeof steward === "string" && steward.trim() !== "") {
+    const { rsiStewardValidity } = await import("./domain/rsi/health-finding-wake.js");
+    if (typeof steward === "string" && rsiStewardValidity(steward) === "valid") {
       const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
       humanGateNotifier = new rsiNotifier.HumanGateNotifier({
         listBlocked: rsiNotifier.sqliteBlockedRows(db),

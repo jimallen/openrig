@@ -93,12 +93,14 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
     const verdict = anchorFor(fixes, fingerprint);
     /** Instant of the latest `rig.deleted` event. That event carries only the rig id, so it cannot be tied
      * to a name: any deletion later than a name's latest archive makes the name's instant unknown (the safe
-     * direction). Read only when an anchor governs, since the instant matters only to an anchor. */
+     * direction). Read only when an anchor governs, since the instant matters only to an anchor. It is the
+     * LATEST INSTANT, max(created_at), not the newest row by seq: a clock that stepped back would give a later
+     * seq an earlier created_at and hide a later deletion (OF-79 N1-1). idx_events_type_created_at serves it. */
     let latestDeletedMs: number | null = null;
     db.transaction(() => {
       if (verdict.anchor !== null) {
-        const deleted = db.prepare("SELECT created_at FROM events WHERE type = 'rig.deleted' ORDER BY seq DESC LIMIT 1").get() as { created_at: string } | undefined;
-        latestDeletedMs = deleted === undefined ? null : parseSqliteUtcMs(deleted.created_at);
+        const deleted = db.prepare("SELECT max(created_at) AS created_at FROM events WHERE type = 'rig.deleted'").get() as { created_at: string | null };
+        latestDeletedMs = deleted.created_at === null ? null : parseSqliteUtcMs(deleted.created_at);
       }
       for (const row of db.prepare("SELECT name, archived_at FROM rigs").all() as Array<{ name: string; archived_at: string | null }>) {
         if (row.archived_at === null) liveNames.add(row.name);

@@ -134,7 +134,18 @@ export class ProviderWeeklyWindowSource extends RsiFindingSource {
 /** D10 dependencies: the live retention setting, read on every scan so a tuned value moves the line. */
 export interface RetentionLagDeps extends RsiFindingSourceDeps {
   retentionDays: () => number;
+  /**
+   * False when the daemon runs no retention sweep (`retention.enabled`, decided once at boot, as
+   * the sweep decides it). D10 then still registers, so every RSI id keeps a source, and reports a
+   * COMPLETE zero-count read with the note `retention disabled`: with no sweep there is nothing to
+   * lag. Not `unavailable`, which B1 would carry forward and keep a stale D10 finding active.
+   * Default true.
+   */
+  retentionEnabled?: boolean;
 }
+
+/** The coverage note of D10 when the daemon runs no retention sweep. */
+export const RETENTION_DISABLED_NOTE = "retention disabled";
 
 /** D10: `usage_samples` rows older than retention + one sweep interval + slack still exist. */
 export class RetentionLagSource extends RsiFindingSource {
@@ -146,6 +157,7 @@ export class RetentionLagSource extends RsiFindingSource {
   }
 
   protected query({ db, now }: SourceContext): SourceResult {
+    if (this.lagDeps.retentionEnabled === false) return { findings: [], total: 0, unit: "tables", order: "single table", note: RETENTION_DISABLED_NOTE };
     const retentionDays = this.lagDeps.retentionDays();
     if (!Number.isFinite(retentionDays) || retentionDays <= 0) throw new Error(`retention days must be a positive number, got ${retentionDays}`);
     const retentionMs = retentionDays * 24 * 3_600_000;

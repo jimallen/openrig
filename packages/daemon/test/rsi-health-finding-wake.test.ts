@@ -474,6 +474,33 @@ describe("RSI B1 boot registration (rsi.steward_session)", () => {
       expect(outcome).toMatchObject({ action: "send", target: { session: STEWARD } });
       expect(outcome.action === "send" ? outcome.message : "").toContain(fp("rig-dead"));
     });
+
+    it("ONE RSI source array with retention OFF too: every RSI detector id still maps to a wake source the projection serves", async () => {
+      process.env.OPENRIG_RSI_STEWARD_SESSION = STEWARD;
+      const savedRetention = process.env.OPENRIG_RETENTION_ENABLED;
+      process.env.OPENRIG_RETENTION_ENABLED = "false";
+      try {
+        const dir = mkdtempSync(join(tmpdir(), "rsi-b1-retention-off-"));
+        dirs.push(dir);
+        const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite") });
+        dbs.push(daemon.db);
+        const policy = daemon.deps.watchdogPolicyEngine!.resolvePolicy(HEALTH_FINDING_WAKE_POLICY);
+        const detectorSources = (policy as HealthFindingWakePolicy).detectorSources;
+        const coverage = daemon.deps.healthProjection!.list().coverage ?? [];
+        const projectionSources = new Set(coverage.map((c) => c.source));
+        expect(RSI_DETECTORS.length).toBeGreaterThan(0);
+        for (const id of RSI_DETECTORS) {
+          expect(detectorSources.get(id), `RSI detector ${id} has no source in the wake`).toBeDefined();
+          expect(projectionSources.has(detectorSources.get(id)!), `wake source for ${id} is not in the projection`).toBe(true);
+        }
+        // Positive control that the setting took: D10 reads as the complete "retention disabled" zero.
+        expect(coverage.find((c) => c.source === "rsi-retention-lag")).toMatchObject({ partial: false, total: 0, note: "retention disabled" });
+      } finally {
+        if (savedRetention === undefined) delete process.env.OPENRIG_RETENTION_ENABLED;
+        else process.env.OPENRIG_RETENTION_ENABLED = savedRetention;
+        delete process.env.OPENRIG_RSI_STEWARD_SESSION;
+      }
+    });
   });
 });
 

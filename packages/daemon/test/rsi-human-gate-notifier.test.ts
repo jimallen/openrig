@@ -19,6 +19,7 @@ import {
   type BannerSpawner,
   type BlockedQueueRow,
 } from "../src/domain/rsi/human-gate-notifier.js";
+import { rsiStewardValidity } from "../src/domain/rsi/health-finding-wake.js";
 
 // DEPENDENCY: the `rsi_notifications` and `rsi_notification_banners` tables and the `rsi.steward_session` setting come from RSI lane B1
 // (migration 113, settings-store). This branch is rebased on B1, so the real migrations are used.
@@ -189,6 +190,34 @@ describe("one parking episode is one entry banner", () => {
       expect(h.calls).toHaveLength(1);
     });
   }
+
+  // integ21c review N5 (R-A10): an item whose FIRST transition is `blocked` has no previous row. COALESCE makes that
+  // first park the episode; without it the episode falls back to ts_updated, which a custody move bumps (queue-repository).
+  it("does not re-banner a custody move that also bumps ts_updated, on an item whose first transition is the park", async () => {
+    const h = harness();
+    insertQueueRow(h.db, "q-a");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    transition(h.db, "q-a", "blocked", "2031-03-04T05:30:00.000Z", STEWARD, "blocker custody moved");
+    h.db.prepare("UPDATE queue_items SET ts_updated = '2031-03-04T05:30:00.000Z' WHERE qitem_id = 'q-a'").run();
+    h.now.ms = T0 + 3 * MIN_BANNER_GAP_MS;
+    expect((await h.notifier.tick()).status).toBe("idle");
+    expect(h.calls).toHaveLength(1);
+  });
+
+  // integ21c review N5 (R-A11): "previous" is by transition_id (insertion order), not by ts. A re-park whose ts steps
+  // backwards (a clock step) is still a new entry into blocked, and gets its banner.
+  it("treats a re-park as a new episode by transition order even when its ts steps backwards", async () => {
+    const h = harness();
+    insertQueueRow(h.db, "q-a"); // parked at 00:00
+    expect((await h.notifier.tick()).status).toBe("sent");
+    h.db.prepare("UPDATE queue_items SET state = 'in-progress' WHERE qitem_id = 'q-a'").run();
+    transition(h.db, "q-a", "in-progress", "2031-03-04T05:10:00.000Z");
+    h.db.prepare("UPDATE queue_items SET state = 'blocked' WHERE qitem_id = 'q-a'").run();
+    transition(h.db, "q-a", "blocked", "2031-03-04T00:30:00.000Z"); // ts earlier than the in-progress row
+    h.now.ms = T0 + 60 * MIN;
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(h.calls).toHaveLength(2);
+  });
 });
 
 describe("rate limits", () => {
@@ -484,6 +513,20 @@ describe("daemon wiring", () => {
     open.push(armed.db);
     expect(armed.humanGateNotifier).toBeInstanceOf(HumanGateNotifier);
     expect(log.mock.calls.map((c) => String(c[0]))).toContain(`[rsi-notifier] armed for steward session ${STEWARD}`);
+  });
+
+  it("uses B1's steward validity rule: an invalid value (no '@') disarms the notifier as it disarms the wake", async () => {
+    const dir = tempDir("rsi-notifier-invalid-");
+    const log = vi.spyOn(console, "log");
+    process.env["OPENRIG_RSI_STEWARD_SESSION"] = "no-at-sign";
+    const invalid = await createDaemon({ dbPath: join(dir, "invalid.sqlite") });
+    open.push(invalid.db);
+    expect(invalid.humanGateNotifier).toBeUndefined();
+    expect(log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[rsi-notifier] armed"))).toEqual([]);
+    // B1 disarms on the same value (its rule, the same function).
+    expect(rsiStewardValidity("no-at-sign")).toBe("invalid");
+    expect(rsiStewardValidity("  ")).toBe("unset");
+    expect(rsiStewardValidity(` ${STEWARD} `)).toBe("valid");
   });
 
   it("degrades, never fails daemon start, when the notifier cannot be built (missing table)", async () => {

@@ -18,7 +18,7 @@ import { deriveCanonicalSessionName, validateSessionComponents } from "./session
 import { LegacyRigSpecSchema as RigSpecSchema } from "./rigspec-schema.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { LegacyRigSpecCodec as RigSpecCodec } from "./rigspec-codec.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import type { LegacyRigSpec as RigSpec, LegacyRigSpecEdge as RigSpecEdge, InstantiateOutcome, InstantiateResult } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
-import { getSeatCwdFault, resolveLaunchCwd, seatCwdFixAdvice } from "./cwd-resolution.js";
+import { getSeatCwdFault, resolveLaunchCwd, SEAT_CWD_CHANGE_HINT, seatCwdFixAdvice } from "./cwd-resolution.js";
 
 // Only these edge kinds constrain launch order
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
@@ -2753,7 +2753,9 @@ export class PodRigInstantiator {
       },
     );
     if (!preflight.ready) {
-      const refused = unavailable(`it does not pass the launch preflight (${preflight.errors.join("; ")}).`);
+      // The fresh preflight judges the seat's RECORDED folder, which no command changes, so the first-launch hint
+      // "or change the seat's cwd" is wrong here and is removed from the message (OF-79 N2-2).
+      const refused = unavailable(`it does not pass the launch preflight (${preflight.errors.map((e) => e.split(SEAT_CWD_CHANGE_HINT).join("")).join("; ")}).`);
       // A missing seat folder is not a spec problem: restoring the spec cannot fix it, and the stored-files route skips
       // this check, so it would start the seat in $HOME. Say what does fix it.
       const fault = node.cwd ? getSeatCwdFault(node.cwd) : null;

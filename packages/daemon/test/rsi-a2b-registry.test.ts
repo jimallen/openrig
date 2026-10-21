@@ -25,13 +25,14 @@ const EXPECTED = [
 ] as const;
 
 describe("the A2b registry", () => {
-  it("builds one source per detector, D10 only when the retention sweep is armed", () => {
+  it("builds one source per detector, D10 included whether or not the retention sweep is armed", () => {
     const f = fixture();
     const armed = createA2bSources({ dbPath: f.dbPath, instanceId: "i", retentionEnabled: true });
     const unarmed = createA2bSources({ dbPath: f.dbPath, instanceId: "i", retentionEnabled: false });
 
     expect(armed.map((s) => [s.name, ...(s.detectors ?? [])])).toEqual(EXPECTED.map(([name, id]) => [name, id]));
-    expect(unarmed.map((s) => s.name)).toEqual(EXPECTED.filter(([name]) => name !== "rsi-retention-lag").map(([name]) => name));
+    // integ21c review N2: D10 always registers, so every RSI id keeps a source (it reads as a complete zero when unarmed).
+    expect(unarmed.map((s) => [s.name, ...(s.detectors ?? [])])).toEqual(EXPECTED.map(([name, id]) => [name, id]));
   });
 
   it("registers exactly the ids RSI_A2B_DETECTORS lists, each once", () => {
