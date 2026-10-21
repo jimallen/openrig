@@ -32,6 +32,9 @@ export type RuntimeAuthStatus = "ok" | "unavailable";
 export interface RuntimeProbeResult {
   claudeCode: RuntimeAuthStatus;
   codex: RuntimeAuthStatus;
+  /** How Claude Code reports it authenticates (`claude.ai`, `api_key`, `none`, ...), when its JSON status said so.
+   *  Logged on boot so an API-billed kernel is visible. It never selects the variant: that is a product rule. */
+  claudeAuthMethod?: string;
 }
 
 export interface KernelBootDeps {
@@ -121,7 +124,8 @@ export async function bootKernelIfNeeded(deps: KernelBootDeps): Promise<KernelBo
   }
 
   // 4. Cold boot via the in-process bootstrap pipeline — FIRED, not awaited.
-  log("info", `kernel-boot: booting kernel rig from ${variant}`);
+  const authNote = probe.claudeAuthMethod ? ` (claude authMethod: ${probe.claudeAuthMethod})` : "";
+  log("info", `kernel-boot: booting kernel rig from ${variant}${authNote}`);
   const bootstrapPromise = deps.bootstrapOrchestrator.bootstrap({
     mode: "apply",
     sourceRef: specPath,
@@ -176,25 +180,33 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
   const { promisify } = await import("node:util");
   const execAsync = promisify(exec);
 
-  async function tryProbe(cmd: string): Promise<RuntimeAuthStatus> {
+  async function runProbe(cmd: string): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
     try {
       const { stdout, stderr } = await execAsync(cmd, { timeout: 5000 });
-      const out = `${stdout}\n${stderr}`.toLowerCase();
-      // Conservative parse: any indicator the CLI considers itself
-      // unauthenticated marks the runtime unavailable. Tighter parsing
-      // can land in a follow-up.
-      if (out.includes("not logged") || out.includes("not authenticated") || out.includes("login required")) {
-        return "unavailable";
-      }
-      return "ok";
-    } catch {
-      return "unavailable";
+      return { stdout, stderr, exitCode: 0 };
+    } catch (err) {
+      // exec rejects on a non-zero exit, a timeout (killed, no numeric code) or a missing binary (string code).
+      const e = err as { stdout?: unknown; stderr?: unknown; code?: unknown };
+      return {
+        stdout: typeof e.stdout === "string" ? e.stdout : "",
+        stderr: typeof e.stderr === "string" ? e.stderr : "",
+        exitCode: typeof e.code === "number" ? e.code : null,
+      };
     }
   }
 
+  async function tryProbe(cmd: string): Promise<RuntimeAuthStatus> {
+    const result = await runProbe(cmd);
+    return classifyTextAuthStatus(result);
+  }
+
+  async function probeClaude(): Promise<ClaudeAuthClassification> {
+    return classifyClaudeAuthStatus(await runProbe("claude auth status"));
+  }
+
   const codexHome = process.env.CODEX_HOME || nodePath.join(os.homedir(), ".codex");
-  const [claudeCode, codex] = await Promise.all([
-    tryProbe("claude auth status"),
+  const [claude, codex] = await Promise.all([
+    probeClaude(),
     probeCodexReadiness({
       run: tryProbe,
       readConfig: () => {
@@ -204,7 +216,62 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
     }),
   ]);
 
-  return { claudeCode, codex };
+  return {
+    claudeCode: claude.status,
+    codex,
+    ...(claude.authMethod ? { claudeAuthMethod: claude.authMethod } : {}),
+  };
+}
+
+export interface AuthProbeOutput {
+  stdout: string;
+  stderr: string;
+  /** null when the command never produced one (timeout, missing binary). */
+  exitCode: number | null;
+}
+
+export interface ClaudeAuthClassification {
+  status: RuntimeAuthStatus;
+  authMethod?: string;
+}
+
+/** Legacy text rule, shared by Codex and the Claude fallback. Conservative: any indicator the CLI considers itself
+ *  unauthenticated marks the runtime unavailable. A non-zero or missing exit code is always unavailable. */
+export function classifyTextAuthStatus(out: AuthProbeOutput): RuntimeAuthStatus {
+  if (out.exitCode !== 0) return "unavailable";
+  const text = `${out.stdout}\n${out.stderr}`.toLowerCase();
+  if (text.includes("not logged") || text.includes("not authenticated") || text.includes("login required")) {
+    return "unavailable";
+  }
+  return "ok";
+}
+
+/** Claude Code readiness from `claude auth status`. Claude Code 2.1.x prints JSON (`loggedIn`, `authMethod`) and
+ *  exits 1 when logged out; older versions print prose. Rules, in order:
+ *   1. A non-zero or missing exit code is unavailable, whatever was printed.
+ *   2. JSON with a boolean `loggedIn` decides: false is unavailable even at exit 0, true is ok.
+ *   3. Anything else falls back to the text rule.
+ *  API-key auth (`authMethod: api_key`) counts as ok: the kernel boots, and the method is only reported so an
+ *  API-billed kernel is visible. Choosing a variant by billing method is a product rule, not made here. */
+export function classifyClaudeAuthStatus(out: AuthProbeOutput): ClaudeAuthClassification {
+  const json = parseAuthStatusJson(out.stdout);
+  const authMethod = json && typeof json.authMethod === "string" && /^[A-Za-z0-9._-]{1,32}$/.test(json.authMethod)
+    ? json.authMethod
+    : undefined;
+  const withMethod = (status: RuntimeAuthStatus): ClaudeAuthClassification =>
+    authMethod ? { status, authMethod } : { status };
+  if (out.exitCode !== 0) return withMethod("unavailable");
+  if (json && typeof json.loggedIn === "boolean") return withMethod(json.loggedIn ? "ok" : "unavailable");
+  return withMethod(classifyTextAuthStatus(out));
+}
+
+function parseAuthStatusJson(stdout: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Issue #194 — how the Codex provider selected in `$CODEX_HOME/config.toml`
