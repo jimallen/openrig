@@ -193,7 +193,7 @@ export function readDeclaredMcpServer(input: {
   if (place) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: ${place}.` };
   const commandSha256 = commandBinarySha256(declaration.command);
   if (!commandSha256) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: its command ${declaration.command} cannot be read to pin its checksum.` };
-  const argFiles = mcpArgFilePins(declaration.args);
+  const argFiles = mcpArgFilePins(declaration.args, { seatCwd: node.cwd, ...(input.io ? { io: input.io } : {}) });
   if (!argFiles.ok) return { ok: false, code: "mcp_server_unusable", message: `MCP server "${input.server}" cannot be switched on: ${argFiles.error}.` };
   return { ok: true, entry: { declaration: serializeMcpServer(declaration), specDir, declaredIn: specPath, switchedOnAt: input.now(),
     commandPath: fs.realpathSync(declaration.command), commandSha256, argFiles: argFiles.pins, specSource: operator ? "operator" : "recorded", specSha256 } };

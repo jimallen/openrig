@@ -473,7 +473,7 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
 
   describe("the config files the args name are pinned at switch-on (OF-50)", () => {
     const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
-    const AGAIN = "switch it on again to accept the new binary (rig seat set-mcp <seat> lsp on --reason ...)";
+    const AGAIN = "if the change is intended, check the config file and switch it on again (rig seat set-mcp <seat> lsp on --reason ...)";
     let cfg: string;
     const withArgs = (args: string[]) => writeSpec(lspBlock().replace('["--workspace-trust", "untrusted"]', JSON.stringify(args)));
     const on = (s: ReturnType<typeof seat>) => service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
@@ -592,6 +592,103 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
       await on(s);
       expect(JSON.parse(column(s.node.id)!)["lsp"].argFiles).toEqual([]);
       expect((await launchFresh(s)).ok).toBe(true);
+    });
+  });
+
+  describe("config files: placement, the -c spellings, --config-file, a dangling flag (OF-50 review N1-N4)", () => {
+    let cfg: string;
+    const withArgs = (args: string[]) => writeSpec(lspBlock().replace('["--workspace-trust", "untrusted"]', JSON.stringify(args)));
+    const on = (s: ReturnType<typeof seat>) => service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+    const refusedOn = async (args: string[], name: string) => {
+      withArgs(args);
+      const s = seat(name);
+      const result = await on(s);
+      expect(result).toMatchObject({ ok: false, code: "mcp_server_unusable" });
+      expect(column(s.node.id)).toBeNull();
+      return (result as { message: string }).message;
+    };
+    beforeEach(() => {
+      cfg = join(root, "opt", "mcpls.toml");
+      writeFileSync(cfg, "[[lsp_servers]]\nlanguage_id = \"typescript\"\n");
+    });
+
+    it("N1: a config file inside the seat's working directory is refused at switch-on, and nothing is stored", async () => {
+      const ws = join(root, "ws-planted");
+      mkdirSync(ws, { recursive: true });
+      const planted = join(ws, "mcpls.toml");
+      writeFileSync(planted, "[[lsp_servers]]\nlanguage_id = \"evil\"\n");
+      withArgs(["--config", planted]);
+      const s = seat("planted", { cwd: ws });
+      const result = await on(s);
+      expect(result).toMatchObject({ ok: false, code: "mcp_server_unusable" });
+      expect((result as { message: string }).message).toContain(`the config file ${planted}`);
+      expect((result as { message: string }).message).toContain("working directory");
+      expect(column(s.node.id)).toBeNull();
+    });
+
+    it("N1: a config file that becomes writable by group or others after switch-on is refused at launch, naming the file", async () => {
+      const dir = join(root, "cfg");
+      mkdirSync(dir, { mode: 0o755 });
+      chmodSync(dir, 0o755);
+      const file = join(dir, "mcpls.toml");
+      writeFileSync(file, "x = 1\n");
+      withArgs(["--config", file]);
+      const s = seat("eztrack");
+      expect(await on(s)).toMatchObject({ ok: true });
+      expect((await launchFresh(s)).ok).toBe(true);
+      chmodSync(dir, 0o775);
+      const r = await launchFresh(s);
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain(`the config file ${file} is not protected: ${dir} is writable by group or others`);
+      expect(r.commands).toEqual([]);
+    });
+
+    it("N2: -c <abs>, -c=<abs> and -c<abs> are pinned like --config", async () => {
+      for (const [name, args] of [["sp", ["-c", cfg]], ["eq", [`-c=${cfg}`]], ["jn", [`-c${cfg}`]]] as const) {
+        withArgs([...args]);
+        const s = seat(name);
+        await on(s);
+        const pins = JSON.parse(column(s.node.id)!)["lsp"].argFiles;
+        expect(pins.map((p: { realPath: string }) => p.realPath)).toEqual([cfg]);
+      }
+    });
+
+    it("N2: a relative -c value is refused at switch-on in all three spellings", async () => {
+      expect(await refusedOn(["-c", "rel.toml"], "r1")).toContain("the config file argument rel.toml is not an absolute path");
+      expect(await refusedOn(["-c=rel.toml"], "r2")).toContain("the config file argument rel.toml is not an absolute path");
+      expect(await refusedOn(["-crel.toml"], "r3")).toContain("the config file argument rel.toml is not an absolute path");
+    });
+
+    it("N2: a changed -c config is refused at launch", async () => {
+      withArgs(["-c", cfg]);
+      const s = seat("eztrack");
+      await on(s);
+      writeFileSync(cfg, "changed = true\n");
+      const r = await launchFresh(s);
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain(`the file ${cfg} (${cfg}) now has sha256`);
+    });
+
+    it("N4: --config-file is a config flag: pinned when absolute, refused when relative", async () => {
+      withArgs(["--config-file", cfg]);
+      const s = seat("eztrack");
+      await on(s);
+      expect(JSON.parse(column(s.node.id)!)["lsp"].argFiles.map((p: { realPath: string }) => p.realPath)).toEqual([cfg]);
+      expect(await refusedOn(["--config-file", "rel.toml"], "cf")).toContain("the config file argument rel.toml is not an absolute path");
+    });
+
+    it("N4: a trailing --config with no value is refused at switch-on", async () => {
+      expect(await refusedOn(["--workspace-trust", "untrusted", "--config"], "dg")).toContain("the config flag --config has no value");
+    });
+
+    it("N3: a config change names the config file and does not talk about a binary", async () => {
+      withArgs(["--config", cfg]);
+      const s = seat("eztrack");
+      await on(s);
+      writeFileSync(cfg, "changed = true\n");
+      const r = await launchFresh(s);
+      expect(r.error).toContain("if the change is intended, check the config file and switch it on again (rig seat set-mcp <seat> lsp on --reason ...)");
+      expect(r.error).not.toContain("binary");
     });
   });
 
