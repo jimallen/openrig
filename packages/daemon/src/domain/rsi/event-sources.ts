@@ -1,9 +1,10 @@
+import type Database from "better-sqlite3";
 import type { HealthScope } from "../health-projection.js";
 import {
   RSI_COMPACTION_STORM, RSI_PERMISSION_STALL, RSI_WATCHDOG_DELIVERY_FAILURE,
 } from "./detector-ids.js";
 import {
-  RsiFindingSource, assertPartitionSumsToTotal, hoursBefore, partitionText, sqliteUtcStamp, toIso,
+  RsiFindingSource, hoursBefore, partitionText, sortedParts, sqliteUtcStamp, toIso,
   type FindingSpec, type RsiFindingSourceDeps, type SourceContext, type SourceResult,
 } from "./finding-builder.js";
 
@@ -12,6 +13,9 @@ import {
  * delivery failures. All three read the `events` table (never a derived table: D12 reads events,
  * rev2 §2 F2), count supporting events per subject inside a trailing window, and fire for a
  * subject whose count reaches a threshold.
+ *
+ * Cost: one grouped statement over the window, served by the index events(type, created_at)
+ * (migration 114). Firing, quiet, population and the class split are derived in JS from it.
  *
  * Narrowest readings chosen where the design is silent (also listed in the PR report):
  *  - "in a day" is the trailing 24 hours, not a calendar day, so a storm does not vanish at 00:00 UTC.
@@ -44,11 +48,20 @@ interface EventThresholdConfig {
   /** The partition of every judged event into a closed list of classes plus `other`. */
   classSql: string;
   classLabel: string;
+  /** An independent series that must agree with the judged events; a disagreement throws (source unavailable). */
+  crossCheck?(db: Database.Database, since: string, judgedEvents: number): void;
   scope(row: { rigId: string | null; nodeId: string | null }, instanceId: string): HealthScope;
   describe(subject: string, n: number): { summary: string; thresholdText: string; suggestedInspection: string; fixHint: string };
 }
 
-interface GroupRow { k: string; n: number; first_seq: number; last_seq: number; first_seen: string; last_seen: string; rig_id: string | null; node_id: string | null }
+interface GroupRow {
+  k: string; cls: string; hit: number; n: number; first_seq: number; last_seq: number;
+  first_seen: string; last_seen: string; rig_id: string | null; node_id: string | null;
+}
+interface Subject {
+  events: number; hits: number; firstSeq: number; lastSeq: number; firstSeen: string; lastSeen: string;
+  rigId: string | null; nodeId: string | null;
+}
 
 const seatScope = (row: { rigId: string | null; nodeId: string | null }, instanceId: string): HealthScope =>
   row.rigId && row.nodeId ? { type: "seat", rigId: row.rigId, seatId: row.nodeId } : { type: "instance", instanceId };
@@ -66,51 +79,60 @@ class EventThresholdSource extends RsiFindingSource {
   protected query({ db, now, limit }: SourceContext): SourceResult {
     const c = this.config;
     const since = sqliteUtcStamp(hoursBefore(now, c.windowHours));
-    const base = [c.eventType, since];
-    const rows = `WITH rows AS (
-      SELECT seq, created_at,
-        coalesce(${c.subjectSql}, '(unattributed)') AS k,
-        CASE WHEN ${c.hitSql} THEN 1 ELSE 0 END AS hit,
-        ${c.classSql} AS cls,
-        json_extract(payload, '$.rigId') AS rig_id, json_extract(payload, '$.nodeId') AS node_id
-      FROM events WHERE type = ? AND created_at >= ? AND (${c.universeSql}))`;
-    const groups = db.prepare(`${rows}
-      SELECT k, count(*) AS n, min(seq) AS first_seq, max(seq) AS last_seq, min(created_at) AS first_seen, max(created_at) AS last_seen,
-        max(rig_id) AS rig_id, max(node_id) AS node_id
-      FROM rows WHERE hit = 1 GROUP BY k HAVING count(*) >= ? ORDER BY n DESC, k LIMIT ?`).all(...base, c.threshold, limit) as GroupRow[];
-    const firing = (db.prepare(`${rows} SELECT count(*) AS n FROM (SELECT k FROM rows WHERE hit = 1 GROUP BY k HAVING count(*) >= ?)`).get(...base, c.threshold) as { n: number }).n;
-    const quiet = (db.prepare(`${rows} SELECT count(*) AS n FROM (SELECT k FROM rows GROUP BY k HAVING sum(hit) < ?)`).get(...base, c.threshold) as { n: number }).n;
-    const population = (db.prepare(`${rows} SELECT count(DISTINCT k) AS n FROM rows`).get(...base) as { n: number }).n;
-    const classes = db.prepare(`${rows} SELECT cls, count(*) AS n FROM rows GROUP BY cls ORDER BY cls`).all(...base) as Array<{ cls: string; n: number }>;
-    const events = (db.prepare(`${rows} SELECT count(*) AS n FROM rows`).get(...base) as { n: number }).n;
+    // ONE grouped pass over the window; everything else is derived below.
+    const rows = db.prepare(`SELECT coalesce(${c.subjectSql}, '(unattributed)') AS k, ${c.classSql} AS cls,
+        CASE WHEN ${c.hitSql} THEN 1 ELSE 0 END AS hit, count(*) AS n,
+        min(seq) AS first_seq, max(seq) AS last_seq, min(created_at) AS first_seen, max(created_at) AS last_seen,
+        max(json_extract(payload, '$.rigId')) AS rig_id, max(json_extract(payload, '$.nodeId')) AS node_id
+      FROM events WHERE type = ? AND created_at >= ? AND (${c.universeSql}) GROUP BY k, cls, hit`).all(c.eventType, since) as GroupRow[];
 
-    // Two sum-to-total controls, each against an independent count: the judged subjects split
-    // into firing and not firing, and the judged events split into the closed class list.
-    assertPartitionSumsToTotal(`${c.detectorId} ${c.subjectNoun}s`, [["firing", firing], ["not firing", quiet]], population);
-    const classParts = classes.map((row) => [row.cls, row.n] as const);
-    assertPartitionSumsToTotal(`${c.detectorId} events`, classParts, events);
+    const subjects = new Map<string, Subject>();
+    const classes = new Map<string, number>();
+    let events = 0;
+    for (const row of rows) {
+      events += row.n;
+      classes.set(row.cls, (classes.get(row.cls) ?? 0) + row.n);
+      const s = subjects.get(row.k) ?? { events: 0, hits: 0, firstSeq: Infinity, lastSeq: -Infinity, firstSeen: "", lastSeen: "", rigId: null, nodeId: null };
+      s.events += row.n;
+      if (row.hit === 1) {
+        s.hits += row.n;
+        s.firstSeq = Math.min(s.firstSeq, row.first_seq);
+        s.lastSeq = Math.max(s.lastSeq, row.last_seq);
+        if (s.firstSeen === "" || row.first_seen < s.firstSeen) s.firstSeen = row.first_seen;
+        if (row.last_seen > s.lastSeen) s.lastSeen = row.last_seen;
+        s.rigId = row.rig_id ?? s.rigId;
+        s.nodeId = row.node_id ?? s.nodeId;
+      }
+      subjects.set(row.k, s);
+    }
+    c.crossCheck?.(db, since, events);
 
-    const findings: FindingSpec[] = groups.map((row) => {
-      const text = c.describe(row.k, row.n);
+    const firing = [...subjects.entries()].filter(([, s]) => s.hits >= c.threshold)
+      .sort(([ka, a], [kb, b]) => b.hits - a.hits || (ka < kb ? -1 : ka > kb ? 1 : 0));
+    const population = subjects.size;
+    const quiet = population - firing.length;
+    const classParts = sortedParts(classes);
+    const findings: FindingSpec[] = firing.slice(0, limit).map(([k, s]) => {
+      const text = c.describe(k, s.hits);
       return {
         detectorId: c.detectorId,
         className: c.className,
-        subjectKey: `${c.subjectNoun}:${row.k}`,
-        scope: c.scope({ rigId: row.rig_id, nodeId: row.node_id }, this.deps.instanceId),
-        count: row.n,
+        subjectKey: `${c.subjectNoun}:${k}`,
+        scope: c.scope({ rigId: s.rigId, nodeId: s.nodeId }, this.deps.instanceId),
+        count: s.hits,
         controlTotal: quiet,
         population,
-        firstSeq: row.first_seq,
-        lastSeq: row.last_seq,
-        firstSeen: toIso(row.first_seen),
-        lastSeen: toIso(row.last_seen),
+        firstSeq: s.firstSeq,
+        lastSeq: s.lastSeq,
+        firstSeen: toIso(s.firstSeen),
+        lastSeen: toIso(s.lastSeen),
         summary: text.summary,
         threshold: text.thresholdText,
-        explanation: `${row.n} of ${events} judged events in the last ${c.windowHours} h; ${firing} ${c.subjectNoun}(s) fire and ${quiet} judged ${c.subjectNoun}(s) do not, out of ${population}. ${c.classLabel}: ${partitionText(classParts, events)}. ${text.fixHint}`,
+        explanation: `${s.hits} of ${events} judged events in the last ${c.windowHours} h; ${firing.length} ${c.subjectNoun}(s) fire and ${quiet} judged ${c.subjectNoun}(s) do not, out of ${population}. ${c.classLabel}: ${partitionText(classParts)}. ${text.fixHint}`,
         suggestedInspection: text.suggestedInspection,
       };
     });
-    return { findings, total: firing, unit: `${c.subjectNoun}s`, order: "count desc, subject" };
+    return { findings, total: firing.length, unit: `${c.subjectNoun}s`, order: "count desc, subject" };
   }
 }
 
@@ -133,6 +155,14 @@ export function createCompactionStormSource(deps: RsiFindingSourceDeps): RsiFind
     hitSql: `json_extract(payload, '$.activity.rawSubtype') = 'compact'`,
     classSql: `CASE WHEN json_extract(payload, '$.activity.rawSubtype') IN ${KNOWN_SESSION_START} THEN json_extract(payload, '$.activity.rawSubtype') ELSE 'other' END`,
     classLabel: "SessionStart events by subtype",
+    // Rev1's independent control: every SessionStart hook event is followed by one agent.session_identity
+    // event (live 24 h: 33 = 33; all time: 798 = 798). A disagreement means the counted series is wrong.
+    crossCheck: (db, since, sessionStarts) => {
+      const identities = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND created_at >= ?").get(since) as { n: number }).n;
+      if (identities !== sessionStarts) {
+        throw new Error(`${RSI_COMPACTION_STORM}: ${sessionStarts} SessionStart activity events disagree with ${identities} agent.session_identity events in the same window`);
+      }
+    },
     scope: seatScope,
     describe: (seat, n) => ({
       summary: `Seat ${seat} recorded ${n} context compactions in the last ${COMPACTION_STORM_WINDOW_HOURS} h.`,

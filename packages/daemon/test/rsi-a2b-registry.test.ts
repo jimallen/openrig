@@ -6,7 +6,7 @@ import { HealthProjectionService } from "../src/domain/health-detectors.js";
 import { DEFAULT_HEALTH_POLICY, validateHealthPolicy } from "../src/domain/health-policy.js";
 import { createA2bSources } from "../src/domain/rsi/a2b-sources.js";
 import { RSI_A2B_DETECTORS, RSI_DETECTORS } from "../src/domain/rsi/detector-ids.js";
-import { assertPartitionSumsToTotal, partitionText } from "../src/domain/rsi/finding-builder.js";
+import { partitionText, sortedParts } from "../src/domain/rsi/finding-builder.js";
 import { RETENTION_DEFAULTS, RETENTION_SWEEP_INTERVAL_MS } from "../src/domain/queue-retention.js";
 import { createDaemon } from "../src/startup.js";
 import { NOW, cleanupFixtures, fixture } from "./rsi-a2b-fixture.js";
@@ -68,16 +68,10 @@ describe("the A2b registry", () => {
   });
 });
 
-describe("sum-to-total control", () => {
-  it("passes a partition that adds up and names the parts when it does not", () => {
-    expect(() => assertPartitionSumsToTotal("x", [["a", 2], ["b", 3]], 5)).not.toThrow();
-    expect(() => assertPartitionSumsToTotal("x", [["a", 2], ["b", 3]], 6)).toThrow("x: parts a=2, b=3 sum to 5, not the counted total 6");
-    expect(() => assertPartitionSumsToTotal("x", [["a", 2], ["b", 3]], 4)).toThrow(/sum to 5, not the counted total 4/);
-    expect(() => assertPartitionSumsToTotal("x", [], 0)).not.toThrow();
-  });
-
-  it("renders the parts and their total", () => {
-    expect(partitionText([["a", 2], ["b", 3]], 5)).toBe("a 2, b 3 = 5");
+describe("class split rendering", () => {
+  it("renders the parts and their sum", () => {
+    expect(partitionText([["a", 2], ["b", 3]])).toBe("a 2, b 3 = 5");
+    expect(sortedParts(new Map([["b", 1], ["a", 2]]))).toEqual([["a", 2], ["b", 1]]);
   });
 });
 
@@ -96,6 +90,33 @@ describe("daemon wiring", () => {
     } finally {
       fileDaemon.db.close();
       memoryDaemon.db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("daemon wiring: the live retention setting moves D10's line", () => {
+  it("reads retention.usage_samples_days on every scan, as the sweep does", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rsi-a2b-retention-wiring-"));
+    const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite") });
+    const variable = "OPENRIG_RETENTION_USAGE_SAMPLES_DAYS";
+    const previous = process.env[variable];
+    try {
+      // One sample captured 5 days before the wall clock the daemon reads. Default retention (14 d): inside it.
+      daemon.db.prepare("INSERT INTO usage_samples (lane, seat_session, captured_at, used_percentage) VALUES ('context', 's@r', ?, 10)")
+        .run(new Date(Date.now() - 5 * 86_400_000).toISOString());
+      const lag = () => daemon.deps.healthProjection!.list().records.filter((r) => r.detector === "rsi.retention-lag");
+      delete process.env[variable];
+      expect(lag()).toEqual([]);
+
+      process.env[variable] = "3"; // line = 3 d + 25 h = 4 d 1 h: the 5-day-old sample is past it
+      expect(lag()).toHaveLength(1);
+
+      process.env[variable] = "30";
+      expect(lag()).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env[variable]; else process.env[variable] = previous;
+      daemon.db.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

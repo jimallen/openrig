@@ -15,10 +15,13 @@ import { rsiFingerprint } from "./fingerprint.js";
  * handle (A1's `openRsiReadOnlyDatabase`), one snapshot transaction per read, A1's coverage
  * shape, and one place that turns a counted finding into a `telemetry-finding` observation.
  *
- * TIME BUDGET SEAM (owned by Stage A2a, not built here): better-sqlite3 cannot interrupt a
- * running statement, so these sources bound their input by a row cap (`rowLimit`) exactly as
- * A1's D4 source does. A2a's per-source time budget is to wrap `RsiFindingSource.read()` from
- * outside; nothing in this file reads a clock to cut a query short.
+ * COST: each source runs ONE grouped statement (plus, where named, one indexed count) and derives
+ * firing / quiet / population / class split in JS, so a read is a single pass over its window.
+ *
+ * TIME BUDGET SEAM (owned by Stage A2a, not built here): every source exposes a plain `read()`, so
+ * a budget wrapper can sit around it. better-sqlite3 cannot interrupt a running statement, so a
+ * wrapper from outside can only measure and refuse the NEXT read; it cannot cut a statement short.
+ * The grouped statements are bounded by the window (and an index), not by a row cap.
  */
 
 /** One database connection shared by every A2b source, opened on first use. */
@@ -46,20 +49,14 @@ export function toIso(stamp: string): string {
   return new Date(ms).toISOString();
 }
 
-/**
- * The sum-to-total control. A partition of a population into disjoint parts must add up to a
- * total counted by an INDEPENDENT statement; a mismatch means a predicate dropped or doubled
- * rows, and the source reports `unavailable` (it throws) rather than a count it cannot vouch for.
- */
-export function assertPartitionSumsToTotal(label: string, parts: ReadonlyArray<readonly [string, number]>, total: number): void {
-  const sum = parts.reduce((acc, [, n]) => acc + n, 0);
-  if (sum !== total) {
-    throw new Error(`${label}: parts ${parts.map(([name, n]) => `${name}=${n}`).join(", ")} sum to ${sum}, not the counted total ${total}`);
-  }
+/** A class split rendered for a finding's explanation: `a 2, b 3 = 5`. The total is the sum of the parts. */
+export function partitionText(parts: ReadonlyArray<readonly [string, number]>): string {
+  return `${parts.map(([name, n]) => `${name} ${n}`).join(", ")} = ${parts.reduce((sum, [, n]) => sum + n, 0)}`;
 }
 
-export function partitionText(parts: ReadonlyArray<readonly [string, number]>, total: number): string {
-  return `${parts.map(([name, n]) => `${name} ${n}`).join(", ")} = ${total}`;
+/** Counts a label map into sorted `[label, n]` parts. */
+export function sortedParts(counts: ReadonlyMap<string, number>): Array<readonly [string, number]> {
+  return [...counts.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, n]) => [name, n] as const);
 }
 
 /** One counted finding, before it becomes an observation. */

@@ -42,11 +42,19 @@ export function fixture() {
   const event = (type: string, payload: unknown, createdAt: string, ids: { rigId?: string; nodeId?: string } = {}) =>
     Number(db.prepare("INSERT INTO events (rig_id, node_id, type, payload, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(ids.rigId ?? null, ids.nodeId ?? null, type, typeof payload === "string" ? payload : JSON.stringify(payload), createdAt).lastInsertRowid);
-  const activity = (a: { seat: string; rawEvent?: string; rawSubtype?: string | null; state?: string; hoursAgo: number; rigId?: string; nodeId?: string; type?: string }) =>
-    event(a.type ?? "agent.activity", {
-      type: a.type ?? "agent.activity", rigId: a.rigId ?? "rig-1", nodeId: a.nodeId ?? `node-${a.seat}`, sessionName: a.seat, runtime: "claude-code",
-      activity: { state: a.state ?? "unknown", rawEvent: a.rawEvent ?? "SessionStart", ...(a.rawSubtype === null ? {} : { rawSubtype: a.rawSubtype ?? "compact" }) },
+  const activity = (a: { seat: string; rawEvent?: string; rawSubtype?: string | null; state?: string; hoursAgo: number; rigId?: string; nodeId?: string; type?: string; identity?: boolean }) => {
+    const type = a.type ?? "agent.activity";
+    const rawEvent = a.rawEvent ?? "SessionStart";
+    const seq = event(type, {
+      type, rigId: a.rigId ?? "rig-1", nodeId: a.nodeId ?? `node-${a.seat}`, sessionName: a.seat, runtime: "claude-code",
+      activity: { state: a.state ?? "unknown", rawEvent, ...(a.rawSubtype === null ? {} : { rawSubtype: a.rawSubtype ?? "compact" }) },
     }, stamp(a.hoursAgo));
+    // The daemon records one agent.session_identity event beside every SessionStart hook event.
+    if (type === "agent.activity" && rawEvent === "SessionStart" && a.identity !== false) {
+      event("agent.session_identity", { type: "agent.session_identity", sessionName: a.seat, provenance: "hook" }, stamp(a.hoursAgo));
+    }
+    return seq;
+  };
   const fired = (f: { jobId: string; deliveryStatus: string; hoursAgo: number; type?: string }) =>
     event(f.type ?? "watchdog.evaluation_fired", { type: f.type ?? "watchdog.evaluation_fired", jobId: f.jobId, policy: "p", targetSession: "t@r", deliveryStatus: f.deliveryStatus }, stamp(f.hoursAgo));
 
@@ -66,8 +74,38 @@ export function fixture() {
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(`st-${++counter}`, iso(s.hoursAgo), `k-${counter}`, s.session, s.body ?? "BODY-CANARY",
       s.tags === null ? null : typeof s.tags === "string" ? s.tags : JSON.stringify(s.tags), s.archivedAt ?? null).lastInsertRowid);
 
+  const rig = (name: string, archivedAt: string | null = null) =>
+    db.prepare("INSERT INTO rigs (id, name, archived_at) VALUES (?, ?, ?)").run(`rig-id-${++counter}`, name, archivedAt);
+
+  /** Runs `then` once, right after the first statement the source runs has returned its rows. */
+  const afterFirstStatement = (source: { readonlyHandle(): Database.Database }, then: () => void) => {
+    const handle = source.readonlyHandle();
+    const original = handle.prepare.bind(handle);
+    let done = false;
+    handle.prepare = ((sql: string) => {
+      const statement = original(sql);
+      for (const method of ["all", "get"] as const) {
+        const run = statement[method].bind(statement) as (...a: unknown[]) => unknown;
+        (statement as unknown as Record<string, unknown>)[method] = (...a: unknown[]) => {
+          const result = run(...a);
+          if (!done) { done = true; then(); }
+          return result;
+        };
+      }
+      return statement;
+    }) as typeof handle.prepare;
+  };
+  /** Counts the statements a source prepares. */
+  const countStatements = (source: { readonlyHandle(): Database.Database }) => {
+    const handle = source.readonlyHandle();
+    const original = handle.prepare.bind(handle);
+    const seen: string[] = [];
+    handle.prepare = ((sql: string) => { seen.push(sql); return original(sql); }) as typeof handle.prepare;
+    return seen;
+  };
+
   const records = (source: HealthObservationSource): HealthRecord[] => new HealthProjectionService([source]).records();
-  return { dir, dbPath, db, deps, event, activity, fired, usage, outbox, stream, records };
+  return { dir, dbPath, db, deps, event, activity, fired, usage, outbox, stream, rig, afterFirstStatement, countStatements, records };
 }
 
 export function span(record: HealthRecord) {

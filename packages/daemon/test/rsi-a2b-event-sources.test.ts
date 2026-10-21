@@ -4,6 +4,7 @@ import {
 } from "../src/domain/rsi/event-sources.js";
 import { RSI_COMPACTION_STORM, RSI_PERMISSION_STALL, RSI_WATCHDOG_DELIVERY_FAILURE } from "../src/domain/rsi/detector-ids.js";
 import type { RsiFindingSource, RsiFindingSourceDeps } from "../src/domain/rsi/finding-builder.js";
+import { HealthProjectionService } from "../src/domain/health-detectors.js";
 import { INSTANCE, NOW, cleanupFixtures, fixture, span } from "./rsi-a2b-fixture.js";
 
 afterEach(cleanupFixtures);
@@ -29,6 +30,8 @@ interface Case {
   wrongType: (f: F, key: string, hoursAgo: number) => number;
   fingerprint: (key: string) => string;
   scope: (key: string) => unknown;
+  /** Statements one read prepares: the grouped pass, plus D5's identity cross-check. */
+  statements: number;
 }
 
 const seatKey = "verify-ops@eztrack";
@@ -41,9 +44,10 @@ const cases: Case[] = [
       ["a resume SessionStart", (f, key, h) => f.activity({ seat: key, rawEvent: "SessionStart", rawSubtype: "resume", hoursAgo: h })],
       ["a compact subtype under another raw event", (f, key, h) => f.activity({ seat: key, rawEvent: "PreCompact", rawSubtype: "compact", hoursAgo: h })],
     ],
-    wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: h, type: "agent.session_identity" }),
+    wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: h, type: "agent.activity_shadow" }),
     fingerprint: (key) => `rsi.compaction-storm/seat:${key}`,
     scope: (key) => ({ type: "seat", rigId: "rig-1", seatId: `node-${key}` }),
+    statements: 2,
   },
   {
     label: "D9 permission-prompt stall", detectorId: RSI_PERMISSION_STALL, create: createPermissionStallSource, threshold: 8, windowHours: 24,
@@ -55,6 +59,7 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: null, state: "needs_input", hoursAgo: h, type: "agent.session_identity" }),
     fingerprint: (key) => `rsi.permission-stall/seat:${key}`,
     scope: (key) => ({ type: "seat", rigId: "rig-1", seatId: `node-${key}` }),
+    statements: 1,
   },
   {
     label: "D12 watchdog delivery failure", detectorId: RSI_WATCHDOG_DELIVERY_FAILURE, create: createWatchdogDeliveryFailureSource, threshold: 3, windowHours: 168,
@@ -66,12 +71,15 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.fired({ jobId: key, deliveryStatus: "failed", hoursAgo: h, type: "watchdog.evaluation_skipped" }),
     fingerprint: (key) => `rsi.watchdog-delivery-failure/job:${key}`,
     scope: () => ({ type: "instance", instanceId: INSTANCE }),
+    statements: 1,
   },
 ];
 
 describe.each(cases)("$label", (c) => {
   const key = c.detectorId === RSI_WATCHDOG_DELIVERY_FAILURE ? "job-01" : seatKey;
   const fires = (f: F) => f.records(c.create(f.deps()));
+  // A source that throws is "unavailable", which reads as no records: quiet assertions read the source itself.
+  const reads = (f: F) => c.create(f.deps()).read();
   const seed = (f: F, n: number, hoursAgo: number, k = key) => { for (let i = 0; i < n; i++) c.hit(f, k, hoursAgo); };
 
   it("fires at exactly the threshold and not one below, with the subject's own fingerprint and scope", () => {
@@ -85,7 +93,7 @@ describe.each(cases)("$label", (c) => {
     expect(record!.detector).toBe(c.detectorId);
     expect(record!.scope).toEqual(c.scope(key));
     expect(span(record!)).toMatchObject({ fingerprint: c.fingerprint(key), count: c.threshold });
-    expect(fires(below)).toEqual([]);
+    expect(reads(below)).toEqual([]);
   });
 
   it.each(c.nearMisses)("does not count %s toward the threshold", (_label, miss) => {
@@ -93,7 +101,7 @@ describe.each(cases)("$label", (c) => {
     seed(f, c.threshold - 1, 2);
     for (let i = 0; i < c.threshold * 2; i++) miss(f, key, 2);
 
-    expect(fires(f)).toEqual([]);
+    expect(reads(f)).toEqual([]);
   });
 
   it("does not count the same payload under another event type", () => {
@@ -102,7 +110,7 @@ describe.each(cases)("$label", (c) => {
     c.wrongType(f, key, 2);
     c.wrongType(f, key, 2);
 
-    expect(fires(f)).toEqual([]);
+    expect(reads(f)).toEqual([]);
   });
 
   it("counts per subject: the threshold split across two subjects fires neither", () => {
@@ -110,7 +118,7 @@ describe.each(cases)("$label", (c) => {
     seed(f, c.threshold - 1, 2, `${key}-a`);
     seed(f, c.threshold - 1, 2, `${key}-b`);
 
-    expect(fires(f)).toEqual([]);
+    expect(reads(f)).toEqual([]);
   });
 
   it("keeps events inside the trailing window and drops those outside it, at the edge", () => {
@@ -122,7 +130,7 @@ describe.each(cases)("$label", (c) => {
 
     expect(fires(inside)).toHaveLength(1);
     // One supporting event just outside the window: the count stays below the threshold.
-    expect(fires(outside)).toEqual([]);
+    expect(reads(outside)).toEqual([]);
   });
 
   it("names a row cap as partial coverage rather than as zero, and reports the whole firing total", () => {
@@ -136,6 +144,17 @@ describe.each(cases)("$label", (c) => {
     const whole = c.create(f.deps());
     expect(whole.read()).toHaveLength(2);
     expect(whole.coverage()[0]).toMatchObject({ total: 2, evaluated: 2, omitted: 0, partial: false });
+  });
+
+  it("is one grouped pass over its window: it prepares no more statements than the table says", () => {
+    const f = fixture();
+    seed(f, c.threshold, 2);
+    seed(f, c.threshold, 2, `${key}-b`);
+    const source = c.create(f.deps());
+    const prepared = f.countStatements(source);
+
+    expect(source.read()).toHaveLength(2);
+    expect(prepared).toHaveLength(c.statements);
   });
 
   it("holds a read-only handle that refuses writes yet sees later commits", () => {
@@ -176,7 +195,7 @@ describe("D5 controls: the judged population and the sum-to-total partitions", (
     // Outside the population: another raw event, an old event, another event type.
     f.activity({ seat: "seat-d@r", rawEvent: "PreCompact", rawSubtype: "compact", hoursAgo: 2 });
     sessionStart("seat-a@r", "compact", 30);
-    f.activity({ seat: "seat-e@r", hoursAgo: 2, type: "agent.session_identity" });
+    f.activity({ seat: "seat-e@r", hoursAgo: 2, type: "agent.activity_shadow" });
 
     const [record, ...rest] = f.records(createCompactionStormSource(f.deps()));
 
@@ -187,6 +206,7 @@ describe("D5 controls: the judged population and the sum-to-total partitions", (
     });
     // 12 + 6 + 1 = 19 SessionStart events: compact 12, startup 3, resume 1, clear 1, other 2.
     expect(record!.explanation).toContain("clear 1, compact 12, other 2, resume 1, startup 3 = 19");
+    expect(record!.explanation).toContain("9 of 19 judged events");
     expect(record!.explanation).toContain("1 seat(s) fire and 2 judged seat(s) do not, out of 3");
   });
 });
@@ -205,6 +225,7 @@ describe("D9 controls", () => {
     expect(span(record!)).toMatchObject({ count: 8, controlTotal: 1, population: 2 });
     // 11 + 4 = 15 activity events: idle 1, needs_input 10, other 1, running 2, unknown 1.
     expect(record!.explanation).toContain("idle 1, needs_input 10, other 1, running 2, unknown 1 = 15");
+    expect(record!.explanation).toContain("8 of 15 judged events");
   });
 });
 
@@ -223,6 +244,7 @@ describe("D12 controls", () => {
     expect(span(record!)).toMatchObject({ count: 3, controlTotal: 1, population: 2 });
     // 7 + 6 = 13 wake-ups: failed 5, ok 6, other 1, retained 1.
     expect(record!.explanation).toContain("failed 5, ok 6, other 1, retained 1 = 13");
+    expect(record!.explanation).toContain("3 of 13 judged events");
   });
 
   it("reads the live stale case as quiet: failures older than 7 days do not fire, however many", () => {
@@ -230,5 +252,64 @@ describe("D12 controls", () => {
     for (let i = 0; i < 6; i++) f.fired({ jobId: "job-old", deliveryStatus: "failed", hoursAgo: 24 * 7 + 5 });
 
     expect(f.records(createWatchdogDeliveryFailureSource(f.deps()))).toEqual([]);
+  });
+});
+
+describe("D5 cross-check: SessionStart activity events must equal agent.session_identity events", () => {
+  const compactions = (f: ReturnType<typeof fixture>, n: number) => {
+    for (let i = 0; i < n; i++) f.activity({ seat: seatKey, rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: 2 });
+  };
+
+  it("serves the finding while the two series agree", () => {
+    const f = fixture();
+    compactions(f, 8);
+
+    expect(f.records(createCompactionStormSource(f.deps()))).toHaveLength(1);
+  });
+
+  it("reports the source unavailable, never a count, when a SessionStart has no identity event", () => {
+    const f = fixture();
+    compactions(f, 8);
+    f.activity({ seat: seatKey, rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: 2, identity: false });
+    const service = new HealthProjectionService([createCompactionStormSource(f.deps())]);
+
+    expect(service.records()).toEqual([]);
+    expect(service.coverage()).toEqual([expect.objectContaining({ source: "rsi-compaction-storm", status: "unavailable", partial: true, reason: expect.stringContaining("disagree") })]);
+  });
+
+  it("reports the source unavailable when an identity event has no SessionStart", () => {
+    const f = fixture();
+    compactions(f, 8);
+    f.event("agent.session_identity", { type: "agent.session_identity" }, "2031-03-04 03:00:00");
+    const service = new HealthProjectionService([createCompactionStormSource(f.deps())]);
+
+    expect(service.records()).toEqual([]);
+    expect(service.coverage()).toEqual([expect.objectContaining({ status: "unavailable" })]);
+  });
+
+  it("reads both series from one snapshot: a pair committed between the two statements cannot desynchronise them", () => {
+    const f = fixture();
+    compactions(f, 8);
+    const source = createCompactionStormSource(f.deps());
+    // After the grouped statement returns, a writer commits another SessionStart and its identity event.
+    f.afterFirstStatement(source, () => f.activity({ seat: seatKey, rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: 1 }));
+
+    const observations = source.read();
+
+    expect(observations).toHaveLength(1);
+    expect(JSON.stringify(observations)).toContain('"count":8'); // the snapshot predates the writer's commit
+    expect(createCompactionStormSource(f.deps()).read()).toHaveLength(1);
+    expect(JSON.stringify(createCompactionStormSource(f.deps()).read())).toContain('"count":9'); // a fresh read sees all nine
+  });
+});
+
+describe("migration 114: the events(type, created_at) index serves the grouped pass", () => {
+  it("exists, and the query plan searches it instead of scanning the table", () => {
+    const f = fixture();
+    const indexes = (f.db.prepare("PRAGMA index_list(events)").all() as Array<{ name: string }>).map((row) => row.name);
+    const plan = (f.db.prepare("EXPLAIN QUERY PLAN SELECT count(*) FROM events WHERE type = ? AND created_at >= ?").all("agent.activity", "2031-01-01 00:00:00") as Array<{ detail: string }>).map((row) => row.detail).join(" | ");
+
+    expect(indexes).toContain("idx_events_type_created_at");
+    expect(plan).toContain("idx_events_type_created_at");
   });
 });
