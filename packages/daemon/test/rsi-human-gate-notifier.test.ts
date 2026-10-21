@@ -50,8 +50,11 @@ function freshDb(file = false): Database.Database {
   return db;
 }
 
+function transition(db: Database.Database, id: string, state: string, ts: string, actor = STEWARD, note: string | null = null): void {
+  db.prepare("INSERT INTO queue_transitions (qitem_id, ts, state, actor_session, transition_note) VALUES (?, ?, ?, ?, ?)").run(id, ts, state, actor, note);
+}
 function park(db: Database.Database, id: string, ts = "2031-03-04T00:00:00.000Z"): void {
-  db.prepare("INSERT INTO queue_transitions (qitem_id, ts, state, actor_session) VALUES (?, ?, 'blocked', ?)").run(id, ts, STEWARD);
+  transition(db, id, "blocked", ts);
 }
 
 function insertQueueRow(
@@ -112,6 +115,7 @@ describe("selection: which rows become banners", () => {
     expect(message).toContain("proposal rsi.x/rig:a");
     expect(message).toContain("rsi-decide q-rsi-1");
     expect(message.startsWith("-")).toBe(false);
+    expect(message.startsWith("1 RSI item(s) waiting")).toBe(true);
     h.now.ms += 5 * MIN;
     expect((await h.notifier.tick()).status).toBe("idle");
     expect(h.calls).toHaveLength(1);
@@ -135,6 +139,11 @@ describe("selection: which rows become banners", () => {
     const h = harness();
     for (let i = 0; i < MAX_BANNERS_PER_DAY; i += 1) insertQueueRow(h.db, `q-junk-${i}`, { source: "some-other@rig" });
     expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 0 });
+    // Near misses of the steward name are not the steward.
+    for (const near of ["improve-steward@other", "improve-steward@kernel2", "Improve-Steward@kernel", "improve-steward"]) {
+      insertQueueRow(h.db, `q-near-${near}`, { source: near });
+    }
+    expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 0 });
     insertQueueRow(h.db, "q-real");
     const result = await h.notifier.tick();
     expect(result.status).toBe("sent");
@@ -149,6 +158,7 @@ describe("selection: which rows become banners", () => {
     expect((await h.notifier.tick()).status).toBe("sent");
     // Resolved (no longer waiting), then parked on the human again an hour later.
     h.db.prepare("UPDATE queue_items SET state = 'in-progress' WHERE qitem_id = 'q-a'").run();
+    transition(h.db, "q-a", "in-progress", "2031-03-04T05:10:00.000Z");
     h.now.ms = T0 + 20 * MIN;
     expect((await h.notifier.tick()).status).toBe("idle");
     h.db.prepare("UPDATE queue_items SET state = 'blocked' WHERE qitem_id = 'q-a'").run();
@@ -160,6 +170,25 @@ describe("selection: which rows become banners", () => {
     h.now.ms = T0 + 90 * MIN;
     expect((await h.notifier.tick()).status).toBe("idle");
   });
+});
+
+describe("one parking episode is one entry banner", () => {
+  const shapes: Array<[string, string, string | null]> = [
+    ["a second blocked update on the same human park", STEWARD, null],
+    ["a watchdog park-wake fire", "watchdog@system", "park wake fired"],
+    ["a blocker custody move", STEWARD, "blocker custody moved"],
+  ];
+  for (const [label, actor, note] of shapes) {
+    it(`does not re-banner on ${label}`, async () => {
+      const h = harness();
+      insertQueueRow(h.db, "q-a");
+      expect((await h.notifier.tick()).status).toBe("sent");
+      transition(h.db, "q-a", "blocked", "2031-03-04T05:30:00.000Z", actor, note);
+      h.now.ms = T0 + 3 * MIN_BANNER_GAP_MS;
+      expect((await h.notifier.tick()).status).toBe("idle");
+      expect(h.calls).toHaveLength(1);
+    });
+  }
 });
 
 describe("rate limits", () => {
@@ -319,6 +348,17 @@ describe("osascript fallback: no string-built AppleScript", () => {
     expect(message).toContain('close" & do shell script');
     expect(message!.startsWith("-")).toBe(false);
     expect(title).toBe("OpenRig RSI");
+  });
+
+  it("always leads the message with the item count, even when the summary looks like an option", async () => {
+    const h = harness();
+    insertQueueRow(h.db, "q-opt", { summary: "-execute /bin/sh -open http://x" });
+    expect((await h.notifier.tick()).status).toBe("sent");
+    const message = messageOf(h.calls[0]!);
+    expect(message.startsWith("1 RSI item(s) waiting")).toBe(true);
+    expect(message).toContain("-execute /bin/sh");
+    const argv = h.calls[0]!.args;
+    expect(argv.filter((a) => a.startsWith("-"))).toEqual(["-title", "-message", "-group"]);
   });
 
   it("passes the summary to terminal-notifier as one argv element, never through a shell", async () => {

@@ -12,7 +12,14 @@ import { isHumanSeatSession } from "../human-route-enforcer.js";
  * `rsi_notifications`, which RSI lane B1 creates in its migration:
  *   rsi_notifications(qitem_id TEXT PRIMARY KEY, first_notified_at TEXT NOT NULL, last_notified_at TEXT NOT NULL)
  * Until that migration is merged the notifier cannot run; startup wiring is also inert until B1
- * adds the `rsi.stewardSession` setting.
+ * adds the `rsi.steward_session` setting. The notifier is armed once, at daemon boot: changing
+ * `rsi.steward_session` needs a daemon restart.
+ *
+ * Residual risk, accepted (Jim's D8(a): approvals can be forged): `source_session` is a label, not an
+ * authenticated identity. The daemon takes the X-OpenRig-Session header (or a body sourceSession)
+ * verbatim, so any seat that can reach the queue API can pose as the steward and have its items
+ * counted. Selecting on the steward's source keeps a seat acting under its own identity from
+ * spending the banner budget by tagging `rsi`; it does not stop a hostile or compromised seat.
  */
 
 export const RSI_TAG = "rsi";
@@ -250,7 +257,11 @@ export class HumanGateNotifier {
 export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[] {
   const stmt = db.prepare(
     "SELECT q.qitem_id, q.source_session, q.state, q.blocked_on, q.tags, q.summary, " +
-    "COALESCE((SELECT MAX(t.transition_id) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.state = 'blocked'), q.ts_updated) AS episode " +
+    // The parking episode is the transition that ENTERED blocked from another state. A blocked-to-blocked
+    // transition (a second update, a watchdog park-wake, a custody move) is the same episode.
+    "COALESCE((SELECT MAX(t.transition_id) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.state = 'blocked' " +
+    "AND COALESCE((SELECT p.state FROM queue_transitions p WHERE p.qitem_id = t.qitem_id AND p.transition_id < t.transition_id " +
+    "ORDER BY p.transition_id DESC LIMIT 1), '') <> 'blocked'), q.ts_updated) AS episode " +
     "FROM queue_items q WHERE q.state = 'blocked'",
   );
   return () => (stmt.all() as Array<{ qitem_id: string; source_session: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null; episode: string | number }>)
