@@ -765,12 +765,21 @@ export class TmuxAdapter {
       }
     }
     let created = false;
+    let commandFile: string | undefined;
     try {
       if (path) {
-        // Sourced in the pane shell, the command keeps its subshell isolation inside the script:
-        // typing `( . file )` put an unpaired-looking `)` where an autopair widget rewrote it.
-        const body = sourceInPane ? `(\n${command}\n)` : `${options.execInScript ? "exec " : ""}${command}`;
-        await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n${body}\n`, { mode: 0o600, flag: "wx" });
+        if (sourceInPane) {
+          // Sourced in the pane shell, the command keeps its subshell isolation inside the script,
+          // not in typed parentheses (an autopair widget rewrote `( . file )`). The command sits in
+          // its own file that the subshell sources, so a stray `)` in it is a parse error rather
+          // than something that could close the wrapper and run the rest in the pane shell.
+          commandFile = `${path}.cmd`;
+          await this.fileOps.writeFile(commandFile, `/bin/rm -f -- ${shellQuote(commandFile)}\n${command}\n`, { mode: 0o600, flag: "wx" });
+          created = true;
+          await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n( . ${shellQuote(commandFile)} )\n`, { mode: 0o600, flag: "wx" });
+        } else {
+          await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
+        }
         created = true;
       }
       const text = beforeInput ? await this.guardedInput(target, (pane, check) => this.sendTextUnchecked(pane, invocation, () => { check(); beforeInput(); }))
@@ -790,6 +799,7 @@ export class TmuxAdapter {
     } finally {
       if (created && path) {
         try { await this.fileOps.unlink(path); } catch { /* best-effort cleanup */ }
+        if (commandFile) { try { await this.fileOps.unlink(commandFile); } catch { /* best-effort cleanup */ } }
       }
     }
   }
