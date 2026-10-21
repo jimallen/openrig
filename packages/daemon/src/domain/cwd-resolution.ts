@@ -1,5 +1,5 @@
 import nodePath from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
 const ENV_REF = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
@@ -72,4 +72,24 @@ export function getOpenRigInstallCwdError(
     return null;
   }
   return `Resolved cwd '${resolvedCwd}' is inside the OpenRig installation '${installRoot}', which is not a valid project workspace. Pass --cwd <path> to launch into your project directory.`;
+}
+
+/** The reason a seat's resolved cwd cannot be a launch directory, or null when it is a directory. tmux does not
+ *  refuse a missing `-c` directory: it starts the session in $HOME, so the seat would run in the wrong place
+ *  with no error. Preflight refuses instead. Nothing here creates the directory. */
+export function getSeatCwdPresenceError(
+  resolvedCwd: string,
+  stat: (path: string) => { isDirectory(): boolean } = statSync,
+): string | null {
+  let found: { isDirectory(): boolean };
+  try {
+    found = stat(resolvedCwd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory or change the seat's cwd (preflight does not create it)`;
+    }
+    return `cwd '${resolvedCwd}' is not accessible (${code ?? (err as Error).message})`;
+  }
+  return found.isDirectory() ? null : `cwd '${resolvedCwd}' is not a directory`;
 }

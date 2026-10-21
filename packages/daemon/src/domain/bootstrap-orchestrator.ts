@@ -788,6 +788,8 @@ export class BootstrapOrchestrator {
           rigSpecYaml,
           rigRoot,
           cwdOverride: opts.cwdOverride,
+          // The apply path creates a project rig's workspace folders before its own preflight; a plan has not.
+          ...(projectRig.kind === "project_rig" ? { cwdsCreatedByLaunch: projectRig.workspaceDirs } : {}),
           fsOps: podInstantiator["deps"].fsOps,
           skillsRoot: podInstantiator.resolveSkillsRoot?.(),
           exec: execFn,
