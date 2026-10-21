@@ -1172,9 +1172,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // THE ONE RSI source array: the health projection below AND the health-finding wake both consume it.
   // Add every RSI source here; a source given only to the projection is served by `rig health` but
   // never wakes the steward (rsi-health-finding-wake.test.ts pins every RSI detector id to a source).
-  const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
+  const { createRsiSources } = await import("./domain/rsi/registry.js");
   const { SlowOpFileSource } = await import("./domain/rsi/slow-op-file-source.js");
-  const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath }), new SlowOpFileSource({ logPath: slowOpLogPath, instanceId: OPENRIG_HOME })];
+  const rsiTelemetrySources = [...createRsiSources({ dbPath, openrigHome: OPENRIG_HOME }), ...(dbPath === ":memory:" ? [] : [new SlowOpFileSource({ logPath: slowOpLogPath, instanceId: OPENRIG_HOME })])];
   // Stage A2b: D5-D10, D12, D14, one source each, one shared read-only handle. D10 is armed only when the retention sweep is.
   const { createA2bSources } = await import("./domain/rsi/a2b-sources.js");
   const { RETENTION_DEFAULTS } = await import("./domain/queue-retention.js");
