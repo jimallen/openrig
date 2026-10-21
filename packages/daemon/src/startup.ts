@@ -229,6 +229,8 @@ interface DaemonResult {
   contextMonitor: import("./domain/context-monitor.js").ContextMonitor;
   // OPR.0.4.3.21 — returned so index.ts can stop() it on graceful shutdown.
   eventLoopMonitor: import("./domain/event-loop-monitor.js").EventLoopMonitor;
+  /** RSI human-gate banner service; absent unless `rsi.stewardSession` is configured. index.ts starts and stops it. */
+  humanGateNotifier?: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   injectWebSocket: (server: any) => void;
 }
@@ -1164,6 +1166,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     configuredCatalogPath(healthSettingsStore));
   const passiveCeremony = new PassiveCeremonySource(healthSettingsStore.resolveOne("workspace.root").value as string, queueRepoInstance, healthPolicy, undefined, healthCheckpoints, { reader: operatingPosture, instanceId: OPENRIG_HOME });
   // RSI telemetry detectors read through their own read-only handle; an in-memory database cannot be opened that way.
+  // THE ONE RSI source array: the health projection below AND the health-finding wake both consume it.
+  // Add every RSI source here; a source given only to the projection is served by `rig health` but
+  // never wakes the steward (rsi-health-finding-wake.test.ts pins every RSI detector id to a source).
   const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
   const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath })];
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
@@ -2195,6 +2200,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             return { ok: res.ok };
           },
         }),
+        // RSI B1 (rev2 §3.4) — the hourly health-finding wake. It reads the SAME projection that
+        // serves `rig health`, and the RSI sources it was built with, so it can tell which source
+        // a fingerprint came from. Inert without a job: jobs are boot-registered below only when
+        // rsi.steward_session is set.
+        (await import("./domain/rsi/health-finding-wake.js")).makeHealthFindingWakePolicy({
+          db,
+          projection: healthProjection,
+          sources: rsiTelemetrySources,
+        }),
         (await import("./domain/policies/delivery-digest-flush.js")).makeDeliveryDigestFlushPolicy({
           queueRepo: queueRepoInstance,
           registry: { loadHumanRegistry: (home: string) => loadHumanRegistryForDelivery(home) },
@@ -2264,6 +2278,24 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       };
       ensureDigestJob("4h", 4 * 60 * 60);
       ensureDigestJob("daily", 24 * 60 * 60);
+    }
+
+    // RSI B1 (rev2 §3.4) — the improvement steward's hourly wake and daily report, reconciled at
+    // every boot: a valid rsi.steward_session arms (or retargets) them; unset (the default) or
+    // invalid (no '@') disarms both (marked terminal, so setting the key again re-arms). Jobs are
+    // keyed on daemon-owned anchors. A failure here is logged and never stops the daemon booting:
+    // RSI is optional machinery.
+    {
+      const { ensureRsiStewardJobs } = await import("./domain/rsi/health-finding-wake.js");
+      try {
+        const stewardSession = new ContextPackSettingsStore().resolveOne("rsi.steward_session").value;
+        const rsiJobs = ensureRsiStewardJobs(watchdogJobsRepoInstance, typeof stewardSession === "string" ? stewardSession : "");
+        if (!rsiJobs.armed && rsiJobs.reason === "rsi_steward_invalid") {
+          console.error(`[rsi] rsi.steward_session '${String(stewardSession)}' is not a '<member>@<rig>' session; RSI jobs disarmed (${rsiJobs.disarmed.length})`);
+        }
+      } catch (err) {
+        console.error("[rsi] steward job registration failed", err);
+      }
     }
 
     // B8 / slice-07 A3 — the MODEL-DIVERGENCE MONITOR: cause-agnostic effective-vs-pinned
@@ -2572,5 +2604,26 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  return { app, db, deps, contextMonitor, eventLoopMonitor, injectWebSocket };
+  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Armed only when `rsi.steward_session` (RSI lane B1's key) is set.
+  // Optional machinery never stops the daemon booting: a failure here (for example the rsi_notifications table
+  // missing after a partial rollback) logs its class once and leaves the notifier off.
+  let humanGateNotifier: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier | undefined;
+  try {
+    const steward = healthSettingsStore.resolveOne("rsi.steward_session").value;
+    if (typeof steward === "string" && steward.trim() !== "") {
+      const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
+      humanGateNotifier = new rsiNotifier.HumanGateNotifier({
+        listBlocked: rsiNotifier.sqliteBlockedRows(db),
+        stewardSession: steward.trim(),
+        store: rsiNotifier.sqliteNotificationStore(db),
+        spawner: rsiNotifier.defaultBannerSpawner,
+        findExecutable: rsiNotifier.defaultFindExecutable,
+      });
+      console.log(`[rsi-notifier] armed for steward session ${steward.trim()}`);
+    }
+  } catch (err) {
+    humanGateNotifier = undefined;
+    console.error(`[rsi-notifier] disabled: construction failed class=${err instanceof Error ? err.constructor.name : typeof err}`);
+  }
+  return { app, db, deps, contextMonitor, eventLoopMonitor, humanGateNotifier, injectWebSocket };
 }

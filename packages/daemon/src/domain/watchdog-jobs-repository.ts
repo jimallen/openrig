@@ -41,6 +41,11 @@ export const PHASE_D_POLICIES = [
   // additionalPolicies like parked-owner-consumer.
   "delivery-deferral",
   "delivery-digest-flush",
+  // RSI B1 (rev2 §3.4) — the hourly health-finding wake of the improvement steward. Wakes only
+  // when a telemetry-finding fingerprint (re)activated since the last delivered wake. Injected
+  // via additionalPolicies like delivery-digest-flush; boot-registered only when
+  // rsi.steward_session is set.
+  "health-finding-wake",
 ] as const;
 
 /** @deprecated since Phase D — use PHASE_D_POLICIES. */

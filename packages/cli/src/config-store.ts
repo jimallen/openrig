@@ -98,6 +98,10 @@ export interface RiggedConfig {
     advisorSession: string;
     operatorSession: string;
   };
+  // RSI B1 — the improvement steward's session; "" = unset (boot disarms the RSI jobs). Twin of the daemon key.
+  rsi: {
+    stewardSession: string;
+  };
   // V1 attempt-3 Phase 5 P5-3 — For You feed subscription toggles per
   // for-you-feed.md L144–L151. SC-29 EXCEPTION declared in Phase 5
   // dispatch ACK §5 DRIFT P5-D2: same scope as Phase 4 (allowlist-only;
@@ -280,6 +284,9 @@ const DEFAULTS = {
   agents: {
     advisorSession: "advisor-lead@kernel",
     operatorSession: "",
+  },
+  rsi: {
+    stewardSession: "",
   },
   // V1 Phase 5 P5-3 — feed subscription defaults per for-you-feed.md
   // L144–L151. action_required forced ON in UI (load-bearing
@@ -486,6 +493,11 @@ export const VALID_KEYS = [
   // Under explicit-only, an ask that needs a person must be addressed to the person;
   // without a human registry, explicit-only posts everything, as always does.
   "queue.wake_human_rung",
+  // RSI B1 (rsi-design-9k-rev2 §3.4, §8 L4) — the improvement steward's session. At each boot
+  // the daemon arms (or retargets) the health-finding wake and the daily report when this names a
+  // canonical '<member>@<rig>' session; unset (the default "") or invalid DISARMS both (terminal).
+  // Twin of the other side.
+  "rsi.steward_session",
 ] as const;
 
 export type ValidKey = typeof VALID_KEYS[number];
@@ -580,6 +592,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
   "queue.wake_swap_grace_seconds": { primary: "OPENRIG_QUEUE_WAKE_SWAP_GRACE_SECONDS" },
   "queue.wake_human_rung": { primary: "OPENRIG_QUEUE_WAKE_HUMAN_RUNG" },
+  "rsi.steward_session": { primary: "OPENRIG_RSI_STEWARD_SESSION" },
 };
 
 // Maps dotted-string config keys to the camelCase RiggedConfig path.
@@ -663,6 +676,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
   "queue.wake_swap_grace_seconds": ["queue", "wakeSwapGraceSeconds"],
   "queue.wake_human_rung": ["queue", "wakeHumanRung"],
+  "rsi.steward_session": ["rsi", "stewardSession"],
 };
 
 function isValidKey(key: string): key is ValidKey {
@@ -1141,6 +1155,9 @@ export class ConfigStore {
       agents: {
         advisorSession: v("agents.advisor_session") as string,
         operatorSession: v("agents.operator_session") as string,
+      },
+      rsi: {
+        stewardSession: v("rsi.steward_session") as string,
       },
       feed: {
         subscriptions: {

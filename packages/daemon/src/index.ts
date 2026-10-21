@@ -306,7 +306,7 @@ export async function startServer(port?: number) {
     bindHosts = bindPlan.hosts;
   }
 
-  const { app, contextMonitor, deps, eventLoopMonitor, injectWebSocket } = await createDaemon({
+  const { app, contextMonitor, deps, eventLoopMonitor, humanGateNotifier, injectWebSocket } = await createDaemon({
     dbPath,
     bearerToken,
     terminalBearerToken,
@@ -381,6 +381,7 @@ export async function startServer(port?: number) {
   // exit so any in-flight policy evaluation completes (or is awaited).
   // Multi-bind: close every serve() instance in parallel.
   deps.healthDiagnosis?.start();
+  humanGateNotifier?.start();
   const shutdown = createDaemonShutdown({
     receiptPath: path.join(OPENRIG_HOME, DAEMON_SHUTDOWN_RECEIPT),
     phases: [
@@ -398,6 +399,7 @@ export async function startServer(port?: number) {
       ["periodic-snapshot", () => deps.periodicSnapshotScheduler?.stop()],
       ["gateway", () => deps.gatewaySubsystem?.stop()],
       ["wake-ladder", () => wakeLadderScheduler?.stop()],
+      ["rsi-human-gate-notifier", () => humanGateNotifier?.stop()],
       ["event-loop-monitor", () => eventLoopMonitor.stop()],
       ["connections", () => Promise.all(servers.map((srv) => closeHttpServer(srv)))],
       ["recorder", async () => {

@@ -33,7 +33,7 @@ const PATHS = new Set(["db.path", "transcripts.path", "workspace.root", "workspa
   "topology.root", "context.root", "skills.root", "policies.claude_compaction.message_file_path"]);
 const IDENTITIES = new Set(["daemon.host", "host.name", "host.selected", "context.system_world",
   "ui.timezone", "agents.advisor_session", "agents.operator_session", "workspace.operator_seat_name",
-  "workflow.exception_routing", "policies.idle_gate_qitem.auto_register"]);
+  "workflow.exception_routing", "policies.idle_gate_qitem.auto_register", "rsi.steward_session"]);
 const INSTRUCTIONS = new Set(["policies.claude_compaction.pre_compact_instruction",
   "policies.claude_compaction.compact_instruction", "policies.claude_compaction.message_inline",
   "policies.claude_compaction.post_restore_audit_instruction"]);
