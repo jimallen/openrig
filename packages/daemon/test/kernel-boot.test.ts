@@ -454,6 +454,11 @@ describe("defaultProbeRuntimes — claude auth status through a real process (OF
     stub("claude", `echo '{"loggedIn": false, "authMethod": "none"}'; exit 1`);
     expect((await defaultProbeRuntimes()).claudeCode).toBe("unavailable");
   });
+
+  it("a status command that outlives the 5s probe timeout is unavailable, even though it printed logged-in JSON first", async () => {
+    stub("claude", `echo '{"loggedIn": true, "authMethod": "claude.ai"}'; exec sleep 30`);
+    expect((await defaultProbeRuntimes()).claudeCode).toBe("unavailable");
+  }, 20000);
 });
 
 describe("bootKernelIfNeeded — auth method visibility (OF-58)", () => {
