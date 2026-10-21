@@ -314,12 +314,9 @@ export class ResumeMetadataRefresher {
         return "inconclusive";
       }
 
-      const send = await this.tmuxAdapter.sendText(probeSession, command);
+      // Staged: only the line sourcing the script is typed into the probe's shell.
+      const send = await this.tmuxAdapter.sendShellCommand(probeSession, command, undefined, { sourceInPane: true });
       if (!send.ok) {
-        return "inconclusive";
-      }
-      const enter = await this.tmuxAdapter.sendKeys(probeSession, ["Enter"]);
-      if (!enter.ok) {
         return "inconclusive";
       }
 

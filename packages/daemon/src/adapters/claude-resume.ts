@@ -97,21 +97,14 @@ export class ClaudeResumeAdapter {
     const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...claudeRemoteControlArgs(remoteControl, tmuxSessionName), "--resume", resumeToken!], claudeResumeLaunchEnv(resumeToken!))
       : `${claudeResumeLaunchPrefix(resumeToken!)}${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg}${claudeRemoteControlArg(remoteControl, tmuxSessionName)} --resume ${shellQuote(resumeToken!)}`;
 
+    // Every branch stages the command: only the source line is typed into the pane shell, and
+    // sendShellCommand owns the Enter and its C-c cleanup.
     const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent)
-      : this.options.seatLaunchEnvironment
-        ? await this.tmux.sendShellCommand(tmuxSessionName, await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { runtime: "claude-code", nodeId }), undefined, { sourceInPane: true })
-        : await this.tmux.sendText(tmuxSessionName, cmd);
+      : await this.tmux.sendShellCommand(tmuxSessionName, this.options.seatLaunchEnvironment
+        ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { runtime: "claude-code", nodeId })
+        : cmd, undefined, { sourceInPane: true });
     if (!textResult.ok) {
-      // sendText failed — nothing in the buffer, no cleanup needed
       return { ok: false, code: "resume_failed", message: textResult.message };
-    }
-
-    const keyResult = managed || this.options.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(tmuxSessionName, ["Enter"]);
-    if (!keyResult.ok) {
-      // Partial failure: command text is in the buffer but Enter failed.
-      // Best-effort cleanup: send C-c to clear the typed command.
-      await this.tmux.sendKeys(tmuxSessionName, ["C-c"]);
-      return { ok: false, code: "resume_failed", message: keyResult.message };
     }
 
     const result = await this.verifyResume(tmuxSessionName, resumeToken!).catch((error): ResumeResult => ({

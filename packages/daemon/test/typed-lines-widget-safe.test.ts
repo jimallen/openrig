@@ -47,7 +47,8 @@ function harness(paneShell = "zsh") {
   });
   const scriptFor = (typedLine: string): string => {
     const path = typedLine.split(" ").at(-1)!;
-    return writes.find(w => w.path === path)!.content;
+    // A sourced script holds the command in a second file the subshell sources.
+    return (writes.find(w => w.path === `${path}.cmd`) ?? writes.find(w => w.path === path)!).content;
   };
   return { tmux, typed, sendKeysArgs, scriptFor, commands };
 }
@@ -115,7 +116,7 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
   describe("claude-resume fallback without a seat launch environment", () => {
     it("types only the staged-script source line", async () => {
       const h = harness();
-      await new ClaudeResumeAdapter(h.tmux).resume("seat@rig", "claude_id", "tok'en (1)", "/work").catch(() => undefined);
+      await new ClaudeResumeAdapter(h.tmux, { sleep: async () => {} }).resume("seat@rig", "claude_id", "tok'en (1)", "/work").catch(() => undefined);
       expectOnlySafeTyping(h, /^\. \/tmp\/of65-\d+\.txt$/);
       expect(h.scriptFor(h.typed()[0]!)).toContain("--resume 'tok'\"'\"'en (1)'");
     });
