@@ -6,7 +6,20 @@
  * detector is never a valid HealthDiagnosisService target (health-policy.ts).
  */
 export const RSI_ARCHIVED_RIG_LIVE_SESSION = "rsi.archived-rig-live-session" as const;
-export const RSI_DETECTORS = [RSI_ARCHIVED_RIG_LIVE_SESSION] as const;
+// Stage A2b detectors (D5-D10, D12, D14). Stage A2a adds D1-D3 beside these.
+export const RSI_COMPACTION_STORM = "rsi.compaction-storm" as const; // D5
+export const RSI_CONTEXT_HIGH_WATER = "rsi.context-high-water" as const; // D6
+export const RSI_PROVIDER_WEEKLY_WINDOW = "rsi.provider-weekly-window" as const; // D7
+export const RSI_OUTBOX_UNSETTLED = "rsi.outbox-unsettled" as const; // D8
+export const RSI_PERMISSION_STALL = "rsi.permission-stall" as const; // D9
+export const RSI_RETENTION_LAG = "rsi.retention-lag" as const; // D10
+export const RSI_WATCHDOG_DELIVERY_FAILURE = "rsi.watchdog-delivery-failure" as const; // D12
+export const RSI_PROJECT_REPORT = "rsi.project-report" as const; // D14
+export const RSI_A2B_DETECTORS = [
+  RSI_COMPACTION_STORM, RSI_CONTEXT_HIGH_WATER, RSI_PROVIDER_WEEKLY_WINDOW, RSI_OUTBOX_UNSETTLED,
+  RSI_PERMISSION_STALL, RSI_RETENTION_LAG, RSI_WATCHDOG_DELIVERY_FAILURE, RSI_PROJECT_REPORT,
+] as const;
+export const RSI_DETECTORS = [RSI_ARCHIVED_RIG_LIVE_SESSION, ...RSI_A2B_DETECTORS] as const;
 
 /**
  * Category and severity of every RSI finding. `info` is load-bearing: routes/attention.ts

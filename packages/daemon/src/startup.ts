@@ -1166,7 +1166,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // RSI telemetry detectors read through their own read-only handle; an in-memory database cannot be opened that way.
   const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
   const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath })];
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Stage A2b: D5-D10, D12, D14, one source each, one shared read-only handle. D10 is armed only when the retention sweep is.
+  const { createA2bSources } = await import("./domain/rsi/a2b-sources.js");
+  const rsiA2bSources = dbPath === ":memory:" ? [] : createA2bSources({ dbPath, instanceId: OPENRIG_HOME, retentionEnabled: healthSettingsStore.resolveOne("retention.enabled").value === true,
+    retentionDays: () => Number(healthSettingsStore.resolveOne("retention.usage_samples_days").value) });
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, ...rsiA2bSources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
