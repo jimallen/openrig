@@ -452,7 +452,10 @@ describe("defaultProbeRuntimes — claude auth status through a real process (OF
 
   it("logged-out JSON with exit 1 stays unavailable", async () => {
     stub("claude", `echo '{"loggedIn": false, "authMethod": "none"}'; exit 1`);
-    expect((await defaultProbeRuntimes()).claudeCode).toBe("unavailable");
+    const probe = await defaultProbeRuntimes();
+    expect(probe.claudeCode).toBe("unavailable");
+    // exec rejects on a non-zero exit; the output it carried must still reach the classifier.
+    expect(probe.claudeAuthMethod).toBe("none");
   });
 
   it("a status command that outlives the 5s probe timeout is unavailable, even though it printed logged-in JSON first", async () => {
