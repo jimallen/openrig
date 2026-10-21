@@ -45,11 +45,19 @@ export interface BlockedQueueRow {
 
 export interface NotificationRow { qitemId: string; firstNotifiedAt: string; lastNotifiedAt: string }
 
+/** One banner attempt (rsi_notification_banners): the gap and the daily cap count these, failed attempts included. */
+export interface BannerRow { sentAt: string; itemCount: number; ok: boolean }
+
 export interface NotificationStore {
+  /** Per-episode entry and reminder state (rsi_notifications). */
   list(): NotificationRow[];
   /** Insert, or move last_notified_at while keeping first_notified_at. */
   record(qitemIds: string[], at: string): void;
   deleteOlderThan(qitemIds: string[], cutoff: string): void;
+  listBanners(): BannerRow[];
+  recordBanner(row: BannerRow): void;
+  /** Bounds the table: banners older than a day carry no gap or cap information. */
+  deleteBannersBefore(cutoff: string): void;
 }
 
 export type BannerSpawner = (command: string, args: string[]) => Promise<{ ok: boolean }>;
@@ -91,8 +99,7 @@ export function selectWaitingRsiItems(rows: BlockedQueueRow[], stewardSession: s
 export function episodeKey(row: Pick<BlockedQueueRow, "qitemId" | "episode">): string {
   return `${row.qitemId}@${row.episode}`;
 }
-/** Failed spawn attempts are persisted as rows with this prefix so the gap and the cap survive a restart. */
-export const ATTEMPT_KEY_PREFIX = "rsi-notifier-attempt:";
+
 
 function clean(text: string, max: number): string {
   // The text is shown, never interpreted, but Jim decides from it: drop every format (Cf: bidi overrides and
@@ -207,13 +214,16 @@ export class HumanGateNotifier {
     });
     if (pending.length === 0) return { status: "idle", waiting: waiting.length };
 
-    const lastBannerMs = Math.max(0, ...rows.map((r) => r.lastMs).filter(Number.isFinite));
+    // The gap and the cap count banner ATTEMPTS, successful or not: a failing spawner must not run a child
+    // process every gap all day, and a restart must not forget the last attempt. A future-stamped row is ignored.
+    const banners = this.deps.store.listBanners()
+      .map((b) => Date.parse(b.sentAt))
+      .filter((t) => Number.isFinite(t) && t <= nowMs);
+    const lastBannerMs = Math.max(0, ...banners);
     if (nowMs - lastBannerMs < MIN_BANNER_GAP_MS) {
       return { status: "coalesced", waiting: waiting.length, pending: pending.length };
     }
-    // Attempts count, successful or not: a failing spawner must not run a child process every gap all day.
-    const bannerTimes = new Set(rows.map((r) => r.lastMs).filter((t) => Number.isFinite(t) && t > dayAgo));
-    if (bannerTimes.size >= MAX_BANNERS_PER_DAY) {
+    if (banners.filter((t) => t > dayAgo).length >= MAX_BANNERS_PER_DAY) {
       return { status: "capped", waiting: waiting.length, pending: pending.length };
     }
 
@@ -223,10 +233,11 @@ export class HumanGateNotifier {
     const { command, args } = bannerCommand(this.deps.findExecutable("terminal-notifier"), NOTIFICATION_TITLE, message);
     const result = await this.deps.spawner(command, args);
     this.lastResult = { at: nowIso, command: path.basename(command), ok: result.ok };
+    this.deps.store.recordBanner({ sentAt: nowIso, itemCount: pending.length, ok: result.ok });
+    this.deps.store.deleteBannersBefore(new Date(dayAgo).toISOString());
     if (!result.ok) {
       this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)}`);
-      // Persist the attempt (not the items: they stay unnotified and are retried after the gap).
-      this.deps.store.record([`${ATTEMPT_KEY_PREFIX}${nowMs}`], nowIso);
+      // The items stay unnotified: they are retried after the gap.
       return { status: "failed", waiting: waiting.length, command: path.basename(command) };
     }
     const notified = pending.map(episodeKey);
@@ -264,10 +275,17 @@ export function sqliteNotificationStore(db: Database.Database): NotificationStor
     "ON CONFLICT(qitem_id) DO UPDATE SET last_notified_at = excluded.last_notified_at",
   );
   const del = db.prepare("DELETE FROM rsi_notifications WHERE qitem_id = ? AND last_notified_at < ?");
+  const listBanners = db.prepare("SELECT sent_at, item_count, ok FROM rsi_notification_banners");
+  const insertBanner = db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES (?, ?, ?)");
+  const deleteBanners = db.prepare("DELETE FROM rsi_notification_banners WHERE sent_at < ?");
   return {
     list: () => (list.all() as Array<{ qitem_id: string; first_notified_at: string; last_notified_at: string }>)
       .map((r) => ({ qitemId: r.qitem_id, firstNotifiedAt: r.first_notified_at, lastNotifiedAt: r.last_notified_at })),
     record: (ids, at) => db.transaction(() => { for (const id of ids) upsert.run(id, at, at); })(),
+    listBanners: () => (listBanners.all() as Array<{ sent_at: string; item_count: number; ok: number }>)
+      .map((r) => ({ sentAt: r.sent_at, itemCount: r.item_count, ok: r.ok === 1 })),
+    recordBanner: (row) => { insertBanner.run(row.sentAt, row.itemCount, row.ok ? 1 : 0); },
+    deleteBannersBefore: (cutoff) => { deleteBanners.run(cutoff); },
     deleteOlderThan: (ids, cutoff) => db.transaction(() => { for (const id of ids) del.run(id, cutoff); })(),
   };
 }

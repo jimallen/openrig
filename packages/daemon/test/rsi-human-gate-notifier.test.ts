@@ -9,7 +9,6 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDaemon } from "../src/startup.js";
 import { isSettingsValidKey } from "../src/domain/user-settings/settings-store.js";
 import {
-  ATTEMPT_KEY_PREFIX,
   defaultFindExecutable,
   HumanGateNotifier,
   MAX_BANNERS_PER_DAY,
@@ -21,7 +20,7 @@ import {
   type BlockedQueueRow,
 } from "../src/domain/rsi/human-gate-notifier.js";
 
-// DEPENDENCY: the `rsi_notifications` table and the `rsi.steward_session` setting come from RSI lane B1
+// DEPENDENCY: the `rsi_notifications` and `rsi_notification_banners` tables and the `rsi.steward_session` setting come from RSI lane B1
 // (migration 113, settings-store). This branch is rebased on B1, so the real migrations are used.
 
 // Injected far from wall clock: a wall-clock mutant would see every fixture timestamp as long past or future.
@@ -211,6 +210,30 @@ describe("rate limits", () => {
     expect(h.calls).toHaveLength(MAX_BANNERS_PER_DAY);
   });
 
+  it("counts the cap from banner rows, so item-row churn cannot undercount it", async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_BANNERS_PER_DAY; i += 1) {
+      insertQueueRow(h.db, `q-${i}`);
+      expect((await h.notifier.tick()).status).toBe("sent");
+      h.now.ms += MIN_BANNER_GAP_MS;
+    }
+    expect(h.db.prepare("SELECT COUNT(*) AS n, SUM(ok) AS ok FROM rsi_notification_banners").get()).toEqual({ n: MAX_BANNERS_PER_DAY, ok: MAX_BANNERS_PER_DAY });
+    // Item rows are rewritten or removed by reminders and re-parks; the cap does not depend on them.
+    h.db.prepare("DELETE FROM rsi_notifications").run();
+    insertQueueRow(h.db, "q-late");
+    expect((await h.notifier.tick()).status).toBe("capped");
+  });
+
+  it("drops banner rows older than a day, and counts only the last day toward the cap", async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_BANNERS_PER_DAY; i += 1) {
+      h.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES (?, 1, 1)").run(new Date(T0 - 25 * 60 * MIN - i * MIN).toISOString());
+    }
+    insertQueueRow(h.db, "q-a");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notification_banners").get()).toEqual({ n: 1 });
+  });
+
   it("keeps the gap and the notified set across a daemon restart", async () => {
     const first = harness();
     insertQueueRow(first.db, "q-a");
@@ -228,7 +251,8 @@ describe("rate limits", () => {
     insertQueueRow(h.db, "q-a");
     expect((await h.notifier.tick()).status).toBe("failed");
     expect(h.notifier.lastResult).toMatchObject({ ok: false, command: "terminal-notifier" });
-    expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications WHERE qitem_id NOT LIKE ?").get(`${ATTEMPT_KEY_PREFIX}%`)).toEqual({ n: 0 });
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications").get()).toEqual({ n: 0 });
+    expect(h.db.prepare("SELECT sent_at, item_count, ok FROM rsi_notification_banners").all()).toEqual([{ sent_at: new Date(T0).toISOString(), item_count: 1, ok: 0 }]);
     h.now.ms += MIN;
     expect((await h.notifier.tick()).status).toBe("coalesced");
     expect(h.calls).toHaveLength(1);
@@ -259,6 +283,8 @@ describe("rate limits", () => {
     const h = harness();
     h.db.prepare("INSERT INTO rsi_notifications (qitem_id, first_notified_at, last_notified_at) VALUES ('q-bad@1', '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z')").run();
     h.db.prepare("INSERT INTO rsi_notifications (qitem_id, first_notified_at, last_notified_at) VALUES ('q-junk@1', 'x', 'not-a-date')").run();
+    h.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES ('2099-01-01T00:00:00.000Z', 1, 1)").run();
+    h.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES ('not-a-date', 1, 1)").run();
     insertQueueRow(h.db, "q-a");
     expect((await h.notifier.tick()).status).toBe("sent");
   });
