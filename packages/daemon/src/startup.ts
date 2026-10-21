@@ -1175,7 +1175,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
   const { SlowOpFileSource } = await import("./domain/rsi/slow-op-file-source.js");
   const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath }), new SlowOpFileSource({ logPath: slowOpLogPath, instanceId: OPENRIG_HOME })];
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Stage A2b: D5-D10, D12, D14, one source each, one shared read-only handle. D10 is armed only when the retention sweep is.
+  const { createA2bSources } = await import("./domain/rsi/a2b-sources.js");
+  const { RETENTION_DEFAULTS } = await import("./domain/queue-retention.js");
+  const rsiA2bSources = dbPath === ":memory:" ? [] : createA2bSources({ dbPath, instanceId: OPENRIG_HOME, retentionEnabled: healthSettingsStore.resolveOne("retention.enabled").value === true,
+    retentionDays: () => { const v = healthSettingsStore.resolveOne("retention.usage_samples_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.usageSamplesRetentionDays; } }); // same resolution as the sweep (index.ts)
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, ...rsiA2bSources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

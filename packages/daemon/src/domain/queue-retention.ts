@@ -68,6 +68,10 @@ import { TERMINAL_QUEUE_STATES } from "./queue-repository.js";
  */
 export const DEFAULT_TERMINAL_STATES = TERMINAL_QUEUE_STATES;
 
+/** How often the daemon runs the retention sweep (index.ts schedules `setInterval` with it).
+ *  RSI D10 (rsi/usage-sources.ts) derives its "expected lag" line from this same constant. */
+export const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 /** Retention defaults (arch D3). BAKED closed-set knobs — registered as settings
  *  keys at rebase; no free-form config. */
 export const RETENTION_DEFAULTS = {

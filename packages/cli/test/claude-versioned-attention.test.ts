@@ -42,7 +42,7 @@ it.each(["valid", "unknown path", "wrong token", "no token", "PID reused", "logi
     eventBus.emit({ type: "restore.completed", rigId: rig.id, snapshotId: "snap", result: {
       snapshotId: "snap", preRestoreSnapshotId: null, rigResult: "failed", nodes: [{ nodeId: node.id, logicalId: "worker", status: "failed" }], warnings: [],
     } });
-    const historical = db.prepare("SELECT * FROM events WHERE type LIKE 'restore.%'").all();
+    const historical = db.prepare("SELECT * FROM events WHERE type LIKE 'restore.%' ORDER BY seq").all();
     const startedAt = "Sun Oct  4 15:21:03 2026";
     let calls = 0;
     const listProcesses = async (): Promise<NativeProcessRow[]> => {
@@ -104,7 +104,7 @@ it.each(["valid", "unknown path", "wrong token", "no token", "PID reused", "logi
       expect((await restore.reconcileNodeRuntimeTruth(rig.id, node.id)).ok).toBe(true);
       expect(db.prepare("SELECT * FROM events WHERE type = 'restore.outcome_reconciled'").all()).toHaveLength(1);
     }
-    expect(db.prepare("SELECT * FROM events WHERE type IN ('restore.started', 'restore.completed')").all()).toEqual(historical);
+    expect(db.prepare("SELECT * FROM events WHERE type IN ('restore.started', 'restore.completed') ORDER BY seq").all()).toEqual(historical);
     expect(sendText).not.toHaveBeenCalled(); expect(sendKeys).not.toHaveBeenCalled();
   } finally { db.close(); }
 });

@@ -179,6 +179,7 @@ export const migrationsForFullTestDbExclusions: Record<string, string> = {
   "054_queue_transitions_archive.sql": "queue-retention EXTENSION table — queue-retention suites migrate it inline.",
   "062_usage_samples.sql": "usage-metering subsystem table — usage suites migrate it inline.",
   "094_usage_samples_latest_indexes.sql": "indexes usage_samples (062 is excluded); usage index tests migrate the canonical full schema.",
+  "114_events_and_usage_samples_indexes.sql": "also indexes usage_samples (062 is excluded); the RSI A2b tests migrate the canonical full schema.",
   "105_usage_samples_client_cost.sql": "adds cost columns to usage_samples (062 is excluded); cost tests migrate the canonical full schema.",
   "107_pi_usage_entries.sql": "Pi usage-facts table for the cost view; its tests migrate the canonical full schema.",
   "108_pi_usage_charges.sql": "OpenRouter charges for Pi entries, for the cost view; its tests migrate the canonical full schema.",

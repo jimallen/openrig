@@ -115,6 +115,7 @@ import { sessionFreshStartSchema } from "./migrations/110_session_fresh_start.js
 import { rigSpecSourceSchema } from "./migrations/111_rig_spec_source.js";
 import { nodeCodexMcpServersSchema } from "./migrations/112_node_codex_mcp_servers.js";
 import { rsiWakeStateSchema } from "./migrations/113_rsi_wake_state.js";
+import { eventsAndUsageSamplesIndexesSchema } from "./migrations/114_events_and_usage_samples_indexes.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -229,4 +230,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   rigSpecSourceSchema,
   nodeCodexMcpServersSchema,
   rsiWakeStateSchema,
+  eventsAndUsageSamplesIndexesSchema,
 ];

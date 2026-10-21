@@ -10,7 +10,7 @@ import { resolveDaemonDbPath } from "./daemon-db-path.js";
 import { createDaemon } from "./startup.js";
 import { removeParentSessionEnv } from "./domain/parent-session-env.js";
 import { resolveBindPlan } from "./domain/bind-plan.js";
-import { runQueueRetentionSweep, RETENTION_DEFAULTS } from "./domain/queue-retention.js";
+import { runQueueRetentionSweep, RETENTION_DEFAULTS, RETENTION_SWEEP_INTERVAL_MS } from "./domain/queue-retention.js";
 import {
   createStuckSweepStatus,
   resolveStuckSweepIntervalSeconds,
@@ -145,7 +145,7 @@ export function startQueueRetentionScheduler(deps: {
     });
   };
   runOnce(); // boot sweep (fire-and-forget)
-  const DAILY_MS = 24 * 60 * 60 * 1000;
+  const DAILY_MS = RETENTION_SWEEP_INTERVAL_MS;
   return setInterval(runOnce, DAILY_MS);
 }
 
