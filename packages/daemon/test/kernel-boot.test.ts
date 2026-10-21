@@ -8,7 +8,7 @@
 // post-bootstrap tracker state.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,8 @@ import {
   authBlockMessage,
   probeCodexReadiness,
   selectCodexProviderAuth,
+  classifyClaudeAuthStatus,
+  defaultProbeRuntimes,
   type KernelBootDeps,
   type RuntimeAuthStatus,
 } from "../src/domain/kernel-boot.js";
@@ -355,5 +357,122 @@ describe("expectedKernelSeats — the roster a boot failure must recover (#1042)
       expect(expectedKernelSeats(join(tmpSpecsDir, file))).toBeNull();
     }
     expect(expectedKernelSeats(join(tmpSpecsDir, "missing.yaml"))).toBeNull();
+  });
+});
+
+describe("classifyClaudeAuthStatus — Claude Code 2.1.x JSON status (OF-58)", () => {
+  const out = (stdout: string, exitCode: number | null, stderr = "") => ({ stdout, stderr, exitCode });
+  const json = (o: Record<string, unknown>) => JSON.stringify(o, null, 2);
+
+  it("JSON logged in with a subscription is ok and reports the method", () => {
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: "claude.ai" }), 0)))
+      .toEqual({ status: "ok", authMethod: "claude.ai" });
+  });
+
+  it("api_key auth counts as ok (the kernel boots) and the method is reported, not acted on", () => {
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: "api_key" }), 0)))
+      .toEqual({ status: "ok", authMethod: "api_key" });
+  });
+
+  it("JSON logged out with exit 1 is unavailable", () => {
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: false, authMethod: "none" }), 1)).status).toBe("unavailable");
+  });
+
+  it("JSON logged out with exit 0 is unavailable: correctness must not rest on the exit code alone", () => {
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: false, authMethod: "none" }), 0)))
+      .toEqual({ status: "unavailable", authMethod: "none" });
+  });
+
+  it("a non-zero exit is unavailable even when the JSON says logged in", () => {
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: "claude.ai" }), 2)).status).toBe("unavailable");
+  });
+
+  it("a missing exit code (timeout, missing binary) is unavailable", () => {
+    expect(classifyClaudeAuthStatus(out("", null)).status).toBe("unavailable");
+  });
+
+  it("legacy text 'Not logged in' at exit 0 is unavailable; legacy logged-in text is ok", () => {
+    expect(classifyClaudeAuthStatus(out("Not logged in. Run claude auth login.", 0)).status).toBe("unavailable");
+    expect(classifyClaudeAuthStatus(out("Logged in as someone@example.com", 0)).status).toBe("ok");
+    expect(classifyClaudeAuthStatus(out("", 0, "Login required")).status).toBe("unavailable");
+  });
+
+  it("empty or garbage output at exit 0 keeps today's text rule (ok)", () => {
+    expect(classifyClaudeAuthStatus(out("", 0)).status).toBe("ok");
+    expect(classifyClaudeAuthStatus(out("{not json", 0)).status).toBe("ok");
+  });
+
+  it("JSON without a boolean loggedIn falls back to the text rule rather than guessing", () => {
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: "no", note: "not logged in" }), 0)).status).toBe("unavailable");
+    expect(classifyClaudeAuthStatus(out(json({ authMethod: "claude.ai" }), 0)).status).toBe("ok");
+  });
+
+  it("an authMethod that is not a short token is never reported", () => {
+    const r = classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: "sk-ant secret value with spaces" }), 0));
+    expect(r).toEqual({ status: "ok" });
+  });
+});
+
+describe("defaultProbeRuntimes — claude auth status through a real process (OF-58)", () => {
+  let binDir: string;
+  let savedPath: string | undefined;
+  let savedCodexHome: string | undefined;
+  function stub(name: string, body: string): void {
+    const file = join(binDir, name);
+    writeFileSync(file, `#!/bin/sh\n${body}\n`);
+    chmodSync(file, 0o755);
+  }
+  beforeEach(() => {
+    binDir = mkdtempSync(join(tmpdir(), "kernel-probe-bin-"));
+    savedPath = process.env.PATH;
+    savedCodexHome = process.env.CODEX_HOME;
+    process.env.PATH = `${binDir}:/usr/bin:/bin`;
+    process.env.CODEX_HOME = binDir; // no config.toml: the codex login-status path
+    stub("codex", "exit 1");
+  });
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedCodexHome;
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it("logged-out JSON printed with exit 0 reads as unavailable", async () => {
+    stub("claude", `echo '{"loggedIn": false, "authMethod": "none"}'`);
+    const probe = await defaultProbeRuntimes();
+    expect(probe.claudeCode).toBe("unavailable");
+    expect(probe.codex).toBe("unavailable");
+  });
+
+  it("logged-in JSON reads as ok and carries the auth method", async () => {
+    stub("claude", `echo '{"loggedIn": true, "authMethod": "api_key"}'`);
+    const probe = await defaultProbeRuntimes();
+    expect(probe.claudeCode).toBe("ok");
+    expect(probe.claudeAuthMethod).toBe("api_key");
+  });
+
+  it("logged-out JSON with exit 1 stays unavailable", async () => {
+    stub("claude", `echo '{"loggedIn": false, "authMethod": "none"}'; exit 1`);
+    const probe = await defaultProbeRuntimes();
+    expect(probe.claudeCode).toBe("unavailable");
+    // exec rejects on a non-zero exit; the output it carried must still reach the classifier.
+    expect(probe.claudeAuthMethod).toBe("none");
+  });
+
+  it("a status command that outlives the 5s probe timeout is unavailable, even though it printed logged-in JSON first", async () => {
+    stub("claude", `echo '{"loggedIn": true, "authMethod": "claude.ai"}'; exec sleep 30`);
+    expect((await defaultProbeRuntimes()).claudeCode).toBe("unavailable");
+  }, 20000);
+});
+
+describe("bootKernelIfNeeded — auth method visibility (OF-58)", () => {
+  it("names the Claude authMethod in the booting log line and does not change the variant", async () => {
+    const lines: string[] = [];
+    const tracker = await bootKernelIfNeeded(makeBaseDeps({
+      probeRuntimes: async () => ({ claudeCode: "ok", codex: "ok", claudeAuthMethod: "api_key" }),
+      log: (_level, message) => { lines.push(message); },
+    }, tmpSpecsDir));
+    expect(lines.some((l) => l.includes("booting kernel rig from rig.yaml") && l.includes("claude authMethod: api_key"))).toBe(true);
+    expect(tracker.getStatus().variant).toBe("rig.yaml");
+    tracker.stop();
   });
 });
