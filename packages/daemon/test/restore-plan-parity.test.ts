@@ -12,7 +12,7 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRestoreHarness, type RestoreHarness } from "./helpers/restore-fresh-harness.js";
-import { buildRestorePlanPreview, collectPreviewSessionRows, readPreviewContinuity } from "../src/domain/restore-plan-preview.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows, PLAN_NO_TOKEN_REASON, readPreviewContinuity } from "../src/domain/restore-plan-preview.js";
 import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
@@ -142,7 +142,8 @@ describe("rig up --plan and restore agree on the pre-launch gates", () => {
     if (restore.outcome === "stopped") {
       expect(node.intendedAction).toBe("awaiting-decision");
       expect(node.restoreStatus, "the status restore reports").toBe(restore.status);
-      expect(node.reason, "restore's own text").toBe(restore.error);
+      // Restore's own text, except the no-token gate, whose plan sentence is the CLI wording operators already read.
+      expect(node.reason, "restore's own text").toBe(restore.error.startsWith("Original session unresumable") ? PLAN_NO_TOKEN_REASON : restore.error);
       expect(node.freshRequired, "a gate --fresh cannot get past does not suggest --fresh").toBe(
         !["node_removed", "occupant_ambiguous", "runtime_mismatch"].some((g) => restore.error.length > 0 && gateOf(restore.error) === g),
       );

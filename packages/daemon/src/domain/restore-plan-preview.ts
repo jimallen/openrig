@@ -24,6 +24,9 @@ import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
  *  that needs no probe). DELIVERY DEFAULT; pm confirms the exact value. */
 export const RESUME_FRESHNESS_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 
+/** The plan's words for a resumable seat whose saved session has no token (the `no_token` gate). Unchanged from before OF-44. */
+export const PLAN_NO_TOKEN_REASON = "Prior occupant has no usable native resume identity. No session will be started without a fresh-start decision.";
+
 /** OPR.0.4.3.20 FR-6 — per-seat token truth in the restore plan. */
 export type ResumeTokenState = "present" | "missing" | "stale" | "unverified";
 
@@ -246,7 +249,9 @@ export function buildRestorePlanPreview(
     let restoreStatus: RestorePlanPreviewNode["restoreStatus"];
     if (outcome.kind === "stop") {
       intendedAction = "awaiting-decision";
-      reason = outcome.stop.error;
+      // Restore's own text for every gate but one: the plan's no-token sentence is the CLI wording operators already read
+      // (kept stable); restore's longer text for the same gate adds the fresh-start command the plan prints beside it.
+      reason = outcome.stop.gate === "no_token" ? PLAN_NO_TOKEN_REASON : outcome.stop.error;
       restoreStatus = outcome.stop.status;
     } else if (outcome.kind === "skip_restoring") {
       intendedAction = "fresh-primed";
