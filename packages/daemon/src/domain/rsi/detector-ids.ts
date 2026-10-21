@@ -5,13 +5,14 @@
  * behavioural-health detectors: a policy may disable an RSI detector, but an RSI
  * detector is never a valid HealthDiagnosisService target (health-policy.ts).
  */
-export const RSI_ARCHIVED_RIG_LIVE_SESSION = "rsi.archived-rig-live-session" as const;
+export const RSI_ARCHIVED_RIG_LIVE_SESSION = "rsi.archived-rig-live-session" as const; // D4
+// Stage A2a detectors (D1-D3).
 export const RSI_STARTUP_FAILURE_CLASS = "rsi.startup-failure-class" as const;
 export const RSI_BOOTSTRAP_FAILURE_CLASS = "rsi.bootstrap-failure-class" as const;
 export const RSI_ORPHANED_PARKED_OWNER_JOB = "rsi.orphaned-parked-owner-job" as const;
 /** D13: a site fills the slow-operation log with spans that are under the slow threshold. */
 export const RSI_SLOW_OP_SUBTHRESHOLD_FLOOD = "rsi.slow-op-subthreshold-flood" as const;
-// Stage A2b detectors (D5-D10, D12, D14). Stage A2a adds D1-D3 beside these.
+// Stage A2b detectors (D5-D10, D12, D14).
 export const RSI_COMPACTION_STORM = "rsi.compaction-storm" as const; // D5
 export const RSI_CONTEXT_HIGH_WATER = "rsi.context-high-water" as const; // D6
 export const RSI_PROVIDER_WEEKLY_WINDOW = "rsi.provider-weekly-window" as const; // D7

@@ -18,10 +18,13 @@ import { rsiFingerprint } from "./fingerprint.js";
  * COST: each source runs ONE grouped statement (plus, where named, one indexed count) and derives
  * firing / quiet / population / class split in JS, so a read is a single pass over its window.
  *
- * TIME BUDGET SEAM (owned by Stage A2a, not built here): every source exposes a plain `read()`, so
- * a budget wrapper can sit around it. better-sqlite3 cannot interrupt a running statement, so a
- * wrapper from outside can only measure and refuse the NEXT read; it cannot cut a statement short.
- * The grouped statements are bounded by the window (and an index), not by a row cap.
+ * TIME BUDGET: every source exposes a plain `read()`, and the RSI registry (registry.ts) wraps
+ * each one in A2a's `BudgetedRsiSource` (read-budget.ts). better-sqlite3 cannot interrupt a running
+ * statement, so the wrapper measures the read and marks an over-budget read `partial` with a note;
+ * it cannot cut a statement short. The grouped statements are bounded by the window (and an index),
+ * not by a row cap.
+ *
+ * This is also the ONE finding builder for every RSI counted source (A2a's D1-D3 use it too).
  */
 
 /** One database connection shared by every A2b source, opened on first use. */
@@ -108,6 +111,11 @@ export function buildTelemetryFinding(spec: FindingSpec, evaluatedAt: string): H
     explanation: spec.explanation,
     suggestedInspection: spec.suggestedInspection,
   };
+}
+
+/** Coverage of a source that could not read an input it depends on: unavailable, never zero. */
+export function unavailableCoverage(source: string, evaluatedAt: string, reason: string): HealthSourceCoverage {
+  return { source, evaluatedAt, status: "unavailable", partial: true, reason };
 }
 
 export interface SourceContext {

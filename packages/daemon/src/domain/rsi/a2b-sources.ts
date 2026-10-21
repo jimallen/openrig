@@ -20,9 +20,10 @@ export interface A2bSourceOptions {
 }
 
 /**
- * The Stage A2b registry: D5, D6, D7, D8, D9, D10, D12, D14, one source per detector so a
- * policy that disables one detector skips exactly that read. All share one read-only handle.
- * Stage A2a registers D1-D3 beside this call in startup.ts.
+ * The A2b part of the RSI registry: D5, D6, D7, D8, D9, D10, D12, D14, one source per detector so
+ * a policy that disables one detector skips exactly that read. All share one read-only handle.
+ * A helper of `createRsiSources` (registry.ts), the one list the daemon registers; it is not
+ * wired anywhere else.
  */
 export function createA2bSources(options: A2bSourceOptions): HealthObservationSource[] {
   const deps = { connection: new RsiReadOnlyConnection(options.dbPath), instanceId: options.instanceId, now: options.now, rowLimit: options.rowLimit };

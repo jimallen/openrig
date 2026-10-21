@@ -11,12 +11,13 @@ import {
   anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, refusalsFor, regressionClass,
   type HistoricalFixedHits, type RefusedAnchor,
 } from "./known-fixes.js";
+import { buildTelemetryFinding, sqliteUtcStamp, unavailableCoverage } from "./finding-builder.js";
 import { RsiReadBudget, type RsiReadBudgetOptions } from "./read-budget.js";
 import { openRsiReadOnlyDatabase } from "./telemetry-source.js";
-import {
-  buildTelemetryFinding, RSI_CLASS_RECURRENCE_THRESHOLD, RSI_CLASS_WINDOW_DAYS,
-  RSI_LOCAL_INSTANCE_SCOPE, sqliteUtcStamp, unavailableCoverage,
-} from "./telemetry-finding.js";
+
+/** Hits within the window needed before a recurring-class detector (D1, D2) fires. */
+export const RSI_CLASS_RECURRENCE_THRESHOLD = 3;
+export const RSI_CLASS_WINDOW_DAYS = 7;
 
 /** Most events one read examines (rows past it are reported as `partial`, never as zero). */
 export const RSI_EVENT_ROW_LIMIT = 5_000;
@@ -50,6 +51,8 @@ interface Hit { seq: number; ms: number; createdAt: string }
 
 export interface EventClassSourceDeps {
   dbPath: string;
+  /** The daemon instance id (OPENRIG_HOME): the scope of a finding about the whole instance. */
+  instanceId: string;
   knownFixesPath: string;
   now?: () => Date;
   rowLimit?: number;
@@ -147,14 +150,13 @@ export class EventClassHealthSource implements HealthObservationSource {
     for (const { cls, subjectKey, verdict, historical, active } of judged) {
       if (active.length < RSI_CLASS_RECURRENCE_THRESHOLD) continue;
       const seen = active.map((hit) => hit.ms);
-      const findingClass = regressionClass(verdict, cls);
+      const className = regressionClass(verdict, cls);
       const regression = verdict.anchor !== null;
       observations.push(buildTelemetryFinding({
-        detectorId: this.detector.detectorId, subjectKey, scope: RSI_LOCAL_INSTANCE_SCOPE, findingClass,
+        detectorId: this.detector.detectorId, subjectKey, scope: { type: "instance", instanceId: this.deps.instanceId }, className,
         count: active.length, controlTotal: evaluated, population: total,
         firstSeq: Math.min(...active.map((hit) => hit.seq)), lastSeq: Math.max(...active.map((hit) => hit.seq)),
         firstSeen: new Date(Math.min(...seen)).toISOString(), lastSeen: new Date(Math.max(...seen)).toISOString(),
-        evaluatedAt,
         summary: regression
           ? `${this.detector.eventType} class ${cls} recurred ${active.length} times after fix ${verdict.anchor!.ref} was deployed.`
           : `${this.detector.eventType} class ${cls} recurred ${active.length} times in ${RSI_CLASS_WINDOW_DAYS} days.`,
@@ -163,7 +165,7 @@ export class EventClassHealthSource implements HealthObservationSource {
           + `${historical.length > 0 ? ` (${historical.length} older hits are historical-fixed)` : ""}; the window holds ${total} such events in all.`
           + `${anchorNote !== undefined ? ` Anchors: ${anchorNote}.` : ""}`,
         suggestedInspection: `List the ${this.detector.eventType} events of class ${cls} (seq ${Math.min(...active.map((hit) => hit.seq))}..${Math.max(...active.map((hit) => hit.seq))}) with the events route and compare their cause.`,
-      }));
+      }, evaluatedAt));
     }
     return observations;
   }

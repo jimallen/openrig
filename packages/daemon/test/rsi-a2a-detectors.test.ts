@@ -58,9 +58,10 @@ function fixture() {
       .run(`job-${++jobSeq}`, policy, targetSession, state, registeredAt);
   const writeFixes = (anchors: unknown) => writeFileSync(fixesPath, typeof anchors === "string" ? anchors : JSON.stringify(anchors));
   type Extra = { rowLimit?: number; budget?: { budgetMs?: number; nowMs?: () => number } };
-  const d1 = (extra: Extra = {}) => new EventClassHealthSource(STARTUP_FAILURE_DETECTOR, { dbPath, knownFixesPath: fixesPath, now: () => NOW, ...extra });
-  const d2 = (extra: Extra = {}) => new EventClassHealthSource(BOOTSTRAP_FAILURE_DETECTOR, { dbPath, knownFixesPath: fixesPath, now: () => NOW, ...extra });
-  const d3 = (extra: Extra = {}) => new OrphanedParkedOwnerJobSource({ dbPath, knownFixesPath: fixesPath, now: () => NOW, ...extra });
+  // The instance id is the daemon's OPENRIG_HOME (registry.ts); the fixture's home is its temp dir.
+  const d1 = (extra: Extra = {}) => new EventClassHealthSource(STARTUP_FAILURE_DETECTOR, { dbPath, knownFixesPath: fixesPath, instanceId: dir, now: () => NOW, ...extra });
+  const d2 = (extra: Extra = {}) => new EventClassHealthSource(BOOTSTRAP_FAILURE_DETECTOR, { dbPath, knownFixesPath: fixesPath, instanceId: dir, now: () => NOW, ...extra });
+  const d3 = (extra: Extra = {}) => new OrphanedParkedOwnerJobSource({ dbPath, knownFixesPath: fixesPath, instanceId: dir, now: () => NOW, ...extra });
   return { dir, dbPath, fixesPath, db, event, startupFailed, bootstrapFailed, rig, job, writeFixes, d1, d2, d3 };
 }
 
@@ -121,7 +122,7 @@ describe("D1 startup-failure class recurrence", () => {
     const found = records(f.d1());
 
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ detector: RSI_STARTUP_FAILURE_CLASS, category: "process", severity: "info", status: "active", scope: { type: "instance", instanceId: "local" } });
+    expect(found[0]).toMatchObject({ detector: RSI_STARTUP_FAILURE_CLASS, category: "process", severity: "info", status: "active", scope: { type: "instance", instanceId: f.dir } });
     expect(span(found[0]!)).toMatchObject({
       class: "codex-profile-getcwd", count: 3, fingerprint: `${RSI_STARTUP_FAILURE_CLASS}/class:codex-profile-getcwd`,
       firstSeen: "2031-03-01T00:00:00.000Z", lastSeen: "2031-03-03T00:00:00.000Z",
@@ -552,7 +553,12 @@ describe("registration", () => {
     service.records();
 
     const bySource = new Map(service.coverage().map((c) => [c.source, c]));
-    expect([...bySource.keys()].sort()).toEqual(["rsi-bootstrap-failure-class", "rsi-orphaned-parked-owner-job", "rsi-startup-failure-class", "rsi-telemetry"]);
+    // The one registry (integration): D4, D1-D3, D13 and the A2b sources. Restated, not derived.
+    expect([...bySource.keys()].sort()).toEqual([
+      "rsi-bootstrap-failure-class", "rsi-compaction-storm", "rsi-context-high-water", "rsi-orphaned-parked-owner-job",
+      "rsi-outbox-unsettled", "rsi-permission-stall", "rsi-project-report", "rsi-provider-weekly-window", "rsi-retention-lag",
+      "rsi-slow-op-file", "rsi-startup-failure-class", "rsi-telemetry", "rsi-watchdog-delivery-failure",
+    ]);
     for (const name of ["rsi-startup-failure-class", "rsi-bootstrap-failure-class", "rsi-orphaned-parked-owner-job"]) {
       expect(bySource.get(name)).toMatchObject({ status: "unavailable" });
     }
@@ -590,7 +596,7 @@ describe("anchor refusals are permanent and self-consistent (recordedAt)", () =>
     const f = fixture();
     f.writeFixes([anchorOf({ recordedAt: "2031-03-02T10:00:00Z" })]); // recorded 03-02 10:00, claims a deployment on 03-03
     threeHits(f);
-    const early = new EventClassHealthSource(STARTUP_FAILURE_DETECTOR, { dbPath: f.dbPath, knownFixesPath: f.fixesPath, now: () => new Date("2031-03-02T20:00:00Z") });
+    const early = new EventClassHealthSource(STARTUP_FAILURE_DETECTOR, { dbPath: f.dbPath, knownFixesPath: f.fixesPath, instanceId: f.dir, now: () => new Date("2031-03-02T20:00:00Z") });
     const later = f.d1(); // NOW is 2031-03-04, after the claimed deployment
 
     expect(records(early)).toHaveLength(1);

@@ -1170,17 +1170,16 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const passiveCeremony = new PassiveCeremonySource(healthSettingsStore.resolveOne("workspace.root").value as string, queueRepoInstance, healthPolicy, undefined, healthCheckpoints, { reader: operatingPosture, instanceId: OPENRIG_HOME });
   // RSI telemetry detectors read through their own read-only handle; an in-memory database cannot be opened that way.
   // THE ONE RSI source array: the health projection below AND the health-finding wake both consume it.
-  // Add every RSI source here; a source given only to the projection is served by `rig health` but
-  // never wakes the steward (rsi-health-finding-wake.test.ts pins every RSI detector id to a source).
+  // Every RSI source comes from the one registry (domain/rsi/registry.ts); add a source THERE, never here.
+  // A source given only to the projection is served by `rig health` but never wakes the steward
+  // (rsi-health-finding-wake.test.ts pins every RSI detector id to a source in both).
+  // D10 is armed only when the retention sweep is, with the sweep's own retention resolution (index.ts).
   const { createRsiSources } = await import("./domain/rsi/registry.js");
-  const { SlowOpFileSource } = await import("./domain/rsi/slow-op-file-source.js");
-  const rsiTelemetrySources = [...createRsiSources({ dbPath, openrigHome: OPENRIG_HOME }), ...(dbPath === ":memory:" ? [] : [new SlowOpFileSource({ logPath: slowOpLogPath, instanceId: OPENRIG_HOME })])];
-  // Stage A2b: D5-D10, D12, D14, one source each, one shared read-only handle. D10 is armed only when the retention sweep is.
-  const { createA2bSources } = await import("./domain/rsi/a2b-sources.js");
   const { RETENTION_DEFAULTS } = await import("./domain/queue-retention.js");
-  const rsiA2bSources = dbPath === ":memory:" ? [] : createA2bSources({ dbPath, instanceId: OPENRIG_HOME, retentionEnabled: healthSettingsStore.resolveOne("retention.enabled").value === true,
-    retentionDays: () => { const v = healthSettingsStore.resolveOne("retention.usage_samples_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.usageSamplesRetentionDays; } }); // same resolution as the sweep (index.ts)
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, ...rsiA2bSources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  const rsiTelemetrySources = createRsiSources({ dbPath, openrigHome: OPENRIG_HOME, slowOpLogPath,
+    retentionEnabled: healthSettingsStore.resolveOne("retention.enabled").value === true,
+    retentionDays: () => { const v = healthSettingsStore.resolveOne("retention.usage_samples_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.usageSamplesRetentionDays; } });
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

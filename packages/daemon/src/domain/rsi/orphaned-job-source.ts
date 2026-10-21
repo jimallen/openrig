@@ -8,9 +8,9 @@ import {
   anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, refusalsFor, regressionClass,
   type HistoricalFixedHits, type RefusedAnchor,
 } from "./known-fixes.js";
+import { buildTelemetryFinding, unavailableCoverage } from "./finding-builder.js";
 import { RsiReadBudget, type RsiReadBudgetOptions } from "./read-budget.js";
 import { openRsiReadOnlyDatabase } from "./telemetry-source.js";
-import { buildTelemetryFinding, RSI_LOCAL_INSTANCE_SCOPE, unavailableCoverage } from "./telemetry-finding.js";
 
 export const RSI_JOB_ROW_LIMIT = 5_000;
 export const ORPHANED_PARKED_OWNER_JOB_CLASS = "parked-owner-job-without-live-rig";
@@ -47,7 +47,7 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
   private readonly budget: RsiReadBudget;
 
   constructor(private readonly deps: {
-    dbPath: string; knownFixesPath: string; now?: () => Date; rowLimit?: number; budget?: RsiReadBudgetOptions;
+    dbPath: string; knownFixesPath: string; instanceId: string; now?: () => Date; rowLimit?: number; budget?: RsiReadBudgetOptions;
   }) {
     this.budget = new RsiReadBudget(deps.budget);
   }
@@ -140,12 +140,11 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
     const times = active.map((job) => job.seenMs);
     const identity = total === distinctRigNames;
     return [buildTelemetryFinding({
-      detectorId: RSI_ORPHANED_PARKED_OWNER_JOB, subjectKey: SUBJECT_KEY, scope: RSI_LOCAL_INSTANCE_SCOPE,
-      findingClass: regressionClass(verdict, ORPHANED_PARKED_OWNER_JOB_CLASS),
+      detectorId: RSI_ORPHANED_PARKED_OWNER_JOB, subjectKey: SUBJECT_KEY, scope: { type: "instance", instanceId: this.deps.instanceId },
+      className: regressionClass(verdict, ORPHANED_PARKED_OWNER_JOB_CLASS),
       count: active.length, controlTotal: liveRigJobs, population: total,
       firstSeq: Math.min(...active.map((job) => job.seq)), lastSeq: Math.max(...active.map((job) => job.seq)),
       firstSeen: new Date(Math.min(...times)).toISOString(), lastSeen: new Date(Math.max(...times)).toISOString(),
-      evaluatedAt,
       summary: `${active.length} active ${PARKED_OWNER_POLICY_NAME} job${active.length === 1 ? "" : "s"} target a rig with no un-archived row.`,
       threshold: `an active ${PARKED_OWNER_POLICY_NAME} job whose rig (rigFromAnchor of its target) has no un-archived rig row`,
       explanation: `${active.length} of ${total} active ${PARKED_OWNER_POLICY_NAME} jobs are orphaned; control: ${liveRigJobs} target a live rig. `
@@ -153,6 +152,6 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
         + `${identity ? ": every name that ever existed has an active job, which is what a boot loop that re-arms archived rigs produces" : ""}.`
         + `${anchorNote !== undefined ? ` Anchors: ${anchorNote}.` : ""}`,
       suggestedInspection: "List the active parked-owner-consumer watchdog jobs, resolve each target's rig, and check which rigs are archived.",
-    })];
+    }, evaluatedAt)];
   }
 }
