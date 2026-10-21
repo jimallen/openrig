@@ -1164,8 +1164,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     configuredCatalogPath(healthSettingsStore));
   const passiveCeremony = new PassiveCeremonySource(healthSettingsStore.resolveOne("workspace.root").value as string, queueRepoInstance, healthPolicy, undefined, healthCheckpoints, { reader: operatingPosture, instanceId: OPENRIG_HOME });
   // RSI telemetry detectors read through their own read-only handle; an in-memory database cannot be opened that way.
-  const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
-  const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath })];
+  const { createRsiSources } = await import("./domain/rsi/registry.js");
+  const rsiTelemetrySources = createRsiSources({ dbPath, openrigHome: OPENRIG_HOME });
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
