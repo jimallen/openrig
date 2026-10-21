@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
+import { getSeatCwdPresenceError } from "../src/domain/cwd-resolution.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RigSpec as PodRigSpec } from "../src/domain/types.js";
@@ -107,6 +108,32 @@ describe("rig up preflight: seat cwd must be an existing directory (OF-63)", () 
     expect(result.errors).toHaveLength(2);
     expect(result.errors[0]).toContain("dev.impl");
     expect(result.errors[1]).toContain("dev.second");
+  });
+
+  it("names a cwd it cannot stat as 'not accessible' (with the errno), not as missing and not as fine", () => {
+    const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    const refusal = getSeatCwdPresenceError("/some/seat", () => { throw denied; });
+    expect(refusal).toContain("/some/seat");
+    expect(refusal).toContain("not accessible");
+    expect(refusal).toContain("EACCES");
+    expect(refusal).not.toContain("does not exist");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("refuses, as 'not accessible', a seat folder under a directory the daemon cannot search", async () => {
+    const parent = nodePath.join(tmp, "locked");
+    const seatDir = nodePath.join(parent, "seat");
+    fs.mkdirSync(seatDir, { recursive: true });
+    fs.chmodSync(parent, 0o000);
+    try {
+      const result = await run(rigYaml([agentSeat(seatDir)]));
+      expect(result.ready).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain("dev.impl");
+      expect(result.errors[0]).toContain(seatDir);
+      expect(result.errors[0]).toContain("not accessible");
+    } finally {
+      fs.chmodSync(parent, 0o755);
+    }
   });
 
   it("never creates the missing directory", async () => {

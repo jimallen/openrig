@@ -44,7 +44,9 @@ export type SeatStartupRead =
   /** The recorded spec does not declare this seat (added with `rig add` after launch, or dropped from the spec). */
   | { kind: "undeclared"; specSource: string }
   /** A source is recorded but cannot give this seat a startup policy; nothing was launched or written. */
-  | { kind: "refused"; code: "startup_source_unavailable" | "startup_source_changed"; message: string; specSource: string }
+  | { kind: "refused"; code: "startup_source_unavailable" | "startup_source_changed"; message: string; specSource: string;
+      /** What to do about this refusal, when the usual "restore the spec, or use the stored files" advice would be wrong for it. */
+      guidance?: string }
   | {
       kind: "spec";
       /** The recorded spelling, for example a spec library link. */
@@ -191,7 +193,7 @@ export async function resolveFreshSeatStartup(
       // N-C2 re-check N6: the caller's guidance offers the stored files as the way out; when they cannot be used either,
       // that escape is refused too (it would print the spec-route advice back), so it is not offered.
       const stored = readStoredStartupContext(deps.db, input.nodeId, input.cwd);
-      const guidance = stored.ok ? input.refusalGuidance
+      const guidance = read.guidance ? read.guidance : stored.ok ? input.refusalGuidance
         : `Restore or fix the spec at that path. The seat's saved startup context cannot be used either (${stored.refusal.message}), so rig seat launch --fresh --startup-from stored is refused too.`;
       return { ok: false, code: read.code, message: read.message, guidance };
     }

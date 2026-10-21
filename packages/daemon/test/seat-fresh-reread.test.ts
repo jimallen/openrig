@@ -282,8 +282,6 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       fs.linkSync(other, path.join(releaseB, "CULTURE.md"));
     }, "startup_source_unavailable", "preflight"],
     ["a required startup file is missing", () => fs.rmSync(path.join(releaseB, "agents", "impl", "guidance", "role.md")), "startup_source_unavailable", "required startup file guidance/role.md"],
-    // OF-63: the seat's recorded working folder is part of the first-launch preflight too (tmux would start the seat in $HOME).
-    ["the seat's working folder was deleted", () => fs.rmSync(workdir, { recursive: true }), "startup_source_unavailable", "work' does not exist; a seat launched there would silently start in $HOME"],
   ] as const)("refuses with the reason, before stopping anything, when %s", async (_label, damage, code, reason) => {
     const seat = await launchRig();
     retarget("bbbbbbb");
@@ -302,6 +300,30 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(alive.has(seat.sessionName)).toBe(true);
     expect(delivered).toEqual([]);
     expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+  });
+
+  // OF-63: the seat's recorded working folder is part of the first-launch preflight too (tmux would start the seat in $HOME).
+  // The usual advice (restore the spec, or use --startup-from stored) is wrong here: restoring the spec cannot create the
+  // folder, and the stored route skips this check, so following it would start the seat in $HOME. The refusal says what fixes it.
+  it("OF-63: a deleted seat working folder refuses before stopping anything, and the guidance names the folder instead of offering --startup-from stored", async () => {
+    const seat = await launchRig();
+    retarget("bbbbbbb");
+    fs.rmSync(workdir, { recursive: true });
+    const stopped = vi.mocked(tmux.killSession).mock.calls.length;
+
+    const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+
+    expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+    expect(!result.ok && result.message).toContain("work' does not exist; a seat launched there would silently start in $HOME");
+    const guidance = (!result.ok && result.guidance) || "";
+    expect(guidance).toContain(`Create the folder ${workdir}`);
+    expect(guidance).not.toContain("run again with --startup-from stored");
+    expect(guidance).not.toContain("Restore or fix the spec");
+    expect(plan).toMatchObject({ ok: false, code: "startup_source_unavailable", launchable: false });
+    expect(vi.mocked(tmux.killSession).mock.calls.length).toBe(stopped);
+    expect(alive.has(seat.sessionName)).toBe(true);
+    expect(delivered).toEqual([]);
   });
 
   // OF-38: the TUI's explicit-fresh action cannot pass `startupFrom`, so a refusal there must not tell the operator to
