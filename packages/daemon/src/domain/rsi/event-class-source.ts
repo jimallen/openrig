@@ -8,7 +8,7 @@ import {
 import { rsiFingerprint } from "./fingerprint.js";
 import { classifyBootstrapFailure, classifyStartupFailure, eventErrorText } from "./failure-classes.js";
 import {
-  anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, regressionClass,
+  anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, refusalsFor, regressionClass,
   type HistoricalFixedHits, type RefusedAnchor,
 } from "./known-fixes.js";
 import { RsiReadBudget, type RsiReadBudgetOptions } from "./read-budget.js";
@@ -89,7 +89,7 @@ export class EventClassHealthSource implements HealthObservationSource {
     return this.lastHistorical;
   }
 
-  /** Anchors refused on the last read (dated in the future). */
+  /** Anchors refused on the last read that name this detector or cannot be attributed (by index). */
   refusedAnchors(): readonly RefusedAnchor[] {
     return this.lastRefused;
   }
@@ -105,7 +105,7 @@ export class EventClassHealthSource implements HealthObservationSource {
       this.lastCoverage = [unavailableCoverage(this.name, evaluatedAt, fixes.reason)];
       return [];
     }
-    this.lastRefused = fixes.refused;
+    this.lastRefused = refusalsFor(fixes, this.detector.detectorId);
 
     const db = this.readonlyHandle();
     const limit = this.deps.rowLimit ?? RSI_EVENT_ROW_LIMIT;

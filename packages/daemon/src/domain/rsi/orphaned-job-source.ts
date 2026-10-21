@@ -5,7 +5,7 @@ import { parseSqliteUtcMs } from "../sqlite-time.js";
 import { RSI_ORPHANED_PARKED_OWNER_JOB } from "./detector-ids.js";
 import { rsiFingerprint } from "./fingerprint.js";
 import {
-  anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, regressionClass,
+  anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, refusalsFor, regressionClass,
   type HistoricalFixedHits, type RefusedAnchor,
 } from "./known-fixes.js";
 import { RsiReadBudget, type RsiReadBudgetOptions } from "./read-budget.js";
@@ -73,7 +73,7 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
       this.lastCoverage = [unavailableCoverage(this.name, evaluatedAt, fixes.reason)];
       return [];
     }
-    this.lastRefused = fixes.refused;
+    this.lastRefused = refusalsFor(fixes, RSI_ORPHANED_PARKED_OWNER_JOB);
 
     const db = this.readonlyHandle();
     const limit = this.deps.rowLimit ?? RSI_JOB_ROW_LIMIT;
@@ -83,11 +83,23 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
     const liveNames = new Set<string>();
     /** `instantMs` is when the job BECAME an orphan: its rig was archived (a job keeps its original
      * `registered_at`, because registration is idempotent), or the job was registered after that.
-     * Null when the name has no rig row at all: the instant is unknown, so the hit is never historical. */
+     * It is null, and the hit is never historical, when that instant is unknown: the name has no rig
+     * row at all, or a rig was DELETED after the name's latest archive (a deleted rig leaves no row, so
+     * a newer generation of the name may have been orphaned after the fix). */
     const orphans: Array<{ seq: number; instantMs: number | null; seenMs: number }> = [];
     const latestArchivedMs = new Map<string, number>();
     let liveRigJobs = 0;
+    const fingerprint = rsiFingerprint(RSI_ORPHANED_PARKED_OWNER_JOB, SUBJECT_KEY);
+    const verdict = anchorFor(fixes, fingerprint);
+    /** Instant of the latest `rig.deleted` event. That event carries only the rig id, so it cannot be tied
+     * to a name: any deletion later than a name's latest archive makes the name's instant unknown (the safe
+     * direction). Read only when an anchor governs, since the instant matters only to an anchor. */
+    let latestDeletedMs: number | null = null;
     db.transaction(() => {
+      if (verdict.anchor !== null) {
+        const deleted = db.prepare("SELECT created_at FROM events WHERE type = 'rig.deleted' ORDER BY seq DESC LIMIT 1").get() as { created_at: string } | undefined;
+        latestDeletedMs = deleted === undefined ? null : parseSqliteUtcMs(deleted.created_at);
+      }
       for (const row of db.prepare("SELECT name, archived_at FROM rigs").all() as Array<{ name: string; archived_at: string | null }>) {
         if (row.archived_at === null) liveNames.add(row.name);
         else latestArchivedMs.set(row.name, Math.max(latestArchivedMs.get(row.name) ?? Number.NEGATIVE_INFINITY, parseSqliteUtcMs(row.archived_at)));
@@ -103,16 +115,15 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
         else {
           const registeredMs = parseSqliteUtcMs(row.registered_at);
           const archivedMs = latestArchivedMs.get(rigName);
-          const instantMs = archivedMs === undefined ? null : Math.max(registeredMs, archivedMs);
-          orphans.push({ seq: row.seq, instantMs, seenMs: instantMs ?? registeredMs });
+          const orphanedMs = archivedMs === undefined ? null : Math.max(registeredMs, archivedMs);
+          const deletedAfter = archivedMs !== undefined && latestDeletedMs !== null && latestDeletedMs > archivedMs;
+          orphans.push({ seq: row.seq, instantMs: deletedAfter ? null : orphanedMs, seenMs: orphanedMs ?? registeredMs });
         }
         evaluated++;
       }
     })();
     this.lastControls = { activeParkedOwnerJobs: total, liveRigJobs, distinctRigNames };
 
-    const fingerprint = rsiFingerprint(RSI_ORPHANED_PARKED_OWNER_JOB, SUBJECT_KEY);
-    const verdict = anchorFor(fixes, fingerprint);
     const historical = orphans.filter((job) => isHistoricalFixed(verdict, job.instantMs));
     const active = orphans.filter((job) => !isHistoricalFixed(verdict, job.instantMs));
     if (historical.length > 0 && verdict.anchor) {

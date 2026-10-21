@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { RSI_DETECTORS } from "./detector-ids.js";
 import { normaliseSubjectKey } from "./fingerprint.js";
 
 /**
@@ -8,10 +9,16 @@ import { normaliseSubjectKey } from "./fingerprint.js";
  *  - a hit older than the anchor's `deployedAt` is `historical-fixed:<ref>` and is not an
  *    active fingerprint;
  *  - a hit at or after `deployedAt` is active, with class `regression-after:<fixSha>`;
- *  - an anchor that cannot be trusted is REFUSED, permanently, and its hits stay active
- *    (an anchor can only hide history, never a recurrence).
+ *  - an anchor that cannot be trusted is REFUSED and its hits stay active (an anchor can only
+ *    hide history, never a recurrence).
  *
- * An anchor is refused when:
+ * The file is untrusted text: any seat can write it. Its strings reach the coverage `note`, the
+ * findings' summary and explanation, and a terminal, so each entry is validated when it is parsed
+ * and a bad entry is refused BY INDEX, without echoing any of its text. An anchor is refused when:
+ *  - its fingerprint is not a well-formed fingerprint (`bad-fingerprint`), or its detector id is
+ *    not an RSI detector (`unknown-detector`);
+ *  - its `ref` is not 1-64 characters of [A-Za-z0-9._:#/-] (`bad-ref`), or its `fixSha` is not
+ *    7-40 hex digits (`bad-fixSha`);
  *  - it carries no `recordedAt` (the instant the entry was written);
  *  - `deployedAt` or `recordedAt` has no timezone (it would be read in host-local time);
  *  - its subject is `class:other` (the catch-all class: an anchor there hides and relabels
@@ -19,17 +26,24 @@ import { normaliseSubjectKey } from "./fingerprint.js";
  *  - `deployedAt` is after `recordedAt` (a fix cannot have shipped after the entry was written,
  *    so a mistyped future date stays refused after that date passes);
  *  - `recordedAt` is after now.
+ * The LAST refusal is TEMPORARY, unlike the others: it is a comparison with the clock on every
+ * read, so an entry whose `recordedAt` AND `deployedAt` are both mistyped into the future is
+ * refused until that date passes and accepted afterwards. No stateless check can do better;
+ * remembering when an entry was first seen would need state this lane does not keep.
+ *
  * Several accepted anchors for one fingerprint: the LATEST `deployedAt` governs (the file order
- * does not matter; equal dates keep the first listed).
+ * does not matter). Two anchors with the same `deployedAt`: the first listed governs.
  *
  * The file is one bounded read (64 KB) of a regular file, opened non-blocking. A file that
  * cannot be read, is not a regular file (a FIFO would block the daemon's event loop), or does not
- * parse makes its sources `unavailable`, never "no anchors".
+ * parse makes its sources `unavailable`, never "no anchors". The reason never quotes file text.
  *
  * WRITE BOUNDARY (accepted risk, Jim's D8): any process running as the daemon's user can write
- * this file, including every seat. `deployedAt` and `recordedAt` are self-asserted, so the
- * checks above catch honest mistakes, not an adversary: a forged pair of dates can still hide up
- * to a window of history. That is the same exposure as the forgeable approvals of D8(a).
+ * this file, including every seat. `deployedAt` and `recordedAt` are self-asserted, so the checks
+ * above catch honest mistakes, not an adversary. A forged, self-consistent pair hides history up
+ * to its `deployedAt`: for D1 and D2 that is at most their 7-day window, but D3 has no window, so
+ * it hides every orphan dated before the forged `deployedAt`, at any age. This is the same
+ * exposure as the forgeable approvals of D8(a).
  */
 export const KNOWN_FIXES_MAX_BYTES = 64 * 1024;
 
@@ -41,13 +55,26 @@ export interface KnownFixAnchor {
   deployedAt: string;
   /** ISO instant, with a timezone, the entry was written. */
   recordedAt: string;
-  /** Optional denominator line, e.g. "Codex launches since deploy: 0". */
+  /** Optional denominator line, e.g. "Codex launches since deploy: 0". Never served. */
   denominator?: string;
 }
 
 export type AnchorRefusalReason =
+  | "bad-fingerprint" | "unknown-detector" | "bad-ref" | "bad-fixSha"
   | "missing-recordedAt" | "no-timezone" | "subject-other" | "deployed-after-recorded" | "recorded-in-the-future";
-export interface RefusedAnchor { fingerprint: string; ref: string; reason: AnchorRefusalReason }
+
+/**
+ * A refused entry, named by its position in the file. `fingerprint` and `ref` are present only
+ * when they passed validation (so they are safe to serve); `detectorId` is the RSI detector the
+ * fingerprint names, or null when the entry cannot be attributed to one.
+ */
+export interface RefusedAnchor {
+  index: number;
+  detectorId: string | null;
+  fingerprint: string | null;
+  ref: string | null;
+  reason: AnchorRefusalReason;
+}
 
 export type KnownFixesRead =
   | { status: "available"; anchors: readonly KnownFixAnchor[]; refused: readonly RefusedAnchor[] }
@@ -61,8 +88,14 @@ export interface HistoricalFixedHits { fingerprint: string; label: string; count
 
 // ISO 8601 date-time with a timezone designator: an offset-less time is read in the host's zone.
 const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+const FINGERPRINT_SHAPE = /^[a-z0-9][a-z0-9.-]*\/[a-z0-9._:-]+$/;
+const FINGERPRINT_MAX = 200;
+const REF_SHAPE = /^[A-Za-z0-9._:#/-]{1,64}$/;
+const FIX_SHA_SHAPE = /^[0-9a-f]{7,40}$/i;
+/** Most parts a served anchor note lists; the rest are counted. */
+export const ANCHOR_NOTE_MAX_PARTS = 10;
 
-interface RawAnchor { fingerprint: string; ref: string; fixSha: string; deployedAt: string; recordedAt: string | null; denominator?: string }
+interface RawAnchor { index: number; fingerprint: string; ref: string; fixSha: string; deployedAt: string; recordedAt: string | null; denominator?: string }
 
 function parseRawAnchors(text: string): RawAnchor[] {
   const parsed: unknown = JSON.parse(text);
@@ -78,22 +111,39 @@ function parseRawAnchors(text: string): RawAnchor[] {
     if (Number.isNaN(Date.parse(e.deployedAt as string))) throw new Error(`anchor ${index} deployedAt is not a date`);
     if (typeof e.recordedAt === "string" && Number.isNaN(Date.parse(e.recordedAt))) throw new Error(`anchor ${index} recordedAt is not a date`);
     return {
-      fingerprint: normaliseSubjectKey(e.fingerprint as string),
-      ref: e.ref as string, fixSha: e.fixSha as string, deployedAt: e.deployedAt as string,
+      index, fingerprint: e.fingerprint as string, ref: e.ref as string, fixSha: e.fixSha as string, deployedAt: e.deployedAt as string,
       recordedAt: typeof e.recordedAt === "string" ? e.recordedAt : null,
       ...(e.denominator !== undefined ? { denominator: e.denominator as string } : {}),
     };
   });
 }
 
-/** The reason an anchor is refused, or null when it is accepted. */
-function refusalFor(anchor: RawAnchor, nowMs: number): AnchorRefusalReason | null {
-  if (anchor.recordedAt === null) return "missing-recordedAt";
-  if (!ISO_WITH_ZONE.test(anchor.deployedAt) || !ISO_WITH_ZONE.test(anchor.recordedAt)) return "no-timezone";
-  if (anchor.fingerprint.endsWith("/class:other")) return "subject-other";
-  if (Date.parse(anchor.deployedAt) > Date.parse(anchor.recordedAt)) return "deployed-after-recorded";
-  if (Date.parse(anchor.recordedAt) > nowMs) return "recorded-in-the-future";
-  return null;
+/** The normalised fingerprint when it is well formed, else null. */
+function wellFormedFingerprint(raw: string): string | null {
+  if (raw.length > FINGERPRINT_MAX) return null;
+  let key: string;
+  try { key = normaliseSubjectKey(raw); } catch { return null; }
+  return FINGERPRINT_SHAPE.test(key) ? key : null;
+}
+
+/** A refusal for an anchor, or null when it is accepted. Validation comes first and quotes nothing. */
+function judge(raw: RawAnchor, nowMs: number): { refusal: RefusedAnchor } | { anchor: KnownFixAnchor } {
+  const refuse = (reason: AnchorRefusalReason, fingerprint: string | null, detectorId: string | null, ref: string | null): { refusal: RefusedAnchor } =>
+    ({ refusal: { index: raw.index, detectorId, fingerprint, ref, reason } });
+  const fingerprint = wellFormedFingerprint(raw.fingerprint);
+  if (fingerprint === null) return refuse("bad-fingerprint", null, null, null);
+  const detectorId = fingerprint.slice(0, fingerprint.indexOf("/"));
+  if (!(RSI_DETECTORS as readonly string[]).includes(detectorId)) return refuse("unknown-detector", null, null, null);
+  if (!REF_SHAPE.test(raw.ref)) return refuse("bad-ref", fingerprint, detectorId, null);
+  if (!FIX_SHA_SHAPE.test(raw.fixSha)) return refuse("bad-fixSha", fingerprint, detectorId, raw.ref);
+  const refuseSafe = (reason: AnchorRefusalReason) => refuse(reason, fingerprint, detectorId, raw.ref);
+  if (raw.recordedAt === null) return refuseSafe("missing-recordedAt");
+  if (!ISO_WITH_ZONE.test(raw.deployedAt) || !ISO_WITH_ZONE.test(raw.recordedAt)) return refuseSafe("no-timezone");
+  if (fingerprint.endsWith("/class:other")) return refuseSafe("subject-other");
+  if (Date.parse(raw.deployedAt) > Date.parse(raw.recordedAt)) return refuseSafe("deployed-after-recorded");
+  if (Date.parse(raw.recordedAt) > nowMs) return refuseSafe("recorded-in-the-future");
+  return { anchor: { fingerprint, ref: raw.ref, fixSha: raw.fixSha, deployedAt: raw.deployedAt, recordedAt: raw.recordedAt,
+    ...(raw.denominator !== undefined ? { denominator: raw.denominator } : {}) } };
 }
 
 /** Read at most KNOWN_FIXES_MAX_BYTES of a regular file; a longer file is unavailable, not
@@ -118,16 +168,24 @@ export function readKnownFixes(path: string, now: Date): KnownFixesRead {
     const refused: RefusedAnchor[] = [];
     const anchors: KnownFixAnchor[] = [];
     for (const raw of all) {
-      const reason = refusalFor(raw, now.getTime());
-      if (reason !== null) refused.push({ fingerprint: raw.fingerprint, ref: raw.ref, reason });
-      else anchors.push({ ...raw, recordedAt: raw.recordedAt! });
+      const judged = judge(raw, now.getTime());
+      if ("refusal" in judged) refused.push(judged.refusal);
+      else anchors.push(judged.anchor);
     }
     return { status: "available", anchors, refused };
   } catch (error) {
-    return { status: "unavailable", reason: `known-fixes.json unparseable: ${(error as Error).message}` };
+    // A JSON syntax error quotes the file's text; never serve it.
+    const detail = error instanceof SyntaxError ? "is not valid JSON" : (error as Error).message;
+    return { status: "unavailable", reason: `known-fixes.json unparseable: ${detail}` };
   } finally {
     closeSync(fd);
   }
+}
+
+/** The refusals a source may list: those naming its own detector, and those that cannot be
+ * attributed to any detector (by index only). A bad entry is not amplified onto other sources. */
+export function refusalsFor(read: Extract<KnownFixesRead, { status: "available" }>, detectorId: string): RefusedAnchor[] {
+  return read.refused.filter((r) => r.detectorId === null || r.detectorId === detectorId);
 }
 
 /** The anchor that governs a fingerprint: the accepted anchor with the latest `deployedAt`. */
@@ -152,11 +210,15 @@ export function regressionClass(verdict: AnchorVerdict, ordinaryClass: string): 
 }
 
 /** The anchor effects of one read as text: what history was hidden, and which anchors were
- * refused. `undefined` when no anchor had any effect. Served on the coverage row. */
+ * refused. At most ANCHOR_NOTE_MAX_PARTS parts, then a count. `undefined` when no anchor had any
+ * effect. Served on the coverage row; every interpolated value passed validation at parse. */
 export function describeAnchorEffects(historical: readonly HistoricalFixedHits[], refused: readonly RefusedAnchor[]): string | undefined {
   const parts = [
     ...historical.map((h) => `${h.label} x${h.count} [${h.fingerprint}]`),
-    ...refused.map((r) => `refused anchor ${r.ref} [${r.fingerprint}]: ${r.reason}`),
+    ...refused.map((r) => `refused anchor #${r.index}${r.ref !== null ? ` ${r.ref}` : ""}${r.fingerprint !== null ? ` [${r.fingerprint}]` : ""}: ${r.reason}`),
   ];
-  return parts.length > 0 ? parts.join("; ") : undefined;
+  if (parts.length === 0) return undefined;
+  const shown = parts.slice(0, ANCHOR_NOTE_MAX_PARTS);
+  if (parts.length > shown.length) shown.push(`and ${parts.length - shown.length} more`);
+  return shown.join("; ");
 }
