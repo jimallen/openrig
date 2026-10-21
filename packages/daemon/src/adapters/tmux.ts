@@ -53,6 +53,15 @@ export function isStagedSendScriptPath(path: string): boolean {
   return path.startsWith("/") && SEND_SCRIPT_NAME.test(path.split("/").pop() ?? "");
 }
 
+// The launch line is TYPED into the pane's interactive shell, where line-editor widgets (autopair,
+// abbreviation expanders, vi-mode...) can rewrite it. Typed characters are therefore limited to
+// ones no widget treats specially: a path of these characters needs no quotes, and the staged
+// script itself carries any parentheses. A path outside the set keeps shell quoting.
+const TYPED_SAFE_PATH = /^\/[A-Za-z0-9_./-]*$/;
+function typedPathArg(path: string): string {
+  return TYPED_SAFE_PATH.test(path) ? path : shellQuote(path);
+}
+
 export function defaultTmuxFileOps(): TmuxFileOps {
   return {
     writeFile: (p, content, options) => fsWriteFile(p, content, { encoding: "utf8", ...options }),
@@ -732,7 +741,7 @@ export class TmuxAdapter {
     const paneShell = options.sourceInPane ? (await this.getPaneCommand(target) ?? "").replace(/^-/, "") : "";
     const sourceInPane = ["bash", "zsh", "sh", "dash", "ksh"].includes(paneShell);
     let path = options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName();
-    let invocation = path ? sourceInPane ? `( . ${shellQuote(path)} )` : `/bin/sh ${shellQuote(path)}` : command;
+    let invocation = path ? sourceInPane ? `. ${typedPathArg(path)}` : `/bin/sh ${typedPathArg(path)}` : command;
     if (path && paneShell === "fish") {
       const quotedPath = shellQuote(path);
       invocation = `/bin/sh ${quotedPath}`;
@@ -756,9 +765,21 @@ export class TmuxAdapter {
       }
     }
     let created = false;
+    let commandFile: string | undefined;
     try {
       if (path) {
-        await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
+        if (sourceInPane) {
+          // Sourced in the pane shell, the command keeps its subshell isolation inside the script,
+          // not in typed parentheses (an autopair widget rewrote `( . file )`). The command sits in
+          // its own file that the subshell sources, so a stray `)` in it is a parse error rather
+          // than something that could close the wrapper and run the rest in the pane shell.
+          commandFile = `${path}.cmd`;
+          await this.fileOps.writeFile(commandFile, `/bin/rm -f -- ${shellQuote(commandFile)}\n${command}\n`, { mode: 0o600, flag: "wx" });
+          created = true;
+          await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n( . ${shellQuote(commandFile)} )\n`, { mode: 0o600, flag: "wx" });
+        } else {
+          await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)}\n${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
+        }
         created = true;
       }
       const text = beforeInput ? await this.guardedInput(target, (pane, check) => this.sendTextUnchecked(pane, invocation, () => { check(); beforeInput(); }))
@@ -778,6 +799,7 @@ export class TmuxAdapter {
     } finally {
       if (created && path) {
         try { await this.fileOps.unlink(path); } catch { /* best-effort cleanup */ }
+        if (commandFile) { try { await this.fileOps.unlink(commandFile); } catch { /* best-effort cleanup */ } }
       }
     }
   }

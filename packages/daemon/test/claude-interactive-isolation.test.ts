@@ -49,8 +49,8 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
   const body='#'+ 'x'.repeat(4096)+String.fromCharCode(10)+`export FIXTURE_MUTATION=child OPENRIG_HOME=child-home; cd /; `+(kind==='exit'?'exit 7':kind==='errexit'?`set -e; false; printf unexpected > ${q(unreachable)}`:':');
   expect(await transport.sendShellCommand('pane',body,undefined,{sourceInPane:true})).toEqual({ok:true});await until(()=>fs.existsSync(status));
   const exit=Number(fs.readFileSync(status,'utf8').trim());expect(exit).toBe(kind==='exit'?7:kind==='errexit'?1:0);expect(fs.existsSync(unreachable)).toBe(false);
-  expect(writes).toHaveLength(2);const [script,payload]=writes;expect(Buffer.byteLength(script.content)).toBeGreaterThan(4096);expect(script.mode).toBe(0o600);expect(payload.mode).toBe(0o600);expect(script.uid).toBe(process.getuid!());expect(payload.uid).toBe(process.getuid!());
-  expect(payload.content).toBe(`( . ${q(script.path)} )`);expect(Buffer.byteLength(payload.content)).toBeLessThan(512);expect(fs.existsSync(script.path)).toBe(false);expect(fs.existsSync(payload.path)).toBe(false);
+  expect(writes).toHaveLength(3);const [cmdFile,script,payload]=writes;expect(cmdFile.path).toBe(script.path+'.cmd');expect(Buffer.byteLength(cmdFile.content)).toBeGreaterThan(4096);expect(cmdFile.mode).toBe(0o600);expect(fs.existsSync(cmdFile.path)).toBe(false);expect(script.mode).toBe(0o600);expect(payload.mode).toBe(0o600);expect(script.uid).toBe(process.getuid!());expect(payload.uid).toBe(process.getuid!());
+  expect(payload.content).toBe(`. ${script.path}`);expect(Buffer.byteLength(payload.content)).toBeLessThan(512);expect(fs.existsSync(script.path)).toBe(false);expect(fs.existsSync(payload.path)).toBe(false);
   const stagedHistory=fs.readFileSync(history,'utf8');
   if(ordinaryFlush){expect(stagedHistory.startsWith(ordinaryHistory)).toBe(true);expect(stagedHistory).toContain(payload.content);}
   else expect(stagedHistory).toBe(ordinaryHistory);
