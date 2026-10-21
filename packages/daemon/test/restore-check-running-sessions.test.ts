@@ -106,7 +106,7 @@ describe("restore-check and restore agree on whether the rig would run, over eve
     }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true,
       // The whole held clause, as one sentence: a half-replaced or duplicated clause must fail this.
       adviceHas: (s) => [`${s.sessionName} is held by dev.other@other, another rig's seat: do not kill it from here, it would end that seat; rig down team ends only this rig's older running row for it, without touching that session, which is what lets restore run. Probing stops`],
-      adviceLacks: (s) => ["tmux kill-session", "end it yourself", "needs manual attention", "no command here frees it", `rig down team ends ${s.sessionName}`, "a seat of this rig", "older running row for it rig down"] },
+      adviceLacks: (s) => ["tmux kill-session", "end it yourself", "needs manual attention", "no command here frees it", `rig down team ends ${s.sessionName}`, "(and stops the rest of the rig), as does rig seat stop", "a seat of this rig", "older running row for it rig down"] },
     // N3: the holder is a seat of THIS rig (its own older row carries the name). rig down stops that seat too, so
     // "without touching that session" would be false; the advice says only what the rows end.
     { name: "N3 older running row's live name is held by a seat of the SAME rig: no 'without touching' promise", pre: (s) => {
@@ -119,7 +119,7 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       h.sessionRegistry.updateStatus(h.sessionRegistry.registerSession(peer.id, "dev-peer-newer@team").id, "exited");
     }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true,
       adviceHas: (s) => [`${s.sessionName} is held by dev.peer@team, a seat of this rig: do not kill it from here, it would end that seat; rig down team ends this rig's older running row for it and stops the rest of the rig, that seat included, which is what lets restore run. Probing stops`],
-      adviceLacks: (s) => ["tmux kill-session", "end it yourself", "without touching that session", `rig down team ends ${s.sessionName}`, "another rig's seat"] },
+      adviceLacks: (s) => ["tmux kill-session", "end it yourself", "without touching that session", `rig down team ends ${s.sessionName}`, "(and stops the rest of the rig), as does rig seat stop", "another rig's seat"] },
     // N2 control: the namesake sits in an ARCHIVED rig (teardown ignores those owners too), so the kill command is still given.
     { name: "N2 control: the same name in an ARCHIVED rig does not hold it, the kill command is still given", pre: (s) => {
       dropToken(s.nodeId);
