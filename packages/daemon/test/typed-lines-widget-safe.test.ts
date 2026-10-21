@@ -60,8 +60,8 @@ function expectOnlySafeTyping(h: ReturnType<typeof harness>, shape = TYPED_SHAPE
     expect(line).toMatch(shape);
     for (const c of WIDGET_CHARS) expect(line).not.toContain(c);
   }
-  // No key chord carries text: only Enter is ever sent as a key.
-  for (const keys of h.sendKeysArgs()) expect(keys).toBe("'Enter'");
+  // No key chord carries text: exactly one Enter per typed line, and nothing else, is sent as a key.
+  expect(h.sendKeysArgs()).toEqual(typed.map(() => "'Enter'"));
 }
 
 const binding = (over: Partial<NodeBinding> = {}): NodeBinding => ({
@@ -131,7 +131,8 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
       });
       await stub.launchHarness(binding({ cwd: "/work [x]" }), { name: "seat" });
       expectOnlySafeTyping(h, /^\/bin\/sh \/tmp\/of65-\d+\.txt$/);
-      expect(h.scriptFor(h.typed()[0]!)).toContain("'/opt/rig/stub (runner).js'");
+      // The staged script replaces its shell with the runner, as the Pi runner's does.
+      expect(h.scriptFor(h.typed()[0]!)).toContain("exec node '/opt/rig/stub (runner).js'");
     });
   });
 
