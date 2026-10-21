@@ -234,6 +234,20 @@ describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
     expect(h.history().filter((r) => r.skip_reason === RSI_WAKE_BUDGET_EXHAUSTED)).toHaveLength(0);
   });
 
+  it("a budget-exhausted day stays quiet across an unchanged hour: 0 history rows", async () => {
+    const h = harness();
+    h.setClock(Date.parse("2031-03-04T01:00:00.000Z"));
+    for (const rig of ["r1", "r2", "r3", "r4"]) {
+      h.source.rigs = [...h.source.rigs, rig];
+      await h.scan();
+    }
+    expect(h.sends.filter((s) => s.status === "ok")).toHaveLength(4);
+    const rows = h.history().length;
+    const unchanged = await h.scan();
+    expect(unchanged.outcome).toMatchObject({ action: "skip", reason: RSI_NO_NEW_FINDING });
+    expect(h.history()).toHaveLength(rows);
+  });
+
   it("per-source carry-forward: a failed source keeps its fingerprints while a complete source quiets its own", async () => {
     const h = harness();
     h.source.rigs = ["a1"];

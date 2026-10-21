@@ -219,9 +219,10 @@ export const SETTINGS_VALID_KEYS = [
   // Under explicit-only, an ask that needs a person must be addressed to the person;
   // without a human registry, explicit-only posts everything, as always does.
   "queue.wake_human_rung",
-  // RSI B1 (rsi-design-9k-rev2 §3.4, §8 L4) — the improvement steward's session. Unset (the
-  // default "") arms nothing: the daemon boot-registers the health-finding wake and the daily
-  // report only when this names a canonical '<member>@<rig>' session. Twin of the other side.
+  // RSI B1 (rsi-design-9k-rev2 §3.4, §8 L4) — the improvement steward's session. At each boot
+  // the daemon arms (or retargets) the health-finding wake and the daily report when this names a
+  // canonical '<member>@<rig>' session; unset (the default "") or invalid DISARMS both (terminal).
+  // Twin of the other side.
   "rsi.steward_session",
 ] as const;
 
@@ -682,7 +683,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "queue.wake_unconfirmed_window_minutes": return 30;
     case "queue.wake_swap_grace_seconds": return 180;
     case "queue.wake_human_rung": return "always";
-    case "rsi.steward_session": return ""; // unset: no RSI job is armed
+    case "rsi.steward_session": return ""; // unset: boot disarms the RSI jobs
     default: return "";
   }
 }

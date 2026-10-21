@@ -111,13 +111,11 @@ export function scanFindingState(
   now: Date,
 ): FindingScanResult {
   const nowIso = now.toISOString();
-  const sourceOfDetector = new Map<string, string>();
+  // The SAME derivation the wake exposes as `detectorSources` (and the F3 conformance test pins):
+  // one rule, one implementation.
+  const sourceOfDetector = rsiDetectorSourceMap(sources);
   const sourceNames: string[] = [];
-  for (const source of sources) {
-    if (!source.name) continue;
-    sourceNames.push(source.name);
-    for (const detector of source.detectors ?? []) sourceOfDetector.set(detector, source.name);
-  }
+  for (const source of sources) if (source.name) sourceNames.push(source.name);
 
   const carriedForward: FindingScanResult["carriedForward"] = [];
   let records: HealthRecord[] | null = null;

@@ -2278,10 +2278,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       ensureDigestJob("daily", 24 * 60 * 60);
     }
 
-    // RSI B1 (rev2 §3.4) — the improvement steward's hourly wake and daily report, armed at boot
-    // ONLY when rsi.steward_session is set; unset (the default) registers nothing. Jobs are keyed
-    // on daemon-owned anchors, so a changed steward retargets them. A failure here is logged and
-    // never stops the daemon booting: RSI is optional machinery.
+    // RSI B1 (rev2 §3.4) — the improvement steward's hourly wake and daily report, reconciled at
+    // every boot: a valid rsi.steward_session arms (or retargets) them; unset (the default) or
+    // invalid (no '@') disarms both (marked terminal, so setting the key again re-arms). Jobs are
+    // keyed on daemon-owned anchors. A failure here is logged and never stops the daemon booting:
+    // RSI is optional machinery.
     {
       const { ensureRsiStewardJobs } = await import("./domain/rsi/health-finding-wake.js");
       try {
