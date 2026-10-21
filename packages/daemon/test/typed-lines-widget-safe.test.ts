@@ -155,7 +155,7 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
       .defaultProbeClaudeResume("seat@rig", "tok-1", "/tmp");
 
     it("types claude itself, holding only shell-quoted words (no bracket, brace, parenthesis or backtick)", async () => {
-      const h = harness("claude");
+      const h = harness(typed => typed.length ? "claude" : "zsh");
       await probe(h);
       expect(h.typed()).toEqual(["claude --resume 'tok-1' --name 'seat@rig'"]);
       for (const c of WIDGET_CHARS.filter(c => c !== "'" && c !== '"')) expect(h.typed()[0]).not.toContain(c);
