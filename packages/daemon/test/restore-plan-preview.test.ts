@@ -123,6 +123,15 @@ describe("FR-6 restore-plan token state", () => {
     expect(result.freshRequired).toBe(false);
     expect(result.reason).toContain("multiple live occupant");
   });
+  // OF-44: with no snapshot the plan forecasts the auto-rehydrate capture, whose occupant relation ignores superseded rows. The
+  // gate must be handed that occupant: left to resolve the rows itself it counts the superseded row and calls the seat ambiguous.
+  it("no snapshot: a superseded row beside the one detached occupant does not make the seat ambiguous", () => {
+    const rig = rigWith([{ id: "n1", logicalId: "a", runtime: "claude-code" }]);
+    const rows = [row("n1", { id: "s-old", status: "superseded", resumeToken: "old" }), row("n1", { id: "s-new", status: "detached" })];
+    const seat = buildRestorePlanPreview(rig, null, rows, undefined, NOW).nodes[0]!;
+    expect(seat).toMatchObject({ intendedAction: "resume-original", occupantSessionId: "s-new" });
+    expect(seat.restoreStatus).toBeUndefined();
+  });
   it("missing: no token → freshRequired, --fresh would be needed", () => {
     const rig = rigWith([{ id: "n1", logicalId: "a", runtime: "claude-code" }]);
     const p = buildRestorePlanPreview(rig, null, [row("n1", { resumeToken: null, resumeType: null, resumeProvenance: null })], undefined, NOW);

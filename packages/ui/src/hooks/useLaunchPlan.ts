@@ -16,6 +16,10 @@ export interface LaunchPlanNode {
   lastVerified?: string | null;
   freshRequired: boolean;
   runtimePrompt?: string;
+  /** Set when apply would STOP this seat before launching it: the status restore reports. `failed` means nothing is
+   *  left to decide (the seat was removed, or its occupant cannot be told): restore-original goes on without it and
+   *  reports it failed, so it must not block the other seats. Absent on older daemons. */
+  restoreStatus?: "failed" | "awaiting-decision";
 }
 
 export interface LaunchPlan {

@@ -387,6 +387,14 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     return { rigId, nodeIds, session, snapshotId };
   }
 
+  /** Every seat's saved session as its resolved occupant (a snapshot with an occupant map needs an entry per seat). */
+  const occupantsOf = (data: any) => Object.fromEntries(data.sessions.map((x: any) => [x.nodeId, { kind: "resolved", sessionId: x.id }]));
+  function editSnapshot(snapshotId: string, edit: (data: any) => void) {
+    const data = JSON.parse((db.prepare("SELECT data FROM snapshots WHERE id = ?").get(snapshotId) as { data: string }).data);
+    edit(data);
+    db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snapshotId);
+  }
+
   function setSavedSession(snapshotId: string, fields: Record<string, unknown>) {
     const data = JSON.parse((db.prepare("SELECT data FROM snapshots WHERE id = ?").get(snapshotId) as { data: string }).data);
     Object.assign(data.sessions[0], fields);
@@ -425,6 +433,36 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     // The fresh route and the pane by hand are always there.
     expect(error).toContain(`rig seat launch ${session.sessionName} --fresh --stop --reason`);
     expect(error).toContain(`attach to tmux session '${session.sessionName}'`);
+  });
+
+  // OF-44: the advice is worded from the same decision restore makes (decideSeatLaunchOutcome), so every gate restore runs
+  // before it launches a seat shapes the advice the same way. Production consequence: the person is told "stop it and launch
+  // resumes your conversation" and the launch skips the seat (continuity `restoring`) or stops it instead.
+  it.each([
+    ["continuity restoring on a resumable session", { restorePolicy: "resume_if_possible", resumeType: "claude_id", resumeToken: "token-1" },
+      (ctx: { snapshotId: string; nodeId: string }) => db.prepare("INSERT OR REPLACE INTO continuity_state (pod_id, node_id, status) VALUES ('pod-1', ?, 'restoring')").run(ctx.nodeId),
+      "continuity state is 'restoring', which restore skips, so launch would start nothing", false],
+    ["a token with no recorded resume source", { restorePolicy: "resume_if_possible", resumeType: null, resumeToken: "token-1" }, undefined,
+      "records no resume source for this seat, so launch would start a fresh conversation", false],
+    ["an earlier occupant's token and none running at capture", { restorePolicy: "resume_if_possible", resumeType: "claude_id", resumeToken: "token-1" },
+      (ctx: { snapshotId: string; nodeId: string }) => editSnapshot(ctx.snapshotId, (data) => { data.activeOccupantsByNode = { ...occupantsOf(data), [ctx.nodeId]: { kind: "absent" } }; data.activeSessionIdByNode = { ...Object.fromEntries(data.sessions.map((x: any) => [x.nodeId, x.id])), [ctx.nodeId]: null }; }),
+      "an earlier occupant left a 'claude_id' resume token, so launch would start nothing and ask for a decision", false],
+    ["an ambiguous occupant", { restorePolicy: "resume_if_possible", resumeType: "claude_id", resumeToken: "token-1" },
+      (ctx: { snapshotId: string; nodeId: string }) => editSnapshot(ctx.snapshotId, (data) => {
+        data.sessions.push({ ...data.sessions[0], id: "sess-other", sessionName: "seat-other@test-rig" });
+        data.activeOccupantsByNode = { ...occupantsOf(data), [ctx.nodeId]: { kind: "ambiguous", candidateIds: ["sess-0", "sess-other"] } };
+      }),
+      "can't tell which saved session is this seat's, so launch would fail", false],
+    ["a runtime the snapshot did not save the startup context under", { restorePolicy: "resume_if_possible", resumeType: "claude_id", resumeToken: "token-1" },
+      (ctx: { snapshotId: string; nodeId: string }) => editSnapshot(ctx.snapshotId, (data) => { data.nodeStartupContext = { [ctx.nodeId]: { runtime: "codex" } }; }),
+      "saved startup runtime matches the seat's current runtime., so launch would start nothing and ask for a decision", false],
+  ])("with %s, the advice follows the restore decision", async (_name, fields, shape, says, resumable) => {
+    const { rigId, nodeIds, session, snapshotId } = seedPreservedShell();
+    setSavedSession(snapshotId, fields);
+    shape?.({ snapshotId, nodeId: nodeIds[0]! });
+    const error = (await orchestrator.launchNodeSubset(rigId, ["dev.driver"])).launched![0].error!;
+    expect(error).toContain(says);
+    expect(error.includes(`rig seat stop ${session.sessionName} --reason`)).toBe(resumable);
   });
 
   it.each(["subset", "single-seat"])("%s launch leaves an agent starting between the two samples running, not told to restart", async (route) => {

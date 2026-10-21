@@ -8,7 +8,7 @@
 // Restore (restoreNodeUnisolated) acts on this decision; restore-check asks the same function what restore WOULD do,
 // so a check cannot be greener than the restore it predicts: they run one code path over the same inputs
 // (the same pattern as fresh-seat-restore-decision.ts, which owns the gate after these).
-import { absentSeatResumeHistory, absentSeatResumeHistoryError, activeOccupantAmbiguityError, freshSeatLaunchCommand, resolveActiveSnapshotSession } from "./active-occupant.js";
+import { absentSeatResumeHistory, absentSeatResumeHistoryError, activeOccupantAmbiguityError, freshSeatLaunchCommand, resolveActiveSnapshotSession, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 import type Database from "better-sqlite3";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
@@ -23,7 +23,7 @@ export type SeatPreLaunchDecision =
   /** Restore skips the seat as `fresh` (its continuity is `restoring`); nothing further is decided for it. */
   | { kind: "skip_restoring" }
   /** Restore reports the seat with this status and error, before anything is started or written. */
-  | { kind: "stop"; gate: SeatGate; status: "failed" | "awaiting-decision"; error: string };
+  | { kind: "stop"; gate: SeatGate; status: "failed" | "awaiting-decision"; error: string; /** absent_history only: the earlier occupant's resume source. */ priorResumeType?: string | null };
 
 export interface SeatPreLaunchInput {
   data: SnapshotData;
@@ -38,6 +38,9 @@ export interface SeatPreLaunchInput {
   startupFrom?: StartupFrom;
   /** The seat's `continuity_state.status` (null: none, or the seat is in no pod). */
   continuityStatus: string | null;
+  /** The seat's occupant when the caller has already resolved it from rows that are not a captured snapshot (the plan's
+   *  would-capture rows of a live rig). Absent: resolved from `data` exactly as restore does. */
+  occupant?: ActiveSnapshotSessionResolution;
 }
 
 export function decideSeatPreLaunchGate(input: SeatPreLaunchInput): SeatPreLaunchDecision {
@@ -52,7 +55,7 @@ export function decideSeatPreLaunchGate(input: SeatPreLaunchInput): SeatPreLaunc
   }
   // OPR.0.5.7.1: D1 present-map ambiguity must be DETECTED before any continuity short-circuit, so a seat in
   // 'restoring' does not report fresh while the occupant truth is ambiguous.
-  const occupant = resolveActiveSnapshotSession(data, nodeId);
+  const occupant = input.occupant ?? resolveActiveSnapshotSession(data, nodeId);
   if (occupant.kind === "ambiguous") {
     return { kind: "stop", gate: "occupant_ambiguous", status: "failed", error: activeOccupantAmbiguityError(occupant.candidateIds, occupant.detail) };
   }
@@ -62,7 +65,7 @@ export function decideSeatPreLaunchGate(input: SeatPreLaunchInput): SeatPreLaunc
   // A seat with no occupant whose history still carries a token: restore stops it for a decision.
   const priorWithToken = occupant.kind === "none" && !freshRequested ? absentSeatResumeHistory(data.sessions, nodeId) : null;
   if (priorWithToken) {
-    return { kind: "stop", gate: "absent_history", status: "awaiting-decision", error: absentSeatResumeHistoryError(logicalId, priorWithToken.resumeType, input.rigName, input.startupFrom) };
+    return { kind: "stop", gate: "absent_history", status: "awaiting-decision", error: absentSeatResumeHistoryError(logicalId, priorWithToken.resumeType, input.rigName, input.startupFrom), priorResumeType: priorWithToken.resumeType };
   }
 
   if (input.continuityStatus === "restoring") return { kind: "skip_restoring" };
@@ -81,6 +84,37 @@ export function decideSeatPreLaunchGate(input: SeatPreLaunchInput): SeatPreLaunc
     };
   }
   return { kind: "proceed" };
+}
+
+/** Whether this restore resumes the seat's saved conversation (an exact resume) rather than starting it fresh.
+ *  The one predicate for the pre-launch startup decision, the post-launch replay containment, the plan and `rig launch`. */
+export function snapshotSeatResumes(session: { restorePolicy?: string | null; resumeType?: string | null } | null, freshRequested: boolean): boolean {
+  const restorePolicy = session?.restorePolicy ?? "resume_if_possible";
+  const resumeType = session?.resumeType ?? null;
+  return restorePolicy === "resume_if_possible" && !!resumeType && resumeType !== "none" && !freshRequested;
+}
+
+/** What restore does with a seat: stops it at a gate, skips it, resumes the saved conversation, or starts it fresh
+ *  (`why` is the reason in the words `rig launch`'s advice uses after "that snapshot"). */
+export type SeatLaunchOutcome =
+  | { kind: "stop"; stop: Extract<SeatPreLaunchDecision, { kind: "stop" }> }
+  | { kind: "skip_restoring" }
+  | { kind: "resume" }
+  | { kind: "fresh"; why: string };
+
+/** The gates, then the resume decision restore makes after them. The plan's forecast and `rig launch`'s advice read this,
+ *  so neither keeps its own copy of the rule. */
+export function decideSeatLaunchOutcome(input: SeatPreLaunchInput): SeatLaunchOutcome {
+  const gate = decideSeatPreLaunchGate(input);
+  if (gate.kind === "stop") return { kind: "stop", stop: gate };
+  if (gate.kind === "skip_restoring") return gate;
+  const occupant = input.occupant ?? resolveActiveSnapshotSession(input.data, input.snapshotNodeId);
+  const session = occupant.kind === "resolved" ? occupant.session : null;
+  if (!session) return { kind: "fresh", why: "saves no session for this seat" };
+  const policy = session.restorePolicy ?? "resume_if_possible";
+  if (policy !== "resume_if_possible") return { kind: "fresh", why: `saves this seat with restore policy '${policy}'` };
+  if (input.freshRequested) return { kind: "fresh", why: "is listed with --fresh" };
+  return snapshotSeatResumes(session, false) ? { kind: "resume" } : { kind: "fresh", why: "records no resume source for this seat" };
 }
 
 /** The seat's continuity row, read where restore reads it. */
