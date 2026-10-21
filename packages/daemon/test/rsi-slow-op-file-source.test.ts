@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDaemon } from "../src/startup.js";
@@ -12,25 +13,32 @@ import { SlowOpFileSource } from "../src/domain/rsi/slow-op-file-source.js";
 // Restated here, not imported: a changed constant must fail the pin, not move it.
 const DETECTOR = "rsi.slow-op-subthreshold-flood";
 const THRESHOLD_MS = 250;
-const NOW = new Date("2031-03-04T05:06:07.000Z");
 const ORDER = "oldest rotated file first, newest four files";
+// Fixture clock: far from wall clock (2030). Minute offsets are from T0; NOW is minute 600.
+const T0 = Date.UTC(2030, 0, 1, 0, 0, 0);
+const NOW = new Date(T0 + 600 * 60_000);
+const FRESH = 595; // five minutes before NOW: inside the 10-minute freshness bound
 const dirs: string[] = [];
-afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+const restore: (() => void)[] = [];
+afterEach(() => {
+  while (restore.length) restore.pop()!();
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+});
 
-function span(site: string, durationMs: number, minute = 0): string {
-  const ts = new Date(Date.UTC(2030, 0, 1, 0, minute, 0)).toISOString();
+function span(site: string, durationMs: number, minute = FRESH): string {
+  const ts = new Date(T0 + minute * 60_000).toISOString();
   return JSON.stringify({ v: 1, ts, spanId: `id-${site}-${minute}-${durationMs}`, phase: "end", site, durationMs, outcome: "ok" });
 }
-const many = (site: string, durationMs: number, n: number, minute = 0) =>
+const many = (site: string, durationMs: number, n: number, minute = FRESH) =>
   Array.from({ length: n }, () => span(site, durationMs, minute));
 
-function fixture() {
+function fixture(now: Date = NOW) {
   const dir = mkdtempSync(join(tmpdir(), "rsi-slowop-"));
   dirs.push(dir);
   mkdirSync(join(dir, "logs"));
   const logPath = join(dir, "logs", "slow-operations.jsonl");
   const write = (suffix: "" | `.${number}`, lines: string[]) => writeFileSync(logPath + suffix, lines.join("\n") + "\n");
-  const source = (extra: { maxFileBytes?: number } = {}) => new SlowOpFileSource({ logPath, instanceId: "inst-1", now: () => NOW, ...extra });
+  const source = (extra: { maxFileBytes?: number; maxSpans?: number } = {}) => new SlowOpFileSource({ logPath, instanceId: "inst-1", now: () => now, ...extra });
   const records = (src: HealthObservationSource = source()): HealthRecord[] => new HealthProjectionService([src]).records();
   return { dir, logPath, write, source, records };
 }
@@ -41,6 +49,7 @@ function evidence(record: HealthRecord) {
   return item;
 }
 const fingerprints = (records: HealthRecord[]) => records.map((r) => evidence(r).fingerprint);
+const fp = (site: string) => `rsi.slow-op-subthreshold-flood/site:${site}`;
 
 describe("D13 sub-threshold span flood", () => {
   it("reports only the site whose sub-threshold spans reach 1000, never a site that is slow by the threshold or one span short", () => {
@@ -56,7 +65,7 @@ describe("D13 sub-threshold span flood", () => {
 
     const records = f.records();
 
-    expect(fingerprints(records)).toEqual(["rsi.slow-op-subthreshold-flood/site:codex.runtime.list_processes"]);
+    expect(fingerprints(records)).toEqual([fp("codex.runtime.list_processes")]);
     // 1000 flood + 5 slow + 1500 busy + 999 quiet = 3504 records; 1505 are at or over the threshold.
     expect(evidence(records[0]!)).toMatchObject({
       detectorId: DETECTOR, class: "subthreshold-span-flood", count: 1000, controlTotal: 1505, population: 3504,
@@ -68,14 +77,14 @@ describe("D13 sub-threshold span flood", () => {
     const f = fixture();
     f.write("", [...many("edge.site", THRESHOLD_MS, 1000), ...many("edge.below", THRESHOLD_MS - 0.001, 1000)]);
 
-    expect(fingerprints(f.records())).toEqual(["rsi.slow-op-subthreshold-flood/site:edge.below"]);
+    expect(fingerprints(f.records())).toEqual([fp("edge.below")]);
   });
 
-  it("counts across the rotated files and ignores diagnostics and start records without calling the read partial", () => {
+  it("counts across the rotated files and ignores diagnostics and begin records without calling the read partial", () => {
     const f = fixture();
     f.write(".2", many("a.site", 5, 400));
-    f.write(".1", [...many("a.site", 5, 400), JSON.stringify({ v: 1, ts: "2030-01-01T00:00:00.000Z", event: "event_loop_gap", gapMs: 120000 })]);
-    f.write("", [...many("a.site", 5, 200), JSON.stringify({ v: 1, ts: "2030-01-01T00:00:00.000Z", phase: "start", site: "a.site", spanId: "s" })]);
+    f.write(".1", [...many("a.site", 5, 400), JSON.stringify({ v: 1, ts: new Date(T0 + FRESH * 60_000).toISOString(), event: "event_loop_gap", gapMs: 120000 })]);
+    f.write("", [...many("a.site", 5, 200), JSON.stringify({ v: 1, ts: new Date(T0 + FRESH * 60_000).toISOString(), phase: "begin", site: "a.site", spanId: "s" })]);
 
     const source = f.source();
     const [record] = f.records(source);
@@ -85,6 +94,69 @@ describe("D13 sub-threshold span flood", () => {
       source: "rsi-slow-op-file", evaluatedAt: NOW.toISOString(), unit: "files", limit: 4, total: 3,
       evaluated: 3, omitted: 0, partial: false, order: ORDER,
     }]);
+  });
+
+  it("numbers spans oldest first across the files, so firstSeq and lastSeq are positions in this read", () => {
+    const f = fixture();
+    f.write(".1", [...many("other.site", 5, 3), ...many("flood.site", 5, 1000)]);
+    f.write("", many("flood.site", 5, 5));
+
+    const [record] = f.records();
+
+    // .1 is older: other.site is 1-3, flood.site 4-1003 there, then 1004-1008 in the live file.
+    expect(evidence(record!)).toMatchObject({ firstSeq: 4, lastSeq: 1008, population: 1008 });
+  });
+});
+
+describe("D13 the flood must be current, not merely in the window", () => {
+  it("goes quiet when the last flooding span is more than an hour older than the newest record", () => {
+    const f = fixture();
+    // The flood ended at minute 100; the log's newest record is a different site at minute 595.
+    f.write("", [...many("old.flood", 5, 1000, 100), span("live.site", 900, FRESH)]);
+
+    expect(f.records()).toEqual([]);
+  });
+
+  it("needs both the 1000 floor and 360 spans in the last hour, and 359 recent spans are not enough", () => {
+    const f = fixture();
+    f.write("", [
+      // Rate without the floor: 400 recent, 400 in total.
+      ...many("fast.short", 5, 400),
+      // Floor and rate: 700 old + 360 recent.
+      ...many("floor.and.rate", 5, 700, 100), ...many("floor.and.rate", 5, 360),
+      // Floor, one short of the rate: 700 old + 359 recent.
+      ...many("floor.no.rate", 5, 700, 100), ...many("floor.no.rate", 5, 359),
+    ]);
+
+    expect(fingerprints(f.records())).toEqual([fp("floor.and.rate")]);
+  });
+
+  it("counts a span exactly one hour before the newest record as old and one a minute later as recent", () => {
+    const f = fixture();
+    f.write("", [
+      ...many("edge.old", 5, 700, 100), ...many("edge.old", 5, 360, FRESH - 60),
+      ...many("edge.new", 5, 700, 100), ...many("edge.new", 5, 360, FRESH - 59),
+      span("anchor.site", 900, FRESH),
+    ]);
+
+    expect(fingerprints(f.records())).toEqual([fp("edge.new")]);
+  });
+
+  it("measures the last hour against the newest record and not against read time, and serves a frozen log as stale", () => {
+    // The whole log ended at minute 100; it is read at minute 600.
+    const f = fixture();
+    f.write("", many("frozen.flood", 5, 1000, 100));
+
+    const [record] = f.records();
+
+    expect(record).toBeDefined();
+    expect(evidence(record!).fingerprint).toBe(fp("frozen.flood"));
+    // The recorder died: the frozen flood must not be served as current.
+    expect(record!.status).toBe("indeterminate");
+    expect(record!.indeterminateReason).toMatch(/stale/);
+    const fresh = fixture();
+    fresh.write("", many("live.flood", 5, 1000));
+    expect(fresh.records()[0]).toMatchObject({ status: "active", indeterminateReason: null });
   });
 });
 
@@ -107,30 +179,62 @@ describe("D13 read bounds", () => {
 
   it("reads only the newest bytes of an oversized file, ignores the record it cut through, and reports partial", () => {
     const f = fixture();
-    const recent = many("new.site", 5, 1000, 2);
+    const recent = many("new.site", 5, 1000);
     // 1200 old records: dropping only the one cut line must leave old.site above the flood size.
-    f.write("", [...many("old.site", 5, 1200, 1), ...recent]);
+    f.write("", [...many("old.site", 5, 1200), ...recent]);
     const recentBytes = Buffer.byteLength(recent.join("\n") + "\n");
 
     const source = f.source({ maxFileBytes: recentBytes + 20 });
     const records = f.records(source);
 
-    expect(fingerprints(records)).toEqual(["rsi.slow-op-subthreshold-flood/site:new.site"]);
+    expect(fingerprints(records)).toEqual([fp("new.site")]);
     expect(evidence(records[0]!)).toMatchObject({ count: 1000, population: 1000 });
     expect(source.coverage()[0]).toMatchObject({ total: 1, evaluated: 0, omitted: 1, partial: true });
   });
 
   it("keeps the first record when the byte cap falls exactly on a line boundary, and still reports partial", () => {
     const f = fixture();
-    const recent = many("new.site", 5, 1000, 2);
-    f.write("", [...many("old.site", 5, 1200, 1), ...recent]);
+    const recent = many("new.site", 5, 1000);
+    f.write("", [...many("old.site", 5, 1200), ...recent]);
 
     const source = f.source({ maxFileBytes: Buffer.byteLength(recent.join("\n") + "\n") });
     const records = f.records(source);
 
-    expect(fingerprints(records)).toEqual(["rsi.slow-op-subthreshold-flood/site:new.site"]);
+    expect(fingerprints(records)).toEqual([fp("new.site")]);
     expect(evidence(records[0]!)).toMatchObject({ count: 1000, population: 1000 });
     expect(source.coverage()[0]).toMatchObject({ total: 1, evaluated: 0, omitted: 1, partial: true });
+  });
+
+  it("keeps the newest spans when the span cap is reached, and reports partial with the cap named", () => {
+    const f = fixture();
+    // Both sites flood now. The cap keeps the newest 1000 lines: all of site.new, none of site.old.
+    f.write("", [...many("site.old", 5, 1000), ...many("site.new", 5, 1000)]);
+
+    const source = f.source({ maxSpans: 1000 });
+    const records = f.records(source);
+
+    expect(fingerprints(records)).toEqual([fp("site.new")]);
+    expect(source.coverage()[0]).toMatchObject({ evaluated: 0, omitted: 1, partial: true });
+    expect(source.coverage()[0]).toMatchObject({ order: expect.stringContaining("span cap 1000 reached") });
+  });
+
+  it("does work linear in the spans: 42,000 spans at one site cost well under a second of CPU", () => {
+    const f = fixture();
+    const line = (i: number) => `{"ts":"${new Date(T0 + FRESH * 60_000 + i).toISOString()}","phase":"end","site":"s","durationMs":1}`;
+    for (const [suffix, from] of [["", 0], [".1", 14000], [".2", 28000]] as const) {
+      f.write(suffix, Array.from({ length: 14000 }, (_, i) => line(from + i)));
+    }
+
+    const source = f.source();
+    const before = process.cpuUsage();
+    const found = source.read();
+    const used = process.cpuUsage(before);
+
+    expect(found).toHaveLength(1);
+    expect(source.coverage()[0]).toMatchObject({ total: 3, evaluated: 3, partial: false });
+    // Linear: tens of milliseconds. The quadratic grouping that read 24,000 spans in 1.7 s needs
+    // several seconds here. CPU time, not wall time, so a loaded host does not move it.
+    expect((used.user + used.system) / 1000).toBeLessThan(600);
   });
 
   it("reports an unparseable line and an unreadable file as partial, and keeps the readable data", () => {
@@ -141,22 +245,79 @@ describe("D13 read bounds", () => {
     const source = f.source();
     const records = f.records(source);
 
-    expect(fingerprints(records)).toEqual(["rsi.slow-op-subthreshold-flood/site:flood.site"]);
+    expect(fingerprints(records)).toEqual([fp("flood.site")]);
     expect(source.coverage()[0]).toMatchObject({ total: 2, evaluated: 0, omitted: 2, partial: true });
+  });
+
+  it("never opens a FIFO: it is reported unreadable and the read returns", () => {
+    const f = fixture();
+    f.write("", many("flood.site", 5, 1000));
+    execFileSync("mkfifo", [f.logPath + ".1"]);
+    // A writer held open lets an unguarded open() succeed instead of blocking the whole process.
+    const writer = openSync(f.logPath + ".1", constants.O_RDWR);
+    restore.push(() => closeSync(writer));
+
+    const source = f.source();
+    const records = f.records(source);
+
+    expect(fingerprints(records)).toEqual([fp("flood.site")]);
+    expect(source.coverage()[0]).toMatchObject({ total: 2, evaluated: 1, omitted: 1, partial: true });
+  });
+
+  it("clamps a span stamped after read time and reports partial, instead of making the source unavailable", () => {
+    const f = fixture();
+    // One span 5 minutes in the future (a clock step back is enough to produce one).
+    f.write("", [...many("flood.site", 5, 1000), span("flood.site", 5, 605)]);
+
+    const source = f.source();
+    const projection = new HealthProjectionService([source]);
+    const records = projection.records();
+
+    expect(fingerprints(records)).toEqual([fp("flood.site")]);
+    expect(evidence(records[0]!)).toMatchObject({ count: 1001, lastSeen: NOW.toISOString() });
+    expect(projection.coverage()).toHaveLength(1);
+    expect(projection.coverage()[0]).toMatchObject({
+      partial: true, order: `${ORDER}; 1 record(s) stamped after read time were clamped to it`,
+    });
+    expect(projection.coverage()[0]).not.toHaveProperty("status", "unavailable");
   });
 });
 
-describe("D13 unavailable, never zero", () => {
-  it("serves unavailable coverage and no finding when there is no log, and when no file can be read", () => {
+describe("D13 no log yet is an honest zero, an unreadable log is unavailable", () => {
+  it("serves zero findings with a no-log note when the log directory or file is missing", () => {
     const f = fixture();
-    const missing = new HealthProjectionService([f.source()]);
-    expect(missing.records()).toEqual([]);
-    expect(missing.coverage()).toMatchObject([{ source: "rsi-slow-op-file", status: "unavailable", partial: true }]);
+    const noFile = new HealthProjectionService([f.source()]);
+    expect(noFile.records()).toEqual([]);
+    expect(noFile.coverage()).toEqual([{
+      source: "rsi-slow-op-file", evaluatedAt: NOW.toISOString(), unit: "files", limit: 4, total: 0,
+      evaluated: 0, omitted: 0, partial: false, order: "no slow-op log yet",
+    }]);
 
+    rmSync(join(f.dir, "logs"), { recursive: true });
+    const noDir = new HealthProjectionService([f.source()]);
+    expect(noDir.records()).toEqual([]);
+    expect(noDir.coverage()).toMatchObject([{ order: "no slow-op log yet", partial: false, total: 0 }]);
+  });
+
+  it("serves unavailable coverage and no finding when the only candidate cannot be read", () => {
+    const f = fixture();
     mkdirSync(f.logPath); // the only candidate is a directory
     const unreadable = new HealthProjectionService([f.source()]);
     expect(unreadable.records()).toEqual([]);
     expect(unreadable.coverage()).toMatchObject([{ source: "rsi-slow-op-file", status: "unavailable", partial: true }]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("serves unavailable coverage when the log directory is not readable, and not the no-log zero", () => {
+    const f = fixture();
+    f.write("", many("flood.site", 5, 1000));
+    const logs = join(f.dir, "logs");
+    chmodSync(logs, 0o000);
+    restore.push(() => chmodSync(logs, 0o700));
+
+    const service = new HealthProjectionService([f.source()]);
+
+    expect(service.records()).toEqual([]);
+    expect(service.coverage()).toMatchObject([{ source: "rsi-slow-op-file", status: "unavailable", partial: true }]);
   });
 });
 
@@ -165,6 +326,14 @@ describe("D13 as a health record", () => {
     const f = fixture();
     f.write("", many("codex.runtime.list_processes", 5, 1000));
     expect(f.records()[0]).toMatchObject({ detector: DETECTOR, category: "process", severity: "info", status: "active" });
+  });
+
+  it("names the inspection without claiming which recorder path leaks", () => {
+    const f = fixture();
+    f.write("", many("codex.runtime.list_processes", 5, 1000));
+    const [record] = f.records();
+    expect(record!.suggestedInspection).toContain("codex.runtime.list_processes");
+    expect(record!.suggestedInspection).not.toMatch(/recordMeasurement|recordRequest/);
   });
 
   it("is a disableable RSI id, and a policy that disables it stops the file being read", () => {
@@ -181,15 +350,23 @@ describe("D13 as a health record", () => {
 });
 
 describe("daemon wiring", () => {
-  it("registers the slow-op source on a file-backed daemon and not on an in-memory one", async () => {
+  it("reads the configured slow-op log on a file-backed daemon, and registers nothing on an in-memory one", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rsi-slowop-wiring-"));
     dirs.push(dir);
-    const fileDaemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite"), slowOpLogPath: join(dir, "logs", "slow-operations.jsonl") });
+    mkdirSync(join(dir, "logs"));
+    const logPath = join(dir, "logs", "slow-operations.jsonl");
+    // A flood written now, so the daemon's own clock sees a current log.
+    const now = new Date().toISOString();
+    const lines = Array.from({ length: 1000 }, (_, i) => JSON.stringify({ v: 1, ts: now, spanId: `w${i}`, phase: "end", site: "wiring.flood", durationMs: 5, outcome: "ok" }));
+    writeFileSync(logPath, lines.join("\n") + "\n");
+    const fileDaemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite"), slowOpLogPath: logPath });
     const memoryDaemon = await createDaemon({ dbPath: ":memory:" });
     try {
-      const sources = (daemon: typeof fileDaemon) => (daemon.deps.healthProjection!.list().coverage ?? []).map((c) => c.source);
-      expect(sources(fileDaemon)).toContain("rsi-slow-op-file");
-      expect(sources(memoryDaemon)).not.toContain("rsi-slow-op-file");
+      const listed = fileDaemon.deps.healthProjection!.list();
+      const detectors = listed.records.map((record) => record.detector);
+      expect(detectors).toContain(DETECTOR);
+      expect(listed.coverage?.find((c) => c.source === "rsi-slow-op-file")).not.toHaveProperty("status", "unavailable");
+      expect((memoryDaemon.deps.healthProjection!.list().coverage ?? []).map((c) => c.source)).not.toContain("rsi-slow-op-file");
     } finally {
       fileDaemon.db.close();
       memoryDaemon.db.close();

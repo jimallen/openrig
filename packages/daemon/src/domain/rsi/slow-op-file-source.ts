@@ -13,21 +13,50 @@ import { rsiFingerprint } from "./fingerprint.js";
 /** The recorder keeps the live file plus three rotations (SLOW_OPERATION_ROTATION_COUNT), so
  * four files is the whole history. The source never reads a fifth, whatever the directory holds. */
 export const SLOW_OP_MAX_FILES = 4;
-/** Most bytes read from one file: its newest bytes. The recorder rotates at 1 MiB, so a file
- * past this cap is not a normal recorder file. */
-export const SLOW_OP_MAX_FILE_BYTES = 2 * 1024 * 1024;
-/** A site is a flood when at least this many of its logged spans are under the slow threshold. */
+/** Most bytes read from one file: its newest bytes. The recorder rotates at 1 MiB (plus the
+ * line that crossed it), so a file past this cap is not a normal recorder file. */
+export const SLOW_OP_MAX_FILE_BYTES = 1024 * 1024 + 64 * 1024;
+/** Most end spans one read keeps, newest first. Four capped files of minimum-size records hold
+ * fewer, so this is a hard bound on the work, not a normal limit. */
+export const SLOW_OP_MAX_SPANS = 60_000;
+/** Floor: a site needs at least this many sub-threshold spans in the files read. A statistical
+ * floor only; on its own it counts history (a finished flood stays in the window for days). */
 export const SLOW_OP_FLOOD_MIN_SUBTHRESHOLD = 1000;
+/** Rate: a site must also have at least SLOW_OP_FLOOD_MIN_RECENT sub-threshold spans in the
+ * hour ending at the newest record in the log, so the finding goes quiet within an hour of a
+ * fix. 360 an hour is one span every 10 s; the live flood runs at about 1,440 an hour. */
+export const SLOW_OP_FLOOD_RECENT_WINDOW_MS = 60 * 60 * 1000;
+export const SLOW_OP_FLOOD_MIN_RECENT = 360;
 export const SLOW_OP_SUBTHRESHOLD_FLOOD_CLASS = "subthreshold-span-flood";
+export const SLOW_OP_COVERAGE_ORDER = "oldest rotated file first, newest four files";
+export const SLOW_OP_NO_LOG_NOTE = "no slow-op log yet";
 
-interface EndSpan { site: string; durationMs: number; ts: number; ordinal: number }
+interface EndSpan { site: string; durationMs: number; ts: number }
+interface SiteTally {
+  total: number; under: number; recent: number;
+  firstSeen: number; lastSeen: number; firstSeq: number; lastSeq: number;
+}
 
 /**
- * D13: spans under the slow threshold fill the slow-operation log. One finding per site. The
- * threshold is the recorder's own (a span under it should not be in the log). Anything that
- * stops the source reading the whole window (a file over the byte cap, an unparseable line,
- * an unreadable file, a fifth file) is reported as `partial` coverage; a log it cannot find or
- * read at all throws, which the projection serves as `unavailable`. Neither is ever zero.
+ * D13: spans under the slow threshold fill the slow-operation log. One finding per site.
+ *
+ * A site is a flood when BOTH hold: at least SLOW_OP_FLOOD_MIN_SUBTHRESHOLD of its spans in the
+ * files read are under the recorder's own threshold, AND at least SLOW_OP_FLOOD_MIN_RECENT of
+ * them fall in the hour ending at the newest record (not at read time, so a dead recorder's
+ * frozen log does not look current). Freshness follows the newest record too.
+ *
+ * Coverage: a log directory with no log file yet is an honest zero with a note. A log that
+ * exists but cannot be read (no file readable, a permission error) throws, which the projection
+ * serves as `unavailable`. Everything that stops the source evaluating the whole window (a
+ * cut or unparseable file, a fifth file, the span cap, a record stamped after read time that
+ * had to be clamped) is `partial`. None of these reads as a clean zero.
+ *
+ * The health record id hashes the episode start, and a flood's start here is its oldest span
+ * still in the files, which moves at every rotation. The id is therefore per-window; the
+ * fingerprint is the stable identity (rsi/fingerprint.ts). A stable id needs the activation
+ * time that B1's rsi_finding_state stores; a stateless file read cannot know it.
+ *
+ * `firstSeq`/`lastSeq` are positions among the end spans of this read, oldest first.
  */
 export class SlowOpFileSource implements HealthObservationSource {
   readonly name = "rsi-slow-op-file";
@@ -39,40 +68,58 @@ export class SlowOpFileSource implements HealthObservationSource {
     instanceId: string;
     now?: () => Date;
     maxFileBytes?: number;
-    floodMinSubthreshold?: number;
+    maxSpans?: number;
   }) {}
 
   coverage(): readonly HealthSourceCoverage[] {
     return this.lastCoverage;
   }
 
+  /** Newest first: the live file, then .1, .2, ... A missing directory is no log yet. */
   private candidateFiles(): string[] {
     const dir = dirname(this.deps.logPath);
     const base = basename(this.deps.logPath);
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return [];
+      throw error;
+    }
     const ranked: { name: string; rank: number }[] = [];
-    for (const name of readdirSync(dir)) {
+    for (const name of names) {
       if (name === base) ranked.push({ name, rank: 0 });
       else if (name.startsWith(`${base}.`) && /^\d+$/.test(name.slice(base.length + 1))) ranked.push({ name, rank: Number(name.slice(base.length + 1)) });
     }
-    // Newest first: the live file, then .1, .2, ...
     return ranked.sort((a, b) => a.rank - b.rank).map((entry) => `${dir}/${entry.name}`);
   }
 
   read(): readonly HealthDetectorObservation[] {
     this.lastCoverage = [];
     const evaluatedAt = (this.deps.now ?? (() => new Date()))().toISOString();
+    const evaluatedMs = Date.parse(evaluatedAt);
     const maxBytes = this.deps.maxFileBytes ?? SLOW_OP_MAX_FILE_BYTES;
-    const floodMin = this.deps.floodMinSubthreshold ?? SLOW_OP_FLOOD_MIN_SUBTHRESHOLD;
+    const maxSpans = this.deps.maxSpans ?? SLOW_OP_MAX_SPANS;
     const found = this.candidateFiles();
-    if (found.length === 0) throw new Error(`no slow-operation log found at ${this.deps.logPath}`);
+    if (found.length === 0) {
+      this.lastCoverage = [{
+        source: this.name, evaluatedAt, unit: "files", limit: SLOW_OP_MAX_FILES, total: 0,
+        evaluated: 0, omitted: 0, partial: false, order: SLOW_OP_NO_LOG_NOTE,
+      }];
+      return [];
+    }
     const selected = found.slice(0, SLOW_OP_MAX_FILES);
 
-    // Read oldest first, so record ordinals grow with time.
-    const spans: EndSpan[] = [];
+    // Newest file first and newest line first, so the span cap drops the OLDEST records.
+    const newestFirst: EndSpan[] = [];
     let wholeFiles = 0;
     let filesRead = 0;
-    let ordinal = 0;
-    for (const file of [...selected].reverse()) {
+    let clamped = 0;
+    let capHit = false;
+    let newestMs: number | null = null;
+    for (const file of selected) {
+      if (capHit) break;
       let text: string;
       let cut: boolean;
       try {
@@ -82,42 +129,71 @@ export class SlowOpFileSource implements HealthObservationSource {
       }
       filesRead++;
       let clean = !cut;
+      const lines = text.split("\n");
       // A tail read may begin inside a record: that fragment fails to parse and is ignored, and the
       // file is already partial because it was cut.
-      for (const line of text.split("\n")) {
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]!;
         if (line === "") continue;
-        const span = parseEndSpan(line);
-        if (span === "other") continue;
-        if (span === null) { clean = false; continue; }
-        ordinal++;
-        spans.push({ ...span, ordinal });
+        const parsed = parseRecord(line);
+        if (parsed === null) { clean = false; continue; }
+        let ts = parsed.ts;
+        if (ts !== null && ts > evaluatedMs) { ts = evaluatedMs; clamped++; }
+        if (ts !== null && (newestMs === null || ts > newestMs)) newestMs = ts;
+        if (parsed.span === null) continue;
+        if (newestFirst.length >= maxSpans) { capHit = true; clean = false; break; }
+        newestFirst.push({ ...parsed.span, ts: ts! });
       }
       if (clean) wholeFiles++;
     }
     if (filesRead === 0) throw new Error(`no slow-operation log file could be read at ${this.deps.logPath}`);
+    const notes = [SLOW_OP_COVERAGE_ORDER];
+    if (clamped > 0) notes.push(`${clamped} record(s) stamped after read time were clamped to it`);
+    if (capHit) notes.push(`span cap ${maxSpans} reached, oldest records not read`);
     this.lastCoverage = [{
       source: this.name, evaluatedAt, unit: "files", limit: SLOW_OP_MAX_FILES, total: found.length,
-      evaluated: wholeFiles, omitted: found.length - wholeFiles, partial: wholeFiles < found.length,
-      order: "oldest rotated file first, newest four files",
+      evaluated: wholeFiles, omitted: found.length - wholeFiles,
+      partial: wholeFiles < found.length || clamped > 0, order: notes.join("; "),
     }];
 
-    const bySite = new Map<string, EndSpan[]>();
-    for (const span of spans) bySite.set(span.site, [...bySite.get(span.site) ?? [], span]);
-    const controlTotal = spans.filter((span) => span.durationMs >= SLOW_OPERATION_THRESHOLD_MS).length;
+    // Oldest first from here on: position i + 1 is the span's sequence in this read.
+    const spans = newestFirst.reverse();
+    const recentFloorMs = (newestMs ?? evaluatedMs) - SLOW_OP_FLOOD_RECENT_WINDOW_MS;
+    const bySite = new Map<string, SiteTally>();
+    let controlTotal = 0;
+    for (let i = 0; i < spans.length; i++) {
+      const span = spans[i]!;
+      const isUnder = span.durationMs < SLOW_OPERATION_THRESHOLD_MS;
+      if (!isUnder) controlTotal++;
+      let tally = bySite.get(span.site);
+      if (!tally) {
+        tally = { total: 0, under: 0, recent: 0, firstSeen: Infinity, lastSeen: -Infinity, firstSeq: 0, lastSeq: 0 };
+        bySite.set(span.site, tally);
+      }
+      tally.total++;
+      if (!isUnder) continue;
+      tally.under++;
+      if (span.ts > recentFloorMs) tally.recent++;
+      if (tally.firstSeq === 0) tally.firstSeq = i + 1;
+      tally.lastSeq = i + 1;
+      if (span.ts < tally.firstSeen) tally.firstSeen = span.ts;
+      if (span.ts > tally.lastSeen) tally.lastSeen = span.ts;
+    }
+
+    const freshnessAt = newestMs === null ? null : new Date(newestMs).toISOString();
     const observations: HealthDetectorObservation[] = [];
-    for (const [site, siteSpans] of [...bySite].sort(([a], [b]) => (a < b ? -1 : 1))) {
-      const under = siteSpans.filter((span) => span.durationMs < SLOW_OPERATION_THRESHOLD_MS);
-      if (under.length < floodMin) continue;
-      const firstSeen = new Date(Math.min(...under.map((span) => span.ts))).toISOString();
-      const lastSeen = new Date(Math.max(...under.map((span) => span.ts))).toISOString();
+    for (const [site, tally] of [...bySite].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      if (tally.under < SLOW_OP_FLOOD_MIN_SUBTHRESHOLD || tally.recent < SLOW_OP_FLOOD_MIN_RECENT) continue;
+      const firstSeen = new Date(tally.firstSeen).toISOString();
+      const lastSeen = new Date(tally.lastSeen).toISOString();
       const fingerprint = rsiFingerprint(RSI_SLOW_OP_SUBTHRESHOLD_FLOOD, `site:${site}`);
       const evidence: HealthEvidenceReference = {
         type: "telemetry-span", sourceOrder: 0, observedAt: lastSeen,
         detectorId: RSI_SLOW_OP_SUBTHRESHOLD_FLOOD, class: SLOW_OP_SUBTHRESHOLD_FLOOD_CLASS, fingerprint,
-        count: under.length, controlTotal, population: spans.length,
-        firstSeq: under[0]!.ordinal, lastSeq: under[under.length - 1]!.ordinal, firstSeen, lastSeen,
+        count: tally.under, controlTotal, population: spans.length,
+        firstSeq: tally.firstSeq, lastSeq: tally.lastSeq, firstSeen, lastSeen,
       };
-      const windowSeconds = Math.max(1, Math.ceil((Date.parse(evaluatedAt) - Date.parse(firstSeen)) / 1000));
+      const windowSeconds = Math.max(1, Math.ceil((evaluatedMs - tally.firstSeen) / 1000));
       observations.push({
         kind: "telemetry-finding",
         detectorId: RSI_SLOW_OP_SUBTHRESHOLD_FLOOD,
@@ -128,18 +204,19 @@ export class SlowOpFileSource implements HealthObservationSource {
         lastObservedAt: evaluatedAt,
         source: boundHealthEvidence([evidence], {
           source: "telemetry-span", startedAt: firstSeen, endedAt: evaluatedAt, limit: 1, retentionSeconds: windowSeconds,
-        }, deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: evaluatedAt, maxAgeSeconds: 600 })),
-        summary: `Site ${site} logged ${under.length} spans under the ${SLOW_OPERATION_THRESHOLD_MS} ms slow-operation threshold.`,
-        threshold: `at least ${floodMin} logged spans at one site with durationMs under ${SLOW_OPERATION_THRESHOLD_MS}`,
-        explanation: `${under.length} of ${siteSpans.length} spans at ${site} are under the threshold; control: ${controlTotal} spans at or over it, out of ${spans.length} spans in the log window.`,
-        suggestedInspection: `Check whether ${site} records its measurements through a path that applies no slow threshold (recordMeasurement) rather than recordRequest.`,
+        }, deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: freshnessAt, maxAgeSeconds: 600 })),
+        summary: `Site ${site} logged ${tally.under} spans under the ${SLOW_OPERATION_THRESHOLD_MS} ms slow-operation threshold.`,
+        threshold: `at least ${SLOW_OP_FLOOD_MIN_SUBTHRESHOLD} logged spans at one site with durationMs under ${SLOW_OPERATION_THRESHOLD_MS}, and at least ${SLOW_OP_FLOOD_MIN_RECENT} of them in the hour ending at the newest log record`,
+        explanation: `${tally.under} of ${tally.total} spans at ${site} are under the threshold, ${tally.recent} of them in the last hour of the log; control: ${controlTotal} spans at or over it, out of ${spans.length} spans in the log window.`,
+        suggestedInspection: `Check how ${site} records its spans: a path that logs every measurement without applying the slow threshold floods this log.`,
       });
     }
     return observations;
   }
 }
 
-/** Read the newest `maxBytes` of a file; `cut` is true when older bytes were left unread. */
+/** Read the newest `maxBytes` of a file; `cut` is true when older bytes were left unread.
+ * Only a regular file is opened: opening a FIFO would block the event loop. */
 function readNewestBytes(file: string, maxBytes: number): { text: string; cut: boolean } {
   const stat = statSync(file);
   if (!stat.isFile()) throw new Error(`${file} is not a regular file`);
@@ -160,16 +237,17 @@ function readNewestBytes(file: string, maxBytes: number): { text: string; cut: b
   }
 }
 
-/** `null`: not a record this source understands (malformed). `"other"`: a well-formed record
- * that is not an `end` span (a diagnostic such as event_loop_gap). */
-function parseEndSpan(line: string): Omit<EndSpan, "ordinal"> | "other" | null {
+/** `null`: a line this source cannot read (malformed). Otherwise the record's own timestamp
+ * (null when it has none) and, for an `end` span, the span itself. A well-formed record that is
+ * not an `end` span (a diagnostic such as event_loop_gap) carries `span: null`. */
+function parseRecord(line: string): { ts: number | null; span: { site: string; durationMs: number } | null } | null {
   let value: unknown;
   try { value = JSON.parse(line); } catch { return null; }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (record.phase !== "end") return "other";
   const ts = typeof record.ts === "string" ? Date.parse(record.ts) : Number.NaN;
+  if (record.phase !== "end") return { ts: Number.isFinite(ts) ? ts : null, span: null };
   if (typeof record.site !== "string" || record.site === "" || typeof record.durationMs !== "number"
     || !Number.isFinite(record.durationMs) || !Number.isFinite(ts)) return null;
-  return { site: record.site, durationMs: record.durationMs, ts };
+  return { ts, span: { site: record.site, durationMs: record.durationMs } };
 }
