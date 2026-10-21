@@ -20,6 +20,7 @@ import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
+import { RSI_FINDING_CATEGORY, RSI_FINDING_SEVERITY } from "./rsi/detector-ids.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -82,6 +83,17 @@ export type HealthDetectorObservation =
       continuity: string | null;
       warningPercent?: number;
       criticalPercent?: number;
+    })
+  /** One counted telemetry finding. Counts and class live in the `telemetry-span` evidence;
+   * `fingerprint` is the finding's stable identity (rsi/fingerprint.ts). */
+  | (ObservationBase & {
+      kind: "telemetry-finding";
+      detectorId: string;
+      fingerprint: string;
+      summary: string;
+      threshold: string;
+      explanation: string;
+      suggestedInspection: string;
     });
 
 /** How much of its input a source actually evaluated on its latest read. Omitted
@@ -372,7 +384,29 @@ function evaluateObservation(observation: HealthDetectorObservation, policy: Hea
     case "directive": return evaluateDirective(observation);
     case "scope-admission": return evaluateAdmission(observation);
     case "context-pressure": return evaluateContext(observation);
+    case "telemetry-finding": return evaluateTelemetryFinding(observation);
   }
+}
+
+/** The single evaluator for every RSI telemetry detector. Category and severity are fixed
+ * (rsi/detector-ids.ts): `info` keeps RSI findings out of the Attention view. A finding whose
+ * evidence does not carry its own fingerprint is refused, never served with a wrong identity. */
+function evaluateTelemetryFinding(
+  observation: Extract<HealthDetectorObservation, { kind: "telemetry-finding" }>,
+): HealthRecord[] {
+  const span = observation.source.evidence.find((item): item is Extract<HealthEvidenceReference, { type: "telemetry-span" }> => item.type === "telemetry-span");
+  if (!span || span.fingerprint !== observation.fingerprint || span.detectorId !== observation.detectorId) {
+    throw new Error(`telemetry finding ${observation.detectorId} lacks matching telemetry-span evidence`);
+  }
+  return [record(observation, {
+    detector: observation.detectorId,
+    category: RSI_FINDING_CATEGORY,
+    severity: RSI_FINDING_SEVERITY,
+    summary: observation.summary,
+    threshold: observation.threshold,
+    explanation: observation.explanation,
+    suggestedInspection: observation.suggestedInspection,
+  })];
 }
 
 function evaluateCoordination(
