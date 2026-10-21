@@ -8,7 +8,7 @@ import {
 import { rsiFingerprint } from "./fingerprint.js";
 import { classifyBootstrapFailure, classifyStartupFailure, eventErrorText } from "./failure-classes.js";
 import {
-  anchorFor, isHistoricalFixed, readKnownFixes, regressionClass,
+  anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, regressionClass,
   type HistoricalFixedHits, type RefusedAnchor,
 } from "./known-fixes.js";
 import { RsiReadBudget, type RsiReadBudgetOptions } from "./read-budget.js";
@@ -116,7 +116,7 @@ export class EventClassHealthSource implements HealthObservationSource {
     db.transaction(() => {
       total = (db.prepare("SELECT count(*) AS n FROM events WHERE type = ? AND created_at >= ?").get(this.detector.eventType, windowStart) as { n: number }).n;
       this.budget.start();
-      for (const row of db.prepare("SELECT seq, created_at, payload FROM events WHERE type = ? AND created_at >= ? ORDER BY seq LIMIT ?")
+      for (const row of db.prepare("SELECT seq, created_at, payload FROM events WHERE type = ? AND created_at >= ? ORDER BY seq DESC LIMIT ?")
         .iterate(this.detector.eventType, windowStart, limit) as IterableIterator<EventRow>) {
         if (this.budget.exceeded()) break;
         const cls = this.detector.classify(eventErrorText(row.payload));
@@ -124,13 +124,7 @@ export class EventClassHealthSource implements HealthObservationSource {
         evaluated++;
       }
     })();
-    this.lastCoverage = [{
-      source: this.name, evaluatedAt, unit: "events", limit, total, evaluated,
-      omitted: Math.max(0, total - evaluated), partial: evaluated < total, order: "seq",
-    }];
-
-    const observations: HealthDetectorObservation[] = [];
-    for (const [cls, hits] of [...byClass].sort(([a], [b]) => a.localeCompare(b))) {
+    const judged = [...byClass].sort(([a], [b]) => a.localeCompare(b)).map(([cls, hits]) => {
       const subjectKey = `class:${cls}`;
       const fingerprint = rsiFingerprint(this.detector.detectorId, subjectKey);
       const verdict = anchorFor(fixes, fingerprint);
@@ -139,6 +133,18 @@ export class EventClassHealthSource implements HealthObservationSource {
       if (historical.length > 0 && verdict.anchor) {
         this.lastHistorical.push({ fingerprint, label: `historical-fixed:${verdict.anchor.ref}`, count: historical.length });
       }
+      return { cls, subjectKey, verdict, historical, active };
+    });
+    // What the anchors did on this read, served on the coverage row (and beside every finding).
+    const anchorNote = describeAnchorEffects(this.lastHistorical, this.lastRefused);
+    this.lastCoverage = [{
+      source: this.name, evaluatedAt, unit: "events", limit, total, evaluated,
+      omitted: Math.max(0, total - evaluated), partial: evaluated < total, order: "seq, newest first",
+      ...(anchorNote !== undefined ? { note: anchorNote } : {}),
+    }];
+
+    const observations: HealthDetectorObservation[] = [];
+    for (const { cls, subjectKey, verdict, historical, active } of judged) {
       if (active.length < RSI_CLASS_RECURRENCE_THRESHOLD) continue;
       const seen = active.map((hit) => hit.ms);
       const findingClass = regressionClass(verdict, cls);
@@ -154,7 +160,8 @@ export class EventClassHealthSource implements HealthObservationSource {
           : `${this.detector.eventType} class ${cls} recurred ${active.length} times in ${RSI_CLASS_WINDOW_DAYS} days.`,
         threshold: `the same ${this.detector.eventType} class occurs at least ${RSI_CLASS_RECURRENCE_THRESHOLD} times in ${RSI_CLASS_WINDOW_DAYS} days${regression ? ", counting only events at or after the known fix's deployment" : ""}`,
         explanation: `${active.length} of ${evaluated} examined ${this.detector.eventType} events in the window are class ${cls}`
-          + `${historical.length > 0 ? ` (${historical.length} older hits are historical-fixed)` : ""}; the window holds ${total} such events in all.`,
+          + `${historical.length > 0 ? ` (${historical.length} older hits are historical-fixed)` : ""}; the window holds ${total} such events in all.`
+          + `${anchorNote !== undefined ? ` Anchors: ${anchorNote}.` : ""}`,
         suggestedInspection: `List the ${this.detector.eventType} events of class ${cls} (seq ${Math.min(...active.map((hit) => hit.seq))}..${Math.max(...active.map((hit) => hit.seq))}) with the events route and compare their cause.`,
       }));
     }

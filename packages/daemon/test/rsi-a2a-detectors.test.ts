@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
@@ -174,7 +175,7 @@ describe("D1 startup-failure class recurrence", () => {
     expect(span(record!)).toMatchObject({ count: 3, controlTotal: 6, population: 6 });
     expect(source.coverage()).toEqual([{
       source: "rsi-startup-failure-class", evaluatedAt: NOW.toISOString(), unit: "events", limit: 5000,
-      total: 6, evaluated: 6, omitted: 0, partial: false, order: "seq",
+      total: 6, evaluated: 6, omitted: 0, partial: false, order: "seq, newest first",
     }]);
   });
 
@@ -208,7 +209,7 @@ describe("D2 bootstrap-failure class recurrence", () => {
 
 describe("known-fix anchors: regression-only", () => {
   const FP = `${RSI_STARTUP_FAILURE_CLASS}/class:codex-profile-getcwd`;
-  const anchor = (deployedAt: string, extra: Record<string, unknown> = {}) => ({ fingerprint: FP, ref: "OF-31", fixSha: "845b6303", deployedAt, denominator: "Codex launches since deploy: 0", ...extra });
+  const anchor = (deployedAt: string, extra: Record<string, unknown> = {}) => ({ fingerprint: FP, ref: "OF-31", fixSha: "845b6303", deployedAt, recordedAt: "2031-03-03T12:00:00Z", denominator: "Codex launches since deploy: 0", ...extra });
 
   it("reports hits before the deployment as historical-fixed, not active, and a post-deploy recurrence as a regression", () => {
     const f = fixture();
@@ -225,6 +226,7 @@ describe("known-fix anchors: regression-only", () => {
 
     expect(span(record!)).toMatchObject({ class: "regression-after:845b6303", count: 3, fingerprint: FP, firstSeen: "2031-03-02T00:00:00.000Z" });
     expect(record!.summary).toContain("after fix OF-31");
+    expect(record!.explanation).toContain(`Anchors: historical-fixed:OF-31 x3 [${FP}]`);
     expect(regressed.historicalFixed()).toEqual([{ fingerprint: FP, label: "historical-fixed:OF-31", count: 3 }]);
   });
 
@@ -239,15 +241,15 @@ describe("known-fix anchors: regression-only", () => {
 
   it("applies an anchor only to its own fingerprint", () => {
     const f = fixture();
-    f.writeFixes([anchor("2031-03-04T00:00:00Z")]);
+    f.writeFixes([anchor("2031-03-03T06:00:00Z")]);
     for (const at of ["2031-03-01 00:00:00", "2031-03-02 00:00:00", "2031-03-03 00:00:00"]) f.startupFailed(CODEX_RESUME, at);
 
     expect(records(f.d1()).map((r) => span(r).class)).toEqual(["codex-resume-not-interactive"]);
   });
 
-  it("refuses an anchor dated in the future: the hits stay active and the refusal is named", () => {
+  it("refuses an anchor deployed after it was recorded: the hits stay active and the refusal is named", () => {
     const f = fixture();
-    f.writeFixes([anchor("2031-03-05T00:00:00Z")]); // one day after NOW
+    f.writeFixes([anchor("2031-03-05T00:00:00Z")]); // deployed two days after it was recorded
     for (const at of ["2031-03-01 00:00:00", "2031-03-02 00:00:00", "2031-03-03 00:00:00"]) f.startupFailed(GETCWD, at);
     const source = f.d1();
 
@@ -255,7 +257,7 @@ describe("known-fix anchors: regression-only", () => {
 
     expect(span(record!)).toMatchObject({ class: "codex-profile-getcwd", count: 3 });
     expect(source.historicalFixed()).toEqual([]);
-    expect(source.refusedAnchors()).toEqual([{ fingerprint: FP, ref: "OF-31", reason: "dated-in-the-future" }]);
+    expect(source.refusedAnchors()).toEqual([{ fingerprint: FP, ref: "OF-31", reason: "deployed-after-recorded" }]);
   });
 
   it("makes D1, D2 and D3 all unavailable, never zero, when the file does not parse", () => {
@@ -408,21 +410,49 @@ describe("D3 orphaned parked-owner jobs", () => {
     expect(record!.explanation).toContain("Active parked-owner jobs 2 differ from the 1 distinct rig names");
   });
 
-  it("applies the anchor by job registration time: older orphans are historical-fixed, a newer one is a regression", () => {
+  it("dates an orphan from when its rig was archived: a rig archived after the fix is a regression even though its job is older", () => {
     const f = fixture();
     const FP = `${RSI_ORPHANED_PARKED_OWNER_JOB}/parked-owner-jobs-without-live-rig`;
-    f.writeFixes([{ fingerprint: FP, ref: "OF-D3", fixSha: "abc1234", deployedAt: "2031-03-01T00:00:00Z" }]);
-    f.rig("r1", "old1", "2031-01-01 00:00:00");
-    f.rig("r2", "new1", "2031-03-02 00:00:00");
+    f.writeFixes([{ fingerprint: FP, ref: "OF-D3", fixSha: "abc1234", deployedAt: "2031-03-01T00:00:00Z", recordedAt: "2031-03-02T00:00:00Z" }]);
+    // before the fix: armed 02-01, archived 02-15 -> historical
+    f.rig("r1", "old1", "2031-02-15 00:00:00");
     f.job("parked-owner-consumer", "parked-owner-consumer@old1", "active", "2031-02-01 00:00:00");
     const quiet = f.d3();
     expect(records(quiet)).toEqual([]);
     expect(quiet.historicalFixed()).toEqual([{ fingerprint: FP, label: "historical-fixed:OF-D3", count: 1 }]);
 
-    f.job("parked-owner-consumer", "parked-owner-consumer@new1", "active", "2031-03-02 00:00:00");
+    // after the fix: armed 02-01 (idempotent registration keeps its time), archived 03-03 -> regression
+    f.rig("r2", "late", "2031-03-03 00:00:00");
+    f.job("parked-owner-consumer", "parked-owner-consumer@late", "active", "2031-02-01 00:00:00");
+    const source = f.d3();
+    const [record] = records(source);
+
+    expect(span(record!)).toMatchObject({ class: "regression-after:abc1234", count: 1, firstSeen: "2031-03-03T00:00:00.000Z" });
+    expect(record!.explanation).toContain(`Anchors: historical-fixed:OF-D3 x1 [${FP}]`);
+    expect(source.historicalFixed()).toEqual([{ fingerprint: FP, label: "historical-fixed:OF-D3", count: 1 }]);
+  });
+
+  it("dates an orphan from its registration when that is later than the archive, so a job re-armed after the fix is a regression", () => {
+    const f = fixture();
+    const FP = `${RSI_ORPHANED_PARKED_OWNER_JOB}/parked-owner-jobs-without-live-rig`;
+    f.writeFixes([{ fingerprint: FP, ref: "OF-D3", fixSha: "abc1234", deployedAt: "2031-03-01T00:00:00Z", recordedAt: "2031-03-02T00:00:00Z" }]);
+    f.rig("r1", "rearmed", "2031-02-01 00:00:00");
+    f.job("parked-owner-consumer", "parked-owner-consumer@rearmed", "active", "2031-03-02 00:00:00");
+
     const [record] = records(f.d3());
 
-    expect(span(record!)).toMatchObject({ class: "regression-after:abc1234", count: 1 });
+    expect(span(record!)).toMatchObject({ class: "regression-after:abc1234", count: 1, firstSeen: "2031-03-02T00:00:00.000Z" });
+  });
+
+  it("never calls an orphan historical when its rig has no row at all: the instant it became an orphan is unknown", () => {
+    const f = fixture();
+    const FP = `${RSI_ORPHANED_PARKED_OWNER_JOB}/parked-owner-jobs-without-live-rig`;
+    f.writeFixes([{ fingerprint: FP, ref: "OF-D3", fixSha: "abc1234", deployedAt: "2031-03-01T00:00:00Z", recordedAt: "2031-03-02T00:00:00Z" }]);
+    f.job("parked-owner-consumer", "parked-owner-consumer@deleted", "active", "2031-02-01 00:00:00");
+    const source = f.d3();
+
+    expect(records(source)).toHaveLength(1);
+    expect(source.historicalFixed()).toEqual([]);
   });
 });
 
@@ -545,5 +575,227 @@ describe("registration", () => {
     const names = (daemon.deps.healthProjection!.list().coverage ?? []).map((c) => c.source);
 
     expect(names).toEqual(expect.arrayContaining(["rsi-startup-failure-class", "rsi-bootstrap-failure-class", "rsi-orphaned-parked-owner-job"]));
+  });
+});
+
+describe("anchor refusals are permanent and self-consistent (recordedAt)", () => {
+  const GETCWD_FP = `${RSI_STARTUP_FAILURE_CLASS}/class:codex-profile-getcwd`;
+  const anchorOf = (extra: Record<string, unknown>) => ({ fingerprint: GETCWD_FP, ref: "OF-T", fixSha: "bbb2222", deployedAt: "2031-03-03T00:00:00Z", recordedAt: "2031-03-03T12:00:00Z", ...extra });
+  const threeHits = (f: ReturnType<typeof fixture>, day = "2031-03-02") => { for (const h of ["06", "12", "18"]) f.startupFailed(GETCWD, `${day} ${h}:00:00`); };
+
+  it("keeps refusing an anchor recorded before its own deployment once the deployment date has passed", () => {
+    const f = fixture();
+    f.writeFixes([anchorOf({ recordedAt: "2031-03-02T10:00:00Z" })]); // recorded 03-02 10:00, claims a deployment on 03-03
+    threeHits(f);
+    const early = new EventClassHealthSource(STARTUP_FAILURE_DETECTOR, { dbPath: f.dbPath, knownFixesPath: f.fixesPath, now: () => new Date("2031-03-02T20:00:00Z") });
+    const later = f.d1(); // NOW is 2031-03-04, after the claimed deployment
+
+    expect(records(early)).toHaveLength(1);
+    expect(early.refusedAnchors()).toEqual([{ fingerprint: GETCWD_FP, ref: "OF-T", reason: "deployed-after-recorded" }]);
+    expect(records(later)).toHaveLength(1);
+    expect(later.refusedAnchors()).toEqual([{ fingerprint: GETCWD_FP, ref: "OF-T", reason: "deployed-after-recorded" }]);
+    expect(later.historicalFixed()).toEqual([]);
+  });
+
+  it("accepts the same anchor once it is recorded at or after its deployment (positive control)", () => {
+    const f = fixture();
+    f.writeFixes([anchorOf({ recordedAt: "2031-03-03T00:00:00Z" })]);
+    threeHits(f);
+    const source = f.d1();
+
+    expect(records(source)).toEqual([]);
+    expect(source.refusedAnchors()).toEqual([]);
+    expect(source.historicalFixed()).toEqual([{ fingerprint: GETCWD_FP, label: "historical-fixed:OF-T", count: 3 }]);
+  });
+
+  it("refuses an anchor recorded in the future", () => {
+    const f = fixture();
+    f.writeFixes([anchorOf({ deployedAt: "2031-03-01T00:00:00Z", recordedAt: "2031-03-05T00:00:00Z" })]);
+    threeHits(f);
+    const source = f.d1();
+
+    expect(records(source)).toHaveLength(1);
+    expect(source.refusedAnchors()).toEqual([{ fingerprint: GETCWD_FP, ref: "OF-T", reason: "recorded-in-the-future" }]);
+  });
+
+  it("refuses an anchor that carries no recordedAt, rather than trusting its deployedAt", () => {
+    const f = fixture();
+    const { recordedAt: _unused, ...bare } = anchorOf({ deployedAt: "2031-03-03T00:00:00Z" });
+    f.writeFixes([bare]);
+    threeHits(f);
+    const source = f.d1();
+
+    expect(records(source)).toHaveLength(1);
+    expect(source.refusedAnchors()).toEqual([{ fingerprint: GETCWD_FP, ref: "OF-T", reason: "missing-recordedAt" }]);
+  });
+
+  it.each([["deployedAt"], ["recordedAt"]])("refuses an anchor whose %s has no timezone, whatever the host timezone", (field) => {
+    const f = fixture();
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      f.writeFixes([anchorOf({ deployedAt: "2031-03-02T00:00:00Z", recordedAt: "2031-03-03T12:00:00Z", [field]: field === "deployedAt" ? "2031-03-02T00:00:00" : "2031-03-03T12:00:00" })]);
+      for (const at of ["2031-03-02 01:00:00", "2031-03-02 02:00:00", "2031-03-02 03:00:00"]) f.startupFailed(GETCWD, at);
+      const source = f.d1();
+
+      expect(records(source)).toHaveLength(1);
+      expect(source.refusedAnchors()).toEqual([{ fingerprint: GETCWD_FP, ref: "OF-T", reason: "no-timezone" }]);
+      expect(source.historicalFixed()).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
+    }
+  });
+
+  it("accepts a numeric UTC offset (positive control for the timezone rule)", () => {
+    const f = fixture();
+    f.writeFixes([anchorOf({ deployedAt: "2031-03-03T02:00:00+02:00", recordedAt: "2031-03-03T12:00:00+00:00" })]);
+    threeHits(f);
+    const source = f.d1();
+
+    expect(source.read()).toEqual([]);
+    expect(source.refusedAnchors()).toEqual([]);
+  });
+
+  it("refuses an anchor on class:other, which would hide and relabel unrelated failures", () => {
+    const f = fixture();
+    const OTHER_FP = `${RSI_STARTUP_FAILURE_CLASS}/class:other`;
+    f.writeFixes([anchorOf({ fingerprint: OTHER_FP, deployedAt: "2031-03-02T00:00:00Z" })]);
+    for (const [i, at] of ["2031-03-01 00:00:00", "2031-03-01 01:00:00", "2031-03-01 02:00:00"].entries()) f.startupFailed(`novel failure mode A${i}`, at);
+    for (const [i, at] of ["2031-03-03 00:00:00", "2031-03-03 01:00:00", "2031-03-03 02:00:00"].entries()) f.startupFailed(`a different novel failure B${i}`, at);
+    const source = f.d1();
+
+    expect(records(source).map((r) => span(r).class)).toEqual(["other"]);
+    expect(source.refusedAnchors()).toEqual([{ fingerprint: OTHER_FP, ref: "OF-T", reason: "subject-other" }]);
+    expect(source.historicalFixed()).toEqual([]);
+  });
+
+  it("lets the latest accepted anchor of a fingerprint govern, not the earliest and not file order", () => {
+    const f = fixture();
+    f.writeFixes([
+      anchorOf({ ref: "OF-new", fixSha: "new0002", deployedAt: "2031-03-03T00:00:00Z" }), // later deployment listed first
+      anchorOf({ ref: "OF-old", fixSha: "old0001", deployedAt: "2031-03-01T00:00:00Z" }),
+    ]);
+    threeHits(f, "2031-03-02"); // after the old fix, before the new one
+    const between = f.d1();
+
+    expect(records(between)).toEqual([]);
+    expect(between.historicalFixed()).toEqual([{ fingerprint: GETCWD_FP, label: "historical-fixed:OF-new", count: 3 }]);
+
+    threeHits(f, "2031-03-03"); // at or after the new fix
+    const [record] = records(f.d1());
+
+    expect(span(record!)).toMatchObject({ class: "regression-after:new0002", count: 3 });
+  });
+});
+
+describe("the class split of a shell return", () => {
+  const CODEX_RESUME_SHELL = "Harness launch failed: Codex resume failed: pane returned to shell instead of entering Codex";
+  const READINESS_SHELL = "Readiness timeout after 30s — harness did not become interactive: The probe pane returned to a shell instead of staying inside the runtime.";
+
+  it("separates a Codex resume that returned to a shell from a readiness probe that did, using the live messages", () => {
+    expect(classifyStartupFailure(CODEX_RESUME_SHELL)).toBe("codex-resume-returned-to-shell");
+    expect(classifyStartupFailure(READINESS_SHELL)).toBe("pane-returned-to-shell");
+    expect(classifyStartupFailure(CODEX_RESUME)).toBe("codex-resume-not-interactive");
+  });
+
+  it("does not let an anchor on the readiness class hide Codex resume failures", () => {
+    const f = fixture();
+    f.writeFixes([{ fingerprint: `${RSI_STARTUP_FAILURE_CLASS}/class:pane-returned-to-shell`, ref: "OF-P", fixSha: "aaa1111", deployedAt: "2031-03-02T00:00:00Z", recordedAt: "2031-03-03T00:00:00Z" }]);
+    for (const at of ["2031-03-01 00:00:00", "2031-03-01 01:00:00", "2031-03-01 02:00:00"]) f.startupFailed(CODEX_RESUME_SHELL, at);
+    const source = f.d1();
+
+    const found = records(source);
+
+    expect(found.map((r) => span(r).class)).toEqual(["codex-resume-returned-to-shell"]);
+    expect(source.historicalFixed()).toEqual([]);
+  });
+});
+
+describe("a capped read keeps the newest rows", () => {
+  it("D1: when the row cap is below the window, a class that exists only in the newest rows is still found", () => {
+    const f = fixture();
+    for (const h of ["00", "01", "02", "03"]) f.startupFailed(GETCWD, `2031-03-01 ${h}:00:00`); // old
+    for (const h of ["00", "01", "02"]) f.startupFailed(CODEX_RESUME, `2031-03-03 ${h}:00:00`); // newest
+    const source = f.d1({ rowLimit: 3 });
+
+    expect(records(source).map((r) => span(r).class)).toEqual(["codex-resume-not-interactive"]);
+    expect(source.coverage()[0]).toMatchObject({ total: 7, evaluated: 3, omitted: 4, partial: true, order: "seq, newest first" });
+  });
+
+  it("D3: when the cap is below the job count, the newest jobs are the ones judged", () => {
+    const f = fixture();
+    f.rig("live", "live");
+    f.job("parked-owner-consumer", "parked-owner-consumer@live"); // oldest
+    f.rig("g1", "gone1", "2031-01-01 00:00:00");
+    f.job("parked-owner-consumer", "parked-owner-consumer@gone1");
+    f.rig("g2", "gone2", "2031-01-01 00:00:00");
+    f.job("parked-owner-consumer", "parked-owner-consumer@gone2"); // newest
+    const source = f.d3({ rowLimit: 2 });
+
+    const [record] = records(source);
+
+    expect(span(record!)).toMatchObject({ count: 2, controlTotal: 0, population: 3 });
+    expect(source.coverage()[0]).toMatchObject({ total: 3, evaluated: 2, partial: true });
+  });
+});
+
+describe("the anchor file is read without blocking", () => {
+  it("treats a FIFO at the anchor path as unavailable even when it holds readable bytes", () => {
+    const f = fixture();
+    execFileSync("mkfifo", [f.fixesPath]);
+    // A held read-write end keeps a read from blocking, so a missing file-type check shows up as a
+    // successful parse of the planted "[]" instead of a hang.
+    const keeper = openSync(f.fixesPath, constants.O_RDWR);
+    try {
+      writeSync(keeper, "[]");
+      const source = f.d1();
+
+      expect(source.read()).toEqual([]);
+      expect(source.coverage()[0]).toMatchObject({ status: "unavailable", reason: expect.stringContaining("not a regular file") });
+    } finally {
+      closeSync(keeper);
+    }
+  });
+});
+
+describe("anchor effects reach the coverage row that `rig health --instance --json` serves", () => {
+  const GETCWD_FP = `${RSI_STARTUP_FAILURE_CLASS}/class:codex-profile-getcwd`;
+  const served = (source: Parameters<typeof records>[0]) => new HealthProjectionService([source] as never).list().coverage ?? [];
+
+  it("names historical-fixed counts and refused anchors on the D1 coverage row, with no finding present", () => {
+    const f = fixture();
+    f.writeFixes([
+      { fingerprint: GETCWD_FP, ref: "OF-31", fixSha: "845b6303", deployedAt: "2031-03-02T00:00:00Z", recordedAt: "2031-03-03T00:00:00Z" },
+      { fingerprint: `${RSI_STARTUP_FAILURE_CLASS}/class:other`, ref: "OF-X", fixSha: "fff0000", deployedAt: "2031-03-02T00:00:00Z", recordedAt: "2031-03-03T00:00:00Z" },
+    ]);
+    for (const h of ["00", "01", "02"]) f.startupFailed(GETCWD, `2031-03-01 ${h}:00:00`);
+
+    const [row] = served(f.d1());
+
+    expect(row).toMatchObject({ source: "rsi-startup-failure-class", partial: false });
+    expect((row as { note?: string }).note).toBe(`historical-fixed:OF-31 x3 [${GETCWD_FP}]; refused anchor OF-X [${RSI_STARTUP_FAILURE_CLASS}/class:other]: subject-other`);
+  });
+
+  it("carries no note when no anchor had an effect", () => {
+    const f = fixture();
+    for (const h of ["00", "01", "02"]) f.startupFailed(GETCWD, `2031-03-01 ${h}:00:00`);
+
+    const [row] = served(f.d1());
+
+    expect((row as { note?: string }).note).toBeUndefined();
+  });
+
+  it("states D3's controls on its coverage row, and the anchor effect beside them", () => {
+    const f = fixture();
+    const FP = `${RSI_ORPHANED_PARKED_OWNER_JOB}/parked-owner-jobs-without-live-rig`;
+    f.writeFixes([{ fingerprint: FP, ref: "OF-D3", fixSha: "abc1234", deployedAt: "2031-03-01T00:00:00Z", recordedAt: "2031-03-02T00:00:00Z" }]);
+    f.rig("live", "live");
+    f.job("parked-owner-consumer", "parked-owner-consumer@live");
+    f.rig("old", "old", "2031-02-15 00:00:00");
+    f.job("parked-owner-consumer", "parked-owner-consumer@old", "active", "2031-02-01 00:00:00");
+
+    const [row] = served(f.d3());
+
+    expect((row as { note?: string }).note).toBe(`controls: 2 active parked-owner jobs, 1 on a live rig, 2 distinct rig names; historical-fixed:OF-D3 x1 [${FP}]`);
   });
 });

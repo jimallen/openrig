@@ -11,6 +11,10 @@ type Rule = readonly [cls: string, needles: readonly string[]];
 
 const STARTUP_FAILURE_RULES: readonly Rule[] = [
   ["codex-hook-trust", ["hook trust"]],
+  // A Codex resume that dropped to a shell is a different code path from a readiness-probe
+  // timeout whose pane did: it must precede `pane-returned-to-shell`, or an anchor on the
+  // readiness fix would hide Codex resume failures.
+  ["codex-resume-returned-to-shell", ["codex resume failed"]],
   ["pane-returned-to-shell", ["returned to a shell", "returned to shell"]],
   ["claude-resume-timeout", ["claude resume failed"]],
   ["no-input-target", ["managed input target"]],

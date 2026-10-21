@@ -5,7 +5,7 @@ import { parseSqliteUtcMs } from "../sqlite-time.js";
 import { RSI_ORPHANED_PARKED_OWNER_JOB } from "./detector-ids.js";
 import { rsiFingerprint } from "./fingerprint.js";
 import {
-  anchorFor, isHistoricalFixed, readKnownFixes, regressionClass,
+  anchorFor, describeAnchorEffects, isHistoricalFixed, readKnownFixes, regressionClass,
   type HistoricalFixedHits, type RefusedAnchor,
 } from "./known-fixes.js";
 import { RsiReadBudget, type RsiReadBudgetOptions } from "./read-budget.js";
@@ -81,36 +81,52 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
     let evaluated = 0;
     let distinctRigNames = 0;
     const liveNames = new Set<string>();
-    const orphans: Array<{ seq: number; ms: number }> = [];
+    /** `instantMs` is when the job BECAME an orphan: its rig was archived (a job keeps its original
+     * `registered_at`, because registration is idempotent), or the job was registered after that.
+     * Null when the name has no rig row at all: the instant is unknown, so the hit is never historical. */
+    const orphans: Array<{ seq: number; instantMs: number | null; seenMs: number }> = [];
+    const latestArchivedMs = new Map<string, number>();
     let liveRigJobs = 0;
     db.transaction(() => {
-      for (const row of db.prepare("SELECT name FROM rigs WHERE archived_at IS NULL").all() as Array<{ name: string }>) liveNames.add(row.name);
+      for (const row of db.prepare("SELECT name, archived_at FROM rigs").all() as Array<{ name: string; archived_at: string | null }>) {
+        if (row.archived_at === null) liveNames.add(row.name);
+        else latestArchivedMs.set(row.name, Math.max(latestArchivedMs.get(row.name) ?? Number.NEGATIVE_INFINITY, parseSqliteUtcMs(row.archived_at)));
+      }
       distinctRigNames = (db.prepare("SELECT count(DISTINCT name) AS n FROM rigs").get() as { n: number }).n;
       total = (db.prepare("SELECT count(*) AS n FROM watchdog_jobs WHERE state = 'active' AND policy = ?").get(PARKED_OWNER_POLICY_NAME) as { n: number }).n;
       this.budget.start();
-      for (const row of db.prepare("SELECT rowid AS seq, target_session, registered_at FROM watchdog_jobs WHERE state = 'active' AND policy = ? ORDER BY rowid LIMIT ?")
+      for (const row of db.prepare("SELECT rowid AS seq, target_session, registered_at FROM watchdog_jobs WHERE state = 'active' AND policy = ? ORDER BY rowid DESC LIMIT ?")
         .iterate(PARKED_OWNER_POLICY_NAME, limit) as IterableIterator<JobRow>) {
         if (this.budget.exceeded()) break;
-        if (liveNames.has(rigFromAnchor(row.target_session))) liveRigJobs++;
-        else orphans.push({ seq: row.seq, ms: parseSqliteUtcMs(row.registered_at) });
+        const rigName = rigFromAnchor(row.target_session);
+        if (liveNames.has(rigName)) liveRigJobs++;
+        else {
+          const registeredMs = parseSqliteUtcMs(row.registered_at);
+          const archivedMs = latestArchivedMs.get(rigName);
+          const instantMs = archivedMs === undefined ? null : Math.max(registeredMs, archivedMs);
+          orphans.push({ seq: row.seq, instantMs, seenMs: instantMs ?? registeredMs });
+        }
         evaluated++;
       }
     })();
-    this.lastCoverage = [{
-      source: this.name, evaluatedAt, unit: "watchdog jobs", limit, total, evaluated,
-      omitted: Math.max(0, total - evaluated), partial: evaluated < total, order: "job rowid",
-    }];
     this.lastControls = { activeParkedOwnerJobs: total, liveRigJobs, distinctRigNames };
 
     const fingerprint = rsiFingerprint(RSI_ORPHANED_PARKED_OWNER_JOB, SUBJECT_KEY);
     const verdict = anchorFor(fixes, fingerprint);
-    const historical = orphans.filter((job) => isHistoricalFixed(verdict, job.ms));
-    const active = orphans.filter((job) => !isHistoricalFixed(verdict, job.ms));
+    const historical = orphans.filter((job) => isHistoricalFixed(verdict, job.instantMs));
+    const active = orphans.filter((job) => !isHistoricalFixed(verdict, job.instantMs));
     if (historical.length > 0 && verdict.anchor) {
       this.lastHistorical = [{ fingerprint, label: `historical-fixed:${verdict.anchor.ref}`, count: historical.length }];
     }
+    const anchorNote = describeAnchorEffects(this.lastHistorical, this.lastRefused);
+    this.lastCoverage = [{
+      source: this.name, evaluatedAt, unit: "watchdog jobs", limit, total, evaluated,
+      omitted: Math.max(0, total - evaluated), partial: evaluated < total, order: "job rowid, newest first",
+      note: [`controls: ${total} active parked-owner jobs, ${liveRigJobs} on a live rig, ${distinctRigNames} distinct rig names`, anchorNote]
+        .filter((part): part is string => part !== undefined).join("; "),
+    }];
     if (active.length === 0) return [];
-    const times = active.map((job) => job.ms);
+    const times = active.map((job) => job.seenMs);
     const identity = total === distinctRigNames;
     return [buildTelemetryFinding({
       detectorId: RSI_ORPHANED_PARKED_OWNER_JOB, subjectKey: SUBJECT_KEY, scope: RSI_LOCAL_INSTANCE_SCOPE,
@@ -123,7 +139,8 @@ export class OrphanedParkedOwnerJobSource implements HealthObservationSource {
       threshold: `an active ${PARKED_OWNER_POLICY_NAME} job whose rig (rigFromAnchor of its target) has no un-archived rig row`,
       explanation: `${active.length} of ${total} active ${PARKED_OWNER_POLICY_NAME} jobs are orphaned; control: ${liveRigJobs} target a live rig. `
         + `Active parked-owner jobs ${total} ${identity ? "equal" : "differ from"} the ${distinctRigNames} distinct rig names across all rig rows`
-        + `${identity ? ": every name that ever existed has an active job, which is what a boot loop that re-arms archived rigs produces" : ""}.`,
+        + `${identity ? ": every name that ever existed has an active job, which is what a boot loop that re-arms archived rigs produces" : ""}.`
+        + `${anchorNote !== undefined ? ` Anchors: ${anchorNote}.` : ""}`,
       suggestedInspection: "List the active parked-owner-consumer watchdog jobs, resolve each target's rig, and check which rigs are archived.",
     })];
   }

@@ -115,6 +115,9 @@ export type HealthSourceCoverage = {
   omitted: number;
   partial: boolean;
   order: string;
+  /** What the source wants a reader of the coverage row to know beyond the counts (RSI: the
+   * known-fix anchors' effect and the detector's controls). Served verbatim. */
+  note?: string;
 };
 
 export interface HealthObservationSource {
