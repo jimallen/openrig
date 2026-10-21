@@ -519,19 +519,40 @@ describe("SeatLifecycleService", () => {
     expect(eventsOfType(db, "session.cleaned")).toHaveLength(0);
     expect(tmux.killed).toEqual([]);
 
-    // The old advice cannot clear this blocker: stop selects the newer row.
-    const stopped = await service.stopSeat({ seatRef: newerName, reason: "demonstrate stop target" });
-    expect(stopped.ok).toBe(latestAlive);
-    if (!stopped.ok) expect(stopped.code).toBe("session_not_live");
-    expect(tmux.killed).toEqual(latestAlive ? [newerName] : []);
+    // OF-54: stop now ends the older live row too, so the advice clean gives is true.
+    expect(result.guidance).toBe("Stop a live seat first with: rig seat stop");
+    const stopped = await service.stopSeat({ seatRef: newerName, reason: "end the older live row too" });
+    expect(stopped).toMatchObject({ ok: true, latestSessionStopped: latestAlive });
+    if (!stopped.ok) throw new Error(stopped.message);
+    expect(stopped.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: true }]);
+    expect(tmux.killed).toEqual(latestAlive ? [newerName, older.sessionName] : [older.sessionName]);
+    expect(await tmux.adapter.hasSession(older.sessionName)).toBe(false);
+    expect(db.prepare("SELECT status, intentionally_stopped FROM sessions WHERE id = ?").get(older.session.id))
+      .toEqual({ status: "exited", intentionally_stopped: 1 });
     const retry = await service.cleanSeat({ seatRef: newerName, reason: "retry after stop" });
-    expect(retry).toMatchObject({ ok: false, code: "session_live" });
-    expect(await tmux.adapter.hasSession(older.sessionName)).toBe(true);
+    // clean no longer refuses session_live: a live-latest seat is now fully stopped (nothing left to clean),
+    // a dead-latest seat has only its dead row to clean.
+    if (latestAlive) expect(retry).toMatchObject({ ok: false, code: "nothing_to_clean" });
+    else expect(retry.ok).toBe(true);
+  });
 
+  it("clean keeps the end-it-yourself advice for an older live name another node owns (stop would leave it alone)", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
+    let older: ReturnType<typeof seatFixture>;
+    try { older = seatFixture("s5-rig", "dev.impl"); } finally { clock.mockRestore(); }
+    const newerName = "dev-impl-v2@s5-rig";
+    const newer = sessionRegistry.registerSession(older.node.id, newerName);
+    sessionRegistry.updateStatus(newer.id, "running");
+    tmux.setAlive(newerName, false);
+    const otherNode = rigRepo.addNode(rigRepo.createRig("s5-other").id, "dev.other", { runtime: "claude-code", cwd: "/project" });
+    const otherSession = sessionRegistry.registerSession(otherNode.id, older.sessionName);
+    sessionRegistry.updateStatus(otherSession.id, "running");
+
+    const result = await service.cleanSeat({ seatRef: newerName, reason: "inspect stale history" });
+    expect(result).toMatchObject({ ok: false, code: "session_live" });
+    if (result.ok) throw new Error("expected live-session refusal");
     expect(result.guidance).toContain(`rig capture -- '${older.sessionName}'`);
     expect(result.guidance).toContain("end it yourself if it is no longer needed");
-    expect(result.guidance).toContain("retry");
-    expect(result.guidance).toContain("rig seat stop targets the seat's latest session");
     expect(result.guidance).not.toContain("Stop a live seat first");
   });
 
@@ -664,6 +685,163 @@ describe("SeatLifecycleService", () => {
       expect(res.message ?? "").not.toContain("rig seat clean");
       // Session untouched.
       expect((db.prepare("SELECT status FROM sessions WHERE id = ?").get(seat.session.id) as { status: string }).status).toBe("running");
+    });
+  });
+
+  // OF-54 — stop acted only on the seat's latest session row, so an older still-live row survived it and no rig
+  // command could end that row (restore kept refusing rig_not_stopped).
+  describe("stop ends the seat's older live rows (OF-54)", () => {
+    const NEWER = "dev-impl-v2@s5-rig";
+
+    /** An older live managed row (registered a second earlier, so it is not the latest) plus a newer row. */
+    function olderLiveSeat(newer: { status: "exited" | "running"; alive: boolean }) {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
+      let older: ReturnType<typeof seatFixture>;
+      try { older = seatFixture("s5-rig", "dev.impl"); } finally { clock.mockRestore(); }
+      const newerSession = sessionRegistry.registerSession(older.node.id, NEWER);
+      sessionRegistry.updateStatus(newerSession.id, newer.status);
+      tmux.setAlive(NEWER, newer.alive);
+      return { older, newerSession };
+    }
+    const row = (id: string) => db.prepare("SELECT status, intentionally_stopped FROM sessions WHERE id = ?").get(id);
+
+    it("Q3: newest row exited, older row live: stop ends the older row instead of refusing session_not_live", async () => {
+      const { older, newerSession } = olderLiveSeat({ status: "exited", alive: false });
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "end the older occupant", operator: "op@rig" });
+
+      expect(result).toMatchObject({ ok: true, latestSessionStopped: false });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: true }]);
+      expect(tmux.killed).toEqual([older.sessionName]);
+      expect(row(older.session.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(row(newerSession.id)).toMatchObject({ status: "exited" });
+      expect(eventsOfType(db, "session.stopped")).toEqual([
+        expect.objectContaining({ sessionName: older.sessionName, reason: "end the older occupant", operator: "op@rig" }),
+      ]);
+    });
+
+    it("T6: newest row running but dead, older row live: stop ends the older row, leaving the dead newest row to clean", async () => {
+      const { older, newerSession } = olderLiveSeat({ status: "running", alive: false });
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "end the older occupant" });
+
+      expect(result).toMatchObject({ ok: true, latestSessionStopped: false });
+      expect(tmux.killed).toEqual([older.sessionName]);
+      expect(row(older.session.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(row(newerSession.id)).toMatchObject({ status: "running" });
+    });
+
+    it("both live: stop ends the latest row and the older row, one session.stopped event each", async () => {
+      const { older, newerSession } = olderLiveSeat({ status: "running", alive: true });
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "stop everything" });
+
+      expect(result).toMatchObject({ ok: true, sessionName: NEWER, latestSessionStopped: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded.map((e) => e.sessionName)).toEqual([older.sessionName]);
+      expect(tmux.killed).toEqual([NEWER, older.sessionName]);
+      expect(row(older.session.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(row(newerSession.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(eventsOfType(db, "session.stopped").map((e) => e["sessionName"])).toEqual([NEWER, older.sessionName]);
+    });
+
+    it("an older row whose tmux session is already gone is ended without a kill", async () => {
+      const { older } = olderLiveSeat({ status: "exited", alive: false });
+      tmux.setAlive(older.sessionName, false);
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "end stale older row" });
+
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: false }]);
+      expect(tmux.killed).toEqual([]);
+      expect(row(older.session.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+    });
+
+    it("never kills a tmux session another node owns: the older row is ended, the session left alone", async () => {
+      const { older } = olderLiveSeat({ status: "exited", alive: false });
+      const otherNode = rigRepo.addNode(rigRepo.createRig("s5-other").id, "dev.other", { runtime: "claude-code", cwd: "/project" });
+      const otherSession = sessionRegistry.registerSession(otherNode.id, older.sessionName);
+      sessionRegistry.updateStatus(otherSession.id, "running");
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "end the older occupant" });
+
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: false }]);
+      expect(tmux.killed).toEqual([]);
+      expect(await tmux.adapter.hasSession(older.sessionName)).toBe(true);
+      expect(row(older.session.id)).toMatchObject({ status: "exited" });
+      expect(row(otherSession.id)).toMatchObject({ status: "running" });
+    });
+
+    it("an older row sharing the latest row's tmux name is ended by the one kill of that name", async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
+      let older: ReturnType<typeof seatFixture>;
+      try { older = seatFixture("s5-rig", "dev.impl"); } finally { clock.mockRestore(); }
+      const newerSession = sessionRegistry.registerSession(older.node.id, older.sessionName);
+      sessionRegistry.updateStatus(newerSession.id, "running");
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "same name twice" });
+
+      expect(result).toMatchObject({ ok: true, latestSessionStopped: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: false }]);
+      expect(tmux.killed).toEqual([older.sessionName]);
+      expect(row(older.session.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      expect(row(newerSession.id)).toEqual({ status: "exited", intentionally_stopped: 1 });
+    });
+
+    it("an older adopted (claimed) row refuses the whole stop before anything is killed", async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
+      let older: ReturnType<typeof seatFixture>;
+      try { older = seatFixture("s5-rig", "dev.impl", { origin: "claimed" }); } finally { clock.mockRestore(); }
+      const newerSession = sessionRegistry.registerSession(older.node.id, NEWER);
+      sessionRegistry.updateStatus(newerSession.id, "running");
+      tmux.setAlive(NEWER, true);
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "x" });
+
+      expect(result).toMatchObject({ ok: false, code: "claimed_session" });
+      expect(tmux.killed).toEqual([]);
+      expect(row(older.session.id)).toMatchObject({ status: "running" });
+      expect(row(newerSession.id)).toMatchObject({ status: "running" });
+    });
+
+    it("an indeterminate probe of an older row refuses before the latest row is killed", async () => {
+      const { older, newerSession } = olderLiveSeat({ status: "running", alive: true });
+      tmux.failProbeFor(older.sessionName);
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "x" });
+
+      expect(result).toMatchObject({ ok: false, code: "tmux_probe_failed" });
+      expect(tmux.killed).toEqual([]);
+      expect(row(newerSession.id)).toMatchObject({ status: "running" });
+      expect(row(older.session.id)).toMatchObject({ status: "running" });
+    });
+
+    it("a failed kill of an older session leaves that row running and says so", async () => {
+      const { older } = olderLiveSeat({ status: "exited", alive: false });
+      (tmux.adapter as unknown as { killSession: unknown }).killSession = async () => ({ ok: false as const, code: "kill_failed", message: "boom" });
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "x" });
+
+      expect(result).toMatchObject({ ok: false, code: "tmux_probe_failed" });
+      if (result.ok) throw new Error("expected refusal");
+      expect(result.message).toContain(older.sessionName);
+      expect(result.message).toContain("boom");
+      expect(row(older.session.id)).toMatchObject({ status: "running" });
+    });
+
+    it("a seat with no older live row and a dead latest row still refuses session_not_live", async () => {
+      const seat = seatFixture("s5-rig", "dev.impl");
+      tmux.setAlive(seat.sessionName, false);
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "x" });
+
+      expect(result).toMatchObject({ ok: false, code: "session_not_live" });
+      expect(row(seat.session.id)).toMatchObject({ status: "running" });
     });
   });
 });
