@@ -14,8 +14,9 @@ import { migrate } from "../src/db/migrate.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { resolvePermissionPolicyAttachment } from "../src/domain/permission-policy/policy-ref.js";
 import { claudePostureFlag, codexPostureArg, piTrust } from "../src/adapters/yolo-mode.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
-const RIG_ROOT = "/project/rigs/policy-rig";
+const RIG_ROOT = existingRigRoot("policy-rig");
 const CUSTOM_POLICY = `---
 policy_schema_version: 1
 name: operator-full

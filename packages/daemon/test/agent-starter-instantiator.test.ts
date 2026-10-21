@@ -32,6 +32,7 @@ import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -64,7 +65,7 @@ function mockFs(files: Record<string, string>): AgentResolverFsOps {
   };
 }
 
-const RIG_ROOT = "/project/rigs/test-rig";
+const RIG_ROOT = existingRigRoot("test-rig");
 
 function agentYaml(name: string): string {
   return `name: ${name}\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;

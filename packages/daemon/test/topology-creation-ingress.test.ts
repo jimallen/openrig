@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 describe("single topology-creation ingress (OPR.0.5.8.9)", () => {
   let db: Database.Database;
@@ -62,6 +63,7 @@ describe("single topology-creation ingress (OPR.0.5.8.9)", () => {
   });
 
   it("keeps a member cwd override identical in durable state and the runtime launch binding", async () => {
+    const OVERRIDE_CWD = existingRigRoot("cwd-override"); // must exist on every platform (OF-63); /private/tmp is macOS only
     const rig = setup.rigRepo.createRig("cwd-override");
     const expanded = await setup.rigExpansionService.expand({
       rigId: rig.id,
@@ -86,14 +88,14 @@ describe("single topology-creation ingress (OPR.0.5.8.9)", () => {
       "dev",
       { ...terminalMember("worker"), cwd: "." },
       "/",
-      { cwdOverride: "/private/tmp" },
+      { cwdOverride: OVERRIDE_CWD },
     );
 
     expect(added.ok).toBe(true);
     expect(setup.rigRepo.getRig(rig.id)?.nodes.find((node) => node.logicalId === "dev.worker")?.cwd)
-      .toBe("/private/tmp");
+      .toBe(OVERRIDE_CWD);
     expect(startNode).toHaveBeenCalledTimes(1);
-    expect(startNode.mock.calls[0]?.[0].binding.cwd).toBe("/private/tmp");
+    expect(startNode.mock.calls[0]?.[0].binding.cwd).toBe(OVERRIDE_CWD);
   });
 
   it("keeps one construction call site for each topology-creation effect", () => {

@@ -10,6 +10,7 @@ import {
   createTestApp,
 } from "./helpers/test-app.js";
 import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const INVALID_BUT_READABLE_CONFIG = `---
 source: custom
@@ -103,7 +104,7 @@ describe("review50-r2 independent Seam-B adversarial branches", () => {
       });
       const materialized = await setup.podInstantiator.materializeStructured(
         minimalSpec("builtin:yolo"),
-        "/rig",
+        existingRigRoot("rig"),
       );
       expect(materialized.ok).toBe(true);
       const rigId = (materialized as { ok: true; result: { rigId: string } }).result.rigId;
@@ -117,7 +118,7 @@ describe("review50-r2 independent Seam-B adversarial branches", () => {
           profile: "default",
           cwd: ".",
         },
-        "/different-operation-root",
+        existingRigRoot("different-operation-root"),
       );
       expect(added.ok).toBe(true);
       expect(bindings).toHaveLength(1);
@@ -156,13 +157,13 @@ describe("review50-r2 independent Seam-B adversarial branches", () => {
       });
       const materialized = await setup.podInstantiator.materializeStructured(
         minimalSpec("builtin:yolo"),
-        "/rig",
+        existingRigRoot("rig"),
       );
       expect(materialized.ok).toBe(true);
       const rigId = (materialized as { ok: true; result: { rigId: string } }).result.rigId;
       const expanded = await setup.rigExpansionService.expand({
         rigId,
-        rigRoot: "/different-operation-root",
+        rigRoot: existingRigRoot("different-operation-root"),
         pod: {
           id: "later",
           label: "Later",

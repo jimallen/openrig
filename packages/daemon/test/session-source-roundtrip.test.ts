@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
-const RIG_ROOT = "/project/rigs/session-source-roundtrip";
+const RIG_ROOT = existingRigRoot("session-source-roundtrip");
 
 function agentYaml(): string {
   return `name: impl

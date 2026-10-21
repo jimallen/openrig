@@ -8,10 +8,11 @@ import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { createFullTestDb, createTestApp as createBaseTestApp } from "./helpers/test-app.js";
 import { SystemPreflight } from "../../cli/src/system-preflight.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
-const RIG_ROOT = "/project/rigs/policy-discovery";
-const ORIGINAL_RIG_ROOT = "/original/rig";
-const OTHER_OPERATION_ROOT = "/different/operation-root";
+const RIG_ROOT = existingRigRoot("policy-discovery");
+const ORIGINAL_RIG_ROOT = existingRigRoot("original-rig");
+const OTHER_OPERATION_ROOT = existingRigRoot("different-operation-root");
 const CUSTOM_POLICY_REF = "policies/operator-full.md";
 const AGENT_YAML = `name: impl
 version: "1.0.0"
@@ -308,7 +309,7 @@ describe("Seam C permission-policy discovery", () => {
 
       const materialized = await setup.podInstantiator.materializeStructured(
         specObject,
-        "/different/operation-root",
+        OTHER_OPERATION_ROOT,
         { targetRigId: rig.id },
       );
       expect(materialized.ok).toBe(true);
@@ -320,7 +321,7 @@ describe("Seam C permission-policy discovery", () => {
 
       const launched = await setup.podInstantiator.launchValidatedSpec(
         PodRigSpecSchema.normalize(specObject),
-        "/different/operation-root",
+        OTHER_OPERATION_ROOT,
         rig.id,
       );
       expect(launched.ok).toBe(true);

@@ -90,7 +90,9 @@ describe("Demo fixture validation", () => {
       readFile: (p: string) => fs.readFileSync(p, "utf-8"),
       exists: (p: string) => fs.existsSync(p),
     };
-    const result = await rigPreflight({ rigSpecYaml: yaml, rigRoot: DEMO_ROOT, fsOps });
+    // OF-63: demo/rig.yaml's infra.ui seat declares cwd "packages/ui", which does not exist under demo/, so preflight now refuses it.
+    // This test is about agent_ref resolution, so it launches every seat into the demo folder; the cwd itself is tracked separately.
+    const result = await rigPreflight({ rigSpecYaml: yaml, rigRoot: DEMO_ROOT, cwdOverride: DEMO_ROOT, fsOps });
     const agentErrors = result.errors.filter((e: string) => e.includes("agent_ref resolution failed"));
     expect(agentErrors).toHaveLength(0);
     // Full preflight should pass (may have runtime warnings in test env, but ready should be true

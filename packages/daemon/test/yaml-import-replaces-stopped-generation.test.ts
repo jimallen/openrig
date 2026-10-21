@@ -17,8 +17,9 @@ import { resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
-const RIG_ROOT = resolve("/project/rigs/my-rig");
+const RIG_ROOT = existingRigRoot("my-rig");
 const AGENT_FILE = resolve(RIG_ROOT, "agents/impl/agent.yaml");
 const SEAT = "dev-impl@test-rig";
 type Probe = (name: string) => Promise<{ state: string; cause?: string }>;

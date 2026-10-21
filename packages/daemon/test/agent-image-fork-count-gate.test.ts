@@ -23,6 +23,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 import { AgentImageLibraryService } from "../src/domain/agent-images/agent-image-library-service.js";
 import type { AgentImageEntry } from "../src/domain/agent-images/agent-image-types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -71,7 +72,7 @@ function mockFs(files: Record<string, string>): AgentResolverFsOps {
   };
 }
 
-const RIG_ROOT = "/project/rigs/my-rig";
+const RIG_ROOT = existingRigRoot("my-rig");
 
 function agentYaml(name: string): string {
   return `name: ${name}\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;

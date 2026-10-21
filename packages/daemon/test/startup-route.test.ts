@@ -4,13 +4,14 @@ import { startupRevision } from "../src/routes/startup.js";
 import { defaultProbeRuntimes } from "../src/domain/kernel-boot.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { existsSync, readFileSync } from "node:fs";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 vi.mock("../src/domain/kernel-boot.js", async (original) => ({ ...await original<typeof import("../src/domain/kernel-boot.js")>(), defaultProbeRuntimes: vi.fn(async () => ({ codex: "ok", claudeCode: "ok" })) }));
 
 describe("startup consent and effect boundary", () => {
   let db: ReturnType<typeof createFullTestDb>;
   let setup: ReturnType<typeof createTestApp>;
   beforeEach(() => { db = createFullTestDb(); setup = createTestApp(db); vi.mocked(defaultProbeRuntimes).mockResolvedValue({ codex: "ok", claudeCode: "ok" }); });
-  afterEach(() => { vi.restoreAllMocks(); db.close(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); db.close(); });
   function seat() {
     const rig = setup.rigRepo.createRig("selected");
     const node = setup.rigRepo.addNode(rig.id, "operator.agent", { runtime: "codex", model: "configured-model" });
@@ -23,6 +24,7 @@ describe("startup consent and effect boundary", () => {
     return setup.app.request(`/api/startup/${rigId}/operator.agent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, revision }) });
   }
   it("prepares the installed kernel definition once without launching any occupant", async () => {
+    vi.stubEnv("OPENRIG_WORKSPACE_ROOT", existingRigRoot("kernel-workspace")); // the kernel launches into workspace.root, which must exist (OF-63)
     setup = createTestApp(db, { podInstantiatorFsOps: { exists: existsSync, readFile: (path) => readFileSync(path, "utf8") } });
     const request = () => setup.app.request("/api/startup/kernel", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ runtime: "codex" }) });

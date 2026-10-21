@@ -11,6 +11,7 @@ import { applyProjectRig } from "../src/domain/project-rig.js";
 import { parse as parseYaml } from "yaml";
 import type { RuntimeAdapter, NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 // Claude Code Remote Control as a member field: `remote_control: true`.
 //
@@ -22,7 +23,7 @@ import type { RigSpec } from "../src/domain/types.js";
 // Same shape as rigspec-role-plumb.test.ts: the field must survive EVERY node-creation path and land
 // on the launch binding, so a per-path field map cannot silently drop it.
 
-const RIG_ROOT = "/project/rigs/rc-rig";
+const RIG_ROOT = existingRigRoot("rc-rig");
 
 const agentYaml = (name: string) => `name: ${name}\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;
 

@@ -16,6 +16,7 @@
 import { describe, expect, it } from "vitest";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 // An agent.yaml that DECLARES + SELECTS the claude_activity_hooks runtime resource — so a claude-code
 // member triggers the managed-activity-hook delivery check (which warns when the assets are absent).
@@ -62,7 +63,7 @@ describe("§6 reconciliation — warning emission order (activity-hook-first, po
   it("a preflight emitting BOTH an activity-hook delivery warning AND a policy discovery warning orders activity-hook FIRST, policy APPENDED", async () => {
     const result = await rigPreflight({
       rigSpecYaml: RIG_YAML,
-      rigRoot: "/probe/root",
+      rigRoot: existingRigRoot("probe-root"),
       fsOps: fsOps(),
       // Missing assets → the managed-activity-hook delivery warning fires (nonfatal, READY path).
       claudeActivityAssets: { relayPath: "/missing/relay.cjs", manifestPath: "/missing/claude.json" },

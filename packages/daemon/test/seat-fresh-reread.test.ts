@@ -282,6 +282,8 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       fs.linkSync(other, path.join(releaseB, "CULTURE.md"));
     }, "startup_source_unavailable", "preflight"],
     ["a required startup file is missing", () => fs.rmSync(path.join(releaseB, "agents", "impl", "guidance", "role.md")), "startup_source_unavailable", "required startup file guidance/role.md"],
+    // OF-63: the seat's recorded working folder is part of the first-launch preflight too (tmux would start the seat in $HOME).
+    ["the seat's working folder was deleted", () => fs.rmSync(workdir, { recursive: true }), "startup_source_unavailable", "work' does not exist; a seat launched there would silently start in $HOME"],
   ] as const)("refuses with the reason, before stopping anything, when %s", async (_label, damage, code, reason) => {
     const seat = await launchRig();
     retarget("bbbbbbb");

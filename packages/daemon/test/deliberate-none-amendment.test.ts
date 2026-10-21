@@ -14,6 +14,7 @@ import {
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const AGENT_YAML = `name: impl
 version: "1.0.0"
@@ -82,7 +83,7 @@ describe("P1 HONESTY CRUX — an ABSENT spec is NEVER rewritten, upgraded, or re
   it("preflight discovery on an ABSENT-policy spec reports absence verbatim — no deliberate_none anywhere", async () => {
     const result = await rigPreflight({
       rigSpecYaml: rigYaml(""),
-      rigRoot: "/probe/root",
+      rigRoot: existingRigRoot("probe-root"),
       fsOps: fsOps(),
     });
     expect(result.ready).toBe(true);
@@ -96,7 +97,7 @@ describe("P1 HONESTY CRUX — an ABSENT spec is NEVER rewritten, upgraded, or re
     const db = createFullTestDb();
     try {
       const setup = createTestApp(db, { podInstantiatorFsOps: fsOps() });
-      const outcome = await setup.podInstantiator.materialize(rigYaml(""), "/probe/root");
+      const outcome = await setup.podInstantiator.materialize(rigYaml(""), existingRigRoot("probe-root"));
       expect(outcome.ok).toBe(true);
       if (!outcome.ok) return;
       const row = db.prepare(
@@ -114,8 +115,8 @@ describe("P1 HONESTY CRUX — an ABSENT spec is NEVER rewritten, upgraded, or re
 
 describe("P2 POSTURE-IDENTITY — absent and none differ ONLY in the record", () => {
   it("discovery: both report launch_posture=floor; only the record wording differs; materialize succeeds identically (201-class outcome both)", async () => {
-    const absent = await rigPreflight({ rigSpecYaml: rigYaml(""), rigRoot: "/probe/root", fsOps: fsOps() });
-    const none = await rigPreflight({ rigSpecYaml: rigYaml("permission_policy: none\n"), rigRoot: "/probe/root", fsOps: fsOps() });
+    const absent = await rigPreflight({ rigSpecYaml: rigYaml(""), rigRoot: existingRigRoot("probe-root"), fsOps: fsOps() });
+    const none = await rigPreflight({ rigSpecYaml: rigYaml("permission_policy: none\n"), rigRoot: existingRigRoot("probe-root"), fsOps: fsOps() });
     expect(absent.ready).toBe(true);
     expect(none.ready).toBe(true);
     const a = absent.warnings.find((w) => w.startsWith("dev.impl: permission_policy"))!;
@@ -132,7 +133,7 @@ describe("P2 POSTURE-IDENTITY — absent and none differ ONLY in the record", ()
     const db = createFullTestDb();
     try {
       const setup = createTestApp(db, { podInstantiatorFsOps: fsOps() });
-      const outcome = await setup.podInstantiator.materialize(rigYaml("permission_policy: none\n"), "/probe/root");
+      const outcome = await setup.podInstantiator.materialize(rigYaml("permission_policy: none\n"), existingRigRoot("probe-root"));
       expect(outcome.ok).toBe(true);
       const row = db.prepare(
         "SELECT policy_origin, policy_launch_posture FROM nodes WHERE logical_id = 'dev.impl'",

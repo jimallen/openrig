@@ -7,6 +7,7 @@ import type {
   NodeBinding,
   RuntimeAdapter,
 } from "../src/domain/runtime-adapter.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 const AGENT_YAML = `name: impl
 version: "1.0.0"
@@ -90,7 +91,7 @@ describe("R2 bootstrap provenance fault probe", () => {
         return original(nodeId, prov);
       };
 
-      const outcome = await setup.podInstantiator.instantiate(TWO_MEMBER_RIG_YAML, "/rig");
+      const outcome = await setup.podInstantiator.instantiate(TWO_MEMBER_RIG_YAML, existingRigRoot("rig"));
 
       // partial-success semantics: the UNAFFECTED sibling may launch and the rig may report ok
       expect(bindings.length, "exactly the unaffected sibling launches").toBe(1);
@@ -130,7 +131,7 @@ describe("R2 bootstrap provenance fault probe", () => {
           },
         },
       });
-      const outcome = await setup.podInstantiator.instantiate(RIG_YAML, "/rig");
+      const outcome = await setup.podInstantiator.instantiate(RIG_YAML, existingRigRoot("rig"));
       expect(outcome.ok).toBe(true);
       expect(bindings).toHaveLength(1);
       expect(bindings[0]!.launchPosture, "member override (locked) controls the live launch").toBe("floor");
@@ -171,7 +172,7 @@ describe("R2 bootstrap provenance fault probe", () => {
         throw new Error("injected provenance write failure");
       };
 
-      const outcome = await setup.podInstantiator.instantiate(RIG_YAML, "/rig");
+      const outcome = await setup.podInstantiator.instantiate(RIG_YAML, existingRigRoot("rig"));
 
       // CORRECTED contract (R2 terminal at 4c49c758): member provenance is LOAD-BEARING
       // restart truth on the bootstrap path — a real setter fault must be fail-visible.

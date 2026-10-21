@@ -22,6 +22,7 @@ import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -51,7 +52,7 @@ function mockCodexFs(seed: Record<string, string>): CodexAdapterFsOps & { _store
   };
 }
 
-const RIG_ROOT = "/project/rigs/test-rig";
+const RIG_ROOT = existingRigRoot("test-rig");
 const DEFAULT_CULTURE_PATH = path.resolve(import.meta.dirname, "../assets/guidance/CULTURE-default.md");
 const DEFAULT_CULTURE = fs.readFileSync(DEFAULT_CULTURE_PATH, "utf8");
 const DEFAULT_ONBOARDING = Object.fromEntries(
