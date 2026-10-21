@@ -217,6 +217,32 @@ describe("transport routes", () => {
     expect(outboxRows()).toHaveLength(0);
   });
 
+  // OF-74 N2 — a submit-only send types no text (it presses Enter onto already-staged text), so the
+  // route records NO outbox row for it: there is no body to attribute and nothing to settle. Pinned
+  // so that dropping the `!body.submitOnly` guard (which would record a null-body row) is seen.
+  it("OF-74 — a SUCCESSFUL submitOnly send (200) writes NO outbox row (no text typed, nothing to settle)", async () => {
+    seedRig();
+    const transport = new SessionTransport({
+      db, rigRepo, sessionRegistry,
+      tmuxAdapter: mockTmux({ capturePaneContent: async () => "staged draft text\n❯ staged draft text" }),
+    });
+    migrate(db, [outboxEntriesSchema]);
+    if (!(db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "identity_provenance")) {
+      db.exec("ALTER TABLE outbox_entries ADD COLUMN identity_provenance TEXT");
+    }
+    const app = createApp({ sessionTransport: transport, outboxHandler: new OutboxHandler(db) });
+    const res = await app.request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "", submitOnly: true, expectedStagedText: "staged draft text" }),
+    });
+    const json = await res.json() as Record<string, unknown>;
+    expect(res.status, JSON.stringify(json)).toBe(200);
+    expect(json["ok"]).toBe(true);
+    expect(json["submitOnly"]).toBe(true); // the submit-only path really ran
+    expect(outboxRows()).toHaveLength(0);
+  });
+
   it("A3 — a cross-host send records the ORIGIN triple (the derived header), never the relay's seat", async () => {
     seedRig();
     const res = await sendApp().request("/api/transport/send", {

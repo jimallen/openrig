@@ -14,6 +14,13 @@ import type Database from "better-sqlite3";
  */
 export const WAKE_INTENT_PREFIX = "wake-intent-";
 
+// `delivered` has TWO meanings in this table, keyed on the id prefix (OF-74 / review F1):
+//  - `wake-intent-*` rows (drained by QueueRepository): `delivered` = the render was CONFIRMED;
+//    ok-but-unverified becomes `indeterminate` (the W1 rule below).
+//  - `/send` and `/broadcast` auto-recorded rows (`outbox-*`, transport:v1): `delivered` = the text
+//    and Enter landed in the pane (transport result.ok), UNVERIFIED by default — a plain `rig send`
+//    without --verify, or a rendered-unconfirmed outcome, still settles `delivered`.
+// The W1 rule below therefore describes the wake-intent drain, not every writer of this table.
 // W1 (transactional closure): `indeterminate` is the ambiguous-delivery outcome —
 // a send that landed on the wire but whose render could not be CONFIRMED (transport
 // res.ok && !verified). It is never silently promoted to `delivered` (unconfirmed)
