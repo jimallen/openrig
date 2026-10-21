@@ -1,4 +1,3 @@
-import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 // OPR.0.3.4.4 — read-only restore plan preview.
 //
 // `rig up --existing <rig> --plan` advertised "preview without executing" but
@@ -12,11 +11,13 @@ import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibilit
 // only reported as would-happen), no projection writes.
 
 import type Database from "better-sqlite3";
-import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, activeOccupantAmbiguityError, absentSeatResumeHistory, absentSeatResumeHistoryError, type ActiveOccupantResolution } from "./active-occupant.js";
-import type { RigWithRelations, Snapshot } from "./types.js";
+import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, type ActiveOccupantResolution, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
+import type { RigWithRelations, Snapshot, SnapshotData } from "./types.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { predictListedSeatRefusals, type ListedSeatDecisionDeps } from "./fresh-seat-restore-decision.js";
 import type { StartupFrom } from "./seat-startup-source.js";
+import { decideSeatLaunchOutcome, readContinuityRow } from "./restore-seat-gates.js";
+import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 
 /** OPR.0.4.3.20 FR-6 — a present token whose last verification is older than this
  *  is surfaced as `stale` (age-based staleness — the "stale while running" signal
@@ -54,6 +55,10 @@ export interface RestorePlanPreviewNode {
    *  restore reports after "Fresh start refused: "). Decided by the function restore calls
    *  (fresh-seat-restore-decision.ts), so the plan is never looser than the restore. Absent: nothing predicted. */
   wouldRefuse?: string;
+  /** Set when apply would STOP this seat at a pre-launch gate: the status restore reports for it (`failed`: the seat was
+   *  removed or its occupant cannot be told; `awaiting-decision`: it needs an operator decision). The intended action
+   *  of such a seat is `awaiting-decision` either way, since nothing is started; `reason` is restore's own text. */
+  restoreStatus?: "failed" | "awaiting-decision";
 }
 
 export interface RestorePlanPreview {
@@ -138,52 +143,6 @@ function runtimePromptFor(runtime: string | null, tokenState: ResumeTokenState):
   return undefined;
 }
 
-/** Forecast one seat's restore action — mirrors the orchestrator's pre-launch
- *  classification (OPR.0.3.4.2) without touching anything. A fresh-listed
- *  seat (operation B, `--fresh <seat>`) forecasts `fresh-primed` BEFORE any
- *  resume-token logic, exactly as apply mode deliberately skips the resume. */
-function intendedActionFor(
-  resolution: ActiveOccupantResolution<PreviewSessionRow>,
-  freshRequested: boolean,
-  absentHistory: { logicalId: string; rigName: string; row: PreviewSessionRow | null },
-): { intendedAction: RestorePlanPreviewNode["intendedAction"]; reason?: string } {
-  // OPR.0.5.7.1 — a broken authoritative relation beats --fresh, exactly as
-  // execution fails loudly before its fresh check: --fresh cannot override
-  // A1 ambiguity.
-  if (resolution.kind === "ambiguous") {
-    return {
-      intendedAction: "awaiting-decision",
-      reason: activeOccupantAmbiguityError(resolution.candidateIds, resolution.detail),
-    };
-  }
-  if (freshRequested) {
-    return {
-      intendedAction: "fresh-primed",
-      reason: "listed in --fresh — apply would deliberately skip the resume (operation B)",
-    };
-  }
-  // No occupant, but an earlier one left a resume token: apply stops for the same decision.
-  if (resolution.kind === "none" && absentHistory.row) {
-    return {
-      intendedAction: "awaiting-decision",
-      reason: absentSeatResumeHistoryError(absentHistory.logicalId, absentHistory.row.resumeType, absentHistory.rigName),
-    };
-  }
-  const occupant = resolution.kind === "resolved" ? resolution.session : null;
-  const policy = occupant?.restorePolicy ?? "resume_if_possible";
-  const sourceRecorded = !!occupant?.resumeType && occupant.resumeType !== "none";
-  if (policy === "resume_if_possible" && sourceRecorded && occupant?.resumeToken) {
-    return { intendedAction: "resume-original" };
-  }
-  if (policy === "resume_if_possible" && occupant && (!sourceRecorded || !occupant.resumeToken)) {
-    return {
-      intendedAction: "awaiting-decision",
-      reason: "Prior occupant has no usable native resume identity. No session will be started without a fresh-start decision.",
-    };
-  }
-  return { intendedAction: "fresh-primed" };
-}
-
 /** Gather the session rows the preview forecasts from — the snapshot's
  *  captured sessions when one exists, otherwise the live rows an
  *  auto-rehydrate capture WOULD snapshot (read-only SELECT; the capture
@@ -260,6 +219,8 @@ export function buildRestorePlanPreview(
   recorded: Record<string, string | null> = {},
   /** Listed seats apply mode would refuse (see `predictedPlanRefusals`), by logical id. */
   refusals: ReadonlyMap<string, string> = new Map(),
+  /** Each live seat's `continuity_state.status` by node id (see `readPreviewContinuity`). */
+  continuity: Readonly<Record<string, string>> = {},
 ): RestorePlanPreview {
   // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own
   // when previewing a snapshot; for the live no-snapshot case, the SAME
@@ -268,44 +229,81 @@ export function buildRestorePlanPreview(
   const relationMap = snapshot
     ? snapshot.data.activeSessionIdByNode
     : deriveRehydrateSessionIdByNode(sessionRows, rig.nodes.map((n) => n.id), recorded);
-  const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
-    const freshRequested = freshLogicalIds?.includes(node.logicalId) ?? false;
-    const savedNodeId = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId)?.id ?? node.id;
-    const resolution = snapshot
-      ? resolveActiveSnapshotSession(snapshot.data, savedNodeId)
-      : sessionRows.some((row) => row.nodeId === node.id)
-        ? resolveActiveOccupantRow(sessionRows, relationMap, node.id)
-        : { kind: "none" as const };
-    const runtimeError = resolution.kind !== "ambiguous"
-      ? restoreRuntimeCompatibilityError(node.runtime, snapshot?.data.nodeStartupContext?.[savedNodeId]?.runtime)
-      : null;
-    const { intendedAction, reason } = runtimeError
-      ? { intendedAction: "awaiting-decision" as const, reason: runtimeError }
-      : intendedActionFor(resolution, freshRequested,
-        { logicalId: node.logicalId, rigName: rig.rig.name, row: absentSeatResumeHistory(sessionRows, savedNodeId) });
+  // The gate input restore reads: the captured snapshot, or (no snapshot) the rows an auto-rehydrate capture would copy.
+  const data = snapshot ? snapshot.data : ({ nodes: [], sessions: sessionRows } as unknown as SnapshotData);
+  const forecast = (input: {
+    logicalId: string; snapshotNodeId: string; live: { runtime: string | null } | null; continuityStatus: string | null;
+    freshRequested: boolean; occupant: ActiveOccupantResolution<PreviewSessionRow>;
+  }): RestorePlanPreviewNode => {
+    const { logicalId, snapshotNodeId, live, freshRequested, occupant: resolution } = input;
+    // ONE decision, the function restore calls (restore-seat-gates.ts): the plan only words it.
+    const outcome = decideSeatLaunchOutcome({
+      data, snapshotNodeId, logicalId, live, freshRequested, rigName: rig.rig.name, continuityStatus: input.continuityStatus,
+      ...(snapshot ? {} : { occupant: resolution as unknown as ActiveSnapshotSessionResolution }),
+    });
+    let intendedAction: RestorePlanPreviewNode["intendedAction"];
+    let reason: string | undefined;
+    let restoreStatus: RestorePlanPreviewNode["restoreStatus"];
+    if (outcome.kind === "stop") {
+      intendedAction = "awaiting-decision";
+      reason = outcome.stop.error;
+      restoreStatus = outcome.stop.status;
+    } else if (outcome.kind === "skip_restoring") {
+      intendedAction = "fresh-primed";
+      reason = "continuity state is 'restoring' — apply would skip this seat as fresh and start nothing for it";
+    } else if (freshRequested) {
+      intendedAction = "fresh-primed";
+      reason = "listed in --fresh — apply would deliberately skip the resume (operation B)";
+    } else {
+      intendedAction = outcome.kind === "resume" ? "resume-original" : "fresh-primed";
+    }
     // OPR.0.4.3.20 FR-6 — per-seat token state (read-only), derived from the
     // RESOLVED occupant only — never from a historical row.
     const occupant = resolution.kind === "resolved" ? resolution.session : null;
     const { tokenState, provenance, lastVerified } = tokenStateFor(occupant, nowMs);
-    const runtimePrompt = runtimePromptFor(node.runtime, tokenState);
+    const runtimePrompt = live ? runtimePromptFor(live.runtime, tokenState) : undefined;
+    // no resumable token → restore needs an explicit --fresh (never silent); a stop --fresh cannot get past (a removed
+    // seat, a runtime mismatch, a broken relation) must not suggest it, and a seat restore skips needs nothing.
+    const freshCannotHelp = outcome.kind === "stop" && (outcome.stop.gate === "node_removed" || outcome.stop.gate === "runtime_mismatch" || outcome.stop.gate === "occupant_ambiguous");
     return {
-      logicalId: node.logicalId,
+      logicalId,
       occupantSessionId: occupant?.id ?? null,
-      hasHistory: sessionRows.some((row) => row.nodeId === savedNodeId),
+      hasHistory: sessionRows.some((row) => row.nodeId === snapshotNodeId),
       intendedAction,
       ...(reason ? { reason } : {}),
+      ...(restoreStatus ? { restoreStatus } : {}),
       tokenState,
       ...(provenance ? { provenance } : {}),
       ...(lastVerified ? { lastVerified } : {}),
-      // no resumable token → restore needs an explicit --fresh (never
-      // silent); runtime mismatches and broken relations cannot be resolved
-      // by a fresh request, so --fresh must not be suggested as their remedy.
-      freshRequired: runtimeError || resolution.kind === "ambiguous" ? false : tokenState === "missing",
+      freshRequired: freshCannotHelp || outcome.kind === "skip_restoring" ? false : tokenState === "missing",
       ...(runtimePrompt ? { runtimePrompt } : {}),
       // Only a seat that is actually listed can be refused (a refusal for an unlisted seat is never predicted).
-      ...(freshRequested && refusals.has(node.logicalId) ? { wouldRefuse: refusals.get(node.logicalId)! } : {}),
+      ...(freshRequested && refusals.has(logicalId) ? { wouldRefuse: refusals.get(logicalId)! } : {}),
     };
+  };
+  const resolveOccupant = (savedNodeId: string, nodeId: string): ActiveOccupantResolution<PreviewSessionRow> => snapshot
+    ? resolveActiveSnapshotSession(snapshot.data, savedNodeId) as unknown as ActiveOccupantResolution<PreviewSessionRow>
+    : sessionRows.some((row) => row.nodeId === nodeId)
+      ? resolveActiveOccupantRow(sessionRows, relationMap, nodeId)
+      : { kind: "none" as const };
+  const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
+    const savedNodeId = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId)?.id ?? node.id;
+    return forecast({
+      logicalId: node.logicalId, snapshotNodeId: savedNodeId, live: { runtime: node.runtime ?? null },
+      continuityStatus: continuity[node.id] ?? null,
+      freshRequested: freshLogicalIds?.includes(node.logicalId) ?? false, occupant: resolveOccupant(savedNodeId, node.id),
+    });
   });
+  // A seat the snapshot's restore would attempt but the rig no longer has: restore reports it failed, so the plan lists it.
+  if (snapshot && Array.isArray(snapshot.data.nodes)) {
+    for (const saved of resolveSnapshotRestoreTopology(snapshot.data).intendedNodes) {
+      if (rig.nodes.some((node) => node.logicalId === saved.logicalId)) continue;
+      nodes.push(forecast({
+        logicalId: saved.logicalId, snapshotNodeId: saved.id, live: null, continuityStatus: null,
+        freshRequested: freshLogicalIds?.includes(saved.logicalId) ?? false, occupant: resolveOccupant(saved.id, saved.id),
+      }));
+    }
+  }
   return {
     status: "plan",
     mode: "restore",
@@ -316,4 +314,14 @@ export function buildRestorePlanPreview(
     nodes,
     mutated: false,
   };
+}
+
+/** The `continuity_state.status` of each live seat, by node id, read where restore reads it (readContinuityRow). */
+export function readPreviewContinuity(db: Database.Database, rig: RigWithRelations): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const node of rig.nodes) {
+    const row = node.podId ? readContinuityRow(db, node.podId, node.id) : undefined;
+    if (row) out[node.id] = row.status;
+  }
+  return out;
 }

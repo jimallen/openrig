@@ -1,5 +1,4 @@
-import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
-import { decideSeatPreLaunchGate, readContinuityRow } from "./restore-seat-gates.js";
+import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
@@ -87,7 +86,7 @@ const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 // in the pure leaf module active-occupant.ts, shared with preview, snapshot
 // usability, and lifecycle projection. Imported and re-exported here so the
 // existing export surface and the execution call sites below are unchanged.
-import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, absentSeatResumeHistory, freshSeatLaunchCommand } from "./active-occupant.js";
+import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLaunchCommand } from "./active-occupant.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -124,26 +123,21 @@ export function launchStatusIsRunning(status: string): boolean {
 /** What `rig launch` does for this node from this snapshot without --fresh, read as the restore path reads it: the
  *  occupant, then the pre-launch stop-and-ask check, then the resume decision (restoreNodeWithCompensation and the
  *  resume step after it). An exited agent's message offers stop-then-launch as a resume only when this says so. */
-function snapshotLaunchOutcome(data: SnapshotData, nodeId: string, runtime: string | null):
-  { kind: "resume" } | { kind: "fresh" | "decision" | "unrecoverable"; why: string } {
-  const occupant = resolveActiveSnapshotSession(data, nodeId);
-  if (occupant.kind === "ambiguous") return { kind: "unrecoverable", why: "can't tell which saved session is this seat's" };
-  const session = occupant.kind === "resolved" ? occupant.session : null;
-  const runtimeError = restoreRuntimeCompatibilityError(runtime,
-    data.nodeStartupContext?.[nodeId]?.runtime);
-  if (runtimeError) return { kind: "decision", why: runtimeError };
-  if (!session) {
-    // The restore's own rule for a seat stopped at capture whose earlier occupant left a token.
-    const prior = occupant.kind === "none" ? absentSeatResumeHistory(data.sessions, nodeId) : null;
-    return prior
-      ? { kind: "decision", why: `had no running occupant for this seat when it was taken, but an earlier occupant left a '${prior.resumeType}' resume token` }
-      : { kind: "fresh", why: "saves no session for this seat" };
+function snapshotLaunchOutcome(data: SnapshotData, node: { id: string; logicalId: string }, live: { runtime: string | null }, continuityStatus: string | null, rigName: string):
+  { kind: "resume" } | { kind: "fresh" | "decision" | "unrecoverable" | "skipped"; why: string } {
+  // The decision itself is restore's (restore-seat-gates.ts); this only words it for the advice.
+  const outcome = decideSeatLaunchOutcome({ data, snapshotNodeId: node.id, logicalId: node.logicalId, live, freshRequested: false, rigName, continuityStatus });
+  if (outcome.kind === "resume") return { kind: "resume" };
+  if (outcome.kind === "fresh") return outcome;
+  if (outcome.kind === "skip_restoring") return { kind: "skipped", why: "does not apply: the seat's continuity state is 'restoring', which restore skips" };
+  const { stop } = outcome;
+  switch (stop.gate) {
+    case "occupant_ambiguous": return { kind: "unrecoverable", why: "can't tell which saved session is this seat's" };
+    case "absent_history": return { kind: "decision", why: `had no running occupant for this seat when it was taken, but an earlier occupant left a '${stop.priorResumeType}' resume token` };
+    case "no_token": return { kind: "decision", why: "has no resume token for this seat" };
+    case "runtime_mismatch": return { kind: "decision", why: stop.error };
+    case "node_removed": return { kind: "unrecoverable", why: "is for a seat that has been removed from this rig" };
   }
-  const policy = session.restorePolicy ?? "resume_if_possible";
-  if (policy !== "resume_if_possible") return { kind: "fresh", why: `saves this seat with restore policy '${policy}'` };
-  if (!session.resumeToken) return { kind: "decision", why: "has no resume token for this seat" };
-  if (!session.resumeType || session.resumeType === "none") return { kind: "fresh", why: "records no resume source for this seat" };
-  return { kind: "resume" };
 }
 
 export interface NarrowLaunchResult {
@@ -203,14 +197,6 @@ type RestoreSeatOpts = {
    *  launch replays exactly that copy, or is refused if its snapshot is gone; it never chooses again. */
   preValidatedCopies?: Map<string, { snapshotId: string; context: NodeStartupSnapshot; warning?: string }>;
 };
-
-/** Whether this restore resumes the seat's saved conversation (an exact resume) rather than starting it fresh.
- *  The one predicate for both the pre-launch startup decision and the post-launch replay containment. */
-function snapshotSeatResumes(session: { restorePolicy?: string | null; resumeType?: string | null } | null, freshRequested: boolean): boolean {
-  const restorePolicy = session?.restorePolicy ?? "resume_if_possible";
-  const resumeType = session?.resumeType ?? null;
-  return restorePolicy === "resume_if_possible" && !!resumeType && resumeType !== "none" && !freshRequested;
-}
 
 export class RestoreOrchestrator {
   readonly db: Database.Database;
@@ -643,12 +629,13 @@ export class RestoreOrchestrator {
         // Choosing a fresh versus resumed conversation belongs to the person. Stopping closes the pane, so
         // stop-then-launch is offered as a resume only when this snapshot can resume the seat; otherwise the
         // message says what that launch would do instead. The command pins the snapshot that was checked.
-        const outcome = snapshotLaunchOutcome(snapshot.data, node.id, liveTarget ? liveTarget.runtime : node.runtime);
+        const outcome = snapshotLaunchOutcome(snapshot.data, node, { runtime: liveTarget ? liveTarget.runtime : node.runtime },
+          liveTarget?.podId ? readContinuityRow(this.db, liveTarget.podId, liveTarget.id)?.status ?? null : null, rig.rig.name);
         const launchCommand = `rig launch ${rigId} ${node.logicalId} --snapshot-id ${snapshot.id}`;
         const relaunch = outcome.kind === "resume"
           ? `To resume its conversation: rig seat stop ${idleSession} --reason "<why>", then ${launchCommand} (this closes the pane, and launch resumes from that snapshot's resume token). `
           : `Stopping it and launching from snapshot ${snapshot.id} won't resume this conversation: that snapshot ${outcome.why}, so launch would `
-            + `${outcome.kind === "fresh" ? "start a fresh conversation" : outcome.kind === "decision" ? "start nothing and ask for a decision" : "fail"}. `;
+            + `${outcome.kind === "fresh" ? "start a fresh conversation" : outcome.kind === "decision" ? "start nothing and ask for a decision" : outcome.kind === "skipped" ? "start nothing" : "fail"}. `;
         launched.push({
           nodeId: liveId ?? node.id, logicalId: node.logicalId, status: "attention_required",
           error: `Session alive, agent not running for '${node.logicalId}': tmux session '${idleSession}' holds an idle shell, and its pane and history are preserved. `

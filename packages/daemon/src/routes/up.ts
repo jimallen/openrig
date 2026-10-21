@@ -13,7 +13,7 @@ import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import { STARTUP_FROM_FORMS, parseStartupFrom, type StartupFrom } from "../domain/seat-startup-source.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { existsSync } from "node:fs";
-import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals } from "../domain/restore-plan-preview.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals, readPreviewContinuity } from "../domain/restore-plan-preview.js";
 import type { SeatStartupSpecReader } from "../domain/seat-startup-source.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { loadTopologyManifest } from "../domain/topology/topology-manifest.js";
@@ -152,7 +152,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
       refusalPredictionError = err instanceof Error ? err.message : String(err);
     }
     return c.json({
-      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals),
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),
     }, 200);
   }
