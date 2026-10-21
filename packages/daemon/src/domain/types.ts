@@ -53,6 +53,11 @@ export interface Node {
   label: string | null;
   /** Exact validated RigSpec declaration retained for export/recreate fidelity. */
   sessionSource?: SessionSourceSpec | null;
+  /** OF-45: set (to the reason) ONLY when the saved package_refs / session_source_json column is damaged (not JSON, or
+   *  the wrong shape). The matching value above then reads as empty, but a damaged column is not an absent one: a
+   *  decision or a copy that depends on the value must refuse on this marker (a literal JSON null is a real "none"). */
+  packageRefsUnreadable?: string;
+  sessionSourceUnreadable?: string;
   resolvedSpecName: string | null;
   resolvedSpecVersion: string | null;
   resolvedSpecHash: string | null;
@@ -876,6 +881,9 @@ export interface NodeDetailEntry extends NodeInventoryEntry {
   binding: Binding | null;
   startupFiles: Array<{ path: string; deliveryHint: string; required: boolean }>;
   startupActions: Array<{ type: string; value: string }>;
+  /** OF-45: the node row's own damaged columns (see Node.packageRefsUnreadable); null when readable. */
+  packageRefsUnreadable: string | null;
+  sessionSourceUnreadable: string | null;
   /** OF-45: why the seat's saved startup row cannot be read (not JSON, or not a valid startup setup); null when it can.
    *  When set, startupFiles, startupActions and the projection-based installedResources are empty, not guessed. */
   startupUnreadable: string | null;

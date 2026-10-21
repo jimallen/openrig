@@ -16,7 +16,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import { probeSessionActivity, mapPaneState } from "./session-transport.js";
 import type { StructuralObservation } from "./seat-structural-activity-service.js";
 import type { BackgroundJobs } from "./session-transport.js";
-import { findLatestUsableSnapshot, findLatestUsableSnapshotsForAllRigs } from "./rig-repository.js";
+import { findLatestUsableSnapshot, findLatestUsableSnapshotsForAllRigs, readSavedPackageRefs, readSavedSessionSource } from "./rig-repository.js";
 import { resolveNodeWorkspace } from "./workspace/workspace-resolver.js";
 import { deriveCanonicalSessionName } from "./session-name.js";
 import { buildNativeResumeCommand, buildCodexResumeCore } from "./native-resume-probe.js";
@@ -905,6 +905,14 @@ export function getNodeDetail(
   const startupActions = startupRead?.ok ? startupRead.actions : [];
   const projectionEntries = startupRead?.ok ? startupRead.projectionEntries : [];
 
+  // OF-45: the node row's own damaged columns, surfaced (rig-repository reads them as empty plus this reason).
+  let nodeColumns: { package_refs?: string | null; session_source_json?: string | null } = {};
+  try {
+    nodeColumns = db.prepare("SELECT package_refs, session_source_json FROM nodes WHERE id = ?").get(nodeId) as typeof nodeColumns ?? {};
+  } catch { /* an older fixture without session_source_json: nothing to surface */ }
+  const packageRefsUnreadable = readSavedPackageRefs(nodeColumns.package_refs).unreadable ?? null;
+  const sessionSourceUnreadable = readSavedSessionSource(nodeColumns.session_source_json).unreadable ?? null;
+
   // Installed resources: override (from async adapter call) > projection fallback
   let installedResources: NodeDetailEntry["installedResources"];
   if (opts?.installedResourcesOverride) {
@@ -1015,6 +1023,8 @@ export function getNodeDetail(
     startupFiles,
     startupActions,
     startupUnreadable,
+    packageRefsUnreadable,
+    sessionSourceUnreadable,
     installedResources,
     recentEvents,
     infrastructureStartupCommand,

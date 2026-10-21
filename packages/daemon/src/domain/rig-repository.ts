@@ -142,28 +142,29 @@ interface NodeOptions {
   resolvedSpecHash?: string;
 }
 
-/** OF-45: a node's saved package list. One damaged row (not JSON, or not a list of strings) reads as no packages
- *  instead of failing getRig, and with it every route that loads the rig, node-detail included. */
-function readSavedPackageRefs(text: string | null | undefined): string[] {
-  if (!text) return [];
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) && parsed.every((ref) => typeof ref === "string") ? parsed as string[] : [];
-  } catch {
-    return [];
-  }
+/** OF-45: a node's saved package list. A damaged column (not JSON, or not a list of strings) reads as no packages WITH
+ *  the reason, so it never passes for a real empty list: getRig still loads (every route that loads the rig, node-detail
+ *  included) and the callers that depend on the value refuse on the reason. NULL / empty column = none, no reason. */
+export function readSavedPackageRefs(text: string | null | undefined): { value: string[]; unreadable?: string } {
+  if (!text) return { value: [] };
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return { value: [], unreadable: "package_refs is not JSON" }; }
+  if (parsed === null) return { value: [] };
+  return Array.isArray(parsed) && parsed.every((ref) => typeof ref === "string")
+    ? { value: parsed as string[] }
+    : { value: [], unreadable: "package_refs is not a list of strings" };
 }
 
-/** OF-45: a node's saved session source. One damaged row (not JSON, or not an object) reads as no session source
- *  instead of failing getRig. */
-function readSavedSessionSource(text: string | null | undefined): SessionSourceSpec | null {
-  if (!text) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as SessionSourceSpec : null;
-  } catch {
-    return null;
-  }
+/** OF-45: a node's saved session source. A damaged column (not JSON, or not an object) reads as no source WITH the
+ *  reason; a literal JSON null is the real "no source". */
+export function readSavedSessionSource(text: string | null | undefined): { value: SessionSourceSpec | null; unreadable?: string } {
+  if (!text) return { value: null };
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return { value: null, unreadable: "session_source_json is not JSON" }; }
+  if (parsed === null) return { value: null };
+  return typeof parsed === "object" && !Array.isArray(parsed)
+    ? { value: parsed as SessionSourceSpec }
+    : { value: null, unreadable: "session_source_json is not an object" };
 }
 
 export class RigRepository {
@@ -786,6 +787,8 @@ export class RigRepository {
   }
 
   private rowToNode(row: NodeRow): Node {
+    const packageRefs = readSavedPackageRefs(row.package_refs);
+    const sessionSource = readSavedSessionSource(row.session_source_json);
     return {
       id: row.id,
       rigId: row.rig_id,
@@ -803,12 +806,14 @@ export class RigRepository {
       surfaceHint: row.surface_hint ?? null,
       workspace: row.workspace ?? null,
       restorePolicy: row.restore_policy ?? null,
-      packageRefs: readSavedPackageRefs(row.package_refs),
+      packageRefs: packageRefs.value,
       podId: row.pod_id ?? null,
       agentRef: row.agent_ref ?? null,
       profile: row.profile ?? null,
       label: row.label ?? null,
-      sessionSource: readSavedSessionSource(row.session_source_json),
+      sessionSource: sessionSource.value,
+      ...(packageRefs.unreadable ? { packageRefsUnreadable: packageRefs.unreadable } : {}),
+      ...(sessionSource.unreadable ? { sessionSourceUnreadable: sessionSource.unreadable } : {}),
       resolvedSpecName: row.resolved_spec_name ?? null,
       resolvedSpecVersion: row.resolved_spec_version ?? null,
       resolvedSpecHash: row.resolved_spec_hash ?? null,

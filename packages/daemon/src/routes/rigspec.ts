@@ -5,6 +5,7 @@ import type { RigSpecExporter } from "../domain/rigspec-exporter.js";
 import type { RigInstantiator, PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import type { RigSpecPreflight } from "../domain/rigspec-preflight.js";
 import type { RigRepository } from "../domain/rig-repository.js";
+import { UnreadableNodeRowError } from "../domain/errors.js";
 import { LegacyRigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
@@ -49,6 +50,9 @@ export function handleExportYaml(c: Context): Response {
     if (err instanceof RigNotFoundError) {
       return c.json({ error: err.message }, 404);
     }
+    if (err instanceof UnreadableNodeRowError) {
+      return c.json({ error: err.message }, 409);
+    }
     return c.json({ error: "Export failed" }, 500);
   }
 }
@@ -64,6 +68,9 @@ export function handleExportJson(c: Context): Response {
   } catch (err) {
     if (err instanceof RigNotFoundError) {
       return c.json({ error: err.message }, 404);
+    }
+    if (err instanceof UnreadableNodeRowError) {
+      return c.json({ error: err.message }, 409);
     }
     return c.json({ error: "Export failed" }, 500);
   }

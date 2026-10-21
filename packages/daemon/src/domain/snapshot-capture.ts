@@ -77,11 +77,25 @@ export class SnapshotCapture {
      *  (null) and reported here, instead of failing the whole capture. Every automatic capture passes it, through
      *  `captureSkippingUnreadable`; the manual `rig snapshot` capture does not. */
     onUnreadableStartupContext?: (nodeId: string, message: string) => void;
+    /** OF-45: with this, a seat whose saved package_refs / session_source_json is damaged is captured with that
+     *  damage kept on the node (`packageRefsUnreadable` / `sessionSourceUnreadable`, never a quiet empty value) and
+     *  reported here. Without it the capture refuses, naming the seat. */
+    onUnreadableNodeRow?: (nodeId: string, message: string) => void;
   }): Snapshot {
     // 1. Get rig with nodes, edges, bindings
     const rig = this.rigRepo.getRig(rigId);
     if (!rig) {
       throw new RigNotFoundError(rigId);
+    }
+
+    // 1b. OF-45: a damaged saved package list / session source reads as empty on the node, which a snapshot would
+    // otherwise persist as if the seat had declared none.
+    for (const node of rig.nodes) {
+      const damage = [node.sessionSourceUnreadable, node.packageRefsUnreadable].filter((reason): reason is string => !!reason);
+      if (damage.length === 0) continue;
+      const message = `${node.logicalId}'s saved row is damaged (${damage.join("; ")})`;
+      if (!opts?.onUnreadableNodeRow) throw new Error(`Cannot snapshot: ${message}. Repair the row, then snapshot again.`);
+      opts.onUnreadableNodeRow(node.id, message);
     }
 
     // 2. Get sessions with resume metadata
@@ -222,6 +236,9 @@ export function captureSkippingUnreadable(
   const warnings: string[] = [];
   const snapshot = capture.captureSnapshot(rigId, kind, {
     ...opts,
+    onUnreadableNodeRow: (_nodeId, message) => {
+      warnings.push(`Snapshot (${kind}) records ${message}; that damage is kept on the seat in the snapshot, not read as an empty value. The rest of the rig was captured.`);
+    },
     onUnreadableStartupContext: (nodeId, message) => {
       let logicalId = nodeId;
       try {
