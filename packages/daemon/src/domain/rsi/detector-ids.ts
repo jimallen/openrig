@@ -6,7 +6,9 @@
  * detector is never a valid HealthDiagnosisService target (health-policy.ts).
  */
 export const RSI_ARCHIVED_RIG_LIVE_SESSION = "rsi.archived-rig-live-session" as const;
-export const RSI_DETECTORS = [RSI_ARCHIVED_RIG_LIVE_SESSION] as const;
+/** D13: a site fills the slow-operation log with spans that are under the slow threshold. */
+export const RSI_SLOW_OP_SUBTHRESHOLD_FLOOD = "rsi.slow-op-subthreshold-flood" as const;
+export const RSI_DETECTORS = [RSI_ARCHIVED_RIG_LIVE_SESSION, RSI_SLOW_OP_SUBTHRESHOLD_FLOOD] as const;
 
 /**
  * Category and severity of every RSI finding. `info` is load-bearing: routes/attention.ts

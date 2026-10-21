@@ -203,6 +203,8 @@ interface DaemonOptions {
   cmuxTimeoutMs?: number;
   tmuxOptionPlatform?: NodeJS.Platform;
   slowOpRecorder?: SlowOperationInstrumentation;
+  /** Where the default slow-operation recorder writes, and where the RSI slow-op source reads. */
+  slowOpLogPath?: string;
   /**
    * PL-005 Phase B: bearer token for Mission Control write verbs.
    * When null, the auth-bearer-token middleware passes through (the
@@ -348,10 +350,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const streamStore = new StreamStore(db, eventBus);
   // Explicit source opt-in only. No sink I/O until a separate drain request.
   const shadow = configureShadowCapture(process.env.OPENRIG_SHADOW_CAPTURE);
+  const slowOpLogPath = opts?.slowOpLogPath ?? nodePath.join(OPENRIG_HOME, "logs", "slow-operations.jsonl");
   const slowOpRecorder = opts?.slowOpRecorder ?? (dbPath === ":memory:"
     ? undefined
     : new SlowOpRecorder({
-        logPath: nodePath.join(OPENRIG_HOME, "logs", "slow-operations.jsonl"),
+        logPath: slowOpLogPath,
       }));
   configureSyncSiteRecorder(slowOpRecorder);
   // Instrumentation wiring is observe-only: neither a throwing registration
@@ -1170,7 +1173,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Add every RSI source here; a source given only to the projection is served by `rig health` but
   // never wakes the steward (rsi-health-finding-wake.test.ts pins every RSI detector id to a source).
   const { TelemetryHealthSource } = await import("./domain/rsi/telemetry-source.js");
-  const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath })];
+  const { SlowOpFileSource } = await import("./domain/rsi/slow-op-file-source.js");
+  const rsiTelemetrySources = dbPath === ":memory:" ? [] : [new TelemetryHealthSource({ dbPath }), new SlowOpFileSource({ logPath: slowOpLogPath, instanceId: OPENRIG_HOME })];
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
