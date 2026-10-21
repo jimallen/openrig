@@ -277,14 +277,26 @@ describe("D5 cross-check: SessionStart activity events must equal agent.session_
     expect(service.coverage()).toEqual([expect.objectContaining({ source: "rsi-compaction-storm", status: "unavailable", partial: true, reason: expect.stringContaining("disagree") })]);
   });
 
-  it("reports the source unavailable when an identity event has no SessionStart", () => {
+  it("is not disturbed by a Pi or OMP identity event: provenance rpc has no SessionStart and is not compared", () => {
     const f = fixture();
     compactions(f, 8);
-    f.event("agent.session_identity", { type: "agent.session_identity" }, "2031-03-04 03:00:00");
+    f.event("agent.session_identity", { type: "agent.session_identity", runtime: "pi", provenance: "rpc", sessionName: "pi-seat@r" }, "2031-03-04 03:00:00");
+    f.event("agent.session_identity", { type: "agent.session_identity", runtime: "omp", provenance: "rpc", sessionName: "omp-seat@r" }, "2031-03-04 04:00:00");
+    f.event("agent.session_identity", { type: "agent.session_identity", sessionName: "no-provenance@r" }, "2031-03-04 04:30:00");
+    const service = new HealthProjectionService([createCompactionStormSource(f.deps())]);
+
+    expect(service.records()).toHaveLength(1);
+    expect(service.coverage()).toEqual([expect.objectContaining({ source: "rsi-compaction-storm", partial: false, total: 1 })]);
+  });
+
+  it("reports the source unavailable when a HOOK identity event has no SessionStart", () => {
+    const f = fixture();
+    compactions(f, 8);
+    f.event("agent.session_identity", { type: "agent.session_identity", provenance: "hook", sessionName: seatKey }, "2031-03-04 03:00:00");
     const service = new HealthProjectionService([createCompactionStormSource(f.deps())]);
 
     expect(service.records()).toEqual([]);
-    expect(service.coverage()).toEqual([expect.objectContaining({ status: "unavailable" })]);
+    expect(service.coverage()).toEqual([expect.objectContaining({ status: "unavailable", reason: expect.stringContaining("hook agent.session_identity") })]);
   });
 
   it("reads both series from one snapshot: a pair committed between the two statements cannot desynchronise them", () => {
@@ -303,7 +315,7 @@ describe("D5 cross-check: SessionStart activity events must equal agent.session_
   });
 });
 
-describe("migration 114: the events(type, created_at) index serves the grouped pass", () => {
+describe("migration 114: the events and usage_samples indexes serve the grouped passes", () => {
   it("exists, and the query plan searches it instead of scanning the table", () => {
     const f = fixture();
     const indexes = (f.db.prepare("PRAGMA index_list(events)").all() as Array<{ name: string }>).map((row) => row.name);
@@ -311,5 +323,14 @@ describe("migration 114: the events(type, created_at) index serves the grouped p
 
     expect(indexes).toContain("idx_events_type_created_at");
     expect(plan).toContain("idx_events_type_created_at");
+  });
+
+  it("also indexes usage_samples(lane, captured_at), which the context and provider-window reads search", () => {
+    const f = fixture();
+    const indexes = (f.db.prepare("PRAGMA index_list(usage_samples)").all() as Array<{ name: string }>).map((row) => row.name);
+    const plan = (f.db.prepare("EXPLAIN QUERY PLAN SELECT count(*) FROM usage_samples WHERE lane = ? AND captured_at >= ?").all("context", "2031-01-01T00:00:00.000Z") as Array<{ detail: string }>).map((row) => row.detail).join(" | ");
+
+    expect(indexes).toContain("idx_usage_samples_lane_captured_at");
+    expect(plan).toContain("idx_usage_samples_lane_captured_at");
   });
 });

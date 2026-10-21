@@ -156,11 +156,13 @@ export function createCompactionStormSource(deps: RsiFindingSourceDeps): RsiFind
     classSql: `CASE WHEN json_extract(payload, '$.activity.rawSubtype') IN ${KNOWN_SESSION_START} THEN json_extract(payload, '$.activity.rawSubtype') ELSE 'other' END`,
     classLabel: "SessionStart events by subtype",
     // Rev1's independent control: every SessionStart hook event is followed by one agent.session_identity
-    // event (live 24 h: 33 = 33; all time: 798 = 798). A disagreement means the counted series is wrong.
+    // event with provenance 'hook' (live 24 h: 33 = 33; all time: 800 = 800). Pi and OMP seats post identity with
+    // provenance 'rpc' and never emit a SessionStart, so only the hook series is comparable. A disagreement means
+    // the counted series is wrong.
     crossCheck: (db, since, sessionStarts) => {
-      const identities = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND created_at >= ?").get(since) as { n: number }).n;
+      const identities = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND json_extract(payload, '$.provenance') = 'hook' AND created_at >= ?").get(since) as { n: number }).n;
       if (identities !== sessionStarts) {
-        throw new Error(`${RSI_COMPACTION_STORM}: ${sessionStarts} SessionStart activity events disagree with ${identities} agent.session_identity events in the same window`);
+        throw new Error(`${RSI_COMPACTION_STORM}: ${sessionStarts} SessionStart activity events disagree with ${identities} hook agent.session_identity events in the same window`);
       }
     },
     scope: seatScope,
