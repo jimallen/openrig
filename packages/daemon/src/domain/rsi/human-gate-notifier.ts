@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants } from "node:fs";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { isHumanSeatSession } from "../human-route-enforcer.js";
@@ -23,6 +23,7 @@ export const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const MIN_BANNER_GAP_MS = 10 * 60 * 1000;
 /** Hard cap on banners in any rolling 24 h. */
 export const MAX_BANNERS_PER_DAY = 12;
+export const OSASCRIPT_PATH = "/usr/bin/osascript";
 export const NOTIFICATION_GROUP = "openrig-rsi";
 export const NOTIFICATION_TITLE = "OpenRig RSI";
 const SPAWN_TIMEOUT_MS = 5_000;
@@ -32,6 +33,10 @@ const MAX_MESSAGE_CHARS = 300;
 /** A blocked queue row as the notifier reads it. Filtering to the human-gate RSI set is the notifier's job. */
 export interface BlockedQueueRow {
   qitemId: string;
+  /** The seat that created the item. Only the configured steward's items are RSI items. */
+  sourceSession: string;
+  /** Identifies one parking episode (latest transition into `blocked`): a re-park is a new episode, so a new entry. */
+  episode: string;
   state: string;
   blockedOn: string | null;
   tags: string[];
@@ -61,6 +66,8 @@ export type NotifierTickResult =
 export interface HumanGateNotifierDeps {
   /** Every row in state `blocked`. Must be read-only. */
   listBlocked: () => BlockedQueueRow[];
+  /** The configured `rsi.steward_session`; only its items are RSI items. */
+  stewardSession: string;
   store: NotificationStore;
   spawner: BannerSpawner;
   /** Absolute path of an installed binary, or null. */
@@ -71,15 +78,26 @@ export interface HumanGateNotifierDeps {
   intervalMs?: number;
 }
 
-/** The set the banner is about: parked on a human seat AND tagged rsi. */
-export function selectWaitingRsiItems(rows: BlockedQueueRow[]): BlockedQueueRow[] {
-  return rows.filter((r) => r.state === "blocked" && isHumanSeatSession(r.blockedOn) && r.tags.includes(RSI_TAG));
+/**
+ * The set the banner is about: parked on a human seat, created by the configured steward, and tagged rsi.
+ * The tag is free text any seat can write, so the source is the authority; without it any seat could
+ * spend the daily banner budget.
+ */
+export function selectWaitingRsiItems(rows: BlockedQueueRow[], stewardSession: string): BlockedQueueRow[] {
+  return rows.filter((r) => r.state === "blocked" && isHumanSeatSession(r.blockedOn) && r.sourceSession === stewardSession && r.tags.includes(RSI_TAG));
 }
 
+/** Key of one parking episode in rsi_notifications (its schema has only qitem_id as the key). */
+export function episodeKey(row: Pick<BlockedQueueRow, "qitemId" | "episode">): string {
+  return `${row.qitemId}@${row.episode}`;
+}
+/** Failed spawn attempts are persisted as rows with this prefix so the gap and the cap survive a restart. */
+export const ATTEMPT_KEY_PREFIX = "rsi-notifier-attempt:";
+
 function clean(text: string, max: number): string {
-  // Control characters out; the text is shown, never interpreted, but a banner is not a log.
-  // eslint-disable-next-line no-control-regex
-  const flat = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  // The text is shown, never interpreted, but Jim decides from it: drop every format (Cf: bidi overrides and
+  // isolates, zero-width) character, and turn control (Cc: C0, DEL, C1) and line/paragraph separators into a space.
+  const flat = text.replace(/[\p{Cf}]+/gu, "").replace(/[\p{Cc}\u2028\u2029]+/gu, " ").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
@@ -110,7 +128,7 @@ export function bannerCommand(
     return { command: terminalNotifierPath, args: ["-title", title, "-message", message, "-group", NOTIFICATION_GROUP] };
   }
   return {
-    command: "osascript",
+    command: OSASCRIPT_PATH,
     args: [
       "-e", "on run argv",
       "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
@@ -126,8 +144,6 @@ export class HumanGateNotifier {
   private readonly log: (line: string) => void;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
-  /** Last spawn attempt, kept in memory as well as in the table: a failed spawn records nothing, and must not retry every tick. */
-  private lastAttemptMs = 0;
   /** Outcome of the last spawn, so the first banner proves delivery from the daemon process. */
   lastResult: { at: string; command: string; ok: boolean } | null = null;
 
@@ -171,44 +187,49 @@ export class HumanGateNotifier {
   private async tickOnce(): Promise<NotifierTickResult> {
     const nowMs = this.clock().getTime();
     const nowIso = new Date(nowMs).toISOString();
-    const waiting = selectWaitingRsiItems(this.deps.listBlocked());
-    const rows = this.deps.store.list();
-    const byId = new Map(rows.map((r) => [r.qitemId, r]));
-    const waitingIds = new Set(waiting.map((w) => w.qitemId));
+    const waiting = selectWaitingRsiItems(this.deps.listBlocked(), this.deps.stewardSession);
+    // A stored time that is unparseable or later than now cannot be a past banner: the row is ignored (for the gap, the
+    // cap and the item's own entry state), so one bad row cannot block every banner. A sent banner rewrites the item's row.
+    const rows = this.deps.store.list()
+      .map((r) => ({ ...r, lastMs: Date.parse(r.lastNotifiedAt) }))
+      .filter((r) => Number.isFinite(r.lastMs) && r.lastMs <= nowMs);
+    const byKey = new Map(rows.map((r) => [r.qitemId, r]));
+    const waitingKeys = new Set(waiting.map(episodeKey));
 
-    // Rows older than a day for items that no longer wait carry no gap or cap information; drop them.
+    // Rows older than a day for episodes that no longer wait (and old attempts) carry no gap or cap information; drop them.
     const dayAgo = nowMs - REMINDER_INTERVAL_MS;
-    const stale = rows.filter((r) => !waitingIds.has(r.qitemId) && Date.parse(r.lastNotifiedAt) <= dayAgo).map((r) => r.qitemId);
+    const stale = rows.filter((r) => !waitingKeys.has(r.qitemId) && r.lastMs <= dayAgo).map((r) => r.qitemId);
     if (stale.length > 0) this.deps.store.deleteOlderThan(stale, new Date(dayAgo + 1).toISOString());
 
     const pending = waiting.filter((w) => {
-      const row = byId.get(w.qitemId);
-      return !row || Date.parse(row.lastNotifiedAt) <= nowMs - REMINDER_INTERVAL_MS;
+      const row = byKey.get(episodeKey(w));
+      return !row || row.lastMs <= nowMs - REMINDER_INTERVAL_MS;
     });
     if (pending.length === 0) return { status: "idle", waiting: waiting.length };
 
-    const lastBannerMs = Math.max(this.lastAttemptMs, ...rows.map((r) => Date.parse(r.lastNotifiedAt)).filter(Number.isFinite));
+    const lastBannerMs = Math.max(0, ...rows.map((r) => r.lastMs).filter(Number.isFinite));
     if (nowMs - lastBannerMs < MIN_BANNER_GAP_MS) {
       return { status: "coalesced", waiting: waiting.length, pending: pending.length };
     }
-    const bannerTimes = new Set(rows.map((r) => Date.parse(r.lastNotifiedAt)).filter((t) => Number.isFinite(t) && t > dayAgo));
-    if (this.lastAttemptMs > dayAgo) bannerTimes.add(this.lastAttemptMs);
+    // Attempts count, successful or not: a failing spawner must not run a child process every gap all day.
+    const bannerTimes = new Set(rows.map((r) => r.lastMs).filter((t) => Number.isFinite(t) && t > dayAgo));
     if (bannerTimes.size >= MAX_BANNERS_PER_DAY) {
       return { status: "capped", waiting: waiting.length, pending: pending.length };
     }
 
     // New entries lead over reminders, so the named item is the one that just arrived.
-    const lead = pending.find((p) => !byId.has(p.qitemId)) ?? pending[0]!;
+    const lead = pending.find((p) => !byKey.has(episodeKey(p))) ?? pending[0]!;
     const message = composeBannerMessage(waiting, lead);
     const { command, args } = bannerCommand(this.deps.findExecutable("terminal-notifier"), NOTIFICATION_TITLE, message);
-    this.lastAttemptMs = nowMs;
     const result = await this.deps.spawner(command, args);
     this.lastResult = { at: nowIso, command: path.basename(command), ok: result.ok };
     if (!result.ok) {
       this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)}`);
+      // Persist the attempt (not the items: they stay unnotified and are retried after the gap).
+      this.deps.store.record([`${ATTEMPT_KEY_PREFIX}${nowMs}`], nowIso);
       return { status: "failed", waiting: waiting.length, command: path.basename(command) };
     }
-    const notified = pending.map((p) => p.qitemId);
+    const notified = pending.map(episodeKey);
     this.deps.store.record(notified, nowIso);
     return { status: "sent", waiting: waiting.length, notified, command: path.basename(command) };
   }
@@ -216,9 +237,13 @@ export class HumanGateNotifier {
 
 /** Reads `blocked` rows from the daemon database. SELECT only. */
 export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[] {
-  const stmt = db.prepare("SELECT qitem_id, state, blocked_on, tags, summary FROM queue_items WHERE state = 'blocked'");
-  return () => (stmt.all() as Array<{ qitem_id: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null }>)
-    .map((r) => ({ qitemId: r.qitem_id, state: r.state, blockedOn: r.blocked_on, tags: parseTags(r.tags), summary: r.summary }));
+  const stmt = db.prepare(
+    "SELECT q.qitem_id, q.source_session, q.state, q.blocked_on, q.tags, q.summary, " +
+    "COALESCE((SELECT MAX(t.transition_id) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.state = 'blocked'), q.ts_updated) AS episode " +
+    "FROM queue_items q WHERE q.state = 'blocked'",
+  );
+  return () => (stmt.all() as Array<{ qitem_id: string; source_session: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null; episode: string | number }>)
+    .map((r) => ({ qitemId: r.qitem_id, sourceSession: r.source_session, episode: String(r.episode), state: r.state, blockedOn: r.blocked_on, tags: parseTags(r.tags), summary: r.summary }));
 }
 
 function parseTags(raw: string | null): string[] {
@@ -263,13 +288,17 @@ export const defaultBannerSpawner: BannerSpawner = (command, args) =>
     }
   });
 
-const EXTRA_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+/** Fixed install locations only. The daemon's PATH is never consulted: a banner binary is not found by search. */
+export const TERMINAL_NOTIFIER_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"] as const;
 
-export function defaultFindExecutable(name: string): string | null {
-  const dirs = [...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean), ...EXTRA_BIN_DIRS];
+export function defaultFindExecutable(name: string, dirs: readonly string[] = TERMINAL_NOTIFIER_DIRS): string | null {
   for (const dir of dirs) {
     const candidate = path.join(dir, name);
-    try { accessSync(candidate, fsConstants.X_OK); return candidate; } catch { /* next */ }
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch { /* next */ }
   }
   return null;
 }

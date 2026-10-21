@@ -148,7 +148,7 @@ import { openRigContextLibraryRoots } from "./domain/instance-initialization.js"
 import { resolveSystemWorld } from "./domain/system-world.js";
 import { AgentImageLibraryService } from "./domain/agent-images/agent-image-library-service.js";
 import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
-import { SettingsStore as ContextPackSettingsStore, isSettingsValidKey } from "./domain/user-settings/settings-store.js";
+import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
 import { WhoamiService } from "./domain/whoami-service.js";
 import { NodeCmuxService } from "./domain/node-cmux-service.js";
 import { createAppWithWebSocket, type AppDeps } from "./server.js";
@@ -2604,21 +2604,26 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Inert until the `rsi.stewardSession` setting exists and is
-  // set: that key and the rsi_notifications table both come from RSI lane B1, so this is a no-op before it merges.
+  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Armed only when `rsi.steward_session` (RSI lane B1's key) is set.
+  // Optional machinery never stops the daemon booting: a failure here (for example the rsi_notifications table
+  // missing after a partial rollback) logs its class once and leaves the notifier off.
   let humanGateNotifier: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier | undefined;
-  const rsiStewardKey: string = "rsi.stewardSession";
-  if (dbPath !== ":memory:" && isSettingsValidKey(rsiStewardKey)) {
-    const steward = healthSettingsStore.resolveOne(rsiStewardKey).value;
+  try {
+    const steward = healthSettingsStore.resolveOne("rsi.steward_session").value;
     if (typeof steward === "string" && steward.trim() !== "") {
       const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
       humanGateNotifier = new rsiNotifier.HumanGateNotifier({
         listBlocked: rsiNotifier.sqliteBlockedRows(db),
+        stewardSession: steward.trim(),
         store: rsiNotifier.sqliteNotificationStore(db),
         spawner: rsiNotifier.defaultBannerSpawner,
         findExecutable: rsiNotifier.defaultFindExecutable,
       });
+      console.log(`[rsi-notifier] armed for steward session ${steward.trim()}`);
     }
+  } catch (err) {
+    humanGateNotifier = undefined;
+    console.error(`[rsi-notifier] disabled: construction failed class=${err instanceof Error ? err.constructor.name : typeof err}`);
   }
   return { app, db, deps, contextMonitor, eventLoopMonitor, humanGateNotifier, injectWebSocket };
 }
