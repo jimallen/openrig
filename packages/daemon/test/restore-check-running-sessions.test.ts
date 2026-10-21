@@ -213,18 +213,21 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       expect(afterReasons, "the check predicts the stop restore reports").toContain(JSON.stringify(node.error.split(" — ")[0]).slice(1, -1));
       expect(afterReasons, "the live-row advice is gone once the row is not live").not.toContain("tmux kill-session");
     });
-    // What the advice used to say. Measured here so the sentence stays out: the real teardown acts on each seat's newest
-    // row, so for these shapes it ends nothing live and restore still refuses.
-    it.each(SHAPES.map((row) => [row.name, row] as const))("%s: rig down does not end the older live row (so the advice must not send the operator there)", async (_name, row) => {
+    // OF-54: the real teardown used to act only on each seat's newest row, so for these shapes it ended nothing live and
+    // restore kept refusing (this row pinned that). It now ends the older live row too.
+    it.each(SHAPES.map((row) => [row.name, row] as const))("%s: rig down ends the older live row, so restore no longer refuses rig_not_stopped", async (_name, row) => {
       h = createRestoreHarness();
       const seat = await h.launchRig();
       row.pre?.(seat);
       const snapshotId = (h.snapshotCapture.captureSnapshot(seat.rigId, "auto-pre-down") as { id: string }).id;
       await row.tmux(seat);
       const down = await new RigTeardownOrchestrator({ db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, tmuxAdapter: h.tmux, snapshotCapture: h.snapshotCapture, eventBus: new EventBus(h.db) }).teardown(seat.rigId);
-      expect(await h.tmux.hasSession(seat.sessionName), JSON.stringify(down)).toBe(true);
+      // The tmux double reads a fixed table, so teardown's kill is mirrored into it (as the advice test does after its kill).
+      expect(down, "teardown killed the one live older session and reported no error").toMatchObject({ sessionsKilled: 1, errors: [] });
+      expect(h.db.prepare("SELECT COUNT(*) AS c FROM sessions WHERE status = 'running'").get(), "no DB-running row is left").toEqual({ c: 0 });
+      tmuxSays({});
       const out: any = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
-      expect(out.ok ? "ran" : out.code).toBe("rig_not_stopped");
+      expect(out.ok ? "ran" : out.code, JSON.stringify(out.ok ? "" : out.message)).not.toBe("rig_not_stopped");
     });
   });
 
