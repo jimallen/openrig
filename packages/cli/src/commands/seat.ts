@@ -919,8 +919,10 @@ Examples:
     .option("--json", "JSON output for agents")
     .description("Stop exactly one LIVE managed seat (kills only that seat's tmux session; audited)")
     .addHelpText("after", `
-Siblings are untouched. A dead seat is refused (use rig seat clean); an adopted
-session is refused (use rig unclaim). Stopping ends that agent's session and any
+Siblings are untouched. The seat's older still-live sessions are ended too (a
+tmux session that another seat owns is never killed). A dead seat with no older
+live session is refused (use rig seat clean); an adopted session is refused (use
+rig unclaim). Stopping ends that agent's session and any
 work in progress: check it first (rig capture <seat>) and stop only a seat you
 own or were asked to stop. rig seat launch <seat> --fresh --reason <text> starts
 a fresh occupant there; it does not resume the stopped conversation.
@@ -932,7 +934,16 @@ rig stopped. Examples:
     .action(async (seat: string, opts: { reason: string; operator?: string; json?: boolean }) => {
       await runLifecycleVerb("stop", seat, { reason: opts.reason, operator: opts.operator }, opts, (data) => {
         const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
-        console.log(`Stopped ${String(data["sessionName"])} (seat ${s?.logicalId}@${s?.rigName}).`);
+        // An older daemon sends neither field: its reply means the latest session was stopped.
+        const older = Array.isArray(data["olderSessionsEnded"]) ? data["olderSessionsEnded"] as Array<{ sessionName?: string; killed?: boolean }> : [];
+        if (data["latestSessionStopped"] !== false) {
+          console.log(`Stopped ${String(data["sessionName"])} (seat ${s?.logicalId}@${s?.rigName}).`);
+        } else {
+          console.log(`Seat ${s?.logicalId}@${s?.rigName}: its latest session ${String(data["sessionName"])} was already gone from tmux; only older live sessions were ended.`);
+        }
+        for (const row of older) {
+          console.log(`Also ended older live session ${String(row.sessionName)}${row.killed ? "" : " (its tmux session was already gone or belongs to another seat, so none was killed)"}.`);
+        }
         console.log("Session marked exited, binding cleared; siblings untouched. Relaunch via the normal launch surface.");
       });
     });

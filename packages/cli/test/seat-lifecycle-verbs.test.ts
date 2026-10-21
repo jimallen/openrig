@@ -359,6 +359,29 @@ describe("rig seat stop", () => {
     expect(logs.join("\n")).toContain("siblings untouched");
   });
 
+  it("names the older live sessions it also ended, and says when the latest session was already gone", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({
+      status: 200,
+      data: {
+        ok: true, seat: { logicalId: "dev.impl", rigName: "seat-rig" }, sessionName: "dev-impl-v2@seat-rig", sessionId: "S2",
+        latestSessionStopped: false,
+        olderSessionsEnded: [
+          { sessionId: "S1", sessionName: "dev-impl@seat-rig", killed: true },
+          { sessionId: "S0", sessionName: "dev-impl-v0@seat-rig", killed: false },
+        ],
+      },
+    }, calls);
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "stop", "dev-impl@seat-rig", "--reason", "x"]);
+    });
+    const text = logs.join("\n");
+    expect(text).toContain("latest session dev-impl-v2@seat-rig was already gone from tmux");
+    expect(text).not.toContain("Stopped dev-impl-v2@seat-rig");
+    expect(text).toContain("Also ended older live session dev-impl@seat-rig.");
+    expect(text).toContain("Also ended older live session dev-impl-v0@seat-rig (its tmux session was already gone or belongs to another seat, so none was killed).");
+  });
+
   it("--json passes the refusal through verbatim and exits 1", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const refusal = { ok: false, code: "session_not_live", message: "not alive", guidance: "rig seat clean" };
