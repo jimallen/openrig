@@ -154,12 +154,16 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
       if (outbox) {
         try {
-          outbox.record({
+          const entry = outbox.record({
             senderSession: derivedActor,
             destinationSession: body.session,
             body: body.text,
             identityProvenance: "transport:v1",
           });
+          // OF-74: settle the row exactly as /broadcast does for a landed recipient. This point is
+          // reached only for result.ok (failures and retained sends returned above), so the send
+          // is delivered; leaving the row `pending` stranded one row per send forever.
+          outbox.markDelivered(entry.outboxId);
         } catch (err) {
           console.warn(`[transport/send] outbox auto-record failed (send already delivered): ${(err as Error).message}`);
         }

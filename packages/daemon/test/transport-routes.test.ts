@@ -160,6 +160,89 @@ describe("transport routes", () => {
     expect(rows[0]!["identity_provenance"]).toBe("transport:v1"); // era-stamp from the run, not hardcoded-lying
   });
 
+  // OF-74 — the single-send path recorded its outbox row but never settled it, so every derived
+  // send stayed `pending` forever (10,153 aged `transport:v1` rows on the live DB). The broadcast
+  // path settles per row (A3b); a successful single send must settle exactly the same way.
+  it("OF-74 — a successful derived single send settles its outbox row as delivered (same as broadcast), stamping delivered_at", async () => {
+    seedRig();
+    const res = await sendApp().request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "settle me" }),
+    });
+    expect(res.status).toBe(200);
+    const rows = outboxRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!["delivery_state"]).toBe("delivered"); // not left `pending`
+    expect(typeof rows[0]!["delivered_at"]).toBe("string");
+    expect(Number.isNaN(Date.parse(String(rows[0]!["delivered_at"])))).toBe(false);
+  });
+
+  it("OF-74 — N successful single sends leave ZERO pending rows (the live-DB symptom: pending rows accruing per send)", async () => {
+    seedRig();
+    const app = sendApp();
+    for (const text of ["one", "two", "three"]) {
+      const res = await app.request("/api/transport/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+        body: JSON.stringify({ session: "dev-impl@my-rig", text }),
+      });
+      expect(res.status).toBe(200);
+    }
+    expect(outboxRows()).toHaveLength(3);
+    expect(outboxRows().filter((r) => r["delivery_state"] === "pending")).toHaveLength(0);
+    expect(outboxRows().map((r) => r["delivery_state"])).toEqual(["delivered", "delivered", "delivered"]);
+  });
+
+  // The failed single send never reaches the auto-record (the route returns on !result.ok first), so
+  // it leaves NO row. Broadcast records a `failed` row for a failed recipient; the single path does
+  // not, and OF-74 deliberately does not change that (see PR scope note). Pinned so a change is seen.
+  it("OF-74 — a FAILED single send (session missing) records no outbox row and never a delivered one", async () => {
+    seedRig();
+    const transport = new SessionTransport({
+      db, rigRepo, sessionRegistry,
+      tmuxAdapter: mockTmux({ hasSession: async () => false }),
+    });
+    migrate(db, [outboxEntriesSchema]);
+    if (!(db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "identity_provenance")) {
+      db.exec("ALTER TABLE outbox_entries ADD COLUMN identity_provenance TEXT");
+    }
+    const app = createApp({ sessionTransport: transport, outboxHandler: new OutboxHandler(db) });
+    const res = await app.request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "nobody home" }),
+    });
+    expect(res.status).toBe(404);
+    expect(outboxRows()).toHaveLength(0);
+  });
+
+  // OF-74 N2 — a submit-only send types no text (it presses Enter onto already-staged text), so the
+  // route records NO outbox row for it: there is no body to attribute and nothing to settle. Pinned
+  // so that dropping the `!body.submitOnly` guard (which would record a null-body row) is seen.
+  it("OF-74 — a SUCCESSFUL submitOnly send (200) writes NO outbox row (no text typed, nothing to settle)", async () => {
+    seedRig();
+    const transport = new SessionTransport({
+      db, rigRepo, sessionRegistry,
+      tmuxAdapter: mockTmux({ capturePaneContent: async () => "staged draft text\n❯ staged draft text" }),
+    });
+    migrate(db, [outboxEntriesSchema]);
+    if (!(db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "identity_provenance")) {
+      db.exec("ALTER TABLE outbox_entries ADD COLUMN identity_provenance TEXT");
+    }
+    const app = createApp({ sessionTransport: transport, outboxHandler: new OutboxHandler(db) });
+    const res = await app.request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "", submitOnly: true, expectedStagedText: "staged draft text" }),
+    });
+    const json = await res.json() as Record<string, unknown>;
+    expect(res.status, JSON.stringify(json)).toBe(200);
+    expect(json["ok"]).toBe(true);
+    expect(json["submitOnly"]).toBe(true); // the submit-only path really ran
+    expect(outboxRows()).toHaveLength(0);
+  });
+
   it("A3 — a cross-host send records the ORIGIN triple (the derived header), never the relay's seat", async () => {
     seedRig();
     const res = await sendApp().request("/api/transport/send", {
