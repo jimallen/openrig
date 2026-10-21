@@ -297,6 +297,10 @@ interface RecoveryRigInput {
   /** Restore would refuse this rig whole (`rig_not_stopped`): a seat the DB shows running is live in tmux or unreadable.
    *  Then what the snapshot says about the next restore is not what recovery reports. */
   restoreRefused: boolean;
+  /** OF-47: restore's own reading of EVERY DB-running row of the rig (restore-running-sessions.ts), which the advice must
+   *  follow instead of each seat's newest row. `live`/`unreadable`: restore refuses (rig_not_stopped); `unanswered`: the
+   *  rule was asked and failed. `none`: restore runs. `not_asked`: no tmux is wired, so no liveness is read at all. */
+  restoreRunningRows: "none" | "live" | "unreadable" | "unanswered" | "not_asked";
 }
 
 interface HostInfraCheckResult {
@@ -410,6 +414,7 @@ export class RestoreCheckService {
     const recoveryRigInputs: RecoveryRigInput[] = [];
     const restoreInputsByRig = new Map<string, { snapshot: { id: string; kind: string } | null; error?: string }>();
     const restoreRefusedByRig = new Map<string, boolean>();
+    const restoreRunningRowsByRig = new Map<string, RecoveryRigInput["restoreRunningRows"]>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -480,6 +485,7 @@ export class RestoreCheckService {
       );
       const restoreRuns = restoreRunsFor(running.get(rig.rigId), nodes);
       restoreRefusedByRig.set(rig.rigId, restoreRuns === "refused");
+      restoreRunningRowsByRig.set(rig.rigId, restoreRunningRowsFor(running.get(rig.rigId)));
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
@@ -489,7 +495,7 @@ export class RestoreCheckService {
       }
 
       for (const node of nodes) {
-        const readinessCheck = this.checkSeatReadiness(node, liveness);
+        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused");
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
@@ -565,6 +571,7 @@ export class RestoreCheckService {
         deadSeatIds: rollup.deadSeatIds,
         unknownLivenessSeats: rollup.unknownLivenessSeats,
         restoreRefused: restoreRefusedByRig.get(rollup.rigId) ?? false,
+        restoreRunningRows: restoreRunningRowsByRig.get(rollup.rigId) ?? "not_asked",
       });
     }
 
@@ -1046,9 +1053,13 @@ export class RestoreCheckService {
     };
   }
 
-  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>): CheckEntry {
+  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false): CheckEntry {
     const session = node.canonicalSessionName ?? node.logicalId;
     const check = `seat.${session}.readiness`;
+    // OF-47: restore (rig up --existing) is offered as a way back only when restore's own rule lets it run.
+    const restoreOrRelaunch = restoreRefused
+      ? "Relaunch the seat (restore refuses this rig, rig_not_stopped, while a session row the DB shows running is live or unreadable; see the rig's recovery entry)"
+      : "Restore or relaunch the seat";
 
     if (!node.canonicalSessionName) {
       return {
@@ -1082,7 +1093,7 @@ export class RestoreCheckService {
         check,
         status: "red",
         evidence: `Seat not running/ready: DB says sessionStatus=running startupStatus=ready but tmux session ${node.canonicalSessionName} is absent (stale DB state)`,
-        remediation: "Restore or relaunch the seat, then rerun rig restore-check",
+        remediation: `${restoreOrRelaunch}, then rerun rig restore-check`,
         remediationSafe: false,
       };
     }
@@ -1108,7 +1119,7 @@ export class RestoreCheckService {
         evidence: `Seat not running/ready: sessionStatus=${node.sessionStatus ?? "unknown"} startupStatus=${node.startupStatus ?? "unknown"}${latestError}${tmuxNote}`,
         remediation: tmux === "live"
           ? "The seat is live in tmux although the DB does not show it running; rig up --existing would be refused while a seat is live. Inspect with rig ps --nodes, then rerun rig restore-check"
-          : "Restore or relaunch the seat, then rerun rig restore-check",
+          : `${restoreOrRelaunch}, then rerun rig restore-check`,
         remediationSafe: false,
       };
     }
@@ -1701,6 +1712,27 @@ export class RestoreCheckService {
         continue;
       }
 
+      // OF-47: the seats' newest rows show nothing live, but restore reads every running row. Whatever it refuses on, the
+      // advice must not be the command it refuses.
+      if (input.restoreRunningRows === "live") {
+        blocked.push({
+          scope: "rig",
+          rigId: input.rigId,
+          rigName: input.rigName,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): a session row the DB shows running is live in tmux, although no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while any running row is live. Inspect with rig ps --nodes; to restart every seat and keep the conversations: rig down ${shellQuote(input.rigName)}, then rig up ${shellQuote(input.rigName)} --existing.`,
+        });
+        continue;
+      }
+      if (input.restoreRunningRows === "unreadable" || input.restoreRunningRows === "unanswered") {
+        unknown.push({
+          scope: "rig",
+          rigId: input.rigId,
+          rigName: input.rigName,
+          reason: `No restore command is advised: ${input.restoreRunningRows === "unreadable" ? "tmux liveness could not be read for a session row the DB shows running (an older running row may sit behind a newer one)" : "restore's own reading of the rig's running session rows could not be answered"}. Restore fails closed (rig_not_stopped, 409) on a running row it cannot read. Check tmux (tmux ls), then rerun rig restore-check.`,
+        });
+        continue;
+      }
+
       if (input.latestSnapshot) {
         actions.push({
           scope: "rig",
@@ -1936,6 +1968,15 @@ function restoreRunsFor(classification: RunningSessionClassification | Error | u
   if (classification && !(classification instanceof Error)) return restoreRefusesRig(classification) ? "refused" : "would_run";
   const anyRunning = nodes.some((node) => (node.storedSessionStatus ?? node.sessionStatus) === "running");
   return anyRunning ? "unknown" : "would_run";
+}
+
+/** OF-47: the recovery advice's reading of restore's own rule over the rig's running rows. */
+function restoreRunningRowsFor(classification: RunningSessionClassification | Error | undefined): RecoveryRigInput["restoreRunningRows"] {
+  if (classification === undefined) return "not_asked";
+  if (classification instanceof Error) return "unanswered";
+  if (classification.live.length > 0) return "live";
+  if (classification.unknown.length > 0) return "unreadable";
+  return "none";
 }
 
 /** DB says running+ready AND tmux has not contradicted it (unprobed counts as DB-only). */
