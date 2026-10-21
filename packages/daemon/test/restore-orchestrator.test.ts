@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,7 +44,7 @@ function setupDb(): Database.Database {
 }
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     createSession: vi.fn(async () => ({ ok: true as const })),
     killSession: vi.fn(async () => ({ ok: true as const })),
     sendText: vi.fn(async () => ({ ok: true as const })),
@@ -55,7 +56,7 @@ function mockTmux(): TmuxAdapter {
     listWindows: async () => [],
     listPanes: async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }],
     hasSession: async () => false,
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 function mockClaudeResume(result?: ResumeResult): ClaudeResumeAdapter {
@@ -4187,7 +4188,7 @@ describe("RestoreOrchestrator", () => {
     // can vary it. Cannot reuse `mockTmux()` because that wires hasSession as a
     // plain async function (88 existing tests depend on that shape).
     function mockTmuxForReconciler(): TmuxAdapter {
-      return {
+      return mockShellCommand({
         createSession: vi.fn(async () => ({ ok: true as const })),
         killSession: vi.fn(async () => ({ ok: true as const })),
         sendText: vi.fn(async () => ({ ok: true as const })),
@@ -4199,7 +4200,7 @@ describe("RestoreOrchestrator", () => {
         listSessions: async () => [],
         listWindows: async () => [],
         listPanes: async () => [{ id: "%1", index: 0, cwd: "/", width: 80, height: 24, active: true }],
-      } as unknown as TmuxAdapter;
+      } as unknown as TmuxAdapter);
     }
 
     const exactClaudeLineage = (token = "tok-abc-123") => async () => [

@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import os from "node:os";
 import path from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -27,7 +28,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     createSession: vi.fn(async () => ({ ok: true as const })),
     killSession: vi.fn(async () => ({ ok: true as const })),
     sendText: vi.fn(async () => ({ ok: true as const })),
@@ -38,7 +39,7 @@ function mockTmux(): TmuxAdapter {
     sendKeys: vi.fn(async () => ({ ok: true as const })),
     getPaneCommand: vi.fn(async () => "claude"),
     capturePaneContent: vi.fn(async () => ""),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 // In-memory FS adapter pattern from claude-runtime-adapter.test.ts. We

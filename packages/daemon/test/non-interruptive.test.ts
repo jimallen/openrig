@@ -1,4 +1,5 @@
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
@@ -24,12 +25,12 @@ const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function root() { const dir = mkdtempSync(join(tmpdir(), "ni-")); roots.push(dir); return dir; }
 function fixture(runtime: string) {
-  const tmux = {
+  const tmux = mockShellCommand({
     sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
     sendShellCommand: vi.fn(async () => ({ ok: true })),
     getPaneCommand: vi.fn(async () => runtime === "codex" ? "codex" : "claude"),
     capturePaneContent: vi.fn(async () => ""), listPanes: vi.fn(async () => []),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
   const fsOps = { readFile: () => { throw new Error("not found"); }, writeFile: vi.fn(),
     exists: () => false, mkdirp: vi.fn(), copyFile: vi.fn(), listFiles: () => [] };
   const binding = { id: "b", nodeId: "n", cwd: "/work/fixture", tmuxSession: "dev@test",

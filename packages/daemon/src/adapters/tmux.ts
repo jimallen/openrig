@@ -62,6 +62,14 @@ function typedPathArg(path: string): string {
   return TYPED_SAFE_PATH.test(path) ? path : shellQuote(path);
 }
 
+// Characters an autopair widget (zsh-autopair and kin) rewrites when typed: it inserts the closer
+// for each opener, and a quote overtypes only while it is balanced. A command line that holds none
+// of them is unaffected and may be typed as it stands; every other line is staged.
+const WIDGET_REWRITTEN = /[()[\]{}"'`]/;
+export function isTypedLineWidgetSafe(line: string): boolean {
+  return !WIDGET_REWRITTEN.test(line);
+}
+
 export function defaultTmuxFileOps(): TmuxFileOps {
   return {
     writeFile: (p, content, options) => fsWriteFile(p, content, { encoding: "utf8", ...options }),
@@ -740,7 +748,8 @@ export class TmuxAdapter {
     // POSIX shells retain subshell isolation; unknown/unreadable panes use sh.
     const paneShell = options.sourceInPane ? (await this.getPaneCommand(target) ?? "").replace(/^-/, "") : "";
     const sourceInPane = ["bash", "zsh", "sh", "dash", "ksh"].includes(paneShell);
-    let path = options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName();
+    // A short Pi command is typed as it stands only when no widget rewrites a character of it.
+    let path = options.stageIfLong && commandBytes <= 512 && isTypedLineWidgetSafe(command) ? undefined : this.fileOps.tmpName();
     let invocation = path ? sourceInPane ? `. ${typedPathArg(path)}` : `/bin/sh ${typedPathArg(path)}` : command;
     if (path && paneShell === "fish") {
       const quotedPath = shellQuote(path);

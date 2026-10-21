@@ -314,6 +314,10 @@ export class ResumeMetadataRefresher {
         return "inconclusive";
       }
 
+      // Typed as it stands, not staged: the verdict below reads the pane's foreground command, and a
+      // sourced subshell keeps the pane shell in front of claude, so every resumable session would
+      // read as "returned to shell". The line holds only shell-quoted words, which an autopair
+      // widget overtypes (OF-64 review, real zsh-autopair).
       const send = await this.tmuxAdapter.sendText(probeSession, command);
       if (!send.ok) {
         return "inconclusive";

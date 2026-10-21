@@ -191,10 +191,9 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
         posture,
         resumeToken: opts.resumeToken,
       });
-      const textResult = await this.tmux.sendText(sessionName, cmd);
+      // Staged: only `/bin/sh <path>` is typed into the pane shell, and the script execs the runner.
+      const textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { execInScript: true });
       if (!textResult.ok) return { ok: false, error: `Failed to send stub launch command: ${textResult.message}` };
-      const enterResult = await this.tmux.sendKeys(sessionName, ["Enter"]);
-      if (!enterResult.ok) return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
 
       const ready = await this.waitForRunnerReady(binding, launchId);
       if (!ready.ok) return ready.failure;

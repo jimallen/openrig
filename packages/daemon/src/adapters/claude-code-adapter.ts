@@ -309,16 +309,13 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         // parent id needs the same quoting as --model/--effort above (and as
         // the codex fork path) — a hostile id must not leave --resume.
         : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name ${opts.name}`;
+      // Every branch stages the command: only the source line is typed into the pane shell.
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
-        : this.seatLaunchEnvironment
-          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
-          : await this.tmux.sendText(binding.tmuxSession, cmd);
+        : await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
+          ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
+          : cmd, undefined, { sourceInPane: true });
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
-      }
-      const enterResult = managed || this.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-      if (!enterResult.ok) {
-        return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
       }
       // As with a fresh launch, nothing is read back from Claude's session files: a same-name
       // file can belong to an earlier occupant or another seat sharing the config directory.
@@ -333,16 +330,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --session-id ${generatedSessionId} --name ${opts.name}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
-      : this.seatLaunchEnvironment
-          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
-          : await this.tmux.sendText(binding.tmuxSession, cmd);
+      : await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment
+        ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
+        : cmd, undefined, { sourceInPane: true });
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
-    }
-    // Send Enter to execute
-    const enterResult = managed || this.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-    if (!enterResult.ok) {
-      return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
     }
 
     const launch = { binding, token: opts.resumeToken ?? generatedSessionId!, executable: managed?.executable } as

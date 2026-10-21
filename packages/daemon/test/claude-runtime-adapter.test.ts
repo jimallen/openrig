@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
@@ -10,7 +11,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { claudePostureFlag } from "../src/adapters/yolo-mode.js";
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     sendText: vi.fn(async () => ({ ok: true as const })),
     hasSession: vi.fn(async () => true),
     getPaneCommand: vi.fn(async () => "claude"),
@@ -21,7 +22,7 @@ function mockTmux(): TmuxAdapter {
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 function mockFs(files?: Record<string, string>): ClaudeAdapterFsOps {

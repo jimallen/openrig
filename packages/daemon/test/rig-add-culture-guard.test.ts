@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -30,7 +31,7 @@ const MARKER = "RIGCULTURE-MARKER-7f3a";
 const BEGIN = "<!-- BEGIN OpenRig MANAGED BLOCK:";
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     createSession: vi.fn(async () => ({ ok: true as const })),
     killSession: vi.fn(async () => ({ ok: true as const })),
     sendText: vi.fn(async () => ({ ok: true as const })),
@@ -41,7 +42,7 @@ function mockTmux(): TmuxAdapter {
     listSessions: vi.fn(async () => []),
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 const realFs = (home: string): ClaudeAdapterFsOps => ({

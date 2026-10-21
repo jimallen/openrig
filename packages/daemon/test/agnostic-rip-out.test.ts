@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRAGMENT_PATH = path.join(__dirname, "../specs/agents/shared/runtime/claude-settings.fragment.json");
 
 function mockTmux(): TmuxAdapter {
-  return {
+  return mockShellCommand({
     sendText: vi.fn(async () => ({ ok: true as const })),
     hasSession: vi.fn(async () => true),
     getPaneCommand: vi.fn(async () => "claude"),
@@ -28,7 +29,7 @@ function mockTmux(): TmuxAdapter {
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
-  } as unknown as TmuxAdapter;
+  } as unknown as TmuxAdapter);
 }
 
 function mockFs(files?: Record<string, string>): ClaudeAdapterFsOps & { _store: Record<string, string> } {
