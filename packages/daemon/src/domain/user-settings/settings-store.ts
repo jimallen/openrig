@@ -219,6 +219,10 @@ export const SETTINGS_VALID_KEYS = [
   // Under explicit-only, an ask that needs a person must be addressed to the person;
   // without a human registry, explicit-only posts everything, as always does.
   "queue.wake_human_rung",
+  // RSI B1 (rsi-design-9k-rev2 §3.4, §8 L4) — the improvement steward's session. Unset (the
+  // default "") arms nothing: the daemon boot-registers the health-finding wake and the daily
+  // report only when this names a canonical '<member>@<rig>' session. Twin of the other side.
+  "rsi.steward_session",
 ] as const;
 
 export type SettingsValidKey = typeof SETTINGS_VALID_KEYS[number];
@@ -312,6 +316,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "queue.wake_retry_cap": { primary: "OPENRIG_QUEUE_WAKE_RETRY_CAP" },
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
   "queue.wake_human_rung": { primary: "OPENRIG_QUEUE_WAKE_HUMAN_RUNG" },
+  "rsi.steward_session": { primary: "OPENRIG_RSI_STEWARD_SESSION" },
   "queue.wake_swap_grace_seconds": { primary: "OPENRIG_QUEUE_WAKE_SWAP_GRACE_SECONDS" },
 };
 
@@ -393,6 +398,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "queue.wake_retry_cap": ["queue", "wakeRetryCap"],
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
   "queue.wake_human_rung": ["queue", "wakeHumanRung"],
+  "rsi.steward_session": ["rsi", "stewardSession"],
   "queue.wake_swap_grace_seconds": ["queue", "wakeSwapGraceSeconds"],
 };
 
@@ -676,6 +682,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "queue.wake_unconfirmed_window_minutes": return 30;
     case "queue.wake_swap_grace_seconds": return 180;
     case "queue.wake_human_rung": return "always";
+    case "rsi.steward_session": return ""; // unset: no RSI job is armed
     default: return "";
   }
 }

@@ -181,6 +181,10 @@ const QUIET_SKIP_REASONS = new Set<string>([
   // seats), NOT via a per-scan log.
   "seat_needs_input",
   "activity_stale_unknown",
+  // RSI B1 (rev2 §3.4) — the hourly health-finding wake found no fingerprint activated since
+  // its last delivered wake. Quiet so an unchanged hour costs no history row; the loud,
+  // audited signals are the SENT wake, rsi_budget_brake and rsi_wake_budget_exhausted.
+  "rsi_no_new_finding",
 ]);
 
 export interface EvaluationResult {

@@ -114,6 +114,7 @@ import { sessionRestorePolicyBackfillSchema } from "./migrations/109_session_res
 import { sessionFreshStartSchema } from "./migrations/110_session_fresh_start.js";
 import { rigSpecSourceSchema } from "./migrations/111_rig_spec_source.js";
 import { nodeCodexMcpServersSchema } from "./migrations/112_node_codex_mcp_servers.js";
+import { rsiWakeStateSchema } from "./migrations/113_rsi_wake_state.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -227,4 +228,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   sessionFreshStartSchema,
   rigSpecSourceSchema,
   nodeCodexMcpServersSchema,
+  rsiWakeStateSchema,
 ];

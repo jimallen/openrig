@@ -2195,6 +2195,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             return { ok: res.ok };
           },
         }),
+        // RSI B1 (rev2 §3.4) — the hourly health-finding wake. It reads the SAME projection that
+        // serves `rig health`, and the RSI sources it was built with, so it can tell which source
+        // a fingerprint came from. Inert without a job: jobs are boot-registered below only when
+        // rsi.steward_session is set.
+        (await import("./domain/rsi/health-finding-wake.js")).makeHealthFindingWakePolicy({
+          db,
+          projection: healthProjection,
+          sources: rsiTelemetrySources,
+        }),
         (await import("./domain/policies/delivery-digest-flush.js")).makeDeliveryDigestFlushPolicy({
           queueRepo: queueRepoInstance,
           registry: { loadHumanRegistry: (home: string) => loadHumanRegistryForDelivery(home) },
@@ -2264,6 +2273,20 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       };
       ensureDigestJob("4h", 4 * 60 * 60);
       ensureDigestJob("daily", 24 * 60 * 60);
+    }
+
+    // RSI B1 (rev2 §3.4) — the improvement steward's hourly wake and daily report, armed at boot
+    // ONLY when rsi.steward_session is set; unset (the default) registers nothing. Jobs are keyed
+    // on daemon-owned anchors, so a changed steward retargets them. A failure here is logged and
+    // never stops the daemon booting: RSI is optional machinery.
+    {
+      const { ensureRsiStewardJobs } = await import("./domain/rsi/health-finding-wake.js");
+      try {
+        const stewardSession = new ContextPackSettingsStore().resolveOne("rsi.steward_session").value;
+        ensureRsiStewardJobs(watchdogJobsRepoInstance, typeof stewardSession === "string" ? stewardSession : "");
+      } catch (err) {
+        console.error("[rsi] steward job registration failed", err);
+      }
     }
 
     // B8 / slice-07 A3 — the MODEL-DIVERGENCE MONITOR: cause-agnostic effective-vs-pinned
