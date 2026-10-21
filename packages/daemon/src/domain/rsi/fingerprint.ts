@@ -6,6 +6,11 @@
  *
  * fingerprint = detector id + "/" + normalised subject key. The subject key names WHAT is
  * wrong (for example `rig:<rigId>`), never when it was seen or how often.
+ *
+ * The finding class is NOT part of the fingerprint. A detector that emits more than one
+ * finding class for the same subject (for example D1) MUST put the class into the subject
+ * key (`rig:<rigId>:<class>`); otherwise its classes collapse into one fingerprint. D4 has a
+ * single class, so its subject key is the rig alone.
  */
 export function normaliseSubjectKey(subjectKey: string): string {
   const normalised = subjectKey.normalize("NFC").trim().toLowerCase();

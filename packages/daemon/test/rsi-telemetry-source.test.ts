@@ -63,6 +63,14 @@ describe("D4 archived-rig-live-session source", () => {
     f.node("n-live", "rig-live");
     f.session("s-live", "n-live", "running", "2030-01-03 00:00:00");
 
+    const source = f.source();
+    expect(source.read()).toHaveLength(1);
+    // The live rig must not inflate the coverage total: that would show a false PARTIAL
+    // (total 2, evaluated 1) and freeze a consumer that treats partial as "no transitions".
+    expect(source.coverage()).toEqual([{
+      source: "rsi-telemetry", evaluatedAt: NOW.toISOString(), unit: "sessions", limit: 500,
+      total: 1, evaluated: 1, omitted: 0, partial: false, order: "rig id, session rowid",
+    }]);
     const records = f.records();
 
     expect(records).toHaveLength(1);
