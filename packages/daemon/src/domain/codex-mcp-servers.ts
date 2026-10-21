@@ -359,6 +359,98 @@ export interface SeatMcpServer {
   specDir: string | null;
   /** sha256 of the binary the command resolved to when the server was switched on (Jim, 2026-10-20). */
   commandSha256: string;
+  /** The config files named in the declaration's args, pinned at switch-on (OF-50). Always present on an entry
+   *  written by a current switch-on (possibly empty); an entry without it is refused. */
+  argFiles: McpArgFilePin[];
+}
+
+/** One file argument pinned at switch-on: the arg's value as written, the real path it resolved to, and its sha256. */
+export interface McpArgFilePin {
+  arg: string;
+  realPath: string;
+  sha256: string;
+}
+
+/** Flags whose next argument is a config file the server reads (mcpls: `-c, --config <FILE>`). A value MUST be
+ *  an absolute path to an existing regular file, else it cannot be pinned. The short flag `-c` also takes its
+ *  value attached (`-c=<path>`, `-c<path>`), as clap-style short options do; `--flag=value` works for the long ones.
+ *
+ *  RESIDUAL (security review N2): a declaration with NO config flag at all pins no config. mcpls then falls back
+ *  to $MCPLS_CONFIG and the user's config directory, which the declaration cannot name (env is refused in a
+ *  spec), and OpenRig does not build environment pinning for it. */
+export const MCP_CONFIG_FLAGS: readonly string[] = ["--config", "--config-file", "-c"];
+
+/**
+ * The file arguments of a declaration, pinned (OF-50). The rule:
+ *   1. the value after a known config flag (MCP_CONFIG_FLAGS), or after `=` in `--flag=value`, must be an
+ *      absolute path to an existing regular file (after links), otherwise the declaration cannot be pinned
+ *      and is refused;
+ *   2. any other arg (or `--flag=value` value) that is an absolute path to an existing regular file (after
+ *      links) is pinned too;
+ *   3. every pinned file must pass the binary's placement and ownership rule (not in the seat's folder, a git
+ *      tree, `.workspaces` or a temp root; no foreign owner or group/other-writable component), because a
+ *      config names what the server spawns and a pin of planted bytes would bless them.
+ * Each pin records the real path (so a retargeted link is a change) and the sha256 of the bytes behind it.
+ * Directories, devices and relative or missing paths in rule 2 are not files and are not pinned; a path that
+ * becomes a regular file later is caught at launch because the same rule is re-run and compared.
+ */
+export function mcpArgFilePins(
+  args: string[],
+  /** Where a pinned file may lie: judged with the binary's rule (untrustedPathProblem), minus the spec directory
+   *  (a config legitimately sits beside the spec in a release). Omitted: no placement judgement (unit use only). */
+  place?: { seatCwd: string | null; io?: PathJudgeIo },
+): { ok: true; pins: McpArgFilePin[] } | { ok: false; error: string } {
+  const pins: McpArgFilePin[] = [];
+  const regularFile = (value: string): { realPath: string; sha256: string } | "unreadable" | null => {
+    if (!nodePath.isAbsolute(value)) return null;
+    let real: string;
+    try {
+      real = realpathSync(value);
+      if (!statSync(real).isFile()) return null;
+    } catch { return null; }
+    try { return { realPath: real, sha256: createHash("sha256").update(readFileSync(real)).digest("hex") }; } catch { return "unreadable"; }
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    const eq = /^(--[^=]+)=(.*)$/s.exec(arg);
+    const short = /^-c(=?)(.+)$/s.exec(arg); // -c=<v> and -c<v>; "-c" alone is the flag
+    const value = eq ? eq[2]! : short ? short[2]! : arg;
+    const afterFlag = i > 0 && MCP_CONFIG_FLAGS.includes(args[i - 1]!);
+    const mustBeFile = afterFlag || short !== null || (eq !== null && MCP_CONFIG_FLAGS.includes(eq[1]!));
+    const hit = regularFile(value);
+    if (hit === "unreadable") return { ok: false, error: `the file argument ${value} cannot be read to pin its checksum` };
+    if (!hit) {
+      if (mustBeFile) return { ok: false, error: `the config file argument ${value} is not an absolute path to an existing regular file, so it cannot be pinned` };
+      continue;
+    }
+    if (place) {
+      const judged = untrustedPathProblem(value, "the config file", { seatCwd: place.seatCwd }, place.io);
+      if (judged?.kind === "untrusted") return { ok: false, error: judged.why };
+    }
+    pins.push({ arg, realPath: hit.realPath, sha256: hit.sha256 });
+  }
+  const last = args[args.length - 1];
+  if (last !== undefined && MCP_CONFIG_FLAGS.includes(last)) {
+    return { ok: false, error: `the config flag ${last} has no value, so nothing can be pinned` };
+  }
+  return { ok: true, pins };
+}
+
+/** What differs between the pins recorded at switch-on and the files now; null when identical. */
+export function mcpArgFileProblem(args: string[], pinned: McpArgFilePin[], place?: { seatCwd: string | null; io?: PathJudgeIo }): string | null {
+  const now = mcpArgFilePins(args, place);
+  if (!now.ok) return now.error;
+  const key = (list: McpArgFilePin[]) => JSON.stringify(list.map((p) => [p.arg, p.realPath]));
+  if (key(now.pins) !== key(pinned)) {
+    const show = (list: McpArgFilePin[]) => list.map((p) => `${p.arg} -> ${p.realPath}`).join(", ") || "none";
+    return `the files its arguments name now resolve differently (switched on: ${show(pinned)}; now: ${show(now.pins)})`;
+  }
+  for (let i = 0; i < pinned.length; i++) {
+    if (now.pins[i]!.sha256 !== pinned[i]!.sha256) {
+      return `the file ${pinned[i]!.arg} (${pinned[i]!.realPath}) now has sha256 ${now.pins[i]!.sha256}, not the ${pinned[i]!.sha256} switched on`;
+    }
+  }
+  return null;
 }
 
 /** sha256 (hex) of the file a command resolves to now; null when it cannot be read. */
@@ -430,6 +522,12 @@ export function prepareSeatMcpLaunchArgs(
     const now = commandBinarySha256(server.declaration.command);
     if (now !== server.commandSha256) {
       return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: its command ${server.declaration.command} now resolves to a binary whose sha256 (${now ?? "unreadable"}) differs from the one switched on (${server.commandSha256}); ${again}` };
+    }
+    // The config files its args name, pinned the same way (OF-50): content, real path (a retargeted link) and
+    // the set of files must all be as switched on.
+    const fileProblem = mcpArgFileProblem(server.declaration.args, server.argFiles, { seatCwd, io });
+    if (fileProblem) {
+      return { ok: false, error: `Codex MCP server "${server.name}" for this seat cannot start: ${fileProblem}; if the change is intended, check the config file and switch it on again (rig seat set-mcp <seat> ${server.name} on --reason ...), or ${remedy}` };
     }
     arg += ` -c ${quote(renderCodexMcpOverride(server))}`;
     // Measured (design report M9, review N1): Codex does not sandbox MCP server processes. Jim's rule:

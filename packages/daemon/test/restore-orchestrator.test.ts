@@ -675,14 +675,14 @@ describe("RestoreOrchestrator", () => {
     const off = rigRepo.addNode(rig.id, "verify.qa", { runtime: "codex", cwd: "/work" });
     const declaration = { command: "/opt/mcpls", args: ["--x"], enabled_tools: ["get_hover"] };
     db.prepare("UPDATE nodes SET codex_mcp_servers = ? WHERE id = ?")
-      .run(JSON.stringify({ lsp: { declaration, specDir: "/spec", declaredIn: "/spec/rig.yaml", switchedOnAt: "t", commandPath: "/opt/mcpls", commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }), on.id);
+      .run(JSON.stringify({ lsp: { declaration, specDir: "/spec", declaredIn: "/spec/rig.yaml", switchedOnAt: "t", commandPath: "/opt/mcpls", commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", argFiles: [] } }), on.id);
 
     await (orch as any).attemptResume(on.id, "ops-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
     await (orch as any).attemptResume(off.id, "qa-session", "codex_id", "tok", "/work", null, "o3", "full_bypass", "medium");
 
     expect(codexResume).toHaveBeenNthCalledWith(1, "ops-session", "codex_id", "tok", "/work", null, "full_bypass", "o3",
       "medium", false, false, true,
-      { ok: true, servers: [{ name: "lsp", specDir: "/spec", declaration: { command: "/opt/mcpls", args: ["--x"], enabledTools: ["get_hover"] }, commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] });
+      { ok: true, servers: [{ name: "lsp", specDir: "/spec", declaration: { command: "/opt/mcpls", args: ["--x"], enabledTools: ["get_hover"] }, commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", argFiles: [] }] });
     // Both seats get the derived team launch default (teamPermissionDefault = true), so the unchanged call is
     // launchTail's [effort, nonInterruptive, false, true]; the MCP seat's full tail equals it plus the selection.
     expect(codexResume).toHaveBeenNthCalledWith(2, "qa-session", "codex_id", "tok", "/work", null, "full_bypass", "o3", "medium", false, false, true);

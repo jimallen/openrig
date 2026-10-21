@@ -27,6 +27,8 @@ const MCPLS = join(scratch, "opt", "mcpls");
 execFileSync("/bin/mkdir", ["-p", "-m", "755", join(scratch, "opt")]);
 writeFileSync(MCPLS, "#!/bin/sh\nexit 0\n");
 chmodSync(MCPLS, 0o755);
+const CONFIG = join(scratch, "opt", "mcpls.toml");
+writeFileSync(CONFIG, "[[lsp_servers]]\nlanguage_id = \"typescript\"\n");
 // Prints its own argv as JSON: stands in for codex so the rendered command can run through a real shell.
 const DUMP = join(scratch, "dump-argv.mjs");
 writeFileSync(DUMP, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
@@ -34,11 +36,13 @@ writeFileSync(DUMP, "process.stdout.write(JSON.stringify(process.argv.slice(2)))
 // The binary checksum a switch-on would have pinned for this command (zeros when it does not exist).
 const pinned = (command: string) => { try { return createHash("sha256").update(readFileSync(realpathSync(command))).digest("hex"); } catch { return "0".repeat(64); } };
 const pilot = (over: Partial<SeatMcpSelection & { ok: true }["servers"][number]["declaration"]> = {}) => {
-  const declaration = { command: MCPLS, args: ["--config", "/x/mcpls.toml", "--workspace-trust", "untrusted"], enabledTools: ["get_definition", "get_hover"], startupTimeoutSec: 30, toolTimeoutSec: 60, ...over };
-  return { name: "lsp", specDir: join(scratch, "spec"), declaration, commandSha256: pinned(declaration.command) };
+  const declaration = { command: MCPLS, args: ["--config", CONFIG, "--workspace-trust", "untrusted"], enabledTools: ["get_definition", "get_hover"], startupTimeoutSec: 30, toolTimeoutSec: 60, ...over };
+  // The config file's pin, restated here (not imported) as a switch-on records it (OF-50).
+  const argFiles = over.args ? [] : [{ arg: CONFIG, realPath: CONFIG, sha256: createHash("sha256").update(readFileSync(CONFIG)).digest("hex") }];
+  return { name: "lsp", specDir: join(scratch, "spec"), declaration, commandSha256: pinned(declaration.command), argFiles };
 };
 const ON: SeatMcpSelection = { ok: true, servers: [pilot()] };
-const EXPECTED = ` -c 'mcp_servers.lsp={command=${JSON.stringify(MCPLS)},args=["--config","/x/mcpls.toml","--workspace-trust","untrusted"],startup_timeout_sec=30,tool_timeout_sec=60,enabled_tools=["get_definition","get_hover"]}'`;
+const EXPECTED = ` -c 'mcp_servers.lsp={command=${JSON.stringify(MCPLS)},args=["--config",${JSON.stringify(CONFIG)},"--workspace-trust","untrusted"],startup_timeout_sec=30,tool_timeout_sec=60,enabled_tools=["get_definition","get_hover"]}'`;
 
 function mockTmux(): TmuxAdapter {
   return mockShellCommand({
