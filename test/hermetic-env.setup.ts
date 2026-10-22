@@ -29,6 +29,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { afterAll } from "vitest";
 
 // Scrub inherited instance selectors before product modules capture their defaults.
 // Tests can still set explicit overrides after setup; test/provider opt-in flags
@@ -65,6 +66,17 @@ const fixtureHome =
     : (() => {
         const h = fs.mkdtempSync(path.join(os.tmpdir(), ".openrig-test-fixture-home-"));
         fs.writeFileSync(path.join(h, ".openrig-fixture"), "");
+        // OF-80: this process created the fixture home (and, below, its `-user-home`
+        // sibling), so it removes both. afterAll runs after failed tests too. vitest's
+        // forks pool (isolate on, no config override) gives each test file its own
+        // process, so one file's afterAll is the end of that home's life. The process
+        // 'exit' hook was measured not to fire in a vitest fork (workers are torn down
+        // without running it), so it is not relied on. Only the creator registers.
+        afterAll(() => {
+          for (const dir of [h, `${h}-user-home`]) {
+            try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+        });
         return h;
       })();
 process.env["OPENRIG_HOME"] = fixtureHome;
