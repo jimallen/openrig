@@ -65,6 +65,17 @@ const fixtureHome =
     : (() => {
         const h = fs.mkdtempSync(path.join(os.tmpdir(), ".openrig-test-fixture-home-"));
         fs.writeFileSync(path.join(h, ".openrig-fixture"), "");
+        // OF-80: this process created the fixture home (and, below, its `-user-home`
+        // sibling), so this process removes both when it exits. Exit is the right
+        // scope, not afterAll: the home is shared by every test file in the worker
+        // (see above), and an 'exit' handler also runs after failed tests. Only the
+        // creator registers, so a worker that merely reuses an inherited home never
+        // deletes a directory it did not make.
+        process.on("exit", () => {
+          for (const dir of [h, `${h}-user-home`]) {
+            try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+        });
         return h;
       })();
 process.env["OPENRIG_HOME"] = fixtureHome;
