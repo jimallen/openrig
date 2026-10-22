@@ -264,12 +264,23 @@ export class SlowOpRecorder implements SlowOperationInstrumentation {
     const startedAt = performance.now();
     try {
       const value = await fn();
-      this.recordMeasurement(site, performance.now() - startedAt, classify?.(value) ?? "ok");
+      this.recordStage(site, performance.now() - startedAt, classify?.(value) ?? "ok");
       return value;
     } catch (error) {
-      this.recordMeasurement(site, performance.now() - startedAt, "failed");
+      this.recordStage(site, performance.now() - startedAt, "failed");
       throw error;
     }
+  }
+
+  /**
+   * A finished stage is worth a log line only when it was slow (the same inclusive
+   * `slowThresholdMs` rule as {@link recordRequest}) or did not succeed. A fast "ok" stage is
+   * the normal case: writing it floods the bounded log and evicts the slow operations it exists
+   * to keep. A failed stage is always kept, however fast, because the failure is the signal.
+   */
+  private recordStage(site: string, durationMs: number, outcome: "ok" | "failed"): void {
+    if (outcome === "ok" && durationMs < this.slowThresholdMs) return;
+    this.recordMeasurement(site, durationMs, outcome);
   }
 
   recordMeasurement(site: string, durationMs: number, outcome: "ok" | "failed" = "ok"): void {
