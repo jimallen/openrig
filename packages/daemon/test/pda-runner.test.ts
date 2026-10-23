@@ -1343,6 +1343,28 @@ describe("pda-runner: the real process (node --import tsx)", () => {
     expect(rig.fake.requests).toEqual([]);
   }, 60000);
 
+  it("a request-id counter file that does not parse: exit 5 with the code pda_outbox_seq_corrupt, and its content is not echoed", async () => {
+    const rig = await makeRig({ realStreams: true });
+    rigs.push(rig);
+    const stateRoot = path.join(rig.dir, "fresh-state-2");
+    const seatRoot = path.join(stateRoot, rig.args.sessionName);
+    fs.mkdirSync(seatRoot, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(seatRoot, "outbox.log.seq"), `not-a-number ${BEARER}`, { mode: 0o600 });
+    const argv = buildPdaRunnerArgv({
+      sessionName: rig.args.sessionName, stateRoot, launchId: "proc-launch-5",
+      binding: { agent: "research", baseUrl: rig.args.baseUrl }, tokenFile: rig.args.tokenFile,
+    });
+    const p = runProcess(argv);
+    expect(await p.exit).toBe(5);
+    const out = p.out() + p.err();
+    expect(out).toContain("[pda-runner] ERROR pda_outbox_unopenable (pda_outbox_seq_corrupt)");
+    expect(out).not.toContain("not-a-number");
+    expect(out).not.toContain(BEARER);
+    expect(JSON.parse(fs.readFileSync(path.join(seatRoot, "runner-state.json"), "utf8"))).toMatchObject({ ready: false, exited: { code: 5 } });
+    expect(fs.readFileSync(path.join(seatRoot, "outbox.log.seq"), "utf8")).toBe(`not-a-number ${BEARER}`); // left for a person to fix
+    expect(rig.fake.requests).toEqual([]);
+  }, 60000);
+
   it("a token file with an interior LF: exit 4, a code on the pane, the canary in no output", async () => {
     const rig = await makeRig({ realStreams: true, tokenFileContent: `${BEARER}\ntail` });
     rigs.push(rig);

@@ -38,7 +38,7 @@ import {
   createPdaClient, pdaTokenSourceFromFile,
   type PdaCallFailure, type PdaClient, type PdaTokenReadResult,
 } from "./pda-client.js";
-import { PdaOutbox, PdaOutboxPoisonedError, type PdaAttemptOutcome } from "./pda-outbox.js";
+import { PdaOutbox, PdaOutboxPoisonedError, PdaOutboxSeqCorruptError, type PdaAttemptOutcome } from "./pda-outbox.js";
 import { PdaSseOverflowError, PdaSseParser, parsePdaEventData, type PdaStreamEvent } from "./pda-sse.js";
 import {
   HOOK_TOKEN_MARKER, PDA_TOKEN_MARKER, PdaPane, argsFirstLine, entryView, resultText, textDeltaOf,
@@ -987,7 +987,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } catch (err) {
     // The log (or its request-id counter) cannot be opened: report a code, record the exit, and stop. The message
     // of this error can hold a path and a file's content, so only a code is printed.
-    process.stdout.write(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_unopenable (${fatalLabel(err)}): the message log or its request-id counter could not be opened; fix or move it while the seat is down\n`);
+    // A corrupt request-id counter has its own code (L1a refuses to guess: 0 would re-open the id-reuse hole).
+    const label = err instanceof PdaOutboxSeqCorruptError ? err.code : fatalLabel(err);
+    process.stdout.write(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_unopenable (${label}): the message log or its request-id counter could not be opened; fix or move it while the seat is down\n`);
     writeExitedSidecar(args, 5);
     process.stdout.write(`${PDA_RUNNER_EXIT_MARKER} code=5\n`);
     process.exitCode = 5;
