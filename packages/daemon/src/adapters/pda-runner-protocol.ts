@@ -290,8 +290,10 @@ const ESCAPE_SEQUENCES = new RegExp([
 ].join("|"), "g");
 // Every remaining C0, DEL and C1 control except LF and TAB: CR, BEL, ETX, a lone ESC, ...
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
-// Bidi embedding, override and isolate controls: they can make capture read differently from the bytes.
-const BIDI_CONTROLS = /[‪-‮⁦-⁩]/g;
+// Bidi controls (embedding, override, isolate; the LRM, RLM and ALM marks) and the line and paragraph
+// separators: they can make capture read differently from the bytes. Written as escapes so no editor or
+// formatter can silently drop an invisible character out of the guard (review N5); a pin checks the source.
+const BIDI_CONTROLS = /[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
 /** Strip every terminal control from text bound for the pane: escape sequences (7-bit and C1), then every
  *  control except `\n` and `\t`, then the bidi controls. Applied to EVERY string the runner prints. The
@@ -315,8 +317,13 @@ export interface PdaUsageTokens { input: number; output: number; cacheRead: numb
  *  - total > 0, finite                → total, model_priced
  *  - total == 0 and tokens > 0        → NULL, declared_zero_price
  *  - total == 0 and 0 tokens          → 0, model_priced (0 tokens at any price is a real 0)
- *  - no cost, non-number, negative, non-finite → NULL, absent */
+ *  - no cost, non-number, negative, non-finite → NULL, absent
+ *  - any token count NaN, infinite or negative → NULL, absent */
 export function derivePdaCost(cost: unknown, tokens: PdaUsageTokens): { costTotal: number | null; costBasis: PdaCostBasis } {
+  // Review N6: a token count that is not a finite, non-negative number makes the basis unknowable.
+  for (const n of [tokens.input, tokens.output, tokens.cacheRead, tokens.cacheWrite]) {
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return { costTotal: null, costBasis: "absent" };
+  }
   const total = isObj(cost) ? cost.total : undefined;
   if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return { costTotal: null, costBasis: "absent" };
   if (total > 0) return { costTotal: total, costBasis: "model_priced" };
