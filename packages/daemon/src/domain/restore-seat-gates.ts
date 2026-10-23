@@ -14,6 +14,17 @@ import type Database from "better-sqlite3";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { readSnapshotStartupCopy, startupFromSnapshotId, type StartupFrom } from "./seat-startup-source.js";
 import type { SnapshotData } from "./types.js";
+import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
+
+/** pda L2a (design T29b): what a stop-for-decision tells the operator to do about a seat whose runtime has no fresh
+ *  start, instead of a `--fresh` command that would then be refused. Its resume token is its binding (no secret), so
+ *  the way back is to record the token and resume; the token is never quoted from the snapshot here. */
+function noFreshStartRemedy(runtime: string, logicalId: string, rigName: string): string {
+  const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
+  return `A ${runtime} seat has no fresh start (${runtime} owns the conversation). To resume it, record the agent its spec binds as its resume token, `
+    + `printf '%s' 'http://127.0.0.1:<port>/agents/<agent>' | rig seat set-resume-token ${seat} --token-stdin --reason "<why>", `
+    + `then run: rig up '${rigName.replace(/'/g, `'"'"'`)}' --existing. To drive another agent, re-instantiate the seat.`;
+}
 
 export type SeatGate = "node_removed" | "occupant_ambiguous" | "runtime_mismatch" | "absent_history" | "no_token";
 
@@ -64,8 +75,12 @@ export function decideSeatPreLaunchGate(input: SeatPreLaunchInput): SeatPreLaunc
 
   // A seat with no occupant whose history still carries a token: restore stops it for a decision.
   const priorWithToken = occupant.kind === "none" && !freshRequested ? absentSeatResumeHistory(data.sessions, nodeId) : null;
+  const noFresh = live.runtime !== null && RUNTIMES_WITHOUT_FRESH_START.has(live.runtime) ? live.runtime : null;
   if (priorWithToken) {
-    return { kind: "stop", gate: "absent_history", status: "awaiting-decision", error: absentSeatResumeHistoryError(logicalId, priorWithToken.resumeType, input.rigName, input.startupFrom), priorResumeType: priorWithToken.resumeType };
+    const error = noFresh
+      ? `Original session not resumed: the seat had no running occupant when this snapshot was taken, but an earlier occupant left a '${priorWithToken.resumeType}' resume token. No session was started. The recorded token has not been verified. ${noFreshStartRemedy(noFresh, logicalId, input.rigName)}`
+      : absentSeatResumeHistoryError(logicalId, priorWithToken.resumeType, input.rigName, input.startupFrom);
+    return { kind: "stop", gate: "absent_history", status: "awaiting-decision", error, priorResumeType: priorWithToken.resumeType };
   }
 
   if (input.continuityStatus === "restoring") return { kind: "skip_restoring" };
@@ -80,7 +95,9 @@ export function decideSeatPreLaunchGate(input: SeatPreLaunchInput): SeatPreLaunc
       : `no resume token was captured for this seat`;
     return {
       kind: "stop", gate: "no_token", status: "awaiting-decision",
-      error: `Original session unresumable: ${sourceNote}. No session was started. To start only this seat fresh, run: ${freshSeatLaunchCommand(logicalId, input.rigName, input.startupFrom)}; or restore the original session manually.`,
+      error: noFresh
+        ? `Original session unresumable: ${sourceNote}. No session was started. ${noFreshStartRemedy(noFresh, logicalId, input.rigName)}`
+        : `Original session unresumable: ${sourceNote}. No session was started. To start only this seat fresh, run: ${freshSeatLaunchCommand(logicalId, input.rigName, input.startupFrom)}; or restore the original session manually.`,
     };
   }
   return { kind: "proceed" };

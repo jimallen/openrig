@@ -247,7 +247,7 @@ export type RigEvent =
   // evidence; `node.startup_proof_skipped` retires a previous challenge on a
   // lean launch. None route through updateStartupStatus; `ready` never means oriented.
   | { type: "node.startup_challenged"; rigId: string; nodeId: string; challengeId: string; contractHash: string }
-  | { type: "node.startup_proof_skipped"; rigId: string; nodeId: string; reason: "not_selected" | "terminal" }
+  | { type: "node.startup_proof_skipped"; rigId: string; nodeId: string; reason: "not_selected" | "terminal" | "startup_content_withheld" }
   | { type: "node.startup_proof_verified"; rigId: string; nodeId: string; sessionId: string; challengeId: string; contractHash: string }
   | { type: "node.startup_proof_rejected"; rigId: string; nodeId: string; challengeId: string | null; reason: "identity_unbound" | "identity_mismatch" | "challenge_stale" | "contract_mismatch" | "bare_ack" }
   | { type: "continuity.sync"; rigId: string; podId: string; nodeId: string }

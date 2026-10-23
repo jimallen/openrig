@@ -116,6 +116,7 @@ export interface SeatRefusal {
     | "invalid_startup_from"
     | "runtime_adapter_missing"
     | "launch_unavailable"
+    | "fresh_start_unsupported"
     | "launch_failed"
     | "startup_failed"
     | "attention_required"

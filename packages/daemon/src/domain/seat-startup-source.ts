@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
-import type { ResolvedStartupFile, RuntimeAdapter } from "./runtime-adapter.js";
+import { adapterFreshStart, type ResolvedStartupFile, type RuntimeAdapter } from "./runtime-adapter.js";
 import type { StartupAction } from "./types.js";
 import { resolveStartupProof } from "./startup-resolver.js";
 import { serializeStartupContext } from "./startup-orchestrator.js";
@@ -130,9 +130,20 @@ export interface FreshStartupRefusal {
     | "startup_source_unavailable"
     | "startup_source_changed"
     | "runtime_adapter_missing"
-    | "launch_unavailable";
+    | "launch_unavailable"
+    | "fresh_start_unsupported";
   message: string;
   guidance?: string;
+}
+
+/** pda L2a (design A4, census row 25): the refusal for a seat whose runtime has no fresh start. One text, so restore,
+ *  restore-check, the plan and `rig seat launch --fresh` say the same thing. It never suggests `--fresh`. */
+export function freshStartUnsupportedRefusal(runtime: string, logicalId: string): FreshStartupRefusal {
+  return {
+    ok: false, code: "fresh_start_unsupported",
+    message: `${logicalId} is a ${runtime} seat, and a ${runtime} seat has no fresh start: ${runtime} owns the conversation, and OpenRig never creates or resets it.`,
+    guidance: "Resume it instead: rig up <rig> --existing re-attaches the seat to the agent its resume token names. To drive another agent, re-instantiate the seat with that binding.",
+  };
 }
 
 export const NO_RECORDED_SOURCE_WARNING = "This rig records no spec source (it was created before OpenRig recorded one, or not from a spec file), "
@@ -168,6 +179,10 @@ export async function resolveFreshSeatStartup(
     refusalGuidance: string;
   },
 ): Promise<{ ok: true; context: FreshStartupContext } | FreshStartupRefusal> {
+  // pda L2a (design A4): checked FIRST, before any source is read, for every caller of this one decision (restore of a
+  // `--fresh`-listed seat, its prediction in restore-check and the plan, and `rig seat launch --fresh`).
+  const runtimeAdapter = input.runtime ? deps.runtimeAdapters[input.runtime] : undefined;
+  if (runtimeAdapter && adapterFreshStart(runtimeAdapter) === "unsupported") return freshStartUnsupportedRefusal(input.runtime!, input.logicalId);
   const fromSnapshot = startupFromSnapshotId(input.startupFrom);
   if (fromSnapshot) {
     // OF-36 Q2: an explicitly named snapshot's copy, checked here, before anything is stopped or launched.
