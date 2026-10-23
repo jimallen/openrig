@@ -2,8 +2,10 @@
 // the runner side, plus the input wiring, the sidecar, the outbox glue and the process-level handlers).
 //
 // The rig (test/helpers/pda-runner-rig.ts) runs the REAL runner, client and outbox against L1a's REAL loopback
-// fake pda, with only `/events` and `/transcript` scripted. What the scripted layer cannot show is stated in the
-// PR body: pda's event field names are the design's vocabulary, not yet measured against a live pda.
+// fake pda, with `/events` and `/transcript` scripted in most rows and the fake's own real-shape stream in the
+// "real wire shapes" rows. EVERY event, entry and submission is built in helpers/pda-real-shapes.ts from the pi-durable
+// 1.3.0 declaration it cites (an earlier version of this file used a guessed vocabulary and the review blocked it).
+// Still unmeasured: a captured batch from a live pda (the design's Q-rows).
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -1250,6 +1252,16 @@ describe("pda-runner against the real wire shapes (M1-M8)", () => {
     expect(pane.split("Hello world, streamed.").length - 1).toBe(1); // streamed, and not printed again at message_end
     expect(rig.sidecar().busy).toBe(false);
     expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["Stop/attached_idle", "active/run_start", "Stop/run_end"]);
+  });
+
+  it("M1: text is on the pane while the reply is STILL streaming, before message_end", async () => {
+    const rig = await onRealFake();
+    const long = "a long streamed sentence that must be on the pane before the message ends, ";
+    rig.fake.emit("research", runStart([1]));
+    rig.fake.emit("research", deltaEvent(long));
+    rig.fake.emit("research", deltaEvent(long)); // the tail buffer holds back the last 42 characters until more arrives
+    await waitFor(() => noReassert(rig.pane()).includes(long.slice(0, 50)), "streamed text, with no message_end yet");
+    expect(rig.sidecar().lastEntryId).toBeUndefined(); // no entry has ended: this is the stream, not the entry
   });
 
   it("another client's message is visible, live, from message_end", async () => {

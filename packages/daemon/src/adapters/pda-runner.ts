@@ -772,8 +772,7 @@ export class PdaRunner {
     if (id !== null) this.recordOwn(id);
     const entry = idText(record.entry);
     if (entry !== null) {
-      this.recordOwnEntry(entry);
-      this.pendingUsers = this.pendingUsers.filter((v) => v.id !== entry); // it was ours: already echoed as `you ▸`
+      this.recordOwnEntry(entry); // a waiting user message with this entry id is now ours: flushUsers skips it
     }
     if (record.status === "unanswered") {
       const reason = typeof record.reason === "string" && record.reason.length > 0 ? `: ${record.reason.slice(0, 200)}` : "";

@@ -13,8 +13,8 @@
 // (longest secret - 1) characters back until the next delta or the end of the message, so a secret split across
 // two deltas is still caught.
 //
-// Also here: the one normaliser from pda's entry records to the few facts the renderer needs. pda's wire shapes
-// are isolated in `entryView` and `eventText` so that live qualification (Q-rows) has one place to correct.
+// Also here: the one normaliser from pda's entry records and message changes to the few facts the renderer needs
+// (`entryView`, `messageChangesOf`, `idText`). Their shapes follow pi-durable 1.3.0's declarations, cited there.
 
 import { sanitizeForPane } from "./pda-runner-protocol.js";
 
