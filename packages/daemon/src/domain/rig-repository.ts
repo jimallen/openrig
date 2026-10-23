@@ -566,6 +566,19 @@ export class RigRepository {
     );
   }
 
+  /** pda L2a (review L2b action 3, and its forward note): who stops THIS seat from launching or restoring onto
+   *  `binding`, as refusal texts. Every other seat that holds the binding counts, as does every damaged seat in
+   *  ANOTHER live rig (fail closed: it may drive any agent). A damaged sibling in the seat's OWN rig does not: the
+   *  in-spec duplicate rule and the creating doors (which count every holder, own rig included) mean no OpenRig path
+   *  puts two seats of one rig on one agent, so one damaged row must not hold every healthy pda seat of its rig
+   *  hostage at restore. The binding is the one being launched: the resume token's on a restore. */
+  findPdaLaunchConflicts(binding: PdaBinding, nodeId: string): string[] {
+    const own = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id: string } | undefined;
+    return this.findPdaBindingHolders(binding, { excludeNodeId: nodeId })
+      .filter((holder) => !(holder.unreadable !== undefined && own !== undefined && holder.rigId === own.rig_id))
+      .map((holder) => describePdaHolder(binding, holder));
+  }
+
   /** Every seat, in any rig that is not archived, that drives this pda agent at this base URL (the pda agent is the
    *  pair: the same name on another port is another pda), PLUS every seat whose saved binding is damaged (it may drive
    *  any agent; see PdaBindingHolder.unreadable). `excludeRigIds` are rigs about to be archived by the same operation;
