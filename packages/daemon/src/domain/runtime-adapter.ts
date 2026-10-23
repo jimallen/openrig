@@ -1,4 +1,4 @@
-import type { Binding, StartupFile } from "./types.js";
+import type { AgentActivity, Binding, StartupFile } from "./types.js";
 import type { ProjectionPlan } from "./projection-planner.js";
 
 // -- Bridge type: NodeBinding extends Binding with cwd --
@@ -30,6 +30,8 @@ export interface NodeBinding extends Binding {
   launchGeneration?: string;
   /** #25: the rig's `managed_blocks.claude-code` file. Absent = CLAUDE.md. Only the Claude adapter reads it. */
   claudeManagedBlockFile?: import("./managed-blocks.js").ClaudeManagedBlockFile;
+  /** pda L0: the pda agent a `runtime: pda` seat drives (`nodes.pda_binding`, L2b). Only the pda adapter reads it. */
+  pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
 }
 
 // -- Resolved startup file with source-root provenance --
@@ -90,6 +92,12 @@ export const ATTENTION_REQUIRED_READINESS_CODES = new Set([
   // but adding it here keeps the two paths semantically aligned.
   "codex_auth_refusal",
   "codex_client_incompatible",
+  // pda L0 (design 9l Rev 2): a pda runner's checkReady codes that need a person. Inert until a pda adapter
+  // (L2a) returns them. pda_agent_missing: OpenRig never creates a pda agent, so a missing one needs a person.
+  "pda_unauthorized",
+  "pda_token_format",
+  "pda_agent_missing",
+  "pda_message_held",
 ]);
 
 export function isAttentionRequiredReadinessCode(code: string | undefined): boolean {
@@ -131,6 +139,23 @@ export function resolveConcreteHint(
 }
 
 // -- Runtime adapter contract --
+
+/** pda L0: what `RuntimeAdapter.sendReadiness` is asked about. Identity only: a runner's readiness is a
+ *  file the runner writes, found by session name. */
+export interface RunnerReadinessTarget {
+  sessionName: string;
+  nodeId: string | null;
+}
+
+/** How an adapter's optional `freshStart` reads when absent: supported, every runtime's behaviour today. */
+export function adapterFreshStart(adapter: Pick<RuntimeAdapter, "freshStart"> | null | undefined): "supported" | "unsupported" {
+  return adapter?.freshStart === "unsupported" ? "unsupported" : "supported";
+}
+
+/** How an adapter's optional `startupContent` reads when absent: deliver, every runtime's behaviour today. */
+export function adapterStartupContent(adapter: Pick<RuntimeAdapter, "startupContent"> | null | undefined): "deliver" | "withhold" {
+  return adapter?.startupContent === "withhold" ? "withhold" : "deliver";
+}
 
 /**
  * Member-level fork-source input translated by the startup orchestrator from
@@ -191,4 +216,25 @@ export interface RuntimeAdapter {
 
   /** Check if the runtime harness is responsive and ready. */
   checkReady(binding: NodeBinding): Promise<ReadinessResult>;
+
+  /**
+   * pda L0 (design 9l Rev 2 D7/A3; review D1). Send readiness from a runner-authored surface (the runner's
+   * sidecar), consulted by `rig send` BEFORE any pane heuristic. Null = no runner answer: today's logic
+   * decides. Absent on every adapter today.
+   *
+   * ASYNC by contract (review D1). The answer is believed only while the pane's foreground is not a shell:
+   * a sidecar outlives a SIGKILLed runner for up to its alive window, and on `--wait-for-idle` the transport's
+   * shell refusal runs once, BEFORE the wait. SessionTransport applies that foreground check at the seam
+   * itself (one rule, one site), so an implementation cannot forget it; an implementation may check more.
+   * The returned activity is re-labelled `evidenceSource: "runner_sidecar"` by the transport.
+   */
+  sendReadiness?(target: RunnerReadinessTarget): Promise<AgentActivity | null>;
+
+  /** pda L0 (design A4). "unsupported": the runtime owns the conversation and has no fresh start, so a
+   *  `--fresh` request is refused at the shared fresh decision (L2a). Absent = "supported" (adapterFreshStart). */
+  readonly freshStart?: "supported" | "unsupported";
+
+  /** pda L0 (design D4). "withhold": OpenRig delivers no startup content, actions, preload or proof challenge
+   *  to this runtime (the orchestrator gate is L2a). Absent = "deliver" (adapterStartupContent). */
+  readonly startupContent?: "deliver" | "withhold";
 }

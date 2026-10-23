@@ -558,7 +558,11 @@ export type AgentActivityEvidenceSource =
   | "terminal_activity"
   | "tmux_session"
   | "external_cli"
-  | "session_registry";
+  | "session_registry"
+  /** pda L0 (design 9l Rev 2 D7/A3): a pane-hosted runner's own sidecar answered `rig send`'s readiness
+   *  question (RuntimeAdapter.sendReadiness), believed only while the pane's foreground is not a shell. Never
+   *  pane scraping. A `needs_input` from this source refuses `--dangerously-interact`. */
+  | "runner_sidecar";
 
 export interface AgentActivity {
   state: AgentActivityState;
