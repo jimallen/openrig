@@ -15,6 +15,10 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
+import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
+import { pdaSeatCosts } from "../domain/usage-series.js";
+import { parsePdaUsageFact } from "../adapters/pda-runner-protocol.js";
+import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 
 // ── S19 A4 — the ingest half of the adapter seam: hook events reach the ONE oracle ──
 // (SeatActivityService) through this translation, so AgentActivityStore is reduced to a
@@ -134,6 +138,80 @@ activityRoutes.post("/pi-usage-charges", async (c) => {
   const result = new PiUsageEntriesStore(req.db).recordCharges(
     { seatSession: req.seat.sessionName, piSessionId: req.piSessionId, charges: valid }, new Date().toISOString());
   return c.json({ ok: true, ...result, rejected: charges.length - valid.length });
+});
+
+/** usage.pda_cost_facts, read at each request so a change takes effect without a restart. Off when the daemon
+ *  has no settings store or cannot resolve the key: a fact is stored only on a positive reading. */
+function pdaCostFactsEnabled(c: Context): boolean {
+  const settings = c.get("settingsStore" as never) as SettingsStore | undefined;
+  try { return settings?.resolveOne("usage.pda_cost_facts").value === true; } catch { return false; }
+}
+
+// pda runtime (pda-runtime-design-9l, J-3): a pda-runner started with --usage-facts (usage.pda_cost_facts on)
+// posts the usage facts of the assistant entries its agent produced. Same local hook token as /hooks and
+// /pi-usage. The daemon never calls pda and holds no pda bearer: the runner reports what its own stream saw.
+// Each (conversation, entry) is stored once. A post for a seat that is not a managed pda seat is refused,
+// never stored under another name; with the setting off nothing is stored (503, so a runner keeps its facts).
+// Every fact is checked by L0's parsePdaUsageFact, which refuses a cost that contradicts its basis (J-5).
+activityRoutes.post("/pda-usage", async (c) => {
+  const store = c.get("agentActivityStore" as never) as AgentActivityStore | undefined;
+  const expectedToken = c.get("activityHookToken" as never) as string | undefined;
+  const sessionRegistry = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+  if (!store || !expectedToken || !sessionRegistry || !hasPdaUsageEntriesTable(sessionRegistry.db)) {
+    return c.json({ ok: false, code: "pda_usage_unconfigured", error: "pda usage facts aren't accepted by this daemon." }, 503);
+  }
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : null;
+  if (bearerToken !== expectedToken && (c.req.header("x-openrig-activity-token") ?? null) !== expectedToken) {
+    return c.json({ ok: false, code: "activity_hook_unauthorized", error: "pda usage facts require the configured local hook token." }, 401);
+  }
+  if (!pdaCostFactsEnabled(c)) {
+    return c.json({ ok: false, code: "pda_usage_disabled", error: "pda usage facts are off (usage.pda_cost_facts); nothing was stored." }, 503);
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json() as Record<string, unknown>;
+  } catch {
+    return c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400);
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ ok: false, code: "invalid_pda_usage", error: "pda usage facts require a JSON object" }, 400);
+  }
+  const sessionName = stringOrNull(body.sessionName);
+  const agent = stringOrNull(body.agent);
+  if (!sessionName || !agent || !Array.isArray(body.facts)) {
+    return c.json({ ok: false, code: "invalid_pda_usage", error: "pda-usage requires sessionName, agent and facts[]" }, 400);
+  }
+  const seat = store.resolveSession({ sessionName, nodeId: stringOrNull(body.nodeId), runtime: "pda" });
+  if (!seat || seat.runtime !== "pda") {
+    return c.json({ ok: false, code: "session_not_found", error: `No managed pda seat named ${sessionName}` }, 404);
+  }
+  const facts = (body.facts as unknown[]).map(parsePdaUsageFact);
+  const valid = facts.filter((fact): fact is NonNullable<typeof fact> => fact !== null);
+  const result = new PdaUsageEntriesStore(sessionRegistry.db).record({
+    seatSession: seat.sessionName, nodeId: seat.nodeId, generation: stringOrNull(body.generation), agent, facts: valid,
+  }, new Date().toISOString());
+  return c.json({ ok: true, ...result, rejected: facts.length - valid.length });
+});
+
+// pda runtime (J-3): the stored cost view of one managed pda seat, the same view `rig usage cost` unions into its
+// seat lines. A seat that is not a managed pda seat is refused, never answered with another runtime's figures.
+// Readable with the setting off: what was recorded while it was on stays visible.
+activityRoutes.get("/pda-usage", (c) => {
+  const store = c.get("agentActivityStore" as never) as AgentActivityStore | undefined;
+  const sessionRegistry = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+  if (!store || !sessionRegistry || !hasPdaUsageEntriesTable(sessionRegistry.db)) {
+    return c.json({ ok: false, code: "pda_usage_unconfigured", error: "pda usage facts aren't held by this daemon." }, 503);
+  }
+  const sessionName = stringOrNull(c.req.query("sessionName"));
+  if (!sessionName) {
+    return c.json({ ok: false, code: "invalid_pda_usage", error: "pda-usage requires ?sessionName=" }, 400);
+  }
+  const seat = store.resolveSession({ sessionName, nodeId: stringOrNull(c.req.query("nodeId")), runtime: "pda" });
+  if (!seat || seat.runtime !== "pda") {
+    return c.json({ ok: false, code: "session_not_found", error: `No managed pda seat named ${sessionName}` }, 404);
+  }
+  return c.json({ ok: true, sessionName: seat.sessionName, cost: pdaSeatCosts(sessionRegistry.db, seat.sessionName)[0] ?? null });
 });
 
 activityRoutes.post("/hooks", async (c) => {

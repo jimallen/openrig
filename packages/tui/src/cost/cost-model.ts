@@ -67,8 +67,29 @@ function piHeadLine(seat: Seat): string {
   return `${seat.seatSession}  ${head}${extras ? `; ${extras}` : ""}${charge ? `; ${charge}` : ""}  tokens in ${t.input ?? "?"} / out ${t.output ?? "?"}`;
 }
 
+/** A pda seat, as `rig usage cost` words it: runs this seat took part in; other and unknown entries not counted. */
+function pdaHeadLine(seat: Seat): string {
+  const w = (seat["window"] ?? {}) as { conversationId?: string; since?: string | null; asOf?: string | null };
+  const e = (seat["entries"] ?? {}) as { own?: number; ownWithoutCost?: { declaredZeroPrice?: number; absent?: number }; errorOrAborted?: number;
+    other?: { count: number; costUsd: number | null }; unknownOrigin?: { count: number; costUsd: number | null } };
+  const t = (seat["tokens"] ?? {}) as { input?: number; output?: number };
+  const plural = (n: number) => `${n} entr${n === 1 ? "y" : "ies"}`;
+  const extras = [
+    e.ownWithoutCost?.declaredZeroPrice ? `${plural(e.ownWithoutCost.declaredZeroPrice)} at a declared zero price (not $0)` : "",
+    e.ownWithoutCost?.absent ? `${plural(e.ownWithoutCost.absent)} without a cost` : "",
+    e.errorOrAborted ? `${e.errorOrAborted} error/aborted turn${e.errorOrAborted === 1 ? "" : "s"} included` : "",
+    e.other?.count ? `${e.other.count} from other clients' runs, not counted${e.other.costUsd !== null ? ` (${formatUsd(e.other.costUsd)})` : ""}` : "",
+    e.unknownOrigin?.count ? `${e.unknownOrigin.count} of unknown origin, not counted${e.unknownOrigin.costUsd !== null ? ` (${formatUsd(e.unknownOrigin.costUsd)})` : ""}` : "",
+  ].filter(Boolean).join("; ");
+  const head = seat.status === "reported"
+    ? `${formatUsd(Number(seat["costUsd"]))} model-priced estimate (pda assistant entries in runs this seat took part in, ${e.own ?? 0} own entries) for pda conversation ${w.conversationId}${w.since ? ` since ${w.since}` : ""}${w.asOf ? `, last ${w.asOf}` : ""}`
+    : `cost: not reported (${seat["reason"]}) for pda conversation ${w.conversationId}`;
+  return `${seat.seatSession}  ${head}${extras ? `; ${extras}` : ""}; excludes compaction and tool usage  tokens in ${t.input ?? "?"} / out ${t.output ?? "?"}`;
+}
+
 /** The line `rig usage cost` prints for this seat. */
 export function costHeadLine(seat: Seat): string {
+  if (seat["runtime"] === "pda") return pdaHeadLine(seat);
   if (seat["runtime"] === "pi") return piHeadLine(seat);
   const w = (seat["window"] ?? {}) as { nativeSessionId?: string | null; since?: string; asOf?: string | null };
   if (seat.status === "reported") {

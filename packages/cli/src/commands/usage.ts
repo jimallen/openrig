@@ -95,8 +95,30 @@ function providerChargeText(raw: unknown): string {
   }
 }
 
+/** A pda seat: the model-priced estimate over the assistant entries of runs this seat took part in. Entries from
+ *  other clients' runs and of unknown origin are named and not counted; a declared zero price is named, not $0. */
+function pdaCostLine(seat: CostPayload["seats"][number]): string {
+  const w = (seat["window"] ?? {}) as { conversationId?: string; since?: string | null; asOf?: string | null };
+  const e = (seat["entries"] ?? {}) as { own?: number; ownWithoutCost?: { declaredZeroPrice?: number; absent?: number }; errorOrAborted?: number;
+    other?: { count: number; costUsd: number | null }; unknownOrigin?: { count: number; costUsd: number | null } };
+  const t = (seat["tokens"] ?? {}) as { input?: number; output?: number };
+  const plural = (n: number) => `${n} entr${n === 1 ? "y" : "ies"}`;
+  const extras = [
+    e.ownWithoutCost?.declaredZeroPrice ? `${plural(e.ownWithoutCost.declaredZeroPrice)} at a declared zero price (not $0)` : "",
+    e.ownWithoutCost?.absent ? `${plural(e.ownWithoutCost.absent)} without a cost` : "",
+    e.errorOrAborted ? `${e.errorOrAborted} error/aborted turn${e.errorOrAborted === 1 ? "" : "s"} included` : "",
+    e.other?.count ? `${e.other.count} from other clients' runs, not counted${e.other.costUsd !== null ? ` (${formatUsd(e.other.costUsd)})` : ""}` : "",
+    e.unknownOrigin?.count ? `${e.unknownOrigin.count} of unknown origin, not counted${e.unknownOrigin.costUsd !== null ? ` (${formatUsd(e.unknownOrigin.costUsd)})` : ""}` : "",
+  ].filter(Boolean).join("; ");
+  const head = seat.status === "reported"
+    ? `${formatUsd(Number(seat["costUsd"]))} model-priced estimate (pda assistant entries in runs this seat took part in, ${e.own ?? 0} own entries) for pda conversation ${w.conversationId}${w.since ? ` since ${w.since}` : ""}${w.asOf ? `, last ${w.asOf}` : ""}`
+    : `cost: not reported (${seat["reason"]}) for pda conversation ${w.conversationId}`;
+  return `${seat.seatSession}  ${head}${extras ? `; ${extras}` : ""}; excludes compaction and tool usage  ${tok({ input: t.input, output: t.output })}`;
+}
+
 /** One labelled line per seat. Never prints a dollar figure the route didn't report. */
 export function costLine(seat: CostPayload["seats"][number]): string {
+  if (seat["runtime"] === "pda") return pdaCostLine(seat);
   if (seat["runtime"] === "pi") return piCostLine(seat);
   const w = (seat["window"] ?? {}) as { nativeSessionId?: string | null; since?: string; asOf?: string | null };
   if (seat.status === "reported") {
@@ -196,7 +218,12 @@ not counted, and an entry without a cost is named, not counted as zero.
 With usage.pi_openrouter_charge on as well (default off), OpenRouter's actual charge for those requests
 is shown beside the estimate (never added to it), when the seat's OpenRouter key is the one OpenRig
 forwarded; requests it can't charge are counted with the reason. Turning it off stops new lookups;
-outcomes recorded while it was on stay visible.`)
+outcomes recorded while it was on stay visible.
+With usage.pda_cost_facts on (default off), pda seats show a model-priced estimate over the assistant
+entries of runs the seat took part in, each counted once. Entries from runs that took only another
+client's input, and entries of unknown origin, are shown apart and not counted. pda's provider declares
+a zero price table, so its entries carry no cost: they are named as such, never counted as $0. The
+figure excludes compaction and tool usage, which pda does not attribute to an entry.`)
     .action(async (opts: { seat?: string; json?: boolean }) => {
       const deps = getDeps();
       const client = await getClient(deps);
