@@ -1026,4 +1026,3 @@ const invokedDirectly = (() => {
   } catch { return false; }
 })();
 if (invokedDirectly) void main();
-
