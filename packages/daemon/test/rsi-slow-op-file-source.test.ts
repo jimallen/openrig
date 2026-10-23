@@ -207,6 +207,19 @@ describe("D13 the recent hour is anchored at the recorder's liveness (OF-73 R1)"
     expect(record).toMatchObject({ status: "active", indeterminateReason: null });
   });
 
+  it("serves a flood from the last hour as active and fresh when the recorder is alive, though the newest record is 40 minutes old", () => {
+    const f = fixture();
+    f.write("", many("recent.flood", 5, 1000, 560));
+
+    const [record] = f.records(f.source({ lastAliveAt: ALIVE_NOW }));
+
+    expect(evidence(record!).fingerprint).toBe(fp("recent.flood"));
+    expect(record).toMatchObject({ status: "active", indeterminateReason: null });
+    // The same log with a dead recorder is stale: freshness follows the liveness, not the record alone.
+    const [dead] = f.records(f.source({ lastAliveAt: () => null }));
+    expect(dead).toMatchObject({ status: "indeterminate" });
+  });
+
   it("takes the later of the newest record and the liveness: liveness older than the newest record cannot pull the hour back", () => {
     const f = fixture();
     // The flood ended at minute 100; a slow span at minute 400 is the newest record. Liveness reports minute 50.
