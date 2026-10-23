@@ -1567,6 +1567,12 @@ describe("pda-runner: the real process (node --import tsx)", () => {
       await waitFor(() => rig.fake.entries("research").some((e) => e.content === "hello from stdin"), "the message arrived", 10000);
       const entry = rig.fake.entries("research").find((e) => e.content === "hello from stdin")!;
       expect(entry.requestId).toMatch(/^openrig\/proc-node\/proc-launch\/\d+$/);
+      // The real process, against pda-shaped events: the ack (a numeric id), no 'other' echo of our own line, streaming.
+      await waitFor(() => p.out().includes("queued (submission 2)"), "the ack of the second line, id 2 (the first line was id 1)", 10000);
+      rig.fake.streamReply("research", ["streamed ", "by the fake"]);
+      await waitFor(() => p.out().includes("streamed by the fake"), "the streamed reply in the real process's stdout", 10000);
+      expect(p.out()).not.toContain("other ▸");
+      expect(p.out()).not.toContain("did not take the message");
       expect(p.out()).not.toContain(BEARER);
       expect(p.err()).not.toContain(BEARER);
       expect(fs.statSync(rig.paths.seatRoot).mode & 0o777).toBe(0o700);
