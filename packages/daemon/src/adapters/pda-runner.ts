@@ -449,6 +449,7 @@ export class PdaRunner {
         this.busy = false;
         this.lastPostedBusy = false;
         this.maybePartial = false;
+        this.streaming = false; // the run is over: whatever was streaming is not coming back
         this.pane.line("── idle ──");
         this.postActivity("Stop", "run_end");
         this.usage.onRunEnd?.(event);

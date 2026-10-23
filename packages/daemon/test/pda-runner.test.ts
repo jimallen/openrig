@@ -586,9 +586,11 @@ describe("pda-runner: exact-value redaction (T31)", () => {
     const { rig, stream } = await attached();
     const spliced = `${BEARER.slice(0, 10)}${ESC}[0m${BEARER.slice(10, 30)}\u0007${BEARER.slice(30)}`;
     stream.push({ type: "tool_execution_end", toolCallId: "sp1", result: `spliced: ${spliced}` });
+    stream.push({ type: "task_failed", error: `failed: ${spliced}` });
     stream.push({ type: "message_end", entry: assistantEntry("sp-a", `reply: ${spliced}`) });
     await waitFor(() => rig.sidecar().lastEntryId === "sp-a", "done");
     const pane = noReassert(rig.pane());
+    expect(pane).toContain("[pda-runner] task failed: failed: [redacted:pda-token]\n"); // a single-line string (line()), not only block bodies
     expect(pane).toContain("  │ spliced: [redacted:pda-token]\n");
     expect(pane).toContain("reply: [redacted:pda-token]\n");
     expect(pane).not.toContain(BEARER.slice(0, 10));

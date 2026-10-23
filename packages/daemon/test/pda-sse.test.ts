@@ -82,6 +82,8 @@ describe("pda-sse: framing", () => {
     expect(() => p.push(enc.encode(`data: ${"x".repeat(200)}\n`))).toThrow(PdaSseOverflowError);
     const q = new PdaSseParser({ maxEventBytes: 64 });
     expect(() => q.push(enc.encode(`data: ${"x".repeat(200)}`))).toThrow(PdaSseOverflowError); // unfinished line counts too
+    const whole = new PdaSseParser({ maxEventBytes: 64 });
+    expect(() => whole.push(enc.encode(`data: ${"x".repeat(200)}\n\n`))).toThrow(PdaSseOverflowError); // a complete oversized event in one chunk
     const ok = new PdaSseParser({ maxEventBytes: 64 });
     expect(ok.push(enc.encode(`data: ${"x".repeat(40)}\n\n`)).map((m) => m.data)).toEqual(["x".repeat(40)]);
   });
