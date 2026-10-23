@@ -1178,6 +1178,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { createRsiSources } = await import("./domain/rsi/registry.js");
   const { RETENTION_DEFAULTS } = await import("./domain/queue-retention.js");
   const rsiTelemetrySources = createRsiSources({ dbPath, openrigHome: OPENRIG_HOME, slowOpLogPath,
+    slowOpRecorderAliveAt: slowOpRecorder?.lastAliveAt ? () => slowOpRecorder.lastAliveAt!() : undefined,
     retentionEnabled: healthSettingsStore.resolveOne("retention.enabled").value === true,
     retentionDays: () => { const v = healthSettingsStore.resolveOne("retention.usage_samples_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.usageSamplesRetentionDays; } });
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));

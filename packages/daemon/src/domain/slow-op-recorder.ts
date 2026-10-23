@@ -52,6 +52,10 @@ export interface SlowOperationInstrumentation {
   /** Bounded nonblocking diagnostic append; false means observation was dropped. */
   recordDiagnostic?(record: Record<string, unknown>): boolean;
   snapshot?(): SlowOperationSnapshot;
+  /** Epoch ms of the recorder's last proof of life, or null when it cannot persist records (closed,
+   * Worker lost, a write acknowledged as failed). OF-73: the RSI slow-op source anchors its recent
+   * hour here, so an alive recorder on a quiet instance reads quiet. */
+  lastAliveAt?(): number | null;
   setDegradedHandler?(handler: (snapshot: Required<Pick<SlowOperationSnapshot, "reason" | "site">>) => void): void;
   // OPR.0.4.3.21 (51elv2) — optional graceful-shutdown lifecycle. A drain that
   // cannot prove durability rejects (never a silent success); see index.ts.
@@ -216,6 +220,16 @@ export class SlowOpRecorder implements SlowOperationInstrumentation {
 
   snapshot(): SlowOperationSnapshot {
     return { ...this.degraded };
+  }
+
+  /**
+   * Alive means able to persist: open, Worker not lost, no write acknowledged as failed. It is read
+   * time while that holds, and null once it stops holding. A barrier timeout degrades snapshot()
+   * but the Worker still writes, so it is not a loss of life here.
+   */
+  lastAliveAt(): number | null {
+    if (this.closed || this.terminalReason !== null || this.acknowledgedWriteFailure) return null;
+    return Date.now();
   }
 
   beginSyncSpan(site: string): Span {

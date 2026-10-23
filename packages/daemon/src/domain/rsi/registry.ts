@@ -16,6 +16,8 @@ export interface RsiSourceContext {
   openrigHome: string;
   /** The slow-operation log D13 reads. Defaults to `<openrigHome>/logs/slow-operations.jsonl`. */
   slowOpLogPath?: string;
+  /** The slow-op recorder's liveness (SlowOperationInstrumentation.lastAliveAt). Absent: D13 anchors at the newest record only. */
+  slowOpRecorderAliveAt?: () => number | null;
   /** False when the daemon runs no retention sweep: D10 still registers and reads as a complete zero
    * noted `retention disabled` (usage-sources.ts). Default true. */
   retentionEnabled?: boolean;
@@ -45,7 +47,7 @@ export function createRsiSources(ctx: RsiSourceContext): HealthObservationSource
     new EventClassHealthSource(STARTUP_FAILURE_DETECTOR, { dbPath: ctx.dbPath, knownFixesPath: anchors, instanceId, now, budget: ctx.budget }),
     new EventClassHealthSource(BOOTSTRAP_FAILURE_DETECTOR, { dbPath: ctx.dbPath, knownFixesPath: anchors, instanceId, now, budget: ctx.budget }),
     new OrphanedParkedOwnerJobSource({ dbPath: ctx.dbPath, knownFixesPath: anchors, instanceId, now, budget: ctx.budget }),
-    new SlowOpFileSource({ logPath: ctx.slowOpLogPath ?? join(ctx.openrigHome, "logs", "slow-operations.jsonl"), instanceId, now }),
+    new SlowOpFileSource({ logPath: ctx.slowOpLogPath ?? join(ctx.openrigHome, "logs", "slow-operations.jsonl"), instanceId, now, lastAliveAt: ctx.slowOpRecorderAliveAt }),
     ...createA2bSources({ dbPath: ctx.dbPath, instanceId, now, retentionEnabled: ctx.retentionEnabled ?? true, retentionDays: ctx.retentionDays }),
   ];
   return sources.map((source) => new BudgetedRsiSource(source, { ...ctx.budget, now }));
