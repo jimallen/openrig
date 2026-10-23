@@ -232,6 +232,13 @@ describe("PdaRuntimeAdapter.checkReady", () => {
     expect(await adapter({}, { pane: "" }).adapter.checkReady(binding())).toMatchObject({ ready: false, code: "awaiting_runtime" });
   });
 
+  it("a sidecar that cannot be read is no sidecar: checkReady falls back to the READY marker and never throws", async () => {
+    writeSidecar(state({ ready: false, exited: { code: 3, at: NOW.toISOString() } }));
+    const unreadable = adapter({ fsOps: { readFile: () => { throw Object.assign(new Error("EIO"), { code: "EIO" }); }, exists: () => true, lstat: () => null } },
+      { pane: "[pda-runner] READY agent=research" });
+    await expect(unreadable.adapter.checkReady(binding())).resolves.toEqual({ ready: true });
+  });
+
   it("maps every person-only sidecar code to its attention code; a plain exit is not attention", async () => {
     const cases: Array<[Partial<PdaRunnerState>, string]> = [
       [{ ready: false, exited: { code: 3, at: NOW.toISOString() }, error: { code: "pda_agent_missing", at: NOW.toISOString() } }, "pda_agent_missing"],

@@ -118,10 +118,15 @@ describe("every fresh-start suggestion is a command that works in the state it i
     // Positional predicate: every awaiting-decision message opens with the same fixed words.
     const inOrchestrator = read("restore-orchestrator.ts");
     const inGates = read("restore-seat-gates.ts");
-    expect(inOrchestrator.length + inGates.length, "positive control: the population is the 7 stop-for-decision messages at e493aa62").toBe(7);
-    expect(inGates.length, "positive control: one of them (the no-token stop) lives in the shared seat gates").toBe(1);
+    // pda L2a (T29b): the no-token stop gained a second wording, for a seat whose runtime has no fresh start. It names no
+    // `--fresh` at all (that command would be refused), so it is held to the opposite rule: the no-fresh-start remedy.
+    expect(inOrchestrator.length + inGates.length, "positive control: the population is the 7 stop-for-decision messages at e493aa62, plus the pda no-token wording").toBe(8);
+    expect(inGates.length, "positive control: two of them (the no-token stop, and its pda wording) live in the shared seat gates").toBe(2);
+    const noFreshRemedy = /noFreshStartRemedy\(noFresh, logicalId, input\.rigName\)/;
+    expect([...inOrchestrator, ...inGates].filter((line) => noFreshRemedy.test(line)), "exactly one no-fresh-start wording").toHaveLength(1);
     for (const line of [...inOrchestrator, ...inGates]) {
       expect(line, line).not.toMatch(/Re-run with --fresh/);
+      if (noFreshRemedy.test(line)) { expect(line, line).not.toMatch(/--fresh|freshSeatLaunchCommand|freshStartCommand/); continue; }
       // OF-32 stage 3: and every one carries the restore's `--startup-from` choice, so the stored escape is not lost.
       expect(line, line).toMatch(/this\.freshStartCommand\(rigId, data, node\.logicalId, opts\?\.startupFrom\)|freshSeatLaunchCommand\(logicalId, input\.rigName, input\.startupFrom\)/);
     }

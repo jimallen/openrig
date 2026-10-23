@@ -1967,7 +1967,9 @@ export class RestoreOrchestrator {
     try {
       const runtime = this.claudeResume.canResume(resumeType, resumeToken) ? "claude-code"
         : this.codexResume.canResume(resumeType, resumeToken) ? "codex"
-        // pda L2a: a pda token is labelled pda, never the Pi fallback (no native permission override applies to it).
+        // pda L2a: a pda token is labelled pda, never the Pi fallback. Equivalent today (proved in the L2a battery, M37):
+        // launchOverride compares the label only with "claude-code"/"codex" and with a stored selection's runtime, which
+        // read() admits only as codex or claude-code, so "pda" and "pi" give the same override or the same refusal.
         : this.pdaResume?.canResume(resumeType, resumeToken) ? "pda" : "pi";
       const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime);
       kernelAuthority = override.kernelAuthority === true;
