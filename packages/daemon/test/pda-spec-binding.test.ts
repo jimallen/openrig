@@ -83,15 +83,29 @@ describe("spec schema: the pda block (T19)", () => {
   });
 
   // The design's list of keys a pda member cannot take. Each is refused WITH ITS OWN PATH (so the author sees which),
-  // and the member without it is the positive control that the fixture is otherwise valid.
+  // and the member without it is the positive control that the fixture is otherwise valid. Every value here is
+  // VALID for its key on a claude-code member, so the refusal is the pda rule's and not the key's own validation
+  // (a first draft used the invalid ref "builtin:floor" for permission_policy: the key's own error satisfied the
+  // assertion and a mutant that deleted the pda rule survived).
+  const PDA_OWN_REFUSAL = "not valid on a pda member";
   it.each([
-    ["model", "gpt-9"], ["effort", "high"], ["codex_config_profile", "p1"], ["mcp_servers", { s: { command: "/bin/x", enabled_tools: ["t"] } }],
-    ["remote_control", true], ["permission_policy", "builtin:floor"], ["session_source", { mode: "fork", ref: { kind: "native_id", value: "abc" } }],
-    ["starter_ref", { name: "s" }], ["startup", { files: [] }], ["compaction_strategy", "default-compaction"], ["mechanic", "m@r"],
-  ])("refuses %s on a pda member", (key, value) => {
+    ["model", "gpt-9"], ["effort", "high"], ["permission_policy", "builtin:yolo"],
+    ["session_source", { mode: "fork", ref: { kind: "native_id", value: "abc" } }],
+    ["starter_ref", { name: "s" }], ["startup", { files: [{ path: "role.md", delivery_hint: "send_text", required: true }] }],
+    ["compaction_strategy", "default-compaction"], ["mechanic", "m@r"],
+  ])("refuses %s on a pda member with the pda rule's own message", (key, value) => {
     expect(RigSpecSchema.validate(spec([member("a")])).valid).toBe(true);
-    const errors = errorsOf(spec([member("a", { [key as string]: value })]));
-    expect(errors).toContain(`pods[0].members[0].${key}:`);
+    const claude = RigSpecSchema.validate(spec([member("a", { runtime: "claude-code", pda: undefined, [key as string]: value })]));
+    expect(claude.errors.filter((e) => e.includes(`.${key}:`)), `${key} must be valid on a claude-code member`).toEqual([]);
+    expect(errorsOf(spec([member("a", { [key as string]: value })]))).toContain(`pods[0].members[0].${key}: ${PDA_OWN_REFUSAL}`);
+  });
+
+  // These three are refused on a pda member by their own runtime-pairing checks (codex only, codex only, claude only),
+  // which already existed; the row pins that a pda member does not slip past them.
+  it.each([
+    ["codex_config_profile", "p1"], ["mcp_servers", { s: { command: "/bin/x", enabled_tools: ["t"] } }], ["remote_control", true],
+  ])("refuses %s on a pda member through its existing runtime-pairing check", (key, value) => {
+    expect(errorsOf(spec([member("a", { [key as string]: value })]))).toContain(`pods[0].members[0].${key}:`);
   });
 
   it("restore_policy: absent, null and resume_if_possible are legal; relaunch_fresh and checkpoint_only are refused", () => {
@@ -198,6 +212,16 @@ describe("repository: nodes.pda_binding", () => {
     expect(readSavedPdaBinding(null)).toEqual({});
     expect(readSavedPdaBinding(undefined)).toEqual({});
     expect(readSavedPdaBinding("")).toEqual({});
+  });
+
+  describe("a database that has not run migration 115", () => {
+    it("storing a binding is refused loudly (a seat bound to nothing must never be created), and the holder lookup finds nothing", () => {
+      db.exec("ALTER TABLE nodes DROP COLUMN pda_binding");
+      const rig = repo.createRig("r");
+      expect(() => repo.addNode(rig.id, "dev.x", { runtime: "pda", pda: { agent: "research", baseUrl: "http://127.0.0.1:8150" } })).toThrow(/migration 115/);
+      expect(repo.addNode(rig.id, "dev.y", { runtime: "codex" }).logicalId).toBe("dev.y"); // a non-pda seat is unaffected
+      expect(repo.findPdaBindingHolders({ agent: "research", baseUrl: "http://127.0.0.1:8150" })).toEqual([]);
+    });
   });
 
   describe("findPdaBindingHolders", () => {
