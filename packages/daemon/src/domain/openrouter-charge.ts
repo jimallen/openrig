@@ -6,8 +6,8 @@
 // `model`, `provider_name`, `api_type`, `is_byok`, `upstream_inference_cost`, `cache_discount`, `workspace_id`
 // and `created_at`.
 //
-// Which requests this covers: Pi 0.87.1 records a chat completion's `id` as the assistant message's
-// `responseId` (openai-completions API), and OpenRouter's usage-accounting guide uses that `id` for this
+// Which requests this covers: Pi 1.3.0 (pi-ai `output.responseId ||= chunk.id`) records a chat completion's `id` as the
+// assistant message's `responseId` (openai-completions API), and OpenRouter's usage-accounting guide uses that `id` for this
 // lookup. Pi's anthropic-messages API records `message_start.message.id` instead, which OpenRouter does not
 // document as a generation id, so those requests are not looked up ("not covered"), never guessed.
 

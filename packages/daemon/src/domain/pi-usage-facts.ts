@@ -1,7 +1,8 @@
 /**
  * OPR.0.7.0.2 (cost reporting, Pi atom): usage facts from Pi's PERSISTED session entries.
  *
- * Read against Pi 0.87.1 (`@earendil-works/pi-coding-agent`, OpenRig's tested baseline), session format v3.
+ * Read against Pi 1.3.0 (`@earendil-works/pi-coding-agent`, OpenRig's tested baseline), session format v3
+ * (`CURRENT_SESSION_VERSION = 3`; a live 1.3.0 session's 18 assistant entries re-summed to the same totals as this reader).
  * Every entry has `{ type, id, parentId, timestamp }`. The usage-bearing kinds are exactly the ones Pi's own
  * totals count (`core/usage-totals.js` getUsageCostBreakdown):
  *   - `message` with `message.role === "assistant"`: `message.usage` (kept for error and aborted turns too);
