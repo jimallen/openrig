@@ -23,8 +23,8 @@ export const SLOW_OP_MAX_SPANS = 60_000;
  * floor only; on its own it counts history (a finished flood stays in the window for days). */
 export const SLOW_OP_FLOOD_MIN_SUBTHRESHOLD = 1000;
 /** Rate: a site must also have at least SLOW_OP_FLOOD_MIN_RECENT sub-threshold spans in the
- * hour ending at the newest record in the log, so the finding goes quiet within an hour of a
- * fix. 360 an hour is one span every 10 s; the live flood runs at about 1,440 an hour. */
+ * hour ending at the anchor: the later of the newest record in the log and the recorder's last
+ * proof of life (see SlowOpFileSource), so the finding goes quiet within an hour of a fix. 360 an hour is one span every 10 s; the live flood runs at about 1,440 an hour. */
 export const SLOW_OP_FLOOD_RECENT_WINDOW_MS = 60 * 60 * 1000;
 export const SLOW_OP_FLOOD_MIN_RECENT = 360;
 export const SLOW_OP_SUBTHRESHOLD_FLOOD_CLASS = "subthreshold-span-flood";
@@ -42,8 +42,12 @@ interface SiteTally {
  *
  * A site is a flood when BOTH hold: at least SLOW_OP_FLOOD_MIN_SUBTHRESHOLD of its spans in the
  * files read are under the recorder's own threshold, AND at least SLOW_OP_FLOOD_MIN_RECENT of
- * them fall in the hour ending at the newest record (not at read time, so a dead recorder's
- * frozen log does not look current). Freshness follows the newest record too.
+ * them fall in the hour ending at the anchor: the later of the newest record (a diagnostic counts)
+ * and the recorder's last-alive time. The anchor is never plain read time, so a dead recorder's
+ * frozen log does not look current: with no liveness the anchor is the newest record, the log is
+ * stale, and a frozen flood reads indeterminate. An alive recorder on a quiet instance anchors at
+ * read time, so a flood that ended more than an hour ago reads quiet instead of staying
+ * indeterminate for ever (OF-73). Freshness follows the same anchor.
  *
  * Coverage: a log directory with no log file yet is an honest zero with a note. A log that
  * exists but cannot be read (no file readable, a permission error) throws, which the projection
@@ -69,13 +73,17 @@ export class SlowOpFileSource implements HealthObservationSource {
     now?: () => Date;
     maxFileBytes?: number;
     maxSpans?: number;
+    /** The slow-op recorder's last proof of life, epoch ms, or null when it cannot persist records
+     * (closed, Worker lost, a write failed). Absent: no recorder to ask, same as null. */
+    lastAliveAt?: () => number | null;
   }) {}
 
   coverage(): readonly HealthSourceCoverage[] {
     return this.lastCoverage;
   }
 
-  /** Newest first: the live file, then .1, .2, ... A missing directory is no log yet. */
+  /** Newest first: the live file, then .1, .2, ... A missing directory is no log yet; a path that is
+   * not a directory throws, which the projection serves as unavailable. */
   private candidateFiles(): string[] {
     const dir = dirname(this.deps.logPath);
     const base = basename(this.deps.logPath);
@@ -84,7 +92,8 @@ export class SlowOpFileSource implements HealthObservationSource {
       names = readdirSync(dir);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") return [];
+      // ENOTDIR is not "no log yet": the recorder cannot create its log under a path that is not a directory.
+      if (code === "ENOENT") return [];
       throw error;
     }
     const ranked: { name: string; rank: number }[] = [];
@@ -138,10 +147,13 @@ export class SlowOpFileSource implements HealthObservationSource {
         const parsed = parseRecord(line);
         if (parsed === null) { clean = false; continue; }
         let ts = parsed.ts;
-        if (ts !== null && ts > evaluatedMs) { ts = evaluatedMs; clamped++; }
+        const future = ts !== null && ts > evaluatedMs;
+        if (future) ts = evaluatedMs;
         if (ts !== null && (newestMs === null || ts > newestMs)) newestMs = ts;
+        if (parsed.span !== null && newestFirst.length >= maxSpans) { capHit = true; clean = false; break; }
+        // Counted only for a record this read keeps: the one that trips the cap is never read.
+        if (future) clamped++;
         if (parsed.span === null) continue;
-        if (newestFirst.length >= maxSpans) { capHit = true; clean = false; break; }
         newestFirst.push({ ...parsed.span, ts: ts! });
       }
       if (clean) wholeFiles++;
@@ -158,7 +170,12 @@ export class SlowOpFileSource implements HealthObservationSource {
 
     // Oldest first from here on: position i + 1 is the span's sequence in this read.
     const spans = newestFirst.reverse();
-    const recentFloorMs = (newestMs ?? evaluatedMs) - SLOW_OP_FLOOD_RECENT_WINDOW_MS;
+    // The anchor: the later of the newest record and the recorder's proof of life, never later than
+    // read time. Without liveness it is the newest record alone (a dead recorder stays stale).
+    const aliveAt = this.deps.lastAliveAt?.() ?? null;
+    const aliveMs = aliveAt !== null && Number.isFinite(aliveAt) ? Math.min(aliveAt, evaluatedMs) : null;
+    const anchorMs = newestMs === null ? aliveMs : aliveMs === null ? newestMs : Math.max(newestMs, aliveMs);
+    const recentFloorMs = (anchorMs ?? evaluatedMs) - SLOW_OP_FLOOD_RECENT_WINDOW_MS;
     const bySite = new Map<string, SiteTally>();
     let controlTotal = 0;
     for (let i = 0; i < spans.length; i++) {
@@ -180,7 +197,7 @@ export class SlowOpFileSource implements HealthObservationSource {
       if (span.ts > tally.lastSeen) tally.lastSeen = span.ts;
     }
 
-    const freshnessAt = newestMs === null ? null : new Date(newestMs).toISOString();
+    const freshnessAt = anchorMs === null ? null : new Date(anchorMs).toISOString();
     const observations: HealthDetectorObservation[] = [];
     for (const [site, tally] of [...bySite].sort(([a], [b]) => (a < b ? -1 : 1))) {
       if (tally.under < SLOW_OP_FLOOD_MIN_SUBTHRESHOLD || tally.recent < SLOW_OP_FLOOD_MIN_RECENT) continue;
@@ -206,8 +223,8 @@ export class SlowOpFileSource implements HealthObservationSource {
           source: "telemetry-span", startedAt: firstSeen, endedAt: evaluatedAt, limit: 1, retentionSeconds: windowSeconds,
         }, deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: freshnessAt, maxAgeSeconds: 600 })),
         summary: `Site ${site} logged ${tally.under} spans under the ${SLOW_OPERATION_THRESHOLD_MS} ms slow-operation threshold.`,
-        threshold: `at least ${SLOW_OP_FLOOD_MIN_SUBTHRESHOLD} logged spans at one site with durationMs under ${SLOW_OPERATION_THRESHOLD_MS}, and at least ${SLOW_OP_FLOOD_MIN_RECENT} of them in the hour ending at the newest log record`,
-        explanation: `${tally.under} of ${tally.total} spans at ${site} are under the threshold, ${tally.recent} of them in the last hour of the log; control: ${controlTotal} spans at or over it, out of ${spans.length} spans in the log window.`,
+        threshold: `at least ${SLOW_OP_FLOOD_MIN_SUBTHRESHOLD} logged spans at one site with durationMs under ${SLOW_OPERATION_THRESHOLD_MS}, and at least ${SLOW_OP_FLOOD_MIN_RECENT} of them in the hour ending at the newest log record or the recorder's last-alive time, whichever is later`,
+        explanation: `${tally.under} of ${tally.total} spans at ${site} are under the threshold, ${tally.recent} of them in the hour ending at the newest log record or the recorder's last-alive time; control: ${controlTotal} spans at or over it, out of ${spans.length} spans in the log window.`,
         suggestedInspection: `Check how ${site} records its spans: a path that logs every measurement without applying the slow threshold floods this log.`,
       });
     }

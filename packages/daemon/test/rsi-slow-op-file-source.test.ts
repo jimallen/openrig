@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import type { HealthRecord } from "../src/domain/health-projection.js";
 import { DEFAULT_HEALTH_POLICY } from "../src/domain/health-policy.js";
 import { RSI_DETECTORS } from "../src/domain/rsi/detector-ids.js";
 import { SlowOpFileSource } from "../src/domain/rsi/slow-op-file-source.js";
+import { SlowOpRecorder } from "../src/domain/slow-op-recorder.js";
 
 // Restated here, not imported: a changed constant must fail the pin, not move it.
 const DETECTOR = "rsi.slow-op-subthreshold-flood";
@@ -38,9 +39,19 @@ function fixture(now: Date = NOW) {
   mkdirSync(join(dir, "logs"));
   const logPath = join(dir, "logs", "slow-operations.jsonl");
   const write = (suffix: "" | `.${number}`, lines: string[]) => writeFileSync(logPath + suffix, lines.join("\n") + "\n");
-  const source = (extra: { maxFileBytes?: number; maxSpans?: number } = {}) => new SlowOpFileSource({ logPath, instanceId: "inst-1", now: () => now, ...extra });
+  const source = (extra: { maxFileBytes?: number; maxSpans?: number; lastAliveAt?: () => number | null } = {}) => new SlowOpFileSource({ logPath, instanceId: "inst-1", now: () => now, ...extra });
   const records = (src: HealthObservationSource = source()): HealthRecord[] => new HealthProjectionService([src]).records();
   return { dir, logPath, write, source, records };
+}
+
+/** A well-formed record that is not an end span: the recorder's own diagnostics (event_loop_gap). */
+function diagnostic(minute: number): string {
+  return JSON.stringify({ v: 1, ts: new Date(T0 + minute * 60_000).toISOString(), event: "event_loop_gap", gapMs: 120000 });
+}
+/** An end span stamped `ageSeconds` before NOW, for the freshness edge. */
+function spanAgo(site: string, ageSeconds: number): string {
+  const ts = new Date(NOW.getTime() - ageSeconds * 1000).toISOString();
+  return JSON.stringify({ v: 1, ts, spanId: `ago-${site}-${ageSeconds}`, phase: "end", site, durationMs: 5, outcome: "ok" });
 }
 
 function evidence(record: HealthRecord) {
@@ -160,6 +171,144 @@ describe("D13 the flood must be current, not merely in the window", () => {
   });
 });
 
+describe("D13 the recent hour is anchored at the recorder's liveness (OF-73 R1)", () => {
+  const ALIVE_NOW = () => NOW.getTime();
+
+  it("reads an idle instance quiet after the fix when the recorder is alive: the flood is hours old and the restart diagnostic is the newest record", () => {
+    const f = fixture();
+    // The flood ended at minute 120 (fix deployed), the restart logged one diagnostic at minute 125,
+    // and the instance has logged nothing since. It is read at minute 600.
+    f.write("", [...many("old.flood", 5, 1000, 100), ...many("old.flood", 5, 360, 120), diagnostic(125)]);
+
+    const quiet = new HealthProjectionService([f.source({ lastAliveAt: ALIVE_NOW })]);
+
+    expect(quiet.records()).toEqual([]);
+    expect(quiet.coverage()).toMatchObject([{ source: "rsi-slow-op-file", partial: false, evaluated: 1, omitted: 0 }]);
+    expect(quiet.coverage()[0]).not.toHaveProperty("status", "unavailable");
+  });
+
+  it("keeps a dead recorder's frozen flood indeterminate: no liveness is not quiet", () => {
+    const f = fixture();
+    f.write("", [...many("frozen.flood", 5, 1000, 100), ...many("frozen.flood", 5, 360, 120), diagnostic(125)]);
+
+    const [record] = f.records(f.source({ lastAliveAt: () => null }));
+
+    expect(evidence(record!).fingerprint).toBe(fp("frozen.flood"));
+    expect(record!.status).toBe("indeterminate");
+    expect(record!.indeterminateReason).toMatch(/stale/);
+  });
+
+  it("does not let an alive recorder mask a flood that is still running: it stays active and fresh", () => {
+    const f = fixture();
+    f.write("", many("live.flood", 5, 1000));
+
+    const [record] = f.records(f.source({ lastAliveAt: ALIVE_NOW }));
+
+    expect(evidence(record!).fingerprint).toBe(fp("live.flood"));
+    expect(record).toMatchObject({ status: "active", indeterminateReason: null });
+  });
+
+  it("serves a flood from the last hour as active and fresh when the recorder is alive, though the newest record is 40 minutes old", () => {
+    const f = fixture();
+    f.write("", many("recent.flood", 5, 1000, 560));
+
+    const [record] = f.records(f.source({ lastAliveAt: ALIVE_NOW }));
+
+    expect(evidence(record!).fingerprint).toBe(fp("recent.flood"));
+    expect(record).toMatchObject({ status: "active", indeterminateReason: null });
+    // The same log with a dead recorder is stale: freshness follows the liveness, not the record alone.
+    const [dead] = f.records(f.source({ lastAliveAt: () => null }));
+    expect(dead).toMatchObject({ status: "indeterminate" });
+  });
+
+  it("takes the later of the newest record and the liveness: liveness older than the newest record cannot pull the hour back", () => {
+    const f = fixture();
+    // The flood ended at minute 100; a slow span at minute 400 is the newest record. Liveness reports minute 50.
+    f.write("", [...many("old.flood", 5, 1000, 100), span("slow.site", 900, 400)]);
+
+    const records = f.records(f.source({ lastAliveAt: () => T0 + 50 * 60_000 }));
+
+    expect(records).toEqual([]);
+  });
+
+  it("clamps liveness stamped after read time to it, so a clock step cannot make the source contradictory", () => {
+    const f = fixture();
+    f.write("", many("live.flood", 5, 1000));
+
+    const [record] = f.records(f.source({ lastAliveAt: () => NOW.getTime() + 10 * 60_000 }));
+
+    expect(record).toMatchObject({ status: "active", indeterminateReason: null });
+  });
+
+  it("ignores a liveness that is not a finite time, as it does a recorder with none", () => {
+    const f = fixture();
+    f.write("", many("frozen.flood", 5, 1000, 100));
+
+    const [record] = f.records(f.source({ lastAliveAt: () => Number.NaN }));
+
+    expect(record).toMatchObject({ status: "indeterminate" });
+  });
+});
+
+describe("D13 a stuck recorder is not alive (OF-73 F1)", () => {
+  it("reads a flood the stuck Worker never recorded as indeterminate and stale two hours on, not quiet on complete coverage", async () => {
+    // The Worker records the flood until minute 100, then wedges (a FIFO log path): the recorder keeps
+    // accepting writes and never acknowledges one. The flood goes on unrecorded. Read at minute 220.
+    const f = fixture(new Date(T0 + 220 * 60_000));
+    f.write("", many("wedge.flood", 5, 1000, 100));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    restore.push(() => vi.useRealTimers());
+    vi.setSystemTime(T0 + 100 * 60_000);
+    const recorder = new SlowOpRecorder({ logPath: f.logPath });
+    restore.push(() => { void (recorder as any).worker.terminate(); });
+    (recorder as any).worker.postMessage = () => {};
+    recorder.recordMeasurement("wedge.flood", 5);
+    vi.setSystemTime(T0 + 220 * 60_000);
+
+    const service = new HealthProjectionService([f.source({ lastAliveAt: () => recorder.lastAliveAt() })]);
+    const [record] = service.records();
+
+    expect(record).toBeDefined();
+    expect(evidence(record!).fingerprint).toBe(fp("wedge.flood"));
+    expect(record!.status).toBe("indeterminate");
+    expect(record!.indeterminateReason).toMatch(/stale/);
+  });
+});
+
+describe("D13 diagnostics advance the newest-record anchor (OF-73 N3)", () => {
+  it("anchors the hour at a diagnostic: a flood older than an hour before the newest diagnostic is quiet", () => {
+    const f = fixture();
+    f.write("", [...many("old.flood", 5, 1000, 100), diagnostic(FRESH)]);
+
+    expect(f.records()).toEqual([]);
+  });
+
+  it("takes freshness from a diagnostic: a flood last seen 40 minutes ago is fresh when a diagnostic is five minutes old", () => {
+    const f = fixture();
+    f.write("", [...many("recent.flood", 5, 1000, 560), diagnostic(598)]);
+
+    const [record] = f.records();
+
+    expect(evidence(record!).fingerprint).toBe(fp("recent.flood"));
+    expect(record).toMatchObject({ status: "active", indeterminateReason: null });
+  });
+});
+
+describe("D13 the 600 second freshness edge (OF-73 N4)", () => {
+  it.each([
+    [599, "active"],
+    [600, "active"],
+    [601, "indeterminate"],
+  ])("serves a flood whose newest record is %i s old as %s", (ageSeconds, status) => {
+    const f = fixture();
+    f.write("", Array.from({ length: 1000 }, () => spanAgo("edge.flood", ageSeconds)));
+
+    const [record] = f.records();
+
+    expect(record).toMatchObject({ status });
+  });
+});
+
 describe("D13 read bounds", () => {
   it("reads at most 4 files and names the rest as partial coverage rather than as clean", () => {
     const f = fixture();
@@ -216,6 +365,20 @@ describe("D13 read bounds", () => {
     expect(fingerprints(records)).toEqual([fp("site.new")]);
     expect(source.coverage()[0]).toMatchObject({ evaluated: 0, omitted: 1, partial: true });
     expect(source.coverage()[0]).toMatchObject({ order: expect.stringContaining("span cap 1000 reached") });
+  });
+
+  it("does not count as clamped a future-stamped span that the cap stops it reading (OF-73 clamp count at the cap)", () => {
+    const f = fixture();
+    // The oldest line is stamped after read time. Reading newest first, the cap is full before it is reached.
+    f.write("", [span("site.old", 5, 605), ...many("site.new", 5, 1000)]);
+
+    const source = f.source({ maxSpans: 1000 });
+    f.records(source);
+
+    const order = source.coverage()[0]!.order;
+    expect(order).toContain("span cap 1000 reached");
+    expect(order).not.toContain("clamped");
+    expect(source.coverage()[0]).toMatchObject({ partial: true });
   });
 
   it("does work linear in the spans: 42,000 spans at one site cost well under a second of CPU", () => {
@@ -321,11 +484,35 @@ describe("D13 no log yet is an honest zero, an unreadable log is unavailable", (
   });
 });
 
+describe("D13 a logs path that is not a directory (OF-73 N5)", () => {
+  it("serves unavailable coverage and not the no-log zero when logs is a regular file, as the recorder cannot write there", () => {
+    const f = fixture();
+    rmSync(join(f.dir, "logs"), { recursive: true });
+    writeFileSync(join(f.dir, "logs"), "not a directory");
+
+    const service = new HealthProjectionService([f.source()]);
+
+    expect(service.records()).toEqual([]);
+    expect(service.coverage()).toMatchObject([{ source: "rsi-slow-op-file", status: "unavailable", partial: true }]);
+    expect(JSON.stringify(service.coverage())).not.toContain("no slow-op log yet");
+  });
+});
+
 describe("D13 as a health record", () => {
   it("is category process and severity info, so it stays out of the Attention view", () => {
     const f = fixture();
     f.write("", many("codex.runtime.list_processes", 5, 1000));
     expect(f.records()[0]).toMatchObject({ detector: DETECTOR, category: "process", severity: "info", status: "active" });
+  });
+
+  it("names the liveness anchor in the explanation, not only in the threshold (OF-73 N1)", () => {
+    const f = fixture();
+    f.write("", many("flood.site", 5, 1000));
+
+    const [record] = f.records();
+
+    expect(record!.explanation).toContain("in the hour ending at the newest log record or the recorder's last-alive time");
+    expect(record!.explanation).not.toContain("last hour of the log");
   });
 
   it("names the inspection without claiming which recorder path leaks", () => {
@@ -350,6 +537,30 @@ describe("D13 as a health record", () => {
 });
 
 describe("daemon wiring", () => {
+  async function wiredDaemon(lastAliveAt: (() => number | null) | undefined) {
+    const dir = mkdtempSync(join(tmpdir(), "rsi-slowop-alive-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, "logs"));
+    const logPath = join(dir, "logs", "slow-operations.jsonl");
+    // A flood that ended three hours ago, read on the daemon's own wall clock.
+    const then = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+    const lines = Array.from({ length: 1000 }, (_, i) => JSON.stringify({ v: 1, ts: then, spanId: `a${i}`, phase: "end", site: "wiring.flood", durationMs: 5, outcome: "ok" }));
+    writeFileSync(logPath, lines.join("\n") + "\n");
+    const recorder = { snapshot: () => ({ healthy: true }), ...(lastAliveAt ? { lastAliveAt } : {}) };
+    const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite"), slowOpLogPath: logPath, slowOpRecorder: recorder } as never);
+    const records = daemon.deps.healthProjection!.list().records.filter((record) => record.detector === DETECTOR);
+    daemon.db.close();
+    return records;
+  }
+
+  it("hands the daemon's slow-op recorder liveness to D13: an alive recorder reads the three-hour-old flood quiet, a recorder without liveness leaves it indeterminate", async () => {
+    expect(await wiredDaemon(() => Date.now())).toEqual([]);
+    const dead = await wiredDaemon(() => null);
+    expect(dead).toHaveLength(1);
+    expect(dead[0]).toMatchObject({ status: "indeterminate" });
+    expect(await wiredDaemon(undefined)).toHaveLength(1);
+  });
+
   it("reads the configured slow-op log on a file-backed daemon, and registers nothing on an in-memory one", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rsi-slowop-wiring-"));
     dirs.push(dir);
