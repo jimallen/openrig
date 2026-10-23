@@ -193,6 +193,9 @@ describe("repository: nodes.pda_binding", () => {
   });
 
   it.each([
+    // pda L2a (review L2b D-1): '' is damaged, like every other non-NULL text that is not a binding. It was read as
+    // absence here and as a damaged holder by findPdaBindingHolders; one reading now, the fail-closed one.
+    ["the empty string", ""],
     ["not JSON", "{agent"],
     ["an array", "[]"],
     ["a number", "7"],
@@ -213,10 +216,9 @@ describe("repository: nodes.pda_binding", () => {
     expect(read2.pdaBindingUnreadable).toMatch(/^pda_binding /);
   });
 
-  it("NULL and the empty string are the real absence", () => {
+  it("NULL (or no column) is the only real absence", () => {
     expect(readSavedPdaBinding(null)).toEqual({});
     expect(readSavedPdaBinding(undefined)).toEqual({});
-    expect(readSavedPdaBinding("")).toEqual({});
   });
 
   describe("a database that has not run migration 115", () => {

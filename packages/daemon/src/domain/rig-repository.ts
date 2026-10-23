@@ -175,12 +175,16 @@ export function serializePdaBinding(binding: PdaBinding): string {
   return JSON.stringify({ agent: binding.agent, base_url: binding.baseUrl });
 }
 
-/** A node's saved pda binding. NULL/empty is the real "no binding"; a damaged column (not JSON, not a mapping, a key
+/** A node's saved pda binding. NULL is the real "no binding"; a damaged column (empty, not JSON, not a mapping, a key
  *  missing, or a value L0's parsePdaSpecBlock refuses) reads as no binding WITH the reason, because a seat that
  *  drives a pda agent must never be launched or copied as if it drove none. The defaults of the spec block do not
  *  apply to a stored row: both keys must be present. */
 export function readSavedPdaBinding(text: string | null | undefined): { value?: PdaBinding; unreadable?: string } {
-  if (!text) return {};
+  // Review D-1: NULL (or no column) is the ONLY absence. Any stored text that is not a binding, the empty string
+  // included, is damaged: serializePdaBinding never writes '', so '' is a hand edit, and every reader (the node, the
+  // retry gate, the exporter, the holder check) now reads it the same way, fail closed.
+  if (text === null || text === undefined) return {};
+  if (text === "") return { unreadable: "pda_binding is empty" };
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return { unreadable: "pda_binding is not JSON" }; }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { unreadable: "pda_binding is not an object" };
