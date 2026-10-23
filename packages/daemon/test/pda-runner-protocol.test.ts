@@ -187,6 +187,11 @@ describe("A5: sanitizeForPane (T30 unit; the review's 12 forms plus DEL)", () =>
     // ESC plus a printable final byte IS a 2-byte sequence to a terminal, so the final byte goes with it.
     expect(sanitizeForPane("a\u001bcb")).toBe("ab");
   });
+  // Battery M15 survived without this row: every C1 form above is an introducer the escape pass already
+  // removes, so nothing exercised step 2's C1 range. NEL and a stray ST are C1 controls that start nothing.
+  it("removes a lone C1 control (NEL, a stray ST) that introduces no sequence", () => {
+    expect(sanitizeForPane("a\u0085b\u009cc")).toBe("abc");
+  });
   it("keeps LF, TAB and ordinary Unicode", () => {
     expect(sanitizeForPane("line one\n\tcafé 日本語 ── idle ──\n")).toBe("line one\n\tcafé 日本語 ── idle ──\n");
   });
