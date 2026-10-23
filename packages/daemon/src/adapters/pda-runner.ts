@@ -17,7 +17,8 @@
 //             error body. `own-submissions.json`: the last 500 submission ids this seat made.
 //   - CONTROL `release.request` is polled on the 60 s alive tick and on every attach (`rig seat pda-release`).
 //   - ACTIVITY POSTs to the daemon on transitions only; they carry the tool NAME, never its arguments or output.
-//   - USAGE   `--usage-facts` is parsed and routed to a `PdaUsageSink`. The sink is a stub here: L2c fills it.
+//   - USAGE   `--usage-facts` installs the `PdaUsageSink` of `pda-usage-sink.ts` (L2a), which posts the assistant
+//             entries' usage facts to the daemon's /api/activity/pda-usage on each run_end, and keeps them on a 503.
 //
 // Errors are CODES. No catch block prints an exception's message, cause or stack, and the process-level
 // `uncaughtException` / `unhandledRejection` handlers print a code and exit 70.
@@ -45,6 +46,7 @@ import {
   type PdaEntryView, type PdaSecret,
 } from "./pda-render.js";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
+import { createPdaUsagePoster, createPdaUsageSink } from "./pda-usage-sink.js";
 
 // ── Arguments ────────────────────────────────────────────────────────────────
 
@@ -266,6 +268,11 @@ export class PdaRunner {
       this.kick();
     }
     this.pane.endBatch();
+  }
+
+  /** Whether pda's submission id (as text) is one this seat made: the usage sink's attribution (J-3). */
+  isOwnSubmission(submissionId: string): boolean {
+    return this.ownSubmissions.includes(submissionId);
   }
 
   /** Ctrl-C. The editor has cleared the line. This never reaches the agent. */
@@ -1108,14 +1115,24 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.exitCode = 5;
     return;
   }
+  // The sink asks the runner whose submissions are its own; the runner exists by the time any event arrives.
+  let ownership: Pick<PdaRunner, "isOwnSubmission"> | null = null;
+  const usage = args.usageFacts
+    ? createPdaUsageSink({
+      sessionName: args.sessionName, nodeId, generation, agent: args.binding.agent,
+      isOwnSubmission: (id) => ownership?.isOwnSubmission(id) ?? false,
+      post: createPdaUsagePoster(endpoint),
+    })
+    : undefined;
   const runner = new PdaRunner({
     args, nodeId, generation, client, outbox,
     readToken: trackedSource, secrets,
     write: (text) => { process.stdout.write(text); },
     postActivity: createActivityPoster(endpoint),
     fs: nodeRunnerFs,
-    usage: args.usageFacts ? stubUsageSink : undefined,
+    usage,
   });
+  ownership = runner;
 
   installPdaRunnerFatalHandlers(process, (label) => runner.fatal(label));
   for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => runner.stop());
@@ -1126,9 +1143,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   input.close();
   process.exitCode = code;
 }
-
-/** L2c fills this. Until then `--usage-facts` is accepted and does nothing. */
-const stubUsageSink: PdaUsageSink = {};
 
 // Compiled-entry guard, as the Pi runner: run main() only when executed directly, not when imported by tests.
 const invokedDirectly = (() => {
