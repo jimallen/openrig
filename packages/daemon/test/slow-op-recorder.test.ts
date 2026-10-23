@@ -418,6 +418,41 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     expect(emissions).toBe(0);
   });
 
+  it("reports its liveness as a time only while it can still persist records (OF-73): alive, then null after close, a lost Worker, or a failed write", async () => {
+    const mod = await loadRecorderModule();
+    expect(mod, "slow-op-recorder production module is missing").not.toBeNull();
+    if (!mod) return;
+
+    const live = new mod.SlowOpRecorder({ logPath: path.join(tempDir(), "alive.jsonl") });
+    const before = Date.now();
+    const aliveAt = live.lastAliveAt();
+    expect(aliveAt).toBeGreaterThanOrEqual(before);
+    expect(aliveAt).toBeLessThanOrEqual(Date.now());
+    await live.close();
+    expect(live.lastAliveAt()).toBeNull();
+
+    const lost = new mod.SlowOpRecorder({ logPath: path.join(tempDir(), "lost.jsonl") });
+    await (lost as any).worker.terminate();
+    await new Promise((r) => setImmediate(r));
+    expect(lost.lastAliveAt()).toBeNull();
+    await lost.close().catch(() => {});
+
+    const notADir = path.join(tempDir(), "regular-file");
+    fs.writeFileSync(notADir, "x");
+    const failed = new mod.SlowOpRecorder({ logPath: path.join(notADir, "slow-operations.jsonl") });
+    failed.recordMeasurement("test.write.fail", 300);
+    await expect(failed.flush()).rejects.toBeInstanceOf(mod.SlowOpRecorderWriteError);
+    expect(failed.lastAliveAt()).toBeNull();
+    await failed.close().catch(() => {});
+
+    // A barrier timeout degrades health but the Worker still writes: it is not a loss.
+    const slow = new mod.SlowOpRecorder({ logPath: path.join(tempDir(), "slow.jsonl") });
+    (slow as any).markDegraded("begin_barrier_timeout", "test.site");
+    expect(slow.snapshot()).toMatchObject({ healthy: false });
+    expect(slow.lastAliveAt()).not.toBeNull();
+    await slow.close();
+  });
+
   it("latches an acknowledged Worker write failure so flush/close cannot report a clean durable drain", async () => {
     const mod = await loadRecorderModule();
     expect(mod, "slow-op-recorder production module is missing").not.toBeNull();
