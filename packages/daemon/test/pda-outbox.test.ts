@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PdaOutbox, PdaOutboxPoisonedError, nodeOutboxFs, PDA_OUTBOX_COMPACT_THRESHOLD, type OutboxFs, type PdaAttemptOutcome } from "../src/adapters/pda-outbox.js";
+import { PdaOutbox, PdaOutboxPoisonedError, PdaOutboxSeqCorruptError, nodeOutboxFs, PDA_OUTBOX_COMPACT_THRESHOLD, type OutboxFs, type PdaAttemptOutcome } from "../src/adapters/pda-outbox.js";
 import { createPdaClient, serializePdaMessage, PDA_MAX_BODY_BYTES, type PdaClient } from "../src/adapters/pda-client.js";
 import type { PdaOutboxRecord } from "../src/adapters/pda-runner-protocol.js";
 import { startFakePda, nonAllowlisted, type FakePda } from "./helpers/fake-pda.js";
@@ -317,9 +317,24 @@ describe("request ids", () => {
     fs.writeFileSync(`${paths().outboxPath}.seq`, "40\n");
     const o2 = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "node-1", launchId: "launch-1", now: () => new Date(T0) });
     expect(enqOk(o2, "y")).toBe("openrig/node-1/launch-1/41"); // persisted 40 beats the log's 6
-    fs.writeFileSync(`${paths().outboxPath}.seq`, "not a number");
-    const o3 = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "node-1", launchId: "launch-1", now: () => new Date(T0) });
-    expect(enqOk(o3, "z")).toBe("openrig/node-1/launch-1/42"); // junk = 0; the log (now holding 41) decides
+  });
+
+  it("D1: an existing .seq that does not parse is refused at open with a coded error, never read as 0 (even with a compacted log)", async () => {
+    const fake = await newFake();
+    await sendAndAck(fake, open(fake), ["old-0", "old-1"]);
+    open(fake); // compacts: nothing in the log remembers the ids
+    const seqFile = `${paths().outboxPath}.seq`;
+    for (const junk of ["garbage", "", "-5", "12abc", "1e3", "9".repeat(16), "4 2"]) {
+      fs.writeFileSync(seqFile, junk);
+      let caught: unknown;
+      try { open(fake); } catch (e) { caught = e; }
+      expect(caught, JSON.stringify(junk)).toBeInstanceOf(PdaOutboxSeqCorruptError);
+      expect((caught as PdaOutboxSeqCorruptError).code).toBe("pda_outbox_seq_corrupt");
+      expect(String((caught as Error).message)).not.toContain("garbage");
+    }
+    expect(fs.readFileSync(seqFile, "utf8")).toBe("4 2"); // untouched: open refused before writing anything
+    fs.writeFileSync(seqFile, "2\n");
+    expect(enqOk(open(fake), "fine again")).toMatch(/\/3$/); // a valid mark opens, and continues above it
   });
 
   it("N1: each enqueue makes its sequence durable (tmp, fsync, rename, fsync dir) BEFORE the enq that uses it is appended", async () => {
@@ -632,6 +647,38 @@ describe("N2: a failed or short append poisons the outbox, so a torn tail can ne
     expect(await restarted.drain(clientFor(fake))).toBe("empty");
     expect(fake.entries("research")).toHaveLength(1);
     expect(fake.postsByRequestId.get(id)).toBe(2);
+  });
+
+  it("release() on a poisoned outbox refuses, so the operator is not told it worked while the record is glued to torn bytes", async () => {
+    const fake = await newFake();
+    const o = open(fake, { fs: recordingFs([], () => false, fault("throw_partial")) });
+    const held = enqOk(o, "A");
+    fake.script({ action: "status", status: 409 });
+    expect(await o.drain(clientFor(fake))).toBe("held");
+    expect(() => o.enqueue("B")).toThrow(/EIO injected/); // poisons, leaving 20 torn bytes at the end of the log
+    const before = readLog();
+    expect(() => o.release()).toThrow(PdaOutboxPoisonedError);
+    expect(readLog()).toBe(before); // nothing was appended after the torn bytes
+    expect(o.snapshot().held).toMatchObject({ requestId: held }); // and the in-memory hold was not lifted
+    const repaired = open(fake); // reopen repairs; the hold is still there for the operator to release
+    expect(repaired.snapshot().held).toMatchObject({ requestId: held });
+    expect(repaired.release()).toBe(held);
+  });
+
+  it("an ack that arrives after the outbox was poisoned mid-flight is not lost silently: attempt throws, and reopen replays it deduped", async () => {
+    const fake = await newFake();
+    const o = open(fake, { fs: recordingFs([], () => false, fault("throw_partial")) });
+    const a = enqOk(o, "A");
+    fake.onPost = () => { try { o.enqueue("B"); } catch { /* the injected append failure poisons the outbox while A's POST is in flight */ } };
+    await expect(o.attempt(clientFor(fake))).rejects.toBeInstanceOf(PdaOutboxPoisonedError);
+    expect(o.poisoned).toBe(true);
+    expect(readLog()).not.toContain('"op":"ack"'); // no ack record was glued onto the torn bytes
+    fake.onPost = undefined;
+    const restarted = open(fake);
+    expect(restarted.snapshot().pending).toBe(1); // A is still pending: replay is safe
+    expect(await restarted.drain(clientFor(fake))).toBe("empty");
+    expect(fake.entries("research").map((x) => x.content)).toEqual(["A"]); // pda deduped the replay
+    expect(fake.postsByRequestId.get(a)).toBe(2);
   });
 
   it("a failed open() of the log for append poisons as well", () => {

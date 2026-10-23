@@ -29,6 +29,15 @@
 // was durable, so every later enqueue/attempt throws until the outbox is reopened (open() rewrites the log and drops
 // the torn tail). Reads (snapshot) keep working.
 //
+// An existing .seq that does not parse makes open() throw PdaOutboxSeqCorruptError (code pda_outbox_seq_corrupt):
+// falling back to 0 would silently re-open the id-reuse hole after a compaction.
+//
+// Outcome unknown (D2): an enqueue that THROWS has an unknown outcome, not "not recorded". If the line was written
+// completely and only fsync or close failed, it may still be on disk, and the next open() replays and delivers it.
+// A caller must therefore not retry a throwing enqueue; it should exit and let the reopened outbox decide (the
+// snapshot after reopen says whether the message is pending). Only `{ok: false, reason: "too_large"}` means
+// "nothing was written".
+//
 // A1: a record is eligible for this outbox only when its {agent, baseUrl} equal the binding it was opened
 // for. Others are SET ASIDE: never posted, never dropped, and they do not block this binding's queue.
 //
@@ -189,6 +198,17 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
 
+/** Thrown by `PdaOutbox.open` when `<outbox>.seq` exists but is not a sequence number. The high-water mark is the
+ *  only thing that keeps a reused launch id from minting an id pda has already admitted, so an unreadable mark is
+ *  an outage, never "0". Restore the file, or (only when every message is delivered) remove it. */
+export class PdaOutboxSeqCorruptError extends Error {
+  readonly code = "pda_outbox_seq_corrupt" as const;
+  constructor() {
+    super("pda outbox: the sequence file exists but does not hold a sequence number; refusing to open");
+    this.name = "PdaOutboxSeqCorruptError";
+  }
+}
+
 /** Thrown by every durable operation after an append failed. Reopen the outbox to repair it. */
 export class PdaOutboxPoisonedError extends Error {
   constructor() {
@@ -292,7 +312,8 @@ export class PdaOutbox {
 
   private readPersistedSeq(): number {
     const text = this.io.readFile(this.seqPath);
-    if (text === null || !/^[0-9]{1,15}\s*$/.test(text)) return 0;
+    if (text === null) return 0; // never persisted: legitimately 0
+    if (!/^[0-9]{1,15}\s*$/.test(text)) throw new PdaOutboxSeqCorruptError();
     return Number(text.trim());
   }
 
@@ -312,7 +333,13 @@ export class PdaOutbox {
 
   private stamp(): string { return this.now().toISOString(); }
 
-  /** Record one message to send. Durable (fsync'd) before this returns and before any POST of it. */
+  /** Record one message to send. Durable (fsync'd) before this returns and before any POST of it.
+   *
+   *  Returns `{ok: false, reason: "too_large"}` when nothing was written. THROWS on a failed write, and a throw
+   *  means OUTCOME UNKNOWN: the line may or may not be on disk (a complete line whose fsync failed will be
+   *  replayed and delivered after reopen). Do not retry; exit and reopen. After any throw from an append this
+   *  outbox is poisoned (`poisoned`), and every later enqueue, attempt and release throws
+   *  `PdaOutboxPoisonedError` until it is reopened. */
   enqueue(content: string): PdaEnqueueResult {
     if (this.poisonedBy) throw new PdaOutboxPoisonedError();
     const seq = this.nextSeq;
