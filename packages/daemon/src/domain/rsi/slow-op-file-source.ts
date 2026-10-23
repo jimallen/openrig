@@ -224,7 +224,7 @@ export class SlowOpFileSource implements HealthObservationSource {
         }, deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: freshnessAt, maxAgeSeconds: 600 })),
         summary: `Site ${site} logged ${tally.under} spans under the ${SLOW_OPERATION_THRESHOLD_MS} ms slow-operation threshold.`,
         threshold: `at least ${SLOW_OP_FLOOD_MIN_SUBTHRESHOLD} logged spans at one site with durationMs under ${SLOW_OPERATION_THRESHOLD_MS}, and at least ${SLOW_OP_FLOOD_MIN_RECENT} of them in the hour ending at the newest log record or the recorder's last-alive time, whichever is later`,
-        explanation: `${tally.under} of ${tally.total} spans at ${site} are under the threshold, ${tally.recent} of them in the last hour of the log; control: ${controlTotal} spans at or over it, out of ${spans.length} spans in the log window.`,
+        explanation: `${tally.under} of ${tally.total} spans at ${site} are under the threshold, ${tally.recent} of them in the hour ending at the newest log record or the recorder's last-alive time; control: ${controlTotal} spans at or over it, out of ${spans.length} spans in the log window.`,
         suggestedInspection: `Check how ${site} records its spans: a path that logs every measurement without applying the slow threshold floods this log.`,
       });
     }

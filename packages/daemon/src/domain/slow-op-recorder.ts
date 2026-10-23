@@ -52,7 +52,8 @@ export interface SlowOperationInstrumentation {
   /** Bounded nonblocking diagnostic append; false means observation was dropped. */
   recordDiagnostic?(record: Record<string, unknown>): boolean;
   snapshot?(): SlowOperationSnapshot;
-  /** Epoch ms of the recorder's last proof of life, or null when it cannot persist records (closed,
+  /** Epoch ms of the recorder's last proof of life: read time when caught up, the post time of its oldest
+   * unacknowledged write when the Worker is behind or stuck, null when it cannot persist records (closed,
    * Worker lost, a write acknowledged as failed). OF-73: the RSI slow-op source anchors its recent
    * hour here, so an alive recorder on a quiet instance reads quiet. */
   lastAliveAt?(): number | null;
@@ -162,7 +163,7 @@ export class SlowOpRecorder implements SlowOperationInstrumentation {
   private readonly rotationCount: number;
   private readonly slowThresholdMs: number;
   private readonly barrierTimeoutMs: number;
-  private readonly pending = new Map<string, { resolve: () => void; reject: (error: unknown) => void }>();
+  private readonly pending = new Map<string, { resolve: () => void; reject: (error: unknown) => void; postedAt: number }>();
   private degraded: SlowOperationSnapshot = { healthy: true };
   private degradedHandler?: (snapshot: Required<Pick<SlowOperationSnapshot, "reason" | "site">>) => void;
   private closed = false;
@@ -223,12 +224,20 @@ export class SlowOpRecorder implements SlowOperationInstrumentation {
   }
 
   /**
-   * Alive means able to persist: open, Worker not lost, no write acknowledged as failed. It is read
-   * time while that holds, and null once it stops holding. A barrier timeout degrades snapshot()
-   * but the Worker still writes, so it is not a loss of life here.
+   * The last moment the recorder is known to have been persisting, epoch ms; null when it cannot.
+   * - null once it is closed, its Worker is lost, or a write was acknowledged as failed;
+   * - read time when it is caught up (no write awaits acknowledgement), so an idle recorder is alive;
+   * - otherwise the post time of the OLDEST write still unacknowledged. The Worker handles messages
+   *   in order, so everything posted before that write has been acknowledged. A Worker stuck in a
+   *   syscall (a FIFO log path) or far behind therefore stops advancing this, instead of reading as
+   *   alive while records are lost. Diagnostic appends are in the same queue.
+   * snapshot() health is deliberately not an input: it is a sticky one-shot latch, so one transient
+   * barrier timeout would read as dead for ever. A sync begin that timed out is covered by the end
+   * span its operation posts when it returns (the main thread cannot ask while it runs).
    */
   lastAliveAt(): number | null {
     if (this.closed || this.terminalReason !== null || this.acknowledgedWriteFailure) return null;
+    for (const waiter of this.pending.values()) return waiter.postedAt;
     return Date.now();
   }
 
@@ -390,7 +399,7 @@ export class SlowOpRecorder implements SlowOperationInstrumentation {
     if (this.terminalReason !== null) return Promise.reject(this.terminalError());
     const id = randomUUID();
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, postedAt: Date.now() });
       if (diagnostic) this.diagnosticIds.add(id);
       try {
         this.worker.postMessage({ ...message, id });
