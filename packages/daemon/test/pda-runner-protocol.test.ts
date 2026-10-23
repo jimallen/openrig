@@ -3,6 +3,9 @@
 // spec block, the resume token, the D4 restore warning, the sidecar parser, the argv, the token format
 // (A6), the pane sanitiser (A5, T30 unit) and Jim's J-5 cost rule with its receiving-side pairing check.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { unicodeInvisiblesIn } from "./helpers/unicode-invisibles.js";
 import {
   PDA_DEFAULT_BASE_URL, buildPdaRunnerArgv, derivePdaCost, formatPdaResumeToken, isPdaLoopbackBaseUrl,
   isPdaTokenFormat, parsePdaResumeToken, parsePdaRunnerState, parsePdaSpecBlock, parsePdaUsageFact,
@@ -176,8 +179,14 @@ describe("A5: sanitizeForPane (T30 unit; the review's 12 forms plus DEL)", () =>
     ["CR", "\r"],
     ["ETX", "\u0003"],
     ["DEL", "\u007f"],
-    ["bidi RLO", "‮"],
-    ["bidi isolate", "⁧"],
+    ["bidi RLO", "\u202e"],
+    ["bidi isolate", "\u2067"],
+    // Review N4: the bidi marks and the line and paragraph separators.
+    ["LRM", "\u200e"],
+    ["RLM", "\u200f"],
+    ["ALM", "\u061c"],
+    ["line separator", "\u2028"],
+    ["paragraph separator", "\u2029"],
   ])("removes %s", (_label, seq) => {
     expect(sanitizeForPane("a" + seq + "b")).toBe("ab");
   });
@@ -192,11 +201,18 @@ describe("A5: sanitizeForPane (T30 unit; the review's 12 forms plus DEL)", () =>
   it("removes a lone C1 control (NEL, a stray ST) that introduces no sequence", () => {
     expect(sanitizeForPane("a\u0085b\u009cc")).toBe("abc");
   });
+  // Review N5: the guard is written as escapes. A raw invisible character in the source can be dropped by
+  // an editor or formatter without any visible diff, silently shrinking the class.
+  it("the sanitiser's source holds no raw invisible character", () => {
+    const src = readFileSync(fileURLToPath(new URL("../src/adapters/pda-runner-protocol.ts", import.meta.url)), "utf8");
+    expect(src.length).toBeGreaterThan(1000); // positive control: the file was read
+    expect(unicodeInvisiblesIn(src)).toEqual([]);
+  });
   it("keeps LF, TAB and ordinary Unicode", () => {
     expect(sanitizeForPane("line one\n\tcafé 日本語 ── idle ──\n")).toBe("line one\n\tcafé 日本語 ── idle ──\n");
   });
   it("leaves no control byte and no ESC in a mixed adversarial string", () => {
-    const out = sanitizeForPane("x\u001b]52;c;Zm9v\u0007y\u001bPdcs\u001b\\z\r\n\u009b31mw\u001b[1;31mv‮u\u001b");
+    const out = sanitizeForPane("x\u001b]52;c;Zm9v\u0007y\u001bPdcs\u001b\\z\r\n\u009b31mw\u001b[1;31mv\u202eu\u001b");
     expect(out).toBe("xyz\nwvu");
     expect(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(out)).toBe(false);
   });
@@ -219,6 +235,16 @@ describe("J-5: the cost rule (Jim's decision) and the receiving side's pairing c
     ["negative", { total: -0.5 }], ["NaN", { total: Number.NaN }], ["Infinity", { total: Number.POSITIVE_INFINITY }],
   ])("%s is NULL with absent", (_label, cost) => {
     expect(derivePdaCost(cost, tokens(10))).toEqual({ costTotal: null, costBasis: "absent" });
+  });
+
+  // Review N6: unusable token counts make the basis unknowable, even with a zero or a positive total.
+  it.each([
+    ["NaN input", { input: Number.NaN, output: 1, cacheRead: 0, cacheWrite: 0 }, { total: 0 }],
+    ["NaN cacheWrite", { input: 0, output: 0, cacheRead: 0, cacheWrite: Number.NaN }, { total: 0 }],
+    ["Infinity output", { input: 1, output: Number.POSITIVE_INFINITY, cacheRead: 0, cacheWrite: 0 }, { total: 0.5 }],
+    ["negative cacheRead", { input: 0, output: 0, cacheRead: -3, cacheWrite: 0 }, { total: 0 }],
+  ])("token counts with %s are NULL with absent", (_label, counts, cost) => {
+    expect(derivePdaCost(cost, counts)).toEqual({ costTotal: null, costBasis: "absent" });
   });
 
   const fact = (over: Partial<PdaUsageFact>): Record<string, unknown> => ({
