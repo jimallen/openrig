@@ -41,7 +41,7 @@ import {
 import { PdaOutbox, PdaOutboxPoisonedError, PdaOutboxSeqCorruptError, type PdaAttemptOutcome } from "./pda-outbox.js";
 import { PdaSseOverflowError, PdaSseParser, parsePdaEventData, type PdaStreamEvent } from "./pda-sse.js";
 import {
-  HOOK_TOKEN_MARKER, PDA_TOKEN_MARKER, PdaPane, argsFirstLine, entryView, resultText, textDeltaOf,
+  HOOK_TOKEN_MARKER, PDA_TOKEN_MARKER, PdaPane, argsFirstLine, entryView, idText, messageChangesOf, partialText,
   type PdaEntryView, type PdaSecret,
 } from "./pda-render.js";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
@@ -149,6 +149,8 @@ export interface PdaRunnerDeps {
   backoffStartMs?: number;
   backoffCapMs?: number;
   usage?: PdaUsageSink;
+  /** How long a user message waits for the submission that says whose it is. Default 150 ms. */
+  userHoldMs?: number;
 }
 
 const OWN_SUBMISSIONS_MAX = 500;
@@ -210,7 +212,16 @@ export class PdaRunner {
   /** A snapshot arrived while a reply might be mid-flight: the next assistant message is printed again in full. */
   private maybePartial = false;
   private readonly rendered = new Map<string, true>();
+  /** Ids as text. A submission is ours when its requestId is under `openrig/<nodeId>/` (we mint those) or pda's
+   *  POST reply named it. An ENTRY is ours when a submission of ours names it in `record.entry`: an EntryRecord has no
+   *  requestId or submissionId of its own (pi-durable types.d.ts:290-305). */
   private ownSubmissions: string[] = [];
+  private ownEntries: string[] = [];
+  /** User entries seen on the stream whose owner is not known yet: the submission that names the entry follows it in
+   *  the same batch (events.js:205-222 then :263-264), so they wait for it, briefly, before they are shown as another
+   *  client's. */
+  private pendingUsers: PdaEntryView[] = [];
+  private userFlushTimer: ReturnType<typeof setTimeout> | undefined;
 
   private attachAbort: AbortController | null = null;
   private currentStream: { close(): void } | null = null;
@@ -343,6 +354,7 @@ export class PdaRunner {
     this.finished = true;
     this.finalCode = code;
     if (this.aliveTimer) clearInterval(this.aliveTimer);
+    if (this.userFlushTimer !== undefined) { clearTimeout(this.userFlushTimer); this.userFlushTimer = undefined; }
     this.ready = false;
     this.connected = false;
     this.exited = { code, at: this.stamp() };
@@ -429,6 +441,7 @@ export class PdaRunner {
     const wasConnected = this.connected;
     this.connected = false;
     this.pane.closeLine();
+    this.flushUsers();
     if (why.error) this.error = { code: why.error, at: this.stamp() };
     if (wasConnected) {
       this.lastPostedBusy = null;
@@ -453,7 +466,19 @@ export class PdaRunner {
 
   // ── Events ──
 
+  /** Events that print something to the pane: a user message still waiting for its owner is settled first, so the
+   *  pane keeps pda's order. */
+  private static readonly PRINTS = new Set([
+    "snapshot", "message_update", "tool_execution_start", "tool_execution_end", "run_end", "task_failed",
+    "auto_retry_start", "compaction_start", "compaction_end", "stream_end",
+  ]);
+  /** Known events the runner has no use for (counted as known, not as unknown). */
+  private static readonly IGNORED = new Set([
+    "turn_start", "turn_end", "tool_execution_update", "inbox_update", "agent_changed", "usage_changed", "deferred_poll", "auto_retry_end",
+  ]);
+
   private async handleEvent(event: PdaStreamEvent, firstSnapshot: boolean): Promise<void> {
+    if (PdaRunner.PRINTS.has(event.type)) this.flushUsers();
     switch (event.type) {
       case "snapshot": return this.onSnapshot(event, firstSnapshot);
       case "run_start":
@@ -474,11 +499,17 @@ export class PdaRunner {
         this.usage.onRunEnd?.(event);
         this.writeSidecar();
         return;
+      case "message_start": {
+        // A streamed answer starts with its first partial, which may already hold text.
+        const initial = partialText(event.message);
+        if (initial.length > 0) { this.streaming = true; this.pane.append(initial); }
+        return;
+      }
       case "message_update": {
-        const delta = textDeltaOf(event);
-        if (delta === null || delta.length === 0) return;
-        this.streaming = true;
-        this.pane.append(delta);
+        const change = messageChangesOf(event);
+        if (change === null) return;
+        if (change.whole) this.maybePartial = true; // a block or the message was replaced: show the reply whole at message_end
+        if (change.text.length > 0) { this.streaming = true; this.pane.append(change.text); }
         return;
       }
       case "message_end": return this.onMessageEnd(event);
@@ -491,31 +522,36 @@ export class PdaRunner {
       }
       case "tool_execution_end": return this.onToolEnd(event);
       case "entry_appended": {
+        // Entries without a model message (a plain reset, display writes); entries WITH one arrive as message_end.
         const view = entryView(event.entry);
-        // Assistant text and tool results are rendered by their own live events; this path adds the rest.
-        if (view && view.role !== "assistant" && view.role !== "toolResult") this.renderEntry(view, "live");
+        if (view) this.renderEntry(view, "live");
         return;
       }
       case "submission": return this.onSubmission(event);
-      case "auto_retry_start":
-        this.pane.line("[pda-runner] transient error; retrying");
+      case "auto_retry_start": {
+        const why = typeof event.errorMessage === "string" && event.errorMessage.length > 0 ? `: ${event.errorMessage.slice(0, 200)}` : "";
+        this.pane.line(`[pda-runner] transient error; retrying${why}`);
         this.postActivity("active", "auto_retry");
         return;
+      }
       case "compaction_start":
         this.pane.line("[pda-runner] compacting context…");
         this.postActivity("active", "compaction");
         return;
-      case "compaction_end":
-        this.pane.line("[pda-runner] compaction finished");
+      case "compaction_end": {
+        const error = typeof event.error === "string" && event.error.length > 0 ? event.error.slice(0, 200) : null;
+        this.pane.line(error ? `[pda-runner] compaction failed: ${error}` : "[pda-runner] compaction finished");
         return;
+      }
       case "task_failed": {
-        const reason = typeof event.error === "string" ? event.error : typeof event.reason === "string" ? event.reason : "";
-        this.pane.line(`[pda-runner] task failed${reason ? `: ${reason.slice(0, 200)}` : ""}`);
+        const kind = typeof event.kind === "string" && event.kind.length > 0 ? ` (${event.kind.slice(0, 60)})` : "";
+        const message = typeof event.message === "string" && event.message.length > 0 ? `: ${event.message.slice(0, 200)}` : "";
+        this.pane.line(`[pda-runner] task failed${kind}${message}`);
         return;
       }
       case "stream_end": throw new Detach("stream_end");
-      case "usage_changed": return; // totals are not shown here (the usage lane's)
-      default: this.unknownEvents += 1;
+      default:
+        if (!PdaRunner.IGNORED.has(event.type)) this.unknownEvents += 1;
     }
   }
 
@@ -602,9 +638,8 @@ export class PdaRunner {
 
   // ── Rendering ──
 
-  private isOwn(view: PdaEntryView): boolean {
-    if (view.requestId !== null && view.requestId.startsWith(`openrig/${this.deps.nodeId}/`)) return true;
-    return view.submissionId !== null && this.ownSubmissions.includes(view.submissionId);
+  private isOwnEntry(view: PdaEntryView): boolean {
+    return view.id !== null && this.ownEntries.includes(view.id);
   }
 
   private remember(key: string): boolean {
@@ -617,12 +652,18 @@ export class PdaRunner {
     return true;
   }
 
+  private errorLine(view: PdaEntryView): void {
+    if (view.errorMessage !== null) this.pane.line(`  ! ${view.errorMessage.slice(0, 500)}`);
+  }
+
   private renderEntry(view: PdaEntryView, source: "gap" | "live"): void {
     if (view.id !== null && !this.remember(view.id)) return;
     if (view.kind === "pi.reset") { this.pane.line("[pda-runner] conversation was reset"); this.advance(view); return; }
+    if (view.kind === "pi.compaction") { this.pane.line("── context compacted ──"); this.advance(view); return; }
     switch (view.role) {
       case "user":
-        if (!this.isOwn(view)) this.pane.block(view.text, "        ", "other ▸ ");
+        // The owner of a live user message is not known until its submission is seen; a gap-filled one is known or not.
+        if (!this.isOwnEntry(view)) this.pane.block(view.text, "        ", "other ▸ ");
         break;
       case "assistant":
         for (const call of view.toolCalls) this.pane.line(`  ⚙ ${call.name}: ${argsFirstLine(call.args)}`);
@@ -633,9 +674,12 @@ export class PdaRunner {
           }
           this.pane.block(view.text, "");
         }
+        this.errorLine(view);
         break;
       case "toolResult":
-        if (view.toolCallId === null || this.remember(`tool:${view.toolCallId}`)) this.pane.block(view.text.length > 0 ? view.text : "(no output)", view.isError ? "  ✗ " : "  │ ")
+        if (view.toolCallId === null || this.remember(`tool:${view.toolCallId}`)) {
+          this.pane.block(view.text.length > 0 ? view.text : "(no output)", view.isError ? "  ✗ " : "  │ ");
+        }
         break;
       default:
         break;
@@ -647,13 +691,42 @@ export class PdaRunner {
     if (view.id !== null) this.lastEntryId = view.id;
   }
 
+  /** A user message arrived on the stream (`message_end`). It is shown as another client's unless a submission of
+   *  ours names it; that submission follows in the same batch, so it waits for it (briefly). */
+  private queueUser(view: PdaEntryView): void {
+    if (view.id !== null && !this.remember(view.id)) return;
+    this.advance(view);
+    this.writeSidecar();
+    if (this.isOwnEntry(view)) return;
+    this.pendingUsers.push(view);
+    if (this.userFlushTimer === undefined) {
+      this.userFlushTimer = setTimeout(() => { this.userFlushTimer = undefined; this.flushUsers(); this.pane.endBatch(); }, this.deps.userHoldMs ?? 150);
+      this.userFlushTimer.unref?.();
+    }
+  }
+
+  /** Show what is still waiting as another client's message. */
+  private flushUsers(): void {
+    if (this.userFlushTimer !== undefined) { clearTimeout(this.userFlushTimer); this.userFlushTimer = undefined; }
+    const waiting = this.pendingUsers;
+    this.pendingUsers = [];
+    for (const view of waiting) {
+      if (this.isOwnEntry(view)) continue;
+      this.pane.block(view.text, "        ", "other ▸ ");
+    }
+  }
+
   private onMessageEnd(event: PdaStreamEvent): void {
     const view = entryView(event.entry);
+    if (view && (view.kind === "pi.compaction" || view.kind === "pi.reset")) { this.renderEntry(view, "live"); return; }
+    if (view && view.role === "user") { this.pane.closeLine(); this.queueUser(view); return; }
+    if (view && view.role === "toolResult") { this.pane.closeLine(); this.flushUsers(); this.renderEntry(view, "live"); return; }
     const wasStreaming = this.streaming;
     this.streaming = false;
     const partial = this.maybePartial;
     this.maybePartial = false;
     if (!view || view.role !== "assistant") { this.pane.closeLine(); return; }
+    this.flushUsers();
     if (view.id !== null && this.rendered.has(view.id)) { this.pane.closeLine(); return; } // the gap fill printed it whole
     if (view.id !== null) this.remember(view.id);
     this.pane.closeLine();
@@ -665,30 +738,45 @@ export class PdaRunner {
     } else if (!wasStreaming && view.text.length > 0) {
       this.pane.block(view.text, ""); // nothing was streamed: print the whole reply
     }
+    this.errorLine(view);
     this.advance(view);
     this.usage.onAssistantEntry?.(event.entry);
     this.writeSidecar();
   }
 
+  /** A model-issued call ends with its result ENTRY (events.d.ts:108-112); the same entry follows as message_end, and
+   *  the rendered-id set shows it once. A call whose task faulted or whose run ended has no entry. */
   private onToolEnd(event: PdaStreamEvent): void {
     if (event.parentToolCallId !== undefined && event.parentToolCallId !== null) return;
+    const name = typeof event.toolName === "string" && event.toolName.length > 0 ? event.toolName : "tool";
     const view = event.entry !== undefined ? entryView(event.entry) : null;
     const callId = typeof event.toolCallId === "string" ? event.toolCallId : view?.toolCallId ?? null;
     if (callId !== null && !this.remember(`tool:${callId}`)) return;
-    if (view?.id) this.remember(view.id);
-    const text = view && view.text.length > 0 ? view.text : resultText(event.result);
-    const isError = event.isError === true || view?.isError === true;
-    this.pane.block(text.length > 0 ? text : "(no output)", isError ? "  ✗ " : "  │ ");
-    if (view) this.advance(view);
+    if (!view) {
+      this.pane.line(`  ✗ ${name}: no result (the tool task faulted or the run ended)`);
+      return;
+    }
+    if (view.id !== null) this.remember(view.id);
+    this.pane.block(view.text.length > 0 ? view.text : "(no output)", view.isError ? "  ✗ " : "  │ ");
+    this.advance(view);
   }
 
+  /** `{type: "submission", record: SubmissionRecord}` (events.d.ts:115-118; types.d.ts:336-366). */
   private onSubmission(event: PdaStreamEvent): void {
-    const requestId = typeof event.requestId === "string" ? event.requestId : null;
-    const own = requestId !== null && requestId.startsWith(`openrig/${this.deps.nodeId}/`);
-    if (own && typeof event.submissionId === "string") this.recordOwn(event.submissionId);
-    const outcome = event.outcome ?? event.status;
-    if (own && outcome === "unanswered") {
-      const reason = typeof event.reason === "string" ? `: ${event.reason.slice(0, 200)}` : "";
+    const record = event.record;
+    if (!isObj(record)) return;
+    const id = idText(record.id);
+    const requestId = typeof record.requestId === "string" ? record.requestId : null;
+    const own = (requestId !== null && requestId.startsWith(`openrig/${this.deps.nodeId}/`)) || (id !== null && this.ownSubmissions.includes(id));
+    if (!own) return;
+    if (id !== null) this.recordOwn(id);
+    const entry = idText(record.entry);
+    if (entry !== null) {
+      this.recordOwnEntry(entry);
+      this.pendingUsers = this.pendingUsers.filter((v) => v.id !== entry); // it was ours: already echoed as `you ▸`
+    }
+    if (record.status === "unanswered") {
+      const reason = typeof record.reason === "string" && record.reason.length > 0 ? `: ${record.reason.slice(0, 200)}` : "";
       this.pane.line(`[pda-runner] not answered${reason}`);
     }
   }
@@ -699,18 +787,30 @@ export class PdaRunner {
     try {
       const text = this.deps.fs.readText(this.paths.ownSubmissionsPath);
       const parsed = text === null ? null : (JSON.parse(text) as unknown);
-      const ids = isObj(parsed) && Array.isArray(parsed.ids) ? parsed.ids.filter((x): x is string => typeof x === "string") : [];
-      this.ownSubmissions = ids.slice(-OWN_SUBMISSIONS_MAX);
-    } catch { this.ownSubmissions = []; }
+      const textIds = (v: unknown): string[] => (Array.isArray(v) ? v.map(idText).filter((x): x is string => x !== null) : []);
+      this.ownSubmissions = isObj(parsed) ? textIds(parsed.ids).slice(-OWN_SUBMISSIONS_MAX) : [];
+      this.ownEntries = isObj(parsed) ? textIds(parsed.entries).slice(-OWN_SUBMISSIONS_MAX) : [];
+    } catch { this.ownSubmissions = []; this.ownEntries = []; }
+  }
+
+  private persistOwn(): void {
+    try {
+      this.deps.fs.writeAtomic(this.paths.ownSubmissionsPath, JSON.stringify({ version: 1, ids: this.ownSubmissions, entries: this.ownEntries }));
+    } catch { /* attribution is best-effort; delivery is not affected */ }
   }
 
   private recordOwn(submissionId: string): void {
     if (this.ownSubmissions.includes(submissionId)) return;
     this.ownSubmissions.push(submissionId);
     if (this.ownSubmissions.length > OWN_SUBMISSIONS_MAX) this.ownSubmissions.splice(0, this.ownSubmissions.length - OWN_SUBMISSIONS_MAX);
-    try {
-      this.deps.fs.writeAtomic(this.paths.ownSubmissionsPath, JSON.stringify({ version: 1, ids: this.ownSubmissions }));
-    } catch { /* attribution is best-effort; delivery is not affected */ }
+    this.persistOwn();
+  }
+
+  private recordOwnEntry(entryId: string): void {
+    if (this.ownEntries.includes(entryId)) return;
+    this.ownEntries.push(entryId);
+    if (this.ownEntries.length > OWN_SUBMISSIONS_MAX) this.ownEntries.splice(0, this.ownEntries.length - OWN_SUBMISSIONS_MAX);
+    this.persistOwn();
   }
 
   /** The outbox's onAck hook: pda admitted a message. */

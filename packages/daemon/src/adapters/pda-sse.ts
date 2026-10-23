@@ -34,7 +34,13 @@ export class PdaSseParser {
   // The default decoder drops a leading byte-order mark (ignoreBOM is false), which is the SSE rule.
   private readonly decoder = new TextDecoder("utf-8", { fatal: false });
   private readonly maxEventBytes: number;
-  private buf = "";
+  // The unfinished line is kept as the chunks that make it up and joined ONCE, when its terminator arrives, and a
+  // chunk is scanned once: the cost of an event is linear in its size however the network cut it (the first
+  // version re-joined and re-scanned the whole pending line per chunk: 2.9 s for an 8 MiB event).
+  private pending: string[] = [];
+  private pendingChars = 0;
+  /** The previous chunk ended in a CR, which ended its line: a LF now at the start of a chunk is the CRLF's second half. */
+  private skipLF = false;
   private dataLines: string[] = [];
   private dataChars = 0;
 
@@ -44,31 +50,53 @@ export class PdaSseParser {
 
   /** Feed one chunk; returns the events it completed, in order. */
   push(chunk: Uint8Array): PdaSseMessage[] {
-    this.buf += this.decoder.decode(chunk, { stream: true });
+    const text = this.decoder.decode(chunk, { stream: true });
     const out: PdaSseMessage[] = [];
+    const n = text.length;
+    if (n === 0) return out;
     let i = 0;
-    const b = this.buf;
+    if (this.skipLF) {
+      this.skipLF = false;
+      if (text.charCodeAt(0) === 10) i = 1;
+    }
     for (;;) {
       let j = i;
-      while (j < b.length && b.charCodeAt(j) !== 10 && b.charCodeAt(j) !== 13) j++;
-      if (j >= b.length) break;                                   // an unfinished line
-      if (b.charCodeAt(j) === 13 && j === b.length - 1) break;    // a CR at the very end may be half of a CRLF
-      const line = b.slice(i, j);
-      i = b.charCodeAt(j) === 13 && b.charCodeAt(j + 1) === 10 ? j + 2 : j + 1;
+      while (j < n) {
+        const c = text.charCodeAt(j);
+        if (c === 10 || c === 13) break;
+        j++;
+      }
+      if (j >= n) break; // an unfinished line
+      const head = text.slice(i, j);
+      let line = head;
+      if (this.pending.length > 0) {
+        line = this.pending.join("") + head;
+        this.pending = [];
+        this.pendingChars = 0;
+      }
+      if (text.charCodeAt(j) === 13) {
+        if (j + 1 < n) i = text.charCodeAt(j + 1) === 10 ? j + 2 : j + 1;
+        else { i = j + 1; this.skipLF = true; }
+      } else i = j + 1;
       this.line(line, out);
     }
-    this.buf = b.slice(i);
+    if (i < n) {
+      const rest = text.slice(i);
+      this.pending.push(rest);
+      this.pendingChars += rest.length;
+    }
     // The unfinished line counts against the same bound as the event it belongs to.
-    if (this.dataChars + this.buf.length > this.maxEventBytes) throw new PdaSseOverflowError();
+    if (this.dataChars + this.pendingChars > this.maxEventBytes) throw new PdaSseOverflowError();
     return out;
   }
 
   /** The stream ended. A trailing line without a terminator is processed; an unfinished event is discarded. */
   end(): PdaSseMessage[] {
     const out: PdaSseMessage[] = [];
-    const tail = this.buf + this.decoder.decode();
-    this.buf = "";
-    if (tail.length > 0) this.line(tail.replace(/\r$/, ""), out);
+    const tail = this.pending.join("") + this.decoder.decode();
+    this.pending = [];
+    this.pendingChars = 0;
+    if (tail.length > 0) this.line(tail, out);
     // Per the SSE rules an event with no closing blank line is NOT dispatched.
     this.dataLines = [];
     this.dataChars = 0;

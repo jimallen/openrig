@@ -168,6 +168,22 @@ describe("pda-client: T6 body size, measured on the exact string that is sent", 
     expect(JSON.parse(body)).toEqual({ content: "line one\nline two é   /abort", mode: "followUp", requestId: "r1" });
   });
 
+  it("M4: pda's real reply carries a NUMERIC submissionId; it is accepted and handed on as text", async () => {
+    const { fake, client } = await rig();
+    const res = await client.postMessage(serializePdaMessage({ content: "x", requestId: "r-num" }));
+    expect(res).toEqual({ ok: true, value: { submissionId: String(fake.entries("research")[0]!.submissionId) } });
+    expect(typeof fake.entries("research")[0]!.submissionId).toBe("number"); // the fake speaks the real shape
+    fake.script({ action: "status", status: 202, body: { submissionId: 7, status: "queued" } });
+    expect(await client.postMessage(serializePdaMessage({ content: "y", requestId: "r-num-2" }))).toEqual({ ok: true, value: { submissionId: "7" } });
+    // Negative, kept on purpose: the old guessed shape (a string id) is still accepted; anything else is not an ack.
+    fake.script({ action: "status", status: 202, body: { submissionId: "sub-9" } });
+    expect(await client.postMessage(serializePdaMessage({ content: "z", requestId: "r-str" }))).toEqual({ ok: true, value: { submissionId: "sub-9" } });
+    for (const bad of [-1, 1.5, Number.NaN, null, true, {}, [], ""]) {
+      fake.script({ action: "status", status: 202, body: { submissionId: bad } });
+      expect(await client.postMessage(serializePdaMessage({ content: "w", requestId: `r-bad-${String(bad)}` })), JSON.stringify(bad)).toMatchObject({ ok: false, kind: "protocol" });
+    }
+  });
+
   it("a reply without a submissionId is a protocol failure, not an ack", async () => {
     const { fake, client } = await rig();
     fake.script({ action: "status", status: 200, body: {} });

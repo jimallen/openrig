@@ -213,6 +213,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
       signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
     }),
     aliveIntervalMs: options.aliveIntervalMs ?? 40,
+    userHoldMs: 25, // a user message waits this long for the submission that names it
     backoffStartMs: 5,
     backoffCapMs: 20,
     usage: options.usage,
@@ -249,14 +250,5 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
   return rig;
 }
 
-// ── Entry builders (pda EntryRecord shapes the renderer reads) ───────────────
-
-export const assistantEntry = (id: string, text: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
-  id, conversationId: "conv-1", model: [{ role: "assistant", content: [{ type: "text", text }], ...extra }],
-});
-export const userEntry = (id: string, text: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
-  id, conversationId: "conv-1", ...extra, model: [{ role: "user", content: text }],
-});
-export const toolResultEntry = (id: string, toolCallId: string, text: string, isError = false): Record<string, unknown> => ({
-  id, conversationId: "conv-1", model: [{ role: "toolResult", toolCallId, isError, content: [{ type: "text", text }] }],
-});
+// The entry, event and submission builders are in ./pda-real-shapes.ts (pda's real wire shapes, each citing its declaration).
+export * from "./pda-real-shapes.js";

@@ -321,8 +321,12 @@ export function createPdaClient(options: PdaClientOptions): PdaClient {
       if (!parsed.ok) return parsed;
       const v = parsed.value;
       const submissionId = typeof v === "object" && v !== null ? (v as Record<string, unknown>).submissionId : undefined;
-      if (typeof submissionId !== "string" || submissionId.length === 0) return { ok: false, kind: "protocol" };
-      return { ok: true, value: { submissionId } };
+      // pda's SubmissionId is a NUMBER (pi-durable types.d.ts:21, `Id<"submission">`; app.mjs `send` returns
+      // `submission.id` as is). A string id is accepted too; either way the caller gets it as a string.
+      const asText = typeof submissionId === "number" && Number.isSafeInteger(submissionId) && submissionId >= 0 ? String(submissionId)
+        : typeof submissionId === "string" && submissionId.length > 0 ? submissionId : null;
+      if (asText === null) return { ok: false, kind: "protocol" };
+      return { ok: true, value: { submissionId: asText } };
     },
   };
   return client;

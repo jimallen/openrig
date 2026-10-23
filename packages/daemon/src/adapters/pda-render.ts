@@ -135,9 +135,27 @@ export class PdaPane {
 }
 
 // ── Entry and event normalisation ────────────────────────────────────────────
+// pda's wire shapes, read at the source (pi-durable 1.3.0 `dist/harness/events.d.ts`, `dist/types.d.ts`,
+// `pi-ai/dist/types.d.ts`; pda `client/pda.mjs`, which renders the same stream):
+//   - EntryId, SubmissionId and ConversationId are NUMBERS (types.d.ts:18-21). `idText` makes them text, once, here;
+//     everything the runner stores or compares (sidecar, own-submissions, the rendered-id set) is text.
+//   - an EntryRecord is `{id, conversationId, kind, model?: Message[], data?, ...}` (types.d.ts:290-305). It carries
+//     NO requestId and NO submissionId: ownership of a user entry comes from the SubmissionRecord that names it
+//     (`record.entry`, types.d.ts:336-366), see `pda-runner.ts`.
+//   - `model[0]` is a pi-ai message (types.d.ts of pi-ai:357-428): user {content: string | parts}, assistant {content:
+//     text | thinking | toolCall parts, errorMessage?}, toolResult {toolCallId, isError, content: parts}.
+//   - `message_update` is `{usage, changes: MessageChange[]}` (events.d.ts:81-84, 14-34): streamed text is the
+//     `text_delta` changes; a `text_start` block can carry initial text; `block` and `message` replace what was
+//     streamed, so the reply can only be shown whole at `message_end`.
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+
+/** An id as text: pda's numeric ids (non-negative safe integers), or a non-empty string. Anything else is no id. */
+export function idText(v: unknown): string | null {
+  if (typeof v === "number") return Number.isSafeInteger(v) && v >= 0 ? String(v) : null;
+  return str(v);
+}
 
 /** The text of a message content: a string, or the `text` parts of a content array. Thinking is never text. */
 export function contentText(content: unknown): string {
@@ -156,16 +174,16 @@ export interface PdaEntryView {
   toolCalls: Array<{ name: string; args: unknown }>;
   toolCallId: string | null;
   isError: boolean;
-  requestId: string | null;
-  submissionId: string | null;
-  /** Entry kind markers such as `pi.reset`. */
+  /** An assistant message's `errorMessage` (a failed generation). */
+  errorMessage: string | null;
+  /** Entry kind markers such as `pi.reset` and `pi.compaction`. */
   kind: string | null;
 }
 
-/** pda's `EntryRecord`: an `id` and `model[0]`, a pi-ai message with `role` and `content`. */
+/** pda's `EntryRecord`: `id`, `kind`, and `model[0]`, a pi-ai message with `role` and `content`. */
 export function entryView(entry: unknown): PdaEntryView | null {
   if (!isObj(entry)) return null;
-  const msg = Array.isArray(entry.model) && isObj(entry.model[0]) ? entry.model[0] : isObj(entry.message) ? entry.message : entry;
+  const msg = Array.isArray(entry.model) && isObj(entry.model[0]) ? entry.model[0] : {};
   const rawRole = msg.role;
   const role = rawRole === "user" || rawRole === "assistant" || rawRole === "toolResult" ? rawRole : "other";
   const toolCalls: PdaEntryView["toolCalls"] = [];
@@ -175,32 +193,37 @@ export function entryView(entry: unknown): PdaEntryView | null {
     }
   }
   return {
-    id: str(entry.id),
+    id: idText(entry.id),
     role,
     text: contentText(msg.content),
     toolCalls,
-    toolCallId: str(msg.toolCallId) ?? str(entry.toolCallId),
-    isError: msg.isError === true || entry.isError === true,
-    requestId: str(entry.requestId) ?? str(msg.requestId),
-    submissionId: str(entry.submissionId) ?? str(msg.submissionId),
-    kind: str(entry.kind) ?? str(entry.type),
+    toolCallId: str(msg.toolCallId),
+    isError: msg.isError === true,
+    errorMessage: str(msg.errorMessage),
+    kind: str(entry.kind),
   };
 }
 
-/** A tool result as text: a string, `{content: parts}`, or a parts array. */
-export function resultText(result: unknown): string {
-  if (typeof result === "string") return result;
-  if (Array.isArray(result)) return contentText(result);
-  if (isObj(result)) return contentText(result.content);
-  return "";
+/** What a `message_update` adds to the pane. `text` is the streamed text (text_delta changes, and the initial text
+ *  of a text_start block). `whole` is true when a change replaced what was streamed (a `block` or a `message`), so
+ *  the reply can only be trusted whole at message_end. Null when the event carries no `changes` array. */
+export function messageChangesOf(event: Record<string, unknown>): { text: string; whole: boolean } | null {
+  const changes = event.changes;
+  if (!Array.isArray(changes)) return null;
+  let text = "";
+  let whole = false;
+  for (const change of changes) {
+    if (!isObj(change)) continue;
+    if (change.type === "text_delta" && typeof change.delta === "string") text += change.delta;
+    else if (change.type === "text_start" && isObj(change.block) && change.block.type === "text" && typeof change.block.text === "string") text += change.block.text;
+    else if (change.type === "block" || change.type === "message") whole = true;
+  }
+  return { text, whole };
 }
 
-/** The streamed text a `message_update` carries, or null when it carries none. */
-export function textDeltaOf(event: Record<string, unknown>): string | null {
-  const inner = event.assistantMessageEvent;
-  if (isObj(inner) && inner.type === "text_delta" && typeof inner.delta === "string") return inner.delta;
-  if (event.kind === "text_delta" && typeof event.delta === "string") return event.delta;
-  return null;
+/** The text a `message_start` partial already holds (a streamed answer starts with its first partial). */
+export function partialText(message: unknown): string {
+  return isObj(message) && message.role === "assistant" ? contentText(message.content) : "";
 }
 
 /** The first line of a tool's arguments, at most `max` characters: enough to see WHICH call, never the lot. */

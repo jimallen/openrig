@@ -16,11 +16,14 @@ import { fileURLToPath } from "node:url";
 import {
   PdaRunner, pdaClientRedactions, fatalLabel, installPdaRunnerFatalHandlers, parsePdaRunnerArgv, wirePdaRunnerInput, createActivityPoster,
 } from "../src/adapters/pda-runner.js";
-import { PdaPane, PdaRedactor, argsFirstLine, entryView } from "../src/adapters/pda-render.js";
+import { PdaSseParser } from "../src/adapters/pda-sse.js";
+import { PdaPane, PdaRedactor, argsFirstLine, entryView, idText } from "../src/adapters/pda-render.js";
 import { buildPdaRunnerArgv, PDA_DEFAULT_BASE_URL } from "../src/adapters/pda-runner-protocol.js";
 import { nonAllowlisted } from "./helpers/fake-pda.js";
 import {
-  BEARER, HOOK_TOKEN, LOOKALIKE, assistantEntry, makeRig, toolResultEntry, userEntry, waitFor, type Rig,
+  BEARER, HOOK_TOKEN, LOOKALIKE, GUESSED_SHAPES, assistantEntry, assistantMessage, autoRetryStart, bareEntry, changesEvent, compactionEnd, compactionEntry, deltaEvent,
+  entryAppended, makeRig, messageEnd, messageStart, nestedToolEnd, runEnd, runStart, snapshotEvent, streamEnd, submissionEvent,
+  taskFailed, thinkingDeltaEvent, toolEnd, toolResultEntry, toolResultMessage, toolStart, userEntry, userMessage, waitFor, type Rig,
 } from "./helpers/pda-runner-rig.js";
 
 const ESC = "\u001b";
@@ -43,7 +46,7 @@ async function started(options: Parameters<typeof makeRig>[0] = {}): Promise<Rig
 }
 
 /** Start a rig on scripted streams and bring it to READY with the given first snapshot. */
-async function attached(options: Parameters<typeof makeRig>[0] = {}, snapshot: Record<string, unknown> = { type: "snapshot", run: null }) {
+async function attached(options: Parameters<typeof makeRig>[0] = {}, snapshot: Record<string, unknown> = snapshotEvent()) {
   const rig = await started(options);
   const stream = await rig.stream();
   stream.push(snapshot);
@@ -95,7 +98,7 @@ describe("pda-runner: attach (T13 runner side, design 'Reconnect')", () => {
     // It recovers when pda returns.
     rig.scripted.allDown = false;
     const stream = await rig.stream();
-    stream.push({ type: "snapshot", run: null });
+    stream.push(snapshotEvent());
     await waitFor(() => rig.sidecar().ready, "ready after recovery");
     expect(rig.sidecar().error).toBeUndefined();
     void done;
@@ -227,10 +230,10 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
   it("maps run_start/run_end and the snapshot's run to busy, and posts activity in the event order", async () => {
     const { rig, stream } = await attached();
     expect(rig.sidecar()).toMatchObject({ busy: false, connected: true });
-    stream.push({ type: "run_start", inputs: [] });
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "busy after run_start");
     stream.push({ type: "tool_execution_start", toolName: "bash", toolCallId: "t1", args: { command: "ls" } });
-    stream.push({ type: "run_end" });
+    stream.push(runEnd());
     await waitFor(() => !rig.sidecar().busy, "idle after run_end");
     expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual([
       "Stop/attached_idle", "active/run_start", "PreToolUse/bash", "Stop/run_end",
@@ -241,10 +244,10 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
   });
 
   it("a snapshot with a run in flight is busy, posts attached_busy once, and a repeat posts nothing", async () => {
-    const { rig, stream } = await attached({}, { type: "snapshot", run: { id: "r1" } });
+    const { rig, stream } = await attached({}, snapshotEvent({ run: [1] }));
     expect(rig.sidecar().busy).toBe(true);
-    stream.push({ type: "snapshot", run: { id: "r1" } });
-    stream.push({ type: "run_end" });
+    stream.push(snapshotEvent({ run: [1] }));
+    stream.push(runEnd());
     await waitFor(() => !rig.sidecar().busy, "idle");
     expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["active/attached_busy", "Stop/run_end"]);
   });
@@ -256,7 +259,7 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
     expect(rig.sidecar().connected).toBe(false);
     expect(rig.sidecar().ready).toBe(true); // readiness is not lost with the connection
     const second = await rig.stream(2);
-    second.push({ type: "snapshot", run: null });
+    second.push(snapshotEvent());
     await waitFor(() => rig.sidecar().connected, "reconnected");
     expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual([
       "Stop/attached_idle", "Notification/pda_disconnected", "Stop/attached_idle",
@@ -267,15 +270,15 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
 
   it("nested tool calls and unknown events render nothing and post nothing", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "tool_execution_start", toolName: "inner", toolCallId: "t2", parentToolCallId: "t1", args: {} });
-    stream.push({ type: "tool_execution_end", toolCallId: "t2", parentToolCallId: "t1", result: "NESTEDOUTPUT" });
+    stream.push(toolStart("t1/k", "inner", {}, "t1"));
+    stream.push(nestedToolEnd("t1/k", "inner", "t1", "NESTEDOUTPUT"));
     const quiet = rig.pane();
     stream.push({ type: "something_new_in_pda_1_4" });
     stream.raw("data: not json at all\n\n");
     stream.raw(": keep-alive\n\n");
     await new Promise((r) => setTimeout(r, 40));
     expect(rig.pane()).toBe(quiet); // an ignored event writes nothing, not even a bracketed-paste re-assertion
-    stream.push({ type: "run_start" });
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "run_start after the noise");
     expect(rig.pane()).not.toContain("inner");
     expect(rig.pane()).not.toContain("NESTEDOUTPUT");
@@ -288,30 +291,30 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
 describe("pda-runner: reconnect (T8)", () => {
   it("after the stream dies mid-run and pda restarts, entries are rendered once, in order, from the cursor", async () => {
     const rig = await started();
-    rig.scripted.transcript = [userEntry("e1", "first question", { requestId: "elsewhere/1" }), assistantEntry("e2", "first answer")];
+    rig.scripted.transcript = [userEntry(103, "first question"), assistantEntry(100, "first answer")];
     const s1 = await rig.stream();
-    s1.push({ type: "snapshot", run: null });
+    s1.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("READY"), "READY");
     expect(rig.pane()).toContain("other ▸ first question");
     expect(rig.pane()).toContain("first answer");
     // A live reply, streamed and finished.
-    s1.push({ type: "run_start" });
-    s1.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "second " } });
-    s1.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "answer" } });
-    s1.push({ type: "message_end", entry: assistantEntry("e3", "second answer") });
-    await waitFor(() => rig.sidecar().lastEntryId === "e3", "cursor e3");
+    s1.push(runStart());
+    s1.push(deltaEvent("second "));
+    s1.push(deltaEvent("answer"));
+    s1.push({ type: "message_end", entry: assistantEntry(101, "second answer") });
+    await waitFor(() => rig.sidecar().lastEntryId === "101", "cursor e3");
     // pda restarts: the stream dies, pda is down for a while, and e4 is produced meanwhile.
     rig.scripted.eventsDown = true;
     s1.error();
     await waitFor(() => !rig.sidecar().connected, "disconnected");
     rig.scripted.transcript = [
-      userEntry("e1", "first question", { requestId: "elsewhere/1" }), assistantEntry("e2", "first answer"),
-      assistantEntry("e3", "second answer"), assistantEntry("e4", "answer given while the runner was away"),
+      userEntry(103, "first question"), assistantEntry(100, "first answer"),
+      assistantEntry(101, "second answer"), assistantEntry(102, "answer given while the runner was away"),
     ];
     rig.scripted.eventsDown = false;
     const s2 = await rig.stream(2);
-    s2.push({ type: "snapshot", run: null });
-    await waitFor(() => rig.sidecar().connected && rig.sidecar().lastEntryId === "e4", "caught up to e4");
+    s2.push(snapshotEvent());
+    await waitFor(() => rig.sidecar().connected && rig.sidecar().lastEntryId === "102", "caught up to e4");
     const pane = noReassert(rig.pane());
     for (const [text, expected] of [["first question", 1], ["first answer", 1], ["second answer", 1], ["answer given while the runner was away", 1]] as const) {
       expect(pane.split(text).length - 1, `'${text}' appears ${expected} time(s)`).toBe(expected);
@@ -325,28 +328,28 @@ describe("pda-runner: reconnect (T8)", () => {
   it("when the cursor is not in the newest 50 it looks at 500 and renders only what is newer than the cursor", async () => {
     const rig = await makeRig();
     rigs.push(rig);
-    fs_writeSidecar(rig, "n10");
-    rig.scripted.transcript = Array.from({ length: 80 }, (_, i) => assistantEntry(`n${i}`, `reply ${i}.`));
+    fs_writeSidecar(rig, "1010");
+    rig.scripted.transcript = Array.from({ length: 80 }, (_, i) => assistantEntry(1000 + i, `reply ${i}.`));
     rig.start();
     const s = await rig.stream();
-    s.push({ type: "snapshot", run: null });
+    s.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("READY"), "READY");
     expect(rig.scripted.transcriptLimits).toEqual([50, 500]);
     expect(rig.pane()).toContain("reply 11.");
     expect(rig.pane()).toContain("reply 79.");
     expect(rig.pane()).not.toContain("reply 10.");
     expect(rig.pane()).not.toContain("(gap:");
-    expect(rig.sidecar().lastEntryId).toBe("n79");
+    expect(rig.sidecar().lastEntryId).toBe("1079");
   });
 
   it("a prior launch's cursor (same binding) means only newer entries are rendered after a runner restart", async () => {
     const rig = await makeRig();
     rigs.push(rig);
-    fs_writeSidecar(rig, "e2");
-    rig.scripted.transcript = [assistantEntry("e1", "old one"), assistantEntry("e2", "old two"), assistantEntry("e3", "new three")];
+    fs_writeSidecar(rig, "100");
+    rig.scripted.transcript = [assistantEntry(103, "old one"), assistantEntry(100, "old two"), assistantEntry(101, "new three")];
     rig.start();
     const s = await rig.stream();
-    s.push({ type: "snapshot", run: null });
+    s.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("READY"), "READY");
     expect(rig.pane()).toContain("new three");
     expect(rig.pane()).not.toContain("old one");
@@ -357,11 +360,11 @@ describe("pda-runner: reconnect (T8)", () => {
   it("a cursor that is nowhere in 500 entries prints the gap marker and the newest 20", async () => {
     const rig = await makeRig();
     rigs.push(rig);
-    fs_writeSidecar(rig, "vanished");
-    rig.scripted.transcript = Array.from({ length: 60 }, (_, i) => assistantEntry(`m${i}`, `message ${i}.`));
+    fs_writeSidecar(rig, "999999");
+    rig.scripted.transcript = Array.from({ length: 60 }, (_, i) => assistantEntry(2000 + i, `message ${i}.`));
     rig.start();
     const s = await rig.stream();
-    s.push({ type: "snapshot", run: null });
+    s.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("READY"), "READY");
     expect(rig.pane()).toContain("(gap: entries before these were not retrieved) showing the newest 20");
     expect(rig.pane()).toContain("message 59.");
@@ -375,7 +378,7 @@ describe("pda-runner: reconnect (T8)", () => {
     stream.push({ type: "stream_end" });
     const second = await rig.stream(2);
     expect(rig.scripted.streams[0]!.closedByClient).toBe(true);
-    second.push({ type: "snapshot", run: null });
+    second.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("reconnected"), "reconnected");
   });
 
@@ -404,11 +407,11 @@ describe("pda-runner: snapshot resync (T9)", () => {
 
   it("an overflow snapshot without a reconnect fills the gap once and does not duplicate what the stream already showed", async () => {
     const { rig, stream } = await attached();
-    rig.scripted.transcript = [userEntry("u1", "question typed in pda chat", { requestId: "other/1" })];
-    stream.push({ type: "snapshot", run: null }); // the server overflowed: a fresh snapshot, same connection
+    rig.scripted.transcript = [userEntry(123, "question typed in pda chat")];
+    stream.push(snapshotEvent()); // the server overflowed: a fresh snapshot, same connection
     await waitFor(() => rig.pane().includes("other ▸ question typed in pda chat"), "gap-filled entry");
-    stream.push({ type: "entry_appended", entry: userEntry("u1", "question typed in pda chat", { requestId: "other/1" }) });
-    stream.push({ type: "run_start" });
+    stream.push(messageEnd(userEntry(123, "question typed in pda chat"))); // the same entry again, live: shown once
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "later events still processed");
     expect(rig.scripted.streams).toHaveLength(1); // no reconnect
     expect(noReassert(rig.pane()).split("question typed in pda chat").length - 1).toBe(1);
@@ -417,13 +420,13 @@ describe("pda-runner: snapshot resync (T9)", () => {
 
   it("a resync in the middle of a message: the reply is printed again in full after the marker, and the pane holds all of it", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "run_start" });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "The quick " } });
+    stream.push(runStart());
+    stream.push(deltaEvent("The quick "));
     // Deltas "brown fox jumps over " were lost in the overflow; a fresh snapshot arrives with the run still going.
-    stream.push({ type: "snapshot", run: { id: "r1" } });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "the lazy dog, then it rests." } });
-    stream.push({ type: "message_end", entry: assistantEntry("a1", FULL) });
-    await waitFor(() => rig.sidecar().lastEntryId === "a1", "message_end processed");
+    stream.push(snapshotEvent({ run: [1] }));
+    stream.push(deltaEvent("the lazy dog, then it rests."));
+    stream.push({ type: "message_end", entry: assistantEntry(104, FULL) });
+    await waitFor(() => rig.sidecar().lastEntryId === "104", "message_end processed");
     const pane = noReassert(rig.pane());
     const marker = pane.indexOf("[pda-runner] (reply resent in full after resync)");
     expect(marker).toBeGreaterThan(-1);
@@ -433,12 +436,12 @@ describe("pda-runner: snapshot resync (T9)", () => {
 
   it("a snapshot taken while a run is in flight marks the next reply dirty even if its first deltas were lost before the snapshot", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "run_start" });
+    stream.push(runStart());
     // The first half of the reply was lost in an overflow; the snapshot says a run is in flight; the tail streams.
-    stream.push({ type: "snapshot", run: { id: "r2" } });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "...and the end of it." } });
-    stream.push({ type: "message_end", entry: assistantEntry("a2", "Here is the beginning ...and the end of it.") });
-    await waitFor(() => rig.sidecar().lastEntryId === "a2", "message_end processed");
+    stream.push(snapshotEvent({ run: [1] }));
+    stream.push(deltaEvent("...and the end of it."));
+    stream.push({ type: "message_end", entry: assistantEntry(105, "Here is the beginning ...and the end of it.") });
+    await waitFor(() => rig.sidecar().lastEntryId === "105", "message_end processed");
     const pane = noReassert(rig.pane());
     expect(pane).toContain("(reply resent in full after resync)");
     expect(pane).toContain("Here is the beginning ...and the end of it.");
@@ -446,13 +449,13 @@ describe("pda-runner: snapshot resync (T9)", () => {
 
   it("when the gap fill itself already holds the finished reply, it is printed once more at most, never twice from the transcript and the event", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "run_start" });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Partial reply " } });
-    rig.scripted.transcript = [assistantEntry("a3", "Partial reply, now complete.")];
-    stream.push({ type: "snapshot", run: null });
+    stream.push(runStart());
+    stream.push(deltaEvent("Partial reply "));
+    rig.scripted.transcript = [assistantEntry(106, "Partial reply, now complete.")];
+    stream.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("now complete"), "gap fill printed the finished reply");
-    stream.push({ type: "message_end", entry: assistantEntry("a3", "Partial reply, now complete.") });
-    stream.push({ type: "run_end" });
+    stream.push({ type: "message_end", entry: assistantEntry(106, "Partial reply, now complete.") });
+    stream.push(runEnd());
     await waitFor(() => rig.pane().includes("── idle ──"), "run_end");
     const pane = noReassert(rig.pane());
     expect(pane.split("now complete").length - 1).toBe(1);
@@ -461,41 +464,41 @@ describe("pda-runner: snapshot resync (T9)", () => {
 
   it("an entry the gap fill printed whole is not printed again when its message_end arrives later with no deltas seen", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "run_start" });
-    rig.scripted.transcript = [assistantEntry("g1", "finished while we were resyncing")];
-    stream.push({ type: "snapshot", run: null });
+    stream.push(runStart());
+    rig.scripted.transcript = [assistantEntry(107, "finished while we were resyncing")];
+    stream.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("finished while we were resyncing"), "gap fill");
-    stream.push({ type: "message_end", entry: assistantEntry("g1", "finished while we were resyncing") });
-    stream.push({ type: "run_end" });
+    stream.push({ type: "message_end", entry: assistantEntry(107, "finished while we were resyncing") });
+    stream.push(runEnd());
     await waitFor(() => rig.pane().includes("── idle ──"), "run_end");
     expect(noReassert(rig.pane()).split("finished while we were resyncing").length - 1).toBe(1);
   });
 
   it("a run that ends without a reply does not leave the next reply marked for a resend", async () => {
-    const { rig, stream } = await attached({}, { type: "snapshot", run: { id: "r1" } }); // a snapshot with a run in flight
-    stream.push({ type: "run_end" }); // aborted: no message_end ever came
-    stream.push({ type: "run_start" });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a fresh reply" } });
-    stream.push({ type: "message_end", entry: assistantEntry("fr1", "a fresh reply") });
-    await waitFor(() => rig.sidecar().lastEntryId === "fr1", "message_end");
+    const { rig, stream } = await attached({}, snapshotEvent({ run: [1] })); // a snapshot with a run in flight
+    stream.push(runEnd()); // aborted: no message_end ever came
+    stream.push(runStart());
+    stream.push(deltaEvent("a fresh reply"));
+    stream.push({ type: "message_end", entry: assistantEntry(108, "a fresh reply") });
+    await waitFor(() => rig.sidecar().lastEntryId === "108", "message_end");
     expect(rig.pane()).not.toContain("resent");
     expect(noReassert(rig.pane()).split("a fresh reply").length - 1).toBe(1);
   });
 
   it("without a resync, a streamed reply is NOT printed a second time at message_end", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "run_start" });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed once " } });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "only" } });
-    stream.push({ type: "message_end", entry: assistantEntry("a4", "streamed once only") });
-    await waitFor(() => rig.sidecar().lastEntryId === "a4", "message_end");
+    stream.push(runStart());
+    stream.push(deltaEvent("streamed once "));
+    stream.push(deltaEvent("only"));
+    stream.push({ type: "message_end", entry: assistantEntry(109, "streamed once only") });
+    await waitFor(() => rig.sidecar().lastEntryId === "109", "message_end");
     expect(noReassert(rig.pane()).split("streamed once only").length - 1).toBe(1);
     expect(rig.pane()).not.toContain("resent");
   });
 
   it("a reply that arrived with no deltas at all is printed whole at message_end", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "message_end", entry: assistantEntry("a5", "never streamed") });
+    stream.push({ type: "message_end", entry: assistantEntry(110, "never streamed") });
     await waitFor(() => rig.pane().includes("never streamed"), "printed whole");
   });
 });
@@ -507,12 +510,12 @@ describe("pda-runner: full output (T14, Jim's J-2)", () => {
     const { rig, stream } = await attached();
     const output = Array.from({ length: 300 }, (_, i) => `line ${i} of the build log`).join("\n");
     const reply = "word ".repeat(8000).trim(); // 39,999 characters, no newline
-    stream.push({ type: "run_start" });
+    stream.push(runStart());
     stream.push({ type: "tool_execution_start", toolName: "bash", toolCallId: "c1", args: { command: "make" } });
-    stream.push({ type: "tool_execution_end", toolCallId: "c1", result: { content: [{ type: "text", text: output }] } });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: reply } });
-    stream.push({ type: "message_end", entry: assistantEntry("a6", reply) });
-    await waitFor(() => rig.sidecar().lastEntryId === "a6", "done");
+    stream.push(toolEnd("c1", "bash", toolResultEntry(501, "c1", output)));
+    stream.push(deltaEvent(reply));
+    stream.push({ type: "message_end", entry: assistantEntry(111, reply) });
+    await waitFor(() => rig.sidecar().lastEntryId === "111", "done");
     const pane = noReassert(rig.pane());
     for (let i = 0; i < 300; i++) expect(pane).toContain(`  │ line ${i} of the build log\n`);
     expect(pane).toContain(`  ⚙ bash: {"command":"make"}`);
@@ -523,7 +526,7 @@ describe("pda-runner: full output (T14, Jim's J-2)", () => {
     const { rig, stream } = await attached();
     stream.push({ type: "tool_execution_start", toolName: "bash", toolCallId: "g1", args: { command: "x".repeat(500) } });
     stream.push({ type: "tool_execution_start", toolName: "write", toolCallId: "g2", args: "first line\nsecond line SHOULD-NOT-SHOW" });
-    stream.push({ type: "run_start" });
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "processed");
     const line = noReassert(rig.pane()).split("\n").find((l) => l.startsWith("  ⚙ bash: "))!;
     expect(line.length).toBe("  ⚙ bash: ".length + 160);
@@ -533,12 +536,12 @@ describe("pda-runner: full output (T14, Jim's J-2)", () => {
 
   it("an error result is marked, and an empty one says so; thinking is never shown", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "tool_execution_end", toolCallId: "c2", isError: true, result: "boom\nsecond line" });
-    stream.push({ type: "tool_execution_end", toolCallId: "c3", result: "" });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "THINKING DELTA SECRET" } });
-    stream.push({ type: "message_end", entry: { id: "a7", model: [{ role: "assistant", content: [
+    stream.push(toolEnd("c2", "bash", toolResultEntry(502, "c2", "boom\nsecond line", true)));
+    stream.push(toolEnd("c3", "bash", toolResultEntry(503, "c3", "")));
+    stream.push(thinkingDeltaEvent("THINKING DELTA SECRET"));
+    stream.push({ type: "message_end", entry: { id: 128, kind: "pi.assistant", model: [{ role: "assistant", content: [
       { type: "thinking", thinking: "SECRET INNER MONOLOGUE" }, { type: "text", text: "visible" }] }] } });
-    await waitFor(() => rig.sidecar().lastEntryId === "a7", "done");
+    await waitFor(() => rig.sidecar().lastEntryId === "128", "done");
     const pane = noReassert(rig.pane());
     expect(pane).toContain("  ✗ boom\n  ✗ second line\n");
     expect(pane).toContain("  │ (no output)\n");
@@ -549,12 +552,12 @@ describe("pda-runner: full output (T14, Jim's J-2)", () => {
 
   it("a tool result is rendered once whether it arrives live or in a gap fill", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "tool_execution_end", toolCallId: "dup1", result: "only-once-output" });
+    stream.push(toolEnd("dup1", "bash", toolResultEntry(504, "dup1", "only-once-output")));
     await waitFor(() => rig.pane().includes("only-once-output"), "live");
-    rig.scripted.transcript = [toolResultEntry("tr1", "dup1", "only-once-output")];
-    stream.push({ type: "snapshot", run: null });
+    rig.scripted.transcript = [toolResultEntry(112, "dup1", "only-once-output")];
+    stream.push(snapshotEvent());
     await waitFor(() => rig.scripted.transcriptLimits.length >= 2, "resync");
-    stream.push({ type: "run_start" });
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "after resync");
     expect(noReassert(rig.pane()).split("only-once-output").length - 1).toBe(1);
   });
@@ -577,10 +580,10 @@ describe("pda-runner: no control sequence reaches the pane (T30)", () => {
 
   it("assistant text (streamed and in the final entry) and tool output are stripped; the text around survives", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "tool_execution_end", toolCallId: "h1", result: HOSTILE });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: HOSTILE } });
-    stream.push({ type: "message_end", entry: assistantEntry("h-a", HOSTILE) });
-    await waitFor(() => rig.sidecar().lastEntryId === "h-a", "done");
+    stream.push(toolEnd("h1", "bash", toolResultEntry(505, "h1", HOSTILE)));
+    stream.push(deltaEvent(HOSTILE));
+    stream.push({ type: "message_end", entry: assistantEntry(113, HOSTILE) });
+    await waitFor(() => rig.sidecar().lastEntryId === "113", "done");
     expect(forbidden(rig.pane())).toEqual([]);
     const pane = noReassert(rig.pane());
     for (const kept of ["turn bracketed paste off", "clipboard", "write and", "red and CRback and a lone", "bidi", "reversed", "and ETX", "done"]) {
@@ -593,14 +596,14 @@ describe("pda-runner: no control sequence reaches the pane (T30)", () => {
   it("the same is true of a gap-filled entry, a user line from another client, the tool name and its arguments, and pda's own strings", async () => {
     const { rig, stream } = await attached();
     rig.scripted.transcript = [
-      userEntry("hu", HOSTILE, { requestId: "other/1" }),
-      { id: "hc", model: [{ role: "assistant", content: [{ type: "toolCall", name: `ba${ESC}[2Jsh`, arguments: { command: `echo ${ESC}[?2004l` } }, { type: "text", text: HOSTILE }] }] },
-      toolResultEntry("hr", "tc1", HOSTILE),
+      userEntry(124, HOSTILE),
+      { id: 129, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", name: `ba${ESC}[2Jsh`, arguments: { command: `echo ${ESC}[?2004l` } }, { type: "text", text: HOSTILE }] }] },
+      toolResultEntry(114, "tc1", HOSTILE),
     ];
-    stream.push({ type: "snapshot", run: null });
+    stream.push(snapshotEvent());
     stream.push({ type: "tool_execution_start", toolName: `to${ESC}]52;c;AAAA\u0007ol`, toolCallId: "h2", args: { x: `${ESC}[?2004l` } });
-    stream.push({ type: "task_failed", error: `failed ${ESC}[?2004l here` });
-    stream.push({ type: "run_start" });
+    stream.push(taskFailed(`failed ${ESC}[?2004l here`));
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy && rig.pane().includes("task failed"), "all processed");
     expect(forbidden(rig.pane())).toEqual([]);
     expect(noReassert(rig.pane())).toContain('  ⚙ bash: {"command":"echo \\u001b[?2004l"}'); // the gap-filled call: name sanitised; JSON escapes the ESC in its arguments to inert text
@@ -611,7 +614,7 @@ describe("pda-runner: no control sequence reaches the pane (T30)", () => {
   it("the runner re-asserts bracketed paste after an output batch, and writes no other escape itself", async () => {
     const { rig, stream } = await attached();
     const before = rig.pane().length;
-    stream.push({ type: "tool_execution_end", toolCallId: "ra1", result: "plain" });
+    stream.push(toolEnd("ra1", "bash", toolResultEntry(506, "ra1", "plain")));
     await waitFor(() => rig.pane().length > before && rig.pane().includes("plain"), "batch written");
     expect(rig.pane().endsWith(`  │ plain\n${REASSERT}`)).toBe(true);
     expect(forbidden(rig.pane())).toEqual([]);
@@ -624,9 +627,9 @@ describe("pda-runner: exact-value redaction (T31)", () => {
   it("the bearer and the hook token in tool output, assistant text and a final entry are replaced by their markers", async () => {
     const { rig, stream } = await attached();
     const leak = `key ${BEARER} and hook ${HOOK_TOKEN} end`;
-    stream.push({ type: "tool_execution_end", toolCallId: "k1", result: leak });
-    stream.push({ type: "message_end", entry: assistantEntry("k-a", leak) });
-    await waitFor(() => rig.sidecar().lastEntryId === "k-a", "done");
+    stream.push(toolEnd("k1", "bash", toolResultEntry(507, "k1", leak)));
+    stream.push({ type: "message_end", entry: assistantEntry(115, leak) });
+    await waitFor(() => rig.sidecar().lastEntryId === "115", "done");
     const pane = rig.pane();
     expect(pane).not.toContain(BEARER);
     expect(pane).not.toContain(HOOK_TOKEN);
@@ -636,12 +639,12 @@ describe("pda-runner: exact-value redaction (T31)", () => {
   it("a secret with a terminal sequence spliced through it is still caught: redaction runs AFTER sanitising", async () => {
     const { rig, stream } = await attached();
     const spliced = `${BEARER.slice(0, 10)}${ESC}[0m${BEARER.slice(10, 30)}\u0007${BEARER.slice(30)}`;
-    stream.push({ type: "tool_execution_end", toolCallId: "sp1", result: `spliced: ${spliced}` });
-    stream.push({ type: "task_failed", error: `failed: ${spliced}` });
-    stream.push({ type: "message_end", entry: assistantEntry("sp-a", `reply: ${spliced}`) });
-    await waitFor(() => rig.sidecar().lastEntryId === "sp-a", "done");
+    stream.push(toolEnd("sp1", "bash", toolResultEntry(508, "sp1", `spliced: ${spliced}`)));
+    stream.push(taskFailed(`failed: ${spliced}`));
+    stream.push({ type: "message_end", entry: assistantEntry(116, `reply: ${spliced}`) });
+    await waitFor(() => rig.sidecar().lastEntryId === "116", "done");
     const pane = noReassert(rig.pane());
-    expect(pane).toContain("[pda-runner] task failed: failed: [redacted:pda-token]\n"); // a single-line string (line()), not only block bodies
+    expect(pane).toContain("[pda-runner] task failed (pi.generation): failed: [redacted:pda-token]\n"); // a single-line string (line()), not only block bodies
     expect(pane).toContain("  │ spliced: [redacted:pda-token]\n");
     expect(pane).toContain("reply: [redacted:pda-token]\n");
     expect(pane).not.toContain(BEARER.slice(0, 10));
@@ -650,13 +653,13 @@ describe("pda-runner: exact-value redaction (T31)", () => {
   it("a secret split across two text_deltas is still caught, and the text around it is preserved in order", async () => {
     const { rig, stream } = await attached();
     for (const at of [1, 7, 20, BEARER.length - 1]) {
-      stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `before-${at} ${BEARER.slice(0, at)}` } });
-      stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${BEARER.slice(at)} after-${at}\n` } });
+      stream.push(deltaEvent(`before-${at} ${BEARER.slice(0, at)}`));
+      stream.push(deltaEvent(`${BEARER.slice(at)} after-${at}\n`));
     }
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${HOOK_TOKEN.slice(0, 5)}` } });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${HOOK_TOKEN.slice(5)} tail` } });
-    stream.push({ type: "message_end", entry: assistantEntry("s-a", "irrelevant") });
-    await waitFor(() => rig.sidecar().lastEntryId === "s-a", "done");
+    stream.push(deltaEvent(`${HOOK_TOKEN.slice(0, 5)}`));
+    stream.push(deltaEvent(`${HOOK_TOKEN.slice(5)} tail`));
+    stream.push({ type: "message_end", entry: assistantEntry(117, "irrelevant") });
+    await waitFor(() => rig.sidecar().lastEntryId === "117", "done");
     const pane = noReassert(rig.pane());
     expect(pane).not.toContain(BEARER);
     for (const at of [1, 7, 20, BEARER.length - 1]) expect(pane).toContain(`before-${at} [redacted:pda-token] after-${at}\n`);
@@ -666,18 +669,18 @@ describe("pda-runner: exact-value redaction (T31)", () => {
 
   it("a partial secret at the very end of a message is flushed as ordinary text when the message ends", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `ends with a prefix ${BEARER.slice(0, 10)}` } });
-    stream.push({ type: "message_end", entry: assistantEntry("e-a", "x") });
-    await waitFor(() => rig.sidecar().lastEntryId === "e-a", "done");
+    stream.push(deltaEvent(`ends with a prefix ${BEARER.slice(0, 10)}`));
+    stream.push({ type: "message_end", entry: assistantEntry(118, "x") });
+    await waitFor(() => rig.sidecar().lastEntryId === "118", "done");
     expect(noReassert(rig.pane())).toContain(`ends with a prefix ${BEARER.slice(0, 10)}\n`);
   });
 
   it("control: a DIFFERENT 43-character base64url string is not redacted (nothing else is pattern-redacted)", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "tool_execution_end", toolCallId: "l1", result: `looks like a token: ${LOOKALIKE}` });
-    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `and ${LOOKALIKE}\n` } });
-    stream.push({ type: "message_end", entry: assistantEntry("l-a", "x") });
-    await waitFor(() => rig.sidecar().lastEntryId === "l-a", "done");
+    stream.push(toolEnd("l1", "bash", toolResultEntry(509, "l1", `looks like a token: ${LOOKALIKE}`)));
+    stream.push(deltaEvent(`and ${LOOKALIKE}\n`));
+    stream.push({ type: "message_end", entry: assistantEntry(119, "x") });
+    await waitFor(() => rig.sidecar().lastEntryId === "119", "done");
     expect(LOOKALIKE).toHaveLength(BEARER.length);
     expect(LOOKALIKE).not.toBe(BEARER);
     expect(noReassert(rig.pane())).toContain(`  │ looks like a token: ${LOOKALIKE}\n`);
@@ -712,11 +715,11 @@ describe("pda-runner: tool output stays in the pane (T32)", () => {
     const { rig, stream } = await attached();
     const CANARY_OUT = "TOOLOUTPUT-CANARY-9f3a1c";
     const CANARY_ARGS = "ARGS-CANARY-77be02";
-    stream.push({ type: "run_start" });
+    stream.push(runStart());
     stream.push({ type: "tool_execution_start", toolName: "bash", toolCallId: "z1", args: { command: `echo ${CANARY_ARGS}` } });
-    stream.push({ type: "tool_execution_end", toolCallId: "z1", result: `${CANARY_OUT}\nmore` });
-    stream.push({ type: "message_end", entry: assistantEntry("z-a", `the answer mentions ${CANARY_OUT}`) });
-    stream.push({ type: "run_end" });
+    stream.push(toolEnd("z1", "bash", toolResultEntry(510, "z1", `${CANARY_OUT}\nmore`)));
+    stream.push({ type: "message_end", entry: assistantEntry(120, `the answer mentions ${CANARY_OUT}`) });
+    stream.push(runEnd());
     await waitFor(() => !rig.sidecar().busy && rig.pane().includes("── idle ──"), "run finished");
     expect(rig.pane()).toContain(CANARY_OUT);
     for (const canary of [CANARY_OUT, CANARY_ARGS]) {
@@ -834,8 +837,8 @@ describe("pda-runner: the outbox glue", () => {
   it("an ack is echoed, recorded in own-submissions.json, and the sidecar's outboxPending returns to 0", async () => {
     const { rig } = await attached();
     rig.runner.submit("hello pda");
-    await waitFor(() => rig.pane().includes("queued (submission sub-1)"), "ack echo");
-    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["sub-1"] });
+    await waitFor(() => rig.pane().includes("queued (submission 1)"), "ack echo"); // pda's id is the number 1
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["1"], entries: [] });
     await waitFor(() => rig.sidecar().outboxPending === 0, "pending 0");
     expect(rig.fake.entries("research")).toHaveLength(1);
     expect(fs.statSync(rig.paths.ownSubmissionsPath).mode & 0o777).toBe(0o600);
@@ -844,38 +847,60 @@ describe("pda-runner: the outbox glue", () => {
 
   it("own-submissions.json keeps the newest 500 ids, from acks and from own submission events", async () => {
     const { rig, stream } = await attached();
-    for (let i = 0; i < 520; i++) stream.push({ type: "submission", requestId: `openrig/node-under-test/launch-1/${i}`, submissionId: `s-${i}` });
-    stream.push({ type: "submission", requestId: "someone-else/1", submissionId: "foreign-1" });
-    stream.push({ type: "run_start" });
+    for (let i = 0; i < 520; i++) stream.push(submissionEvent({ id: 3000 + i, requestId: `openrig/node-under-test/launch-1/${i}`, status: "queued" }));
+    stream.push(submissionEvent({ id: 9999, requestId: "someone-else/1", status: "queued" }));
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "all processed");
     const ids = JSON.parse(rig.ownSubmissionsRaw()).ids as string[];
     expect(ids).toHaveLength(500);
-    expect(ids[0]).toBe("s-20");
-    expect(ids[499]).toBe("s-519");
-    expect(ids).not.toContain("foreign-1");
+    expect(ids[0]).toBe("3020"); // pda's ids are numbers; the file holds them as text
+    expect(ids[499]).toBe("3519");
+    expect(ids).not.toContain("9999");
   });
 
   it("an unanswered own submission is reported; a foreign one is not", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "submission", requestId: "foreign/1", submissionId: "f1", outcome: "unanswered", reason: "x" });
-    stream.push({ type: "submission", requestId: "openrig/node-under-test/launch-1/9", submissionId: "m1", outcome: "unanswered", reason: "agent was reset" });
-    stream.push({ type: "run_start" });
+    stream.push(submissionEvent({ id: 41, requestId: "foreign/1", status: "unanswered", reason: "x" }));
+    stream.push(submissionEvent({ id: 42, requestId: "openrig/node-under-test/launch-1/9", status: "unanswered", reason: "agent was reset" }));
+    stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "processed");
     expect(rig.pane()).toContain("[pda-runner] not answered: agent was reset");
     expect(noReassert(rig.pane()).split("not answered").length - 1).toBe(1);
   });
 
-  it("this seat's own user entries are not echoed a second time as 'other'; a foreign one is", async () => {
+  it("M3/M5: a user message arrives as message_end; this seat's own is recognised through the submission record that names its entry, another client's is shown", async () => {
     const { rig, stream } = await attached();
-    stream.push({ type: "entry_appended", entry: userEntry("u-own", "OWN TEXT", { requestId: "openrig/node-under-test/launch-1/3" }) });
-    stream.push({ type: "submission", requestId: "openrig/node-under-test/launch-1/4", submissionId: "sub-known" });
-    stream.push({ type: "entry_appended", entry: userEntry("u-sub", "SUBMITTED TEXT", { submissionId: "sub-known" }) });
-    stream.push({ type: "entry_appended", entry: userEntry("u-foreign", "FOREIGN TEXT", { requestId: "pda-chat/1" }) });
-    stream.push({ type: "run_start" });
-    await waitFor(() => rig.sidecar().busy, "processed");
-    expect(rig.pane()).toContain("other ▸ FOREIGN TEXT");
+    // One batch, in pda's order (events.js:205-222, then :263-264): the entries, then their submissions.
+    stream.push(messageStart(userMessage("OWN TEXT")));
+    stream.push(messageEnd(userEntry(125, "OWN TEXT")));
+    stream.push(messageEnd(userEntry(127, "FOREIGN TEXT")));
+    stream.push(submissionEvent({ id: 7, requestId: "openrig/node-under-test/launch-1/4", status: "placed", entry: 125 }));
+    stream.push(submissionEvent({ id: 8, requestId: "pda-chat/laptop/1", status: "placed", entry: 127 }));
+    stream.push(runStart([7, 8]));
+    await waitFor(() => rig.pane().includes("other ▸ FOREIGN TEXT"), "the other client's message");
     expect(rig.pane()).not.toContain("OWN TEXT");
-    expect(rig.pane()).not.toContain("SUBMITTED TEXT");
+    expect(rig.sidecar().lastEntryId).toBe("127");
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["7"], entries: ["125"] });
+  });
+
+  it("M3: an own user entry whose submission is never seen is shown after the hold, as another client's (documented limit)", async () => {
+    const { rig, stream } = await attached();
+    stream.push(messageEnd(userEntry(130, "ORPHAN TEXT")));
+    await waitFor(() => rig.pane().includes("other ▸ ORPHAN TEXT"), "shown after the hold");
+  });
+
+  it("M3: after a restart the entries this seat sent are still its own: the gap fill does not show them as 'other'", async () => {
+    const rig = await makeRig();
+    rigs.push(rig);
+    fs.writeFileSync(rig.paths.ownSubmissionsPath, JSON.stringify({ version: 1, ids: ["7"], entries: ["125"] }), { mode: 0o600 });
+    rig.scripted.transcript = [userEntry(125, "WE SENT THIS"), assistantEntry(126, "and the answer"), userEntry(127, "SOMEONE ELSE SENT THIS")];
+    rig.start();
+    const s = await rig.stream();
+    s.push(snapshotEvent());
+    await waitFor(() => rig.pane().includes("READY"), "READY");
+    expect(rig.pane()).not.toContain("WE SENT THIS");
+    expect(rig.pane()).toContain("and the answer");
+    expect(rig.pane()).toContain("other ▸ SOMEONE ELSE SENT THIS");
   });
 
   it("a paste typed while pda is unreachable is saved, pending in the sidecar, and delivered once on return (T4 runner side)", async () => {
@@ -889,7 +914,7 @@ describe("pda-runner: the outbox glue", () => {
     expect(rig.fake.postBodies).toEqual([]);
     rig.scripted.allDown = false;
     const s2 = await rig.stream(2);
-    s2.push({ type: "snapshot", run: null });
+    s2.push(snapshotEvent());
     await waitFor(() => rig.fake.entries("research").length === 1, "delivered");
     expect(rig.fake.entries("research")[0]!.content).toBe("typed during the outage");
     await waitFor(() => rig.sidecar().outboxPending === 0, "pending 0");
@@ -939,7 +964,7 @@ describe("pda-runner: the outbox glue", () => {
     });
     expect(rig.sidecar().held).toMatchObject({ requestId: id });
     const s = await rig.stream();
-    s.push({ type: "snapshot", run: null });
+    s.push(snapshotEvent());
     await waitFor(() => rig.fake.entries("research").length === 1, "released and delivered by the attach-time poll");
     expect(rig.fake.entries("research")[0]!.content).toBe("held from before");
     expect(fs.existsSync(rig.paths.releaseRequestPath)).toBe(false);
@@ -964,7 +989,7 @@ describe("pda-runner: the outbox glue", () => {
     expect(rig.fake.postBodies).toEqual([]);
     rig.scripted.eventsDown = false;
     const s2 = await rig.stream(2);
-    s2.push({ type: "snapshot", run: null });
+    s2.push(snapshotEvent());
     await waitFor(() => rig.fake.entries("research").length === 1, "delivered after the re-attach");
     expect(rig.fake.postBodies).toHaveLength(1);
   });
@@ -994,7 +1019,7 @@ describe("pda-runner: the outbox glue", () => {
     await waitFor(() => rig.sidecar().held !== undefined, "held");
     stream.error();
     const s2 = await rig.stream(2);
-    s2.push({ type: "snapshot", run: null });
+    s2.push(snapshotEvent());
     await waitFor(() => rig.fake.entries("research").length === 1, "retried after the reconnect");
     await waitFor(() => rig.sidecar().held === undefined && rig.sidecar().outboxPending === 0, "hold cleared and acked");
     // Not written down: the log still holds the hold record until the ack compacts it; the ack is what ended it.
@@ -1023,7 +1048,7 @@ describe("pda-runner: the outbox glue", () => {
     const stale = JSON.stringify({ op: "enq", requestId: "openrig/node-under-test/old/1", agent: "other-agent", baseUrl: "http://127.0.0.1:1", content: "meant for the other agent", at: "2026-01-01T00:00:00.000Z" });
     const rig = await started({ preseedOutbox: `${stale}\n` });
     const s = await rig.stream();
-    s.push({ type: "snapshot", run: null });
+    s.push(snapshotEvent());
     await waitFor(() => rig.pane().includes("READY"), "READY");
     expect(rig.pane()).toContain("1 message(s) read for another pda binding are held and will not be sent to research");
     expect(rig.sidecar()).toMatchObject({ setAside: 1, outboxPending: 0, error: { code: "pda_outbox_binding_mismatch" } });
@@ -1176,13 +1201,273 @@ describe("pda-runner: --usage-facts is a stub for L2c", () => {
       onAssistantEntry: (e) => calls.push(`entry:${(e as { id: string }).id}`),
       onRunEnd: () => calls.push("run_end"),
     } });
-    stream.push({ type: "run_start", inputs: [] });
-    stream.push({ type: "message_end", entry: assistantEntry("u-a", "hi", { usage: { input: 1 } }) });
-    stream.push({ type: "run_end" });
+    stream.push(runStart());
+    stream.push({ type: "message_end", entry: assistantEntry(121, "hi", { usage: { input: 1 } }) });
+    stream.push(runEnd());
     await waitFor(() => !rig.sidecar().busy && calls.includes("run_end"), "run finished");
-    expect(calls).toEqual(["run_start", "entry:u-a", "run_end"]);
+    expect(calls).toEqual(["run_start", "entry:121", "run_end"]);
     expect(rig.sidecar().usage).toBeUndefined();
     expect(rig.activity.every((a) => a.hookEvent !== "usage")).toBe(true);
+  });
+});
+
+// ── pda's REAL shapes (review of 591e89fb: M1-M8). Every fixture is built in helpers/pda-real-shapes.ts from the
+// declaration it cites; the loopback fake speaks the same shapes (numeric ids, the real snapshot, `message_end` for
+// user messages, `submission{record}`), so these rows run the runner against a pda-shaped server, not a guess. ──
+
+describe("pda-runner against the real wire shapes (M1-M8)", () => {
+  /** The runner attached to the fake's OWN event stream (real snapshot, real events) and its own transcript. */
+  async function onRealFake() {
+    const rig = await started({ realStreams: true });
+    await waitFor(() => rig.pane().includes("READY"), "READY");
+    return rig;
+  }
+
+  it("a message round trip: acked (numeric id), the seat's own message is not echoed as 'other', no 'did not take the message' retry", async () => {
+    const rig = await onRealFake();
+    rig.runner.submit("hello pda");
+    await waitFor(() => rig.pane().includes("queued (submission 1)"), "the ack");
+    await waitFor(() => rig.sidecar().outboxPending === 0 && rig.sidecar().lastEntryId !== undefined, "pending 0 and the user entry seen");
+    await new Promise((r) => setTimeout(r, 120)); // longer than the user-message hold
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("you ▸ hello pda");
+    expect(pane).not.toContain("other ▸");
+    expect(pane).not.toContain("did not take the message");
+    expect(rig.fake.postBodies).toHaveLength(1); // not re-posted
+    const entry = rig.fake.entries("research")[0]!;
+    expect(typeof entry.submissionId).toBe("number");
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: [String(entry.submissionId)], entries: [String(entry.entryId)] });
+    expect(rig.sidecar().lastEntryId).toBe(String(entry.entryId)); // a string in the sidecar, from a numeric id
+    expect(rig.sidecar().held).toBeUndefined();
+  });
+
+  it("streaming is visible: the reply appears from text_delta changes, once, and the sidecar goes busy then idle", async () => {
+    const rig = await onRealFake();
+    rig.fake.streamReply("research", ["Hel", "lo wor", "ld, streamed."]);
+    await waitFor(() => rig.pane().includes("── idle ──"), "run_end");
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("Hello world, streamed.\n");
+    expect(pane.split("Hello world, streamed.").length - 1).toBe(1); // streamed, and not printed again at message_end
+    expect(rig.sidecar().busy).toBe(false);
+    expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["Stop/attached_idle", "active/run_start", "Stop/run_end"]);
+  });
+
+  it("another client's message is visible, live, from message_end", async () => {
+    const rig = await onRealFake();
+    const { entryId } = rig.fake.injectOtherClientMessage("research", "typed on the laptop with pda chat");
+    await waitFor(() => rig.pane().includes("other ▸ typed on the laptop with pda chat"), "the other client's message");
+    expect(rig.sidecar().lastEntryId).toBe(String(entryId));
+    expect(JSON.parse(rig.ownSubmissionsRaw() || "{}").ids ?? []).toEqual([]); // not ours
+  });
+
+  it("a waiting user message is shown before later output: pda's order is kept", async () => {
+    const { rig, stream } = await attached();
+    stream.push(messageEnd(userEntry(270, "question from another client")));
+    stream.push(submissionEvent({ id: 71, requestId: "pda-chat/1", status: "placed", entry: 270 }));
+    stream.push(deltaEvent("the answer starts"));
+    stream.push(messageEnd(assistantEntry(271, "the answer starts")));
+    await waitFor(() => rig.sidecar().lastEntryId === "271", "message_end");
+    const pane = noReassert(rig.pane());
+    expect(pane.indexOf("other ▸ question from another client")).toBeGreaterThan(-1);
+    expect(pane.indexOf("other ▸ question from another client")).toBeLessThan(pane.indexOf("the answer starts"));
+  });
+
+  it("a reconnect replays nothing: every entry already shown stays shown once, and the cursor is a text id", async () => {
+    const rig = await onRealFake();
+    rig.runner.submit("first question");
+    await waitFor(() => rig.pane().includes("queued (submission 1)"), "ack");
+    rig.fake.streamReply("research", ["the ", "first answer"]);
+    rig.fake.injectOtherClientMessage("research", "a remark from another client");
+    await waitFor(() => rig.pane().includes("other ▸ a remark from another client"), "all shown");
+    const newest = rig.fake.transcriptOf("research").length;
+    rig.fake.dropStreams(); // pda restarted: the socket dies with no stream_end
+    await waitFor(() => rig.pane().includes("[pda-runner] reconnected"), "reconnected");
+    await new Promise((r) => setTimeout(r, 120));
+    const pane = noReassert(rig.pane());
+    for (const once of ["you ▸ first question", "the first answer", "other ▸ a remark from another client"]) {
+      expect(pane.split(once).length - 1, once).toBe(1);
+    }
+    expect(pane.split("first question").length - 1).toBe(1); // not re-shown as 'other ▸ first question' either
+    expect(rig.sidecar().lastEntryId).toBe(String(newest));
+    expect(rig.fake.postBodies).toHaveLength(1);
+  });
+
+  it("M1, negative: the guessed streaming shape (assistantMessageEvent) shows nothing", async () => {
+    const { rig, stream } = await attached();
+    const before = rig.pane();
+    stream.push(GUESSED_SHAPES.delta("SHOULD NOT STREAM"));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(rig.pane()).toBe(before);
+  });
+
+  it("M2/M3, negative: the guessed submission shape and string-id entries record no ownership", async () => {
+    const { rig, stream } = await attached();
+    stream.push(GUESSED_SHAPES.submission("openrig/node-under-test/launch-1/1", "sub-1"));
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "processed");
+    expect(rig.ownSubmissionsRaw()).toBe("");
+  });
+
+  it("M1: text_start's initial text, a message_start partial that already holds text, and many deltas in one update are all shown, once", async () => {
+    const { rig, stream } = await attached();
+    stream.push(messageStart(assistantMessage([{ type: "text", text: "partial " }])));
+    stream.push(changesEvent([{ type: "text_delta", contentIndex: 0, delta: "one " }, { type: "text_delta", contentIndex: 0, delta: "two " }]));
+    stream.push(changesEvent([{ type: "text_start", contentIndex: 1, block: { type: "text", text: "three " } }, { type: "thinking_delta", contentIndex: 2, delta: "HIDDEN" }]));
+    stream.push(messageEnd(assistantEntry(210, "partial one two three ")));
+    await waitFor(() => rig.sidecar().lastEntryId === "210", "message_end");
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("partial one two three \n");
+    expect(pane.split("partial one two three").length - 1).toBe(1);
+    expect(pane).not.toContain("HIDDEN");
+  });
+
+  it("M1: a block or a whole-message change replaces what was streamed, so the reply is shown whole at message_end", async () => {
+    const { rig, stream } = await attached();
+    stream.push(deltaEvent("start of "));
+    stream.push(changesEvent([{ type: "block", contentIndex: 0, block: { type: "text", text: "start of a replaced block" } }]));
+    stream.push(messageEnd(assistantEntry(211, "start of a replaced block")));
+    await waitFor(() => rig.sidecar().lastEntryId === "211", "message_end");
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("[pda-runner] (reply resent in full after resync)\nstart of a replaced block\n");
+  });
+
+  it("M2: a submission record that is unanswered is reported by its reason; placed, done and queued say nothing", async () => {
+    const { rig, stream } = await attached();
+    stream.push(submissionEvent({ id: 51, requestId: "openrig/node-under-test/launch-1/1", status: "queued" }));
+    stream.push(submissionEvent({ id: 51, requestId: "openrig/node-under-test/launch-1/1", status: "placed", entry: 301 }));
+    stream.push(submissionEvent({ id: 51, requestId: "openrig/node-under-test/launch-1/1", status: "done", entry: 301, answer: 302 }));
+    stream.push(submissionEvent({ id: 52, requestId: "openrig/node-under-test/launch-1/2", status: "unanswered", reason: "the conversation was reset" }));
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "processed");
+    expect(noReassert(rig.pane()).split("not answered").length - 1).toBe(1);
+    expect(rig.pane()).toContain("[pda-runner] not answered: the conversation was reset");
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["51", "52"], entries: ["301"] });
+  });
+
+  it("M2: an own submission is also recognised by the id pda returned to the POST, when its record carries no requestId", async () => {
+    const { rig, stream } = await attached();
+    rig.runner.submit("sent by us");
+    await waitFor(() => rig.pane().includes("queued (submission 1)"), "ack");
+    stream.push(submissionEvent({ id: 1, status: "unanswered", reason: "no one answered" })); // no requestId on this record
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "processed");
+    expect(rig.pane()).toContain("not answered: no one answered");
+  });
+
+  it("M5: entries without a model message arrive as entry_appended: a reset is announced, a compaction entry (it has a model) as message_end", async () => {
+    const { rig, stream } = await attached();
+    stream.push(entryAppended(bareEntry(220, "pi.reset")));
+    stream.push(messageEnd(compactionEntry(221, "SUMMARY TEXT THAT IS NOT A USER MESSAGE")));
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "processed");
+    await new Promise((r) => setTimeout(r, 60));
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("[pda-runner] conversation was reset");
+    expect(pane).toContain("── context compacted ──");
+    expect(pane).not.toContain("SUMMARY TEXT");
+    expect(pane).not.toContain("other ▸");
+  });
+
+  it("M6: task_failed carries message and kind; auto_retry_start carries errorMessage; compaction_end carries error", async () => {
+    const { rig, stream } = await attached();
+    stream.push(taskFailed("model returned 500", "pi.generation"));
+    stream.push(autoRetryStart("429 Too Many Requests"));
+    stream.push(compactionEnd("summary too large"));
+    stream.push(compactionEnd());
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "processed");
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("[pda-runner] task failed (pi.generation): model returned 500\n");
+    expect(pane).toContain("[pda-runner] transient error; retrying: 429 Too Many Requests\n");
+    expect(pane).toContain("[pda-runner] compaction failed: summary too large\n");
+    expect(pane).toContain("[pda-runner] compaction finished\n");
+  });
+
+  it("M7: a top-level tool end carries the result ENTRY; the same entry arrives as message_end and is shown once; no entry means no result", async () => {
+    const { rig, stream } = await attached();
+    const result = toolResultEntry(230, "call-1", "line one\nFULL OUTPUT line two");
+    stream.push(toolStart("call-1", "bash", { command: "make" }));
+    stream.push(toolEnd("call-1", "bash", result));
+    stream.push(messageStart(toolResultMessage("call-1", "line one\nFULL OUTPUT line two")));
+    stream.push(messageEnd(result)); // pda emits the result's message right after the tool's end (events.js:205-222)
+    stream.push(toolStart("call-2", "bash", { command: "boom" }));
+    stream.push(toolEnd("call-2", "bash")); // the task faulted: no entry
+    stream.push(runStart());
+    await waitFor(() => rig.sidecar().busy, "processed");
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("  │ line one\n  │ FULL OUTPUT line two\n");
+    expect(pane.split("FULL OUTPUT line two").length - 1).toBe(1);
+    expect(pane).toContain("  ✗ bash: no result (the tool task faulted or the run ended)\n");
+  });
+
+  it("M8: an assistant message that failed shows its errorMessage, live and in a gap fill", async () => {
+    const { rig, stream } = await attached();
+    stream.push(messageEnd(assistantEntry(240, "", { errorMessage: "provider said 503 overloaded", stopReason: "error" })));
+    await waitFor(() => rig.sidecar().lastEntryId === "240", "message_end");
+    expect(noReassert(rig.pane())).toContain("  ! provider said 503 overloaded\n");
+    rig.scripted.transcript = [assistantEntry(240, "", { errorMessage: "provider said 503 overloaded" }), assistantEntry(241, "later", { errorMessage: "second failure" })];
+    stream.push(snapshotEvent());
+    await waitFor(() => rig.pane().includes("later"), "gap fill");
+    const pane = noReassert(rig.pane());
+    expect(pane.split("provider said 503 overloaded").length - 1).toBe(1);
+    expect(pane).toContain("  ! second failure\n");
+  });
+
+  it("a verbatim batch in pda's emission order (events.js:205-264) renders as one coherent exchange", async () => {
+    const { rig, stream } = await attached();
+    const user = userEntry(260, "what is in the repo?");
+    const call = toolResultEntry(262, "call-9", "README.md\nsrc");
+    const answer = assistantEntry(263, "It has a README and a src directory.");
+    // commit 1: the input is placed
+    stream.push(messageStart(userMessage("what is in the repo?")));
+    stream.push(messageEnd(user));
+    stream.push(submissionEvent({ id: 61, requestId: "openrig/node-under-test/launch-1/1", status: "placed", entry: 260 }));
+    stream.push(runStart([61]));
+    // commit 2: a tool call and its result
+    stream.push(toolStart("call-9", "bash", { command: "ls" }));
+    stream.push(toolEnd("call-9", "bash", call));
+    stream.push(messageStart(toolResultMessage("call-9", "README.md\nsrc")));
+    stream.push(messageEnd(call));
+    // commit 3: the streamed answer, then its entry, the run's end and the submission's settlement
+    stream.push(deltaEvent("It has a README "));
+    stream.push(deltaEvent("and a src directory."));
+    stream.push(messageEnd(answer));
+    stream.push(runEnd([61]));
+    stream.push(submissionEvent({ id: 61, requestId: "openrig/node-under-test/launch-1/1", status: "done", entry: 260, answer: 263 }));
+    await waitFor(() => rig.sidecar().lastEntryId === "263" && !rig.sidecar().busy, "the whole batch");
+    await new Promise((r) => setTimeout(r, 60));
+    const pane = noReassert(rig.pane());
+    const order = ["  ⚙ bash: {\"command\":\"ls\"}", "  │ README.md", "It has a README and a src directory.", "── idle ──"].map((t) => pane.indexOf(t));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(pane).not.toContain("what is in the repo?"); // our own message was echoed as 'you ▸' at submit time only
+    expect(pane).not.toContain("other ▸");
+    expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["Stop/attached_idle", "active/run_start", "PreToolUse/bash", "Stop/run_end"]);
+  });
+});
+
+// ── The SSE parser's cost ────────────────────────────────────────────────────
+
+describe("pda-sse: the cost of one event is linear in its size, however it is cut (review nit)", () => {
+  function timeOne(megabytes: number): number {
+    const body = `data: ${"x".repeat(megabytes * 1024 * 1024)}\n\n`;
+    const bytes = new TextEncoder().encode(body);
+    const parser = new PdaSseParser({ maxEventBytes: 64 * 1024 * 1024 });
+    let events = 0;
+    const t0 = performance.now();
+    for (let at = 0; at < bytes.length; at += 16 * 1024) events += parser.push(bytes.subarray(at, at + 16 * 1024)).length;
+    const ms = performance.now() - t0;
+    expect(events).toBe(1);
+    return ms;
+  }
+
+  it("4x the event costs about 4x, not 16x (the quadratic version took 14x)", () => {
+    timeOne(1); // warm up
+    const best = (mb: number) => Math.min(timeOne(mb), timeOne(mb), timeOne(mb));
+    const small = best(2);
+    const large = best(8);
+    expect(large / Math.max(small, 1)).toBeLessThan(9);
+    expect(large).toBeLessThan(2000);
   });
 });
 
@@ -1190,12 +1475,21 @@ describe("pda-runner: --usage-facts is a stub for L2c", () => {
 
 describe("pda-render: entry views", () => {
   it("reads text parts only, tool calls, ids, and the kind marker; anything else is 'other'", () => {
-    expect(entryView(assistantEntry("a", "hi"))).toMatchObject({ id: "a", role: "assistant", text: "hi", toolCalls: [] });
-    expect(entryView({ id: "k", type: "pi.reset", model: [{ role: "system" }] })).toMatchObject({ role: "other", kind: "pi.reset" });
-    expect(entryView({ id: "t", model: [{ role: "toolResult", toolCallId: "c", isError: true, content: "plain string" }] }))
+    expect(entryView(assistantEntry(122, "hi"))).toMatchObject({ id: "122", role: "assistant", text: "hi", toolCalls: [] });
+    expect(entryView(bareEntry(5, "pi.reset"))).toMatchObject({ id: "5", role: "other", kind: "pi.reset", text: "" });
+    expect(entryView({ id: 6, kind: "pi.assistant", model: [{ role: "assistant", content: [], errorMessage: "429 rate limited" }] })).toMatchObject({ errorMessage: "429 rate limited" });
+    expect(entryView({ id: 130, kind: "pi.assistant", model: [{ role: "toolResult", toolCallId: "c", isError: true, content: "plain string" }] }))
       .toMatchObject({ role: "toolResult", toolCallId: "c", isError: true, text: "plain string" });
     expect(entryView(null)).toBeNull();
     expect(entryView("x")).toBeNull();
+    // Ids: pda's are numbers; they become text once, here. A string is accepted; anything else is no id.
+    expect(entryView({ id: 0, model: [] })?.id).toBe("0");
+    expect(entryView({ id: 12, model: [] })?.id).toBe("12");
+    expect(entryView({ id: "17", model: [] })?.id).toBe("17");
+    for (const bad of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2, null, true, {}, "", undefined]) {
+      expect(entryView({ id: bad, model: [] })?.id, String(bad)).toBeNull();
+    }
+    expect(idText(41)).toBe("41");
     expect(argsFirstLine({ command: "x".repeat(500) }, 160)).toHaveLength(160);
     expect(argsFirstLine("first\nsecond")).toBe("first");
   });

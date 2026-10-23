@@ -365,7 +365,7 @@ describe("request ids", () => {
     o.onAck = (r, s) => seen.push([r, s]);
     const id = enqOk(o, "x");
     await o.drain(clientFor(fake));
-    expect(seen).toEqual([[id, fake.entries("research")[0]!.submissionId]]);
+    expect(seen).toEqual([[id, String(fake.entries("research")[0]!.submissionId)]]); // pda's id is a number; the outbox records it as text
   });
 });
 
