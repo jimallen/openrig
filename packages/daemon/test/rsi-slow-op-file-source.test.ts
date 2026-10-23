@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import type { HealthRecord } from "../src/domain/health-projection.js";
 import { DEFAULT_HEALTH_POLICY } from "../src/domain/health-policy.js";
 import { RSI_DETECTORS } from "../src/domain/rsi/detector-ids.js";
 import { SlowOpFileSource } from "../src/domain/rsi/slow-op-file-source.js";
+import { SlowOpRecorder } from "../src/domain/slow-op-recorder.js";
 
 // Restated here, not imported: a changed constant must fail the pin, not move it.
 const DETECTOR = "rsi.slow-op-subthreshold-flood";
@@ -249,6 +250,31 @@ describe("D13 the recent hour is anchored at the recorder's liveness (OF-73 R1)"
   });
 });
 
+describe("D13 a stuck recorder is not alive (OF-73 F1)", () => {
+  it("reads a flood the stuck Worker never recorded as indeterminate and stale two hours on, not quiet on complete coverage", async () => {
+    // The Worker records the flood until minute 100, then wedges (a FIFO log path): the recorder keeps
+    // accepting writes and never acknowledges one. The flood goes on unrecorded. Read at minute 220.
+    const f = fixture(new Date(T0 + 220 * 60_000));
+    f.write("", many("wedge.flood", 5, 1000, 100));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    restore.push(() => vi.useRealTimers());
+    vi.setSystemTime(T0 + 100 * 60_000);
+    const recorder = new SlowOpRecorder({ logPath: f.logPath });
+    restore.push(() => { void (recorder as any).worker.terminate(); });
+    (recorder as any).worker.postMessage = () => {};
+    recorder.recordMeasurement("wedge.flood", 5);
+    vi.setSystemTime(T0 + 220 * 60_000);
+
+    const service = new HealthProjectionService([f.source({ lastAliveAt: () => recorder.lastAliveAt() })]);
+    const [record] = service.records();
+
+    expect(record).toBeDefined();
+    expect(evidence(record!).fingerprint).toBe(fp("wedge.flood"));
+    expect(record!.status).toBe("indeterminate");
+    expect(record!.indeterminateReason).toMatch(/stale/);
+  });
+});
+
 describe("D13 diagnostics advance the newest-record anchor (OF-73 N3)", () => {
   it("anchors the hour at a diagnostic: a flood older than an hour before the newest diagnostic is quiet", () => {
     const f = fixture();
@@ -477,6 +503,16 @@ describe("D13 as a health record", () => {
     const f = fixture();
     f.write("", many("codex.runtime.list_processes", 5, 1000));
     expect(f.records()[0]).toMatchObject({ detector: DETECTOR, category: "process", severity: "info", status: "active" });
+  });
+
+  it("names the liveness anchor in the explanation, not only in the threshold (OF-73 N1)", () => {
+    const f = fixture();
+    f.write("", many("flood.site", 5, 1000));
+
+    const [record] = f.records();
+
+    expect(record!.explanation).toContain("in the hour ending at the newest log record or the recorder's last-alive time");
+    expect(record!.explanation).not.toContain("last hour of the log");
   });
 
   it("names the inspection without claiming which recorder path leaks", () => {

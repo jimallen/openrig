@@ -445,12 +445,49 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     expect(failed.lastAliveAt()).toBeNull();
     await failed.close().catch(() => {});
 
-    // A barrier timeout degrades health but the Worker still writes: it is not a loss.
+    // snapshot() health is a sticky latch, not liveness: a recorder that degraded once but has
+    // acknowledged every write (nothing pending) is caught up, so it is alive.
     const slow = new mod.SlowOpRecorder({ logPath: path.join(tempDir(), "slow.jsonl") });
     (slow as any).markDegraded("begin_barrier_timeout", "test.site");
     expect(slow.snapshot()).toMatchObject({ healthy: false });
+    expect((slow as any).pending.size).toBe(0);
     expect(slow.lastAliveAt()).not.toBeNull();
     await slow.close();
+  });
+
+  it("reports the post time of the oldest unacknowledged write while the Worker acknowledges nothing, and now again once it catches up (OF-73 F1)", async () => {
+    const mod = await loadRecorderModule();
+    expect(mod, "slow-op-recorder production module is missing").not.toBeNull();
+    if (!mod) return;
+
+    const recorder = new mod.SlowOpRecorder({ logPath: path.join(tempDir(), "stuck.jsonl") });
+    const posted: unknown[] = [];
+    // A Worker stuck in a syscall (a FIFO log path): it receives messages and never acknowledges one.
+    (recorder as any).worker.postMessage = (message: unknown) => { posted.push(message); };
+    const before = Date.now();
+    recorder.recordMeasurement("test.stuck.first", 300);
+    const afterFirst = Date.now();
+    await new Promise((r) => setTimeout(r, 40));
+    recorder.recordMeasurement("test.stuck.second", 300);
+
+    const stuckAt = recorder.lastAliveAt();
+    expect(posted).toHaveLength(2);
+    expect(stuckAt).toBeGreaterThanOrEqual(before);
+    expect(stuckAt).toBeLessThanOrEqual(afterFirst);
+    // It does not advance with the clock, nor with a later unacknowledged post.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(recorder.lastAliveAt()).toBe(stuckAt);
+    expect(recorder.snapshot()).toMatchObject({ healthy: true });
+
+    // Caught up: acknowledge both writes, as a Worker that drained its queue would.
+    for (const message of posted as { id: string }[]) {
+      (recorder as any).worker.emit("message", { id: message.id, ok: true });
+    }
+    expect((recorder as any).pending.size).toBe(0);
+    const caughtUp = recorder.lastAliveAt();
+    expect(caughtUp).toBeGreaterThan(afterFirst + 40);
+    await (recorder as any).worker.terminate();
+    await recorder.close().catch(() => {});
   });
 
   it("latches an acknowledged Worker write failure so flush/close cannot report a clean durable drain", async () => {
