@@ -190,12 +190,32 @@ export function readSavedPdaBinding(text: string | null | undefined): { value?: 
   return result.ok ? { value: result.binding } : { unreadable: "pda_binding is not a valid pda binding" };
 }
 
-/** A seat that already drives a pda agent (the holder side of the duplicate-binding check). */
+/** A seat that drives a pda agent, or may (the holder side of the duplicate-binding check). `unreadable` is set when
+ *  the seat's saved binding is damaged: the agent it drives cannot be known, so it is treated as a possible holder of
+ *  EVERY agent (fail closed) and the reason says what to repair. */
 export interface PdaBindingHolder {
   nodeId: string;
   rigId: string;
   rigName: string;
   logicalId: string;
+  unreadable?: string;
+}
+
+/** The ONE refusal text for "this pda agent is already taken", used by instantiation, unarchive and the rollback of a
+ *  replacement, so the three never drift. Names the holding seat and rig; carries no token. */
+export function describePdaHolder(binding: PdaBinding, holder: PdaBindingHolder): string {
+  if (holder.unreadable !== undefined) {
+    return `seat "${holder.logicalId}" in rig "${holder.rigName}" has an unreadable pda binding (${holder.unreadable}), so it may already drive pda agent "${binding.agent}" at ${binding.baseUrl}; repair its pda_binding or archive that rig, then retry`;
+  }
+  return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}"; one pda agent is driven by one seat`;
+}
+
+/** A binding of one rig that another live seat already holds (the unarchive check). */
+export interface PdaBindingConflict {
+  binding: PdaBinding;
+  /** The rig's own seat that carries the binding. */
+  seat: string;
+  holder: PdaBindingHolder;
 }
 
 export class RigRepository {
@@ -546,10 +566,11 @@ export class RigRepository {
     );
   }
 
-  /** Every seat, in any rig that is not archived, whose saved binding names this pda agent at this base URL
-   *  (the pda agent is the pair: the same name on another port is another pda). `excludeRigIds` are rigs about to be
-   *  archived by the same operation; `excludeNodeId` is the seat being re-checked. The comparison is made on the
-   *  parsed binding, never on the stored text. */
+  /** Every seat, in any rig that is not archived, that drives this pda agent at this base URL (the pda agent is the
+   *  pair: the same name on another port is another pda), PLUS every seat whose saved binding is damaged (it may drive
+   *  any agent; see PdaBindingHolder.unreadable). `excludeRigIds` are rigs about to be archived by the same operation;
+   *  `excludeNodeId` is the seat being re-checked. The comparison is made on the parsed binding, never on the stored
+   *  text. */
   findPdaBindingHolders(binding: PdaBinding, opts?: { excludeRigIds?: readonly string[]; excludeNodeId?: string }): PdaBindingHolder[] {
     if (!this.hasNodeColumn("pda_binding")) return [];
     const rows = this.db.prepare(
@@ -559,11 +580,38 @@ export class RigRepository {
     const excludedRigs = new Set(opts?.excludeRigIds ?? []);
     return rows
       .filter((row) => row.node_id !== opts?.excludeNodeId && !excludedRigs.has(row.rig_id))
-      .filter((row) => {
-        const saved = readSavedPdaBinding(row.pda_binding).value;
-        return saved !== undefined && saved.agent === binding.agent && saved.baseUrl === binding.baseUrl;
-      })
-      .map((row) => ({ nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id }));
+      .flatMap((row): PdaBindingHolder[] => {
+        const base = { nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id };
+        const saved = readSavedPdaBinding(row.pda_binding);
+        if (saved.value === undefined) return [{ ...base, unreadable: saved.unreadable ?? "pda_binding is not readable" }];
+        return saved.value.agent === binding.agent && saved.value.baseUrl === binding.baseUrl ? [base] : [];
+      });
+  }
+
+  /** Would bringing this (archived) rig back create a second holder? Every readable binding of the rig's own seats is
+   *  checked against the other live rigs (the rig itself is excluded). A damaged binding of the rig's OWN seat names no
+   *  agent and so cannot be checked here; a damaged binding in ANOTHER live rig counts against every binding. */
+  findPdaBindingConflictsForRig(rigId: string): PdaBindingConflict[] {
+    if (!this.hasNodeColumn("pda_binding")) return [];
+    const own = this.db.prepare("SELECT logical_id, pda_binding FROM nodes WHERE rig_id = ? AND pda_binding IS NOT NULL ORDER BY id")
+      .all(rigId) as Array<{ logical_id: string; pda_binding: string }>;
+    const conflicts: PdaBindingConflict[] = [];
+    for (const row of own) {
+      const binding = readSavedPdaBinding(row.pda_binding).value;
+      if (binding === undefined) continue;
+      for (const holder of this.findPdaBindingHolders(binding, { excludeRigIds: [rigId] })) {
+        conflicts.push({ binding, seat: row.logical_id, holder });
+      }
+    }
+    return conflicts;
+  }
+
+  /** `unarchiveRig`, unless that would leave one pda agent driven by two seats. Synchronous, so the check and the
+   *  write are one step. The plain `unarchiveRig` stays the bare primitive. */
+  unarchiveRigUnlessPdaConflict(rigId: string): { ok: true; changed: boolean } | { ok: false; conflicts: PdaBindingConflict[] } {
+    const conflicts = this.findPdaBindingConflictsForRig(rigId);
+    if (conflicts.length > 0) return { ok: false, conflicts };
+    return { ok: true, changed: this.unarchiveRig(rigId) };
   }
 
   /** S5 (OPR.0.5.4.7) — the first supported nodes.model write (the inventory was insert-only;

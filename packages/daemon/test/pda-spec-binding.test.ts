@@ -12,7 +12,11 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { RigSpecExporter } from "../src/domain/rigspec-exporter.js";
-import { RigRepository, readSavedPdaBinding } from "../src/domain/rig-repository.js";
+import { RigRepository, readSavedPdaBinding, describePdaHolder } from "../src/domain/rig-repository.js";
+import { resolveAgentRef } from "../src/domain/agent-resolver.js";
+import fs from "node:fs";
+import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { retainedPdaBindingAgrees } from "../src/domain/rigspec-instantiator.js";
@@ -260,11 +264,88 @@ describe("repository: nodes.pda_binding", () => {
       expect(repo.findPdaBindingHolders(research, { excludeRigIds: [a.id, b.id] })).toEqual([]);
     });
 
-    it("a damaged row is not a holder of anything", () => {
+    // Fail closed: a damaged binding cannot say which agent the seat drives, so it may drive THIS one. (An earlier
+    // version skipped it, and a second rig took the agent a first rig's damaged seat still drove.)
+    it("a damaged row in a live rig is a possible holder of EVERY agent, named with its reason", () => {
       const a = repo.createRig("rig-a");
       const node = repo.addNode(a.id, "dev.research", { runtime: "pda" });
       db.prepare("UPDATE nodes SET pda_binding = ? WHERE id = ?").run('{"agent":"research"}', node.id);
+      for (const asked of [research, { agent: "unrelated", baseUrl: "http://127.0.0.1:9999" }]) {
+        const holders = repo.findPdaBindingHolders(asked);
+        expect(holders).toEqual([{ nodeId: node.id, rigId: a.id, rigName: "rig-a", logicalId: "dev.research", unreadable: "pda_binding lacks agent or base_url" }]);
+      }
+      expect(describePdaHolder(research, repo.findPdaBindingHolders(research)[0]!)).toContain('has an unreadable pda binding (pda_binding lacks agent or base_url)');
+    });
+
+    it("a damaged row in an ARCHIVED rig, or one excluded by rig or node, holds nothing", () => {
+      const a = repo.createRig("rig-a");
+      const node = repo.addNode(a.id, "dev.research", { runtime: "pda" });
+      db.prepare("UPDATE nodes SET pda_binding = ? WHERE id = ?").run("{bad", node.id);
+      expect(repo.findPdaBindingHolders(research, { excludeNodeId: node.id })).toEqual([]);
+      expect(repo.findPdaBindingHolders(research, { excludeRigIds: [a.id] })).toEqual([]);
+      expect(repo.findPdaBindingHolders(research)).toHaveLength(1);
+      repo.archiveRig(a.id);
       expect(repo.findPdaBindingHolders(research)).toEqual([]);
+    });
+
+    // The docstring says the comparison is on the parsed binding, never the stored text. A row written by hand (or by
+    // a future writer) with the keys in the other order is the same binding.
+    it("matches on the parsed binding, not the stored text (keys in the other order, extra whitespace)", () => {
+      const a = repo.createRig("rig-a");
+      const node = repo.addNode(a.id, "dev.research", { runtime: "pda" });
+      db.prepare("UPDATE nodes SET pda_binding = ? WHERE id = ?").run('{ "base_url": "http://127.0.0.1:8150",  "agent": "research" }', node.id);
+      expect(repo.findPdaBindingHolders(research).map((h) => h.nodeId)).toEqual([node.id]);
+      expect(repo.findPdaBindingHolders(research)[0]!.unreadable).toBeUndefined();
+    });
+  });
+
+  describe("bringing an archived rig back (findPdaBindingConflictsForRig, unarchiveRigUnlessPdaConflict)", () => {
+    const research = { agent: "research", baseUrl: "http://127.0.0.1:8150" };
+    it("is a conflict when another live seat holds one of the rig's agents, naming the seat and the holder; the rig stays archived", () => {
+      const a = repo.createRig("rig-a");
+      repo.addNode(a.id, "dev.research", { runtime: "pda", pda: research });
+      repo.archiveRig(a.id);
+      const b = repo.createRig("rig-b");
+      const holder = repo.addNode(b.id, "dev.copy", { runtime: "pda", pda: research });
+      const conflicts = repo.findPdaBindingConflictsForRig(a.id);
+      expect(conflicts).toEqual([{ binding: research, seat: "dev.research", holder: { nodeId: holder.id, rigId: b.id, rigName: "rig-b", logicalId: "dev.copy" } }]);
+      const refused = repo.unarchiveRigUnlessPdaConflict(a.id);
+      expect(refused).toMatchObject({ ok: false });
+      expect((db.prepare("SELECT archived_at FROM rigs WHERE id = ?").get(a.id) as { archived_at: string | null }).archived_at).not.toBeNull();
+    });
+    it("unarchives when nothing else holds the agent (another port, another name, or no pda seat at all)", () => {
+      const a = repo.createRig("rig-a");
+      repo.addNode(a.id, "dev.research", { runtime: "pda", pda: research });
+      repo.addNode(a.id, "dev.plain", { runtime: "codex" });
+      repo.archiveRig(a.id);
+      const b = repo.createRig("rig-b");
+      repo.addNode(b.id, "dev.x", { runtime: "pda", pda: { agent: "research", baseUrl: "http://127.0.0.1:8151" } });
+      repo.addNode(b.id, "dev.y", { runtime: "pda", pda: { agent: "other", baseUrl: "http://127.0.0.1:8150" } });
+      expect(repo.findPdaBindingConflictsForRig(a.id)).toEqual([]);
+      expect(repo.unarchiveRigUnlessPdaConflict(a.id)).toEqual({ ok: true, changed: true });
+      expect(repo.unarchiveRigUnlessPdaConflict(a.id)).toEqual({ ok: true, changed: false }); // already live
+    });
+    it("a damaged seat in ANOTHER live rig blocks it; the rig's OWN damaged seat names no agent and does not", () => {
+      const a = repo.createRig("rig-a");
+      const own = repo.addNode(a.id, "dev.own", { runtime: "pda" });
+      db.prepare("UPDATE nodes SET pda_binding = '{bad' WHERE id = ?").run(own.id);
+      repo.addNode(a.id, "dev.research", { runtime: "pda", pda: research });
+      repo.archiveRig(a.id);
+      expect(repo.findPdaBindingConflictsForRig(a.id)).toEqual([]);
+      const b = repo.createRig("rig-b");
+      const other = repo.addNode(b.id, "dev.broken", { runtime: "pda" });
+      db.prepare("UPDATE nodes SET pda_binding = '{bad' WHERE id = ?").run(other.id);
+      const conflicts = repo.findPdaBindingConflictsForRig(a.id);
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]!.holder).toMatchObject({ logicalId: "dev.broken", unreadable: "pda_binding is not JSON" });
+    });
+    it("the bare unarchiveRig primitive stays unconditional (the check lives in unarchiveRigUnlessPdaConflict)", () => {
+      const a = repo.createRig("rig-a");
+      repo.addNode(a.id, "dev.research", { runtime: "pda", pda: research });
+      repo.archiveRig(a.id);
+      const b = repo.createRig("rig-b");
+      repo.addNode(b.id, "dev.copy", { runtime: "pda", pda: research });
+      expect(repo.unarchiveRig(a.id)).toBe(true);
     });
   });
 });
@@ -305,5 +386,31 @@ describe("first-start retry: the member must name the retained seat's pda agent"
   it("a damaged saved binding agrees with nothing, not even the matching member or no member", () => {
     expect(retainedPdaBindingAgrees({ ...held }, { pdaBindingUnreadable: "pda_binding is not JSON" })).toBe(false);
     expect(retainedPdaBindingAgrees(undefined, { pdaBindingUnreadable: "pda_binding is not JSON" })).toBe(false);
+  });
+});
+
+// The agent-spec template the docs example's `agent_ref: local:agents/pda-seat` stands for (design D3): a minimal
+// AgentSpec. Resolved with the real resolver against the real file, so a template that stops being a valid AgentSpec,
+// or grows startup content a pda agent is never given (D4), fails here.
+describe("docs/reference/templates/pda-seat", () => {
+  const dir = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), "../../../docs/reference/templates/pda-seat");
+  const fsOps = { readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) };
+
+  it("is a valid AgentSpec named pda-seat with a default profile that uses nothing", () => {
+    const resolved = resolveAgentRef(`path:${dir}`, dir, fsOps);
+    expect(resolved.ok, JSON.stringify(resolved)).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.resolved.spec.name).toBe("pda-seat");
+    expect(Object.keys(resolved.resolved.spec.profiles)).toEqual(["default"]);
+    expect(resolved.resolved.spec.profiles.default).toMatchObject({ uses: { skills: [] } });
+  });
+
+  it("delivers no startup content (D4): no startup block, no skills", () => {
+    const resolved = resolveAgentRef(`path:${dir}`, dir, fsOps);
+    if (!resolved.ok) throw new Error("template must resolve");
+    const spec = resolved.resolved.spec as unknown as { startup?: { files?: unknown[]; actions?: unknown[] }; resources?: { skills?: unknown[] } };
+    expect(spec.startup?.files ?? []).toEqual([]);
+    expect(spec.startup?.actions ?? []).toEqual([]);
+    expect(spec.resources?.skills ?? []).toEqual([]);
   });
 });

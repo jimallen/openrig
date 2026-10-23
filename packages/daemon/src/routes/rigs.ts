@@ -4,7 +4,7 @@ import { DeliveryGuardError } from "../domain/seat-delivery-guard.js";
 import { Hono } from "hono";
 import { observeInventoryHandler, observeInventoryQuery } from "../domain/request-phase-observer.js";
 import type Database from "better-sqlite3";
-import type { RigRepository } from "../domain/rig-repository.js";
+import { describePdaHolder, type RigRepository } from "../domain/rig-repository.js";
 import type { SessionRegistry } from "../domain/session-registry.js";
 import type { EventBus } from "../domain/event-bus.js";
 import { summarizeSnapshot, type SnapshotRepository } from "../domain/snapshot-repository.js";
@@ -565,13 +565,22 @@ rigsRoutes.post("/:id/unarchive", (c) => {
   if (!rig) {
     return c.json({ error: "rig not found" }, 404);
   }
+  // pda: bringing a rig back must not leave one pda agent driven by two seats. Check and write are one transaction.
   const result = eventBus.db.transaction(() => {
-    const changed = repo.unarchiveRig(rigId);
-    const persisted = changed
+    const restored = repo.unarchiveRigUnlessPdaConflict(rigId);
+    if (!restored.ok) return { refused: restored.conflicts, changed: false, persisted: null };
+    const persisted = restored.changed
       ? eventBus.persistWithinTransaction({ type: "rig.unarchived", rigId })
       : null;
-    return { changed, persisted };
+    return { refused: null, changed: restored.changed, persisted };
   })();
+  if (result.refused) {
+    const first = result.refused[0]!;
+    return c.json({
+      error: `Cannot unarchive rig "${rig.rig.name}": ${describePdaHolder(first.binding, first.holder)}`,
+      conflicts: result.refused.map((x) => ({ seat: x.seat, agent: x.binding.agent, baseUrl: x.binding.baseUrl, heldBySeat: x.holder.logicalId, heldByRig: x.holder.rigName, unreadable: x.holder.unreadable })),
+    }, 409);
+  }
   if (result.persisted) eventBus.notifySubscribers(result.persisted);
   return c.json({ ok: true, rigId, unarchived: result.changed });
 });

@@ -172,6 +172,157 @@ describe("pda binding: persisted on every node-creation path, carried onto the l
     });
   });
 
+  describe("review round 2 (architect probes P1-P3): the gaps in the daemon-wide rule", () => {
+    const yamlOf = (members: Record<string, unknown>[], name: string) =>
+      RigSpecCodec.serialize(RigSpecSchema.normalize(rawSpec(members, name)) as unknown as RigSpec);
+    const holders = (agent = "research") => setup.rigRepo.findPdaBindingHolders({ agent, baseUrl: "http://127.0.0.1:8150" });
+    const archivedCount = (): number => (db.prepare("SELECT COUNT(*) AS c FROM rigs WHERE archived_at IS NOT NULL").get() as { c: number }).c;
+
+    // P1. `rig up` checks up front, then awaits (preflight, stop confirmation, the prelaunch hook, other launches)
+    // before it creates each seat. A rig that takes the agent in that window used to leave two holders.
+    it("P1 - rig up: a rig that takes the agent AFTER the up-front check is refused at seat creation, leaving one holder", async () => {
+      let inner: Awaited<ReturnType<typeof setup.podInstantiator.materializeStructured>> | undefined;
+      const outcome = await setup.podInstantiator.instantiate(yamlOf([rawMember("research")], "rig-one"), RIG_ROOT, {
+        prelaunchHook: async () => {
+          inner = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("copy")], "rig-two"), RIG_ROOT);
+          return { ok: true };
+        },
+      });
+      expect(inner?.ok, "the interleaved rig takes the agent first").toBe(true);
+      expect(outcome.ok).toBe(false);
+      expect(JSON.stringify(outcome)).toContain('already driven by seat \\"dev.copy\\" in rig \\"rig-two\\"');
+      expect(holders().map((h) => h.rigName)).toEqual(["rig-two"]);
+    });
+
+    it("P1-control - without the interleave the same rig up succeeds and holds the agent", async () => {
+      const outcome = await setup.podInstantiator.instantiate(yamlOf([rawMember("research")], "rig-one"), RIG_ROOT, { prelaunchHook: async () => ({ ok: true }) });
+      expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+      expect(holders().map((h) => h.rigName)).toEqual(["rig-one"]);
+    });
+
+    it("P1 - only the contested seat fails: a sibling seat on a free agent is still created (partial success is the existing contract)", async () => {
+      const spec2 = yamlOf([rawMember("a", { pda: { agent: "taken-late" } }), rawMember("b", { pda: { agent: "free" } })], "rig-three");
+      let first = true;
+      const outcome = await setup.podInstantiator.instantiate(spec2, RIG_ROOT, {
+        prelaunchHook: async () => {
+          if (first) { first = false; await setup.podInstantiator.materializeStructured(rawSpec([rawMember("x", { pda: { agent: "taken-late" } })], "rig-four"), RIG_ROOT); }
+          return { ok: true };
+        },
+      });
+      expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+      const names = (db.prepare("SELECT n.logical_id AS l, r.name AS r FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE r.name = 'rig-three'").all() as Array<{ l: string }>).map((x) => x.l);
+      expect(names).toEqual(["dev.b"]);
+    });
+
+    // P2. Bringing an archived rig back used to create the second holder with a 200.
+    const archivedRigHoldingResearch = async (name: string) => {
+      const first = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("research")], name), RIG_ROOT);
+      const id = (first as { ok: true; result: { rigId: string } }).result.rigId;
+      expect(setup.rigRepo.archiveRig(id)).toBe(true);
+      return id;
+    };
+
+    it("P2 - POST /api/rigs/:id/unarchive is refused with 409 naming the holder, and the rig stays archived", async () => {
+      const aId = await archivedRigHoldingResearch("rig-a");
+      expect((await setup.podInstantiator.materializeStructured(rawSpec([rawMember("copy")], "rig-b"), RIG_ROOT)).ok).toBe(true);
+      const eventsBefore = (db.prepare("SELECT COUNT(*) AS c FROM events WHERE type = 'rig.unarchived'").get() as { c: number }).c;
+      const res = await setup.app.request(`/api/rigs/${aId}/unarchive`, { method: "POST" });
+      const body = await res.json() as { error: string; conflicts: Array<Record<string, unknown>> };
+      expect(res.status).toBe(409);
+      expect(body.error).toContain('Cannot unarchive rig "rig-a"');
+      expect(body.error).toContain('pda agent "research" at http://127.0.0.1:8150 is already driven by seat "dev.copy" in rig "rig-b"');
+      expect(body.conflicts).toEqual([{ seat: "dev.research", agent: "research", baseUrl: "http://127.0.0.1:8150", heldBySeat: "dev.copy", heldByRig: "rig-b" }]);
+      expect(holders()).toHaveLength(1);
+      expect(archivedCount()).toBe(1);
+      expect((db.prepare("SELECT COUNT(*) AS c FROM events WHERE type = 'rig.unarchived'").get() as { c: number }).c).toBe(eventsBefore);
+    });
+
+    it("P2-control - unarchive succeeds when the agent is free, and then holds it", async () => {
+      const aId = await archivedRigHoldingResearch("rig-a");
+      const res = await setup.app.request(`/api/rigs/${aId}/unarchive`, { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, unarchived: true });
+      expect(holders().map((h) => h.rigName)).toEqual(["rig-a"]);
+    });
+
+    it("P2 - a rig with no pda seat unarchives as before, even while pda agents are held elsewhere", async () => {
+      const plain = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("p", { runtime: "terminal", agent_ref: "builtin:terminal", profile: "none", pda: undefined })], "rig-plain"), RIG_ROOT);
+      const plainId = (plain as { ok: true; result: { rigId: string } }).result.rigId;
+      setup.rigRepo.archiveRig(plainId);
+      await setup.podInstantiator.materializeStructured(rawSpec([rawMember("research")], "rig-holder"), RIG_ROOT);
+      const res = await setup.app.request(`/api/rigs/${plainId}/unarchive`, { method: "POST" });
+      expect(res.status).toBe(200);
+    });
+
+    // The rollback of a failed same-name replacement unarchives the prior generation after deleting the new rig.
+    it("P2 - the rollback of a failed rig up replacement does not unarchive a generation whose agent another rig took meanwhile", async () => {
+      const yaml = yamlOf([rawMember("research")], "pda-rig");
+      expect((await setup.podInstantiator.instantiate(yaml, RIG_ROOT)).ok).toBe(true);
+      db.prepare("UPDATE sessions SET status = 'exited'").run(); // stopped, so the replacement may archive it
+      const outcome = await setup.podInstantiator.instantiate(yaml, RIG_ROOT, {
+        prelaunchHook: async () => {
+          const taken = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("copy")], "rig-two"), RIG_ROOT);
+          expect(taken.ok, "the prior generation was archived by the replacement, so rig-two may take the agent").toBe(true);
+          return { ok: false, code: "service_boot_failed", message: "boom" };
+        },
+      });
+      expect(outcome).toMatchObject({ ok: false, code: "service_boot_failed" });
+      expect((outcome as { message: string }).message).toContain("boom The earlier generation ");
+      expect((outcome as { message: string }).message).toContain('was left archived: pda agent "research" at http://127.0.0.1:8150 is already driven by seat "dev.copy" in rig "rig-two"');
+      expect(holders().map((h) => h.rigName)).toEqual(["rig-two"]);
+      expect(archivedCount()).toBe(1);
+    });
+
+    it("P2-control - the same failed replacement WITHOUT a rival restores the prior generation, and the message is unchanged", async () => {
+      const yaml = yamlOf([rawMember("research")], "pda-rig");
+      expect((await setup.podInstantiator.instantiate(yaml, RIG_ROOT)).ok).toBe(true);
+      db.prepare("UPDATE sessions SET status = 'exited'").run();
+      const outcome = await setup.podInstantiator.instantiate(yaml, RIG_ROOT, { prelaunchHook: async () => ({ ok: false, code: "service_boot_failed", message: "boom" }) });
+      expect(outcome).toMatchObject({ ok: false, message: "boom" });
+      expect(archivedCount()).toBe(0);
+      expect(holders().map((h) => h.rigName)).toEqual(["pda-rig"]);
+    });
+
+    // P3. A damaged binding used to be invisible to the check.
+    const damageEveryBinding = () => db.prepare("UPDATE nodes SET pda_binding = ? WHERE pda_binding IS NOT NULL").run('{"agent":"research","base_url":"http://127.0.0.1:8150","x":1}');
+
+    it("P3 - a live rig's damaged binding refuses a new seat on ANY agent, in materialize and in rig up, naming the damaged seat", async () => {
+      expect((await setup.podInstantiator.materializeStructured(rawSpec([rawMember("research")], "rig-a"), RIG_ROOT)).ok).toBe(true);
+      damageEveryBinding();
+      const viaMaterialize = await setup.podInstantiator.materializeStructured(rawSpec([rawMember("copy", { pda: { agent: "unrelated" } })], "rig-b"), RIG_ROOT);
+      expect(viaMaterialize).toMatchObject({ ok: false, code: "materialize_conflict" });
+      expect(JSON.stringify(viaMaterialize)).toContain('seat \\"dev.research\\" in rig \\"rig-a\\" has an unreadable pda binding');
+      const viaUp = await setup.podInstantiator.instantiate(yamlOf([rawMember("copy", { pda: { agent: "unrelated" } })], "rig-c"), RIG_ROOT);
+      expect(viaUp).toMatchObject({ ok: false, code: "validation_failed" });
+      expect(JSON.stringify(viaUp)).toContain("has an unreadable pda binding");
+    });
+
+    it("P3 - unarchive is refused while another live rig's binding is damaged; archiving that rig frees it", async () => {
+      const aId = await archivedRigHoldingResearch("rig-a");
+      expect((await setup.podInstantiator.materializeStructured(rawSpec([rawMember("copy", { pda: { agent: "other" } })], "rig-b"), RIG_ROOT)).ok).toBe(true);
+      db.prepare("UPDATE nodes SET pda_binding = '{bad' WHERE logical_id = 'dev.copy'").run();
+      const refused = await setup.app.request(`/api/rigs/${aId}/unarchive`, { method: "POST" });
+      expect(refused.status).toBe(409);
+      expect(JSON.stringify(await refused.json())).toContain("has an unreadable pda binding (pda_binding is not JSON)");
+      const bId = (db.prepare("SELECT id FROM rigs WHERE name = 'rig-b'").get() as { id: string }).id;
+      setup.rigRepo.archiveRig(bId);
+      expect((await setup.app.request(`/api/rigs/${aId}/unarchive`, { method: "POST" })).status).toBe(200);
+    });
+
+    // Review nit N1: a falsy raw `pda` must reach the canonical validator through the expansion service; truthiness
+    // would erase `null` into absence and let a non-pda member through with its declaration silently dropped.
+    it.each([["pda", "must be a mapping"], ["codex", 'pda: only valid when runtime is \\"pda\\"']])("N1 - expand with a null pda block on a %s member is refused by the validator, not dropped", async (runtime, expected) => {
+      const rig = setup.rigRepo.createRig("pda-rig");
+      const expanded = await setup.rigExpansionService.expand({
+        rigId: rig.id, rigRoot: RIG_ROOT,
+        pod: { id: "qa", label: "QA", members: [{ id: "m", runtime, agentRef: "local:agents/pda-seat", profile: "default", cwd: ".", pda: null }], edges: [] },
+      });
+      expect(expanded).toMatchObject({ ok: false, code: "validation_failed" });
+      expect(JSON.stringify(expanded)).toContain(expected);
+      expect(nodeCount()).toBe(0);
+    });
+  });
+
   it("PATH 2 - rig expand (structured fragment): persisted and carried onto the binding", async () => {
     const rig = setup.rigRepo.createRig("pda-rig");
     const expanded = await setup.rigExpansionService.expand({

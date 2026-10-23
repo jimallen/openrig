@@ -8,7 +8,7 @@ import {
   resolvePermissionPolicyRefValue,
   type ResolvedPolicyAttachment,
 } from "./permission-policy/policy-ref.js";
-import type { RigRepository } from "./rig-repository.js";
+import { describePdaHolder, type RigRepository } from "./rig-repository.js";
 import type { PdaBinding } from "../adapters/pda-runner-protocol.js";
 import { checkRunningNameGuard, confirmStoppedGenerations, makeRunningSessionCounter } from "./running-name-guard.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -515,8 +515,7 @@ export class PodRigInstantiator {
   private pdaBindingConflict(binding: PdaBinding | undefined, opts?: { excludeRigIds?: readonly string[] }): string | null {
     if (!binding) return null;
     const holder = this.deps.rigRepo.findPdaBindingHolders(binding, opts)[0];
-    if (!holder) return null;
-    return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}"; one pda agent is driven by one seat`;
+    return holder ? describePdaHolder(binding, holder) : null;
   }
 
   /** One configured catalog root for preflight, materialization, and launch. */
@@ -1415,7 +1414,20 @@ export class PodRigInstantiator {
       }
       archivedGenerations = stopped.rigIds;
     }
-    const restoreArchived = () => { for (const id of archivedGenerations) this.deps.rigRepo.unarchiveRig(id); };
+    // Rolling a failed replacement back brings the prior generation out of the archive. If another rig took one of its
+    // pda agents meanwhile, bringing it back would make two holders: it stays archived instead, and the returned note
+    // (appended to the failure message) says so and why. Check and write are one synchronous step.
+    const restoreArchived = (): string => {
+      const notes: string[] = [];
+      for (const id of archivedGenerations) {
+        const restored = this.deps.rigRepo.unarchiveRigUnlessPdaConflict(id);
+        if (!restored.ok) {
+          const first = restored.conflicts[0]!;
+          notes.push(`The earlier generation ${id} was left archived: ${describePdaHolder(first.binding, first.holder)}`);
+        }
+      }
+      return notes.length > 0 ? ` ${notes.join(" ")}` : "";
+    };
 
     let rigId: string;
     let createdRigId: string | null = null;
@@ -1467,8 +1479,8 @@ export class PodRigInstantiator {
     } catch (err) {
       if (err instanceof GenerationChanged) return { ok: false, code: "generation_unconfirmed", message: err.message };
       // #141: a replacement that failed to finish creating must not leave the prior generation hidden.
-      if (createdRigId && archivedGenerations.length > 0) { this.deps.rigRepo.deleteRig(createdRigId); restoreArchived(); }
-      return { ok: false, code: "instantiate_error", message: (err as Error).message };
+      const restoreNote = createdRigId && archivedGenerations.length > 0 ? (this.deps.rigRepo.deleteRig(createdRigId), restoreArchived()) : "";
+      return { ok: false, code: "instantiate_error", message: `${(err as Error).message}${restoreNote}` };
     }
 
     // 5. Create pods + nodes + edges, then launch in topological order
@@ -1541,11 +1553,12 @@ export class PodRigInstantiator {
     if (opts?.prelaunchHook) {
       const hookResult = await opts.prelaunchHook(rigId, archivedGenerations);
       if (!hookResult.ok) {
+        let restoreNote = "";
         if (!hookResult.retainRig) {
           this.deps.rigRepo.deleteRig(rigId);
-          restoreArchived();
+          restoreNote = restoreArchived();
         }
-        return { ok: false, code: hookResult.code === "compose_project_conflict" ? "compose_project_conflict" : "service_boot_failed", message: hookResult.message };
+        return { ok: false, code: hookResult.code === "compose_project_conflict" ? "compose_project_conflict" : "service_boot_failed", message: `${hookResult.message}${restoreNote}` };
       }
       rollbackServices = hookResult.rollback;
     }
@@ -1578,6 +1591,11 @@ export class PodRigInstantiator {
 
         // Create node
         const createUnit = this.db.transaction(() => {
+          // pda: the up-front check (step 1c) ran before awaits (preflight, stop confirmation, the prelaunch hook, other
+          // members' launches) during which another rig can take the agent. Re-check HERE, in the same synchronous
+          // step as the insert, and fail this member into the existing per-member failure path.
+          const pdaConflict = this.pdaBindingConflict(member.pda);
+          if (pdaConflict) throw new Error(pdaConflict);
           const node = this.deps.rigRepo.addNode(rigId, qualifiedId, {
             // OPR.0.4.6.FAC1 (VM-caught): the pod-aware bootstrap
             // instantiate-from-YAML path (`rig up <spec>`) creates agent
@@ -1701,6 +1719,7 @@ export class PodRigInstantiator {
 
     if (allTerminal) {
       let serviceCleanupError: string | undefined;
+      let restoreNote = "";
       const cleanup = async () => {
         if (this.deps.tmuxAdapter) {
           for (const sessionName of launchedSessionNames) {
@@ -1725,13 +1744,13 @@ export class PodRigInstantiator {
           return;
         }
         this.deps.rigRepo.deleteRig(rigId);
-        restoreArchived();
+        restoreNote = restoreArchived();
       };
       const guard = this.deps.tmuxAdapter?.deliveryGuard;
       if (guard) await guard.lifecycle(Object.values(nodeIdMap), cleanup);
       else await cleanup();
       const details = nodeResults.map((n) => `${n.logicalId}: ${n.error ?? "unknown"}`).join("; ");
-      return { ok: false, code: "instantiate_error", message: `all node launches/startups failed — ${details}${serviceCleanupError ? `; ${serviceCleanupError}` : ""}` };
+      return { ok: false, code: "instantiate_error", message: `all node launches/startups failed — ${details}${serviceCleanupError ? `; ${serviceCleanupError}` : ""}${restoreNote}` };
     }
 
     if (hasAttention && !hasLaunched) {
