@@ -31,14 +31,15 @@ const spec = (members: Record<string, unknown>[], podId = "dev"): Record<string,
 const errorsOf = (raw: Record<string, unknown>): string => RigSpecSchema.validate(raw).errors.join("\n");
 
 describe("migration 115: nodes.pda_binding", () => {
-  it("adds a nullable TEXT column named pda_binding, and 116 is still unregistered", () => {
+  it("adds a nullable TEXT column named pda_binding, and 116 is L2c's pda_usage_entries, the next migration", () => {
     const db = createDb();
     migrate(db, ALL_MIGRATIONS);
     const columns = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string; type: string; notnull: number }>;
     expect(columns.find((c) => c.name === "pda_binding")).toMatchObject({ type: "TEXT", notnull: 0 });
     expect(columns.length).toBeGreaterThan(10); // positive control: the table was read
     expect(ALL_MIGRATIONS.map((m) => m.name)).toContain("115_node_pda_binding.sql");
-    expect(ALL_MIGRATIONS.map((m) => m.name).filter((n) => n.startsWith("116"))).toEqual([]);
+    // L2b pinned this empty (116 belonged to a lane not yet landed); L2c lands it under the reserved name.
+    expect(ALL_MIGRATIONS.map((m) => m.name).filter((n) => n.startsWith("116"))).toEqual(["116_pda_usage_entries.sql"]);
     db.close();
   });
 });
