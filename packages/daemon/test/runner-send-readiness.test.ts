@@ -12,6 +12,8 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { AgentActivity } from "../src/domain/types.js";
+import * as runtimeAdapter from "../src/domain/runtime-adapter.js";
+import type { RunnerSendReadinessSource } from "../src/domain/runtime-adapter.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 
 const SEAT = "dev-pda@my-rig";
@@ -71,7 +73,14 @@ describe("pda L0: runner send readiness at the SessionTransport seam", () => {
     return { adapter, sendText, sendKeys };
   }
 
-  function transport(adapter: TmuxAdapter, runnerSendReadiness?: (t: { sessionName: string; runtime: string; nodeId: string | null }) => Promise<AgentActivity | null>) {
+  type Ask = (t: { sessionName: string; runtime: string; nodeId: string | null }) => Promise<AgentActivity | null>;
+  /** A source declaring `runtimes`. It is also callable, so the same rows ran against ccbdc005's
+   *  function-shaped dep for the red-at-ccbdc005 run (that dep ignores `runtimes`). */
+  function source(ask: Ask, runtimes: ReadonlySet<string> = new Set(["pda"])): RunnerSendReadinessSource {
+    return Object.assign(ask, { runtimes, ask }) as unknown as RunnerSendReadinessSource;
+  }
+  function transport(adapter: TmuxAdapter, dep?: Ask | RunnerSendReadinessSource) {
+    const runnerSendReadiness = dep === undefined ? undefined : typeof dep === "function" ? source(dep) : dep;
     return new SessionTransport({
       db, rigRepo, sessionRegistry, tmuxAdapter: adapter, agentActivityStore, eventBus,
       waitForIdlePollMs: 1,
@@ -181,5 +190,95 @@ describe("pda L0: runner send readiness at the SessionTransport seam", () => {
     await transport(t.adapter, async (target) => { asked.push(target); return runnerAnswer("idle", "runner_idle"); }).send(SEAT, "hello");
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ sessionName: SEAT, runtime: "pda" });
+  });
+
+  // ── Review round 2 (ccbdc005 verdict, N1-N3 and the seam guard) ─────────────────────────────────
+
+  const idleAsk: Ask = async () => runnerAnswer("idle", "runner_idle");
+
+  it("N1 (default send): an unobservable pane foreground is not believed; refused, 0 bytes", async () => {
+    const t = tmux({ paneCommand: () => null });
+    const r = await transport(t.adapter, idleAsk).send(SEAT, "hello");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_runner_unverified");
+    expect(r.activity).toMatchObject({ state: "unknown", reason: "runner_foreground_unobserved", evidenceSource: "runner_sidecar" });
+    expect(t.sendText).not.toHaveBeenCalled();
+    expect(t.sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("N1 (--wait-for-idle): an unobservable pane foreground never reads idle; the wait times out unsent", async () => {
+    const t = tmux({ paneCommand: () => null });
+    const r = await transport(t.adapter, idleAsk).send(SEAT, "hello", { waitForIdleMs: 200 });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_activity_unknown");
+    expect(r.activity).toMatchObject({ state: "unknown", reason: "runner_foreground_unobserved" });
+    expect(t.sendText).not.toHaveBeenCalled();
+  });
+
+  it("N2: a runner answer that throws fails closed to unknown; refused, 0 bytes, never today's pane logic", async () => {
+    const t = tmux({ paneCommand: () => "node" });
+    const r = await transport(t.adapter, async () => { throw new Error("sidecar read failed"); }).send(SEAT, "hello");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_runner_unverified");
+    expect(r.activity).toMatchObject({ state: "unknown", reason: "runner_readiness_unavailable", evidenceSource: "runner_sidecar" });
+    expect(t.sendText).not.toHaveBeenCalled();
+    expect(t.sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("N2: a pane-command lookup that throws fails closed to unknown; refused, 0 bytes", async () => {
+    const t = tmux({ paneCommand: () => { throw new Error("tmux gone"); } });
+    const r = await transport(t.adapter, idleAsk).send(SEAT, "hello");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_runner_unverified");
+    expect(r.activity).toMatchObject({ state: "unknown", reason: "runner_foreground_unobserved", evidenceSource: "runner_sidecar" });
+    expect(t.sendText).not.toHaveBeenCalled();
+    expect(t.sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("N3: pane-only readiness never asks the runner", async () => {
+    const t = tmux({ paneCommand: () => "node" });
+    const ask = vi.fn(idleAsk);
+    const r = await transport(t.adapter, ask).send(SEAT, "hello", { waitForIdleMs: 200, readinessFromPaneOnly: true });
+    expect(ask).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false); // the F1 frame, read from the pane alone
+    expect(r.activity?.evidenceSource).toBe("pane_heuristic");
+  });
+
+  it("N3: a seat with no runtime never asks the runner, even of a source that claims every runtime", async () => {
+    seat("dev-none@my-rig", "dev.none", undefined as unknown as string);
+    const t = tmux({ paneCommand: () => "node" });
+    const ask = vi.fn(idleAsk);
+    const claimsAll = source(ask, { has: () => true } as unknown as ReadonlySet<string>);
+    await transport(t.adapter, claimsAll).send("dev-none@my-rig", "hello");
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  // Seam guard: a source that declares only pda, but whose ask would answer idle for anything, cannot touch
+  // any other runtime. Each runtime's outcome equals the no-dep outcome, and its runner is never asked.
+  it.each(["claude-code", "codex", "pi", "omp", "terminal", "stub"])("seam guard: %s is never asked and never affected", async (runtime) => {
+    const name = `dev-${runtime}@my-rig`;
+    seat(name, `dev.${runtime.replace("-", "")}`, runtime);
+    const outcome = async (dep?: RunnerSendReadinessSource) => {
+      const t = tmux({ paneCommand: () => "node" });
+      const r = await transport(t.adapter, dep).send(name, "hello");
+      return { ok: r.ok, reason: r.reason ?? null, sent: r.sent ?? null, bytes: t.sendText.mock.calls.length, source: r.activity?.evidenceSource ?? null };
+    };
+    const ask = vi.fn(idleAsk);
+    const withSource = await outcome(source(ask, new Set(["pda"])));
+    expect(ask).not.toHaveBeenCalled();
+    expect(withSource).toEqual(await outcome());
+  });
+
+  it("runnerSendReadinessFromAdapters declares exactly the adapters that define sendReadiness", async () => {
+    const calls: unknown[] = [];
+    const pda = { sendReadiness: async (target: unknown) => { calls.push(target); return runnerAnswer("idle", "runner_idle"); } };
+    const built = runtimeAdapter.runnerSendReadinessFromAdapters({
+      "claude-code": {}, codex: {}, pi: {}, omp: {}, terminal: {}, stub: {}, pda,
+    });
+    expect([...built.runtimes]).toEqual(["pda"]);
+    expect(await built.ask({ sessionName: "x@r", nodeId: null, runtime: "codex" })).toBeNull();
+    expect(calls).toHaveLength(0);
+    expect(await built.ask({ sessionName: SEAT, nodeId: "n1", runtime: "pda" })).toMatchObject({ state: "idle" });
+    expect(calls).toEqual([{ sessionName: SEAT, nodeId: "n1" }]);
   });
 });

@@ -147,6 +147,34 @@ export interface RunnerReadinessTarget {
   nodeId: string | null;
 }
 
+/** What SessionTransport consults for a runner-hosted seat's send readiness (review N3 seam guard). The
+ *  transport asks, and believes, ONLY a runtime in `runtimes`: a runtime whose adapter declares
+ *  `sendReadiness`. A mis-wired source can therefore never touch claude-code, codex, pi, omp, terminal or
+ *  stub. Build it with `runnerSendReadinessFromAdapters`, never by hand. */
+export interface RunnerSendReadinessSource {
+  readonly runtimes: ReadonlySet<string>;
+  ask(target: RunnerReadinessTarget & { runtime: string }): Promise<import("./types.js").AgentActivity | null>;
+}
+
+/** The only constructor L2a should use for SessionTransport's `runnerSendReadiness` dep: one entry per
+ *  adapter-map key whose adapter declares `sendReadiness`, and nothing else. */
+export function runnerSendReadinessFromAdapters(
+  adapters: Readonly<Record<string, Pick<RuntimeAdapter, "sendReadiness"> | undefined>>,
+): RunnerSendReadinessSource {
+  const declared = new Map<string, NonNullable<RuntimeAdapter["sendReadiness"]>>();
+  for (const [runtime, adapter] of Object.entries(adapters)) {
+    const fn = adapter?.sendReadiness;
+    if (typeof fn === "function") declared.set(runtime, fn.bind(adapter));
+  }
+  return {
+    runtimes: new Set(declared.keys()),
+    ask: async (target) => {
+      const fn = declared.get(target.runtime);
+      return fn ? fn({ sessionName: target.sessionName, nodeId: target.nodeId }) : null;
+    },
+  };
+}
+
 /** How an adapter's optional `freshStart` reads when absent: supported, every runtime's behaviour today. */
 export function adapterFreshStart(adapter: Pick<RuntimeAdapter, "freshStart"> | null | undefined): "supported" | "unsupported" {
   return adapter?.freshStart === "unsupported" ? "unsupported" : "supported";
