@@ -206,7 +206,8 @@ describe("rig usage cost: pda seats (pda L2c, J-3)", () => {
       window: { conversationId: "conv-1", since: "2026-10-23T09:00:01.000Z", asOf: "2026-10-23T09:00:04.000Z" },
       entries: { own: 4, ownWithoutCost: { declaredZeroPrice: 1, absent: 2 }, errorOrAborted: 1, other: { count: 3, costUsd: 4 }, unknownOrigin: { count: 1, costUsd: null } },
       tokens: { input: 400, output: 80 } });
-    expect(line).toContain("$0.75 model-priced estimate (pda assistant entries in runs this seat took part in, 4 own entries) for pda conversation conv-1");
+    expect(line).toContain("$0.75 model-priced estimate (pda assistant entries: 4 in runs this seat took part in; a run that also took another client's input counts in full) for pda conversation conv-1");
+    expect(line).not.toContain("own entries"); // a mixed run's entries are not all this seat's
     expect(line).toContain("1 entry at a declared zero price (not $0)");
     expect(line).toContain("2 entries without a cost");
     expect(line).toContain("1 error/aborted turn included");
@@ -221,8 +222,8 @@ describe("rig usage cost: pda seats (pda L2c, J-3)", () => {
     const { costLine } = await import("../src/commands/usage.js");
     const line = costLine({ seatSession: "research@r", runtime: "pda", status: "absent", reason: "pda's provider declares a zero price table, so its entries carry no cost (tokens are shown)",
       window: { conversationId: "conv-1" }, entries: { own: 2, ownWithoutCost: { declaredZeroPrice: 2, absent: 0 } }, tokens: { input: 200, output: 40 } });
-    expect(line).toContain("cost: not reported (pda's provider declares a zero price table");
-    expect(line).toContain("tokens in 200 / out 40");
+    // The whole line, so a fall-through to the generic absent wording (no conversation, no declared-zero note) fails.
+    expect(line).toBe("research@r  cost: not reported (pda's provider declares a zero price table, so its entries carry no cost (tokens are shown)) for pda conversation conv-1; 2 entries at a declared zero price (not $0); excludes compaction and tool usage  tokens in 200 / out 40");
     expect(line).not.toContain("$0.00");
   });
 

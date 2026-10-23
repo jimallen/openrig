@@ -10,7 +10,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../src/domain/pda-usage-store.js";
 import { computeCostView, PDA_COST_COVERAGE } from "../src/domain/usage-series.js";
-import { PDA_SEAT, PDA_NODE, pdaFact, pdaPayload, pdaUsageApp } from "./helpers/pda-usage-route.js";
+import { PDA_SEAT, PDA_NODE, PDA_OTHER_NODE, PDA_OTHER_SEAT, pdaFact, pdaPayload, pdaUsageApp } from "./helpers/pda-usage-route.js";
 
 const dbs: Database.Database[] = [];
 afterEach(() => { for (const d of dbs.splice(0)) d.close(); });
@@ -23,7 +23,10 @@ const NOW = "2026-10-23T12:00:00.000Z";
 
 describe("migration 116: pda_usage_entries", () => {
   it("is registered under its reserved name and creates the sibling table, not columns on Pi's", () => {
-    expect(ALL_MIGRATIONS.map((m) => m.name)).toContain("116_pda_usage_entries.sql");
+    const names = ALL_MIGRATIONS.map((m) => m.name);
+    expect(names).toContain("116_pda_usage_entries.sql");
+    // 115 (L2b) then 116 (L2c), adjacent and in number order, however the lanes were rebased.
+    expect(names.indexOf("116_pda_usage_entries.sql")).toBe(names.indexOf("115_node_pda_binding.sql") + 1);
     const d = createDb(); dbs.push(d);
     migrate(d, ALL_MIGRATIONS);
     expect(hasPdaUsageEntriesTable(d)).toBe(true);
@@ -139,6 +142,14 @@ describe("POST /api/activity/pda-usage", () => {
     expect(a.rows().map((r) => r.origin)).toEqual(["own", "other", "unknown"]);
   });
 
+  it("honours nodeId: the node's own seat is the one stored under, not the session name the body also carries", async () => {
+    const a = app();
+    await a.postPdaUsage(pdaPayload([pdaFact("e1")], { nodeId: PDA_OTHER_NODE }));
+    expect(a.rows()).toMatchObject([{ seat_session: PDA_OTHER_SEAT, node_id: PDA_OTHER_NODE }]);
+    await a.postPdaUsage(pdaPayload([pdaFact("e2")]));
+    expect(a.rows().map((r) => [r.entry_id, r.seat_session, r.node_id])).toEqual([["e1", PDA_OTHER_SEAT, PDA_OTHER_NODE], ["e2", PDA_SEAT, PDA_NODE]]);
+  });
+
   it("refuses a missing or wrong hook token, storing nothing", async () => {
     const a = app();
     expect((await a.postPdaUsage(pdaPayload([pdaFact("e1")]), "nope")).status).toBe(401);
@@ -213,6 +224,27 @@ describe("GET /api/activity/pda-usage and the cost view", () => {
       entries: { own: 4, ownWithoutCost: { declaredZeroPrice: 1, absent: 1 }, errorOrAborted: 1, other: { count: 1, costUsd: 4 }, unknownOrigin: { count: 1, costUsd: 8 } },
       tokens: { input: 400, output: 80, cacheRead: 20, cacheWrite: 4 },
     });
+  });
+
+  it("other-client and unknown-origin entries nobody priced have a NULL cost, never 0 (counts still shown)", async () => {
+    const a = app();
+    await a.postPdaUsage(pdaPayload([
+      pdaFact("e1", { priced: 0.25 }),
+      pdaFact("e2", { priced: 0, origin: "other" }), // declared zero price
+      pdaFact("e3", { costTotal: null, costBasis: "absent", origin: "unknown" }),
+    ]));
+    const cost = ((await (await a.getPdaUsage()).json()) as { cost: Record<string, any> }).cost;
+    expect(cost.entries.other).toEqual({ count: 1, costUsd: null });
+    expect(cost.entries.unknownOrigin).toEqual({ count: 1, costUsd: null });
+    expect(cost.costUsd).toBe(0.25);
+  });
+
+  it("GET honours nodeId the same way", async () => {
+    const a = app();
+    await a.postPdaUsage(pdaPayload([pdaFact("e1", { priced: 1 })], { nodeId: PDA_OTHER_NODE }));
+    const body = await (await a.getPdaUsage(`?sessionName=${encodeURIComponent(PDA_SEAT)}&nodeId=${PDA_OTHER_NODE}`)).json() as { sessionName: string; cost: { costUsd: number } };
+    expect(body).toMatchObject({ sessionName: PDA_OTHER_SEAT, cost: { costUsd: 1 } });
+    expect(((await (await a.getPdaUsage()).json()) as { cost: unknown }).cost).toBeNull(); // PDA_SEAT itself has none
   });
 
   it("the coverage says what the figure leaves out", () => {

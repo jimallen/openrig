@@ -12,6 +12,9 @@ import { derivePdaCost, type PdaUsageFact, type PdaUsagePayload } from "../../sr
 export const PDA_USAGE_TOKEN = "hook-token";
 export const PDA_SEAT = "research@rig";
 export const PDA_NODE = "node-pda-1";
+/** A second managed pda seat, reachable only by its node id. */
+export const PDA_OTHER_NODE = "node-pda-2";
+export const PDA_OTHER_SEAT = "other-pda@rig";
 
 /** One assistant entry's fact, built the way the runner builds it: the cost and basis come from `derivePdaCost`
  *  (J-5), never typed by hand, unless a test overrides them to build a fact the receiving side must refuse. */
@@ -48,8 +51,13 @@ export function pdaUsageApp(opts: { runtime?: string | null; setting?: boolean |
   if (!opts.db) migrate(db, ALL_MIGRATIONS);
   const runtime = opts.runtime === undefined ? "pda" : opts.runtime;
   let setting: boolean | "throws" | "absent" = opts.setting === undefined ? true : opts.setting;
-  const store = { resolveSession: (q: { sessionName?: string | null; runtime?: string | null }) => (q.sessionName === PDA_SEAT && runtime
-    ? { sessionId: "sid", rigId: "r", nodeId: PDA_NODE, sessionName: PDA_SEAT, runtime } : null) };
+  // Like the real registry: an explicit nodeId answers with that node's own session (so the same session name on
+  // two nodes never mixes them); otherwise the session name decides.
+  const store = { resolveSession: (q: { sessionName?: string | null; nodeId?: string | null; runtime?: string | null }) => {
+    if (!runtime) return null;
+    if (q.nodeId === PDA_OTHER_NODE) return { sessionId: "sid2", rigId: "r", nodeId: PDA_OTHER_NODE, sessionName: PDA_OTHER_SEAT, runtime };
+    return q.sessionName === PDA_SEAT ? { sessionId: "sid", rigId: "r", nodeId: PDA_NODE, sessionName: PDA_SEAT, runtime } : null;
+  } };
   const settingsStore = {
     resolveOne: (key: string) => {
       if (key !== "usage.pda_cost_facts") throw new Error(`unexpected setting ${key}`);

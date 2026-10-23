@@ -258,6 +258,9 @@ describe("J-5: the cost rule (Jim's decision) and the receiving side's pairing c
     expect(parsePdaUsageFact(fact({ costTotal: null, costBasis: "absent" }))).not.toBeNull();
     expect(parsePdaUsageFact(fact({ input: 0, output: 0, costTotal: 0, costBasis: "model_priced" }))).not.toBeNull();
   });
+  it("accepts the largest safe-integer token count (the boundary the safe-integer rule keeps)", () => {
+    expect(parsePdaUsageFact(fact({ input: Number.MAX_SAFE_INTEGER }))).not.toBeNull();
+  });
   it.each([
     ["a stored 0 for real tokens", { costTotal: 0, costBasis: "model_priced" as const }],
     ["a cost on a declared-zero fact", { costTotal: 0.01, costBasis: "declared_zero_price" as const }],
@@ -269,6 +272,8 @@ describe("J-5: the cost rule (Jim's decision) and the receiving side's pairing c
     ["an unknown origin", { origin: "inherited" as never }],
     ["a non-assistant kind", { kind: "tool_result" as never }],
     ["fractional tokens", { input: 1.5 }],
+    ["a token count past the safe-integer range", { output: 1e300 }],
+    ["a token count one past the largest safe integer", { cacheRead: Number.MAX_SAFE_INTEGER + 1 }],
     ["no entry id", { entryId: "" }],
   ])("refuses %s", (_label, over) => {
     expect(parsePdaUsageFact(fact(over as Partial<PdaUsageFact>))).toBeNull();

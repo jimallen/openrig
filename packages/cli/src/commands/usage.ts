@@ -111,7 +111,7 @@ function pdaCostLine(seat: CostPayload["seats"][number]): string {
     e.unknownOrigin?.count ? `${e.unknownOrigin.count} of unknown origin, not counted${e.unknownOrigin.costUsd !== null ? ` (${formatUsd(e.unknownOrigin.costUsd)})` : ""}` : "",
   ].filter(Boolean).join("; ");
   const head = seat.status === "reported"
-    ? `${formatUsd(Number(seat["costUsd"]))} model-priced estimate (pda assistant entries in runs this seat took part in, ${e.own ?? 0} own entries) for pda conversation ${w.conversationId}${w.since ? ` since ${w.since}` : ""}${w.asOf ? `, last ${w.asOf}` : ""}`
+    ? `${formatUsd(Number(seat["costUsd"]))} model-priced estimate (pda assistant entries: ${e.own ?? 0} in runs this seat took part in; a run that also took another client's input counts in full) for pda conversation ${w.conversationId}${w.since ? ` since ${w.since}` : ""}${w.asOf ? `, last ${w.asOf}` : ""}`
     : `cost: not reported (${seat["reason"]}) for pda conversation ${w.conversationId}`;
   return `${seat.seatSession}  ${head}${extras ? `; ${extras}` : ""}; excludes compaction and tool usage  ${tok({ input: t.input, output: t.output })}`;
 }

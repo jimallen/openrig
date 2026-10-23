@@ -234,7 +234,7 @@ const ERROR_CODES: ReadonlySet<string> = new Set<PdaRunnerErrorCode>([
 ]);
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
+const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
 /** Parse a sidecar. Null for anything that is not a complete, well-typed record: a reader that cannot
  *  parse the sidecar has no runner answer and must fall back, never guess. */
