@@ -18,6 +18,17 @@
 // A record is pending if it has an `enq` and no `ack` or `reject`. A torn last line (a crash mid-append) is
 // ignored. Compaction is an atomic rewrite: tmp file, fsync, rename over, fsync the directory.
 //
+// Request ids (N1): the sequence number inside every requestId is allocated from a high-water mark that is
+// persisted durably (<outbox>.seq, tmp + fsync + rename + fsync dir) BEFORE the `enq` that uses it, and starts at
+// max(persisted + 1, log high-water + 1). Neither the clock nor the contents of a compacted log is trusted, so a
+// launch id that is reused can never mint an id pda has already admitted (pda would silently dedupe the new
+// message as the old one).
+//
+// A failed append poisons the outbox (N2): a write that throws, or reports fewer bytes than it was given, may have
+// left torn bytes at the end of the file. Gluing the next record onto them would lose a record the caller was told
+// was durable, so every later enqueue/attempt throws until the outbox is reopened (open() rewrites the log and drops
+// the torn tail). Reads (snapshot) keep working.
+//
 // A1: a record is eligible for this outbox only when its {agent, baseUrl} equal the binding it was opened
 // for. Others are SET ASIDE: never posted, never dropped, and they do not block this binding's queue.
 //
@@ -38,7 +49,9 @@ export interface OutboxFs {
   readFile(path: string): string | null;
   /** Open for write (create/truncate, or append) with mode 0600. */
   open(path: string, mode: "write" | "append"): number;
-  write(fd: number, data: string): void;
+  /** Returns the number of bytes written when it knows it. A count below the data's byte length is a short
+   *  write, which the outbox treats as a failed write (it never trusts a partial record). */
+  write(fd: number, data: string): number | void;
   fsync(fd: number): void;
   close(fd: number): void;
   rename(from: string, to: string): void;
@@ -54,7 +67,7 @@ export const nodeOutboxFs: OutboxFs = {
     }
   },
   open: (path, mode) => fs.openSync(path, mode === "append" ? "a" : "w", 0o600),
-  write: (fd, data) => { fs.writeSync(fd, data); },
+  write: (fd, data) => fs.writeSync(fd, data),
   fsync: (fd) => { fs.fsyncSync(fd); },
   close: (fd) => { fs.closeSync(fd); },
   rename: (from, to) => { fs.renameSync(from, to); },
@@ -176,6 +189,14 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
 
+/** Thrown by every durable operation after an append failed. Reopen the outbox to repair it. */
+export class PdaOutboxPoisonedError extends Error {
+  constructor() {
+    super("pda outbox: an earlier append failed; reopen the outbox to repair the log");
+    this.name = "PdaOutboxPoisonedError";
+  }
+}
+
 export class PdaOutbox {
   private readonly paths: PdaOutboxOptions["paths"];
   private readonly binding: PdaBinding;
@@ -186,6 +207,9 @@ export class PdaOutbox {
   private entries: Map<string, Entry>;
   private readonly serverAttempts = new Map<string, number>();
   private nextSeq: number;
+  private poisonedBy = false;
+  /** True after an append failed: enqueue and attempt throw until the outbox is reopened. */
+  get poisoned(): boolean { return this.poisonedBy; }
   /** Acks the runner has not yet been told about are reported through `onAck`. */
   onAck?: (requestId: string, submissionId: string) => void;
 
@@ -207,7 +231,7 @@ export class PdaOutbox {
     outbox.io.mkdirPrivate(outbox.paths.seatRoot);
     outbox.entries = replay(outbox.io.readFile(outbox.paths.outboxPath));
     // A sequence number is never reused under one launch id, even after compaction dropped the acked record
-    // that used it: it starts above both the log's highest and the wall clock in milliseconds.
+    // that used it: it starts above both the persisted high-water mark and the log's highest. No clock.
     const prefix = `openrig/${outbox.nodeId}/${outbox.launchId}/`;
     let high = 0;
     for (const id of outbox.entries.keys()) {
@@ -215,7 +239,7 @@ export class PdaOutbox {
       const n = Number(id.slice(prefix.length));
       if (Number.isSafeInteger(n) && n > high) high = n;
     }
-    outbox.nextSeq = Math.max(high + 1, outbox.now().getTime());
+    outbox.nextSeq = Math.max(outbox.readPersistedSeq() + 1, high + 1, 1);
     outbox.compact();
     return outbox;
   }
@@ -240,23 +264,63 @@ export class PdaOutbox {
 
   // ── Durable appends ──
 
+  /** Write all of `data` or throw: a short write is a failure, never a smaller record. */
+  private writeAll(fd: number, data: string): void {
+    const n = this.io.write(fd, data);
+    if (typeof n === "number" && n !== Buffer.byteLength(data, "utf8")) {
+      throw new Error("pda outbox: short write");
+    }
+  }
+
   private append(record: PdaOutboxRecord): void {
-    const fd = this.io.open(this.paths.outboxPath, "append");
+    if (this.poisonedBy) throw new PdaOutboxPoisonedError();
     try {
-      this.io.write(fd, `${JSON.stringify(record)}\n`);
+      const fd = this.io.open(this.paths.outboxPath, "append");
+      try {
+        this.writeAll(fd, `${JSON.stringify(record)}\n`);
+        this.io.fsync(fd);
+      } finally {
+        this.io.close(fd);
+      }
+    } catch (err) {
+      this.poisonedBy = true;
+      throw err;
+    }
+  }
+
+  private get seqPath(): string { return `${this.paths.outboxPath}.seq`; }
+
+  private readPersistedSeq(): number {
+    const text = this.io.readFile(this.seqPath);
+    if (text === null || !/^[0-9]{1,15}\s*$/.test(text)) return 0;
+    return Number(text.trim());
+  }
+
+  /** Make `seq` the durable high-water mark: tmp + fsync + rename + fsync of the directory. */
+  private persistSeq(seq: number): void {
+    const tmp = `${this.seqPath}.tmp`;
+    const fd = this.io.open(tmp, "write");
+    try {
+      this.writeAll(fd, `${seq}\n`);
       this.io.fsync(fd);
     } finally {
       this.io.close(fd);
     }
+    this.io.rename(tmp, this.seqPath);
+    this.io.fsyncDir(nodePath.dirname(this.seqPath));
   }
 
   private stamp(): string { return this.now().toISOString(); }
 
   /** Record one message to send. Durable (fsync'd) before this returns and before any POST of it. */
   enqueue(content: string): PdaEnqueueResult {
-    const requestId = pdaRequestId(this.nodeId, this.launchId, this.nextSeq);
+    if (this.poisonedBy) throw new PdaOutboxPoisonedError();
+    const seq = this.nextSeq;
+    const requestId = pdaRequestId(this.nodeId, this.launchId, seq);
     if (!pdaBodyFits(serializePdaMessage({ content, requestId }))) return { ok: false, reason: "too_large" };
-    this.nextSeq += 1;
+    // The high-water mark is durable BEFORE the enq that uses it: a crash in between burns a number, never reuses one.
+    this.persistSeq(seq);
+    this.nextSeq = seq + 1;
     const enq: EnqRecord = { op: "enq", requestId, agent: this.binding.agent, baseUrl: this.binding.baseUrl, content, at: this.stamp() };
     this.append(enq);
     this.entries.set(requestId, { enq, acked: false });
@@ -267,6 +331,7 @@ export class PdaOutbox {
 
   /** One delivery attempt for the FIFO head of this binding's pending records. */
   async attempt(client: PdaClient): Promise<PdaAttemptOutcome> {
+    if (this.poisonedBy) throw new PdaOutboxPoisonedError();
     if (client.binding.agent !== this.binding.agent || client.binding.baseUrl !== this.binding.baseUrl) {
       throw new RangeError("pda outbox: the client is bound to a different pda agent than this outbox");
     }
@@ -376,7 +441,8 @@ export class PdaOutbox {
   }
 
   /** A reconnect that follows a pda restart makes a held head eligible once more, in memory only: no record
-   *  is written, so a runner restart reads the hold again. Returns whether a head was un-held. */
+   *  is written, so a runner restart reads the hold again, until the next compaction rewrites the log without it
+   *  (benign: the head was delivered first, or held again by a new record). Returns whether a head was un-held. */
   retryHeldAfterReconnect(): boolean {
     const held = this.eligible().find((e) => e.hold !== undefined);
     if (!held) return false;
@@ -410,7 +476,7 @@ export class PdaOutbox {
     const tmp = `${outboxPath}.tmp`;
     const fd = this.io.open(tmp, "write");
     try {
-      this.io.write(fd, lines.map((l) => `${l}\n`).join(""));
+      this.writeAll(fd, lines.map((l) => `${l}\n`).join(""));
       this.io.fsync(fd);
     } finally {
       this.io.close(fd);
@@ -423,8 +489,9 @@ export class PdaOutbox {
   private copyRejected(rejectedPath: string): void {
     const rejected = [...this.entries.values()].filter((e) => e.reject !== undefined);
     if (rejected.length === 0) return;
+    const existing = this.io.readFile(rejectedPath) ?? "";
     const already = new Set<string>();
-    for (const line of (this.io.readFile(rejectedPath) ?? "").split("\n")) {
+    for (const line of existing.split("\n")) {
       if (line.length === 0) continue;
       try {
         const id = (JSON.parse(line) as { requestId?: unknown }).requestId;
@@ -435,8 +502,10 @@ export class PdaOutbox {
     if (fresh.length === 0) return;
     const fd = this.io.open(rejectedPath, "append");
     try {
+      // A torn tail from an interrupted earlier copy must not swallow the first new record: start on a fresh line.
+      if (existing.length > 0 && !existing.endsWith("\n")) this.writeAll(fd, "\n");
       for (const e of fresh) {
-        this.io.write(fd, `${JSON.stringify({
+        this.writeAll(fd, `${JSON.stringify({
           requestId: e.enq.requestId, agent: e.enq.agent, baseUrl: e.enq.baseUrl, content: e.enq.content,
           status: e.reject?.status, rejectedAt: e.reject?.at, at: e.enq.at,
         })}\n`);

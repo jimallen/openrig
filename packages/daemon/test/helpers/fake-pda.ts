@@ -22,8 +22,8 @@ export type FakePdaPostBehaviour =
   | { action: "admit_then_drop" }
   /** Reply with `status` (and an optional JSON body) WITHOUT admitting. */
   | { action: "status"; status: number; body?: unknown }
-  /** 302 to another path on this server; the target must never be requested. */
-  | { action: "redirect"; to: string };
+  /** 3xx (default 302) to another path on this server; the target must never be requested. */
+  | { action: "redirect"; to: string; status?: number };
 
 export interface FakePdaRequest { method: string; path: string; url: string }
 
@@ -150,7 +150,7 @@ export async function startFakePda(options: FakePdaOptions): Promise<FakePda> {
         if (typeof parsed.content !== "string" || requestId === null) return json(res, 400, { error: "content and requestId required" });
         const behaviour = queue.shift() ?? { action: "admit" as const };
         if (behaviour.action === "status") return json(res, behaviour.status, behaviour.body ?? { error: `scripted ${behaviour.status}` });
-        if (behaviour.action === "redirect") { res.writeHead(302, { Location: behaviour.to }); return res.end(); }
+        if (behaviour.action === "redirect") { res.writeHead(behaviour.status ?? 302, { Location: behaviour.to }); return res.end(); }
         const admitted = admit(agent, requestId, parsed.content);   // ADMIT first ...
         if (behaviour.action === "admit_then_drop") { req.socket.destroy(); return; }   // ... then drop
         return json(res, 202, { submissionId: admitted.submissionId });

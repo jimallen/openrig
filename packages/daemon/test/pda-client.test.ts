@@ -119,6 +119,13 @@ describe("pda-client: loopback only, no redirects (T12)", () => {
     }
   });
 
+  it.each([300, 301, 302, 303, 304, 305, 307, 308, 399])("N3: a %i redirect on the one write is a protocol failure and its target is never requested", async (status) => {
+    const { fake, client } = await rig();
+    fake.script({ action: "redirect", to: "/agents/research/abort", status });
+    expect(await client.postMessage(msg())).toEqual({ ok: false, kind: "protocol", status });
+    expect(fake.requests.map((q) => `${q.method} ${q.path}`)).toEqual(["POST /agents/research/messages"]);
+  });
+
   it("a redirect is a protocol failure and its target is never requested", async () => {
     const { fake, client } = await rig();
     fake.script({ action: "redirect", to: "/agents/research/abort" });
@@ -197,7 +204,7 @@ describe("pda-client: errors are codes, never messages (T10)", () => {
     const r = await client.postMessage(msg());
     expect(r).toMatchObject({ ok: false, kind: "http", status: 500 });
     const detail = (r as { detail?: string }).detail ?? "";
-    expect(detail).toContain("[redacted]");
+    expect(detail).toContain("[redacted:pda-token]");
     expect(detail).not.toContain(CANARY);
     expect(detail).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e]/);
     expect(detail.length).toBeLessThanOrEqual(200);
@@ -205,7 +212,7 @@ describe("pda-client: errors are codes, never messages (T10)", () => {
 
   it("a token straddling the 200-character cap is redacted before the cut, so no prefix of it survives", async () => {
     const { fake, client } = await rig();
-    fake.script({ action: "status", status: 500, body: { error: `${"p".repeat(190)}${CANARY}` } });
+    fake.script({ action: "status", status: 500, body: { error: `${"p".repeat(180)}${CANARY}` } });
     const r = await client.postMessage(msg());
     const detail = (r as { detail?: string }).detail ?? "";
     expect(detail.length).toBe(200);
@@ -218,7 +225,26 @@ describe("pda-client: errors are codes, never messages (T10)", () => {
     const client = createPdaClient({ binding: { agent: "research", baseUrl: fake.baseUrl }, readToken: okToken(), redact: [HOOK] });
     fake.script({ action: "status", status: 500, body: { error: `leaked ${HOOK}` } });
     const r = await client.postMessage(msg());
-    expect((r as { detail?: string }).detail).toBe("leaked [redacted]");
+    expect((r as { detail?: string }).detail).toBe("leaked [redacted:secret]");
+  });
+
+  it("a named extra secret gets its own marker, and the bearer keeps the design's [redacted:pda-token]", async () => {
+    fake = await startFakePda({ token: CANARY });
+    const HOOK = "hook-secret-value-123456";
+    const client = createPdaClient({
+      binding: { agent: "research", baseUrl: fake.baseUrl }, readToken: okToken(),
+      redact: [{ value: HOOK, marker: "[redacted:openrig-hook-token]" }],
+    });
+    fake.script({ action: "status", status: 500, body: { error: `${HOOK} then ${CANARY}` } });
+    expect(((await client.postMessage(msg())) as { detail?: string }).detail).toBe("[redacted:openrig-hook-token] then [redacted:pda-token]");
+  });
+
+  it("N3: every occurrence of the bearer inside the cap is redacted, not just the first", async () => {
+    const { fake, client } = await rig();
+    fake.script({ action: "status", status: 500, body: { error: `${CANARY} and again ${CANARY} and a third ${CANARY}` } });
+    const detail = ((await client.postMessage(msg())) as { detail?: string }).detail ?? "";
+    expect(detail).toBe("[redacted:pda-token] and again [redacted:pda-token] and a third [redacted:pda-token]");
+    expect(detail).not.toContain(CANARY.slice(0, 8));
   });
 
   it("no detail when pda's body is not JSON, has no string `error`, or the status is bare", async () => {
@@ -320,6 +346,25 @@ describe("pda-client: T11 the token file", () => {
   it("a refusal result holds no file content", () => {
     const secretish = "S3CRET-NOT-A-TOKEN-because-of-the-bang!";
     expect(JSON.stringify(readPdaTokenFile(tokenFile(secretish)))).not.toContain("S3CRET");
+  });
+});
+
+describe("N3: the token is format-checked inside send(), whatever the source", () => {
+  it.each([["an LF inside", `${CANARY}\ntail`], ["too short", "short"], ["a space", `${CANARY} x`]])("a custom source returning a value with %s is a token failure, not an outage, and nothing is sent", async (_n, bad) => {
+    fake = await startFakePda({ token: CANARY });
+    const client = createPdaClient({ binding: { agent: "research", baseUrl: fake.baseUrl }, readToken: () => ({ ok: true, token: bad }) });
+    const results = [await client.getAgent(), await client.postMessage(msg()), await client.getTranscript(1), await client.openEvents(0)];
+    for (const r of results) expect(r).toEqual({ ok: false, kind: "token", code: "pda_token_format", problem: "format" });
+    expect(fake.requests).toEqual([]);
+    expect(JSON.stringify(results)).not.toContain(CANARY);
+  });
+
+  it("a source that throws is a token failure too (the exception text is discarded)", async () => {
+    fake = await startFakePda({ token: CANARY });
+    const client = createPdaClient({ binding: { agent: "research", baseUrl: fake.baseUrl }, readToken: () => { throw new Error(`boom ${CANARY}`); } });
+    const r = await client.getAgent();
+    expect(r).toEqual({ ok: false, kind: "token", code: "pda_token_format", problem: "unreadable" });
+    expect(JSON.stringify(r)).not.toContain(CANARY);
   });
 });
 

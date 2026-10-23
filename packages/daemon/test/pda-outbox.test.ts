@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PdaOutbox, nodeOutboxFs, PDA_OUTBOX_COMPACT_THRESHOLD, type OutboxFs, type PdaAttemptOutcome } from "../src/adapters/pda-outbox.js";
+import { PdaOutbox, PdaOutboxPoisonedError, nodeOutboxFs, PDA_OUTBOX_COMPACT_THRESHOLD, type OutboxFs, type PdaAttemptOutcome } from "../src/adapters/pda-outbox.js";
 import { createPdaClient, serializePdaMessage, PDA_MAX_BODY_BYTES, type PdaClient } from "../src/adapters/pda-client.js";
 import type { PdaOutboxRecord } from "../src/adapters/pda-runner-protocol.js";
 import { startFakePda, nonAllowlisted, type FakePda } from "./helpers/fake-pda.js";
@@ -57,7 +57,11 @@ const enqOk = (o: PdaOutbox, content: string): string => {
   return r.requestId;
 };
 /** An fs that records every operation as `op:file` and throws Crash when `crashAt(op, file)` says so. */
-function recordingFs(ops: string[], crashAt: (op: string, file: string, data?: string) => boolean = () => false): OutboxFs {
+type WriteFault = "throw_partial" | "short";
+function recordingFs(
+  ops: string[], crashAt: (op: string, file: string, data?: string) => boolean = () => false,
+  writeFault: (file: string, data: string) => WriteFault | null = () => null,
+): OutboxFs {
   const names = new Map<number, string>();
   const base = (p: string) => path.basename(p);
   const step = (op: string, file: string, data?: string) => { ops.push(`${op}:${file}`); if (crashAt(op, file, data)) throw new Crash(`${op}:${file}`); };
@@ -65,7 +69,15 @@ function recordingFs(ops: string[], crashAt: (op: string, file: string, data?: s
     mkdirPrivate: (d) => nodeOutboxFs.mkdirPrivate(d),
     readFile: (p) => nodeOutboxFs.readFile(p),
     open: (p, mode) => { step("open", `${base(p)}:${mode}`); const fd = nodeOutboxFs.open(p, mode); names.set(fd, base(p)); return fd; },
-    write: (fd, data) => { step("write", names.get(fd) ?? "?", data); nodeOutboxFs.write(fd, data); },
+    write: (fd, data) => {
+      const file = names.get(fd) ?? "?";
+      step("write", file, data);
+      const fault = writeFault(file, data);
+      // Both faults put the first 20 bytes of the line on disk: that is the torn tail the next append would glue onto.
+      if (fault === "throw_partial") { nodeOutboxFs.write(fd, data.slice(0, 20)); throw new Error("EIO injected"); }
+      if (fault === "short") return nodeOutboxFs.write(fd, data.slice(0, Math.min(20, data.length - 1))); // fewer bytes than given
+      return nodeOutboxFs.write(fd, data);
+    },
     fsync: (fd) => { step("fsync", names.get(fd) ?? "?"); nodeOutboxFs.fsync(fd); },
     close: (fd) => { step("close", names.get(fd) ?? "?"); nodeOutboxFs.close(fd); },
     rename: (a, b) => { step("rename", `${base(a)}->${base(b)}`); nodeOutboxFs.rename(a, b); },
@@ -260,14 +272,75 @@ describe("request ids", () => {
     expect(a).toMatch(/^openrig\/node-1\/launch-1\/\d+$/);
     expect(Number(b.split("/").at(-1))).toBe(Number(a.split("/").at(-1)) + 1);
     await first.drain(clientFor(fake)); // acked
-    clock.t = T0 + 5000;
     open(fake); // this open compacts the acked records away ...
-    const second = open(fake); // ... so this one sees an empty log: nothing remembers a or b
+    const second = open(fake); // ... so this one sees an empty log: nothing in it remembers a or b
     const c = enqOk(second, "c");
     expect([a, b]).not.toContain(c);
     await second.drain(clientFor(fake));
     expect(fake.entries("research").map((e) => e.content)).toEqual(["a", "b", "c"]);
-    clock.t = T0;
+  });
+
+  async function sendAndAck(fake: FakePda, o: PdaOutbox, contents: string[]) {
+    for (const c of contents) enqOk(o, c);
+    expect(await o.drain(clientFor(fake))).toBe("empty");
+  }
+
+  it("N1 (reviewer's a2): a clock 1 ms BACKWARDS and two reopens under the same launch id never dedupes a new message as an old one", async () => {
+    const fake = await newFake();
+    await sendAndAck(fake, open(fake), ["old-0", "old-1", "old-2"]);
+    clock.t = T0 - 1;
+    open(fake); // compacts the three acked records away
+    const third = open(fake);
+    await sendAndAck(fake, third, ["NEW-A", "NEW-B"]);
+    expect(fake.entries("research").map((e) => e.content)).toEqual(["old-0", "old-1", "old-2", "NEW-A", "NEW-B"]);
+    expect(new Set(fake.entries("research").map((e) => e.requestId)).size).toBe(5);
+  });
+
+  it("N1 (reviewer's b2): a 65-message burst inside one millisecond, runtime compaction, then a restart: the next message is delivered", async () => {
+    const fake = await newFake();
+    const burst = open(fake);
+    await sendAndAck(fake, burst, Array.from({ length: 65 }, (_, i) => `burst-${i}`));
+    expect(logRecords()).toEqual([]); // runtime compaction emptied the log: nothing remembers any id
+    clock.t = T0 + 10;
+    const restarted = open(fake);
+    await sendAndAck(fake, restarted, ["NEW-X"]);
+    const entries = fake.entries("research");
+    expect(entries).toHaveLength(66);
+    expect(entries.at(-1)?.content).toBe("NEW-X");
+    expect(new Set(entries.map((x) => x.requestId)).size).toBe(66);
+  });
+
+  it("N1: the next sequence is max(persisted + 1, log high-water + 1), from either source, and a junk seq file counts as 0", () => {
+    seed([rec.enq("openrig/node-1/launch-1/5", "pending five", "research", "http://127.0.0.1:1")]);
+    const o = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "node-1", launchId: "launch-1", now: () => new Date(T0) });
+    expect(enqOk(o, "x")).toBe("openrig/node-1/launch-1/6"); // no seq file: the log's high-water decides
+    fs.writeFileSync(`${paths().outboxPath}.seq`, "40\n");
+    const o2 = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "node-1", launchId: "launch-1", now: () => new Date(T0) });
+    expect(enqOk(o2, "y")).toBe("openrig/node-1/launch-1/41"); // persisted 40 beats the log's 6
+    fs.writeFileSync(`${paths().outboxPath}.seq`, "not a number");
+    const o3 = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "node-1", launchId: "launch-1", now: () => new Date(T0) });
+    expect(enqOk(o3, "z")).toBe("openrig/node-1/launch-1/42"); // junk = 0; the log (now holding 41) decides
+  });
+
+  it("N1: each enqueue makes its sequence durable (tmp, fsync, rename, fsync dir) BEFORE the enq that uses it is appended", async () => {
+    const fake = await newFake();
+    const ops: string[] = [];
+    const o = open(fake, { fs: recordingFs(ops) });
+    ops.length = 0;
+    const id = enqOk(o, "ordered");
+    expect(ops).toEqual([
+      "open:outbox.log.seq.tmp:write", "write:outbox.log.seq.tmp", "fsync:outbox.log.seq.tmp", "close:outbox.log.seq.tmp",
+      "rename:outbox.log.seq.tmp->outbox.log.seq", "fsyncDir:seat",
+      "open:outbox.log:append", "write:outbox.log", "fsync:outbox.log", "close:outbox.log",
+    ]);
+    expect(fs.readFileSync(`${paths().outboxPath}.seq`, "utf8").trim()).toBe(id.split("/").at(-1));
+    expect(fs.statSync(`${paths().outboxPath}.seq`).mode & 0o777).toBe(0o600);
+  });
+
+  it("N1: a too-large message burns no sequence and writes no seq file", () => {
+    const o = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:8150" }, nodeId: "n", launchId: "l", now: () => new Date(T0) });
+    expect(o.enqueue("a".repeat(PDA_MAX_BODY_BYTES)).ok).toBe(false);
+    expect(fs.existsSync(`${paths().outboxPath}.seq`)).toBe(false);
   });
 
   it("onAck reports the requestId and the submissionId pda returned", async () => {
@@ -512,6 +585,91 @@ describe("status classification: every status is derived, none is a constant", (
     const o = open(fake);
     expect(await o.attempt(clientFor(fake))).toEqual({ kind: "rejected", requestId: "openrig/node-1/old/1", status: 413 });
     expect(fake.requests).toEqual([]);
+  });
+});
+
+describe("N2: a failed or short append poisons the outbox, so a torn tail can never swallow a later acknowledged enqueue", () => {
+  const fault = (which: WriteFault) => (file: string, data: string): WriteFault | null =>
+    (file === "outbox.log" && data.includes('"content":"B"') ? which : null);
+
+  async function acknowledgedThenFailed(which: WriteFault) {
+    const fake = await newFake();
+    const ops: string[] = [];
+    const o = open(fake, { fs: recordingFs(ops, () => false, fault(which)) });
+    const a = enqOk(o, "A");
+    expect(() => o.enqueue("B")).toThrow(which === "short" ? /short write/ : /EIO injected/);
+    return { fake, o, a };
+  }
+
+  it.each(["throw_partial", "short"] as const)("%s: later enqueues and attempts are refused, the torn bytes stay un-glued, and A survives a reopen", async (which) => {
+    const { fake, o, a } = await acknowledgedThenFailed(which);
+    expect(o.poisoned).toBe(true);
+    const seqBefore = fs.readFileSync(`${paths().outboxPath}.seq`, "utf8");
+    expect(() => o.enqueue("C")).toThrow(PdaOutboxPoisonedError);
+    expect(fs.readFileSync(`${paths().outboxPath}.seq`, "utf8")).toBe(seqBefore); // refused before it burned a number
+    await expect(o.attempt(clientFor(fake))).rejects.toBeInstanceOf(PdaOutboxPoisonedError);
+    expect(fake.requests).toEqual([]);
+    expect(readLog()).not.toContain('"content":"C"');
+    // repair: reopening rewrites the log and drops the torn tail; A (acknowledged) is intact, B (which threw) is not
+    const repaired = open(fake);
+    expect(repaired.poisoned).toBe(false);
+    expect(repaired.snapshot().pending).toBe(1);
+    const d = enqOk(repaired, "D");
+    expect(open(fake).snapshot().pending).toBe(2);
+    await open(fake).drain(clientFor(fake));
+    expect(fake.entries("research").map((x) => [x.requestId === a, x.content])).toEqual([[true, "A"], [false, "D"]]);
+    expect(d).not.toBe(a);
+  });
+
+  it("a short write of the ack record poisons too: nothing more is attempted, and the replay after reopen is deduped by pda", async () => {
+    const fake = await newFake();
+    const o = open(fake, { fs: recordingFs([], () => false, (file, data) => (file === "outbox.log" && data.includes('"op":"ack"') ? "short" : null)) });
+    const id = enqOk(o, "A");
+    await expect(o.drain(clientFor(fake))).rejects.toThrow(/short write/);
+    expect(o.poisoned).toBe(true);
+    const restarted = open(fake);
+    expect(restarted.snapshot().pending).toBe(1);
+    expect(await restarted.drain(clientFor(fake))).toBe("empty");
+    expect(fake.entries("research")).toHaveLength(1);
+    expect(fake.postsByRequestId.get(id)).toBe(2);
+  });
+
+  it("a failed open() of the log for append poisons as well", () => {
+    const fx = recordingFs([], (op, file) => op === "open" && file === "outbox.log:append");
+    const o = PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "n", launchId: "l", fs: fx, now: () => new Date(T0) });
+    expect(() => o.enqueue("A")).toThrow(Crash);
+    expect(o.poisoned).toBe(true);
+  });
+
+  it("a short write of the compaction tmp file aborts BEFORE the rename: the old log is byte-intact", () => {
+    const text = seed([rec.enq("p1", "pending"), rec.enq("a1"), rec.ack("a1")]);
+    const ops: string[] = [];
+    expect(() => PdaOutbox.open({
+      paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "n", launchId: "l", now: () => new Date(T0),
+      fs: recordingFs(ops, () => false, (file) => (file === "outbox.log.tmp" ? "short" : null)),
+    })).toThrow(/short write/);
+    expect(fs.readFileSync(paths().outboxPath, "utf8")).toBe(text);
+    expect(ops.some((o) => o.startsWith("rename:"))).toBe(false);
+  });
+
+  it("a short write of the seq file burns nothing: no enq is appended and the old high-water stands", () => {
+    const o = PdaOutbox.open({
+      paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "n", launchId: "l", now: () => new Date(T0),
+      fs: recordingFs([], () => false, (file) => (file === "outbox.log.seq.tmp" ? "short" : null)),
+    });
+    expect(() => o.enqueue("A")).toThrow(/short write/);
+    expect(readLog()).toBe("");
+    expect(fs.existsSync(`${paths().outboxPath}.seq`)).toBe(false);
+    expect(o.poisoned).toBe(false); // nothing torn the log
+  });
+
+  it("rejected.log: a torn tail left by an interrupted copy does not swallow the next copied record", () => {
+    seed([rec.enq("r1", "bad one", "research", "http://127.0.0.1:1"), rec.reject("r1")]);
+    fs.writeFileSync(paths().rejectedPath, '{"requestId":"torn-by-a-crash', { mode: 0o600 });
+    PdaOutbox.open({ paths: paths(), binding: { agent: "research", baseUrl: "http://127.0.0.1:1" }, nodeId: "n", launchId: "l", now: () => new Date(T0) });
+    const lines = fs.readFileSync(paths().rejectedPath, "utf8").split("\n").filter(Boolean);
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1]!)).toMatchObject({ requestId: "r1", content: "bad one" });
   });
 });
 

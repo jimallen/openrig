@@ -72,7 +72,7 @@ export interface PdaTokenFileOptions {
   expectedUid?: number;
 }
 
-function tokenFailure(problem: PdaTokenProblem): PdaTokenReadResult {
+function tokenFailure(problem: PdaTokenProblem): Extract<PdaTokenReadResult, { ok: false }> {
   return { ok: false, kind: "token", code: "pda_token_format", problem };
 }
 
@@ -139,8 +139,10 @@ export interface PdaClientOptions {
   readToken: () => PdaTokenReadResult;
   /** Per-request budget for everything but the event stream's lifetime. Default 10 s. */
   timeoutMs?: number;
-  /** Extra exact values to redact from pda's error text (for example the runner's activity hook token). */
-  redact?: readonly string[];
+  /** Extra exact values to redact from pda's error text (for example the runner's activity hook token). A bare
+   *  string is replaced by `[redacted:secret]`; pass `{value, marker}` to name it, for example
+   *  `{value: hookToken, marker: "[redacted:openrig-hook-token]"}`. The bearer is always `[redacted:pda-token]`. */
+  redact?: ReadonlyArray<string | { value: string; marker: string }>;
   /** Test seam; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -148,6 +150,8 @@ export interface PdaClientOptions {
 const ERROR_BODY_CAP = 64 * 1024;
 const SUCCESS_BODY_CAP = 16 * 1024 * 1024;
 const DETAIL_CAP = 200;
+/** What replaces the bearer in any text this client returns (design: Token handling). */
+export const PDA_TOKEN_MARKER = "[redacted:pda-token]";
 export const PDA_TRANSCRIPT_MAX_LIMIT = 500;
 
 /** A chunk read past `cap` bytes is a protocol failure, not a silent truncation. */
@@ -180,7 +184,10 @@ export function createPdaClient(options: PdaClientOptions): PdaClient {
   const doFetch = options.fetchImpl ?? globalThis.fetch;
   let token: string | null = null;
 
-  const secrets = (): string[] => [...(token ? [token] : []), ...(options.redact ?? [])].filter((s) => s.length > 0);
+  const secrets = (): Array<{ value: string; marker: string }> => [
+    ...(token ? [{ value: token, marker: PDA_TOKEN_MARKER }] : []),
+    ...(options.redact ?? []).map((r) => (typeof r === "string" ? { value: r, marker: "[redacted:secret]" } : r)),
+  ].filter((s) => s.value.length > 0);
 
   /** pda's JSON `error` string made safe for a pane or a sidecar: control sequences stripped first, then the
    *  exact secret values replaced (so a stripped sequence cannot assemble one), then capped. */
@@ -191,7 +198,7 @@ export function createPdaClient(options: PdaClientOptions): PdaClient {
     const raw = (parsed as Record<string, unknown>).error;
     if (typeof raw !== "string") return undefined;
     let text = sanitizeForPane(raw);
-    for (const secret of secrets()) text = text.split(secret).join("[redacted]");
+    for (const secret of secrets()) text = text.split(secret.value).join(secret.marker);
     text = text.slice(0, DETAIL_CAP);
     return text.length > 0 ? text : undefined;
   }
@@ -205,8 +212,12 @@ export function createPdaClient(options: PdaClientOptions): PdaClient {
   ): Promise<Raw> {
     for (let reread = 0; reread < 2; reread++) {
       if (opts.bearer && (token === null || reread > 0)) {
-        const read = options.readToken();
+        // The source may be custom: it can throw, and it may not have format-checked. Either is a token failure,
+        // never an outage (an LF in a header value would make fetch throw, and read as "unreachable" forever).
+        let read: PdaTokenReadResult;
+        try { read = options.readToken(); } catch { return tokenFailure("unreadable"); }
         if (!read.ok) return read;
+        if (!isPdaTokenFormat(read.token)) return tokenFailure("format");
         token = read.token;
       }
       const controller = new AbortController();
