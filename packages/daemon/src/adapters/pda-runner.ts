@@ -268,7 +268,9 @@ export class PdaRunner {
   private exitIfPoisoned(err: unknown): boolean {
     if (!(err instanceof PdaOutboxPoisonedError) && !this.deps.outbox.poisoned) return false;
     if (!this.finished) {
-      this.pane.line(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_poisoned: the message log could not be written; the last message may not have been saved. Restart the seat to repair the log`);
+      // Outcome UNKNOWN: an append can fail after its line was fully written (at fsync), and the message is then
+      // delivered after the log is reopened. So never say it was dropped, and never re-enqueue it automatically.
+      this.pane.line(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_poisoned: the message log could not be written. The last message you sent may or may not have been queued; it is NOT being sent again automatically. Restart the seat to repair the log, then check before re-sending`);
       this.pane.endBatch();
       this.finish(5);
     }
@@ -930,6 +932,16 @@ export function createActivityPoster(
   };
 }
 
+/** The sidecar of a runner that never started: not ready, exited with `code`. Best effort. */
+function writeExitedSidecar(args: PdaRunnerArgs, code: number): void {
+  const at = new Date().toISOString();
+  const state: PdaRunnerState = {
+    ready: false, launchId: args.launchId, updatedAt: at, aliveAt: at, agent: args.binding.agent, baseUrl: args.binding.baseUrl,
+    connected: false, busy: false, outboxPending: 0, exited: { code, at },
+  };
+  try { nodeRunnerFs.writeAtomic(pdaSeatPaths(args.stateRoot, args.sessionName).runnerStatePath, JSON.stringify(state)); } catch { /* best-effort */ }
+}
+
 /** What the client is told to redact from pda's error text besides the bearer (which it names itself). */
 export function pdaClientRedactions(hookToken: string): Array<{ value: string; marker: string }> {
   return hookToken.length > 0 ? [{ value: hookToken, marker: HOOK_TOKEN_MARKER }] : [];
@@ -969,7 +981,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   ];
 
   const client = createPdaClient({ binding: args.binding, readToken: trackedSource, redact: pdaClientRedactions(hookToken) });
-  const outbox = PdaOutbox.open({ paths, binding: args.binding, nodeId, launchId: args.launchId });
+  let outbox: PdaOutbox;
+  try {
+    outbox = PdaOutbox.open({ paths, binding: args.binding, nodeId, launchId: args.launchId });
+  } catch (err) {
+    // The log (or its request-id counter) cannot be opened: report a code, record the exit, and stop. The message
+    // of this error can hold a path and a file's content, so only a code is printed.
+    process.stdout.write(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_unopenable (${fatalLabel(err)}): the message log or its request-id counter could not be opened; fix or move it while the seat is down\n`);
+    writeExitedSidecar(args, 5);
+    process.stdout.write(`${PDA_RUNNER_EXIT_MARKER} code=5\n`);
+    process.exitCode = 5;
+    return;
+  }
   const runner = new PdaRunner({
     args, nodeId, generation, client, outbox,
     readToken: trackedSource, secrets,

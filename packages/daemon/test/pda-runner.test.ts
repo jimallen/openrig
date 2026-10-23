@@ -1044,6 +1044,10 @@ describe("pda-runner: a poisoned outbox ends the runner with a code", () => {
     expect(await rig.done).toBe(5);
     expect(rig.pane()).toContain(POISON_LINE);
     expect(rig.pane()).toContain("[pda-runner] EXITED code=5");
+    // Outcome unknown: it must not claim the message was dropped, and says it is not re-sent by the runner.
+    expect(rig.pane()).toContain("may or may not have been queued");
+    expect(rig.pane()).toContain("NOT being sent again automatically");
+    expect(rig.pane()).not.toMatch(/was NOT saved|not been saved|dropped|lost/);
     expect(rig.pane()).not.toContain("pda_outbox_write_failed"); // the generic failure is not what is said
     for (const surface of [rig.pane(), rig.sidecarRaw()]) { expect(surface).not.toContain(BEARER); expect(surface).not.toContain("ENOSPC"); }
     expect(rig.sidecar()).toMatchObject({ ready: false, exited: { code: 5 } });
@@ -1314,6 +1318,29 @@ describe("pda-runner: the real process (node --import tsx)", () => {
       await p.exit;
       await new Promise<void>((resolve) => daemon.close(() => resolve()));
     }
+  }, 60000);
+
+  it("a message log that cannot be opened at startup: exit 5, a code only (no path, no content), an exited sidecar, and pda is never contacted", async () => {
+    const rig = await makeRig({ realStreams: true });
+    rigs.push(rig);
+    fs.mkdirSync(path.join(rig.dir, "elsewhere"));
+    const stateRoot = path.join(rig.dir, "fresh-state");
+    const seatRoot = path.join(stateRoot, rig.args.sessionName);
+    fs.mkdirSync(seatRoot, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(seatRoot, "outbox.log")); // a directory where the log should be: reading it fails
+    const argv = buildPdaRunnerArgv({
+      sessionName: rig.args.sessionName, stateRoot, launchId: "proc-launch-4",
+      binding: { agent: "research", baseUrl: rig.args.baseUrl }, tokenFile: rig.args.tokenFile,
+    });
+    const p = runProcess(argv);
+    expect(await p.exit).toBe(5);
+    const out = p.out() + p.err();
+    expect(out).toContain("[pda-runner] ERROR pda_outbox_unopenable (EISDIR)");
+    expect(out).toContain("[pda-runner] EXITED code=5");
+    expect(out).not.toContain(seatRoot); // no path
+    expect(out).not.toContain(BEARER);
+    expect(JSON.parse(fs.readFileSync(path.join(seatRoot, "runner-state.json"), "utf8"))).toMatchObject({ ready: false, launchId: "proc-launch-4", exited: { code: 5 } });
+    expect(rig.fake.requests).toEqual([]);
   }, 60000);
 
   it("a token file with an interior LF: exit 4, a code on the pane, the canary in no output", async () => {
