@@ -199,6 +199,45 @@ describe("rig usage cost: Pi seats (OPR.0.7.0.2)", () => {
   });
 });
 
+describe("rig usage cost: pda seats (pda L2c, J-3)", () => {
+  it("labels the figure as pda's, over runs the seat took part in, and names what is not in it", async () => {
+    const { costLine } = await import("../src/commands/usage.js");
+    const line = costLine({ seatSession: "research@r", runtime: "pda", status: "reported", costUsd: 0.75,
+      window: { conversationId: "conv-1", since: "2026-10-23T09:00:01.000Z", asOf: "2026-10-23T09:00:04.000Z" },
+      entries: { own: 4, ownWithoutCost: { declaredZeroPrice: 1, absent: 2 }, errorOrAborted: 1, other: { count: 3, costUsd: 4 }, unknownOrigin: { count: 1, costUsd: null } },
+      tokens: { input: 400, output: 80 } });
+    expect(line).toContain("$0.75 model-priced estimate (pda assistant entries: 4 in runs this seat took part in; a run that also took another client's input counts in full) for pda conversation conv-1");
+    expect(line).not.toContain("own entries"); // a mixed run's entries are not all this seat's
+    expect(line).toContain("1 entry at a declared zero price (not $0)");
+    expect(line).toContain("2 entries without a cost");
+    expect(line).toContain("1 error/aborted turn included");
+    expect(line).toContain("3 from other clients' runs, not counted ($4.00)");
+    expect(line).toContain("1 of unknown origin, not counted");
+    expect(line).toContain("excludes compaction and tool usage");
+    expect(line).not.toContain("Claude statusline");
+    expect(line).not.toContain("Pi ");
+  });
+
+  it("an absent figure reads as missing with its reason, never $0", async () => {
+    const { costLine } = await import("../src/commands/usage.js");
+    const line = costLine({ seatSession: "research@r", runtime: "pda", status: "absent", reason: "pda's provider declares a zero price table, so its entries carry no cost (tokens are shown)",
+      window: { conversationId: "conv-1" }, entries: { own: 2, ownWithoutCost: { declaredZeroPrice: 2, absent: 0 } }, tokens: { input: 200, output: 40 } });
+    // The whole line, so a fall-through to the generic absent wording (no conversation, no declared-zero note) fails.
+    expect(line).toBe("research@r  cost: not reported (pda's provider declares a zero price table, so its entries carry no cost (tokens are shown)) for pda conversation conv-1; 2 entries at a declared zero price (not $0); excludes compaction and tool usage  tokens in 200 / out 40");
+    expect(line).not.toContain("$0.00");
+  });
+
+  it("rig usage cost --help and rig config --help name usage.pda_cost_facts as off by default", async () => {
+    const { usageCommand } = await import("../src/commands/usage.js");
+    const cost = usageCommand().commands.find((c) => c.name() === "cost")!;
+    let help = "";
+    cost.configureOutput({ writeOut: (t) => { help += t; }, writeErr: () => {} });
+    cost.outputHelp();
+    expect(help).toContain("usage.pda_cost_facts on (default off)");
+    expect(help).toContain("never counted as $0");
+  });
+});
+
 describe("rig usage cost: OpenRouter charge beside the Pi estimate (OPR.0.7.0.2 K4)", () => {
   const seat = (providerCharge: Record<string, unknown>) => ({ seatSession: "devpi@r", runtime: "pi", status: "reported", costUsd: 0.18,
     window: { piSessionId: "s1" }, entries: { own: 4 }, tokens: { input: 1, output: 1 }, providerCharge });

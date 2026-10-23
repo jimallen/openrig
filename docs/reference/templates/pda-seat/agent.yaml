@@ -1,0 +1,11 @@
+name: pda-seat
+version: "1.0.0"
+description: Minimal AgentSpec for a pda seat. A pda seat drives an agent that lives on a pda server, so this spec carries nothing for it to run - no skills, no guidance and no startup files (OpenRig delivers no startup content to a pda agent).
+
+resources:
+  skills: []
+
+profiles:
+  default:
+    uses:
+      skills: []

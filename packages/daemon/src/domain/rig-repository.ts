@@ -17,6 +17,7 @@ import type {
   SnapshotData,
   SessionSourceSpec,
 } from "./types.js";
+import { parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
 
 /**
  * Free helper: returns the latest snapshot for a rig whose data carries non-null
@@ -124,6 +125,8 @@ interface NodeOptions {
   effort?: string;
   /** `remote_control: true` on the member: persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** The pda agent the seat drives (runtime pda): persisted as nodes.pda_binding. */
+  pda?: PdaBinding;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -165,6 +168,54 @@ export function readSavedSessionSource(text: string | null | undefined): { value
   return typeof parsed === "object" && !Array.isArray(parsed)
     ? { value: parsed as SessionSourceSpec }
     : { value: null, unreadable: "session_source_json is not an object" };
+}
+
+/** nodes.pda_binding as stored: `{"agent":..,"base_url":..}`, both keys always written. */
+export function serializePdaBinding(binding: PdaBinding): string {
+  return JSON.stringify({ agent: binding.agent, base_url: binding.baseUrl });
+}
+
+/** A node's saved pda binding. NULL/empty is the real "no binding"; a damaged column (not JSON, not a mapping, a key
+ *  missing, or a value L0's parsePdaSpecBlock refuses) reads as no binding WITH the reason, because a seat that
+ *  drives a pda agent must never be launched or copied as if it drove none. The defaults of the spec block do not
+ *  apply to a stored row: both keys must be present. */
+export function readSavedPdaBinding(text: string | null | undefined): { value?: PdaBinding; unreadable?: string } {
+  if (!text) return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return { unreadable: "pda_binding is not JSON" }; }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { unreadable: "pda_binding is not an object" };
+  const keys = Object.keys(parsed as Record<string, unknown>);
+  if (!keys.includes("agent") || !keys.includes("base_url")) return { unreadable: "pda_binding lacks agent or base_url" };
+  const result = parsePdaSpecBlock(parsed);
+  return result.ok ? { value: result.binding } : { unreadable: "pda_binding is not a valid pda binding" };
+}
+
+/** A seat that drives a pda agent, or may (the holder side of the duplicate-binding check). `unreadable` is set when
+ *  the seat's saved binding is damaged: the agent it drives cannot be known, so it is treated as a possible holder of
+ *  EVERY agent (fail closed) and the reason says what to repair. */
+export interface PdaBindingHolder {
+  nodeId: string;
+  rigId: string;
+  rigName: string;
+  logicalId: string;
+  unreadable?: string;
+}
+
+/** The ONE refusal text for "this pda agent is already taken", used by instantiation, unarchive and the rollback of a
+ *  replacement, so the three never drift. Names the holding seat and rig; carries no token. */
+export function describePdaHolder(binding: PdaBinding, holder: PdaBindingHolder): string {
+  if (holder.unreadable !== undefined) {
+    return `seat "${holder.logicalId}" in rig "${holder.rigName}" has an unreadable pda binding (${holder.unreadable}), so it may already drive pda agent "${binding.agent}" at ${binding.baseUrl}; repair its pda_binding or archive that rig, then retry`;
+  }
+  return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}"; one pda agent is driven by one seat`;
+}
+
+/** A binding of one rig that another live seat already holds (the unarchive check). */
+export interface PdaBindingConflict {
+  binding: PdaBinding;
+  /** The rig's own seat that carries the binding. */
+  seat: string;
+  holder: PdaBindingHolder;
 }
 
 export class RigRepository {
@@ -504,9 +555,63 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET remote_control = 1 WHERE id = ?").run(id);
     }
 
+    if (opts?.pda) {
+      // No silent skip: a pda seat whose binding was not stored would restore and export as bound to nothing.
+      if (!this.hasNodeColumn("pda_binding")) throw new Error("nodes.pda_binding is missing (migration 115 has not run); the pda binding cannot be stored");
+      this.db.prepare("UPDATE nodes SET pda_binding = ? WHERE id = ?").run(serializePdaBinding(opts.pda), id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
+  }
+
+  /** Every seat, in any rig that is not archived, that drives this pda agent at this base URL (the pda agent is the
+   *  pair: the same name on another port is another pda), PLUS every seat whose saved binding is damaged (it may drive
+   *  any agent; see PdaBindingHolder.unreadable). `excludeRigIds` are rigs about to be archived by the same operation;
+   *  `excludeNodeId` is the seat being re-checked. The comparison is made on the parsed binding, never on the stored
+   *  text. */
+  findPdaBindingHolders(binding: PdaBinding, opts?: { excludeRigIds?: readonly string[]; excludeNodeId?: string }): PdaBindingHolder[] {
+    if (!this.hasNodeColumn("pda_binding")) return [];
+    const rows = this.db.prepare(
+      "SELECT n.id AS node_id, n.rig_id AS rig_id, r.name AS rig_name, n.logical_id AS logical_id, n.pda_binding AS pda_binding " +
+      "FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.pda_binding IS NOT NULL AND r.archived_at IS NULL ORDER BY n.id",
+    ).all() as Array<{ node_id: string; rig_id: string; rig_name: string; logical_id: string; pda_binding: string }>;
+    const excludedRigs = new Set(opts?.excludeRigIds ?? []);
+    return rows
+      .filter((row) => row.node_id !== opts?.excludeNodeId && !excludedRigs.has(row.rig_id))
+      .flatMap((row): PdaBindingHolder[] => {
+        const base = { nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id };
+        const saved = readSavedPdaBinding(row.pda_binding);
+        if (saved.value === undefined) return [{ ...base, unreadable: saved.unreadable ?? "pda_binding is not readable" }];
+        return saved.value.agent === binding.agent && saved.value.baseUrl === binding.baseUrl ? [base] : [];
+      });
+  }
+
+  /** Would bringing this (archived) rig back create a second holder? Every readable binding of the rig's own seats is
+   *  checked against the other live rigs (the rig itself is excluded). A damaged binding of the rig's OWN seat names no
+   *  agent and so cannot be checked here; a damaged binding in ANOTHER live rig counts against every binding. */
+  findPdaBindingConflictsForRig(rigId: string): PdaBindingConflict[] {
+    if (!this.hasNodeColumn("pda_binding")) return [];
+    const own = this.db.prepare("SELECT logical_id, pda_binding FROM nodes WHERE rig_id = ? AND pda_binding IS NOT NULL ORDER BY id")
+      .all(rigId) as Array<{ logical_id: string; pda_binding: string }>;
+    const conflicts: PdaBindingConflict[] = [];
+    for (const row of own) {
+      const binding = readSavedPdaBinding(row.pda_binding).value;
+      if (binding === undefined) continue;
+      for (const holder of this.findPdaBindingHolders(binding, { excludeRigIds: [rigId] })) {
+        conflicts.push({ binding, seat: row.logical_id, holder });
+      }
+    }
+    return conflicts;
+  }
+
+  /** `unarchiveRig`, unless that would leave one pda agent driven by two seats. Synchronous, so the check and the
+   *  write are one step. The plain `unarchiveRig` stays the bare primitive. */
+  unarchiveRigUnlessPdaConflict(rigId: string): { ok: true; changed: boolean } | { ok: false; conflicts: PdaBindingConflict[] } {
+    const conflicts = this.findPdaBindingConflictsForRig(rigId);
+    if (conflicts.length > 0) return { ok: false, conflicts };
+    return { ok: true, changed: this.unarchiveRig(rigId) };
   }
 
   /** S5 (OPR.0.5.4.7) — the first supported nodes.model write (the inventory was insert-only;
@@ -789,6 +894,7 @@ export class RigRepository {
   private rowToNode(row: NodeRow): Node {
     const packageRefs = readSavedPackageRefs(row.package_refs);
     const sessionSource = readSavedSessionSource(row.session_source_json);
+    const pdaBinding = readSavedPdaBinding(row.pda_binding);
     return {
       id: row.id,
       rigId: row.rig_id,
@@ -799,6 +905,9 @@ export class RigRepository {
       effort: row.effort ?? null,
       // Present only when declared, so nodes (and the snapshots serialized from them) that never declared it are unchanged.
       ...(row.remote_control === 1 ? { remoteControl: true } : {}),
+      // Present only for a pda seat, so every other node (and the snapshots serialized from them) is unchanged.
+      ...(pdaBinding.value ? { pda: pdaBinding.value } : {}),
+      ...(pdaBinding.unreadable ? { pdaBindingUnreadable: pdaBinding.unreadable } : {}),
       effortChoice: row.effort_choice ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
@@ -890,6 +999,7 @@ interface NodeRow {
   model: string | null;
   effort?: string | null;
   remote_control?: number | null;
+  pda_binding?: string | null;
   effort_choice?: string | null;
   codex_config_profile?: string | null;
   permission_policy?: string | null;

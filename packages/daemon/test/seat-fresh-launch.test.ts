@@ -277,7 +277,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(deriveRehydrateSessionIdByNode(history, [seat.node.id], readFreshOccupantRelations(db, seat.rig.id))[seat.node.id]).toBeNull();
   });
 
-  function seedSeat(opts?: { clean?: boolean; adopted?: boolean; model?: string; withContext?: boolean; runtime?: "claude-code" | "codex"; remoteControl?: boolean }) {
+  function seedSeat(opts?: { clean?: boolean; adopted?: boolean; model?: string; withContext?: boolean; runtime?: "claude-code" | "codex"; remoteControl?: boolean; pda?: { agent: string; baseUrl: string } }) {
     const runtime = opts?.runtime ?? "claude-code";
     const rig = rigRepo.createRig("fresh-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", {
@@ -285,6 +285,7 @@ describe("SeatLifecycleService.launchFresh", () => {
       cwd: "/project",
       model: opts?.model ?? "claude-current",
       ...(opts?.remoteControl ? { remoteControl: true } : {}),
+      ...(opts?.pda ? { pda: opts.pda } : {}),
     });
     const sessionName = "dev-impl@fresh-rig";
     let session: ReturnType<SessionRegistry["registerSession"]> | null = null;
@@ -903,6 +904,21 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     if (remoteControl) expect(launchBinding).toMatchObject({ remoteControl: true });
     else expect(launchBinding).not.toHaveProperty("remoteControl");
+  });
+
+  it("a fresh launch binds the seat's persisted pda binding onto the launch binding, and a seat without one carries no key", async () => {
+    const pda = { agent: "research", baseUrl: "http://127.0.0.1:9001" };
+    seedSeat({ clean: true, pda });
+    const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "blank restart of a pda-bound seat" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(launchBinding).toMatchObject({ pda });
+  });
+
+  it("a fresh launch of a seat with no pda binding carries no pda key", async () => {
+    seedSeat({ clean: true });
+    const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "blank restart" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(launchBinding).not.toHaveProperty("pda");
   });
 
   it("supersedes historically ambiguous dead rows without selecting a continuity source", async () => {

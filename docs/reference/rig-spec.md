@@ -411,6 +411,34 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `starter_ref` | object | no | — | `{ name }` of an agent starter (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) whose files lead the seat's startup. Not valid on terminal members or with a fork. |
 | `startup` | StartupBlock | no | — | Member-level startup files and actions. Applied only to this member. |
 | `mcp_servers` | map | no | — | Codex only. Declares stdio MCP servers that are OFF for every seat of this member until one seat instance is switched on with `rig seat set-mcp`. See [Codex MCP servers](#codex-mcp-servers-mcp_servers). |
+| `pda` | object | pda members only | — | `{ agent, base_url }`, required exactly when `runtime` is `pda` and refused on any other runtime. See [pda seats](#pda-seats-pda). |
+
+### pda seats (`pda`)
+
+A pda seat drives one agent on a pda server. The block names the agent and where its server listens:
+
+```yaml
+- id: research
+  runtime: pda
+  agent_ref: local:agents/pda-seat      # copy docs/reference/templates/pda-seat/ to agents/pda-seat/ beside the rig spec
+  profile: default
+  cwd: /home/me/.workspaces/durable-research
+  pda:
+    agent: research                     # required, no default
+    base_url: http://127.0.0.1:8150     # optional; this is the default
+```
+
+- `agent` is required and has no default. It matches `^[a-z0-9][a-z0-9_-]{0,39}$`, and `main` (pda's root agent) is refused.
+- `base_url` is `http://127.0.0.1:<port>` with a port from 1 to 65535 and nothing else: pda listens on loopback only, `localhost` is a name and not an address, and `https`, a path, userinfo, a trailing slash or a leading-zero port are refused. Any other key in the block is refused.
+- A pda member refuses `model`, `effort`, `permission_policy`, `session_source`, `starter_ref`, `startup`, `compaction_strategy`, `mechanic`, `codex_config_profile`, `mcp_servers` and `remote_control: true`: the pda agent owns them, and OpenRig delivers no startup content to a pda agent. `restore_policy` may be absent or `resume_if_possible`.
+- **One pda agent is driven by one seat.** Two members that name the same `agent` at the same `base_url` are refused in the spec. The same name on another port is another pda server and is allowed. Beyond the spec, the daemon enforces it against every rig of the SAME daemon that is not archived:
+  - at instantiation (`rig up <spec>`, `rig expand`, adding a member), refused naming the seat and rig that hold the agent; `rig up` re-checks inside the transaction that creates each seat, so a rig created while it runs cannot slip in;
+  - when an archived rig is brought back (`rig unarchive`, `POST /api/rigs/:id/unarchive`), refused with 409 naming the holder; the rollback of a failed `rig up` replacement leaves the earlier generation archived, with a note, for the same reason;
+  - a live seat whose saved binding is damaged counts as a possible holder of every agent: the refusal names it and asks for it to be repaired or its rig archived.
+
+  **Not covered:** two daemons on one host (different `OPENRIG_HOME`, different ports) share that host's loopback pda and cannot see each other's seats, so nothing stops both from driving one agent. The same pair on different hosts is two different pda servers and is correct.
+- The binding is stored on the seat (`nodes.pda_binding`) and written back by `rig spec export`.
+- This revision stores and validates the block. Launching a pda seat needs the pda runtime adapter, which has not landed: preflight still refuses `runtime: pda` as an unsupported runtime.
 
 ### Codex MCP servers (`mcp_servers`)
 

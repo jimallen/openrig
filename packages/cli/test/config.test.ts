@@ -387,6 +387,18 @@ describe("Config CLI", () => {
     expect(combined).toContain("default on");
   });
 
+  it("pda L2c: rig config --help names usage.pda_cost_facts, off by default, with what it excludes", () => {
+    const cmd = configCommand(join(tmpDir, "config.json"));
+    let combined = "";
+    cmd.configureOutput({ writeOut: (text) => { combined += text; }, writeErr: () => {} });
+    cmd.outputHelp();
+    const line = combined.split("\n").find((l) => l.includes("usage.pda_cost_facts"));
+    expect(line).toBeDefined();
+    expect(line).toContain("(default off");
+    expect(line).toContain("with it off the daemon stores none");
+    expect(line).toContain("excludes compaction and tool usage");
+  });
+
   // V0.3.1 slice 08 — HG-6: rig config --help text must enumerate every
   // top-level dotted-prefix used in VALID_KEYS. The slice 08 verification
   // pass caught a drift where ui.preview.* / agents.* / feed.subscriptions.* /

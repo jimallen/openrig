@@ -107,6 +107,7 @@ Keys:
   provider.usage_windows Codex and Claude usage windows in rig provider status (Codex read on request; Claude from its seats' status lines) (default off)
   usage.pi_cost_facts    Pi seats report model-priced cost from their persisted session entries to rig usage cost (default off)
   usage.pi_openrouter_charge  with usage.pi_cost_facts on, Pi seats look up OpenRouter's actual charge for their requests, shown beside the estimate (default off; off stops new lookups and posts, outcomes recorded while it was on stay visible)
+  usage.pda_cost_facts   pda seats report usage facts of their agent's assistant entries to rig usage cost; with it off the daemon stores none (default off; excludes compaction and tool usage; pda's declared zero price is shown as no cost, not $0)
 
 Precedence: CLI flag > environment variable > config file > default`)
     .action((opts: { json?: boolean; withSource?: boolean }) => {
