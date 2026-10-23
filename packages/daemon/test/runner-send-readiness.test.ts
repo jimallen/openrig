@@ -80,7 +80,9 @@ describe("pda L0: runner send readiness at the SessionTransport seam", () => {
     return Object.assign(ask, { runtimes, ask }) as unknown as RunnerSendReadinessSource;
   }
   function transport(adapter: TmuxAdapter, dep?: Ask | RunnerSendReadinessSource) {
-    const runnerSendReadiness = dep === undefined ? undefined : typeof dep === "function" ? source(dep) : dep;
+    // A bare ask is wrapped as a pda source. A built source is passed as is: it is callable too, so test for
+    // `runtimes`, not for a function (battery R5 survived while this re-wrapped every source as pda-only).
+    const runnerSendReadiness = dep === undefined ? undefined : "runtimes" in dep ? dep : source(dep);
     return new SessionTransport({
       db, rigRepo, sessionRegistry, tmuxAdapter: adapter, agentActivityStore, eventBus,
       waitForIdlePollMs: 1,
