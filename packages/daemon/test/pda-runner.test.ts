@@ -8,6 +8,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -97,6 +99,32 @@ describe("pda-runner: attach (T13 runner side, design 'Reconnect')", () => {
     await waitFor(() => rig.sidecar().ready, "ready after recovery");
     expect(rig.sidecar().error).toBeUndefined();
     void done;
+  });
+
+  it("a token file that becomes unusable after pda rotated its token: the next re-attach re-reads it and the runner exits 4", async () => {
+    const { rig, stream } = await attached();
+    rig.fake.setToken("ROTATEDtoken".padEnd(43, "R")); // pda rotated its token ...
+    fs.writeFileSync(rig.args.tokenFile, "garbage, not a token"); // ... and the file now holds something else
+    stream.error();
+    expect(await rig.done).toBe(4);
+    expect(rig.pane()).toContain("[pda-runner] ERROR pda_token_format");
+    expect(rig.pane()).not.toContain(BEARER);
+    expect(rig.sidecar()).toMatchObject({ ready: false, error: { code: "pda_token_format" }, exited: { code: 4 } });
+  });
+
+  it("the same while a message is being sent: it stays saved and pending, the pane and sidecar say pda_token_format, and nothing is dropped", async () => {
+    const { rig } = await attached();
+    rig.fake.setToken("ROTATEDtoken".padEnd(43, "R"));
+    fs.writeFileSync(rig.args.tokenFile, "garbage, not a token");
+    rig.runner.submit("waits for a usable token");
+    await waitFor(() => rig.sidecar().error?.code === "pda_token_format", "pda_token_format in the sidecar");
+    expect(rig.pane()).toContain("pda_token_format: the token file is not usable; retrying");
+    expect(rig.sidecar().outboxPending).toBe(1);
+    expect(rig.outboxRaw()).toContain("waits for a usable token");
+    // The operator repairs the file; the saved message goes out under its original id.
+    fs.writeFileSync(rig.args.tokenFile, "ROTATEDtoken".padEnd(43, "R"));
+    await waitFor(() => rig.fake.entries("research").length === 1, "delivered after the repair");
+    expect(rig.fake.entries("research")[0]!.content).toBe("waits for a usable token");
   });
 
   it("a 401 that survives the token re-read is an error code, not an exit: the runner keeps retrying", async () => {
@@ -429,6 +457,29 @@ describe("pda-runner: snapshot resync (T9)", () => {
     const pane = noReassert(rig.pane());
     expect(pane.split("now complete").length - 1).toBe(1);
     expect(pane).toContain("(reply resent in full after resync)");
+  });
+
+  it("an entry the gap fill printed whole is not printed again when its message_end arrives later with no deltas seen", async () => {
+    const { rig, stream } = await attached();
+    stream.push({ type: "run_start" });
+    rig.scripted.transcript = [assistantEntry("g1", "finished while we were resyncing")];
+    stream.push({ type: "snapshot", run: null });
+    await waitFor(() => rig.pane().includes("finished while we were resyncing"), "gap fill");
+    stream.push({ type: "message_end", entry: assistantEntry("g1", "finished while we were resyncing") });
+    stream.push({ type: "run_end" });
+    await waitFor(() => rig.pane().includes("── idle ──"), "run_end");
+    expect(noReassert(rig.pane()).split("finished while we were resyncing").length - 1).toBe(1);
+  });
+
+  it("a run that ends without a reply does not leave the next reply marked for a resend", async () => {
+    const { rig, stream } = await attached({}, { type: "snapshot", run: { id: "r1" } }); // a snapshot with a run in flight
+    stream.push({ type: "run_end" }); // aborted: no message_end ever came
+    stream.push({ type: "run_start" });
+    stream.push({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a fresh reply" } });
+    stream.push({ type: "message_end", entry: assistantEntry("fr1", "a fresh reply") });
+    await waitFor(() => rig.sidecar().lastEntryId === "fr1", "message_end");
+    expect(rig.pane()).not.toContain("resent");
+    expect(noReassert(rig.pane()).split("a fresh reply").length - 1).toBe(1);
   });
 
   it("without a resync, a streamed reply is NOT printed a second time at message_end", async () => {
@@ -1139,6 +1190,42 @@ describe("pda-runner: the real process (node --import tsx)", () => {
     const side = JSON.parse(fs.readFileSync(rig.paths.runnerStatePath, "utf8"));
     expect(side).toMatchObject({ ready: false, exited: { code: 0 }, launchId: "proc-launch" });
     expect(nonAllowlisted(rig.fake.requests)).toEqual([]);
+  }, 60000);
+
+  it("the real process posts activity to the daemon endpoint it is given, with the hook token as bearer", async () => {
+    const hooks: Array<{ url: string | undefined; auth: string | undefined; body: Record<string, unknown> }> = [];
+    const daemon = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        hooks.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(raw || "{}") as Record<string, unknown> });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => daemon.listen(0, "127.0.0.1", resolve));
+    const rig = await makeRig({ realStreams: true });
+    rigs.push(rig);
+    const argv = buildPdaRunnerArgv({
+      sessionName: rig.args.sessionName, stateRoot: rig.args.stateRoot, launchId: "proc-launch-3",
+      binding: { agent: "research", baseUrl: rig.args.baseUrl }, tokenFile: rig.args.tokenFile,
+    });
+    const p = runProcess(argv, {
+      OPENRIG_NODE_ID: "proc-node-3", OPENRIG_OCCUPANT_GENERATION: "gen-9", OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK_TOKEN,
+      OPENRIG_URL: `http://127.0.0.1:${(daemon.address() as AddressInfo).port}`,
+    });
+    try {
+      await waitFor(() => hooks.length >= 1, "an activity post", 20000);
+      expect(hooks[0]).toMatchObject({
+        url: "/api/activity/hooks", auth: `Bearer ${HOOK_TOKEN}`,
+        body: { sessionName: rig.args.sessionName, nodeId: "proc-node-3", generation: "gen-9", runtime: "pda", hookEvent: "Stop", subtype: "attached_idle" },
+      });
+      expect(JSON.stringify(hooks)).not.toContain(BEARER);
+    } finally {
+      p.child.kill("SIGTERM");
+      await p.exit;
+      await new Promise<void>((resolve) => daemon.close(() => resolve()));
+    }
   }, 60000);
 
   it("a token file with an interior LF: exit 4, a code on the pane, the canary in no output", async () => {

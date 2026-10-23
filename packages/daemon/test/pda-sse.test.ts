@@ -69,7 +69,10 @@ describe("pda-sse: framing", () => {
   });
 
   it("strips one leading BOM and one leading space after the colon", () => {
-    expect(parseAll([enc.encode("﻿data:  two spaces\n\n")])).toEqual([" two spaces"]);
+    expect(parseAll([enc.encode("\ufeffdata:  two spaces\n\n")])).toEqual([" two spaces"]);
+    // A byte-order mark split across two chunks is still the stream's first character.
+    const bom = enc.encode("\ufeffdata: x\n\n");
+    expect(parseAll([bom.slice(0, 1), bom.slice(1)])).toEqual(["x"]);
   });
 
   it("never dispatches an event the stream ended in the middle of", () => {

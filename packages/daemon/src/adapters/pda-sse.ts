@@ -31,12 +31,12 @@ export interface PdaSseParserOptions {
 }
 
 export class PdaSseParser {
+  // The default decoder drops a leading byte-order mark (ignoreBOM is false), which is the SSE rule.
   private readonly decoder = new TextDecoder("utf-8", { fatal: false });
   private readonly maxEventBytes: number;
   private buf = "";
   private dataLines: string[] = [];
   private dataChars = 0;
-  private sawBom = false;
 
   constructor(options: PdaSseParserOptions = {}) {
     this.maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
@@ -45,10 +45,6 @@ export class PdaSseParser {
   /** Feed one chunk; returns the events it completed, in order. */
   push(chunk: Uint8Array): PdaSseMessage[] {
     this.buf += this.decoder.decode(chunk, { stream: true });
-    if (!this.sawBom && this.buf.length > 0) {
-      this.sawBom = true;
-      if (this.buf.charCodeAt(0) === 0xfeff) this.buf = this.buf.slice(1);
-    }
     const out: PdaSseMessage[] = [];
     let i = 0;
     const b = this.buf;
@@ -104,8 +100,8 @@ export type PdaStreamEvent = { type: string } & Record<string, unknown>;
 export function parsePdaEventData(data: string): PdaStreamEvent | null {
   let parsed: unknown;
   try { parsed = JSON.parse(data); } catch { return null; }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-  const type = (parsed as Record<string, unknown>).type;
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const type = (parsed as Record<string, unknown>).type; // an array has none, so it is refused here
   if (typeof type !== "string" || type.length === 0) return null;
   return parsed as PdaStreamEvent;
 }
