@@ -263,6 +263,11 @@ activityRoutes.post("/hooks", async (c) => {
     if (!resolved) {
       return c.json({ ok: false, code: "session_not_found", error: `No session found for ${sessionName}` }, 404);
     }
+    // pda L2a: a pda seat's resume token IS its binding (the agent restore re-attaches to), recorded by the seat's own
+    // launch. A hook must never set it: with the local hook token alone it would re-point the seat at another agent.
+    if (runtime === "pda" || resolved.runtime === "pda") {
+      return c.json({ ok: false, code: "session_identity_not_accepted", tokenPersisted: false, error: "A pda seat's resume token is recorded by its launch; a hook cannot set it." }, 409);
+    }
     // OMP session identity (hook or seat) is strict: the exact seat name, the
     // seat's own runtime, the current occupant generation, and a materialized
     // session file that matches the seat's runner sidecar. Every refusal

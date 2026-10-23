@@ -468,6 +468,23 @@ profiles:
     expect(result.errors).toEqual([]);
   });
 
+  // pda L2a (census row 4): `pda` is a supported runtime at the modern-pod gate; the probe is offline (nothing is run).
+  it("accepts a modern pod member with runtime: pda and its pda block, running no probe", async () => {
+    const files: Record<string, string> = {
+      [`${RIG_ROOT}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+    };
+    const rigYaml = makeRigYaml({
+      pods: [{
+        id: "dev", label: "Dev",
+        members: [{ id: "impl", agentRef: "local:agents/impl", profile: "default", runtime: "pda", cwd: ".", pda: { agent: "research", baseUrl: "http://127.0.0.1:8150" } }],
+        edges: [],
+      }],
+    });
+    const result = await rigPreflight({ rigSpecYaml: rigYaml, rigRoot: RIG_ROOT, cwdOverride: EXISTING_CWD, fsOps: mockFs(files) });
+    expect(result.errors.filter((e) => e.includes("unsupported runtime"))).toEqual([]);
+    expect(result.ready, `preflight must accept runtime: pda; errors: ${JSON.stringify(result.errors)}`).toBe(true);
+  });
+
   // T7: missing cwd
   it("reports missing cwd", async () => {
     const files: Record<string, string> = {

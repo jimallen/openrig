@@ -9,7 +9,9 @@
 // actually resume" probe is intentionally out of scope (heavy + must not
 // mutate live state); format validation is the safe, side-effect-free floor.
 
-export type ResumeType = "claude_id" | "codex_id" | "pi_session_file" | "omp_session_file";
+import { PDA_RESUME_TYPE, PDA_RUNTIME, parsePdaResumeToken } from "../adapters/pda-runner-protocol.js";
+
+export type ResumeType = "claude_id" | "codex_id" | "pi_session_file" | "omp_session_file" | typeof PDA_RESUME_TYPE;
 
 export interface ResumeTokenValidationOk {
   ok: true;
@@ -48,6 +50,8 @@ export function resumeTypeForRuntime(runtime: string | null): ResumeType | null 
   if (runtime === "codex") return "codex_id";
   if (runtime === "pi") return "pi_session_file";
   if (runtime === "omp") return "omp_session_file";
+  // pda L2a: the token names the pda agent the seat drives, `http://127.0.0.1:<port>/agents/<agent>` (no secret).
+  if (runtime === PDA_RUNTIME) return PDA_RESUME_TYPE;
   return null;
 }
 
@@ -95,7 +99,7 @@ export function validateResumeToken(
   if (!resumeType) {
     return {
       ok: false,
-      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, pi, and omp have resume tokens).`,
+      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, pi, omp and pda have resume tokens).`,
     };
   }
   if (typeof rawToken !== "string") {
@@ -107,6 +111,12 @@ export function validateResumeToken(
   }
   if (resumeType === "pi_session_file" || resumeType === "omp_session_file") {
     return validateSessionFileToken(resumeType, token);
+  }
+  if (resumeType === PDA_RESUME_TYPE) {
+    // The same loopback and agent-name rules as the spec block (L0's one parser); the error never quotes the input.
+    return parsePdaResumeToken(token)
+      ? { ok: true, resumeType, token }
+      : { ok: false, error: "pda resume token must be http://127.0.0.1:<port>/agents/<agent>, naming an agent a seat may bind (not 'main')." };
   }
   return validateIdShapedToken(resumeType, token);
 }

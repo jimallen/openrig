@@ -149,7 +149,9 @@ import {
 
 // Slice 51-01 (OPR.0.5.1.1): `stub` is a first-class runtime (the deterministic node-script fake harness
 // through the real orchestrator) — admitted at the modern-pod preflight gate alongside the real runtimes.
-const SUPPORTED_RUNTIMES = new Set(["claude-code", "codex", "pi", "omp", "terminal", "stub"]);
+// pda L2a: `pda` is launchable (its adapter is registered in startup.ts). Its preflight is offline: the schema checks the
+// binding (L2b) and the adapter lstats pda's token file at launch, before any keystroke; the daemon never calls pda.
+const SUPPORTED_RUNTIMES = new Set(["claude-code", "codex", "pi", "omp", "pda", "terminal", "stub"]);
 
 // Default daemon-shipped asset paths for the managed Claude activity hooks — the SAME files the
 // ClaudeCodeAdapter is wired with in startup.ts (validation is the shared module either way).

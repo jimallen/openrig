@@ -401,7 +401,8 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snapshotId);
   }
 
-  it.each(["claude-code", "codex", "pi", "omp"])("reports an exited %s agent without replacing its preserved shell", async (runtime) => {
+  // pda L2a (T18, census row 12): a pda seat whose runner exited leaves its shell preserved, like the other agents.
+  it.each(["claude-code", "codex", "pi", "omp", "pda"])("reports an exited %s agent without replacing its preserved shell", async (runtime) => {
     const { rigId, nodeIds, session } = seedPreservedShell(runtime);
     const before = sessionRegistry.getBindingForNode(nodeIds[0]!);
     const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);

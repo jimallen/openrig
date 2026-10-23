@@ -106,6 +106,10 @@ export async function deriveResumeToken(
     if (!deps.resumeTokenCapturer) return { outcome: "noop" }; // dep absent — silent no-op
     token = await deps.resumeTokenCapturer.captureCodexThreadId(input.sessionName);
     if (!token) return { outcome: "skipped", reason: "probe_timeout" };
+  } else if (runtime === "pda") {
+    // pda L2a: nothing to derive. A pda seat's token is its binding, recorded when its launch reaches READY
+    // (PdaRuntimeAdapter.launchHarness); there is no runtime-side id to scrape later.
+    return { outcome: "noop" };
   } else if (runtime === "pi" || runtime === "omp") {
     const stateStore = runtime === "pi" ? deps.piRunnerStateStore : deps.ompRunnerStateStore;
     if (!stateStore) return { outcome: "noop" }; // dep absent — silent no-op

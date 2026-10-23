@@ -1,4 +1,5 @@
 import type { AgentActivity, Binding, StartupFile } from "./types.js";
+import { PDA_RUNTIME } from "../adapters/pda-runner-protocol.js";
 import type { ProjectionPlan } from "./projection-planner.js";
 
 // -- Bridge type: NodeBinding extends Binding with cwd --
@@ -174,6 +175,11 @@ export function runnerSendReadinessFromAdapters(
     },
   };
 }
+
+/** pda L2a: the runtimes whose adapter declares `freshStart: "unsupported"`, for the decisions that run without an
+ *  adapter map (restore-seat-gates' remedy text). The adapter's declaration is the authority; a startup pin checks
+ *  this set equals the adapter map's "unsupported" keys, so the two cannot drift. */
+export const RUNTIMES_WITHOUT_FRESH_START: ReadonlySet<string> = new Set([PDA_RUNTIME]);
 
 /** How an adapter's optional `freshStart` reads when absent: supported, every runtime's behaviour today. */
 export function adapterFreshStart(adapter: Pick<RuntimeAdapter, "freshStart"> | null | undefined): "supported" | "unsupported" {
