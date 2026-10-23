@@ -4,7 +4,14 @@
 // starts the in-process runner the command names. No real pda, tmux, daemon or seat is touched.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { makeRig, waitFor, type Rig } from "./helpers/pda-runner-rig.js";
+import { BEARER, HOOK_TOKEN, makeRig, waitFor, type Rig } from "./helpers/pda-runner-rig.js";
+import { buildPdaRunnerArgv } from "../src/adapters/pda-runner-protocol.js";
+import { spawn } from "node:child_process";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import { PdaRuntimeAdapter } from "../src/adapters/pda-runtime-adapter.js";
 import { createPdaUsagePoster, createPdaUsageSink, type PdaUsageReporter } from "../src/adapters/pda-usage-sink.js";
 import { pdaUsageApp, PDA_NODE, PDA_SEAT, PDA_USAGE_TOKEN } from "./helpers/pda-usage-route.js";
@@ -131,4 +138,61 @@ describe("the usage sink: the real runner's facts reach the real /pda-usage rout
     expect(rows.map((r) => r.origin)).toEqual(["other"]);
     expect(JSON.stringify(rows)).not.toMatch(/CANARY/);
   });
+});
+
+// ── The real process: main() installs the sink only with --usage-facts, and it posts with the hook token ─────────
+
+const RUNNER_TS = fileURLToPath(new URL("../src/adapters/pda-runner.ts", import.meta.url));
+
+describe("the real runner process (node --import tsx) posts usage facts only with --usage-facts", () => {
+  it.each([true, false])("--usage-facts %s: own run -> one pda-usage post with the hook token (and none without the flag)", async (usageFacts) => {
+    const posts: Array<{ url: string | undefined; auth: string | undefined; body: Record<string, unknown> }> = [];
+    const daemon = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        if (req.url === "/api/activity/pda-usage") posts.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(raw || "{}") as Record<string, unknown> });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => daemon.listen(0, "127.0.0.1", resolve));
+    rig = await makeRig({ realStreams: true });
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "pda-l2a-proc-"));
+    const argv = buildPdaRunnerArgv({
+      sessionName: rig.args.sessionName, stateRoot: rig.args.stateRoot, launchId: "proc-usage",
+      binding: { agent: "research", baseUrl: rig.args.baseUrl }, tokenFile: rig.args.tokenFile, usageFacts,
+    });
+    const child = spawn(process.execPath, ["--import", "tsx", RUNNER_TS, ...argv], {
+      env: {
+        PATH: process.env.PATH ?? "", HOME: home, OPENRIG_HOME: home, OPENRIG_NODE_ID: "proc-node", OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK_TOKEN,
+        OPENRIG_URL: `http://127.0.0.1:${(daemon.address() as AddressInfo).port}`,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (c) => { out += c.toString(); });
+    const exit = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    try {
+      await waitFor(() => out.includes("[pda-runner] READY agent=research"), "READY", 20000);
+      child.stdin.write("count my usage\n");
+      await waitFor(() => out.includes("queued (submission"), "the ack", 10000);
+      rig.fake.streamReply("research", ["usage reply"]);
+      await waitFor(() => out.includes("── idle ──"), "the run to end", 10000);
+      if (usageFacts) {
+        await waitFor(() => posts.length >= 1, "a pda-usage post", 10000);
+        expect(posts[0]).toMatchObject({ auth: `Bearer ${HOOK_TOKEN}`, body: { sessionName: rig.args.sessionName, nodeId: "proc-node", agent: "research" } });
+        expect((posts[0]!.body.facts as Array<Record<string, unknown>>).map((f) => [f.origin, f.costBasis])).toEqual([["own", "declared_zero_price"]]);
+        expect(JSON.stringify(posts)).not.toContain(BEARER);
+      } else {
+        await new Promise((r) => setTimeout(r, 300));
+        expect(posts).toEqual([]);
+      }
+    } finally {
+      child.kill("SIGTERM");
+      await exit;
+      await new Promise<void>((resolve) => daemon.close(() => resolve()));
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }, 60000);
 });
