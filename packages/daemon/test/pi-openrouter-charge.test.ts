@@ -1,6 +1,6 @@
 // OPR.0.7.0.2 (cost reporting, K4): OpenRouter's actual charge for a Pi request, shown beside its labelled Pi
 // estimate, tied to that request (Pi's recorded generation id) and the credential that generated it, never added
-// to the estimate or counted again on replay or restart. Hermetic: Pi 0.87.1-shaped entries, fixture OpenRouter
+// to the estimate or counted again on replay or restart. Hermetic: Pi 1.3.0-shaped entries, fixture OpenRouter
 // replies, the real runner core, authenticated routes, a migrated SQLite store and the cost view. No network,
 // no key, no account.
 import { describe, it, expect, afterEach } from "vitest";
