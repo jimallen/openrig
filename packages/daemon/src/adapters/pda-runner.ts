@@ -217,6 +217,10 @@ export class PdaRunner {
    *  requestId or submissionId of its own (pi-durable types.d.ts:290-305). */
   private ownSubmissions: string[] = [];
   private ownEntries: string[] = [];
+  /** The requestIds THIS runner's outbox minted (`submit()` and the outbox's ack hook). A requestId is ours only if it
+   *  is in here: the `openrig/<nodeId>/` prefix is not enough, because any client holding pda's bearer can post with
+   *  that prefix, and a message of ours is hidden from the pane (review D1). Persisted, so a restart still knows them. */
+  private mintedRequests: string[] = [];
   /** User entries seen on the stream whose owner is not known yet: the submission that names the entry follows it in
    *  the same batch (events.js:205-222 then :263-264), so they wait for it, briefly, before they are shown as another
    *  client's. */
@@ -235,7 +239,7 @@ export class PdaRunner {
     this.usage = deps.usage ?? {};
     this.paths = pdaSeatPaths(deps.args.stateRoot, deps.args.sessionName);
     this.pane = new PdaPane(deps.write, deps.secrets);
-    deps.outbox.onAck = (_requestId, submissionId) => this.onAck(submissionId);
+    deps.outbox.onAck = (requestId, submissionId) => { this.recordMinted(requestId); this.onAck(submissionId); };
   }
 
   // ── Public surface ──
@@ -255,6 +259,7 @@ export class PdaRunner {
     if (!result.ok) {
       this.pane.line(`${PDA_RUNNER_ERROR_MARKER} not sent: the message is too large for pda`);
     } else {
+      this.recordMinted(result.requestId);
       const shown = block.length > ECHO_CAP ? `${block.slice(0, ECHO_CAP)} … (${block.length - ECHO_CAP} more characters)` : block;
       this.pane.block(shown, "      ", "you ▸ ");
       this.writeSidecar();
@@ -767,7 +772,7 @@ export class PdaRunner {
     if (!isObj(record)) return;
     const id = idText(record.id);
     const requestId = typeof record.requestId === "string" ? record.requestId : null;
-    const own = (requestId !== null && requestId.startsWith(`openrig/${this.deps.nodeId}/`)) || (id !== null && this.ownSubmissions.includes(id));
+    const own = (requestId !== null && this.mintedRequests.includes(requestId)) || (id !== null && this.ownSubmissions.includes(id));
     if (!own) return;
     if (id !== null) this.recordOwn(id);
     const entry = idText(record.entry);
@@ -789,12 +794,14 @@ export class PdaRunner {
       const textIds = (v: unknown): string[] => (Array.isArray(v) ? v.map(idText).filter((x): x is string => x !== null) : []);
       this.ownSubmissions = isObj(parsed) ? textIds(parsed.ids).slice(-OWN_SUBMISSIONS_MAX) : [];
       this.ownEntries = isObj(parsed) ? textIds(parsed.entries).slice(-OWN_SUBMISSIONS_MAX) : [];
-    } catch { this.ownSubmissions = []; this.ownEntries = []; }
+      this.mintedRequests = isObj(parsed) && Array.isArray(parsed.requests)
+        ? parsed.requests.filter((x): x is string => typeof x === "string" && x.length > 0).slice(-OWN_SUBMISSIONS_MAX) : [];
+    } catch { this.ownSubmissions = []; this.ownEntries = []; this.mintedRequests = []; }
   }
 
   private persistOwn(): void {
     try {
-      this.deps.fs.writeAtomic(this.paths.ownSubmissionsPath, JSON.stringify({ version: 1, ids: this.ownSubmissions, entries: this.ownEntries }));
+      this.deps.fs.writeAtomic(this.paths.ownSubmissionsPath, JSON.stringify({ version: 1, ids: this.ownSubmissions, entries: this.ownEntries, requests: this.mintedRequests }));
     } catch { /* attribution is best-effort; delivery is not affected */ }
   }
 
@@ -802,6 +809,13 @@ export class PdaRunner {
     if (this.ownSubmissions.includes(submissionId)) return;
     this.ownSubmissions.push(submissionId);
     if (this.ownSubmissions.length > OWN_SUBMISSIONS_MAX) this.ownSubmissions.splice(0, this.ownSubmissions.length - OWN_SUBMISSIONS_MAX);
+    this.persistOwn();
+  }
+
+  private recordMinted(requestId: string): void {
+    if (this.mintedRequests.includes(requestId)) return;
+    this.mintedRequests.push(requestId);
+    if (this.mintedRequests.length > OWN_SUBMISSIONS_MAX) this.mintedRequests.splice(0, this.mintedRequests.length - OWN_SUBMISSIONS_MAX);
     this.persistOwn();
   }
 

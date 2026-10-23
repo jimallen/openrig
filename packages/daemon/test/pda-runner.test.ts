@@ -840,30 +840,32 @@ describe("pda-runner: the outbox glue", () => {
     const { rig } = await attached();
     rig.runner.submit("hello pda");
     await waitFor(() => rig.pane().includes("queued (submission 1)"), "ack echo"); // pda's id is the number 1
-    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["1"], entries: [] });
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toMatchObject({ version: 1, ids: ["1"], entries: [] });
     await waitFor(() => rig.sidecar().outboxPending === 0, "pending 0");
     expect(rig.fake.entries("research")).toHaveLength(1);
     expect(fs.statSync(rig.paths.ownSubmissionsPath).mode & 0o777).toBe(0o600);
     expect(fs.statSync(rig.paths.runnerStatePath).mode & 0o777).toBe(0o600);
   });
 
-  it("own-submissions.json keeps the newest 500 ids, from acks and from own submission events", async () => {
+  it("own-submissions.json keeps the newest 500 ids and the newest 500 minted request ids (502 sends)", async () => {
     const { rig, stream } = await attached();
-    for (let i = 0; i < 520; i++) stream.push(submissionEvent({ id: 3000 + i, requestId: `openrig/node-under-test/launch-1/${i}`, status: "queued" }));
+    for (let i = 0; i < 502; i++) rig.runner.submit(`message ${i}`);
     stream.push(submissionEvent({ id: 9999, requestId: "someone-else/1", status: "queued" }));
-    stream.push(runStart());
-    await waitFor(() => rig.sidecar().busy, "all processed");
-    const ids = JSON.parse(rig.ownSubmissionsRaw()).ids as string[];
-    expect(ids).toHaveLength(500);
-    expect(ids[0]).toBe("3020"); // pda's ids are numbers; the file holds them as text
-    expect(ids[499]).toBe("3519");
-    expect(ids).not.toContain("9999");
-  });
+    await waitFor(() => rig.fake.entries("research").length === 502, "all 502 delivered", 40000);
+    await waitFor(() => (JSON.parse(rig.ownSubmissionsRaw()).ids as string[]).length === 500 && rig.sidecar().outboxPending === 0, "all acked", 40000);
+    const file = JSON.parse(rig.ownSubmissionsRaw()) as { ids: string[]; requests: string[] };
+    expect(file.ids).toHaveLength(500);
+    expect(file.ids[0]).toBe("3"); // pda's ids 1..502 are numbers; the file holds the newest 500 as text
+    expect(file.ids[499]).toBe("502");
+    expect(file.ids).not.toContain("9999");
+    expect(file.requests).toHaveLength(500);
+    expect(file.requests[499]).toMatch(/^openrig\/node-under-test\/launch-1\/\d+$/);
+  }, 60000);
 
   it("an unanswered own submission is reported; a foreign one is not", async () => {
     const { rig, stream } = await attached();
     stream.push(submissionEvent({ id: 41, requestId: "foreign/1", status: "unanswered", reason: "x" }));
-    stream.push(submissionEvent({ id: 42, requestId: "openrig/node-under-test/launch-1/9", status: "unanswered", reason: "agent was reset" }));
+    stream.push(submissionEvent({ id: 42, requestId: rig.mint("a message of ours"), status: "unanswered", reason: "agent was reset" }));
     stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "processed");
     expect(rig.pane()).toContain("[pda-runner] not answered: agent was reset");
@@ -876,13 +878,62 @@ describe("pda-runner: the outbox glue", () => {
     stream.push(messageStart(userMessage("OWN TEXT")));
     stream.push(messageEnd(userEntry(125, "OWN TEXT")));
     stream.push(messageEnd(userEntry(127, "FOREIGN TEXT")));
-    stream.push(submissionEvent({ id: 7, requestId: "openrig/node-under-test/launch-1/4", status: "placed", entry: 125 }));
+    stream.push(submissionEvent({ id: 7, requestId: rig.mint("OWN TEXT"), status: "placed", entry: 125 }));
     stream.push(submissionEvent({ id: 8, requestId: "pda-chat/laptop/1", status: "placed", entry: 127 }));
     stream.push(runStart([7, 8]));
     await waitFor(() => rig.pane().includes("other ▸ FOREIGN TEXT"), "the other client's message");
-    expect(rig.pane()).not.toContain("OWN TEXT");
+    expect(noReassert(rig.pane()).split("OWN TEXT").length - 1).toBe(1); // the you ▸ echo at submit time, never also 'other ▸'
     expect(rig.sidecar().lastEntryId).toBe("127");
-    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["7"], entries: ["125"] });
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toMatchObject({ version: 1, ids: expect.arrayContaining(["7"]), entries: ["125"] });
+  });
+
+  it("D1: a requestId with OUR prefix that our outbox did not mint is NOT ours: its message is shown as another client's and nothing is recorded", async () => {
+    const { rig, stream } = await attached();
+    stream.push(messageEnd(userEntry(140, "INSTRUCTION FROM SOMEONE ELSE with a spoofed prefix")));
+    stream.push(submissionEvent({ id: 90, requestId: "openrig/node-under-test/evil-launch/1", status: "placed", entry: 140 }));
+    stream.push(submissionEvent({ id: 91, requestId: "openrig/node-under-test/launch-1/99999", status: "unanswered", reason: "SPOOFED REASON" }));
+    stream.push(runStart());
+    await waitFor(() => rig.pane().includes("other ▸ INSTRUCTION FROM SOMEONE ELSE with a spoofed prefix"), "the spoofed message, shown");
+    expect(rig.pane()).not.toContain("SPOOFED REASON"); // and its settlement is not reported as ours
+    const file = rig.ownSubmissionsRaw();
+    expect(file === "" ? {} : JSON.parse(file)).not.toMatchObject({ ids: expect.arrayContaining(["90"]) });
+    expect(file).not.toContain("140");
+  });
+
+  it("D1 positive control: a requestId our outbox minted IS ours, even when its submission arrives before the POST reply", async () => {
+    const { rig, stream } = await attached();
+    const minted = rig.mint("OUR OWN WORDS");
+    stream.push(messageEnd(userEntry(141, "OUR OWN WORDS")));
+    stream.push(submissionEvent({ id: 92, requestId: minted, status: "placed", entry: 141 }));
+    await new Promise((r) => setTimeout(r, 120));
+    expect(noReassert(rig.pane()).split("OUR OWN WORDS").length - 1).toBe(1); // the 'you ▸' echo only
+  });
+
+  it("D1: minted request ids survive a restart, so a replayed submission is still recognised as ours", async () => {
+    const rig = await makeRig();
+    rigs.push(rig);
+    fs.writeFileSync(rig.paths.ownSubmissionsPath, JSON.stringify({ version: 1, ids: [], entries: [], requests: ["openrig/node-under-test/launch-0/7"] }), { mode: 0o600 });
+    rig.start();
+    const s = await rig.stream();
+    s.push(snapshotEvent());
+    await waitFor(() => rig.pane().includes("READY"), "READY");
+    s.push(messageEnd(userEntry(142, "WORDS FROM BEFORE THE RESTART")));
+    s.push(submissionEvent({ id: 93, requestId: "openrig/node-under-test/launch-0/7", status: "placed", entry: 142 }));
+    s.push(messageEnd(userEntry(143, "SPOOF AFTER RESTART")));
+    s.push(submissionEvent({ id: 94, requestId: "openrig/node-under-test/launch-0/8", status: "placed", entry: 143 }));
+    await waitFor(() => rig.pane().includes("other ▸ SPOOF AFTER RESTART"), "the spoof");
+    expect(rig.pane()).not.toContain("WORDS FROM BEFORE THE RESTART");
+  });
+
+  it("Y4: the production hold is 150 ms: an unclaimed user message is not shown at once, and is shown soon after", async () => {
+    const rig = await started({ defaultHold: true });
+    const s = await rig.stream();
+    s.push(snapshotEvent());
+    await waitFor(() => rig.pane().includes("READY"), "READY");
+    s.push(messageEnd(userEntry(144, "WAITING FOR ITS OWNER")));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(rig.pane()).not.toContain("WAITING FOR ITS OWNER"); // still inside the hold (a hold of 0 shows it already)
+    await waitFor(() => rig.pane().includes("other ▸ WAITING FOR ITS OWNER"), "shown after the hold", 1500); // a hold of seconds does not
   });
 
   it("M3: an own user entry whose submission is never seen is shown after the hold, as another client's (documented limit)", async () => {
@@ -1238,7 +1289,7 @@ describe("pda-runner against the real wire shapes (M1-M8)", () => {
     expect(rig.fake.postBodies).toHaveLength(1); // not re-posted
     const entry = rig.fake.entries("research")[0]!;
     expect(typeof entry.submissionId).toBe("number");
-    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: [String(entry.submissionId)], entries: [String(entry.entryId)] });
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toMatchObject({ version: 1, ids: [String(entry.submissionId)], entries: [String(entry.entryId)] });
     expect(rig.sidecar().lastEntryId).toBe(String(entry.entryId)); // a string in the sidecar, from a numeric id
     expect(rig.sidecar().held).toBeUndefined();
   });
@@ -1345,15 +1396,17 @@ describe("pda-runner against the real wire shapes (M1-M8)", () => {
 
   it("M2: a submission record that is unanswered is reported by its reason; placed, done and queued say nothing", async () => {
     const { rig, stream } = await attached();
-    stream.push(submissionEvent({ id: 51, requestId: "openrig/node-under-test/launch-1/1", status: "queued" }));
-    stream.push(submissionEvent({ id: 51, requestId: "openrig/node-under-test/launch-1/1", status: "placed", entry: 301 }));
-    stream.push(submissionEvent({ id: 51, requestId: "openrig/node-under-test/launch-1/1", status: "done", entry: 301, answer: 302 }));
-    stream.push(submissionEvent({ id: 52, requestId: "openrig/node-under-test/launch-1/2", status: "unanswered", reason: "the conversation was reset" }));
+    const first = rig.mint("first of ours");
+    const second = rig.mint("second of ours");
+    stream.push(submissionEvent({ id: 51, requestId: first, status: "queued" }));
+    stream.push(submissionEvent({ id: 51, requestId: first, status: "placed", entry: 301 }));
+    stream.push(submissionEvent({ id: 51, requestId: first, status: "done", entry: 301, answer: 302 }));
+    stream.push(submissionEvent({ id: 52, requestId: second, status: "unanswered", reason: "the conversation was reset" }));
     stream.push(runStart());
     await waitFor(() => rig.sidecar().busy, "processed");
     expect(noReassert(rig.pane()).split("not answered").length - 1).toBe(1);
     expect(rig.pane()).toContain("[pda-runner] not answered: the conversation was reset");
-    expect(JSON.parse(rig.ownSubmissionsRaw())).toEqual({ version: 1, ids: ["51", "52"], entries: ["301"] });
+    expect(JSON.parse(rig.ownSubmissionsRaw())).toMatchObject({ version: 1, ids: expect.arrayContaining(["51", "52"]), entries: ["301"] });
   });
 
   it("M2: an own submission is also recognised by the id pda returned to the POST, when its record carries no requestId", async () => {
@@ -1433,7 +1486,8 @@ describe("pda-runner against the real wire shapes (M1-M8)", () => {
     // commit 1: the input is placed
     stream.push(messageStart(userMessage("what is in the repo?")));
     stream.push(messageEnd(user));
-    stream.push(submissionEvent({ id: 61, requestId: "openrig/node-under-test/launch-1/1", status: "placed", entry: 260 }));
+    const ours = rig.mint("what is in the repo?");
+    stream.push(submissionEvent({ id: 61, requestId: ours, status: "placed", entry: 260 }));
     stream.push(runStart([61]));
     // commit 2: a tool call and its result
     stream.push(toolStart("call-9", "bash", { command: "ls" }));
@@ -1445,14 +1499,14 @@ describe("pda-runner against the real wire shapes (M1-M8)", () => {
     stream.push(deltaEvent("and a src directory."));
     stream.push(messageEnd(answer));
     stream.push(runEnd([61]));
-    stream.push(submissionEvent({ id: 61, requestId: "openrig/node-under-test/launch-1/1", status: "done", entry: 260, answer: 263 }));
+    stream.push(submissionEvent({ id: 61, requestId: ours, status: "done", entry: 260, answer: 263 }));
     await waitFor(() => rig.sidecar().lastEntryId === "263" && !rig.sidecar().busy, "the whole batch");
     await new Promise((r) => setTimeout(r, 60));
     const pane = noReassert(rig.pane());
     const order = ["  ⚙ bash: {\"command\":\"ls\"}", "  │ README.md", "It has a README and a src directory.", "── idle ──"].map((t) => pane.indexOf(t));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(pane).not.toContain("what is in the repo?"); // our own message was echoed as 'you ▸' at submit time only
+    expect(pane.split("what is in the repo?").length - 1).toBe(1); // only the 'you ▸' echo at submit time, never 'other ▸' too
     expect(pane).not.toContain("other ▸");
     expect(rig.activity.map((a) => `${a.hookEvent}/${a.subtype}`)).toEqual(["Stop/attached_idle", "active/run_start", "PreToolUse/bash", "Stop/run_end"]);
   });

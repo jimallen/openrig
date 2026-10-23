@@ -121,6 +121,8 @@ export interface RigOptions {
   usage?: PdaUsageSink;
   usageFacts?: boolean;
   fakeDedupe?: boolean;
+  /** Leave the runner's user-message hold at its production default (the rig otherwise shortens it to 25 ms). */
+  defaultHold?: boolean;
 }
 
 export interface Rig {
@@ -143,6 +145,8 @@ export interface Rig {
   ownSubmissionsRaw(): string;
   /** The runner has a live event stream (the n-th). */
   stream(n?: number): Promise<ScriptedStream>;
+  /** Send `text` through the runner (so its outbox MINTS a requestId) and return that id. */
+  mint(text?: string): string;
   /** Stop the runner and wait for its exit code. */
   stop(): Promise<number>;
   cleanup(): Promise<void>;
@@ -213,7 +217,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
       signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
     }),
     aliveIntervalMs: options.aliveIntervalMs ?? 40,
-    userHoldMs: 25, // a user message waits this long for the submission that names it
+    ...(options.defaultHold ? {} : { userHoldMs: 25 }), // a user message waits this long for the submission that names it
     backoffStartMs: 5,
     backoffCapMs: 20,
     usage: options.usage,
@@ -235,6 +239,13 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
     async stream(n = 1) {
       await waitFor(() => scripted.streams.length >= n, `event stream #${n} to be opened`);
       return scripted.streams[n - 1]!;
+    },
+    mint(text = "minted") {
+      runner.submit(text);
+      const ids = [...rig.outboxRaw().matchAll(/"op":"enq","requestId":"([^"]+)"/g)].map((m) => m[1]!);
+      const id = ids[ids.length - 1];
+      if (!id) throw new Error("the outbox minted no request id");
+      return id;
     },
     async stop() {
       runner.stop();

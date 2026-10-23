@@ -20,13 +20,13 @@ export const toolResultMessage = (toolCallId: string, text: string, isError = fa
   role: "toolResult", toolCallId, toolName: "bash", content: [{ type: "text", text }], isError, timestamp: 1_760_000_000_000,
 });
 
-// ── entries (TYPES: types.d.ts:290-305 EntryRecord; ids are NUMBERS, :18-21)
+// ── entries (TYPES: types.d.ts:290-305 EntryRecord; ids are NUMBERS, :18-21; kinds from entries.js:11-30, e.g. `pi.tool-result` at :20)
 const entry = (id: number, kind: string, message?: Json, extra: Json = {}): Json => ({
   id, conversationId: 1, kind, ...(message === undefined ? {} : { model: [message] }), ...extra,
 });
 export const userEntry = (id: number, text: string): Json => entry(id, "pi.user", userMessage(text));
 export const assistantEntry = (id: number, text: string, extra: Json = {}): Json => entry(id, "pi.assistant", assistantMessage([{ type: "text", text }], extra));
-export const toolResultEntry = (id: number, toolCallId: string, text: string, isError = false): Json => entry(id, "pi.toolResult", toolResultMessage(toolCallId, text, isError));
+export const toolResultEntry = (id: number, toolCallId: string, text: string, isError = false): Json => entry(id, "pi.tool-result", toolResultMessage(toolCallId, text, isError));
 /** A model-less bookkeeping entry (`pi.reset`, entries.js:25): arrives as entry_appended, not message_end. */
 export const bareEntry = (id: number, kind: string): Json => entry(id, kind);
 /** A compaction entry carries its summary as a UserMessage (types.d.ts:290-305, kind `pi.compaction`). */
@@ -71,7 +71,9 @@ export const entryAppended = (e: Json): Json => ({ type: "entry_appended", entry
 export const taskFailed = (message: string, kind = "pi.generation"): Json => ({ type: "task_failed", taskId: 9, kind, message });            // :139-143
 export const autoRetryStart = (errorMessage: string): Json => ({ type: "auto_retry_start", attempt: 1, at: 0, errorMessage });                 // :119-123
 export const compactionEnd = (error?: string): Json => ({ type: "compaction_end", taskId: 9, reason: "threshold", ...(error === undefined ? {} : { error }) });   // :153-158
-export const streamEnd = (): Json => ({ type: "stream_end", end: { status: "closed" } });                                                    // SERVER :77
+/** `stream_end{end}` where `end` is a WatchEnd, `{reason: "stopped" | "cancelled" | "session_closed" | "retired"}` (TYPES: types.d.ts:772-777);
+ *  written by the server at SERVER :88 (`write({type: "stream_end", end})`). */
+export const streamEnd = (reason: "stopped" | "cancelled" | "session_closed" | "retired" = "session_closed"): Json => ({ type: "stream_end", end: { reason } });
 
 /** The shapes the FIRST version of this lane guessed. Kept only as a negative: feeding them to the runner must not
  *  make it show streamed text, record ownership or acknowledge anything. */
