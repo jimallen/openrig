@@ -116,10 +116,11 @@ import { rigSpecSourceSchema } from "./migrations/111_rig_spec_source.js";
 import { nodeCodexMcpServersSchema } from "./migrations/112_node_codex_mcp_servers.js";
 import { rsiWakeStateSchema } from "./migrations/113_rsi_wake_state.js";
 import { eventsAndUsageSamplesIndexesSchema } from "./migrations/114_events_and_usage_samples_indexes.js";
+import { nodePdaBindingSchema } from "./migrations/115_node_pda_binding.js";
 
 /** Numbers held for changes that have not landed, with the exact name each must land under. pda L0
- *  (pda-runtime-design-9l Rev 2): L2b adds 115 (`nodes.pda_binding`); L2c, after L2b, adds 116
- *  (`pda_usage_entries`). No stub is registered: until then the schema is unchanged. An entry stays after
+ *  (pda-runtime-design-9l Rev 2): L2b has added 115 (`nodes.pda_binding`); L2c, after L2b, adds 116
+ *  (`pda_usage_entries`) and no stub is registered for it until then. An entry stays after
  *  its migration lands, and the reservation test then checks the landed name. */
 export const RESERVED_MIGRATION_NAMES: Readonly<Record<string, string>> = {
   "115": "115_node_pda_binding.sql",
@@ -240,4 +241,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   nodeCodexMcpServersSchema,
   rsiWakeStateSchema,
   eventsAndUsageSamplesIndexesSchema,
+  nodePdaBindingSchema,
 ];

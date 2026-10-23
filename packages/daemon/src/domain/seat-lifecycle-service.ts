@@ -1333,6 +1333,7 @@ export class SeatLifecycleService {
         model: node.model ?? undefined,
         effort: resolveSeatEffort(node).effective ?? undefined,
         ...(node.remoteControl ? { remoteControl: true } : {}),
+        ...(node.pda ? { pda: node.pda } : {}),
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,
       },

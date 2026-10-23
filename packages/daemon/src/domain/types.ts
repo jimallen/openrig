@@ -36,6 +36,11 @@ export interface Node {
   effort?: string | null;
   /** The seat declared `remote_control: true`; persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** The pda agent this seat drives (runtime pda only; nodes.pda_binding). Absent for every other seat. */
+  pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
+  /** Set (to the reason) ONLY when nodes.pda_binding is damaged: the value above then reads as absent, but a
+   *  damaged column is not an absent one, so a launch or a copy that needs the binding must refuse on this. */
+  pdaBindingUnreadable?: string;
   /** OPR.0.7.0.7: the seat's explicit effort choice (rig seat set-effort); null = none. */
   effortChoice?: string | null;
   codexConfigProfile?: string | null;
@@ -1147,6 +1152,8 @@ export interface RigSpecPodMember {
    * Settings cannot do this: claude ignores `remoteControlAtStartup` from project/local scope.
    */
   remoteControl?: boolean;
+  /** The pda agent this seat drives (runtime pda only, required there). Parsed by L0's parsePdaSpecBlock. */
+  pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
   /**
    * OPR.0.4.6.FAC1: optional seat-side role declaration (writes the
    * existing `nodes.role` column via createMemberNode → addNode). The
@@ -1440,6 +1447,8 @@ export interface ExpansionPodFragment {
      *  permissionPolicy: the ingress preserves RAW presence so the canonical validator rejects a
      *  non-boolean or a non-claude `true`, rather than the ingress erasing it into absence. */
     remoteControl?: unknown;
+    /** `pda` block. Typed UNKNOWN: RAW presence is preserved so the canonical validator owns the shape. */
+    pda?: unknown;
     restorePolicy?: unknown;
     label?: string;
     /** Member `compaction_strategy`. Typed UNKNOWN (RAW presence preserved; the canonical validator owns the vocabulary). */

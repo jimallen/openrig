@@ -171,6 +171,8 @@ export class RigSpecExporter {
         if (node.effort) member.effort = node.effort;
         // The seat's remote_control declaration round-trips export -> import.
         if (node.remoteControl) member.remoteControl = true;
+        // The pda binding round-trips export -> import (D2: export reads the column).
+        if (node.pda) member.pda = node.pda;
         // OPR.0.4.6.FAC1: a declared seat role exports with the pod
         // member (round-trip fidelity — export→import keeps the role).
         if (node.role) member.role = node.role;

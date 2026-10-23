@@ -9,6 +9,7 @@ import {
   type ResolvedPolicyAttachment,
 } from "./permission-policy/policy-ref.js";
 import type { RigRepository } from "./rig-repository.js";
+import type { PdaBinding } from "../adapters/pda-runner-protocol.js";
 import { checkRunningNameGuard, confirmStoppedGenerations, makeRunningSessionCounter } from "./running-name-guard.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
@@ -315,7 +316,7 @@ import { planProjection, claudeConflictTargetPath, projectionConflictWarnings, f
 import { ProjectionManifestStore } from "./projection-manifest-store.js";
 import { StartupOrchestrator } from "./startup-orchestrator.js";
 import { PodRepository } from "./pod-repository.js";
-import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, StartupAction, StartupFile } from "./types.js";
+import type { Node, RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, StartupAction, StartupFile } from "./types.js";
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { SeatSkillProjection, SeatSkillProjectionResult, SeatStartupRead } from "./seat-startup-source.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
@@ -480,6 +481,14 @@ class GenerationChanged extends Error {
 }
 
 /** The operator-facing reason an agent ref did not resolve (a validation failure lists every error). */
+/** First-start retry: does the member the operator re-supplies name the pda agent the retained seat is bound to?
+ *  The binding is the seat's identity on the pda server, so another agent, another base URL, none where the seat has
+ *  one, or one where it has none is a different seat; and a damaged saved binding proves nothing either way. */
+export function retainedPdaBindingAgrees(memberPda: PdaBinding | undefined, node: Pick<Node, "pda" | "pdaBindingUnreadable">): boolean {
+  if (node.pdaBindingUnreadable !== undefined) return false;
+  return memberPda?.agent === node.pda?.agent && memberPda?.baseUrl === node.pda?.baseUrl;
+}
+
 function agentRefFailureMessage(result: Extract<ReturnType<typeof resolveAgentRef>, { ok: false }>): string {
   return result.code === "validation_failed"
     ? (result as { errors: string[] }).errors.join("; ")
@@ -497,6 +506,17 @@ export class PodRigInstantiator {
     if (deps.db !== deps.nodeLauncher.db) throw new Error("PodRigInstantiator: nodeLauncher must share the same db handle");
     this.db = deps.db;
     this.deps = deps;
+  }
+
+  /** Daemon-wide uniqueness of a pda binding (pda-runtime-design-9l, "The seat spec"): one pda agent is driven by one
+   *  seat, in whatever rig. Archived rigs hold no live seat and do not count; `excludeRigIds` are the same-name rigs
+   *  that `rig up` is about to archive. Returns the refusal text, or null when the agent is free. The text names the
+   *  holding seat and rig, never a token. */
+  private pdaBindingConflict(binding: PdaBinding | undefined, opts?: { excludeRigIds?: readonly string[] }): string | null {
+    if (!binding) return null;
+    const holder = this.deps.rigRepo.findPdaBindingHolders(binding, opts)[0];
+    if (!holder) return null;
+    return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}"; one pda agent is driven by one seat`;
   }
 
   /** One configured catalog root for preflight, materialization, and launch. */
@@ -1239,7 +1259,7 @@ export class PodRigInstantiator {
     const initialRefusal = eligible();
     if (initialRefusal) return refuse(initialRefusal);
 
-    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy"]);
+    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda"]);
     if (Object.keys(memberFragment).some(key => !retainedFields.has(key))) return refuse("Retry accepts only retained member fields; topology and startup overrides require a separate change.");
     const rawSpec = { version: "0.2", name: rig.rig.name, pods: [{ id: podRow.namespace, label: podRow.label, members: [memberFragment], edges: [] }], edges: [] };
     const validation = PodRigSpecSchema.validate(rawSpec);
@@ -1263,7 +1283,8 @@ export class PodRigInstantiator {
       || !same(member.permissionPolicy, node.permissionPolicy)
       // A retry relaunches the seat from this member; one that dropped or added remote_control would
       // silently rewrite the persisted declaration, so it must agree with the retained seat.
-      || (member.remoteControl === true) !== (node.remoteControl === true)) return refuse("Member source disagrees with the retained seat identity or policy.");
+      || (member.remoteControl === true) !== (node.remoteControl === true)
+      || !retainedPdaBindingAgrees(member.pda, node)) return refuse("Member source disagrees with the retained seat identity or policy.");
     const resolved = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
     if (!resolved.ok) return refuse(agentRefFailureMessage(resolved));
     if (!node.resolvedSpecHash || resolved.resolved.hash !== node.resolvedSpecHash) return refuse("Agent source hash differs from the failed first start.");
@@ -1341,6 +1362,17 @@ export class PodRigInstantiator {
       countRunningSessions: makeRunningSessionCounter(this.db),
     }, rigSpec.name);
     if (!nameGuard.ok) return nameGuard;
+
+    // 1c. pda: one pda agent is driven by one seat, across every rig of this daemon. Before preflight/create/launch, so
+    // a refusal spends nothing. The same-name rigs this import will archive are not holders (they are archived in the
+    // creating transaction below, under the same tmuxProbe condition). In-spec duplicates are the schema's.
+    const replacedRigIds = this.deps.tmuxAdapter?.probeSession ? this.deps.rigRepo.findUnarchivedRigsByName(rigSpec.name).map((rig) => rig.id) : [];
+    for (const pod of rigSpec.pods) {
+      for (const member of pod.members) {
+        const conflict = this.pdaBindingConflict(member.pda, { excludeRigIds: replacedRigIds });
+        if (conflict) return { ok: false, code: "validation_failed", errors: [`${pod.id}.${member.id}: ${conflict}`] };
+      }
+    }
 
     // 2. Preflight
     const preflight = await rigPreflight({ rigSpecYaml, rigRoot, cwdOverride: opts?.cwdOverride, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext(), exec: this.deps.exec, claudeActivityAssets: this.deps.claudeActivityAssets });
@@ -1561,6 +1593,7 @@ export class PodRigInstantiator {
             model: member.model ?? configResult.config.model,
             effort: member.effort ?? configResult.config.effort,
             remoteControl: member.remoteControl,
+            pda: member.pda,
             codexConfigProfile: member.codexConfigProfile,
             // OPR.0.4.8.3 Seam B: bootstrap inline addNode is the FOURTH node-creation
             // site (see the role wire note above) — same member-ref persistence as
@@ -1913,12 +1946,17 @@ export class PodRigInstantiator {
     cwdOverride?: string;
   }) {
     const effectiveCwd = resolveLaunchCwd(input.member.cwd, input.rigRoot, input.cwdOverride);
+    // pda: the daemon-wide uniqueness check, here because every materialize/expand/add_member seat passes through this
+    // one door, and a seat created earlier in the same transaction is already visible to the next member's check.
+    const pdaConflict = this.pdaBindingConflict(input.member.pda);
+    if (pdaConflict) throw { code: "materialize_conflict", message: `${input.qualifiedId}: ${pdaConflict}` };
     const node = this.deps.rigRepo.addNode(input.rigId, input.qualifiedId, {
       role: input.member.role,
       runtime: input.member.runtime,
       model: input.member.model,
       effort: input.member.effort,
       remoteControl: input.member.remoteControl,
+      pda: input.member.pda,
       codexConfigProfile: input.member.codexConfigProfile,
       // OPR.0.4.8.3 Seam B: the member's OWN raw ref persists on the node (like role);
       // rig-level lives on the rig row; precedence applies at RESOLUTION, not storage.
@@ -2183,6 +2221,7 @@ export class PodRigInstantiator {
       // updateNodeResolvedConfig; a seat without one launches with exactly that authored value.
       effort: (readSeatEffort(this.deps.rigRepo.db, input.nodeId) ?? { effective: configResult.config.effort ?? null }).effective ?? undefined,
       ...(input.member.remoteControl ? { remoteControl: true } : {}),
+      ...(input.member.pda ? { pda: input.member.pda } : {}),
       codexConfigProfile: input.member.codexConfigProfile,
       // OPR.0.4.8.3 Seam B: resolved launch posture (member > rig > persisted > FLOOR)
       // binds per-seat explicitly; adapters thread it into the yolo-mode helpers.

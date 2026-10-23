@@ -175,6 +175,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       const mechanic = readMemberSpelling(m, "mechanic", "mechanic");
       const startup = readMemberSpelling(m, "startup", "startup");
       const mcpServers = readMemberSpelling(m, "mcp_servers", "mcp_servers");
+      const pda = readMemberSpelling(m, "pda", "pda");
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
@@ -214,6 +215,8 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         ...(startup.present ? { startup: startup.value } : {}),
         // mcp_servers: carried RAW so the expansion service refuses it by name instead of dropping it.
         ...(mcpServers.present ? { mcpServers: mcpServers.value } : {}),
+        // pda: PRESENCE-preserving RAW carry; the canonical validator owns the block shape and the runtime pairing.
+        ...(pda.present ? { pda: pda.value } : {}),
         // Presence-governed, never truthiness: null/false/primitive raw values
         // must survive to canonical validation, not vanish at a truthy check.
         ...(hasSessionSource ? { sessionSource } : {}),
