@@ -62,6 +62,12 @@ describe("pda-sse: framing", () => {
     for (let i = 1; i < crlf.length; i++) expect(parseAll(cutAt(crlf, [i]))).toEqual(["a", "b"]);
   });
 
+  it("a CRLF cut between its CR and its LF is ONE line end: two data lines of one event stay one event", () => {
+    const bytes = enc.encode("data: a\r\ndata: b\r\n\r\n");
+    expect(parseAll([bytes])).toEqual(["a\nb"]);
+    for (let i = 1; i < bytes.length; i++) expect(parseAll(cutAt(bytes, [i])), `cut at ${i}`).toEqual(["a\nb"]);
+  });
+
   it("strips one leading BOM and one leading space after the colon", () => {
     expect(parseAll([enc.encode("﻿data:  two spaces\n\n")])).toEqual([" two spaces"]);
   });

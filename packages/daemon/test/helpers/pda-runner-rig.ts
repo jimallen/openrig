@@ -110,8 +110,12 @@ export interface RigOptions {
   realStreams?: boolean;
   tokenFileContent?: string;
   tokenMode?: number;
-  /** Written to the outbox log before the runner starts. */
-  preseedOutbox?: string;
+  /** Written to the outbox log before the runner starts (a function gets the fake's base URL). */
+  preseedOutbox?: string | ((baseUrl: string) => string);
+  /** Written to release.request before the runner starts. */
+  preseedRelease?: boolean;
+  /** The alive tick. Default 40 ms; a large value leaves the attach-time poll as the only one. */
+  aliveIntervalMs?: number;
   /** Written to runner-state.json before the runner starts (a prior launch). */
   preseedSidecar?: PdaRunnerState;
   usage?: PdaUsageSink;
@@ -155,7 +159,11 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
   const tokenFile = path.join(dir, "token");
   fs.writeFileSync(tokenFile, options.tokenFileContent ?? BEARER, { mode: options.tokenMode ?? 0o600 });
   fs.chmodSync(tokenFile, options.tokenMode ?? 0o600);
-  if (options.preseedOutbox !== undefined) fs.writeFileSync(paths.outboxPath, options.preseedOutbox, { mode: 0o600 });
+  if (options.preseedOutbox !== undefined) {
+    const text = typeof options.preseedOutbox === "function" ? options.preseedOutbox(fake.baseUrl) : options.preseedOutbox;
+    fs.writeFileSync(paths.outboxPath, text, { mode: 0o600 });
+  }
+  if (options.preseedRelease) fs.writeFileSync(paths.releaseRequestPath, "", { mode: 0o600 });
   if (options.preseedSidecar) fs.writeFileSync(paths.runnerStatePath, JSON.stringify(options.preseedSidecar), { mode: 0o600 });
 
   const binding = { agent, baseUrl: fake.baseUrl };
@@ -194,7 +202,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
       const t = setTimeout(resolve, Math.min(ms, 5));
       signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
     }),
-    aliveIntervalMs: 40,
+    aliveIntervalMs: options.aliveIntervalMs ?? 40,
     backoffStartMs: 5,
     backoffCapMs: 20,
     usage: options.usage,

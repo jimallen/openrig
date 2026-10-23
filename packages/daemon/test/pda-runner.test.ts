@@ -88,6 +88,8 @@ describe("pda-runner: attach (T13 runner side, design 'Reconnect')", () => {
     await waitFor(() => rig.sidecar().error?.code === "pda_unreachable", "pda_unreachable in the sidecar");
     expect(rig.sidecar().ready).toBe(false);
     expect(rig.pane()).toContain("pda unreachable; retrying");
+    await new Promise((r) => setTimeout(r, 120)); // many retries later ...
+    expect(noReassert(rig.pane()).split("pda unreachable; retrying").length - 1).toBe(1); // ... still one notice a minute
     // It recovers when pda returns.
     rig.scripted.allDown = false;
     const stream = await rig.stream();
@@ -239,9 +241,12 @@ describe("pda-runner: busy/idle and activity (T7)", () => {
     const { rig, stream } = await attached();
     stream.push({ type: "tool_execution_start", toolName: "inner", toolCallId: "t2", parentToolCallId: "t1", args: {} });
     stream.push({ type: "tool_execution_end", toolCallId: "t2", parentToolCallId: "t1", result: "NESTEDOUTPUT" });
+    const quiet = rig.pane();
     stream.push({ type: "something_new_in_pda_1_4" });
     stream.raw("data: not json at all\n\n");
     stream.raw(": keep-alive\n\n");
+    await new Promise((r) => setTimeout(r, 40));
+    expect(rig.pane()).toBe(quiet); // an ignored event writes nothing, not even a bracketed-paste re-assertion
     stream.push({ type: "run_start" });
     await waitFor(() => rig.sidecar().busy, "run_start after the noise");
     expect(rig.pane()).not.toContain("inner");
@@ -463,10 +468,23 @@ describe("pda-runner: full output (T14, Jim's J-2)", () => {
     expect(pane).toContain(reply);
   });
 
+  it("a tool call's arguments show their first line, at most 160 characters; the output is not capped by that", async () => {
+    const { rig, stream } = await attached();
+    stream.push({ type: "tool_execution_start", toolName: "bash", toolCallId: "g1", args: { command: "x".repeat(500) } });
+    stream.push({ type: "tool_execution_start", toolName: "write", toolCallId: "g2", args: "first line\nsecond line SHOULD-NOT-SHOW" });
+    stream.push({ type: "run_start" });
+    await waitFor(() => rig.sidecar().busy, "processed");
+    const line = noReassert(rig.pane()).split("\n").find((l) => l.startsWith("  ⚙ bash: "))!;
+    expect(line.length).toBe("  ⚙ bash: ".length + 160);
+    expect(rig.pane()).toContain("  ⚙ write: first line\n");
+    expect(rig.pane()).not.toContain("SHOULD-NOT-SHOW");
+  });
+
   it("an error result is marked, and an empty one says so; thinking is never shown", async () => {
     const { rig, stream } = await attached();
     stream.push({ type: "tool_execution_end", toolCallId: "c2", isError: true, result: "boom\nsecond line" });
     stream.push({ type: "tool_execution_end", toolCallId: "c3", result: "" });
+    stream.push({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "THINKING DELTA SECRET" } });
     stream.push({ type: "message_end", entry: { id: "a7", model: [{ role: "assistant", content: [
       { type: "thinking", thinking: "SECRET INNER MONOLOGUE" }, { type: "text", text: "visible" }] }] } });
     await waitFor(() => rig.sidecar().lastEntryId === "a7", "done");
@@ -475,6 +493,7 @@ describe("pda-runner: full output (T14, Jim's J-2)", () => {
     expect(pane).toContain("  │ (no output)\n");
     expect(pane).toContain("visible");
     expect(pane).not.toContain("SECRET INNER MONOLOGUE");
+    expect(pane).not.toContain("THINKING DELTA SECRET");
   });
 
   it("a tool result is rendered once whether it arrives live or in a gap fill", async () => {
@@ -533,6 +552,7 @@ describe("pda-runner: no control sequence reaches the pane (T30)", () => {
     stream.push({ type: "run_start" });
     await waitFor(() => rig.sidecar().busy && rig.pane().includes("task failed"), "all processed");
     expect(forbidden(rig.pane())).toEqual([]);
+    expect(noReassert(rig.pane())).toContain('  ⚙ bash: {"command":"echo \\u001b[?2004l"}'); // the gap-filled call: name sanitised; JSON escapes the ESC in its arguments to inert text
     expect(rig.activity.map((a) => String(a.subtype))).toContain("tool"); // the tool name was sanitised before it left the process
     expect(JSON.stringify(rig.activity)).not.toContain(ESC);
   });
@@ -560,6 +580,18 @@ describe("pda-runner: exact-value redaction (T31)", () => {
     expect(pane).not.toContain(BEARER);
     expect(pane).not.toContain(HOOK_TOKEN);
     expect(pane).toContain("  │ key [redacted:pda-token] and hook [redacted:openrig-hook-token] end");
+  });
+
+  it("a secret with a terminal sequence spliced through it is still caught: redaction runs AFTER sanitising", async () => {
+    const { rig, stream } = await attached();
+    const spliced = `${BEARER.slice(0, 10)}${ESC}[0m${BEARER.slice(10, 30)}\u0007${BEARER.slice(30)}`;
+    stream.push({ type: "tool_execution_end", toolCallId: "sp1", result: `spliced: ${spliced}` });
+    stream.push({ type: "message_end", entry: assistantEntry("sp-a", `reply: ${spliced}`) });
+    await waitFor(() => rig.sidecar().lastEntryId === "sp-a", "done");
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain("  │ spliced: [redacted:pda-token]\n");
+    expect(pane).toContain("reply: [redacted:pda-token]\n");
+    expect(pane).not.toContain(BEARER.slice(0, 10));
   });
 
   it("a secret split across two text_deltas is still caught, and the text around it is preserved in order", async () => {
@@ -678,6 +710,17 @@ describe("pda-runner: input (T1, T2, T5, T5b wiring)", () => {
       expect(rig.fake.postBodies).toHaveLength(1);
       expect(rig.pane()).toContain("you ▸ From: a\n      To: b\n");
     } finally { t.editor.close(); }
+  });
+
+  it("the echo of a large paste is capped on the pane; the whole message is still what is sent", async () => {
+    const { rig } = await attached();
+    const big = `${"y".repeat(5000)}END`;
+    rig.runner.submit(big);
+    await waitFor(() => rig.fake.entries("research").length === 1, "sent");
+    expect(rig.fake.entries("research")[0]!.content).toBe(big);
+    const pane = noReassert(rig.pane());
+    expect(pane).toContain(`you ▸ ${"y".repeat(4000)} … (1003 more characters)\n`);
+    expect(pane).not.toContain("END");
   });
 
   it("T5: Ctrl-C clears the line, posts nothing, and says Ctrl-C never stops the agent", async () => {
@@ -829,6 +872,48 @@ describe("pda-runner: the outbox glue", () => {
     fs.writeFileSync(rig.paths.releaseRequestPath, "x".repeat(5000));
     await waitFor(() => !fs.existsSync(rig.paths.releaseRequestPath), "oversized consumed");
     expect(noReassert(rig.pane()).split("no message is held").length - 1).toBe(1);
+  });
+
+  it("release.request is also polled on attach: a hold from a previous launch is released by the first reconnect", async () => {
+    const id = "openrig/node-under-test/launch-0/1";
+    const rig = await started({
+      aliveIntervalMs: 600_000, // the tick cannot be what releases it
+      preseedRelease: true,
+      preseedOutbox: (baseUrl) => [
+        JSON.stringify({ op: "enq", requestId: id, agent: "research", baseUrl, content: "held from before", at: "2026-01-01T00:00:00.000Z" }),
+        JSON.stringify({ op: "hold", requestId: id, code: "pda_message_held", status: 500, attempts: 6, at: "2026-01-01T00:00:01.000Z" }),
+      ].join("\n") + "\n",
+    });
+    expect(rig.sidecar().held).toMatchObject({ requestId: id });
+    const s = await rig.stream();
+    s.push({ type: "snapshot", run: null });
+    await waitFor(() => rig.fake.entries("research").length === 1, "released and delivered by the attach-time poll");
+    expect(rig.fake.entries("research")[0]!.content).toBe("held from before");
+    expect(fs.existsSync(rig.paths.releaseRequestPath)).toBe(false);
+  });
+
+  it("the alive tick rewrites the sidecar: aliveAt advances while nothing else happens", async () => {
+    const { rig } = await attached();
+    const first = rig.sidecar().aliveAt;
+    await waitFor(() => rig.sidecar().aliveAt !== first, "aliveAt to advance");
+    expect(Date.parse(rig.sidecar().aliveAt)).toBeGreaterThan(Date.parse(first));
+    expect(rig.sidecar().ready).toBe(true);
+  });
+
+  it("while the stream is down but pda is reachable, a saved message is NOT posted until the runner has re-attached", async () => {
+    const { rig, stream } = await attached();
+    rig.scripted.eventsDown = true; // /health, the agent and POSTs still work; only the stream is refused
+    stream.error();
+    await waitFor(() => !rig.sidecar().connected, "disconnected");
+    rig.runner.submit("typed while detached");
+    await waitFor(() => rig.sidecar().outboxPending === 1, "saved");
+    await new Promise((r) => setTimeout(r, 120));
+    expect(rig.fake.postBodies).toEqual([]);
+    rig.scripted.eventsDown = false;
+    const s2 = await rig.stream(2);
+    s2.push({ type: "snapshot", run: null });
+    await waitFor(() => rig.fake.entries("research").length === 1, "delivered after the re-attach");
+    expect(rig.fake.postBodies).toHaveLength(1);
   });
 
   it("a symlinked release.request is consumed (the link, not its target) and never applied", async () => {
@@ -1031,9 +1116,14 @@ describe("pda-runner: the real process (node --import tsx)", () => {
       sessionName: rig.args.sessionName, stateRoot: rig.args.stateRoot, launchId: "proc-launch",
       binding: { agent: "research", baseUrl: rig.args.baseUrl }, tokenFile: rig.args.tokenFile,
     });
-    const p = runProcess(argv, { OPENRIG_NODE_ID: "proc-node" });
+    fs.chmodSync(rig.paths.seatRoot, 0o755); // a directory made too open by someone else: the runner closes it
+    const p = runProcess(argv, { OPENRIG_NODE_ID: "proc-node", OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK_TOKEN });
     try {
       await waitFor(() => p.out().includes("[pda-runner] READY agent=research"), "READY from the real process", 20000);
+      const secretLine = `paste: ${BEARER} and ${HOOK_TOKEN}`;
+      p.child.stdin.write(`${secretLine}\n`);
+      await waitFor(() => p.out().includes("you ▸ paste: [redacted:pda-token] and [redacted:openrig-hook-token]"), "the echo, redacted", 10000);
+      await waitFor(() => rig.fake.entries("research").some((e) => e.content === secretLine), "the line as typed reached pda", 10000); // the operator's own input is sent as typed
       p.child.stdin.write("hello from stdin\n");
       await waitFor(() => rig.fake.entries("research").some((e) => e.content === "hello from stdin"), "the message arrived", 10000);
       const entry = rig.fake.entries("research").find((e) => e.content === "hello from stdin")!;
