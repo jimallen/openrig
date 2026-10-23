@@ -23,7 +23,8 @@
 // `uncaughtException` / `unhandledRejection` handlers print a code and exit 70.
 //
 // Exit codes: 0 stopped (SIGTERM, SIGHUP, input closed); 2 bad arguments; 3 the agent does not exist (OpenRig
-// never creates one); 4 the token file is not usable; 70 internal.
+// never creates one); 4 the token file is not usable; 5 the outbox log could not be written (it is poisoned: a
+// restart reopens and repairs it, and the runner does not retry on top of a possibly torn log); 70 internal.
 
 import fs from "node:fs";
 import nodePath from "node:path";
@@ -37,7 +38,7 @@ import {
   createPdaClient, pdaTokenSourceFromFile,
   type PdaCallFailure, type PdaClient, type PdaTokenReadResult,
 } from "./pda-client.js";
-import { PdaOutbox, type PdaAttemptOutcome } from "./pda-outbox.js";
+import { PdaOutbox, PdaOutboxPoisonedError, type PdaAttemptOutcome } from "./pda-outbox.js";
 import { PdaSseOverflowError, PdaSseParser, parsePdaEventData, type PdaStreamEvent } from "./pda-sse.js";
 import {
   HOOK_TOKEN_MARKER, PDA_TOKEN_MARKER, PdaPane, argsFirstLine, entryView, resultText, textDeltaOf,
@@ -199,6 +200,7 @@ export class PdaRunner {
   private error: { code: PdaRunnerErrorCode; at: string } | null = null;
   private exited: { code: number | null; at: string } | null = null;
   private finished = false;
+  private finalCode = 0;
   private everAttached = false;
   private unknownEvents = 0;
   private aliveTimer: ReturnType<typeof setInterval> | undefined;
@@ -229,10 +231,12 @@ export class PdaRunner {
 
   /** An Enter after a paste: one block, one message. Durable before anything is posted. */
   submit(block: string): void {
+    if (this.finished) return;
     let result: ReturnType<PdaOutbox["enqueue"]>;
     try {
       result = this.deps.outbox.enqueue(block);
-    } catch {
+    } catch (err) {
+      if (this.exitIfPoisoned(err)) return;
       this.pane.line(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_write_failed: the message was NOT saved and will NOT be sent`);
       this.pane.endBatch();
       return;
@@ -257,6 +261,18 @@ export class PdaRunner {
   stop(): void {
     this.stopper.abort();
     this.currentStream?.close();
+  }
+
+  /** The outbox log could not be written (L1a: it is poisoned until reopened). Say so by code and stop: a
+   *  restart reopens the outbox, which rewrites the log and drops any torn tail. Never retry on top of it. */
+  private exitIfPoisoned(err: unknown): boolean {
+    if (!(err instanceof PdaOutboxPoisonedError) && !this.deps.outbox.poisoned) return false;
+    if (!this.finished) {
+      this.pane.line(`${PDA_RUNNER_ERROR_MARKER} pda_outbox_poisoned: the message log could not be written; the last message may not have been saved. Restart the seat to repair the log`);
+      this.pane.endBatch();
+      this.finish(5);
+    }
+    return true;
   }
 
   /** Record a fatal internal error: a code, never a message. Returns the exit code to use. */
@@ -321,8 +337,9 @@ export class PdaRunner {
   }
 
   private finish(code: number): number {
-    if (this.finished) return code;
+    if (this.finished) return this.finalCode;
     this.finished = true;
+    this.finalCode = code;
     if (this.aliveTimer) clearInterval(this.aliveTimer);
     this.ready = false;
     this.connected = false;
@@ -718,9 +735,11 @@ export class PdaRunner {
             signal, sleep: this.sleep, onOutcome: (outcome) => this.onOutcome(outcome),
           });
         } while (this.pumpAgain && !signal.aborted);
-      } catch {
-        this.pane.line(`${PDA_RUNNER_ERROR_MARKER} internal (delivery)`);
-        this.pane.endBatch();
+      } catch (err) {
+        if (!this.exitIfPoisoned(err)) {
+          this.pane.line(`${PDA_RUNNER_ERROR_MARKER} internal (delivery)`);
+          this.pane.endBatch();
+        }
       } finally {
         this.pumping = false;
         this.writeSidecar();
@@ -772,7 +791,13 @@ export class PdaRunner {
     if (!st) return;
     this.deps.fs.remove(file);
     if (!st.isFile || st.size > 4096) return;
-    const released = this.deps.outbox.release();
+    let released: string | null;
+    try {
+      released = this.deps.outbox.release();
+    } catch (err) {
+      if (!this.exitIfPoisoned(err)) throw err;
+      return;
+    }
     this.pane.line(released
       ? "[pda-runner] release requested: retrying the held message"
       : "[pda-runner] release requested, but no message is held");
@@ -905,6 +930,11 @@ export function createActivityPoster(
   };
 }
 
+/** What the client is told to redact from pda's error text besides the bearer (which it names itself). */
+export function pdaClientRedactions(hookToken: string): Array<{ value: string; marker: string }> {
+  return hookToken.length > 0 ? [{ value: hookToken, marker: HOOK_TOKEN_MARKER }] : [];
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
@@ -938,7 +968,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     ...(hookToken.length > 0 ? [{ value: hookToken, marker: HOOK_TOKEN_MARKER }] : []),
   ];
 
-  const client = createPdaClient({ binding: args.binding, readToken: trackedSource, redact: hookToken ? [hookToken] : [] });
+  const client = createPdaClient({ binding: args.binding, readToken: trackedSource, redact: pdaClientRedactions(hookToken) });
   const outbox = PdaOutbox.open({ paths, binding: args.binding, nodeId, launchId: args.launchId });
   const runner = new PdaRunner({
     args, nodeId, generation, client, outbox,

@@ -21,7 +21,7 @@ import { sanitizeForPane } from "./pda-runner-protocol.js";
 // ── Secrets the runner holds ─────────────────────────────────────────────────
 
 export interface PdaSecret { value: string; marker: string }
-export const PDA_TOKEN_MARKER = "[redacted:pda-token]";
+export { PDA_TOKEN_MARKER } from "./pda-client.js";
 export const HOOK_TOKEN_MARKER = "[redacted:openrig-hook-token]";
 
 /** Exact-value redaction with a tail buffer for streamed text. `secrets` is read at every call, so a rotated

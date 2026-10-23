@@ -12,8 +12,8 @@ import path from "node:path";
 import {
   createPdaClient, readPdaTokenFile, type PdaTokenReadResult,
 } from "../../src/adapters/pda-client.js";
-import { PdaOutbox } from "../../src/adapters/pda-outbox.js";
-import { PdaRunner, nodeRunnerFs, type PdaRunnerDeps, type PdaUsageSink } from "../../src/adapters/pda-runner.js";
+import { PdaOutbox, nodeOutboxFs, type OutboxFs } from "../../src/adapters/pda-outbox.js";
+import { PdaRunner, nodeRunnerFs, pdaClientRedactions, type PdaRunnerDeps, type PdaUsageSink } from "../../src/adapters/pda-runner.js";
 import { HOOK_TOKEN_MARKER, PDA_TOKEN_MARKER } from "../../src/adapters/pda-render.js";
 import {
   parsePdaRunnerState, pdaSeatPaths, type PdaRunnerState, type PdaSeatPaths,
@@ -129,6 +129,8 @@ export interface Rig {
   scripted: ScriptedPda;
   paths: PdaSeatPaths;
   runner: PdaRunner;
+  /** Set `fault.failWhen` to make the outbox's next matching write throw (a full disk), after the first append. */
+  fault: { failWhen: ((data: string) => boolean) | null };
   /** Everything the runner wrote to the pane, in order. */
   pane(): string;
   activity: Array<Record<string, unknown>>;
@@ -175,10 +177,18 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
     return res;
   };
   const client = createPdaClient({
-    binding, readToken, timeoutMs: 3000, redact: [HOOK_TOKEN],
+    binding, readToken, timeoutMs: 3000, redact: pdaClientRedactions(HOOK_TOKEN),
     fetchImpl: options.realStreams ? globalThis.fetch : scripted.fetchImpl,
   });
-  const outbox = PdaOutbox.open({ paths, binding, nodeId: "node-under-test", launchId: "launch-1" });
+  const fault: Rig["fault"] = { failWhen: null };
+  const faultyFs: OutboxFs = {
+    ...nodeOutboxFs,
+    write: (fd, data) => {
+      if (fault.failWhen?.(data)) throw Object.assign(new Error(`disk trouble, bearer ${BEARER}`), { code: "ENOSPC" });
+      return nodeOutboxFs.write(fd, data);
+    },
+  };
+  const outbox = PdaOutbox.open({ paths, binding, nodeId: "node-under-test", launchId: "launch-1", fs: faultyFs });
   let pane = "";
   const activity: Array<Record<string, unknown>> = [];
   const deps: PdaRunnerDeps = {
@@ -209,7 +219,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
   };
   const runner = new PdaRunner(deps);
   const rig: Rig = {
-    dir, fake, scripted, paths, runner, activity, done: null,
+    dir, fake, scripted, paths, runner, fault, activity, done: null,
     args: { sessionName, stateRoot, launchId: "launch-1", agent, baseUrl: fake.baseUrl, tokenFile, nodeId: "node-under-test" },
     pane: () => pane,
     start() { rig.done = runner.run(); return rig.done; },

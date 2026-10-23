@@ -14,7 +14,7 @@ import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  PdaRunner, fatalLabel, installPdaRunnerFatalHandlers, parsePdaRunnerArgv, wirePdaRunnerInput, createActivityPoster,
+  PdaRunner, pdaClientRedactions, fatalLabel, installPdaRunnerFatalHandlers, parsePdaRunnerArgv, wirePdaRunnerInput, createActivityPoster,
 } from "../src/adapters/pda-runner.js";
 import { PdaPane, PdaRedactor, argsFirstLine, entryView } from "../src/adapters/pda-render.js";
 import { buildPdaRunnerArgv, PDA_DEFAULT_BASE_URL } from "../src/adapters/pda-runner-protocol.js";
@@ -1029,6 +1029,94 @@ describe("pda-runner: the outbox glue", () => {
     expect(rig.sidecar()).toMatchObject({ setAside: 1, outboxPending: 0, error: { code: "pda_outbox_binding_mismatch" } });
     expect(rig.fake.postBodies).toEqual([]);
     expect(rig.outboxRaw()).toContain("meant for the other agent");
+  });
+});
+
+// ── A poisoned outbox (L1a 0d1ff178): stop with a code, never retry on a possibly torn log ──
+
+describe("pda-runner: a poisoned outbox ends the runner with a code", () => {
+  const POISON_LINE = "[pda-runner] ERROR pda_outbox_poisoned";
+
+  it("a failed append while saving a message: exit 5, a code on the pane, the message is not posted, nothing retried, and the canary in the error is nowhere", async () => {
+    const { rig } = await attached();
+    rig.fault.failWhen = (data) => data.includes('"op":"enq"');
+    rig.runner.submit("this cannot be saved");
+    expect(await rig.done).toBe(5);
+    expect(rig.pane()).toContain(POISON_LINE);
+    expect(rig.pane()).toContain("[pda-runner] EXITED code=5");
+    expect(rig.pane()).not.toContain("pda_outbox_write_failed"); // the generic failure is not what is said
+    for (const surface of [rig.pane(), rig.sidecarRaw()]) { expect(surface).not.toContain(BEARER); expect(surface).not.toContain("ENOSPC"); }
+    expect(rig.sidecar()).toMatchObject({ ready: false, exited: { code: 5 } });
+    expect(rig.fake.postBodies).toEqual([]);
+    // The runner is finished: a second paste is ignored rather than retried on top of the log.
+    const before = rig.pane();
+    rig.runner.submit("typed after the failure");
+    expect(rig.pane()).toBe(before);
+    expect(rig.outboxRaw()).not.toContain("typed after the failure");
+  });
+
+  it("after the runner has finished for any reason, a paste is not saved and nothing is printed", async () => {
+    const { rig } = await attached();
+    rig.runner.fatal("TEST");
+    const before = rig.pane();
+    rig.runner.submit("typed too late");
+    expect(rig.pane()).toBe(before);
+    expect(rig.outboxRaw()).not.toContain("typed too late");
+    expect(await rig.done).toBe(70);
+  });
+
+  it("a failed ack append after pda admitted the message: exit 5, and the log keeps the enq with no ack, so a restart replays it under the same id", async () => {
+    const { rig } = await attached();
+    rig.fault.failWhen = (data) => data.includes('"op":"ack"');
+    rig.runner.submit("admitted but not acked");
+    expect(await rig.done).toBe(5);
+    expect(rig.pane()).toContain(POISON_LINE);
+    expect(rig.fake.entries("research")).toHaveLength(1); // pda has it ...
+    const log = rig.outboxRaw();
+    expect(log).toContain('"op":"enq"');
+    expect(log).not.toContain('"op":"ack"'); // ... and the log will say "pending", so the replay is exactly-once by requestId
+    expect(rig.pane()).not.toContain("internal (delivery)");
+    expect(rig.fake.postBodies).toHaveLength(1);
+  });
+
+  it("a failed release append (from release.request): exit 5", async () => {
+    const { rig } = await attached();
+    const five = { action: "status" as const, status: 500 };
+    rig.fake.script(five, five, five, five, five, five);
+    rig.runner.submit("held first");
+    await waitFor(() => rig.sidecar().held !== undefined, "held");
+    rig.fault.failWhen = (data) => data.includes('"op":"release"');
+    fs.writeFileSync(rig.paths.releaseRequestPath, "", { mode: 0o600 });
+    expect(await rig.done).toBe(5);
+    expect(rig.pane()).toContain(POISON_LINE);
+    expect(rig.fake.entries("research")).toEqual([]);
+  });
+
+  it("an enqueue error that is NOT a poisoned log (the size pre-check is fine, the request-id counter cannot be saved) says so plainly and keeps running", async () => {
+    const { rig } = await attached();
+    rig.fault.failWhen = (data) => /^[0-9]+\n$/.test(data); // only the .seq counter write
+    rig.runner.submit("counter cannot be saved");
+    await waitFor(() => rig.pane().includes("pda_outbox_write_failed"), "the generic failure");
+    expect(rig.pane()).not.toContain(POISON_LINE);
+    expect(rig.sidecar().exited).toBeUndefined();
+    rig.fault.failWhen = null;
+    rig.runner.submit("next one is fine");
+    await waitFor(() => rig.fake.entries("research").length === 1, "delivered");
+  });
+});
+
+describe("pda-runner: what the client is told to redact", () => {
+  it("names the hook token's marker, and nothing when there is no hook token", async () => {
+    expect(pdaClientRedactions("")).toEqual([]);
+    expect(pdaClientRedactions(HOOK_TOKEN)).toEqual([{ value: HOOK_TOKEN, marker: "[redacted:openrig-hook-token]" }]);
+  });
+
+  it("a pda error naming both tokens reaches the pane with each token's own marker", async () => {
+    const { rig } = await attached();
+    rig.fake.script({ action: "status", status: 400, body: { error: `bad request ${HOOK_TOKEN} and ${BEARER}` } });
+    rig.runner.submit("provokes a 400");
+    await waitFor(() => rig.pane().includes("not delivered: 400"), "rejection line");
+    expect(noReassert(rig.pane())).toContain("not delivered: 400 bad request [redacted:openrig-hook-token] and [redacted:pda-token]\n");
   });
 });
 
