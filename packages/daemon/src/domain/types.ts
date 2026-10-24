@@ -183,6 +183,8 @@ export type RigEvent =
   // on an operator set (`operator_set`) and on reconcile capture-on-adopt
   // (`reconcile_capture`). NEVER carries the raw token (credential-class);
   // `redacted: true` marks that the token value is intentionally omitted.
+  /** pda L2a: an operator asked a pda seat's runner to retry its held message (ids and codes only, never content). */
+  | { type: "seat.pda_release_requested"; rigId: string; nodeId: string; sessionName: string; heldRequestId: string; heldCode: string; reason: string; actor: string | null }
   | { type: "session.resume_token_set"; rigId: string; nodeId: string; sessionName: string; sessionId: string; resumeType: string; previousProvenance: "hook" | "scrape" | "operator" | null; newProvenance: "operator" | "scrape"; source: "operator_set" | "reconcile_capture"; reason?: string; operator?: string; redacted: true }
   // OPR.0.4.3.20 FR-3 — append-only observability of an adoption-boundary
   // resume-token capture (reconcile / adopt / bind). `captured` records a

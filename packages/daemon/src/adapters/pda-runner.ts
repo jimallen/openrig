@@ -883,7 +883,7 @@ export class PdaRunner {
         }
         break;
       case "held":
-        this.pane.line(`${PDA_RUNNER_ERROR_MARKER} ${outcome.code}: ${HELD_TEXT[outcome.code]}; later messages wait behind it. Resolve with: rig seat pda-release`);
+        this.pane.line(`${PDA_RUNNER_ERROR_MARKER} ${outcome.code}: ${HELD_TEXT[outcome.code]}; later messages wait behind it. Resolve with: rig seat pda-release ${this.deps.args.sessionName} --reason "<why>"`);
         break;
       case "rejected": {
         const detail = outcome.detail ? ` ${outcome.detail}` : "";

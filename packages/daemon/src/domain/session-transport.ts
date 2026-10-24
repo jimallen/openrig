@@ -1139,7 +1139,7 @@ const RUNNER_SEAM_FAILURES: ReadonlySet<string> = new Set([
  *  runner-hosted seat takes only bracketed input, and what holds it is the runner's, not a picker's. */
 function needsInputRefusal(sessionName: string, readiness: AgentActivity): string {
   if (readiness.evidenceSource === "runner_sidecar") {
-    return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName}). No text was sent.`;
+    return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName} --reason "<why>"). No text was sent.`;
   }
   return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`;
 }

@@ -987,6 +987,45 @@ tokens), and the occupant-tenure ledger are untouched. A live seat is refused
       });
     });
 
+  // pda L2a — the command a pda-runner's held-message line and `rig send`'s refusal name: ask the seat's runner to retry
+  // its held message once more. The daemon writes the runner's control file in the seat's own state dir; the CLI never
+  // touches a file itself.
+  cmd
+    .command("pda-release")
+    .argument("<session>", "Canonical session name of the pda seat (e.g. dev-research@my-rig)")
+    .requiredOption("--reason <text>", "Why the held message should be retried (recorded in the audit event)")
+    .option("--operator <address>", "Operator address recorded in the audit event (outside a managed seat)")
+    .option("--json", "JSON output for agents")
+    .description("Retry a pda seat's held message once more (its runner applies the release within 60 s)")
+    .addHelpText("after", `
+A held message waits at the head of the seat's queue after pda refused it repeatedly (or the agent or the token
+was missing); later messages wait behind it. A release retries it once more. If pda already took that message on an
+earlier attempt that never answered, it may be delivered twice. Example:
+  rig seat pda-release dev-research@my-rig --reason "pda restarted; retry the held message"
+`)
+    .action(async (session: string, opts: { reason: string; operator?: string; json?: boolean }) => {
+      const deps = getDeps();
+      const status = await getDaemonStatus(deps.lifecycleDeps);
+      if (!daemonStatusGuard(status)) return;
+      const client = deps.clientFactory(getDaemonUrl(status));
+      const res = await client.post<Record<string, unknown>>(
+        `/api/sessions/${encodeURIComponent(session)}/pda-release`,
+        { reason: opts.reason, ...(opts.operator ? { operator: opts.operator } : {}) },
+        { headers: terminalAuthHeaders() },
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(res.data));
+        if (res.status >= 400) process.exitCode = 1;
+        return;
+      }
+      if (res.status >= 400) {
+        console.error(`error: ${String(res.data["error"] ?? res.data["message"] ?? "unknown")}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(String(res.data["message"] ?? `Release requested for ${session}.`));
+    });
+
   // OPR.0.4.0.22 — set a managed seat's durable resume token (attested + audited).
   // The token is read from STDIN ONLY (never a positional argv, which would leak
   // via shell history + argv/ps) and is NEVER echoed back.

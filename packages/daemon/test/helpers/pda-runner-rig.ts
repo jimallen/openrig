@@ -121,6 +121,8 @@ export interface RigOptions {
   usage?: PdaUsageSink;
   usageFacts?: boolean;
   fakeDedupe?: boolean;
+  /** The seat's session name (default "seat-under-test"); a registry-backed test needs a canonical one. */
+  sessionName?: string;
   /** Leave the runner's user-message hold at its production default (the rig otherwise shortens it to 25 ms). */
   defaultHold?: boolean;
 }
@@ -159,7 +161,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
   const fake = await startFakePda({ token: BEARER, agents: options.agents ?? [agent, "research"], dedupe: options.fakeDedupe });
   const scripted = new ScriptedPda();
   const stateRoot = path.join(dir, "state");
-  const sessionName = "seat-under-test";
+  const sessionName = options.sessionName ?? "seat-under-test";
   const paths = pdaSeatPaths(stateRoot, sessionName);
   fs.mkdirSync(paths.seatRoot, { recursive: true, mode: 0o700 });
   const tokenFile = path.join(dir, "token");
