@@ -128,7 +128,9 @@ describe("every fresh-start suggestion is a command that works in the state it i
       expect(line, line).not.toMatch(/Re-run with --fresh/);
       if (noFreshRemedy.test(line)) { expect(line, line).not.toMatch(/--fresh|freshSeatLaunchCommand|freshStartCommand/); continue; }
       // OF-32 stage 3: and every one carries the restore's `--startup-from` choice, so the stored escape is not lost.
-      expect(line, line).toMatch(/this\.freshStartCommand\(rigId, data, node\.logicalId, opts\?\.startupFrom\)|freshSeatLaunchCommand\(logicalId, input\.rigName, input\.startupFrom\)/);
+      // pda L2a round 2 (review N5): the orchestrator's lines go through freshStartAdvice, which builds the same command
+      // with the same `--startup-from` choice for every runtime that has a fresh start, and the no-fresh-start remedy otherwise.
+      expect(line, line).toMatch(/this\.freshStartAdvice\(rigId, data, node\.logicalId, opts\?\.startupFrom[,)]|freshSeatLaunchCommand\(logicalId, input\.rigName, input\.startupFrom\)/);
     }
   });
 });

@@ -74,6 +74,16 @@ describe("the activity hook route never sets a pda seat's resume token", () => {
     expect(updateResumeToken).not.toHaveBeenCalled();
   });
 
+  // Review N1 (mutant R1c): the BODY's runtime claim is load-bearing on its own. A hook claiming pda against a seat of
+  // another runtime would otherwise store a pda_agent token over that seat's own (the next restore picks the wrong adapter).
+  it.each(["claude-code", "codex", "terminal", "stub"])("N1: a hook claiming runtime pda against a %s seat is 409 and stores nothing", async (seatRuntime) => {
+    const { post, updateResumeToken } = app(seatRuntime);
+    const res = await post({ eventFamily: "session_identity", sessionName: "seat@rig", sessionId: "http://127.0.0.1:9999/agents/evil", runtime: "pda" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ ok: false, code: "session_identity_not_accepted", tokenPersisted: false });
+    expect(updateResumeToken).not.toHaveBeenCalled();
+  });
+
   it("control: a codex seat's hook still records its token", async () => {
     const { post, updateResumeToken } = app("codex");
     const res = await post({ eventFamily: "session_identity", sessionName: "seat@rig", sessionId: "thread-abc", runtime: "codex" });
@@ -119,6 +129,20 @@ describe("restore of a pda token: the D4 binding warning, and the legacy pda res
   it("the saved binding is damaged: restore says it resumes the token's agent and the binding needs repair", async () => {
     const { snapshotId } = await seatWithPdaToken("http://127.0.0.1:8150/agents/research", "{damaged");
     expect(await restoreWarnings(snapshotId)).toContain("saved pda binding cannot be read (pda_binding is not JSON); restore resumes pda agent 'research'");
+  });
+
+  it("review N5: the restore orchestrator's stop-for-decision advice never suggests --fresh for a pda seat; other seats keep it", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    const snapshotId = await h.down(seat.rigId);
+    const data = h.snapshotRepo.getSnapshot(snapshotId)!.data;
+    const advice = (h.restore as unknown as { freshStartAdvice(r: string, d: unknown, l: string, s?: string): string }).freshStartAdvice.bind(h.restore);
+    expect(advice(seat.rigId, data, "dev.impl")).toContain("To start only this seat fresh, run: rig seat launch 'dev.impl@team' --fresh");
+    h.db.prepare("UPDATE nodes SET runtime = 'pda' WHERE id = ?").run(seat.nodeId);
+    const pda = advice(seat.rigId, data, "dev.impl");
+    expect(pda).toContain("has no fresh start");
+    expect(pda).toContain("rig seat set-resume-token 'dev.impl@team' --token-stdin");
+    expect(pda).not.toContain("--fresh");
   });
 
   it("legacy path (attemptResume): a pda token goes to the pda resume adapter; attention stays attention, never retry_fresh", async () => {

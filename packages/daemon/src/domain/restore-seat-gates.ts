@@ -19,7 +19,7 @@ import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 /** pda L2a (design T29b): what a stop-for-decision tells the operator to do about a seat whose runtime has no fresh
  *  start, instead of a `--fresh` command that would then be refused. Its resume token is its binding (no secret), so
  *  the way back is to record the token and resume; the token is never quoted from the snapshot here. */
-function noFreshStartRemedy(runtime: string, logicalId: string, rigName: string): string {
+export function noFreshStartRemedy(runtime: string, logicalId: string, rigName: string): string {
   const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
   return `A ${runtime} seat has no fresh start (${runtime} owns the conversation). To resume it, record the agent its spec binds as its resume token, `
     + `printf '%s' 'http://127.0.0.1:<port>/agents/<agent>' | rig seat set-resume-token ${seat} --token-stdin --reason "<why>", `

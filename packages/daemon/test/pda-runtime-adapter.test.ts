@@ -165,6 +165,23 @@ describe("PdaRuntimeAdapter.launchHarness", () => {
     expect(asked).toEqual([{ agent: "research", nodeId: "node-1" }, { agent: "zeta", nodeId: "node-1" }]);
   });
 
+  it("R15: a token path that is not a regular file (a directory) is refused the same way, nothing typed", async () => {
+    fs.rmSync(tokenFile);
+    fs.mkdirSync(tokenFile);
+    const { adapter: a, tmux } = adapter();
+    const result = await a.launchHarness(binding(), { name: SESSION });
+    expect(result).toMatchObject({ ok: false, recovery: "attention_required", error: expect.stringContaining("is not a regular file") });
+    expect(tmux.commands).toEqual([]);
+  });
+
+  it("N4: the exit-3 refusal says how to retry once the agent exists (the runner has exited; nothing retries by itself)", async () => {
+    const { adapter: a, tmux } = adapter();
+    tmux.onCommand = () => writeSidecar(state({ ready: false, connected: false, exited: { code: 3, at: NOW.toISOString() }, error: { code: "pda_agent_missing", at: NOW.toISOString() } }));
+    const result = await a.launchHarness(binding(), { name: SESSION });
+    expect(result).toMatchObject({ ok: false, recovery: "attention_required" });
+    expect((result as { error: string }).error).toContain("then run: rig up <rig> --existing");
+  });
+
   it("a missing token file needs a person: attention_required, nothing typed; the daemon only lstats it", async () => {
     fs.rmSync(tokenFile);
     const { adapter: a, tmux } = adapter();
@@ -232,6 +249,19 @@ describe("PdaRuntimeAdapter.checkReady", () => {
     expect(await adapter({}, { pane: "" }).adapter.checkReady(binding())).toMatchObject({ ready: false, code: "awaiting_runtime" });
   });
 
+  it("N3: checkReady applies sendReadiness's 180 s alive window: a ready sidecar with no tick for longer is not ready", async () => {
+    const stale = new Date(NOW.getTime() - PDA_SIDECAR_ALIVE_WINDOW_MS - 1).toISOString();
+    writeSidecar(state({ aliveAt: stale }));
+    const result = await adapter({}, { pane: "[pda-runner] READY agent=research" }).adapter.checkReady(binding());
+    expect(result).toMatchObject({ ready: false, code: "runner_stale" });
+    expect(isAttentionRequiredReadinessCode(result.code)).toBe(false);
+    writeSidecar(state({ aliveAt: new Date(NOW.getTime() + PDA_SIDECAR_ALIVE_WINDOW_MS + 1).toISOString() }));
+    expect(await adapter().adapter.checkReady(binding())).toMatchObject({ ready: false, code: "runner_stale" });
+    // control: inside the window it is ready
+    writeSidecar(state({ aliveAt: new Date(NOW.getTime() - PDA_SIDECAR_ALIVE_WINDOW_MS).toISOString() }));
+    expect(await adapter().adapter.checkReady(binding())).toEqual({ ready: true });
+  });
+
   it("a sidecar that cannot be read is no sidecar: checkReady falls back to the READY marker and never throws", async () => {
     writeSidecar(state({ ready: false, exited: { code: 3, at: NOW.toISOString() } }));
     const unreadable = adapter({ fsOps: { readFile: () => { throw Object.assign(new Error("EIO"), { code: "EIO" }); }, exists: () => true, lstat: () => null } },
@@ -287,6 +317,13 @@ describe("PdaRuntimeAdapter.sendReadiness", () => {
     const edge = new Date(NOW.getTime() - PDA_SIDECAR_ALIVE_WINDOW_MS).toISOString();
     writeSidecar(state({ aliveAt: edge }));
     expect(await ask()).toMatchObject({ state: "idle" }); // the window is inclusive
+    // N2: the window is two-sided: an aliveAt in the future (a clock jump, a forged file) is no answer either.
+    writeSidecar(state({ aliveAt: new Date(NOW.getTime() + 60 * 60_000).toISOString() }));
+    expect(await ask()).toBeNull();
+    writeSidecar(state({ aliveAt: new Date(NOW.getTime() + PDA_SIDECAR_ALIVE_WINDOW_MS + 1).toISOString() }));
+    expect(await ask()).toBeNull();
+    writeSidecar(state({ aliveAt: new Date(NOW.getTime() + PDA_SIDECAR_ALIVE_WINDOW_MS).toISOString() }));
+    expect(await ask()).toMatchObject({ state: "idle" });
     writeSidecar(state({ aliveAt: "not a date" }));
     expect(await ask()).toBeNull();
     writeSidecar(state());

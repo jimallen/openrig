@@ -72,11 +72,19 @@ export interface PdaRuntimeAdapterDeps {
 /** What the runner's exit code means for a launch (pda-runner.ts header). */
 const EXIT_TEXT: Record<number, string> = {
   2: "the runner refused its arguments",
-  3: "pda has no such agent (OpenRig never creates one; create it in pda, or re-instantiate the seat on another agent)",
+  3: "pda has no such agent (OpenRig never creates one). Create it in pda, or re-instantiate the seat on another agent; the runner has exited and nothing retries by itself, so once the agent exists, then run: rig up <rig> --existing",
   4: "pda's token file is not usable (check $OPENRIG_PDA_TOKEN_FILE or ~/.pi-durable/token: a regular file, yours, mode 0600)",
   5: "the seat's message log could not be opened (fix or move it while the seat is down)",
   70: "the runner stopped on an internal error",
 };
+
+/** The ONE alive rule both readers apply (review N2, N3): a sidecar is the runner's word only while its aliveAt is
+ *  within the window on either side of now. The runner rewrites it at least every 60 s; one older than the window was
+ *  left by a runner that died (SIGKILL writes no `exited`), and one from the future is a clock jump or a forged file. */
+export function pdaSidecarAlive(state: PdaRunnerState, nowMs: number): boolean {
+  const alive = Date.parse(state.aliveAt);
+  return Number.isFinite(alive) && Math.abs(nowMs - alive) <= PDA_SIDECAR_ALIVE_WINDOW_MS;
+}
 
 /** Sidecar codes that need a person, as checkReady reports them (ATTENTION_REQUIRED_READINESS_CODES holds each). */
 function sidecarAttentionCode(state: PdaRunnerState): "pda_agent_missing" | "pda_token_format" | "pda_unauthorized" | "pda_message_held" | null {
@@ -93,6 +101,9 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly newLaunchId: () => string;
+
+  /** <OPENRIG_HOME>/state/pda: the root under which each seat's runner state dir is <stateRoot>/<sessionName>. */
+  get stateRoot(): string { return this.deps.stateRoot; }
 
   constructor(private readonly deps: PdaRuntimeAdapterDeps) {
     this.now = deps.now ?? (() => new Date());
@@ -182,6 +193,11 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
           ? { ready: false, reason: `pda-runner exited: ${attention}`, code: attention }
           : { ready: false, reason: `pda-runner exited (code ${state.exited.code ?? "unknown"})`, code: "runner_exited" };
       }
+      // Review N3: the same alive window as sendReadiness. A ready sidecar left by a runner killed without an `exited`
+      // record is not readiness, even while the pane shows another process.
+      if (!pdaSidecarAlive(state, this.now().getTime())) {
+        return { ready: false, reason: `pda-runner sidecar has had no alive tick for over ${PDA_SIDECAR_ALIVE_WINDOW_MS / 1000} s (the runner is gone or hung)`, code: "runner_stale" };
+      }
       if (attention) return { ready: false, reason: `pda-runner needs a person: ${attention}`, code: attention };
       if (state.ready) {
         return atShell
@@ -210,9 +226,8 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     let state: PdaRunnerState | null;
     try { state = this.readState(target.sessionName); } catch { return null; }
     if (!state || !state.ready || state.exited) return null;
-    const alive = Date.parse(state.aliveAt);
     const nowMs = this.now().getTime();
-    if (!Number.isFinite(alive) || Math.abs(nowMs - alive) > PDA_SIDECAR_ALIVE_WINDOW_MS) return null;
+    if (!pdaSidecarAlive(state, nowMs)) return null;
     const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date(nowMs).toISOString(), evidence: null, runtime: PDA_RUNTIME };
     if (state.held) return { ...base, state: "needs_input", reason: state.held.code };
     if (!state.connected) return { ...base, state: "unknown", reason: "pda_disconnected" };

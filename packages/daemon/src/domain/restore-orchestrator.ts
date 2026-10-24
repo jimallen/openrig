@@ -1,4 +1,5 @@
-import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
+import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
+import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
@@ -964,6 +965,16 @@ export class RestoreOrchestrator {
     });
   }
 
+  /** pda L2a round 2 (review N5): the fresh-start advice a stop-for-decision message gives, by the seat's runtime. A seat
+   *  whose runtime has no fresh start (pda) is never told to run a `--fresh` command that would then be refused; it gets
+   *  the same remedy the shared seat gates give (record the binding's token, then resume). */
+  private freshStartAdvice(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom, lead = "To start only this seat fresh, run: "): string {
+    const rigName = this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name;
+    const runtime = this.rigRepo.getRig(rigId)?.nodes.find((n) => n.logicalId === logicalId)?.runtime ?? null;
+    if (runtime && RUNTIMES_WITHOUT_FRESH_START.has(runtime)) return noFreshStartRemedy(runtime, logicalId, rigName);
+    return `${lead}${this.freshStartCommand(rigId, data, logicalId, startupFrom)}`;
+  }
+
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
   private freshStartCommand(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom): string {
     return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, this.adviceStartupFrom(rigId, logicalId, startupFrom));
@@ -1449,7 +1460,7 @@ export class RestoreOrchestrator {
         // just-created session is a confirmed blank (no resume was possible) —
         // roll back to zero sessions and present the decision honestly.
         await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-        return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.` };
+        return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.` };
       } else {
         const launchedSessionId = launchResult?.session.id;
         if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) {
@@ -1487,7 +1498,7 @@ export class RestoreOrchestrator {
           // a confirmed blank agent (precision guard trigger (i)). Roll back to
           // zero sessions; the stop-and-ask is realized as awaiting-decision.
           await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
+          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
         }
       }
     } else if (resumeRequested && isPodAware) {
@@ -1501,7 +1512,7 @@ export class RestoreOrchestrator {
           nodeId: node.id,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
+          error: `Original session unresumable: resume requested but no token available. No session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
         };
       }
       // OPR.0.4.3.20 FR-7 (Gap 2b) — a pod-aware resume needs the runtime adapter
@@ -1517,7 +1528,7 @@ export class RestoreOrchestrator {
           nodeId: node.id,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: resume requested but runtime continuity could not be verified (no ${node.runtime ?? "runtime"} adapter available). No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or retry restore with runtime adapters.`,
+          error: `Original session unresumable: resume requested but runtime continuity could not be verified (no ${node.runtime ?? "runtime"} adapter available). No session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or retry restore with runtime adapters.`,
         };
       }
     }
@@ -1699,7 +1710,7 @@ export class RestoreOrchestrator {
                   nodeId: node.id,
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
-                  error: `Original session unresumable: resume attempted but the runtime reported fresh continuity. The blank session was rolled back; no session is running. If that degradation is acceptable, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}.`,
+                  error: `Original session unresumable: resume attempted but the runtime reported fresh continuity. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom, "If that degradation is acceptable, run: ")}.`,
                 };
               }
               const finalStatus = (isPodAware && resumeRequested)
@@ -1739,7 +1750,7 @@ export class RestoreOrchestrator {
                   nodeId: node.id,
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
-                  error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
+                  error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
                 };
               }
               return {
