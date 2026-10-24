@@ -529,8 +529,8 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
     fake.emit("research", runStart([second.submissionId]));
     fake.emit("research", messageEnd(assistantEntry(900002, "PRICED REPLY", { usage: priced })));
     fake.emit("research", runEnd([second.submissionId]));
-    // One run at a time: a fact queued while the previous post is still in flight waits for the NEXT run_end (the sink
-    // posts on run_end and on recovery only), so ending two runs back to back would leave the second waiting on a third.
+    // One run at a time, so each row is attributable to one post. (Written when a fact queued behind an in-flight post
+    // waited for the NEXT run_end; integ24a made the sink flush it as that post settles; pda-usage-sink-inflight-gap.test.ts.)
     await until("the second usage row", () => usageCount() >= 2, 20_000);
     const foreign = fake.injectOtherClientMessage("research", "FOREIGN-RUN-INPUT");
     fake.emit("research", runStart([foreign.submissionId]));

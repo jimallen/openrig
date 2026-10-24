@@ -78,7 +78,7 @@ describe("createPdaUsageSink", () => {
     expect(posts.map((p) => p.facts.map((f) => f.origin))).toEqual([["own"]]);
   });
 
-  it("U1: an unknown fact whose post is still in flight does not lose its later own upgrade; the own fact goes out next", async () => {
+  it("U1: an unknown fact whose post is still in flight does not lose its later own upgrade; the own fact goes out as that post settles", async () => {
     const posts: Array<Array<[string, string]>> = [];
     let release!: (o: PdaUsagePostOutcome) => void;
     const s = createPdaUsageSink({
@@ -91,10 +91,12 @@ describe("createPdaUsageSink", () => {
     s.onAssistantEntry!(priced(40, 0.01));        // seen live inside this seat's run, while the post is in flight
     release("stored");
     await s.settled();
-    expect(s.pending().map((f) => [f.entryId, f.origin])).toEqual([["40", "own"]]);
+    // integ24a: the upgraded fact is flushed when the in-flight post settles (the L3 finding), not at the next run_end.
+    expect(posts).toEqual([[["40", "unknown"]], [["40", "own"]]]);
+    expect(s.pending()).toEqual([]);
     s.onRunEnd!({ type: "run_end", inputs: [11] } as never);
     await s.settled();
-    expect(posts).toEqual([[["40", "unknown"]], [["40", "own"]]]);
+    expect(posts).toHaveLength(2); // and never sent twice
     expect(s.pending()).toEqual([]);
   });
 

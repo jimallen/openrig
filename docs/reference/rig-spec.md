@@ -438,7 +438,10 @@ A pda seat drives one agent on a pda server. The block names the agent and where
 
   **Not covered:** two daemons on one host (different `OPENRIG_HOME`, different ports) share that host's loopback pda and cannot see each other's seats, so nothing stops both from driving one agent. The same pair on different hosts is two different pda servers and is correct.
 - The binding is stored on the seat (`nodes.pda_binding`) and written back by `rig spec export`.
-- This revision stores and validates the block. Launching a pda seat needs the pda runtime adapter, which has not landed: preflight still refuses `runtime: pda` as an unsupported runtime.
+- `runtime: pda` is launchable: preflight accepts it, and the seat's pane runs OpenRig's pda runner, which attaches to the agent on the pda server and reads pda's token file itself (`$OPENRIG_PDA_TOKEN_FILE`, default `~/.pi-durable/token`). The agent must already exist: OpenRig never creates, resets or forks a pda agent. A launch or restore is refused before any keystroke while another seat drives the same agent.
+- Readiness and `rig send` are answered by the runner (its sidecar), not by reading the pane. A restore resumes the same agent (resume token type `pda_agent`). A pda seat has no fresh start and no handover: `rig seat launch --fresh` and `rig seat handover` are refused, and restore's advice never offers a fresh start for it. OpenRig delivers no startup content to it.
+- A message pda refused repeatedly is held at the head of the seat's queue, and later messages wait behind it. `rig seat pda-release <session> --reason <text>` asks the runner to retry the held message once more. It is audited, and the message may be delivered twice if pda took it on an earlier attempt that never answered.
+- Usage: the setting `usage.pda_cost_facts` is **off by default**. With it off, the daemon stores no pda usage. With it on, the runner reports the usage of its agent's assistant entries to `rig usage cost` (ids and token counts only, never text). Compaction and tool usage are not included, and pda's declared zero price is shown as no cost, not $0. See `rig config` and `rig usage cost --help`.
 
 ### Codex MCP servers (`mcp_servers`)
 

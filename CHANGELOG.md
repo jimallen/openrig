@@ -42,6 +42,19 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   re-sum of the session file. No OpenRouter charge applies to `openai-codex` turns. This qualifies the supervised path only;
   unattended operation remains unverified.
 
+### pda seats (fork)
+
+- A rig-spec member can declare `runtime: pda` with a `pda: { agent, base_url }` block, and the seat is launchable: its
+  pane runs OpenRig's pda runner, which drives that one existing agent on a loopback pda server. One agent is driven by
+  one seat; a second launch or restore of the same agent is refused. Restore resumes the same agent. A pda seat has no
+  fresh start, no handover and no startup content. See `docs/reference/rig-spec.md` ("pda seats").
+- `rig seat pda-release <session> --reason <text>` retries a pda seat's held message once more (audited; it may
+  deliver that message twice).
+- `usage.pda_cost_facts` (off by default) lets pda seats report their agent's assistant-entry usage to
+  `rig usage cost`.
+- Migrations `115` (`nodes.pda_binding`) and `116` (`pda_usage_entries`).
+- Exercised end to end against a fake pda server only. Not yet qualified against a real pda server.
+
 ## [0.6.10]
 
 0.6.10 is a fix release, most of it from the community. Setup can be told

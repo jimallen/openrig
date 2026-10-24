@@ -13,7 +13,9 @@
 // Delivery: facts are kept until the daemon stores them. A 503 (the setting is off, or the store is unconfigured), a
 // timeout or a connection failure keeps them for the next run_end; the route is idempotent on (conversation, entry),
 // so a resend after a lost reply stores nothing twice. A definitive refusal (4xx) drops the posted facts: a resend
-// could never succeed. The pending list is bounded; past the bound the OLDEST facts are dropped and counted.
+// could never succeed. One post is in flight at a time; facts queued behind it are posted as soon as it settles stored
+// or refused (not only at the next run_end). The pending list is bounded; past the bound the OLDEST facts are dropped
+// and counted.
 // Numbers and ids only: never text, tool output or the token (T32).
 
 import { derivePdaCost, parsePdaUsageFact, type PdaUsageFact, type PdaUsageOrigin, type PdaUsagePayload } from "./pda-runner-protocol.js";
@@ -105,6 +107,7 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
     const payload: PdaUsagePayload = {
       sessionName: options.sessionName, nodeId: options.nodeId, generation: options.generation, agent: options.agent, facts: batch,
     };
+    let settledDefinitively = false;
     inFlight = (async () => {
       let outcome: PdaUsagePostOutcome;
       try { outcome = await options.post(payload); } catch { outcome = "keep"; }
@@ -114,8 +117,15 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
         const before = pending.length;
         pending = pending.filter((f) => !sent.has(f));
         if (outcome === "refused") dropped += before - pending.length;
+        settledDefinitively = true;
       }
-    })().finally(() => { inFlight = null; });
+    })().finally(() => {
+      inFlight = null;
+      // What is still pending after a stored or refused post was queued (or upgraded) while it was in flight: send it
+      // now rather than at the next run_end, which may never come before the runner exits (L3 finding). After `keep`
+      // the daemon just said it cannot take facts, so nothing is re-posted until the next run_end (no spin on a 503).
+      if (settledDefinitively) flush();
+    });
   };
 
   return {
