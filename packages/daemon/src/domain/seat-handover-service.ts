@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { SuccessorSessionLauncher } from "./successor-session-launcher.js";
 import { deriveResumeToken, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { validateResumeToken } from "./resume-token-validation.js";
-import type { RuntimeAdapter } from "./runtime-adapter.js";
+import { adapterFreshStart, type RuntimeAdapter } from "./runtime-adapter.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import type { JsonlExchange } from "./session-jsonl.js";
 import type { PersistedEvent } from "./types.js";
@@ -86,7 +86,7 @@ export interface SeatHandoverMutationResult {
 export type SeatHandoverResult =
   | { ok: true; plan: SeatHandoverPlan }
   | { ok: true; result: SeatHandoverMutationResult }
-  | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found"; message: string; guidance: string }
+  | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found" | "handover_unsupported_runtime"; message: string; guidance: string }
   | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
   | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
@@ -226,6 +226,7 @@ export class SeatHandoverService {
   private sleep: (ms: number) => Promise<void>;
   private appliedLaunchObservations: AppliedLaunchObservationStore;
   private now: () => Date;
+  private runtimeAdapters: Record<string, RuntimeAdapter | undefined>;
 
   constructor(deps: SeatHandoverServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatHandoverService: rigRepo must share the same db handle");
@@ -247,6 +248,7 @@ export class SeatHandoverService {
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.appliedLaunchObservations = new AppliedLaunchObservationStore(deps.db);
     this.now = deps.now ?? (() => new Date());
+    this.runtimeAdapters = deps.runtimeAdapters ?? {};
     this.statusService = new SeatStatusService({ rigRepo: deps.rigRepo });
     this.planner = new SeatHandoverPlanner({ rigRepo: deps.rigRepo });
     this.successorLauncher = deps.successorLauncher ?? new SuccessorSessionLauncher(deps.tmuxAdapter, deps.discoveryRepo, {
@@ -274,6 +276,11 @@ export class SeatHandoverService {
     operator?: string | null;
     dryRun?: boolean;
   }): Promise<SeatHandoverResult> {
+    // pda L2a (design D4 site 4, census row 15): every handover source puts a new conversation in the seat (fresh,
+    // fork, rebuild, a discovered session). A runtime with no fresh start has none to give: refuse before anything,
+    // the dry-run plan included, so the plan never promises what the handover refuses.
+    const unsupported = this.refuseRuntimeWithoutSuccessor(input.seatRef);
+    if (unsupported) return unsupported;
     if (input.dryRun) {
       const planResult = this.planner.plan({ ...input, dryRun: true });
       if (planResult.ok) {
@@ -916,6 +923,20 @@ export class SeatHandoverService {
       code: "runtime_mismatch",
       message: `Seat expects runtime "${nodeRuntime}", but discovered successor is "${discoveredRuntime}".`,
       guidance: "Use a discovered successor with a matching runtime hint.",
+    };
+  }
+
+  private refuseRuntimeWithoutSuccessor(seatRef: string): SeatHandoverResult | null {
+    const status = this.statusService.getStatus(seatRef);
+    if (!status.ok) return null; // the ordinary path reports an unknown or ambiguous seat
+    let runtime: string | null;
+    try { runtime = this.lookupNode(status.status).runtime; } catch { return null; }
+    if (!runtime || adapterFreshStart(this.runtimeAdapters[runtime]) !== "unsupported") return null;
+    return {
+      ok: false,
+      code: "handover_unsupported_runtime",
+      message: `Seat "${seatRef}" runs ${runtime}, and a ${runtime} seat has no handover: ${runtime} owns the conversation, and OpenRig never starts, forks or adopts another one into the seat.`,
+      guidance: "Keep the seat as it is; to drive another agent, re-instantiate the seat with that binding.",
     };
   }
 

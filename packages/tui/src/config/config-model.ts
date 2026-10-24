@@ -70,6 +70,7 @@ const LABELS: Record<string, string> = {
   "provider.usage_windows": "Codex and Claude usage windows",
   "usage.pi_cost_facts": "Pi cost from persisted entries",
   "usage.pi_openrouter_charge": "OpenRouter charge for Pi requests",
+  "usage.pda_cost_facts": "pda cost from assistant entries",
   "ui.enabled": "Web UI",
   "health.context_pressure.warning_percent": "Context warning threshold",
   "health.context_pressure.critical_percent": "Context critical threshold",

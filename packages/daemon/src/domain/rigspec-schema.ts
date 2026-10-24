@@ -21,6 +21,7 @@ import { validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
 import { validateStartupBlock, normalizeStartupBlock } from "./startup-validation.js";
 import { COMPOSE_PROJECT_NAME_PATTERN, deriveComposeProjectName } from "./compose-project-name.js";
 import { validateMcpServersBlock, normalizeMcpServers } from "./codex-mcp-servers.js";
+import { PDA_RUNTIME, parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
 import * as path from "node:path";
 
 // -- Canonical pod-aware RigSpec validation (AgentSpec reboot) --
@@ -53,8 +54,16 @@ const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startu
 export const MEMBER_KEYS: ReadonlySet<string> = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
   "model", "effort", "remote_control", "role", "permission_policy", "cwd", "restore_policy",
-  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers",
+  "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref", "mcp_servers", "pda",
 ]);
+
+/** Member keys a pda seat cannot take: OpenRig delivers no startup content to a pda agent (D4), and the model,
+ *  effort, permission, session-source and compaction vocabularies belong to the pda agent, not the seat
+ *  (pda-runtime-design-9l, "The seat spec"). `codex_config_profile`, `mcp_servers` and `remote_control: true` are
+ *  already refused for any runtime that is not theirs, by their own checks in validateMember. */
+const PDA_REFUSED_MEMBER_KEYS = [
+  "model", "effort", "permission_policy", "session_source", "starter_ref", "startup", "compaction_strategy", "mechanic",
+] as const;
 const EDGE_KEYS = new Set(["kind", "from", "to"]);
 
 /** OPR.0.5.8.7 — the topology normalizer is an explicit literal. Reject an
@@ -202,6 +211,7 @@ export class RigSpecSchema {
         const pod = pods[pi]!;
         errors.push(...validatePod(pod, pi, podIds, advisories));
       }
+      errors.push(...pdaBindingDuplicates(pods));
 
       // Cross-pod edge validation
       const allQualifiedIds = new Set<string>(opts?.externalQualifiedIds ?? []);
@@ -513,6 +523,7 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.remote_control: only valid when runtime is "claude-code"`);
     }
   }
+  errors.push(...validatePdaMember(member, prefix));
   if (!member["cwd"] || typeof member["cwd"] !== "string") {
     errors.push(`${prefix}.cwd: required non-empty string`);
   }
@@ -623,6 +634,58 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
   }
 
   return errors;
+}
+
+/** The `pda:` block of a member. Required exactly when `runtime: pda`; the block's own shape is L0's
+ *  parsePdaSpecBlock (agent name, never `main`, loopback base_url, closed key set). */
+function validatePdaMember(member: Record<string, unknown>, prefix: string): string[] {
+  const errors: string[] = [];
+  const isPda = member["runtime"] === PDA_RUNTIME;
+  if (member["pda"] !== undefined) {
+    if (!isPda) errors.push(`${prefix}.pda: only valid when runtime is "${PDA_RUNTIME}"`);
+    else {
+      const parsed = parsePdaSpecBlock(member["pda"], `${prefix}.pda`);
+      if (!parsed.ok) errors.push(...parsed.errors);
+    }
+  } else if (isPda) {
+    errors.push(`${prefix}.pda: required when runtime is "${PDA_RUNTIME}" (it names the pda agent this seat drives)`);
+  }
+  if (!isPda) return errors;
+  for (const key of PDA_REFUSED_MEMBER_KEYS) {
+    if (member[key] !== undefined) errors.push(`${prefix}.${key}: not valid on a pda member (the pda agent owns it; OpenRig delivers no startup content to a pda agent)`);
+  }
+  const policy = member["restore_policy"];
+  if (policy !== undefined && policy !== null && policy !== "resume_if_possible") {
+    errors.push(`${prefix}.restore_policy: a pda member takes only resume_if_possible (got ${JSON.stringify(policy)})`);
+  }
+  return errors;
+}
+
+/** One seat per pda agent: two members of one spec that bind the same agent at the same base URL are refused. The
+ *  daemon-wide half (other rigs) is checked at instantiation, where the other rigs are known. */
+function pdaBindingDuplicates(pods: Record<string, unknown>[]): string[] {
+  const errors: string[] = [];
+  const first = new Map<string, string>();
+  pods.forEach((pod, pi) => {
+    if (!isMapping(pod) || !Array.isArray(pod["members"])) return;
+    (pod["members"] as unknown[]).forEach((member, mi) => {
+      if (!isMapping(member) || member["runtime"] !== PDA_RUNTIME || member["pda"] === undefined) return;
+      const parsed = parsePdaSpecBlock(member["pda"]);
+      if (!parsed.ok) return; // its own error was recorded by validatePdaMember
+      const at = `pods[${pi}].members[${mi}]`;
+      const key = pdaBindingKey(parsed.binding);
+      const earlier = first.get(key);
+      if (earlier !== undefined) {
+        errors.push(`${at}.pda: agent "${parsed.binding.agent}" at ${parsed.binding.baseUrl} is already driven by ${earlier}; one pda agent is driven by one seat`);
+      } else first.set(key, at);
+    });
+  });
+  return errors;
+}
+
+/** The identity of a pda agent: the name on one pda server. */
+export function pdaBindingKey(binding: PdaBinding): string {
+  return `${binding.baseUrl}\n${binding.agent}`;
 }
 
 function validateStarterRef(
@@ -1155,6 +1218,12 @@ function normalizeSessionSource(raw: unknown): import("./types.js").SessionSourc
   return undefined;
 }
 
+function normalizePdaBinding(raw: unknown): PdaBinding | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = parsePdaSpecBlock(raw);
+  return parsed.ok ? parsed.binding : undefined;
+}
+
 function normalizePod(raw: Record<string, unknown>): RigSpecPod {
   const members = (raw["members"] as Record<string, unknown>[]).map((m) => ({
     id: m["id"] as string,
@@ -1167,6 +1236,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
     // Only a validated `true` survives; false/absent normalize to undefined (the launch is unchanged).
     remoteControl: m["remote_control"] === true ? true : undefined,
+    pda: normalizePdaBinding(m["pda"]),
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
     cwd: m["cwd"] as string,

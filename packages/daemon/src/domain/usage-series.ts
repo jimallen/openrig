@@ -15,6 +15,7 @@
 import type { Database } from "better-sqlite3";
 import { hasClientCostColumns } from "./usage-samples-store.js";
 import { hasPiUsageChargesTable, hasPiUsageEntriesTable } from "./pi-usage-entries-store.js";
+import { hasPdaUsageEntriesTable } from "./pda-usage-store.js";
 import { openRouterChargeTarget } from "./openrouter-charge.js";
 
 export interface UsageSeriesQuery {
@@ -283,6 +284,7 @@ export type SeatCost =
       tokens: { input: number | null; output: number | null };
     }
   | PiSeatCost
+  | PdaSeatCost
   | { seatSession: string; runtime: null; status: "unknown"; reason: string };
 
 /** OPR.0.7.0.2 (Pi atom): a Pi seat's model-priced estimate from its persisted entries. */
@@ -315,6 +317,35 @@ export type PiSeatCost = {
    *  to it). Present once the store can hold charges. */
   providerCharge?: PiProviderChargeView;
 };
+
+/** pda runtime (J-3): a pda seat's model-priced estimate from the assistant entries the runner reported. Spend in
+ *  runs this seat took part in (a run that took one of the seat's submissions is `own`, whoever else also sent
+ *  to the agent), never the agent's whole bill. */
+export type PdaSeatCost = {
+  seatSession: string;
+  runtime: "pda";
+  status: "reported" | "absent";
+  kind: "model-priced estimate";
+  source: "pda assistant entries (usage.cost.total)";
+  /** The `own` entries that carried a priced cost, summed; absent when none did. */
+  costUsd?: number;
+  reason?: string;
+  window: { conversationId: string; agent: string; since: string | null; asOf: string | null };
+  coverage: string;
+  entries: {
+    own: number;
+    /** Own entries stored without a cost, by why (J-5): a declared zero price table is not spend, and not $0. */
+    ownWithoutCost: { declaredZeroPrice: number; absent: number };
+    errorOrAborted: number;
+    /** Entries from runs whose inputs were all foreign (Jim in `pda chat`): not this seat's spend. */
+    other: { count: number; costUsd: number | null };
+    /** Gap-filled entries and runs the runner saw no inputs for: kept apart from the total. */
+    unknownOrigin: { count: number; costUsd: number | null };
+  };
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+};
+
+export const PDA_COST_COVERAGE = "spend in runs this seat took part in: this pda agent's assistant entries, each counted once, in runs that took at least one of this seat's submissions (a run that also took another client's input counts in full); a model-priced estimate from pda's catalog rates, not a provider charge. pda: assistant entries only; excludes compaction and tool usage. An entry priced at a declared zero rate is named, never counted as $0";
 
 export type PiProviderChargeView = {
   kind: "provider charge";
@@ -426,6 +457,10 @@ export function computeCostView(db: Database, q: { nowIso: string; seatSession?:
   for (const pi of piSeatCosts(db, q.seatSession)) {
     const at = seats.findIndex((seat) => seat.seatSession === pi.seatSession);
     if (at >= 0) seats[at] = pi; else seats.push(pi);
+  }
+  for (const pda of pdaSeatCosts(db, q.seatSession)) {
+    const at = seats.findIndex((seat) => seat.seatSession === pda.seatSession);
+    if (at >= 0) seats[at] = pda; else seats.push(pda);
   }
   return { seats, note };
 }
@@ -545,6 +580,65 @@ function piSeatCosts(db: Database, seatSession?: string): PiSeatCost[] {
       },
       // Only once this session has a charge outcome, so with the charge lookup off the view is unchanged.
       ...(charged ? { providerCharge: providerChargeView(db, seat, piSession) } : {}),
+    };
+  });
+}
+
+interface PdaRow {
+  seat_session: string; conversation_id: string; agent: string; entry_timestamp: string;
+  input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number;
+  cost_total: number | null; cost_basis: "model_priced" | "declared_zero_price" | "absent"; stop_reason: string | null;
+  origin: "own" | "other" | "unknown";
+}
+
+/** Each pda seat's latest conversation (the one whose facts first arrived most recently), as one row per seat.
+ *  The `own` entries carry the seat's cost; `other` and `unknown` are counted apart and never added in. */
+export function pdaSeatCosts(db: Database, seatSession?: string): PdaSeatCost[] {
+  if (!hasPdaUsageEntriesTable(db)) return [];
+  const latest = db.prepare(
+    `WITH s AS (SELECT seat_session, conversation_id, MIN(id) AS first_id FROM pda_usage_entries
+                ${seatSession ? "WHERE seat_session = ? " : ""}GROUP BY seat_session, conversation_id)
+     SELECT seat_session, conversation_id FROM s
+      WHERE first_id = (SELECT MAX(first_id) FROM s s2 WHERE s2.seat_session = s.seat_session)
+      ORDER BY seat_session ASC`,
+  ).all(...(seatSession ? [seatSession] : [])) as Array<{ seat_session: string; conversation_id: string }>;
+  const sum = (rows: PdaRow[]): number | null => {
+    const priced = rows.filter((r) => r.cost_total !== null);
+    return priced.length ? priced.reduce((total, r) => total + r.cost_total!, 0) : null;
+  };
+  return latest.map(({ seat_session: seat, conversation_id: conversation }) => {
+    const rows = db.prepare(
+      `SELECT seat_session, conversation_id, agent, entry_timestamp, input_tokens, output_tokens, cache_read_tokens,
+              cache_write_tokens, cost_total, cost_basis, stop_reason, origin
+         FROM pda_usage_entries WHERE seat_session = ? AND conversation_id = ? ORDER BY entry_timestamp ASC, id ASC`,
+    ).all(seat, conversation) as PdaRow[];
+    const own = rows.filter((r) => r.origin === "own");
+    const other = rows.filter((r) => r.origin === "other");
+    const unknown = rows.filter((r) => r.origin === "unknown");
+    const ownCost = sum(own);
+    const declaredZero = own.filter((r) => r.cost_basis === "declared_zero_price").length;
+    return {
+      seatSession: seat, runtime: "pda" as const,
+      status: ownCost === null ? "absent" as const : "reported" as const,
+      kind: "model-priced estimate" as const, source: "pda assistant entries (usage.cost.total)" as const,
+      ...(ownCost === null
+        ? { reason: own.length === 0 ? "no own entries with usage are stored for this pda conversation yet"
+            : declaredZero === own.length ? "pda's provider declares a zero price table, so its entries carry no cost (tokens are shown)"
+            : "pda recorded no cost on this conversation's own entries" }
+        : { costUsd: ownCost }),
+      window: { conversationId: conversation, agent: rows[0]?.agent ?? "", since: own[0]?.entry_timestamp ?? null, asOf: own.at(-1)?.entry_timestamp ?? null },
+      coverage: PDA_COST_COVERAGE,
+      entries: {
+        own: own.length,
+        ownWithoutCost: { declaredZeroPrice: declaredZero, absent: own.filter((r) => r.cost_basis === "absent").length },
+        errorOrAborted: own.filter((r) => r.stop_reason === "error" || r.stop_reason === "aborted").length,
+        other: { count: other.length, costUsd: sum(other) },
+        unknownOrigin: { count: unknown.length, costUsd: sum(unknown) },
+      },
+      tokens: {
+        input: own.reduce((t, r) => t + r.input_tokens, 0), output: own.reduce((t, r) => t + r.output_tokens, 0),
+        cacheRead: own.reduce((t, r) => t + r.cache_read_tokens, 0), cacheWrite: own.reduce((t, r) => t + r.cache_write_tokens, 0),
+      },
     };
   });
 }

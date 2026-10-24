@@ -11,7 +11,7 @@ import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
   ProjectionResult, StartupDeliveryResult, ForkSource,
 } from "./runtime-adapter.js";
-import { isAttentionRequiredReadinessCode, resolveConcreteHint } from "./runtime-adapter.js";
+import { adapterStartupContent, isAttentionRequiredReadinessCode, resolveConcreteHint } from "./runtime-adapter.js";
 import type { ProjectionPlan } from "./projection-planner.js";
 import { issueStartupChallenge, STARTUP_PROOF_INSTRUCTION_LINE } from "./startup-proof.js";
 import { resolveStartupProof } from "./startup-resolver.js";
@@ -263,6 +263,15 @@ export class StartupOrchestrator {
     if (claudeManagedBlockFile) input = { ...input, binding: { ...input.binding, claudeManagedBlockFile } };
     const deliveryInput: StartupDeliveryInput = { ...input, warnings, submissionWarnings: [], startupAttemptId: randomUUID(), sendOrder: 0, submissionDiagnostics: [] };
     const errors: string[] = [];
+    // pda L2a (design D4, census row 14): a runtime that withholds startup content (pda: the agent's conversation is
+    // pda's, and OpenRig never types into it) gets no session-identity prompt, no restore preload, no proof challenge
+    // and no startup action, on a first launch, a restore replay or a continued fresh start alike. Files go to the
+    // adapter, which delivers nothing and says so. What was withheld is said once, never silently dropped.
+    const withholdStartup = adapterStartupContent(input.adapter) === "withhold";
+    if (withholdStartup) {
+      const actions = input.startupActions.filter((action) => action.type !== "startup_proof").length;
+      if (actions > 0) warnings.push(`${input.sessionName ?? input.nodeId}: ${actions} startup action${actions === 1 ? " was" : "s were"} withheld; OpenRig delivers no startup content to a ${input.adapter.runtime} agent`);
+    }
     let continuityOutcome: "resumed" | "fresh" | "forked" | "rebuilt" = input.resumeToken
       ? "resumed"
       : input.forkSource
@@ -445,12 +454,12 @@ export class StartupOrchestrator {
     // A successful new lean launch replaces the occupant's proof boundary even
     // if readiness later fails. Failed launches and resume/adopt retain history.
     const isFreshLaunch = continuityOutcome === "fresh" && (!input.skipHarnessLaunch || input.continueFreshStartup === true);
-    const shouldChallenge = isFreshLaunch
+    const shouldChallenge = isFreshLaunch && !withholdStartup
       && input.adapter.runtime !== "terminal" && startupProof.mode === "authenticated";
     if (isFreshLaunch && !shouldChallenge) {
       this.eventBus.emit({
         type: "node.startup_proof_skipped", rigId: input.rigId, nodeId: input.nodeId,
-        reason: input.adapter.runtime === "terminal" ? "terminal" : "not_selected",
+        reason: withholdStartup ? "startup_content_withheld" : input.adapter.runtime === "terminal" ? "terminal" : "not_selected",
       });
     }
 
@@ -480,7 +489,7 @@ export class StartupOrchestrator {
 
     // Issue selected proof only once the runtime can receive its prompt.
     // Persist ground truth BEFORE delivering any proof prompt.
-    const identityAction = this.extractSessionIdentityAction(input.startupActions, context);
+    const identityAction = withholdStartup ? null : this.extractSessionIdentityAction(input.startupActions, context);
     const challenge = shouldChallenge
       ? issueStartupChallenge(this.eventBus, {
           rigId: input.rigId,
@@ -517,7 +526,7 @@ export class StartupOrchestrator {
     // deliverInitialSessionPrompt identity+role.md bundle. Sequencing (not
     // timing) guarantees the preload precedes the role-triggered work turn; the
     // bundled actions are marked consumed so step 9 does not re-send them.
-    if (continuityOutcome !== "fresh") {
+    if (continuityOutcome !== "fresh" && !withholdStartup) {
       const preloadActions = input.startupActions.filter(
         (a) =>
           !isSessionIdentityAction(a) &&
@@ -567,15 +576,15 @@ export class StartupOrchestrator {
       if (!challengeFailure) await this.sendProofInstruction(deliveryInput);
     }
 
-    // 8. Execute after_files actions
-    const afterFilesResult = await this.executeActions(deliveryInput, "after_files");
+    // 8. Execute after_files actions (none for a runtime that withholds startup content)
+    const afterFilesResult = withholdStartup ? { ok: true as const } : await this.executeActions(deliveryInput, "after_files");
     if (!afterFilesResult.ok) {
       return this.fail(deliveryInput, "failed", afterFilesResult.errors);
     }
 
     // 9. Execute after_ready actions (skipping any preload actions already
     // delivered ahead of role.md by the restore-order bundling above).
-    const afterReadyResult = await this.executeActions(deliveryInput, "after_ready", consumedActions);
+    const afterReadyResult = withholdStartup ? { ok: true as const } : await this.executeActions(deliveryInput, "after_ready", consumedActions);
     if (!afterReadyResult.ok) {
       return this.fail(deliveryInput, "failed", afterReadyResult.errors);
     }

@@ -169,6 +169,35 @@ describe("explicit first-start retry after projection failure", () => {
     });
   });
 
+  // pda: the binding is the seat's identity on the pda server. A retry runs through the pi fixture here (runtime pda
+  // cannot pass preflight until L2a), so the retained seat is a pi seat that has a binding written on it: the
+  // member the operator re-supplies has none, which is a different seat. The agent/base URL comparison itself is
+  // pinned one level down (pda-spec-binding.test.ts, retainedPdaBindingAgrees).
+  describe("pda binding", () => {
+    it.each([
+      ["a saved binding the re-supplied member does not name", '{"agent":"research","base_url":"http://127.0.0.1:8150"}'],
+      ["a damaged saved binding", '{"agent":'],
+    ])("refuses a retry against %s, without projection or launch", async (_label, saved) => {
+      const f = await failedAdd();
+      f.db.prepare("UPDATE nodes SET pda_binding = ? WHERE id = ?").run(saved, f.node.id);
+      const changes = f.db.prepare("SELECT total_changes() AS n").get();
+      const res = await f.request();
+      expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 409, body: { code: expect.any(String), message: expect.stringContaining("disagrees with the retained seat") } });
+      expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+      expect(f.adapter.launchHarness).not.toHaveBeenCalled();
+      expect(f.adapter.project).toHaveBeenCalledTimes(1);
+    });
+
+    it("a retry member may carry the pda key: the retained-field gate lets it through to validation, which refuses it on a pi member", async () => {
+      const f = await failedAdd();
+      const res = await f.request({ ...f.effectiveMember, pda: { agent: "research" } });
+      const body = await res.json() as { message?: string };
+      expect(res.status).toBe(409);
+      expect(body.message).toContain('pda: only valid when runtime is "pda"');
+      expect(f.adapter.launchHarness).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(["present", "unknown"])("refuses %s liveness without effects", async state => {
     const f = await failedAdd();
     vi.mocked(f.tmux.probeSession).mockResolvedValue(state === "present" ? { state: "present" } : { state: "transport_unavailable", cause: "transport failure" });

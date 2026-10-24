@@ -1,4 +1,5 @@
-import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
+import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
+import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
@@ -20,6 +21,8 @@ import type { ClaudeResumeAdapter } from "../adapters/claude-resume.js";
 import type { CodexResumeAdapter } from "../adapters/codex-resume.js";
 import type { PiResumeAdapter } from "../adapters/pi-resume.js";
 import type { OmpResumeAdapter } from "../adapters/omp-resume.js";
+import type { PdaResumeAdapter } from "../adapters/pda-resume.js";
+import { PDA_RESUME_TYPE, parsePdaResumeToken, pdaRestoreBindingWarning } from "../adapters/pda-runner-protocol.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { assessNativeResumeProbe } from "./native-resume-probe.js";
 import { observeClaudeDelivery, observeClaudeResumeLaunch, verifyClaudePaneProcess, type ClaudeLaunchedProcess } from "./native-process-lineage.js";
@@ -177,6 +180,8 @@ interface RestoreOrchestratorDeps {
    *  resume without the adapter falls through to the honest no-adapter error. */
   piResume?: PiResumeAdapter;
   ompResume?: OmpResumeAdapter;
+  /** pda L2a: re-attaches a pda seat to the agent its `pda_agent` token names (legacy resume path). */
+  pdaResume?: PdaResumeAdapter;
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
@@ -212,6 +217,7 @@ export class RestoreOrchestrator {
   private codexResume: CodexResumeAdapter;
   private piResume: PiResumeAdapter | null;
   private ompResume: OmpResumeAdapter | null;
+  private pdaResume: PdaResumeAdapter | null;
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
@@ -253,6 +259,7 @@ export class RestoreOrchestrator {
     this.codexResume = deps.codexResume;
     this.piResume = deps.piResume ?? null;
     this.ompResume = deps.ompResume ?? null;
+    this.pdaResume = deps.pdaResume ?? null;
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
@@ -604,7 +611,7 @@ export class RestoreOrchestrator {
             const runtime = liveTarget?.runtime ?? node.runtime;
             // Launch needs consistent positive evidence: both samples idle with the same fingerprint, and the
             // bound pane still in this session (a recycled pane id could name another session's shell).
-            if (pane && ["claude-code", "codex", "pi", "omp"].includes(runtime ?? "")
+            if (pane && ["claude-code", "codex", "pi", "omp", "pda"].includes(runtime ?? "")
               && isShellForeground(await this.tmuxAdapter.getPaneCommand(pane) ?? "")
               && (await this.tmuxAdapter.listPanes(session.sessionName)).some(candidate => candidate.id === pane)
               && (await observeClaudeDelivery({ target: pane, tmux: this.tmuxAdapter, listProcesses: this.listProcesses }, { unknownKeepsIdle: false })).state === "idle_shell"
@@ -956,6 +963,16 @@ export class RestoreOrchestrator {
     return startupToValidateForSeat({ db: this.db, rigRepo: this.rigRepo }, {
       rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom, selectedCopy,
     });
+  }
+
+  /** pda L2a round 2 (review N5): the fresh-start advice a stop-for-decision message gives, by the seat's runtime. A seat
+   *  whose runtime has no fresh start (pda) is never told to run a `--fresh` command that would then be refused; it gets
+   *  the same remedy the shared seat gates give (record the binding's token, then resume). */
+  private freshStartAdvice(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom, lead = "To start only this seat fresh, run: "): string {
+    const rigName = this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name;
+    const runtime = this.rigRepo.getRig(rigId)?.nodes.find((n) => n.logicalId === logicalId)?.runtime ?? null;
+    if (runtime && RUNTIMES_WITHOUT_FRESH_START.has(runtime)) return noFreshStartRemedy(runtime, logicalId, rigName);
+    return `${lead}${this.freshStartCommand(rigId, data, logicalId, startupFrom)}`;
   }
 
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
@@ -1422,6 +1439,19 @@ export class RestoreOrchestrator {
       }
     }
 
+    // pda L2a (L0 review D4): restore resumes the agent the TOKEN names. When the seat's saved spec binding names another
+    // agent or URL, or cannot be read, say so on the restore result, for both resume paths below.
+    if (resumeRequested && resumeToken && resumeType === PDA_RESUME_TYPE) {
+      const tokenBinding = parsePdaResumeToken(resumeToken.trim());
+      const live = this.rigRepo.getRig(rigId)?.nodes.find((candidate) => candidate.id === node.id);
+      if (tokenBinding && live?.pdaBindingUnreadable !== undefined) {
+        warnings?.push(`Restore: ${node.logicalId}: the seat's saved pda binding cannot be read (${live.pdaBindingUnreadable}); restore resumes pda agent '${tokenBinding.agent}' at ${tokenBinding.baseUrl}, which its resume token names. Repair the binding, or re-instantiate the seat; a pda seat has no fresh start.`);
+      } else if (tokenBinding) {
+        const mismatch = pdaRestoreBindingWarning(live?.pda ?? null, tokenBinding);
+        if (mismatch) warnings?.push(`Restore: ${node.logicalId}: ${mismatch}`);
+      }
+    }
+
     if (resumeRequested && !isPodAware) {
       // Legacy resume path
       if (!resumeToken) {
@@ -1430,7 +1460,7 @@ export class RestoreOrchestrator {
         // just-created session is a confirmed blank (no resume was possible) —
         // roll back to zero sessions and present the decision honestly.
         await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-        return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.` };
+        return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.` };
       } else {
         const launchedSessionId = launchResult?.session.id;
         if (launchedSessionId && this.claudeResume.canResume(resumeType, resumeToken)) {
@@ -1468,7 +1498,7 @@ export class RestoreOrchestrator {
           // a confirmed blank agent (precision guard trigger (i)). Roll back to
           // zero sessions; the stop-and-ask is realized as awaiting-decision.
           await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
+          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
         }
       }
     } else if (resumeRequested && isPodAware) {
@@ -1482,7 +1512,7 @@ export class RestoreOrchestrator {
           nodeId: node.id,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: resume requested but no token available. No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
+          error: `Original session unresumable: resume requested but no token available. No session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
         };
       }
       // OPR.0.4.3.20 FR-7 (Gap 2b) — a pod-aware resume needs the runtime adapter
@@ -1498,7 +1528,7 @@ export class RestoreOrchestrator {
           nodeId: node.id,
           logicalId: node.logicalId,
           status: "awaiting-decision",
-          error: `Original session unresumable: resume requested but runtime continuity could not be verified (no ${node.runtime ?? "runtime"} adapter available). No session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or retry restore with runtime adapters.`,
+          error: `Original session unresumable: resume requested but runtime continuity could not be verified (no ${node.runtime ?? "runtime"} adapter available). No session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or retry restore with runtime adapters.`,
         };
       }
     }
@@ -1680,7 +1710,7 @@ export class RestoreOrchestrator {
                   nodeId: node.id,
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
-                  error: `Original session unresumable: resume attempted but the runtime reported fresh continuity. The blank session was rolled back; no session is running. If that degradation is acceptable, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}.`,
+                  error: `Original session unresumable: resume attempted but the runtime reported fresh continuity. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom, "If that degradation is acceptable, run: ")}.`,
                 };
               }
               const finalStatus = (isPodAware && resumeRequested)
@@ -1720,7 +1750,7 @@ export class RestoreOrchestrator {
                   nodeId: node.id,
                   logicalId: node.logicalId,
                   status: "awaiting-decision",
-                  error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. To start only this seat fresh, run: ${this.freshStartCommand(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
+                  error: `Original session unresumable: ${startupResult.errors.join("; ")}. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or restore the original session manually.`,
                 };
               }
               return {
@@ -1947,7 +1977,11 @@ export class RestoreOrchestrator {
     let permissionMode: string | undefined;
     try {
       const runtime = this.claudeResume.canResume(resumeType, resumeToken) ? "claude-code"
-        : this.codexResume.canResume(resumeType, resumeToken) ? "codex" : "pi";
+        : this.codexResume.canResume(resumeType, resumeToken) ? "codex"
+        // pda L2a: a pda token is labelled pda, never the Pi fallback. Equivalent today (proved in the L2a battery, M37):
+        // launchOverride compares the label only with "claude-code"/"codex" and with a stored selection's runtime, which
+        // read() admits only as codex or claude-code, so "pda" and "pi" give the same override or the same refusal.
+        : this.pdaResume?.canResume(resumeType, resumeToken) ? "pda" : "pi";
       const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime);
       kernelAuthority = override.kernelAuthority === true;
       teamPermissionDefault = override.teamPermissionDefault === true;
@@ -2043,7 +2077,16 @@ export class RestoreOrchestrator {
       }
       return { kind: "failed", message: result.message };
     }
-
+    // pda L2a: re-attach to the agent the token names. Never retry_fresh (pda has no fresh start): a missing agent or
+    // a refused token is attention_required, an unreachable pda a plain failure (pda-runtime-adapter.ts).
+    if (this.pdaResume?.canResume(resumeType, resumeToken)) {
+      const result = await this.pdaResume.resume(nodeId, sessionName, resumeType, resumeToken, cwd);
+      if (result.ok) return { kind: "resumed" };
+      if (result.code === "attention_required") {
+        return { kind: "attention_required", message: result.message, evidence: (result as { evidence?: string }).evidence };
+      }
+      return { kind: "failed", message: result.message };
+    }
 
     return { kind: "failed", message: "No resume adapter available for this runtime/token combination." };
   }

@@ -41,7 +41,9 @@ export class RigSpecExporter {
     // OF-45: a node whose saved package_refs / session_source_json is damaged would export with that field silently
     // missing, a spec that cannot recreate the seat. Refuse, naming the seat and the column.
     for (const node of rig.nodes) {
-      const damage = [node.sessionSourceUnreadable, node.packageRefsUnreadable].filter((reason): reason is string => !!reason);
+      // pda L2a (review L2b N-1): a damaged pda_binding too. Exporting without it gives a spec that is refused on
+      // import ("pda: required when runtime is pda") at best, and drops which agent the seat drives at worst.
+      const damage = [node.sessionSourceUnreadable, node.packageRefsUnreadable, node.pdaBindingUnreadable].filter((reason): reason is string => !!reason);
       if (damage.length > 0) {
         throw new UnreadableNodeRowError(`Cannot export node '${node.logicalId}': its saved row is damaged (${damage.join("; ")}), so the exported spec would silently drop it. Repair the row, then export again.`);
       }
@@ -171,6 +173,8 @@ export class RigSpecExporter {
         if (node.effort) member.effort = node.effort;
         // The seat's remote_control declaration round-trips export -> import.
         if (node.remoteControl) member.remoteControl = true;
+        // The pda binding round-trips export -> import (D2: export reads the column).
+        if (node.pda) member.pda = node.pda;
         // OPR.0.4.6.FAC1: a declared seat role exports with the pod
         // member (round-trip fidelity — export→import keeps the role).
         if (node.role) member.role = node.role;

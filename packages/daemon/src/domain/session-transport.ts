@@ -26,6 +26,7 @@ import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activi
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
+import type { RunnerSendReadinessSource } from "./runtime-adapter.js";
 import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
 import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "../lib/pane-envelope.js";
 import { getSelfHostId } from "./hosts/fanout-contract.js";
@@ -1120,6 +1121,27 @@ interface SessionTransportDeps {
   /** S01/S02 P2: optional read-only capture observer. Absent by default (no activation). */
   captureObserver?: CaptureObserverSink;
   listProcesses?: NativeProcessLister;
+  /** pda L0 (design 9l Rev 2 D7/A3; reviews D1, N1-N3): a runner-hosted seat's own send readiness. L2a wires
+   *  it in startup.ts as `runnerSendReadinessFromAdapters(adapterMap)`. Absent = no runtime answers (today).
+   *  The transport asks only a runtime the source declares, and believes an answer only while the pane's
+   *  foreground is observed and is not a shell. */
+  runnerSendReadiness?: RunnerSendReadinessSource;
+}
+
+/** Runner-sourced unknowns that mean the seam could not confirm its authority (the runner's answer threw,
+ *  or the pane's foreground is a shell or cannot be read). Unreadable authority is an outage, never open:
+ *  these refuse on the default path too, where any other unknown proceeds with an advisory. */
+const RUNNER_SEAM_FAILURES: ReadonlySet<string> = new Set([
+  "runner_not_foreground", "runner_foreground_unobserved", "runner_readiness_unavailable",
+]);
+
+/** The refusal for positive needs-input evidence. A runner-sourced one never offers the prompt override: a
+ *  runner-hosted seat takes only bracketed input, and what holds it is the runner's, not a picker's. */
+function needsInputRefusal(sessionName: string, readiness: AgentActivity): string {
+  if (readiness.evidenceSource === "runner_sidecar") {
+    return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName} --reason "<why>"). No text was sent.`;
+  }
+  return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`;
 }
 
 interface SessionRow { node_id: string; session_name: string; }
@@ -1144,6 +1166,7 @@ export class SessionTransport {
   private activityEndpointFile: () => { baseUrl: string; token: string } | null;
   private captureObserver?: CaptureObserverSink;
   private listProcesses?: NativeProcessLister;
+  private runnerSendReadiness?: SessionTransportDeps["runnerSendReadiness"];
 
   constructor(deps: SessionTransportDeps) {
     this.db = deps.db;
@@ -1160,6 +1183,7 @@ export class SessionTransport {
     this.activityEndpointFile = deps.activityEndpointFile ?? (() => null);
     this.captureObserver = deps.captureObserver;
     this.listProcesses = deps.listProcesses;
+    this.runnerSendReadiness = deps.runnerSendReadiness;
   }
 
   /** Freeze the registration and binding before asking tmux about this name. */
@@ -1961,7 +1985,7 @@ export class SessionTransport {
             recheck.state === "needs_input"
               ? {
                   reason: "target_needs_input",
-                  error: `Refused: '${sessionName}' is at an interactive prompt (${recheck.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`,
+                  error: needsInputRefusal(sessionName, recheck),
                 }
               : recheck.state === "unknown"
                 ? {
@@ -2020,6 +2044,18 @@ export class SessionTransport {
         // override (reason required + an auditable record persisted BEFORE the send; fail closed if it
         // cannot be audited so an unauditable override never sends). Otherwise refuse with the
         // proceed-path. This is the ONLY state --dangerously-interact bypasses.
+        if (opts?.dangerouslyInteract && readiness.evidenceSource === "runner_sidecar") {
+          // pda L0 (design A3): the override sends UNBRACKETED input, which a runner splits per line. A
+          // runner's needs-input is never a prompt to drive, so the override is refused before any audit.
+          return {
+            ok: false,
+            sessionName,
+            sent: false,
+            reason: "runner_input_no_override",
+            activity: readiness,
+            error: needsInputRefusal(sessionName, readiness),
+          };
+        }
         if (opts?.dangerouslyInteract) {
           if (!opts.reason || opts.reason.trim().length === 0) {
             return {
@@ -2052,9 +2088,18 @@ export class SessionTransport {
             sessionName,
             reason: "target_needs_input",
             activity: readiness,
-            error: `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`,
+            error: needsInputRefusal(sessionName, readiness),
           };
         }
+      } else if (readiness.state === "unknown" && readiness.evidenceSource === "runner_sidecar" && RUNNER_SEAM_FAILURES.has(readiness.reason)) {
+        return {
+          ok: false,
+          sessionName,
+          sent: false,
+          reason: "target_runner_unverified",
+          activity: readiness,
+          error: `Refused: '${sessionName}' is a runner-hosted seat, and OpenRig could not confirm that its runner holds the pane (${readiness.reason}). No text was sent.`,
+        };
       } else if (readiness.state === "unknown") {
         // OPR.0.4.3.28 correction — INVERT the fail-closed-on-unknown default. Absent/stale/failed
         // telemetry is NOT positive picker evidence, so the send PROCEEDS. Diagnose the producer link
@@ -2369,6 +2414,39 @@ export class SessionTransport {
     return paneCommand.replace(/^-/, "");
   }
 
+  /** The runner's answer, or null for "ask today's logic". Review D1: a sidecar outlives a SIGKILLed runner
+   *  for up to its alive window, and on --wait-for-idle the shell refusal runs once, BEFORE the wait. So an
+   *  answer is believed only while the pane's foreground is observed and is not a shell. Reviews N1-N3:
+   *  - only a runtime the source declares is asked (the seam guard), and never with no runtime;
+   *  - an answer that throws, a pane-command read that throws or returns nothing, and a shell foreground
+   *    all read unknown from the runner (never idle), and refuse on every path (RUNNER_SEAM_FAILURES).
+   *  One rule, at the seam, for every runtime. */
+  private async runnerReadiness(input: { sessionName: string; runtime: string | null; binding?: ObservedBinding }): Promise<AgentActivity | null> {
+    const source = this.runnerSendReadiness;
+    if (!source || !input.runtime) return null;
+    if (!source.runtimes.has(input.runtime)) return null;
+    const runtime = input.runtime;
+    const failClosed = (reason: string, evidence: string | null = null): AgentActivity => ({
+      state: "unknown", reason, evidenceSource: "runner_sidecar", sampledAt: this.now().toISOString(), evidence, runtime,
+    });
+    let answer: AgentActivity | null;
+    try {
+      answer = await source.ask({ sessionName: input.sessionName, nodeId: input.binding?.nodeId ?? null, runtime });
+    } catch {
+      return failClosed("runner_readiness_unavailable");
+    }
+    if (!answer) return null;
+    let paneCommand: string | null;
+    try {
+      paneCommand = await this.tmuxAdapter.getPaneCommand(input.sessionName);
+    } catch {
+      paneCommand = null;
+    }
+    if (!paneCommand) return failClosed("runner_foreground_unobserved");
+    if (isShellForeground(paneCommand)) return failClosed("runner_not_foreground", `pane foreground: ${paneCommand.replace(/^-/, "")}`);
+    return { ...answer, evidenceSource: "runner_sidecar", runtime };
+  }
+
   private async classifySendReadiness(input: {
     sessionName: string;
     runtime: string | null;
@@ -2376,6 +2454,13 @@ export class SessionTransport {
     binding?: ObservedBinding;
     readinessFromPaneOnly?: boolean;
   }): Promise<AgentActivity> {
+    // pda L0 (design 9l Rev 2 D7/A3): a runner-hosted seat answers from its runner, before any hook or pane
+    // heuristic, so a reply ending in a question can never read as a prompt. All three callers (the default
+    // send, the wait loop, the recheck after a wait) come through here. Pane-only readiness asks the pane.
+    if (!input.readinessFromPaneOnly) {
+      const runner = await this.runnerReadiness(input);
+      if (runner) return runner;
+    }
     const now = this.now();
     const hookActivity = this.agentActivityStore?.getLatestForNode({
       sessionName: input.sessionName,

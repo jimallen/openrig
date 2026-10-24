@@ -116,6 +116,7 @@ export interface SeatRefusal {
     | "invalid_startup_from"
     | "runtime_adapter_missing"
     | "launch_unavailable"
+    | "fresh_start_unsupported"
     | "launch_failed"
     | "startup_failed"
     | "attention_required"
@@ -1333,6 +1334,7 @@ export class SeatLifecycleService {
         model: node.model ?? undefined,
         effort: resolveSeatEffort(node).effective ?? undefined,
         ...(node.remoteControl ? { remoteControl: true } : {}),
+        ...(node.pda ? { pda: node.pda } : {}),
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,
       },

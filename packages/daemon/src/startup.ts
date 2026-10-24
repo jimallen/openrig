@@ -51,6 +51,9 @@ import { ClaudeUsageWindows, latestClaudeWindowSamples } from "./domain/provider
 import { prepareCodexTeamWorkspace } from "./domain/codex-team-workspace.js";
 import { PiResumeAdapter } from "./adapters/pi-resume.js";
 import { OmpResumeAdapter } from "./adapters/omp-resume.js";
+import { PdaResumeAdapter } from "./adapters/pda-resume.js";
+import { PdaRuntimeAdapter, resolvePdaTokenFile } from "./adapters/pda-runtime-adapter.js";
+import { runnerSendReadinessFromAdapters, type RuntimeAdapter } from "./domain/runtime-adapter.js";
 import { OMP_PROVIDER_ENV_VARS, OMP_PROVIDER_EXTRA_ENV_VARS } from "./adapters/pi-runner-protocol.js";
 import { RigSpecExporter } from "./domain/rigspec-exporter.js";
 import { PodRepository } from "./domain/pod-repository.js";
@@ -680,6 +683,27 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }) },
     { stateRoot: ompStateRoot, runnerEntryPath: piRunnerEntryPath },
   );
+  // pda runtime (pda-runtime-design-9l, L2a): a pda seat's runner state lives under <OPENRIG_HOME>/state/pda. The
+  // adapter is built here, before the restore orchestrator, because the legacy resume path launches through it too.
+  // The daemon passes pda's token file to the runner as a PATH and only lstats it (D1); usage.pda_cost_facts is read
+  // at each launch; a launch or restore is refused while another seat holds the binding (one agent, one seat).
+  const pdaUsageFactsEnabled = (): boolean => {
+    try { return new ContextPackSettingsStore().resolveOne("usage.pda_cost_facts").value === true; } catch { return false; }
+  };
+  const pdaAdapter = new PdaRuntimeAdapter({
+    tmux: tmuxAdapter,
+    fsOps: {
+      readFile: (p: string) => fs.readFileSync(p, "utf-8"),
+      exists: (p: string) => fs.existsSync(p),
+      lstat: (p: string) => { try { return { isFile: fs.lstatSync(p).isFile() }; } catch { return null; } },
+    },
+    stateRoot: nodePath.join(OPENRIG_HOME, "state", "pda"),
+    runnerEntryPath: nodePath.resolve(import.meta.dirname, "./adapters/pda-runner.js"),
+    tokenFile: () => resolvePdaTokenFile(process.env, daemonHome),
+    usageFactsEnabled: pdaUsageFactsEnabled,
+    bindingConflicts: (binding, nodeId) => rigRepo.findPdaLaunchConflicts(binding, nodeId),
+  });
+  const pdaResume = new PdaResumeAdapter(pdaAdapter);
   // Services infrastructure (RigEnv) — created early so restore/bootstrap can use it
   const { ComposeServicesAdapter } = await import("./adapters/compose-services-adapter.js");
   const { ServiceOrchestrator } = await import("./domain/service-orchestrator.js");
@@ -688,7 +712,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const restoreOrchestrator = new RestoreOrchestrator({
     db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
-    checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume, ompResume,
+    checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume, ompResume, pdaResume,
     transcriptStore, serviceOrchestrator,
     // OF-32: a seat restored fresh re-reads its rig's spec through the same reader `rig seat launch --fresh` uses.
     // The instantiator is built further down; a restore only runs once the daemon is serving.
@@ -1039,7 +1063,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     db, rigRepo, podRepo,
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
     fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
-    adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
+    adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
     tmuxAdapter,
     agentImageLibrary,
     continuityPolicyMaterializer,
@@ -1270,6 +1294,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const userSpecLibraryRoot = getDefaultOpenRigPath("specs");
   const compatibleSpecLibraryRoot = getCompatibleOpenRigPath("specs");
 
+  // The runtime adapter map the routes see, and the ONE map `rig send`'s runner readiness is built from (pda L0/L2a):
+  // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (today: pda), so a
+  // mis-wired source can never touch another runtime's send.
+  const runtimeAdapterMap: Record<string, RuntimeAdapter> = { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() };
   const deps: AppDeps = {
     rigRepo,
     sessionRegistry,
@@ -1350,7 +1378,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     }),
     podInstantiator,
     podBundleSourceResolver,
-    runtimeAdapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
+    runtimeAdapters: runtimeAdapterMap,
     transcriptStore,
     sessionTransport: (() => {
       const t = new SessionTransport({
@@ -1363,6 +1391,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         slowOpRecorder,
         activityEndpointFile: () => readActivityEndpointFile(OPENRIG_HOME),
         captureObserver: shadow.capture?.observer,
+        runnerSendReadiness: runnerSendReadinessFromAdapters(runtimeAdapterMap),
       });
       // PL-004 Phase A revision (R1): wire QueueRepository's wake-path so
       // create / handoff / handoff-and-complete nudge by default.

@@ -36,6 +36,11 @@ export interface Node {
   effort?: string | null;
   /** The seat declared `remote_control: true`; persisted so restore and successor launches know it. */
   remoteControl?: boolean;
+  /** The pda agent this seat drives (runtime pda only; nodes.pda_binding). Absent for every other seat. */
+  pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
+  /** Set (to the reason) ONLY when nodes.pda_binding is damaged: the value above then reads as absent, but a
+   *  damaged column is not an absent one, so a launch or a copy that needs the binding must refuse on this. */
+  pdaBindingUnreadable?: string;
   /** OPR.0.7.0.7: the seat's explicit effort choice (rig seat set-effort); null = none. */
   effortChoice?: string | null;
   codexConfigProfile?: string | null;
@@ -178,6 +183,8 @@ export type RigEvent =
   // on an operator set (`operator_set`) and on reconcile capture-on-adopt
   // (`reconcile_capture`). NEVER carries the raw token (credential-class);
   // `redacted: true` marks that the token value is intentionally omitted.
+  /** pda L2a: an operator asked a pda seat's runner to retry its held message (ids and codes only, never content). */
+  | { type: "seat.pda_release_requested"; rigId: string; nodeId: string; sessionName: string; heldRequestId: string; heldCode: string; reason: string; actor: string | null }
   | { type: "session.resume_token_set"; rigId: string; nodeId: string; sessionName: string; sessionId: string; resumeType: string; previousProvenance: "hook" | "scrape" | "operator" | null; newProvenance: "operator" | "scrape"; source: "operator_set" | "reconcile_capture"; reason?: string; operator?: string; redacted: true }
   // OPR.0.4.3.20 FR-3 — append-only observability of an adoption-boundary
   // resume-token capture (reconcile / adopt / bind). `captured` records a
@@ -242,7 +249,7 @@ export type RigEvent =
   // evidence; `node.startup_proof_skipped` retires a previous challenge on a
   // lean launch. None route through updateStartupStatus; `ready` never means oriented.
   | { type: "node.startup_challenged"; rigId: string; nodeId: string; challengeId: string; contractHash: string }
-  | { type: "node.startup_proof_skipped"; rigId: string; nodeId: string; reason: "not_selected" | "terminal" }
+  | { type: "node.startup_proof_skipped"; rigId: string; nodeId: string; reason: "not_selected" | "terminal" | "startup_content_withheld" }
   | { type: "node.startup_proof_verified"; rigId: string; nodeId: string; sessionId: string; challengeId: string; contractHash: string }
   | { type: "node.startup_proof_rejected"; rigId: string; nodeId: string; challengeId: string | null; reason: "identity_unbound" | "identity_mismatch" | "challenge_stale" | "contract_mismatch" | "bare_ack" }
   | { type: "continuity.sync"; rigId: string; podId: string; nodeId: string }
@@ -558,7 +565,11 @@ export type AgentActivityEvidenceSource =
   | "terminal_activity"
   | "tmux_session"
   | "external_cli"
-  | "session_registry";
+  | "session_registry"
+  /** pda L0 (design 9l Rev 2 D7/A3): a pane-hosted runner's own sidecar answered `rig send`'s readiness
+   *  question (RuntimeAdapter.sendReadiness), believed only while the pane's foreground is not a shell. Never
+   *  pane scraping. A `needs_input` from this source refuses `--dangerously-interact`. */
+  | "runner_sidecar";
 
 export interface AgentActivity {
   state: AgentActivityState;
@@ -1143,6 +1154,8 @@ export interface RigSpecPodMember {
    * Settings cannot do this: claude ignores `remoteControlAtStartup` from project/local scope.
    */
   remoteControl?: boolean;
+  /** The pda agent this seat drives (runtime pda only, required there). Parsed by L0's parsePdaSpecBlock. */
+  pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
   /**
    * OPR.0.4.6.FAC1: optional seat-side role declaration (writes the
    * existing `nodes.role` column via createMemberNode → addNode). The
@@ -1436,6 +1449,8 @@ export interface ExpansionPodFragment {
      *  permissionPolicy: the ingress preserves RAW presence so the canonical validator rejects a
      *  non-boolean or a non-claude `true`, rather than the ingress erasing it into absence. */
     remoteControl?: unknown;
+    /** `pda` block. Typed UNKNOWN: RAW presence is preserved so the canonical validator owns the shape. */
+    pda?: unknown;
     restorePolicy?: unknown;
     label?: string;
     /** Member `compaction_strategy`. Typed UNKNOWN (RAW presence preserved; the canonical validator owns the vocabulary). */

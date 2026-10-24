@@ -39,6 +39,8 @@ import { CodexThreadIdResolver } from "../domain/codex-thread-id.js";
 import { resolveLiveCodexThreadId } from "../domain/model-divergence/current-generation-record.js";
 import { SeatIdentityStore } from "../domain/seat-identity-store.js";
 import { parseSqliteUtcMs } from "../domain/sqlite-time.js";
+import { requestPdaRelease } from "../domain/pda-release.js";
+import { transportSenderSession } from "./require-sender-identity.js";
 
 const generationCensus = new ProcessCensus({ freshnessMs: 0 }); // coalesce concurrent receipts; recheck each later read
 const generationThreadIds = new CodexThreadIdResolver({ codexHome: process.env.CODEX_HOME || undefined });
@@ -592,6 +594,27 @@ sessionAdminRoutes.post("/:sessionName/clear-attention", terminalAuthGuard(), as
     return c.json(result, result.code === "not_in_attention" ? 409 : 422);
   }
   return c.json(result, 200);
+});
+
+// POST /api/sessions/:sessionName/pda-release — pda L2a round 2 (`rig seat pda-release <session> --reason <why>`).
+// Asks a pda seat's runner to retry its held message once more, by creating `release.request` in the seat's own
+// state dir. GUARDED by terminalAuthGuard() (it re-sends a message into an agent). Every fail-closed rule is in
+// domain/pda-release.ts; the route only resolves its inputs.
+sessionAdminRoutes.post("/:sessionName/pda-release", terminalAuthGuard(), async (c) => {
+  const sessionName = c.req.param("sessionName")!;
+  const { sessionRegistry } = getDeps(c);
+  const eventBus = c.get("eventBus" as never) as EventBus | undefined;
+  const adapters = c.get("runtimeAdapters" as never) as Record<string, unknown> | undefined;
+  const pda = adapters?.["pda"] as { stateRoot?: unknown } | undefined;
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const actor = transportSenderSession(c) ?? (typeof body["operator"] === "string" && body["operator"].trim() ? body["operator"].trim() : null);
+  const result = requestPdaRelease({
+    db: sessionRegistry.db,
+    stateRoot: typeof pda?.stateRoot === "string" ? pda.stateRoot : null,
+    findSession: (name) => sessionRegistry.findResumeContextByName(name),
+    ...(eventBus ? { emit: (event) => eventBus.emit(event) } : {}),
+  }, { sessionName, reason: body["reason"], actor });
+  return result.ok ? c.json(result) : c.json(result, result.status);
 });
 
 // POST /api/sessions/:sessionName/resume-token — OPR.0.4.0.22.

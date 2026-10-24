@@ -162,6 +162,8 @@ describe("SettingsStore (User Settings v0)", () => {
       "provider.usage_windows",
       "usage.pi_cost_facts",
       "usage.pi_openrouter_charge",
+      // pda L0 (review D2) — pda cost facts, both twins, default off.
+      "usage.pda_cost_facts",
       // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs.
       "retention.enabled",
       "retention.transitions_days",

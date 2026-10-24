@@ -212,7 +212,8 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     result.code === "successor_tmux_absent" ||
     result.code === "successor_already_managed" ||
     result.code === "successor_is_current" ||
-    result.code === "runtime_mismatch") {
+    result.code === "runtime_mismatch" ||
+    result.code === "handover_unsupported_runtime") {
     return c.json(result, 409);
   }
   if (result.code === "seat_ref_required") {

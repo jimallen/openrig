@@ -21,12 +21,10 @@
 import fs from "node:fs";
 import nodePath from "node:path";
 import readline from "node:readline";
-import { PassThrough } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { formatDaemonHostForUrl } from "./daemon-url.js";
+import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
@@ -37,119 +35,9 @@ import {
 } from "./pi-runner-protocol.js";
 
 // ── Submitted input boundaries ─────────────────────────────────────────────
-// Canonical TTY buffers can overflow before Node sees even the paste terminator.
-// Use Node's line editor in raw mode, with only paste framing handled here.
-export const MAX_PI_INPUT_BYTES = 1024 * 1024;
-
-export function createRunnerInput(
-  input: NodeJS.ReadStream,
-  output: NodeJS.WriteStream,
-  onSubmit: (block: string) => void,
-): readline.Interface {
-  const reject = () => output.write(
-    "[pi-runner] input rejected: maximum 1048576 UTF-8 bytes; send a smaller message. Ctrl-C clears unfinished input.\n",
-  );
-  const submit = (block: string) => {
-    if (Buffer.byteLength(block) > MAX_PI_INPUT_BYTES) reject();
-    else if (block.trim()) onSubmit(block);
-  };
-  // A pipe has no kernel line limit or terminal editing; each line is a message.
-  if (!input.isTTY || !output.isTTY) {
-    return readline.createInterface({ input, crlfDelay: Infinity }).on("line", submit);
-  }
-
-  const keys = new PassThrough();
-  const editor = readline.createInterface({
-    input: keys, output, terminal: true, prompt: "", historySize: 0, crlfDelay: Infinity,
-  });
-  // Node forces dumb-terminal mode without editing if TERM=dumb. When terminal: true
-  // was requested, remove the dumb-mode override so VT100 line editing is preserved.
-  if (Object.prototype.hasOwnProperty.call(editor, "_ttyWrite")) {
-    delete (editor as any)._ttyWrite;
-  }
-  const decoder = new StringDecoder("utf8");
-  let pending = "";
-  let paste: string | null = null;
-  let pasteBytes = 0;
-  let discarded = false;
-  const setLine = (line: string, cursor: number) => {
-    // Node documents changing rl.line together with rl.cursor. The installed
-    // typings mark them readonly, so assign this pair through one explicit seam.
-    Object.assign(editor, { line, cursor });
-    editor.prompt(true);
-  };
-  const clear = () => setLine("", 0);
-  const consume = (text: string) => {
-    if (paste === null) {
-      keys.write(text);
-    } else if (!discarded) {
-      pasteBytes += Buffer.byteLength(text);
-      if (pasteBytes > MAX_PI_INPUT_BYTES) {
-        paste = "";
-        discarded = true;
-        clear();
-        reject();
-      } else paste += text;
-    }
-  };
-  const receive = (chunk: Buffer) => {
-    pending += decoder.write(chunk);
-    while (pending) {
-      const marker = paste === null ? "\u001b[200~" : "\u001b[201~";
-      const boundary = pending.indexOf(marker);
-      const interrupt = pending.indexOf("\u0003");
-      const at = boundary < 0 ? interrupt : interrupt < 0 ? boundary : Math.min(boundary, interrupt);
-      if (at < 0) {
-        // Retain only a possible split marker; normal editing keys go to Node.
-        let tail = Math.min(marker.length - 1, pending.length);
-        while (tail && !marker.startsWith(pending.slice(-tail))) tail--;
-        consume(pending.slice(0, pending.length - tail));
-        pending = pending.slice(pending.length - tail);
-        break;
-      }
-      consume(pending.slice(0, at));
-      pending = pending.slice(at + (at === interrupt ? 1 : marker.length));
-      if (at === interrupt) {
-        paste = null;
-        discarded = false;
-        clear();
-        output.write("\n[pi-runner] input cleared\n");
-        onSubmit("/abort");
-      } else if (paste === null) {
-        paste = "";
-        pasteBytes = 0;
-        discarded = false;
-      } else {
-        if (!discarded) {
-          const line = editor.line.slice(0, editor.cursor) + paste + editor.line.slice(editor.cursor);
-          if (Buffer.byteLength(line) > MAX_PI_INPUT_BYTES) { clear(); reject(); }
-          else {
-            // rl.write(text) treats pasted newlines as submits. These public
-            // editing fields insert the whole literal paste without submitting.
-            setLine(line, editor.cursor + paste.length);
-          }
-        }
-        paste = null;
-      }
-    }
-  };
-  const wasRaw = input.isRaw;
-  const end = () => editor.close();
-  input.setRawMode(true);
-  output.write("\u001b[?2004h");
-  input.on("data", receive);
-  input.once("end", end);
-  editor.on("line", submit);
-  editor.once("close", () => {
-    input.removeListener("data", receive);
-    input.removeListener("end", end);
-    input.setRawMode(wasRaw);
-    input.pause();
-    keys.destroy();
-    output.write("\u001b[?2004l");
-  });
-  return editor;
-}
+// pda L0: the editor and the activity endpoint lookup live in runner-pane-io.ts, shared with other
+// pane-hosted runners. Pi calls them with the defaults, which are this runner's behaviour unchanged.
+export { createRunnerInput, MAX_RUNNER_INPUT_BYTES as MAX_PI_INPUT_BYTES } from "./runner-pane-io.js";
 
 // ── Pi event → mirror + activity mapping (pure, hermetically testable) ──────
 
@@ -833,26 +721,6 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
   }
   if (args.sessionFile && args.forkRef) throw new Error("--session and --fork are mutually exclusive");
   return args as RunnerArgs;
-}
-
-function resolveActivityEndpoint(env: NodeJS.ProcessEnv): { baseUrl: string; token: string } | null {
-  let baseUrl = env.OPENRIG_URL?.trim() || null;
-  let token = env.OPENRIG_ACTIVITY_HOOK_TOKEN?.trim() || null;
-  if (!baseUrl && env.OPENRIG_PORT) {
-    const rawHost = env.OPENRIG_HOST?.trim() || "127.0.0.1";
-    baseUrl = `http://${formatDaemonHostForUrl(rawHost)}:${env.OPENRIG_PORT.trim()}`;
-  }
-  if (!baseUrl || !token) {
-    try {
-      const home = env.OPENRIG_HOME?.trim() || nodePath.join(process.env.HOME ?? "", ".openrig");
-      const parsed = JSON.parse(fs.readFileSync(nodePath.join(home, "activity-endpoint.json"), "utf8"));
-      if (!baseUrl && typeof parsed.baseUrl === "string") baseUrl = parsed.baseUrl;
-      if (!token && typeof parsed.token === "string") token = parsed.token;
-    } catch {
-      // absent/malformed — activity POSTs no-op; the sidecar + mirror still work.
-    }
-  }
-  return baseUrl && token ? { baseUrl, token } : null;
 }
 
 /** The runner-side sidecar handshake, extracted for hermetic testing (guard

@@ -116,8 +116,19 @@ import { rigSpecSourceSchema } from "./migrations/111_rig_spec_source.js";
 import { nodeCodexMcpServersSchema } from "./migrations/112_node_codex_mcp_servers.js";
 import { rsiWakeStateSchema } from "./migrations/113_rsi_wake_state.js";
 import { eventsAndUsageSamplesIndexesSchema } from "./migrations/114_events_and_usage_samples_indexes.js";
+import { nodePdaBindingSchema } from "./migrations/115_node_pda_binding.js";
+import { pdaUsageEntriesSchema } from "./migrations/116_pda_usage_entries.js";
 
-/** Ordered migrations; numbers may be reserved by independent changes. */
+/** Numbers held for changes that have not landed, with the exact name each must land under. pda L0
+ *  (pda-runtime-design-9l Rev 2): L2b added 115 (`nodes.pda_binding`) and L2c added 116
+ *  (`pda_usage_entries`). An entry stays after its migration lands, and the reservation test then checks the
+ *  landed name. */
+export const RESERVED_MIGRATION_NAMES: Readonly<Record<string, string>> = {
+  "115": "115_node_pda_binding.sql",
+  "116": "116_pda_usage_entries.sql",
+};
+
+/** Ordered migrations; numbers may be reserved by independent changes (RESERVED_MIGRATION_NAMES). */
 
 export const ALL_MIGRATIONS: Migration[] = [
   coreSchema,
@@ -231,4 +242,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   nodeCodexMcpServersSchema,
   rsiWakeStateSchema,
   eventsAndUsageSamplesIndexesSchema,
+  nodePdaBindingSchema,
+  pdaUsageEntriesSchema,
 ];
