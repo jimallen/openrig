@@ -86,10 +86,13 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
   const key = (f: PdaUsageFact): string => `${f.conversationId}\u0000${f.entryId}`;
 
   const queue = (fact: PdaUsageFact): void => {
-    const existing = pending.find((f) => key(f) === key(fact));
-    if (existing) {
-      // An unknown origin settles to a known one; a known one is never changed.
-      if (existing.origin === "unknown" && fact.origin !== "unknown") existing.origin = fact.origin;
+    const at = pending.findIndex((f) => key(f) === key(fact));
+    if (at >= 0) {
+      // An unknown origin settles to a known one; a known one is never changed. The upgrade is a NEW object (review U1):
+      // a batch in flight holds the old one, and its reply removes exactly the objects it sent, so the upgraded fact
+      // stays pending and is posted next, where the store settles unknown -> own/other.
+      const existing = pending[at]!;
+      if (existing.origin === "unknown" && fact.origin !== "unknown") pending[at] = { ...existing, origin: fact.origin };
       return;
     }
     pending.push(fact);
@@ -106,9 +109,10 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
       let outcome: PdaUsagePostOutcome;
       try { outcome = await options.post(payload); } catch { outcome = "keep"; }
       if (outcome !== "keep") {
-        const sent = new Set(batch.map(key));
+        // By identity, not by key: a fact upgraded while this post was in flight is a different object and stays (U1).
+        const sent = new Set(batch);
         const before = pending.length;
-        pending = pending.filter((f) => !sent.has(key(f)));
+        pending = pending.filter((f) => !sent.has(f));
         if (outcome === "refused") dropped += before - pending.length;
       }
     })().finally(() => { inFlight = null; });

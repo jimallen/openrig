@@ -32,11 +32,16 @@ export interface PdaReleaseDeps {
   now?: () => Date;
 }
 
+/** The longest `--reason` accepted (review P1). */
+export const PDA_RELEASE_REASON_MAX = 500;
+
 const refuse = (status: 400 | 404 | 409 | 500 | 503, code: string, error: string): PdaReleaseResult => ({ ok: false, status, code, error });
 
 export function requestPdaRelease(deps: PdaReleaseDeps, input: { sessionName: string; reason: unknown; actor: string | null }): PdaReleaseResult {
   const reason = typeof input.reason === "string" ? input.reason.trim() : "";
   if (!reason) return refuse(400, "missing_reason", "pda-release requires --reason (recorded in the audit event).");
+  // Review P1: the reason goes into an audit event; it is a sentence, not a payload.
+  if (reason.length > PDA_RELEASE_REASON_MAX) return refuse(400, "reason_too_long", `The reason is ${reason.length} characters; at most ${PDA_RELEASE_REASON_MAX} are accepted.`);
   const ctx = deps.findSession(input.sessionName);
   if (!ctx) return refuse(404, "session_not_found", `Session '${input.sessionName}' not found.`);
   if (ctx.runtime !== PDA_RUNTIME) {
@@ -85,7 +90,7 @@ export function requestPdaRelease(deps: PdaReleaseDeps, input: { sessionName: st
     ok: true, sessionName: name, heldRequestId: held.requestId, heldCode: held.code, runnerAlive,
     message: `Release requested for ${name} (held: ${held.code}). ${runnerAlive
       ? "The runner retries the held message once more on its next tick (within 60 s)."
-      : "Its runner is not running now; it applies the release when the seat next starts (rig up <rig> --existing)."} `
+      : "Its runner is not running now. The release stays on disk and applies at its next start to whatever message is held then, which may not be this one (rig up <rig> --existing)."} `
       + "If pda already took that message on an earlier attempt that never answered, it may be delivered twice.",
   };
 }

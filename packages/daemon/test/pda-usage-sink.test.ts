@@ -78,6 +78,26 @@ describe("createPdaUsageSink", () => {
     expect(posts.map((p) => p.facts.map((f) => f.origin))).toEqual([["own"]]);
   });
 
+  it("U1: an unknown fact whose post is still in flight does not lose its later own upgrade; the own fact goes out next", async () => {
+    const posts: Array<Array<[string, string]>> = [];
+    let release!: (o: PdaUsagePostOutcome) => void;
+    const s = createPdaUsageSink({
+      sessionName: "s", nodeId: null, generation: null, agent: "a", isOwnSubmission: (id) => id === "11",
+      post: (p) => { posts.push(p.facts.map((f) => [f.entryId, f.origin])); return posts.length === 1 ? new Promise((r) => { release = r; }) : Promise.resolve("stored"); },
+    });
+    s.onGapEntry!(priced(40, 0.01));
+    s.flush!();                                   // the unknown fact is in flight
+    s.onRunStart!({ type: "run_start", inputs: [11] } as never);
+    s.onAssistantEntry!(priced(40, 0.01));        // seen live inside this seat's run, while the post is in flight
+    release("stored");
+    await s.settled();
+    expect(s.pending().map((f) => [f.entryId, f.origin])).toEqual([["40", "own"]]);
+    s.onRunEnd!({ type: "run_end", inputs: [11] } as never);
+    await s.settled();
+    expect(posts).toEqual([[["40", "unknown"]], [["40", "own"]]]);
+    expect(s.pending()).toEqual([]);
+  });
+
   it("a 503 (or a timeout) keeps the facts for the next run_end; a stored post clears them; a refusal drops and counts them", async () => {
     const { s, posts } = sink(["keep", "stored", "refused"]);
     await run(s, [11], [1]);

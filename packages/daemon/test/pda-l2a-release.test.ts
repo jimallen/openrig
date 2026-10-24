@@ -121,6 +121,27 @@ describe("POST /api/sessions/:sessionName/pda-release", () => {
     expect(events()).toHaveLength(1);
   });
 
+  it("P1: a reason over 500 characters is refused (400), nothing written or audited; 500 is accepted", async () => {
+    seat(SEAT);
+    sidecar(SEAT);
+    const tooLong = await app().post(SEAT, { reason: "x".repeat(501) });
+    expect(tooLong.status).toBe(400);
+    expect(await tooLong.json()).toMatchObject({ code: "reason_too_long" });
+    expect(fs.existsSync(releaseFile(SEAT))).toBe(false);
+    expect(events()).toHaveLength(0);
+    expect((await app().post(SEAT, { reason: "y".repeat(500) })).status).toBe(200);
+  });
+
+  it("P3: with the runner not running, the reply says the release applies at the next start to whatever message is held then", async () => {
+    seat(SEAT);
+    sidecar(SEAT, { aliveAt: new Date(Date.now() - 600_000).toISOString() });
+    const res = await app().post(SEAT, { reason: "x" });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { runnerAlive: boolean; message: string };
+    expect(body.runnerAlive).toBe(false);
+    expect(body.message).toContain("applies at its next start to whatever message is held then, which may not be this one");
+  });
+
   it("the path is the seat's own: a symlinked seat dir, a symlink at release.request, or a session name that is not one path segment is refused", async () => {
     seat(SEAT);
     const elsewhere = path.join(dir, "elsewhere");
