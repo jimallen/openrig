@@ -12,6 +12,8 @@ import {
   type RunnerIo,
 } from "../src/adapters/pi-runner.js";
 import { PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, type PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
+import { extractPiUsageFacts } from "../src/domain/pi-usage-facts.js";
+import { openRouterChargeTarget } from "../src/domain/openrouter-charge.js";
 
 const SESSION = "devpi-a@some-rig";
 const SESSION_FILE = "/state/pi/devpi-a@some-rig/sessions/2026_0197.jsonl";
@@ -355,6 +357,113 @@ describe("RunnerCore assistant reply mirror", () => {
     f.io.mirrorAppend = (text) => { pane += text; };
     for (const event of PI_REPLY_EVENTS) core.handlePiLine(JSON.stringify(event));
     expect(pane).toBe("Hello from the mock server.\n");
+  });
+});
+
+// Shapes from a real Pi 1.3.0 session (qualification run on Sparky, 2026-10-23: scratch seat, `openai-codex`
+// stored sign-in, 18 assistant turns across a restart). Pi 1.3.0's stdout stream was not recorded by anything
+// (the runner's transcript holds pane text only), so this is the PERSISTED form: the entries `get_entries` returns,
+// which are also the `message` of each `message_end` (agent-session persists the finalized message on message_end).
+// Scrubbed: ids, response ids, prompts, commands, reply text and paths are generic placeholders. What is kept
+// real is every number the usage reader consumes. Per assistant turn:
+// [input, output, cacheRead, reasoning, totalTokens, cost.total, stopReason, durationMs]; cacheWrite was 0 on every
+// turn, and cost components other than the total are elided (only the total is read).
+const PI13_TURNS: ReadonlyArray<readonly [number, number, number, number, number, number, "toolUse" | "stop", number]> = [
+  [34413, 75, 0, 0, 34488, 0.0034788000000000006, "toolUse", 2481],
+  [777, 36, 34304, 0, 35117, 0.00043874, "toolUse", 1323],
+  [257, 35, 34944, 0, 35236, 0.00039264000000000004, "toolUse", 1888],
+  [3854, 52, 35072, 0, 38978, 0.00076212, "toolUse", 1259],
+  [243, 64, 38784, 0, 39091, 0.00044414000000000004, "toolUse", 1485],
+  [249, 40, 38912, 0, 39201, 0.00043402, "toolUse", 1285],
+  [2257, 41, 39040, 0, 41338, 0.0006366, "stop", 1375],
+  [262, 44, 41216, 0, 41522, 0.00046036000000000004, "toolUse", 1311],
+  [538, 50, 41344, 0, 41932, 0.00049224, "toolUse", 1038],
+  [234, 68, 41728, 0, 42030, 0.00047468, "toolUse", 1657],
+  [204, 39, 41856, 0, 42099, 0.00045846, "toolUse", 2266],
+  [292, 66, 41856, 9, 42214, 0.00048076, "toolUse", 3189],
+  [246, 21, 41984, 0, 42251, 0.00045494, "stop", 1126],
+  [264, 80, 42112, 0, 42456, 0.00048752, "toolUse", 2437],
+  [252, 88, 42240, 0, 42580, 0.0004916, "toolUse", 1443],
+  [248, 55, 42368, 0, 42671, 0.00047598, "toolUse", 1176],
+  [191, 21, 42496, 0, 42708, 0.00045456, "stop", 1160],
+  [310, 27, 42496, 0, 42833, 0.00046946, "stop", 1582],
+];
+const PI13_TURN_WITH_THINKING = 11; // the one real turn whose content was [thinking, toolCall]
+/** Pi 1.3.0 assistant message (openai-codex-responses). `rawStopReason`, `durationMs` and `thinkingLevel` are
+ *  1.3.0 fields the 0.87.1 fixture above does not have. */
+const pi13Assistant = (i: number) => {
+  const [input, output, cacheRead, reasoning, totalTokens, total, stopReason, durationMs] = PI13_TURNS[i]!;
+  const call = { type: "toolCall", id: `call_fixture_${i}|fc_fixture_${i}`, name: "bash", arguments: { command: "<scrubbed command>", timeout: 20 } };
+  const content = stopReason === "stop" ? [{ type: "text", text: "<scrubbed reply>" }]
+    : i === PI13_TURN_WITH_THINKING ? [{ type: "thinking", thinking: "<scrubbed>", thinkingSignature: "<scrubbed>" }, call] : [call];
+  return {
+    role: "assistant", content, api: "openai-codex-responses", provider: "openai-codex", model: "gpt-6-luna",
+    usage: { input, output, cacheRead, cacheWrite: 0, reasoning, totalTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } },
+    stopReason, timestamp: 1792768673142 + i * 3000, responseId: `resp_fixture_${i}`,
+    rawStopReason: "completed", durationMs, thinkingLevel: "medium",
+  };
+};
+/** The persisted entries: a 1.3.0 `system` message entry (role "system" with `sections` and `toolsAdded`, which
+ *  carries no usage), the user prompt, then each assistant turn (toolResult entries between tool calls). */
+const PI13_ENTRIES: Record<string, unknown>[] = (() => {
+  const entries: Record<string, unknown>[] = [];
+  const add = (message: Record<string, unknown>) => {
+    const n = entries.length;
+    entries.push({ type: "message", id: `f1300${String(n).padStart(3, "0")}`, parentId: n === 0 ? null : entries[n - 1]!.id,
+      timestamp: new Date(Date.UTC(2026, 9, 23, 15, 17, 53) + n * 1000).toISOString(), message });
+  };
+  add({ role: "system", content: "", sections: { preamble: "<scrubbed>", cwd: "<scrubbed>" },
+    toolsAdded: [{ name: "bash", description: "<scrubbed>", parameters: { type: "object" } }], timestamp: 1792768673128 });
+  add({ role: "user", content: [{ type: "text", text: "<scrubbed prompt>" }], timestamp: 1792768673128 });
+  PI13_TURNS.forEach((turn, i) => {
+    add(pi13Assistant(i));
+    if (turn[6] === "toolUse") {
+      add({ role: "toolResult", toolCallId: `call_fixture_${i}|fc_fixture_${i}`, toolName: "bash",
+        content: [{ type: "text", text: "<scrubbed output>" }], isError: false, durationMs: 477, timestamp: 1792768676103 + i * 3000 });
+    }
+  });
+  return entries;
+})();
+
+describe("Pi 1.3.0 persisted transcript (real session shapes, scrubbed)", () => {
+  it("is a Pi 1.3.0 fixture: every assistant turn carries the fields 0.87.1 messages do not", () => {
+    const assistants = PI13_ENTRIES.map(e => e.message as Record<string, unknown>).filter(m => m.role === "assistant");
+    expect(assistants).toHaveLength(18);
+    for (const m of assistants) {
+      expect(Object.keys(m)).toEqual(expect.arrayContaining(["rawStopReason", "durationMs", "thinkingLevel"]));
+    }
+    expect(PI13_ENTRIES.some(e => (e.message as Record<string, unknown>).role === "system")).toBe(true);
+  });
+
+  it("reads exactly what Pi's own totals count: 18 turns, 45091 in / 902 out / 682752 cache-read, no system or tool-result noise", () => {
+    const { facts, malformed } = extractPiUsageFacts(PI13_ENTRIES, { createdAt: "2026-10-23T15:17:52.828Z", parentSession: null });
+    expect(malformed).toBe(0);
+    expect(facts).toHaveLength(18);
+    expect(facts.every(f => f.kind === "assistant" && f.origin === "own")).toBe(true);
+    expect(facts.reduce((n, f) => n + f.input, 0)).toBe(45091);
+    expect(facts.reduce((n, f) => n + f.output, 0)).toBe(902);
+    expect(facts.reduce((n, f) => n + f.cacheRead, 0)).toBe(682752);
+    expect(facts.reduce((n, f) => n + f.cacheWrite, 0)).toBe(0);
+    expect(facts.filter(f => f.stopReason === "toolUse")).toHaveLength(14);
+    expect(facts.filter(f => f.stopReason === "stop")).toHaveLength(4);
+    expect(facts[0]).toMatchObject({ provider: "openai-codex", model: "gpt-6-luna", api: "openai-codex-responses", responseId: "resp_fixture_0", costTotal: 0.0034788000000000006 });
+  });
+
+  it("never looks these turns up as OpenRouter charges, and an openai-codex-responses id would not be one either", () => {
+    const { facts } = extractPiUsageFacts(PI13_ENTRIES, { createdAt: "2026-10-23T15:17:52.828Z", parentSession: null });
+    for (const f of facts) expect(openRouterChargeTarget(f)).toEqual({ notCovered: "not an OpenRouter request" });
+    // Control: relabel the provider and the api branch decides, so the answer above is not only the provider test.
+    expect(openRouterChargeTarget({ ...facts[0]!, provider: "openrouter" }))
+      .toEqual({ notCovered: "Pi's openai-codex-responses API: its response id isn't a documented OpenRouter generation id" });
+  });
+
+  it("maps a 1.3.0 assistant message_end to the same honest terminal: a line end, no error, for toolUse and stop alike", () => {
+    for (const i of [0, PI13_TURN_WITH_THINKING, 6, 17]) {
+      expect(mapPiEvent({ type: "message_end", message: pi13Assistant(i) })).toEqual({ mirrorLines: [""] });
+    }
+    // Control: the same message as a failed turn does announce itself, so the quiet result above is not blindness.
+    const failed = { ...pi13Assistant(0), stopReason: "error", errorMessage: "provider said no" };
+    expect(mapPiEvent({ type: "message_end", message: failed }).errorNotice).toBe("[pi-runner] ERROR provider said no");
   });
 });
 

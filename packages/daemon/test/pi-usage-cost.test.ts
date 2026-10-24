@@ -1,5 +1,5 @@
 // OPR.0.7.0.2 (cost reporting, Pi atom): Pi cost from PERSISTED session entries, counted once, with a fork's
-// inherited history kept apart from the new occupant's spend. Hermetic: Pi 0.87.1-shaped entry fixtures, a fake
+// inherited history kept apart from the new occupant's spend. Hermetic: Pi 1.3.0-shaped entry fixtures, a fake
 // runner IO, an in-memory database and the activity route; no Pi process, no account, no provider call.
 import { describe, it, expect, afterEach } from "vitest";
 import { Hono } from "hono";
@@ -27,7 +27,7 @@ const assistant = (id: string, s: number, cost: number | undefined, stopReason =
   type: "message", id, parentId: null, timestamp: at(s),
   message: { role: "assistant", provider: "openrouter", model: "m-1", responseModel: "m-1-0801", usage: usage(100, 20, cost), stopReason },
 });
-/** One of each usage-bearing kind Pi 0.87.1 records, plus entries that carry none. */
+/** One of each usage-bearing kind Pi 1.3.0 records, plus entries that carry none. */
 const ENTRIES = [
   { type: "message", id: "u1", parentId: null, timestamp: at(1), message: { role: "user", content: "hi" } },
   assistant("a1", 2, 0.01),
@@ -42,7 +42,7 @@ const ENTRIES = [
 ];
 const OWN: PiSessionBoundary = { createdAt: at(0), parentSession: null };
 
-describe("extractPiUsageFacts (Pi 0.87.1, session format v3)", () => {
+describe("extractPiUsageFacts (Pi 1.3.0, session format v3)", () => {
   it("covers every usage-bearing kind Pi's own totals count, and only those", () => {
     const { facts, malformed } = extractPiUsageFacts(ENTRIES, OWN);
     expect(malformed).toBe(0);

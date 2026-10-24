@@ -1,8 +1,9 @@
 import path from "node:path";
 import { PI_PROVIDER_ENV_VARS, providerFromModel } from "./pi-runner-protocol.js";
 
-// A tested baseline, not an enforced minimum. See docs/releases/v0.5.15.md.
-const TESTED_PI_VERSION = "0.87.1";
+// A tested baseline, not an enforced minimum. Pi 1.3.0 is the qualified baseline (CHANGELOG.md, Unreleased);
+// docs/releases/v0.5.15.md records the earlier 0.87.1 qualification.
+const TESTED_PI_VERSION = "1.3.0";
 
 /** The daemon and pane may resolve different executables. Never turn a
  * version observation into a new launch refusal or echo arbitrary stdout. */
@@ -27,9 +28,10 @@ function object(value: unknown): value is JsonObject {
  * in Pi's own order: a stored sign-in or key in auth.json, then a models.json provider key, then the provider's
  * environment key. Metadata only: no global login read, credential command, refresh or API request, and never a
  * credential value. Presence is not a successful authentication claim. Pi's own loader remains authoritative
- * (including extension/custom-provider credentials). Shapes: earendil-works/pi v0.87.1 auth-storage.ts and
- * docs/models.md. */
-/** Whether a models.json provider entry can change how Pi authenticates for that provider (Pi 0.87.1
+ * (including extension/custom-provider credentials). Shapes: earendil-works/pi v1.3.0 auth-storage.ts and
+ * docs/models.md ("Pi uses a runtime `--api-key` first, then a stored `auth.json` credential, an `apiKey` from
+ * `models.json`, and finally the provider's environment variables"; OpenRig passes no --api-key). */
+/** Whether a models.json provider entry can change how Pi authenticates for that provider (Pi 1.3.0
  *  provider-composer.js): a key, OAuth, headers, an auth header, or a base URL (where the key is sent), on the
  *  entry or on any of its custom models or model overrides. An entry that only adds or adjusts models without
  *  these keeps the inherited credential (for OpenRouter, the environment key). */
@@ -50,7 +52,7 @@ export function providerEntryAuth(entry: unknown): "none" | "bearing" | "unknown
   return parts.includes("bearing") ? "bearing" : parts.includes("unknown") ? "unknown" : "none";
 }
 
-/** Pi 0.87.1 parses models.json as JSON.parse(stripJsonComments(stripBom(text))) (model-config.js, utils/json.js):
+/** Pi 1.3.0 parses models.json as JSON.parse(stripJsonComments(stripBom(text))) (model-config.js, utils/json.js):
  *  `//` line comments outside strings and trailing commas are removed. The same here, so a file Pi reads is read. */
 export function parsePiModelsJson(text: string): unknown {
   const stripped = text.replace(/^\uFEFF/, "")
@@ -148,8 +150,11 @@ export function piCredentialNotice(opts: {
 export type PiCredentialEvidence = {
   at: number;
   source: PiCredentialSource;
-  /** Whether a Pi extension could load (and so register a provider or a runtime key): Pi 0.87.1 discovers
+  /** Whether a Pi extension could load (and so register a provider or a runtime key): Pi 1.3.0 discovers
    *  <agentDir>/extensions, <cwd>/.pi/extensions, and `packages`/`extensions` entries in either settings.json.
+   *  In Pi 1.3.0 the project-level ones load only after a project-trust decision, which RPC mode does not
+   *  prompt for (docs/security.md); this check does not model trust, so "present" over-reports for an untrusted project (the safe
+   *  direction). Pi's built-in extensions (`builtin:*`) are not user-configured and are not counted.
    *  OpenRig passes no -e flags. */
   extensions: "none" | "present" | "unknown";
   /** Whether models.json has an OpenRouter provider entry that can change authentication (providerEntryAuth),
@@ -228,7 +233,7 @@ export function piCredentialEvidence(opts: {
 }
 
 /** What, seen in any observation of this runner process, Pi may still hold until it restarts: an extension
- *  (Pi 0.87.1 loads extensions at start and again only on an explicit /reload) or a models.json OpenRouter key
+ *  (Pi 1.3.0 loads extensions at start and again only on an explicit /reload) or a models.json OpenRouter key
  *  (Pi loads models.json at start and again only on an explicit refresh). Clean files later don't change what
  *  the running Pi loaded, so once seen, this is sticky for the process. */
 export function credentialTaint(e: PiCredentialEvidence): { sticky: string } | null {

@@ -32,6 +32,16 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
   lost its skill folders does not get them back from a restore, and a new release's added skills are not installed
   by a re-read.
 
+### Pi 1.3.0 is the qualified baseline (fork)
+
+- OpenRig's tested Pi baseline moves from 0.87.1 to 1.3.0. A Pi older than 1.3.0 (including 0.87.1) now gets the
+  "older than OpenRig's tested baseline" launch notice; launch still continues, and nothing is refused.
+- Qualified on a scratch seat with Pi 1.3.0 and an `openai-codex` stored sign-in: the runner reached READY, two
+  dependent turns answered, `rig down` then `rig up --existing` resumed the same Pi session file and the seat answered
+  from memory, and the recorded usage (18 assistant turns, 45091 in / 902 out / 682752 cache-read tokens) equals a
+  re-sum of the session file. No OpenRouter charge applies to `openai-codex` turns. This qualifies the supervised path only;
+  unattended operation remains unverified.
+
 ## [0.6.10]
 
 0.6.10 is a fix release, most of it from the community. Setup can be told

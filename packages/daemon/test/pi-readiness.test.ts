@@ -77,15 +77,15 @@ describe("Pi credential presence, not online validation", () => {
 });
 
 describe("Pi version observation", () => {
-  it.each(["0.73.1", "pi 0.73.1", "v0.73.1"])("names an older tested-baseline version (%s) without a gate", output => {
-    expect(piVersionNotice(output)).toContain("older than OpenRig's tested baseline 0.87.1");
+  it.each(["0.73.1", "pi 0.73.1", "v0.73.1", "0.87.1", "1.2.9"])("names an older tested-baseline version (%s) without a gate", output => {
+    expect(piVersionNotice(output)).toContain("older than OpenRig's tested baseline 1.3.0");
     expect(piVersionNotice(output)).toContain("launch continues");
   });
-  it.each(["0.87.1", "0.87.2", "1.0.0", "0.100.0", "0.87.1-dev"])("does not confuse a version response with authentication (%s)", output => {
+  it.each(["1.3.0", "pi 1.3.0", "1.3.1", "2.0.0", "1.10.0", "1.3.0-dev"])("does not confuse a version response with authentication (%s)", output => {
     expect(piVersionNotice(output)).toContain("answered on the daemon's PATH");
     expect(piVersionNotice(output)).toContain("does not verify");
   });
-  it.each(["", "private-value", "0.87.1\nprivate-value", "99999999999.1.2"])("does not echo arbitrary output (%s)", output => {
+  it.each(["", "private-value", "1.3.0\nprivate-value", "99999999999.1.2"])("does not echo arbitrary output (%s)", output => {
     expect(piVersionNotice(output)).toContain("version unknown");
     expect(piVersionNotice(output)).not.toContain("private-value");
   });
