@@ -125,7 +125,11 @@ export const nodeRunnerFs: PdaRunnerFs = {
 export interface PdaUsageSink {
   onRunStart?(event: PdaStreamEvent): void;
   onAssistantEntry?(entry: unknown): void;
+  /** An assistant entry the runner recovered by a gap fill (not seen live): origin unknown (design T33). */
+  onGapEntry?(entry: unknown): void;
   onRunEnd?(event: PdaStreamEvent): void;
+  /** Post what is pending now (after a gap fill, which no run_end may follow for a long time). */
+  flush?(): void;
 }
 
 export interface PdaRunnerDeps {
@@ -633,10 +637,16 @@ export class PdaRunner {
         ? `[pda-runner] showing the newest ${todo.length} entries`
         : `[pda-runner] (gap: entries before these were not retrieved) showing the newest ${todo.length}`);
     }
+    let recovered = 0;
     for (const entry of todo) {
       const view = entryView(entry);
-      if (view) this.renderEntry(view, "gap");
+      if (!view) continue;
+      const unseen = view.id !== null && !this.rendered.has(view.id);
+      this.renderEntry(view, "gap");
+      // Usage (review section 8): an assistant entry this gap fill printed for the first time reaches the sink too.
+      if (unseen && view.role === "assistant") { this.usage.onGapEntry?.(entry); recovered += 1; }
     }
+    if (recovered > 0) this.usage.flush?.();
   }
 
   private async transcript(limit: number): Promise<unknown[]> {
@@ -739,7 +749,12 @@ export class PdaRunner {
     this.maybePartial = false;
     if (!view || view.role !== "assistant") { this.pane.closeLine(); return; }
     this.flushUsers();
-    if (view.id !== null && this.rendered.has(view.id)) { this.pane.closeLine(); return; } // the gap fill printed it whole
+    if (view.id !== null && this.rendered.has(view.id)) {
+      // The gap fill printed it whole (and posted it as unknown); seen live inside a run, its attribution is now known.
+      this.pane.closeLine();
+      this.usage.onAssistantEntry?.(event.entry);
+      return;
+    }
     if (view.id !== null) this.remember(view.id);
     this.pane.closeLine();
     if (partial) {

@@ -4,7 +4,11 @@
 //
 // Attribution (settled in the design): a run is `own` when at least one of its `run_start.inputs` is a submission of
 // this seat (mixed runs count as own), `other` when every input is another client's, and `unknown` when no run_start
-// was seen for it (the runner attached mid-run) or the run had no inputs.
+// was seen for it (the runner attached mid-run) or the run had no inputs. An entry the runner recovered by a gap fill
+// (after a reconnect or an overflow snapshot) is `unknown` (design T33); if the same entry is then seen live inside a
+// run whose attribution is known, the pending fact is upgraded, never queued twice. Once posted as unknown, the live
+// fact is posted again and the store settles unknown -> own/other (L2c: idempotent on (conversation, entry); a settled
+// origin is never demoted).
 //
 // Delivery: facts are kept until the daemon stores them. A 503 (the setting is off, or the store is unconfigured), a
 // timeout or a connection failure keeps them for the next run_end; the route is idempotent on (conversation, entry),
@@ -81,6 +85,17 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
 
   const key = (f: PdaUsageFact): string => `${f.conversationId}\u0000${f.entryId}`;
 
+  const queue = (fact: PdaUsageFact): void => {
+    const existing = pending.find((f) => key(f) === key(fact));
+    if (existing) {
+      // An unknown origin settles to a known one; a known one is never changed.
+      if (existing.origin === "unknown" && fact.origin !== "unknown") existing.origin = fact.origin;
+      return;
+    }
+    pending.push(fact);
+    if (pending.length > max) { dropped += pending.length - max; pending = pending.slice(pending.length - max); }
+  };
+
   const flush = (): void => {
     if (inFlight || pending.length === 0) return;
     const batch = pending.slice();
@@ -107,10 +122,14 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
     onAssistantEntry(entry) {
       const fact = pdaUsageFactFromEntry(entry, runOrigin ?? "unknown");
       if (!fact) { if (isObj(entry)) dropped += 1; return; }
-      if (pending.some((f) => key(f) === key(fact))) return;
-      pending.push(fact);
-      if (pending.length > max) { dropped += pending.length - max; pending = pending.slice(pending.length - max); }
+      queue(fact);
     },
+    onGapEntry(entry) {
+      const fact = pdaUsageFactFromEntry(entry, "unknown");
+      if (!fact) { if (isObj(entry)) dropped += 1; return; }
+      queue(fact);
+    },
+    flush,
     onRunEnd() {
       runOrigin = null;
       flush();

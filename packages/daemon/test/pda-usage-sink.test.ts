@@ -63,6 +63,21 @@ describe("createPdaUsageSink", () => {
     expect(posts[0]).toMatchObject({ sessionName: "seat@rig", nodeId: "n1", generation: "g1", agent: "research" });
   });
 
+  it("gap-filled entries are unknown and flushed when asked; the same entry seen live upgrades a pending unknown, never doubles it", async () => {
+    const { s, posts } = sink(["keep"]);
+    s.onGapEntry!(priced(30, 0.01));
+    s.onGapEntry!(priced(30, 0.01));
+    expect(s.pending().map((f) => [f.entryId, f.origin])).toEqual([["30", "unknown"]]);
+    s.onRunStart!({ type: "run_start", inputs: [11] } as never);
+    s.onAssistantEntry!(priced(30, 0.01));
+    expect(s.pending().map((f) => [f.entryId, f.origin])).toEqual([["30", "own"]]);
+    s.onGapEntry!(priced(30, 0.01)); // a later gap fill never demotes it
+    expect(s.pending().map((f) => f.origin)).toEqual(["own"]);
+    s.flush!();
+    await s.settled();
+    expect(posts.map((p) => p.facts.map((f) => f.origin))).toEqual([["own"]]);
+  });
+
   it("a 503 (or a timeout) keeps the facts for the next run_end; a stored post clears them; a refusal drops and counts them", async () => {
     const { s, posts } = sink(["keep", "stored", "refused"]);
     await run(s, [11], [1]);

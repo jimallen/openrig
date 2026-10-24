@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { BEARER, HOOK_TOKEN, makeRig, waitFor, type Rig } from "./helpers/pda-runner-rig.js";
 import { buildPdaRunnerArgv } from "../src/adapters/pda-runner-protocol.js";
+import { assistantEntry, messageEnd, runEnd, runStart, snapshotEvent } from "./helpers/pda-real-shapes.js";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import os from "node:os";
@@ -137,6 +138,67 @@ describe("the usage sink: the real runner's facts reach the real /pda-usage rout
     const rows = app.rows();
     expect(rows.map((r) => r.origin)).toEqual(["other"]);
     expect(JSON.stringify(rows)).not.toMatch(/CANARY/);
+  });
+});
+
+// ── Gap-filled entries (review section 8): what the runner recovers after a reconnect is posted too ─────────────
+
+describe("the usage sink: entries recovered by a gap fill reach the route, once, with honest attribution", () => {
+  async function scriptedUsageRig() {
+    const app = pdaUsageApp({ setting: true });
+    let owner: { isOwnSubmission(id: string): boolean } | null = null;
+    const sink = createPdaUsageSink({
+      sessionName: PDA_SEAT, nodeId: PDA_NODE, generation: "gen-7", agent: "research",
+      isOwnSubmission: (id) => owner?.isOwnSubmission(id) ?? false,
+      post: createPdaUsagePoster({ baseUrl: "http://daemon.invalid", token: PDA_USAGE_TOKEN },
+        (async (input: string | URL | Request, init?: RequestInit) => app.hono.request(new URL(String(input)).pathname, init)) as typeof fetch),
+    });
+    rig = await makeRig({ usage: sink, usageFacts: true });
+    owner = rig.runner;
+    void rig.start();
+    return { app, sink };
+  }
+
+  it("an entry produced while the runner was detached is posted once, origin unknown; a later reconnect posts nothing more", async () => {
+    const { app, sink } = await scriptedUsageRig();
+    const s1 = await rig!.stream(1);
+    s1.push(snapshotEvent());
+    await waitFor(() => rig!.pane().includes("READY"), "attach");
+    rig!.scripted.transcript = [assistantEntry(7, "made while detached")];
+    s1.end();
+    const s2 = await rig!.stream(2);
+    s2.push(snapshotEvent());
+    await waitFor(() => rig!.pane().includes("made while detached"), "the gap fill to print it");
+    await waitFor(() => app.rows().length === 1, "the gap-filled entry to be stored");
+    await sink.settled();
+    expect(app.rows().map((r) => [r.entry_id, r.origin])).toEqual([["7", "unknown"]]);
+    s2.end();
+    const s3 = await rig!.stream(3);
+    s3.push(snapshotEvent());
+    await waitFor(() => (rig!.pane().match(/reconnected/g) ?? []).length >= 2, "the second reconnect");
+    await sink.settled();
+    expect(app.rows()).toHaveLength(1);
+    expect(sink.pending()).toEqual([]);
+  });
+
+  it("an entry the gap fill printed during this seat's own run, then seen live, settles to own (unknown is upgraded, never doubled)", async () => {
+    const { app, sink } = await scriptedUsageRig();
+    const s1 = await rig!.stream(1);
+    s1.push(snapshotEvent());
+    await waitFor(() => rig!.pane().includes("READY"), "attach");
+    rig!.runner.submit("mine");
+    await waitFor(() => rig!.pane().includes("queued (submission"), "the ack");
+    const submissionId = rig!.fake.entries("research")[0]!.submissionId;
+    s1.push(runStart([submissionId]));
+    rig!.scripted.transcript = [assistantEntry(20, "reply printed by an overflow resync")];
+    s1.push(snapshotEvent({ run: [submissionId] })); // an overflow snapshot mid-run: the gap fill prints entry 20
+    await waitFor(() => rig!.pane().includes("reply printed by an overflow resync"), "the gap fill");
+    s1.push(messageEnd(assistantEntry(20, "reply printed by an overflow resync")));
+    s1.push(runEnd([submissionId]));
+    await waitFor(() => rig!.pane().includes("── idle ──"), "run end");
+    await waitFor(() => app.rows().length === 1 && app.rows()[0]!.origin === "own", "the entry to settle as own");
+    await sink.settled();
+    expect(app.rows().map((r) => [r.entry_id, r.origin])).toEqual([["20", "own"]]);
   });
 });
 
