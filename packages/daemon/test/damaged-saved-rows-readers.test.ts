@@ -14,7 +14,11 @@
 // MissionControlActionLog, MissionControlAuditBrowse, WatchdogHistoryLog, WorkflowStepTrailLog, WorkflowInstanceStore).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
-import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { createTestApp } from "./helpers/test-app.js";
+import { createDb } from "../src/db/connection.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { QueueRepository } from "../src/domain/queue-repository.js";
 import { InboxHandler } from "../src/domain/inbox-handler.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { StreamStore } from "../src/domain/stream-store.js";
@@ -30,9 +34,13 @@ const NOT_JSON = "{not json";
 
 let db: Database.Database;
 let setup: ReturnType<typeof createTestApp>;
+let queueRepo: QueueRepository;
 beforeEach(() => {
-  db = createFullTestDb();
+  // Every migration the daemon ships: the stores below own tables the shared fixture leaves out.
+  db = createDb();
+  migrate(db, ALL_MIGRATIONS);
   setup = createTestApp(db);
+  queueRepo = new QueueRepository(db, setup.eventBus);
 });
 afterEach(() => db.close());
 
@@ -151,7 +159,7 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
   });
 
   it("inbox: tags", () => {
-    const inbox = new InboxHandler(db, setup.eventBus, setup.queueRepo);
+    const inbox = new InboxHandler(db, setup.eventBus, queueRepo);
     const good = inbox.drop({ destinationSession: "b@r", senderSession: "a@r", body: "x", tags: ["t"] });
     const bad = inbox.drop({ destinationSession: "b@r", senderSession: "a@r", body: "y", tags: ["t"] });
     db.prepare("UPDATE inbox_entries SET tags = ? WHERE inbox_id = ?").run(NOT_JSON, bad.inboxId);
@@ -180,18 +188,18 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
   });
 
   it("queue: tags, chain_of_record, human_questions, human_answers", async () => {
-    const good = await setup.queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "x", tags: ["t"], chainOfRecord: ["q0"] });
-    const bad = await setup.queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "y", tags: ["t"], chainOfRecord: ["q0"] });
+    const good = await queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "x", tags: ["t"], chainOfRecord: ["q0"] });
+    const bad = await queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "y", tags: ["t"], chainOfRecord: ["q0"] });
     db.prepare("UPDATE queue_items SET tags = ?, chain_of_record = ?, human_questions = ?, human_answers = ? WHERE qitem_id = ?")
       .run(NOT_JSON, NOT_JSON, NOT_JSON, NOT_JSON, bad.qitemId);
-    const byId = new Map((setup.queueRepo.list({ destinationSession: "b@r" } as never) as Array<{ qitemId: string; tags: unknown; chainOfRecord: unknown; humanQuestions: unknown; humanAnswers: unknown }>).map((q) => [q.qitemId, q]));
+    const byId = new Map((queueRepo.list({ destinationSession: "b@r" } as never) as Array<{ qitemId: string; tags: unknown; chainOfRecord: unknown; humanQuestions: unknown; humanAnswers: unknown }>).map((q) => [q.qitemId, q]));
     expect(byId.get(good.qitemId)).toMatchObject({ tags: ["t"], chainOfRecord: ["q0"] });
     expect(byId.get(bad.qitemId)).toMatchObject({ tags: null, chainOfRecord: null, humanQuestions: null, humanAnswers: null });
-    expect(setup.queueRepo.getById(bad.qitemId)).toMatchObject({ qitemId: bad.qitemId, tags: null });
+    expect(queueRepo.getById(bad.qitemId)).toMatchObject({ qitemId: bad.qitemId, tags: null });
   });
 
   it("mission control action log and audit browse: before/after state and audit notes", async () => {
-    const q = await setup.queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "x" });
+    const q = await queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "x" });
     const log = new MissionControlActionLog(db);
     const input = { actionVerb: "approve" as const, qitemId: q.qitemId, actorSession: "alice@r", beforeState: { a: 1 }, afterState: { a: 2 }, auditNotes: { n: 1 } };
     log.record({ ...input, actedAt: "2026-05-04T03:00:00.000Z" });

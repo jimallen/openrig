@@ -47,6 +47,8 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
   async function restoreError(snapshotId: string): Promise<string> {
     try {
       const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
+      // The route's catch maps a thrown capture to this code; restore() itself reports it as restore_error.
+      if (!out.ok && out.code === "restore_error") return out.message;
       return `restore did not refuse: ${JSON.stringify(out.ok ? { ok: true } : out)}`;
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
