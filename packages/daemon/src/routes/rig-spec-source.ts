@@ -6,8 +6,10 @@
 //  1. The spec file must be one a seat could not have written: it must lie, by its REAL location, under a trusted
 //     spec root and pass the ownership and placement rules `rig seat set-mcp --spec` applies (Jim, 2026-10-26,
 //     "Trusted folders instead"). The roots are the MCP ones (released copies, spec library) plus this route's own,
-//     <OPENRIG_HOME>/shared-docs/rigs, taken from the daemon's home and never from the caller. No other caller's
-//     roots change. Whoever asks, a spec outside the roots is refused.
+//     <OPENRIG_HOME>/shared-docs/rigs, taken from the daemon's home and never from the caller. That one takes EXACTLY
+//     <root>/<name>/rig.yaml by real location, <name> being this rig's name or its spec's name: sandboxed Codex seats
+//     get <root>/<rig>/state/<pod> as a writable folder, so nothing deeper may qualify. No other caller's roots
+//     change. Whoever asks, a spec outside the roots is refused.
 //  2. When the daemon was started with an operator bearer (OPENRIG_AUTH_BEARER_TOKEN) the call must carry it, as the
 //     rig-mode writes do. With none configured the trusted-root rule alone gates the write.
 import nodePath from "node:path";
@@ -44,7 +46,7 @@ export function rigSpecSourceRoutes(opts?: RigSpecSourceRoutesOpts): Hono {
     return new RigSpecSourceService({
       rigRepo: c.get("rigRepo" as never) as RigRepository,
       eventBus: c.get("eventBus" as never) as EventBus,
-      trust: { roots: () => [...(mcpTrust?.specRoots?.() ?? []), sharedDocsRigsRoot()], ...(mcpTrust?.io ? { io: mcpTrust.io } : {}) },
+      trust: { roots: () => [...(mcpTrust?.specRoots?.() ?? [])], exactDepthRoot: sharedDocsRigsRoot, ...(mcpTrust?.io ? { io: mcpTrust.io } : {}) },
     });
   };
 

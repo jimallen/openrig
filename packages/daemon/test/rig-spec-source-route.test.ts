@@ -330,6 +330,76 @@ edges:
       expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
     });
 
+    // Review R6: sandboxed Codex seats get <shared-docs>/rigs/<rig>/state/<pod> as a WRITABLE folder, and it sits inside the
+    // route's own root, which spans every rig. That root therefore takes exactly <root>/<name>/rig.yaml, by real location.
+    describe("the shared-docs rigs folder takes exactly <name>/rig.yaml", () => {
+      it("the reviewer's spec in a seat-writable state folder (<root>/eztrack/state/verify/rig.yaml) is refused, for another rig", async () => {
+        const evil = write("eztrack/state/verify/rig.yaml", GOOD, sharedDocsRigs);
+        const res = await set({ path: evil, operator: "verify-qa@eztrack" }, rigId, { "x-openrig-session": "verify-qa@eztrack" }, mount({ bearerToken: null, io: PERMISSIVE_IO }));
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+        nothingRecorded();
+      });
+      it("even for the rig it belongs to: a state subfolder never qualifies", async () => {
+        const evil = write("team/state/verify/rig.yaml", GOOD, sharedDocsRigs);
+        expect((await set({ path: evil, operator: "jim@ops" })).status).toBe(409);
+        nothingRecorded();
+      });
+      it("a deeper path under the rig's own folder is refused", async () => {
+        expect((await set({ path: write("team/sub/rig.yaml", GOOD, sharedDocsRigs), operator: "jim@ops" })).status).toBe(409);
+        nothingRecorded();
+      });
+      it("another filename in the rig's folder is refused", async () => {
+        expect((await set({ path: write("team/other.yaml", GOOD, sharedDocsRigs), operator: "jim@ops" })).status).toBe(409);
+        nothingRecorded();
+      });
+      it("another rig's <name>/rig.yaml is refused (the folder names neither this rig nor its spec)", async () => {
+        const res = await set({ path: write("other/rig.yaml", GOOD, sharedDocsRigs), operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        const body = await res.json() as { code: string; message: string };
+        expect(body.code).toBe("spec_untrusted");
+        expect(body.message).toContain("neither this rig's name");
+        nothingRecorded();
+      });
+      it("a folder link to another rig's folder is judged by the real location: refused", async () => {
+        write("other/rig.yaml", GOOD, sharedDocsRigs);
+        fs.symlinkSync(path.join(sharedDocsRigs, "other"), path.join(sharedDocsRigs, "team"));
+        expect((await set({ path: path.join(sharedDocsRigs, "team", "rig.yaml"), operator: "jim@ops" })).status).toBe(409);
+        nothingRecorded();
+      });
+      it("this rig's own <name>/rig.yaml is accepted, and a link inside the root to it keeps its spelling", async () => {
+        const real = write("team/rig.yaml", GOOD, sharedDocsRigs);
+        fs.symlinkSync(path.join(sharedDocsRigs, "team"), path.join(sharedDocsRigs, "current"));
+        const typed = path.join(sharedDocsRigs, "current", "rig.yaml");
+        const res = await set({ path: typed, operator: "jim@ops" });
+        expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+        expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
+        expect(real).not.toBe(typed);
+      });
+      it("a project rig's spec sits in a folder named for the rig or for the spec: both accepted", async () => {
+        const spec = `version: "0.2"\nname: jims-team\nproject_rig: true\npods:\n  - id: dev\n    label: dev\n    members:\n      - id: impl\n        agent_ref: "local:agents/impl"\n        profile: default\n        runtime: claude-code\n        cwd: .\n    edges: []\nedges: []\n`;
+        const proj = path.join(root, "myproj", ".workspaces", "dev-impl");
+        for (const folder of ["myproj", "jims-team"]) {
+          // one rig per folder, each in its own transaction-free fresh row; both are the project rig "myproj"
+          const id = rigRepo.createRig("myproj").id;
+          rigRepo.addNode(id, "dev.impl", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd: proj });
+          const typed = write(`${folder}/rig.yaml`, spec, sharedDocsRigs);
+          const res = await set({ path: typed, operator: "jim@ops" }, id);
+          expect(res.status, `${folder}: ${JSON.stringify(await res.clone().json())}`).toBe(200);
+        }
+      });
+    });
+
+    it("a typed path into an install that is gone is judged where the read goes (re-anchored), not skipped", async () => {
+      // /gone/…/@openrig/cli/daemon/specs/… re-anchors to the running install's bundled specs, which are not among this
+      // app's trusted roots: the check must refuse it instead of waving an unresolvable path through to the read.
+      const typed = "/gone/node_modules/@openrig/cli/daemon/specs/rigs/launch/kernel/rig.yaml";
+      const res = await set({ path: typed, operator: "jim@ops" });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+      nothingRecorded();
+    });
+
     // The ownership and protection rules of the existing check, shown with the production judge's own rules switched
     // on (the owner rule and the writable-bits rule) over a file system that presents the bits: group- or
     // other-writable folders and files are refused; the same tree without those bits is accepted.

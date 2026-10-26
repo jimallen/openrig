@@ -100,13 +100,13 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
       d.prepare("UPDATE rigs SET spec_source_path = NULL WHERE name = ?").run(rigName);
     });
     // The spec the operator names lives in the daemon's own <OPENRIG_HOME>/shared-docs/rigs, behind a folder link that
-    // stays inside that root, and reaches the agent through `current`.
+    // stays inside that root (a link to its real <rig name>/rig.yaml), and reaches the agent through `current`.
     const rigs = dir(ctx.scaffold.openrigHome, "shared-docs", "rigs");
-    const realDir = dir(rigs, "team-v1");
+    const realDir = dir(rigs, rigName);
     realSpec = join(realDir, "rig.yaml");
     file(realSpec, RIG(`path:${join(root, "current", "agents", "impl")}`));
-    symlinkSync(realDir, join(rigs, "team"));
-    typedSpec = join(rigs, "team", "rig.yaml");
+    symlinkSync(realDir, join(rigs, "current"));
+    typedSpec = join(rigs, "current", "rig.yaml");
   }, 200_000);
   afterAll(async () => {
     try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (ctx.base) rmSync(ctx.base, { recursive: true, force: true }); }
@@ -132,10 +132,18 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     expect(`${res.stderr}${res.stdout}`).toContain("not under a trusted spec root");
     expect(recordedSource()).toBeNull();
     expect(changeEvents()).toEqual([]);
+    // Codex seats get <shared-docs>/rigs/<rig>/state/<pod> as a writable folder: inside the trusted root, but never a place a spec may be recorded from.
+    const state = dir(ctx.scaffold!.openrigHome, "shared-docs", "rigs", rigName, "state", "verify");
+    file(join(state, "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
+    const inState = await rig(["spec-source", "set", rigName, join(state, "rig.yaml"), "--operator", "dev-impl@x"]);
+    expect(inState.code).not.toBe(0);
+    expect(`${inState.stderr}${inState.stdout}`).toContain("only <rig name>/rig.yaml qualifies");
+    expect(recordedSource()).toBeNull();
+    expect(changeEvents()).toEqual([]);
   }, 60_000);
 
   it("a spec for another rig is refused, and nothing is recorded", async () => {
-    const other = dir(ctx.scaffold!.openrigHome, "shared-docs", "rigs", "other");
+    const other = dir(ctx.scaffold!.openrigHome, "shared-docs", "rigs", "not-this-rig");
     file(join(other, "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`, "not-this-rig"));
     const res = await rig(["spec-source", "set", rigName, join(other, "rig.yaml"), "--operator", "jim@ops"]);
     expect(res.code).not.toBe(0);
