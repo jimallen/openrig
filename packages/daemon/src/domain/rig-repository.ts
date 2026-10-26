@@ -17,7 +17,7 @@ import type {
   SnapshotData,
   SessionSourceSpec,
 } from "./types.js";
-import { parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
+import { PDA_RESUME_TYPE, parsePdaResumeToken, parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
 
 /**
  * Free helper: returns the latest snapshot for a rig whose data carries non-null
@@ -203,6 +203,9 @@ export interface PdaBindingHolder {
   rigName: string;
   logicalId: string;
   unreadable?: string;
+  /** Set when the seat is a holder because its RESUME TOKEN names the agent (what a restore of that seat would
+   *  launch with), not because its saved binding does. The two can differ: an operator may set a token. */
+  viaResumeToken?: true;
 }
 
 /** The ONE refusal text for "this pda agent is already taken", used by instantiation, unarchive and the rollback of a
@@ -210,6 +213,9 @@ export interface PdaBindingHolder {
 export function describePdaHolder(binding: PdaBinding, holder: PdaBindingHolder): string {
   if (holder.unreadable !== undefined) {
     return `seat "${holder.logicalId}" in rig "${holder.rigName}" has an unreadable pda binding (${holder.unreadable}), so it may already drive pda agent "${binding.agent}" at ${binding.baseUrl}; repair its pda_binding or archive that rig, then retry`;
+  }
+  if (holder.viaResumeToken) {
+    return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}" (that seat's resume token names it); one pda agent is driven by one seat`;
   }
   return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}"; one pda agent is driven by one seat`;
 }
@@ -577,10 +583,40 @@ export class RigRepository {
    *  puts two seats of one rig on one agent, so one damaged row must not hold every healthy pda seat of its rig
    *  hostage at restore. The binding is the one being launched: the resume token's on a restore. */
   findPdaLaunchConflicts(binding: PdaBinding, nodeId: string): string[] {
-    const own = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id: string } | undefined;
-    return this.findPdaBindingHolders(binding, { excludeNodeId: nodeId })
-      .filter((holder) => !(holder.unreadable !== undefined && own !== undefined && holder.rigId === own.rig_id))
-      .map((holder) => describePdaHolder(binding, holder));
+    const own = this.db.prepare(
+      "SELECT n.rig_id AS rig_id, n.logical_id AS logical_id, r.name AS rig_name FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?",
+    ).get(nodeId) as { rig_id: string; logical_id: string; rig_name: string } | undefined;
+    const byBinding = this.findPdaBindingHolders(binding, { excludeNodeId: nodeId })
+      .filter((holder) => !(holder.unreadable !== undefined && own !== undefined && holder.rigId === own.rig_id));
+    // OF-92: a restore launches the agent the seat's RESUME TOKEN names, which an operator can set to another seat's
+    // agent. Every other seat whose token names this agent drives it (or will on its next restore) too.
+    const seen = new Set(byBinding.map((holder) => holder.nodeId));
+    const byToken = this.findPdaResumeTokenHolders(binding, { excludeNodeId: nodeId }).filter((holder) => !seen.has(holder.nodeId));
+    const who = own ? `seat "${own.logical_id}" in rig "${own.rig_name}" cannot take it: ` : "";
+    return [...byBinding, ...byToken].map((holder) => who + describePdaHolder(binding, holder));
+  }
+
+  /** Every seat, in a rig that is not archived, whose current pda resume token names this agent at this base URL.
+   *  The token of a seat is that of its most recent session that has one (the row a restore resumes from). A token that
+   *  does not parse, or a token of another resume type, names no pda agent and holds nothing. */
+  findPdaResumeTokenHolders(binding: PdaBinding, opts?: { excludeNodeId?: string }): PdaBindingHolder[] {
+    const rows = this.db.prepare(
+      "SELECT s.node_id AS node_id, s.resume_token AS resume_token, n.rig_id AS rig_id, r.name AS rig_name, n.logical_id AS logical_id " +
+      "FROM sessions s JOIN nodes n ON n.id = s.node_id JOIN rigs r ON r.id = n.rig_id " +
+      "WHERE s.resume_type = ? AND s.resume_token IS NOT NULL AND TRIM(s.resume_token) != '' AND r.archived_at IS NULL " +
+      "ORDER BY s.created_at DESC, s.id DESC",
+    ).all(PDA_RESUME_TYPE) as Array<{ node_id: string; resume_token: string; rig_id: string; rig_name: string; logical_id: string }>;
+    const latest = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) if (!latest.has(row.node_id)) latest.set(row.node_id, row);
+    const holders: PdaBindingHolder[] = [];
+    for (const row of latest.values()) {
+      if (row.node_id === opts?.excludeNodeId) continue;
+      const named = parsePdaResumeToken(row.resume_token.trim());
+      if (named && named.agent === binding.agent && named.baseUrl === binding.baseUrl) {
+        holders.push({ nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id, viaResumeToken: true });
+      }
+    }
+    return holders;
   }
 
   /** Every seat, in any rig that is not archived, that drives this pda agent at this base URL (the pda agent is the
