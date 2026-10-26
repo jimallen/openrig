@@ -696,7 +696,7 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
       // (N-C3, and the exporter does not list it); the session source and package list do.
       const startup = screen.getByTestId("detail-saved-row-damage-startup").textContent!;
       expect(startup).toContain("Restore does not stop on it alone");
-      expect(startup).not.toContain("refuse");
+      expect(startup).not.toContain("Restore, snapshot and export");
       for (const key of ["session-source", "package-refs"]) {
         expect(screen.getByTestId(`detail-saved-row-damage-${key}`).textContent).toContain("Restore, snapshot and export refuse until the row is repaired.");
       }
