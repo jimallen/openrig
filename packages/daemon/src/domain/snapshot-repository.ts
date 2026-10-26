@@ -4,6 +4,22 @@ import type { RestoreSnapshotSelection, RestoreSnapshotSummary, Snapshot, Snapsh
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { readStoredJson } from "./stored-json.js";
 
+/** OF-51: one row of a snapshot listing whose saved data cannot be read: named, flagged, never hidden and never a 500. */
+export interface UnreadableSnapshot {
+  id: string;
+  rigId: string;
+  kind: string;
+  status: string;
+  createdAt: string;
+  data: null;
+  /** Why the row cannot be read. */
+  unreadable: string;
+}
+
+export function isUnreadableSnapshot(snapshot: Snapshot | UnreadableSnapshot): snapshot is UnreadableSnapshot {
+  return (snapshot as UnreadableSnapshot).unreadable !== undefined;
+}
+
 /** OF-51: a saved snapshot whose `data` column is not JSON. Listing and "latest" lookups skip such a row; naming one
  *  snapshot by id throws this so the caller can say so (a 4xx), where it used to surface as a bare SyntaxError (a 500). */
 export class UnreadableSnapshotError extends Error {
@@ -155,7 +171,9 @@ export class SnapshotRepository {
     return firstReadable(rows, (row) => this.rowToSnapshot(row));
   }
 
-  listSnapshots(rigId: string, opts?: ListOptions): Snapshot[] {
+  /** Every snapshot of the rig, newest first. A row whose saved data is damaged is listed too, flagged `unreadable`
+   *  with `data: null` (it is not restorable, and it is not hidden either). */
+  listSnapshots(rigId: string, opts?: ListOptions): Array<Snapshot | UnreadableSnapshot> {
     let sql = "SELECT * FROM snapshots WHERE rig_id = ?";
     const params: unknown[] = [rigId];
 
@@ -171,11 +189,10 @@ export class SnapshotRepository {
       params.push(opts.limit);
     }
 
-    // A damaged row is left out (OF-51); the limit then counts rows read, not rows listed.
     const rows = this.db.prepare(sql).all(...params) as SnapshotRow[];
-    return rows.flatMap((r) => {
-      const snapshot = this.rowToSnapshot(r);
-      return snapshot ? [snapshot] : [];
+    return rows.map((r) => this.rowToSnapshot(r) ?? {
+      id: r.id, rigId: r.rig_id, kind: r.kind, status: r.status, createdAt: r.created_at,
+      data: null, unreadable: "its saved data is not JSON",
     });
   }
 

@@ -30,7 +30,6 @@ import {
 import { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
 import { parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
-import { readStoredJson, readStoredJsonStrings } from "./stored-json.js";
 
 export const QUEUE_STATES = [
   "pending",
@@ -4062,12 +4061,12 @@ export class QueueRepository {
       state: row.state as QueueState,
       priority: row.priority as QueuePriority,
       tier: row.tier,
-      tags: readStoredJsonStrings(row.tags),
+      tags: row.tags ? (JSON.parse(row.tags) as string[]) : null,
       blockedOn: row.blocked_on,
       handedOffTo: row.handed_off_to,
       handedOffFrom: row.handed_off_from,
       expiresAt: row.expires_at,
-      chainOfRecord: readStoredJsonStrings(row.chain_of_record),
+      chainOfRecord: row.chain_of_record ? (JSON.parse(row.chain_of_record) as string[]) : null,
       body: row.body ?? "",
       // OPR.0.4.1.18: summary present only when migration 044 has applied;
       // legacy/minimal fixtures supply rows where summary is undefined → null.
@@ -4078,8 +4077,8 @@ export class QueueRepository {
       humanIntent: row.human_intent ?? null,
       humanDetail: row.human_detail ?? null,
       replyTo: row.reply_to ?? null,
-      humanQuestions: readStoredJson<HumanQuestion[]>(row.human_questions) ?? null,
-      humanAnswers: readStoredJson<HumanAnswers>(row.human_answers) ?? null,
+      humanQuestions: row.human_questions ? (JSON.parse(row.human_questions) as HumanQuestion[]) : null,
+      humanAnswers: row.human_answers ? (JSON.parse(row.human_answers) as HumanAnswers) : null,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

@@ -20,7 +20,7 @@ import { resolveLegacyTopologyRigsRoot } from "../domain/user-settings/settings-
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { classifySessionLiveness, SESSION_LIVENESS_DEADLINE_MS } from "../domain/session-liveness.js";
 import type { RigRepository } from "../domain/rig-repository.js";
-import type { SnapshotRepository } from "../domain/snapshot-repository.js";
+import { isUnreadableSnapshot, type SnapshotRepository } from "../domain/snapshot-repository.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 
 function getDeps(c: { get(key: never): unknown }): {
@@ -242,7 +242,7 @@ export function createRestoreCheckService(
       return damage.length > 0 ? [{ logicalId: node.logicalId, damage }] : [];
     }),
     hasSnapshot: (rigId: string) => {
-      return snapshotRepo.listSnapshots(rigId).length > 0;
+      return snapshotRepo.listSnapshots(rigId).some((snapshot) => !isUnreadableSnapshot(snapshot));
     },
     getLatestSnapshot: (rigId: string) => {
       const snapshot = snapshotRepo.getLatestSnapshot(rigId);

@@ -9,7 +9,6 @@ import { validateMissionComposition } from "./lifecycle-manifest.js";
 import { healthHash, type HealthPolicyStore } from "./health-policy.js";
 import type { HealthDetectorObservation, HealthObservationSource, HealthSourceCoverage } from "./health-detectors.js";
 import { adaptQueueTransitionEvidence, boundHealthEvidence, deriveHealthSourceFreshness, healthEpisodeId, type HealthScope, type PassiveCeremony, type CeremonyProgressAssessment } from "./health-projection.js";
-import { readStoredJson, readStoredJsonStrings } from "./stored-json.js";
 
 const detector = "process.ceremony-amplification";
 const familyLimit = 200;
@@ -46,7 +45,7 @@ export class PassiveCeremonySource implements HealthObservationSource {
     const get = (id: string): Member | null => {
       if (!cached.has(id)) {
         const row = lookup.get(id) as { qitemId: string; handedOffFrom: string | null; tags: string | null } | undefined;
-        cached.set(id, row ? { ...row, tags: readStoredJsonStrings(row.tags) ?? [] } : null);
+        cached.set(id, row ? { ...row, tags: JSON.parse(row.tags ?? "[]") as string[] } : null);
       }
       return cached.get(id)!;
     };
@@ -148,7 +147,7 @@ export class PassiveCeremonySource implements HealthObservationSource {
         const trails = this.queue.db.prepare(`SELECT trail_id, instance_id, step_id, prior_qitem_id, closure_reason, actor_session, closed_at, closure_evidence_json FROM workflow_step_trails WHERE prior_qitem_id IN (${memberIds.map(() => "?").join(",")}) AND closed_at >= ? AND closed_at <= ? ORDER BY trail_id LIMIT 201`)
           .all(...memberIds, episodeStartedAt > start ? episodeStartedAt : start, measuredEnd) as Array<{ trail_id: string; instance_id: string; step_id: string; prior_qitem_id: string; closure_reason: string; actor_session: string; closed_at: string; closure_evidence_json: string | null }>;
         if (trails.length > 200) throw new Error("health_passive_workflow_receipts_truncated");
-        const workflowReceipts = trails.map((t) => ({ trailId: t.trail_id, instanceId: t.instance_id, stepId: t.step_id, qitemId: t.prior_qitem_id, closureReason: t.closure_reason, actor: t.actor_session, at: t.closed_at, evidence: readStoredJson<unknown>(t.closure_evidence_json) ?? null }));
+        const workflowReceipts = trails.map((t) => ({ trailId: t.trail_id, instanceId: t.instance_id, stepId: t.step_id, qitemId: t.prior_qitem_id, closureReason: t.closure_reason, actor: t.actor_session, at: t.closed_at, evidence: t.closure_evidence_json ? JSON.parse(t.closure_evidence_json) as unknown : null }));
         const transitionIds = segment.map((t) => t.transitionId);
         const basis = healthHash({ lineageId, scope, transitions: segment.map(adaptQueueTransitionEvidence), context, workflowReceipts });
         const id = healthEpisodeId(detector, scope, episodeStartedAt, episodeKey);

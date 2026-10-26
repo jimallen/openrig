@@ -14,13 +14,18 @@ export function readFreshOccupantRelations(db: Database.Database, rigId: string)
       (SELECT MAX(t2.generation_ordinal) FROM occupant_tenures t2 WHERE t2.node_id = t.node_id)
   `).all(rigId) as Array<{ nodeId: string; generation: string }>;
   const current = new Map(generations.map((row) => [row.nodeId, row.generation]));
-  const events = db.prepare("SELECT payload FROM events WHERE rig_id = ? AND type = 'seat.fresh_launched' ORDER BY seq")
-    .all(rigId) as Array<{ payload: string }>;
+  const events = db.prepare("SELECT node_id AS nodeId, payload FROM events WHERE rig_id = ? AND type = 'seat.fresh_launched' ORDER BY seq")
+    .all(rigId) as Array<{ nodeId: string | null; payload: string }>;
   const relation: Record<string, string | null> = {};
   for (const row of events) {
-    // OF-51: a damaged event row is no relation evidence; it is skipped, never a 500 for the route that asks.
+    // OF-51: a damaged event row cannot say which session it launched, so the seat it names (the row's own node_id
+    // column) has no readable relation: null, the same "unavailable" a contradiction gives, which restore and the plan
+    // already fail closed on. It is never a 500 for the route that asks, and never skipped as if it had not happened.
     const event = readStoredJsonObject(row.payload);
-    if (!event) continue;
+    if (!event) {
+      if (row.nodeId && current.has(row.nodeId)) relation[row.nodeId] = null;
+      continue;
+    }
     if (typeof event.nodeId !== "string" || !current.has(event.nodeId)
       || event.newGeneration !== current.get(event.nodeId)) continue;
     const id = typeof event.sessionId === "string" && event.sessionId ? event.sessionId : null;

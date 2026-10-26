@@ -17,7 +17,6 @@ import { ulid } from "ulid";
 import { parse as parseYaml } from "yaml";
 import type { WorkflowSpec, WorkflowSpecRow } from "./workflow-types.js";
 import { WORKFLOW_AGENT_HARNESSES, WORKFLOW_EXIT_KINDS } from "./workflow-types.js";
-import { parseStoredJson, readStoredJsonObject } from "./stored-json.js";
 
 interface SpecRow {
   spec_id: string;
@@ -1030,7 +1029,7 @@ function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec): WorkflowSpe
   // readThrough).
   const storedSpec: WorkflowSpec | undefined =
     !parsedSpec && row.spec_json
-      ? (readStoredJsonObject(row.spec_json) as WorkflowSpec | null) ?? undefined
+      ? (JSON.parse(row.spec_json) as WorkflowSpec)
       : undefined;
   const hydrated = parsedSpec ?? storedSpec;
   if (!hydrated) {
@@ -1053,8 +1052,8 @@ function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec): WorkflowSpe
         version: row.version,
         objective: row.purpose ?? undefined,
         target: row.target_rig ? { rig: row.target_rig } : undefined,
-        roles: parseStoredJson<WorkflowSpec["roles"]>(row.roles_json, {}),
-        steps: parseStoredJson<WorkflowSpec["steps"]>(row.steps_json, []),
+        roles: JSON.parse(row.roles_json) as WorkflowSpec["roles"],
+        steps: JSON.parse(row.steps_json) as WorkflowSpec["steps"],
         coordination_terminal_turn_rule: row.coordination_terminal_turn_rule,
       };
   return {

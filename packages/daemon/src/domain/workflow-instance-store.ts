@@ -13,7 +13,6 @@ import type {
   WorkflowInstance,
   WorkflowInstanceStatus,
 } from "./workflow-types.js";
-import { readStoredJsonObject, readStoredJsonStrings } from "./stored-json.js";
 
 interface InstanceRow {
   instance_id: string;
@@ -417,11 +416,13 @@ function rowToInstance(row: InstanceRow): WorkflowInstance {
     createdBySession: row.created_by_session,
     createdAt: row.created_at,
     status: row.status as WorkflowInstanceStatus,
-    currentFrontier: readStoredJsonStrings(row.current_frontier_json) ?? [],
+    currentFrontier: JSON.parse(row.current_frontier_json) as string[],
     currentStepId: row.current_step_id,
     hopCount: row.hop_count,
     fallbackSynthesis: row.fallback_synthesis,
-    lastContinuationDecision: readStoredJsonObject(row.last_continuation_decision_json),
+    lastContinuationDecision: row.last_continuation_decision_json
+      ? (JSON.parse(row.last_continuation_decision_json) as Record<string, unknown>)
+      : null,
     completedAt: row.completed_at,
     version: row.version ?? 0,
     resumeCount: row.resume_count ?? 0,
@@ -429,7 +430,9 @@ function rowToInstance(row: InstanceRow): WorkflowInstance {
     boundRig: row.bound_rig ?? null,
     lifecycleOperationKey: row.lifecycle_operation_key ?? null,
     compiledInputDigest: row.compiled_input_digest ?? null,
-    lifecycleBinding: readStoredJsonObject(row.lifecycle_binding_json),
+    lifecycleBinding: row.lifecycle_binding_json
+      ? (JSON.parse(row.lifecycle_binding_json) as Record<string, unknown>)
+      : null,
   };
 }
 

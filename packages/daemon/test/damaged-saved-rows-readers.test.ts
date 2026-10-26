@@ -1,17 +1,25 @@
 // OF-51: a saved row with a JSON column that is not JSON (a hand edit, a truncated write) used to throw out of the reader
 // that parses it, so a route that merely LISTS the table answered 500 for every row in it. Measured at base 18f46db6:
-// GET /api/rigs/:id/snapshots -> 500 once one snapshot's data was damaged; the event replay, the audit listing and the
-// queue / inbox / outbox / stream listings threw the same way. Now the damaged value reads as absent (or the row is left
-// out where the JSON IS the row) and the rows beside it are served.
+// GET /api/rigs/:id/snapshots -> 500 once one snapshot's data was damaged; the event replay and the audit listing threw
+// the same way. Now the damaged value reads as absent (or the row is flagged / left out where the JSON IS the row) and
+// the rows beside it are served.
 //
 // Production consequence, in the test names: a damaged row never turns a read route into a 500 for its neighbours.
 //
-// Census at 18f46db6 (AST walk of packages/daemon/src, JSON.parse call expressions not inside a `try` block of their own
-// function): 54 unguarded. This file pins the stored-row readers a route reaches; the rest are classified in the PR body.
+// What is NOT guarded here, on purpose: readers whose callers DECIDE on the row and rely on it throwing. Measured: the
+// queue item reader (the prompt-blocked alert's "unreadable member" protocol, pinned by prompt-blocked-alert.test.ts,
+// failed 5 rows when its tags read as absent), the inbox absorb (copies tags into a queue item), the outbox guard
+// binding (session-transport compares it), the workflow instance frontier (the projector rewrites it), the watchdog
+// history notes (the parked-owner policy reconciles from them), the workflow spec cache (projection runs against it).
+// Reading a damaged column there as "absent" turns a refusal into a silent wrong answer or a fail-open guard; they need
+// the OF-45 marker pattern first (PR body, follow-ups).
 //
-// Deployed entrypoints: server.ts mounts routes/snapshots.ts and routes/events.ts; startup.ts constructs the stores
-// below (SnapshotRepository, EventBus, QueueRepository, InboxHandler, OutboxHandler, StreamStore, CheckpointStore,
-// MissionControlActionLog, MissionControlAuditBrowse, WatchdogHistoryLog, WorkflowStepTrailLog, WorkflowInstanceStore).
+// Census at 18f46db6 (AST walk of packages/daemon/src, JSON.parse call expressions not inside a `try` block of their own
+// function): 54 unguarded. This file pins the stored-row readers it guards; the rest are classified in the PR body.
+//
+// Deployed entrypoints: server.ts mounts routes/snapshots.ts, routes/events.ts and routes/restore-check.ts; startup.ts
+// constructs the stores below (SnapshotRepository, EventBus, CheckpointStore, StreamStore, MissionControlActionLog,
+// MissionControlAuditBrowse, WorkflowStepTrailLog) and the workflow-keepalive policy.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { createTestApp } from "./helpers/test-app.js";
@@ -19,18 +27,14 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { InboxHandler } from "../src/domain/inbox-handler.js";
-import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { StreamStore } from "../src/domain/stream-store.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
 import { MissionControlAuditBrowse } from "../src/domain/mission-control/audit-browse.js";
-import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
 import { WorkflowStepTrailLog } from "../src/domain/workflow-step-trail-log.js";
 import { WorkflowInstanceStore } from "../src/domain/workflow-instance-store.js";
 import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
 import { hasPendingFreshStartup } from "../src/domain/startup-orchestrator.js";
 import { makeWorkflowKeepalivePolicy } from "../src/domain/policies/workflow-keepalive.js";
-import { WorkflowSpecCache } from "../src/domain/workflow-spec-cache.js";
 
 const NOT_JSON = "{not json";
 
@@ -62,11 +66,16 @@ function seedRigWithSnapshots() {
 }
 
 describe("OF-51 snapshots: one damaged snapshot is never a 500 for the rig's other snapshots", () => {
-  it("GET /api/rigs/:id/snapshots lists the readable snapshots, newest first, and leaves the damaged one out", async () => {
-    const { rig, first, last } = seedRigWithSnapshots();
+  it("GET /api/rigs/:id/snapshots lists every snapshot newest first; the damaged one is flagged unreadable, not hidden", async () => {
+    const { rig, first, damaged, last } = seedRigWithSnapshots();
     const res = await setup.app.request(`/api/rigs/${rig.id}/snapshots`);
     expect(res.status).toBe(200);
-    expect((await res.json() as Array<{ id: string }>).map((s) => s.id)).toEqual([last.id, first.id]);
+    const listed = await res.json() as Array<{ id: string; kind: string; status: string; createdAt: string; data: unknown; unreadable?: string }>;
+    expect(listed.map((s) => s.id)).toEqual([last.id, damaged.id, first.id]);
+    expect(listed.map((s) => s.unreadable)).toEqual([undefined, "its saved data is not JSON", undefined]);
+    // The flagged row keeps the fields the CLI and the UI list by; its data is null, not a guess.
+    expect(listed[1]).toMatchObject({ id: damaged.id, rigId: rig.id, kind: "auto-pre-down", createdAt: "2026-01-01 00:00:02", data: null });
+    expect(typeof listed[1]!.status).toBe("string");
   });
 
   it("GET /api/rigs/:id/snapshots/:id of the damaged one is 422 snapshot_unreadable, not a 500; a readable one is 200", async () => {
@@ -91,11 +100,10 @@ describe("OF-51 snapshots: one damaged snapshot is never a 500 for the rig's oth
   });
 
   it("the latest-snapshot lookups skip a damaged newest row and name the newest readable one", () => {
-    const { rig, first, damaged } = seedRigWithSnapshots();
+    const { rig, first, damaged, last } = seedRigWithSnapshots();
     // Make the damaged one the newest of all.
     db.prepare("UPDATE snapshots SET created_at = '2026-01-01 00:00:09' WHERE id = ?").run(damaged.id);
-    expect(setup.snapshotRepo.getLatestSnapshot(rig.id)!.id).not.toBe(damaged.id);
-    expect(setup.snapshotRepo.getLatestSnapshot(rig.id)!.id).toBeTruthy();
+    expect(setup.snapshotRepo.getLatestSnapshot(rig.id)!.id).toBe(last.id);
     // The only auto-pre-down snapshot is the damaged one: no readable one exists.
     expect(setup.snapshotRepo.findLatestAutoPreDown(rig.id)).toBeNull();
     // Control: with a readable auto-pre-down older than the damaged one, that one is named.
@@ -104,7 +112,7 @@ describe("OF-51 snapshots: one damaged snapshot is never a 500 for the rig's oth
   });
 });
 
-describe("OF-51 events: a damaged event payload is left out of the replay, not a throw for every other event", () => {
+describe("OF-51 events: a damaged event payload never ends a replay, and never reads as 'nothing happened'", () => {
   function emitThree(rigId: string) {
     const bus = setup.eventBus;
     const a = bus.emit({ type: "node.added", rigId, nodeId: "n1", logicalId: "a" } as never);
@@ -128,17 +136,52 @@ describe("OF-51 events: a damaged event payload is left out of the replay, not a
     expect(setup.eventBus.replaySince(a.seq - 1, rig.id).map((e) => e.seq)).toEqual([a.seq, c.seq]);
   });
 
-  it("readFreshOccupantRelations skips a damaged seat.fresh_launched row and still reads the others", () => {
-    const rig = setup.rigRepo.createRig("r");
-    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
-    db.prepare("INSERT INTO occupant_tenures (id, node_id, generation_uuid, generation_ordinal, kind) VALUES ('t1', ?, 'gen-1', 1, 'launch')").run(node.id);
-    const insert = (payload: string) => db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'seat.fresh_launched', ?)").run(rig.id, node.id, payload);
-    insert(NOT_JSON);
-    insert(JSON.stringify({ type: "seat.fresh_launched", nodeId: node.id, newGeneration: "gen-1", sessionId: "sess-1" }));
-    expect(readFreshOccupantRelations(db, rig.id)).toEqual({ [node.id]: "sess-1" });
+  describe("readFreshOccupantRelations: a damaged seat.fresh_launched row makes THAT seat's relation unavailable (null), not a throw and not skipped", () => {
+    function seedSeats() {
+      const rig = setup.rigRepo.createRig("r");
+      const damagedSeat = setup.rigRepo.addNode(rig.id, "dev.damaged", { runtime: "terminal" });
+      const goodSeat = setup.rigRepo.addNode(rig.id, "dev.good", { runtime: "terminal" });
+      const tenure = db.prepare("INSERT INTO occupant_tenures (id, node_id, generation_uuid, generation_ordinal, kind) VALUES (?, ?, ?, 1, 'launch')");
+      tenure.run("t-damaged", damagedSeat.id, "gen-damaged");
+      tenure.run("t-good", goodSeat.id, "gen-good");
+      const insert = (nodeId: string, payload: string) => db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'seat.fresh_launched', ?)").run(rig.id, nodeId, payload);
+      const launched = (node: { id: string }, generation: string, sessionId: string) => JSON.stringify({ type: "seat.fresh_launched", nodeId: node.id, newGeneration: generation, sessionId });
+      return { rig, damagedSeat, goodSeat, insert, launched };
+    }
+
+    it("a damaged row names no session: its seat reads null, the other seat's relation is still read", () => {
+      const f = seedSeats();
+      f.insert(f.goodSeat.id, f.launched(f.goodSeat, "gen-good", "sess-good"));
+      f.insert(f.damagedSeat.id, NOT_JSON);
+      expect(readFreshOccupantRelations(db, f.rig.id)).toEqual({ [f.damagedSeat.id]: null, [f.goodSeat.id]: "sess-good" });
+    });
+
+    it("the damage stays unavailable whichever side of a readable launch it falls on", () => {
+      const f = seedSeats();
+      // The same session on both sides: skipping the damaged row would read "sess-1" (consistent), not "unavailable".
+      f.insert(f.damagedSeat.id, f.launched(f.damagedSeat, "gen-damaged", "sess-1"));
+      f.insert(f.damagedSeat.id, NOT_JSON);
+      f.insert(f.damagedSeat.id, f.launched(f.damagedSeat, "gen-damaged", "sess-1"));
+      expect(readFreshOccupantRelations(db, f.rig.id)[f.damagedSeat.id]).toBeNull();
+    });
+
+    it("control: with no damaged row the readable launch is the relation", () => {
+      const f = seedSeats();
+      f.insert(f.damagedSeat.id, f.launched(f.damagedSeat, "gen-damaged", "sess-1"));
+      expect(readFreshOccupantRelations(db, f.rig.id)).toEqual({ [f.damagedSeat.id]: "sess-1" });
+    });
+
+    it("a damaged row naming no current seat (no node_id, or a seat with no current occupant generation) changes nothing", () => {
+      const f = seedSeats();
+      f.insert(f.goodSeat.id, f.launched(f.goodSeat, "gen-good", "sess-good"));
+      db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, NULL, 'seat.fresh_launched', ?)").run(f.rig.id, NOT_JSON);
+      const ghost = setup.rigRepo.addNode(f.rig.id, "dev.ghost", { runtime: "terminal" });
+      f.insert(ghost.id, NOT_JSON);
+      expect(readFreshOccupantRelations(db, f.rig.id)).toEqual({ [f.goodSeat.id]: "sess-good" });
+    });
   });
 
-  it("hasPendingFreshStartup reads a damaged newest startup row as 'nothing pending'", () => {
+  it("hasPendingFreshStartup (canContinueFresh) reads a damaged newest startup row as 'not pending': uncertain delivery is never replayed", () => {
     const rig = setup.rigRepo.createRig("r");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
     const insert = (type: string, payload: string) => db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(rig.id, node.id, type, payload);
@@ -149,7 +192,7 @@ describe("OF-51 events: a damaged event payload is left out of the replay, not a
   });
 });
 
-describe("OF-51 stores: a damaged JSON column reads as absent, the row and its neighbours are still served", () => {
+describe("OF-51 stores read for display or audit: a damaged JSON column reads as absent, the row and its neighbours are still served", () => {
   it("checkpoints: key_artifacts", () => {
     const rig = setup.rigRepo.createRig("r");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
@@ -160,44 +203,12 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
     expect(setup.checkpointStore.getCheckpointsForRig(rig.id)[node.id]!.summary).toBe("two");
   });
 
-  it("inbox: tags", () => {
-    const inbox = new InboxHandler(db, setup.eventBus, queueRepo);
-    const good = inbox.drop({ destinationSession: "b@r", senderSession: "a@r", body: "x", tags: ["t"] });
-    const bad = inbox.drop({ destinationSession: "b@r", senderSession: "a@r", body: "y", tags: ["t"] });
-    db.prepare("UPDATE inbox_entries SET tags = ? WHERE inbox_id = ?").run(NOT_JSON, bad.inboxId);
-    const listed = inbox.listForDestination("b@r");
-    expect(listed.map((e) => [e.inboxId, e.tags]).sort()).toEqual([[good.inboxId, ["t"]], [bad.inboxId, null]].sort());
-  });
-
-  it("outbox: tags and guard_binding", () => {
-    const outbox = new OutboxHandler(db);
-    const good = outbox.record({ senderSession: "a@r", destinationSession: "b@r", body: "x", tags: ["t"] });
-    const bad = outbox.record({ senderSession: "a@r", destinationSession: "b@r", body: "y", tags: ["t"] });
-    db.prepare("UPDATE outbox_entries SET tags = ?, guard_binding = ? WHERE outbox_id = ?").run(NOT_JSON, NOT_JSON, bad.outboxId);
-    const listed = outbox.listForSender("a@r");
-    expect(listed.find((e) => e.outboxId === good.outboxId)!.tags).toEqual(["t"]);
-    const damaged = listed.find((e) => e.outboxId === bad.outboxId)!;
-    expect(damaged.tags).toBeNull();
-    expect(damaged.guardBinding).toBeNull();
-  });
-
   it("stream: hint_tags", () => {
     const stream = new StreamStore(db, setup.eventBus);
     const good = stream.emit({ sourceSession: "a@r", body: "x", hintTags: ["t"] });
     const bad = stream.emit({ sourceSession: "a@r", body: "y", hintTags: ["t"] });
     db.prepare("UPDATE stream_items SET hint_tags = ? WHERE stream_item_id = ?").run(NOT_JSON, bad.streamItemId);
     expect(stream.list().map((i) => [i.streamItemId, i.hintTags]).sort()).toEqual([[good.streamItemId, ["t"]], [bad.streamItemId, null]].sort());
-  });
-
-  it("queue: tags, chain_of_record, human_questions, human_answers", async () => {
-    const good = await queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "x", tags: ["t"], chainOfRecord: ["q0"] });
-    const bad = await queueRepo.create({ sourceSession: "a@r", destinationSession: "b@r", body: "y", tags: ["t"], chainOfRecord: ["q0"] });
-    db.prepare("UPDATE queue_items SET tags = ?, chain_of_record = ?, human_questions = ?, human_answers = ? WHERE qitem_id = ?")
-      .run(NOT_JSON, NOT_JSON, NOT_JSON, NOT_JSON, bad.qitemId);
-    const byId = new Map((queueRepo.list({ destinationSession: "b@r" } as never) as Array<{ qitemId: string; tags: unknown; chainOfRecord: unknown; humanQuestions: unknown; humanAnswers: unknown }>).map((q) => [q.qitemId, q]));
-    expect(byId.get(good.qitemId)).toMatchObject({ tags: ["t"], chainOfRecord: ["q0"] });
-    expect(byId.get(bad.qitemId)).toMatchObject({ tags: null, chainOfRecord: null, humanQuestions: null, humanAnswers: null });
-    expect(queueRepo.getById(bad.qitemId)).toMatchObject({ qitemId: bad.qitemId, tags: null });
   });
 
   it("mission control action log and audit browse: before/after state and audit notes", async () => {
@@ -215,46 +226,8 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
     }
   });
 
-  it("watchdog history: evaluation_notes", () => {
-    db.pragma("foreign_keys = OFF"); // the log's job row is not what this reads
-    const history = new WatchdogHistoryLog(db);
-    history.record({ jobId: "j1", evaluatedAt: "2026-05-04T03:00:00.000Z", outcome: "skipped", evaluationNotes: { a: 1 } } as never);
-    const bad = history.record({ jobId: "j1", evaluatedAt: "2026-05-04T03:01:00.000Z", outcome: "skipped", evaluationNotes: { a: 1 } } as never);
-    db.prepare("UPDATE watchdog_history SET evaluation_notes = ? WHERE history_id = ?").run(NOT_JSON, bad.historyId);
-    expect(history.listForJob("j1").map((e) => e.evaluationNotes)).toEqual([null, { a: 1 }]);
-  });
-
   describe("workflow", () => {
     const instance = () => new WorkflowInstanceStore(db).create({ workflowName: "wf", workflowVersion: "1", createdBySession: "a@r" } as never);
-
-    it("keepalive policy: a damaged frontier ends the keepalive as terminal workflow_frontier_unreadable, not a throw", async () => {
-      const q = await queueRepo.create({ sourceSession: "a@r", destinationSession: "owner@r", body: "x" });
-      const insert = (id: string, frontier: string) => db.prepare(
-        `INSERT INTO workflow_instances (instance_id, workflow_name, workflow_version, created_by_session, created_at, status, current_frontier_json)
-         VALUES (?, 'wf', '1', 'creator@rig', '2026-05-03T07:00:00Z', 'active', ?)`).run(id, frontier);
-      insert("inst-good", JSON.stringify([q.qitemId]));
-      insert("inst-bad", NOT_JSON);
-      const policy = makeWorkflowKeepalivePolicy({ db });
-      const job = (instance: string) => ({
-        jobId: "job-1", policy: "workflow-keepalive", target: { session: "registered@rig" }, intervalSeconds: 1800, activeWakeIntervalSeconds: null,
-        scanIntervalSeconds: null, lastEvaluationAt: null, lastFireAt: null, registeredBySession: "ops@kernel", registeredAt: "2026-05-03T07:00:00.000Z",
-        context: { workflow_instance_id: instance },
-      }) as never;
-      expect((await policy.evaluate(job("inst-good"))).action, "control: the readable frontier is served").toBe("send");
-      expect(await policy.evaluate(job("inst-bad"))).toMatchObject({ action: "terminal", reason: "workflow_frontier_unreadable", notes: { instanceId: "inst-bad" } });
-    });
-
-    it("spec cache: a damaged stored spec / roles / steps reads as the legacy reconstruction, listing and lookup both serve the row", () => {
-      const insert = (name: string, specJson: string | null, roles: string, steps: string) => db.prepare(
-        `INSERT INTO workflow_specs (spec_id, name, version, purpose, target_rig, roles_json, steps_json, coordination_terminal_turn_rule, source_path, source_hash, cached_at, spec_json)
-         VALUES (?, ?, '1', NULL, NULL, ?, ?, 'hybrid', '/nowhere.yaml', 'h', '2026-05-03T07:00:00Z', ?)`).run(`id-${name}`, name, roles, steps, specJson);
-      insert("a-good", null, JSON.stringify({ r: { preferred_targets: ["x@y"] } }), JSON.stringify([{ id: "s1" }]));
-      insert("b-bad", NOT_JSON, NOT_JSON, NOT_JSON);
-      const cache = new WorkflowSpecCache(db);
-      const listed = cache.listAll();
-      expect(listed.map((row) => [row.name, Object.keys(row.spec.roles), row.spec.steps.length])).toEqual([["a-good", ["r"], 1], ["b-bad", [], 0]]);
-      expect(cache.getByNameVersion("b-bad", "1")).toMatchObject({ name: "b-bad", spec: { roles: {}, steps: [] } });
-    });
 
     it("step trails: closure_evidence_json", () => {
       const inst = instance();
@@ -267,12 +240,21 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
       expect(trail.listForInstance(inst.instanceId).map((e) => e.closureEvidence).sort((x, y) => String(x).localeCompare(String(y)))).toEqual([{ ok: true }, null].sort((x, y) => String(x).localeCompare(String(y))));
     });
 
-    it("instances: current_frontier_json, last_continuation_decision_json, lifecycle_binding_json", () => {
-      const store = new WorkflowInstanceStore(db);
-      const inst = instance();
-      db.prepare("UPDATE workflow_instances SET current_frontier_json = ?, last_continuation_decision_json = ?, lifecycle_binding_json = ? WHERE instance_id = ?")
-        .run(NOT_JSON, NOT_JSON, NOT_JSON, inst.instanceId);
-      expect(store.getById(inst.instanceId)).toMatchObject({ instanceId: inst.instanceId, currentFrontier: [], lastContinuationDecision: null, lifecycleBinding: null });
+    it("keepalive policy: a damaged frontier ends the keepalive as terminal workflow_frontier_unreadable, not a throw", async () => {
+      const q = await queueRepo.create({ sourceSession: "a@r", destinationSession: "owner@r", body: "x" });
+      const insert = (id: string, frontier: string) => db.prepare(
+        `INSERT INTO workflow_instances (instance_id, workflow_name, workflow_version, created_by_session, created_at, status, current_frontier_json)
+         VALUES (?, 'wf', '1', 'creator@rig', '2026-05-03T07:00:00Z', 'active', ?)`).run(id, frontier);
+      insert("inst-good", JSON.stringify([q.qitemId]));
+      insert("inst-bad", NOT_JSON);
+      const policy = makeWorkflowKeepalivePolicy({ db });
+      const job = (instanceId: string) => ({
+        jobId: "job-1", policy: "workflow-keepalive", target: { session: "registered@rig" }, intervalSeconds: 1800, activeWakeIntervalSeconds: null,
+        scanIntervalSeconds: null, lastEvaluationAt: null, lastFireAt: null, registeredBySession: "ops@kernel", registeredAt: "2026-05-03T07:00:00.000Z",
+        context: { workflow_instance_id: instanceId },
+      }) as never;
+      expect((await policy.evaluate(job("inst-good"))).action, "control: the readable frontier is served").toBe("send");
+      expect(await policy.evaluate(job("inst-bad"))).toMatchObject({ action: "terminal", reason: "workflow_frontier_unreadable", notes: { instanceId: "inst-bad" } });
     });
   });
 });
