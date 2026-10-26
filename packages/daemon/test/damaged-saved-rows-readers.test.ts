@@ -29,6 +29,8 @@ import { WorkflowStepTrailLog } from "../src/domain/workflow-step-trail-log.js";
 import { WorkflowInstanceStore } from "../src/domain/workflow-instance-store.js";
 import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
 import { hasPendingFreshStartup } from "../src/domain/startup-orchestrator.js";
+import { makeWorkflowKeepalivePolicy } from "../src/domain/policies/workflow-keepalive.js";
+import { WorkflowSpecCache } from "../src/domain/workflow-spec-cache.js";
 
 const NOT_JSON = "{not json";
 
@@ -224,6 +226,35 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
 
   describe("workflow", () => {
     const instance = () => new WorkflowInstanceStore(db).create({ workflowName: "wf", workflowVersion: "1", createdBySession: "a@r" } as never);
+
+    it("keepalive policy: a damaged frontier ends the keepalive as terminal workflow_frontier_unreadable, not a throw", async () => {
+      const q = await queueRepo.create({ sourceSession: "a@r", destinationSession: "owner@r", body: "x" });
+      const insert = (id: string, frontier: string) => db.prepare(
+        `INSERT INTO workflow_instances (instance_id, workflow_name, workflow_version, created_by_session, created_at, status, current_frontier_json)
+         VALUES (?, 'wf', '1', 'creator@rig', '2026-05-03T07:00:00Z', 'active', ?)`).run(id, frontier);
+      insert("inst-good", JSON.stringify([q.qitemId]));
+      insert("inst-bad", NOT_JSON);
+      const policy = makeWorkflowKeepalivePolicy({ db });
+      const job = (instance: string) => ({
+        jobId: "job-1", policy: "workflow-keepalive", target: { session: "registered@rig" }, intervalSeconds: 1800, activeWakeIntervalSeconds: null,
+        scanIntervalSeconds: null, lastEvaluationAt: null, lastFireAt: null, registeredBySession: "ops@kernel", registeredAt: "2026-05-03T07:00:00.000Z",
+        context: { workflow_instance_id: instance },
+      }) as never;
+      expect((await policy.evaluate(job("inst-good"))).action, "control: the readable frontier is served").toBe("send");
+      expect(await policy.evaluate(job("inst-bad"))).toMatchObject({ action: "terminal", reason: "workflow_frontier_unreadable", notes: { instanceId: "inst-bad" } });
+    });
+
+    it("spec cache: a damaged stored spec / roles / steps reads as the legacy reconstruction, listing and lookup both serve the row", () => {
+      const insert = (name: string, specJson: string | null, roles: string, steps: string) => db.prepare(
+        `INSERT INTO workflow_specs (spec_id, name, version, purpose, target_rig, roles_json, steps_json, coordination_terminal_turn_rule, source_path, source_hash, cached_at, spec_json)
+         VALUES (?, ?, '1', NULL, NULL, ?, ?, 'hybrid', '/nowhere.yaml', 'h', '2026-05-03T07:00:00Z', ?)`).run(`id-${name}`, name, roles, steps, specJson);
+      insert("a-good", null, JSON.stringify({ r: { preferred_targets: ["x@y"] } }), JSON.stringify([{ id: "s1" }]));
+      insert("b-bad", NOT_JSON, NOT_JSON, NOT_JSON);
+      const cache = new WorkflowSpecCache(db);
+      const listed = cache.listAll();
+      expect(listed.map((row) => [row.name, Object.keys(row.spec.roles), row.spec.steps.length])).toEqual([["a-good", ["r"], 1], ["b-bad", [], 0]]);
+      expect(cache.getByNameVersion("b-bad", "1")).toMatchObject({ name: "b-bad", spec: { roles: {}, steps: [] } });
+    });
 
     it("step trails: closure_evidence_json", () => {
       const inst = instance();
