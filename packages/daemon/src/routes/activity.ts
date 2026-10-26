@@ -268,6 +268,12 @@ activityRoutes.post("/hooks", async (c) => {
     if (runtime === "pda" || resolved.runtime === "pda") {
       return c.json({ ok: false, code: "session_identity_not_accepted", tokenPersisted: false, error: "A pda seat's resume token is recorded by its launch; a hook cannot set it." }, 409);
     }
+    // OF-91: the resume-token type a hook may write is the one of the seat's STORED runtime (nodes.runtime), never
+    // the runtime the body claims. A body that names another runtime is refused whole: no token written, no
+    // identity event. (A hook naming no runtime is not a claim; it persists nothing below.)
+    if (runtime !== null && runtime !== resolved.runtime) {
+      return c.json({ ok: false, code: "runtime_mismatch", tokenPersisted: false, error: "Session identity runtime does not match the managed seat." }, 409);
+    }
     // OMP session identity (hook or seat) is strict: the exact seat name, the
     // seat's own runtime, the current occupant generation, and a materialized
     // session file that matches the seat's runner sidecar. Every refusal
