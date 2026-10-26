@@ -59,6 +59,10 @@ export interface CodexSeatHome {
  *  would give the seat another seat's identity (or the activity-hook token) the moment its posture loads it. */
 export const CODEX_PROFILE_FOREIGN_IDENTITY_VARS: readonly string[] = [
   "OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION", "OPENRIG_ACTIVITY_HOOK_TOKEN",
+  // The legacy aliases the cli, hooks and daemon read when the OPENRIG_ name is empty (a profile can drop the
+  // OPENRIG_ names with shell_environment_policy and set only these). Census: a search for RIGGED_<name> over
+  // packages (non-test) finds a read for each of these five and for no other identity variable.
+  "RIGGED_NODE_ID", "RIGGED_SESSION_NAME", "RIGGED_RUNTIME", "RIGGED_OCCUPANT_GENERATION", "RIGGED_ACTIVITY_HOOK_TOKEN",
 ];
 
 /** The identity variable names a profile's text sets, as keys anywhere in the document or as `NAME=value`
@@ -69,8 +73,8 @@ export function codexProfileIdentityVars(text: string): string[] {
   try {
     const walk = (node: unknown): void => {
       if (typeof node === "string") {
-        const m = /^([A-Z0-9_]+)=/.exec(node);
-        if (m && names.includes(m[1]!)) found.add(m[1]!);
+        // NAME=value anywhere in the string: after `export `, `&&`, `;` or a space, not only at the start.
+        for (const n of names) if (new RegExp(`(?:^|[^A-Za-z0-9_])${n}=`).test(node)) found.add(n);
       } else if (Array.isArray(node)) {
         node.forEach(walk);
       } else if (node && typeof node === "object") {
@@ -85,6 +89,23 @@ export function codexProfileIdentityVars(text: string): string[] {
     for (const n of names) if (new RegExp(`\\b${n}\\b`).test(text)) found.add(n);
   }
   return [...found].sort();
+}
+
+/** Move a refused seat copy to `<dest>.refused-openrig-identity-<ms>-<n>` without ever replacing a file: the
+ *  name is claimed with a hard link (EEXIST on a taken name), then the original name is removed. */
+async function moveAsideUnique(dest: string): Promise<string> {
+  const stamp = Date.now();
+  for (let n = 0; ; n++) {
+    const target = `${dest}.refused-openrig-identity-${stamp}-${n}`;
+    try {
+      await fs.link(dest, target);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw err;
+    }
+    await fs.unlink(dest);
+    return target;
+  }
 }
 
 /**
@@ -446,7 +467,7 @@ export async function ensureCodexSeatHome(
       const text = await fs.readFile(dest, "utf8").catch(() => null);
       const vars = text === null ? [] : codexProfileIdentityVars(text);
       if (vars.length === 0) continue;
-      await fs.rename(dest, `${dest}.refused-openrig-identity`);
+      await moveAsideUnique(dest);
       refusedProfiles.push(entry);
       log(`codex seat home ${home}: moved profile ${entry} aside; it sets ${vars.join(", ")}, which would give the seat another identity`);
     }

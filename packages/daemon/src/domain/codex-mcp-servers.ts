@@ -401,6 +401,20 @@ export function mcpArgFilePins(
   place?: { seatCwd: string | null; io?: PathJudgeIo },
 ): { ok: true; pins: McpArgFilePin[] } | { ok: false; error: string } {
   const pins: McpArgFilePin[] = [];
+  const io = place?.io ?? DEFAULT_PATH_JUDGE_IO;
+  // A hard link elsewhere could change a pinned file's bytes after the pin, unless nobody but root can write
+  // either name: root-owned, not group/other-writable, in a chain of root-owned, not group/other-writable
+  // directories (a system binary such as /usr/bin/<tool> with many links stays allowed).
+  const rootControlled = (real: string): boolean => {
+    try {
+      const sealed = (st: Stats) => st.uid === 0 && (st.mode & 0o022) === 0;
+      if (!sealed(io.stat(real))) return false;
+      for (let dir = nodePath.dirname(real); ; dir = nodePath.dirname(dir)) {
+        if (!sealed(io.stat(dir))) return false;
+        if (nodePath.dirname(dir) === dir) return true;
+      }
+    } catch { return false; }
+  };
   const regularFile = (value: string): { realPath: string; sha256: string } | "unreadable" | { linked: number } | null => {
     if (!nodePath.isAbsolute(value)) return null;
     let real: string;
@@ -408,7 +422,7 @@ export function mcpArgFilePins(
       real = realpathSync(value);
       const st = statSync(real);
       if (!st.isFile()) return null;
-      if (st.nlink > 1) return { linked: st.nlink }; // a link elsewhere could change the bytes after the pin (as for spec files)
+      if (st.nlink > 1 && !rootControlled(real)) return { linked: st.nlink };
     } catch { return null; }
     try { return { realPath: real, sha256: createHash("sha256").update(readFileSync(real)).digest("hex") }; } catch { return "unreadable"; }
   };

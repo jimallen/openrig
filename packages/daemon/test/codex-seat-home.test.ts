@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -130,7 +130,9 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     await fs.writeFile(path.join(first.path, "rig-yolo.config.toml"), DIRTY);
     const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
     expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
-    expect(await fs.readFile(path.join(first.path, "rig-yolo.config.toml.refused-openrig-identity"), "utf8")).toBe(DIRTY);
+    const asides = (await fs.readdir(first.path)).filter((f) => f.startsWith("rig-yolo.config.toml.refused-openrig-identity"));
+    expect(asides).toHaveLength(1);
+    expect(await fs.readFile(path.join(first.path, asides[0]!), "utf8")).toBe(DIRTY);
     expect(await fs.readFile(path.join(first.path, "rig-yolo.config.toml"), "utf8")).not.toContain("OPENRIG_");
   });
   it.each([
@@ -140,6 +142,54 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     ["unparseable text", "OPENRIG_RUNTIME = = oops\n", "OPENRIG_RUNTIME"],
   ])("detects %s", (_label, text, name) => {
     expect(codexProfileIdentityVars(text)).toEqual([name]);
+  });
+  it("a second refusal keeps the first moved-aside copy (nothing is overwritten)", async () => {
+    const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const copy = path.join(first.path, "rig-yolo.config.toml");
+    const editA = DIRTY + "# seat edit A\n";
+    const editB = DIRTY + "# seat edit B\n";
+    await fs.writeFile(copy, editA);
+    await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    await fs.writeFile(copy, editB);
+    await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const asides = (await fs.readdir(first.path)).filter((f) => f.startsWith("rig-yolo.config.toml.refused-openrig-identity"));
+    expect(asides).toHaveLength(2);
+    const bodies = await Promise.all(asides.map((f) => fs.readFile(path.join(first.path, f), "utf8")));
+    expect(bodies.sort()).toEqual([editA, editB]);
+  });
+  it("two refusals in the same millisecond still keep both copies", async () => {
+    const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    const copy = path.join(first.path, "rig-yolo.config.toml");
+    const spy = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    try {
+      await fs.writeFile(copy, DIRTY + "# A\n");
+      await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      await fs.writeFile(copy, DIRTY + "# B\n");
+      await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+    } finally {
+      spy.mockRestore();
+    }
+    const asides = (await fs.readdir(first.path)).filter((f) => f.startsWith("rig-yolo.config.toml.refused-openrig-identity"));
+    expect(asides).toHaveLength(2);
+  });
+  // The cli, hooks and daemon fall back to these when the OPENRIG_ name is empty, and a profile's
+  // shell_environment_policy can empty it (OF-43 trial copy: a session name set, the node id stripped).
+  it.each([
+    "RIGGED_NODE_ID", "RIGGED_SESSION_NAME", "RIGGED_RUNTIME", "RIGGED_OCCUPANT_GENERATION", "RIGGED_ACTIVITY_HOOK_TOKEN",
+  ])("detects the legacy alias %s set through shell_environment_policy", (name) => {
+    const text = `[shell_environment_policy]\ninherit = "core"\nexclude = ["OPENRIG_*"]\nset = { ${name} = "other-seat" }\n`;
+    expect(codexProfileIdentityVars(text)).toEqual([name]);
+  });
+  it.each([
+    ["after export", "export OPENRIG_SESSION_NAME=v"],
+    ["after &&", "cd /x && OPENRIG_SESSION_NAME=v rig send"],
+    ["after a leading space", " OPENRIG_SESSION_NAME=v"],
+    ["after a semicolon", "true;OPENRIG_SESSION_NAME=v"],
+  ])("detects NAME=value inside a shell string %s", (_label, str) => {
+    expect(codexProfileIdentityVars(`args = ${JSON.stringify(["-c", str])}\n`)).toEqual(["OPENRIG_SESSION_NAME"]);
+  });
+  it("does not flag a longer name that merely ends in an identity name", () => {
+    expect(codexProfileIdentityVars('args = ["-c", "MY_OPENRIG_SESSION_NAME=v"]\n')).toEqual([]);
   });
   it("does not flag non-identity OPENRIG_ settings or comments", () => {
     expect(codexProfileIdentityVars('# OPENRIG_SESSION_NAME is injected\n[x]\nOPENRIG_HOME = "/h"\n')).toEqual([]);
