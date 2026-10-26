@@ -60,6 +60,8 @@ export interface PiSessionBoundary {
 }
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+/** A token count: a safe integer, the same rule the daemon applies when it stores a fact (OF-90). */
+const count = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
 
 /**
@@ -92,11 +94,15 @@ export function tiesPiForkHeader(timestamp: string, boundary: PiSessionBoundary 
 
 /**
  * The usage facts in `entries` (Pi `get_entries` data). An entry whose usage can't be read is counted in
- * `malformed` and skipped; nothing here throws, so a bad entry never blocks the seat's work.
+ * `malformed` and skipped (one whose token count is not a safe integer is also named in `unsafeCountEntryIds`);
+ * nothing here throws, so a bad entry never blocks the seat's work.
  */
-export function extractPiUsageFacts(entries: unknown[], boundary: PiSessionBoundary | null): { facts: PiUsageFact[]; malformed: number } {
+export function extractPiUsageFacts(entries: unknown[], boundary: PiSessionBoundary | null): { facts: PiUsageFact[]; malformed: number; unsafeCountEntryIds: string[] } {
   const facts: PiUsageFact[] = [];
   let malformed = 0;
+  // OF-90: entries skipped because a token count is not a safe integer (fractional, or 2**53 and over). The daemon
+  // refuses such a fact too; skipping it here, and naming it, keeps it from being posted and then lost silently.
+  const unsafeCountEntryIds: string[] = [];
   for (const raw of entries) {
     if (raw === null || typeof raw !== "object") continue;
     const entry = raw as Record<string, unknown>;
@@ -134,10 +140,16 @@ export function extractPiUsageFacts(entries: unknown[], boundary: PiSessionBound
     const id = str(entry["id"]);
     const timestamp = str(entry["timestamp"]);
     const u = usage && typeof usage === "object" ? usage as Record<string, unknown> : null;
-    const input = num(u?.["input"]);
-    const output = num(u?.["output"]);
-    if (!id || !timestamp || !u || input === null || output === null) {
+    const input = count(u?.["input"]);
+    const output = count(u?.["output"]);
+    // An absent cache count is 0; a present one must be a safe integer (as the daemon requires).
+    const cacheCount = (v: unknown): number | null => (v === undefined || v === null ? 0 : count(v));
+    const cacheRead = u ? cacheCount(u["cacheRead"]) : 0;
+    const cacheWrite = u ? cacheCount(u["cacheWrite"]) : 0;
+    if (!id || !timestamp || !u || input === null || output === null || cacheRead === null || cacheWrite === null) {
       malformed += 1;
+      const counts = u ? [u["input"], u["output"], u["cacheRead"], u["cacheWrite"]] : [];
+      if (id && timestamp && counts.some((v) => typeof v === "number" && Number.isFinite(v) && !Number.isSafeInteger(v))) unsafeCountEntryIds.push(id);
       continue;
     }
     const cost = u["cost"] && typeof u["cost"] === "object" ? num((u["cost"] as Record<string, unknown>)["total"]) : null;
@@ -151,8 +163,8 @@ export function extractPiUsageFacts(entries: unknown[], boundary: PiSessionBound
       model,
       input,
       output,
-      cacheRead: num(u["cacheRead"]) ?? 0,
-      cacheWrite: num(u["cacheWrite"]) ?? 0,
+      cacheRead,
+      cacheWrite,
       costTotal: cost,
       stopReason,
       api,
@@ -160,7 +172,7 @@ export function extractPiUsageFacts(entries: unknown[], boundary: PiSessionBound
       origin: originOf(id, timestamp, boundary),
     });
   }
-  return { facts, malformed };
+  return { facts, malformed, unsafeCountEntryIds };
 }
 
 /** The boundary from a Pi session file's first line (its header). null when it can't be read as one, including a

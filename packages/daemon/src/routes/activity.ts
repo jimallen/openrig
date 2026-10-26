@@ -15,7 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
-import { USAGE_MAX_BODY_BYTES,USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
+import { USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
 import { parsePdaUsageFact } from "../adapters/pda-runner-protocol.js";
@@ -92,7 +92,7 @@ async function readUsageBody(c: Context, what: string, notObjectCode: "invalid_p
     return { error: c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400) };
   }
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return { error: c.json({ ok: false, code: notObjectCode,error: `${what} require a JSON object` }, 400) };
+    return { error: c.json({ ok: false, code: notObjectCode, error: `${what} require a JSON object` }, 400) };
   }
   return { body: body as Record<string, unknown> };
 }

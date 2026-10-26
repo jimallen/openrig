@@ -183,7 +183,7 @@ export interface RunnerIo {
   stopChild?(): void;
   /** OPR.0.7.0.2 (only with --usage-facts): POST usage facts from persisted entries to the daemon. Best-effort;
    *  resolves true only when the daemon accepted them, `{ refused }` (the daemon's code) when it answered 413. */
-  postUsageFacts?(payload: Record<string, unknown>): Promise<boolean | { charged: string[] } | { refused: string }>;
+  postUsageFacts?(payload: Record<string, unknown>): Promise<boolean | { charged: string[]; rejected?: number } | { refused: string }>;
   /** OPR.0.7.0.2 K4 (only with --openrouter-charge): queue OpenRouter charge lookups for facts the daemon stored;
    *  `charged` already have a charge there. */
   enqueueChargeLookups?(piSessionId: string, items: Array<{ fact: PiUsageFact; provenance: ChargeProvenance }>, charged: ReadonlySet<string>): void;
@@ -204,11 +204,12 @@ async function refusalCode(res: Response): Promise<string> {
 
 /** What a /pi-usage reply means to the runner: `{ refused }` for a 413 (given up, never resent), false for any other
  *  failure (resent on the next refresh), else the entries the daemon already has a charge for. */
-export async function interpretUsageFactsReply(res: Response): Promise<false | { charged: string[] } | { refused: string }> {
+export async function interpretUsageFactsReply(res: Response): Promise<false | { charged: string[]; rejected?: number } | { refused: string }> {
   if (res.status === 413) return { refused: await refusalCode(res) };
   if (!res.ok) return false;
-  const reply = await res.json().catch(() => null) as { charged?: unknown } | null;
-  return { charged: Array.isArray(reply?.charged) ? reply.charged.filter((id): id is string => typeof id === "string") : [] };
+  const reply = await res.json().catch(() => null) as { charged?: unknown; rejected?: unknown } | null;
+  const rejected = typeof reply?.rejected === "number" && reply.rejected > 0 ? reply.rejected : undefined;
+  return { charged: Array.isArray(reply?.charged) ? reply.charged.filter((id): id is string => typeof id === "string") : [], ...(rejected ? { rejected } : {}) };
 }
 
 /** What a /pi-usage-charges reply means to the charge lookup: `{ refused }` for a 413, false for any other failure,
@@ -317,6 +318,7 @@ export class RunnerCore {
   /** Entry ids the daemon has accepted with a known origin. Anything else is sent again on the next refresh;
    *  the daemon stores each (session, entry) once regardless. */
   private readonly postedUsageEntryIds = new Set<string>();
+  private readonly loggedUnsafeCountEntryIds = new Set<string>();
 
   constructor(
     private io: RunnerIo,
@@ -481,7 +483,13 @@ export class RunnerCore {
       this.usageBoundary = firstLine ? parsePiSessionHeader(firstLine) : null;
     }
     this.latestUsageEntries = entries;
-    const { facts, malformed } = extractPiUsageFacts(entries, this.usageBoundary);
+    const { facts, malformed, unsafeCountEntryIds } = extractPiUsageFacts(entries, this.usageBoundary);
+    // OF-90: a fact whose token count is not a safe integer is skipped (the daemon would refuse it); say so once per entry.
+    for (const entryId of unsafeCountEntryIds) {
+      if (this.loggedUnsafeCountEntryIds.has(entryId)) continue;
+      this.loggedUnsafeCountEntryIds.add(entryId);
+      this.io.mirrorLine(`[pi-runner] usage fact skipped: code=usage_count_not_safe_integer entry=${entryId}`);
+    }
     if (this.opts.openRouterCharge && this.io.credentialEvidence) {
       // Each entry's credential is judged once, from the observations before and after it was first seen.
       const now = this.io.credentialEvidence();
@@ -524,7 +532,7 @@ export class RunnerCore {
     if (!post) return;
     const chunks = fresh.length > 0 ? chunkUsagePost(fresh) : [[] as PiUsageFact[]];
     for (const [index, chunk] of chunks.entries()) {
-      let result: boolean | { charged: string[] } | { refused: string };
+      let result: boolean | { charged: string[]; rejected?: number } | { refused: string };
       try {
         result = await post.call(this.io, {
           sessionName: this.identity.sessionName,
@@ -550,6 +558,11 @@ export class RunnerCore {
         continue;
       }
       for (const fact of chunk) if (fact.origin !== "unknown") this.postedUsageEntryIds.add(fact.entryId);
+      // OF-90: facts the daemon stored nothing for (it refused their shape) are settled as posted above and would
+      // otherwise vanish silently, so say how many.
+      if (typeof result === "object" && "charged" in result && (result.rejected ?? 0) > 0) {
+        this.io.mirrorLine(`[pi-runner] usage facts rejected by the daemon: code=usage_fact_rejected count=${result.rejected}`);
+      }
       // K4: the charge is looked up only for facts the daemon has stored, never for one it already has.
       if (this.opts.openRouterCharge && this.sessionId && this.io.enqueueChargeLookups) {
         this.io.enqueueChargeLookups(this.sessionId, chunk.map((fact) => ({

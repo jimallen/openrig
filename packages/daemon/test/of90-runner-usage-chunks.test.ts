@@ -34,7 +34,7 @@ const entries = (n: number) => Array.from({ length: n }, (_, i) => entry(i));
 const HEADER = JSON.stringify({ type: "session", version: 3, id: "0197a2f0", timestamp: new Date(BASE).toISOString(), cwd: "/w" });
 
 /** A runner whose posts go to the REAL pi-usage route (when `viaRoute`) or to a scripted reply. */
-function runner(script?: (payload: Record<string, any>, n: number) => boolean | { refused: string }) {
+function runner(script?: (payload: Record<string, any>, n: number) => boolean | { refused: string } | { charged: string[]; rejected?: number }) {
   const d = createDb(); migrate(d, ALL_MIGRATIONS); dbs.push(d);
   const hono = new Hono();
   hono.use("*", async (c, next) => {
@@ -127,6 +127,35 @@ describe("OF-90 runner: a 413 is given up with a logged code, never retried endl
     expect(await interpretChargesReply(json(413, { code: "usage_body_too_large" }))).toEqual({ refused: "usage_body_too_large" });
     expect(await interpretChargesReply(json(500, {}))).toBe(false);
     expect([...(await interpretChargesReply(json(200, { acknowledged: ["x"] })) as Set<string>)]).toEqual(["x"]);
+  });
+});
+
+describe("OF-90 runner: a fact the daemon would refuse is never lost silently (review N1)", () => {
+  const withCounts = (i: number, usage: Record<string, unknown>) => ({ ...entry(i), message: { ...entry(i).message, usage } });
+  it("a fractional or 2**53 token count is skipped before posting and logged once with a code; the good fact still posts", async () => {
+    const r = runner();
+    const list = [entry(0), withCounts(1, { input: 1.5, output: 5 }), withCounts(2, { input: 10, output: 5, cacheRead: 2 ** 53 }), entry(3)];
+    await r.refresh(list);
+    await r.refresh(list);
+    // e0 and e3 once; the second refresh posts no facts, only the standing `malformed` count (as before this change)
+    expect(r.posts.map((p) => p.facts)).toEqual([2, 0]);
+    expect(r.stored()).toBe(2);
+    expect(r.lines.filter((l) => l.includes("usage_count_not_safe_integer"))).toEqual([
+      "[pi-runner] usage fact skipped: code=usage_count_not_safe_integer entry=e1",
+      "[pi-runner] usage fact skipped: code=usage_count_not_safe_integer entry=e2",
+    ]);
+  });
+  it("a post the daemon answers with rejected > 0 is logged with the count", async () => {
+    // a daemon stricter than the runner would otherwise drop these silently: the runner settles them as posted
+    const r = runner(() => ({ charged: [], rejected: 2 }));
+    await r.refresh([entry(1), entry(2)]);
+    expect(r.lines.filter((l) => l.includes("rejected"))).toEqual(["[pi-runner] usage facts rejected by the daemon: code=usage_fact_rejected count=2"]);
+    const clean = runner(); // control: a post with nothing rejected logs nothing
+    await clean.refresh([entry(1)]);
+    expect(clean.lines.filter((l) => l.includes("rejected"))).toEqual([]);
+    // and the wire reading carries the daemon's count through
+    expect(await interpretUsageFactsReply(new Response(JSON.stringify({ ok: true, charged: [], stored: 0, rejected: 2 }), { status: 200 }))).toEqual({ charged: [], rejected: 2 });
+    expect(await interpretUsageFactsReply(new Response(JSON.stringify({ ok: true, charged: [], rejected: 0 }), { status: 200 }))).toEqual({ charged: [] });
   });
 });
 
