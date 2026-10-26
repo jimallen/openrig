@@ -214,6 +214,7 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
   });
 
   it("watchdog history: evaluation_notes", () => {
+    db.pragma("foreign_keys = OFF"); // the log's job row is not what this reads
     const history = new WatchdogHistoryLog(db);
     history.record({ jobId: "j1", evaluatedAt: "2026-05-04T03:00:00.000Z", outcome: "skipped", evaluationNotes: { a: 1 } } as never);
     const bad = history.record({ jobId: "j1", evaluatedAt: "2026-05-04T03:01:00.000Z", outcome: "skipped", evaluationNotes: { a: 1 } } as never);
@@ -226,6 +227,7 @@ describe("OF-51 stores: a damaged JSON column reads as absent, the row and its n
 
     it("step trails: closure_evidence_json", () => {
       const inst = instance();
+      db.pragma("foreign_keys = OFF"); // the trail's prior qitem is not what this reads
       const trail = new WorkflowStepTrailLog(db);
       const record = (closedAt: string) => trail.record({ instanceId: inst.instanceId, stepId: "s", stepRole: "r", closureReason: "done", closedAt, actorSession: "a@r", priorQitemId: "q", closureEvidence: { ok: true } } as never);
       record("2026-05-04T03:00:00.000Z");
