@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, PersistedEvent } from "./types.js";
+import { PDA_RUNTIME, isPdaHeldCode } from "../adapters/pda-runner-protocol.js";
 
 export const AGENT_ACTIVITY_FRESHNESS_MS = 5 * 60 * 1000;
 
@@ -326,7 +327,8 @@ export class AgentActivityStore {
 
 /** The activity a runtime hook event means, before freshness or generation checks. The one mapping behind
  *  ingest, the send gate and the wake ladder. `seatRuntime` is the managed seat's runtime: runtime_error is
- *  an OMP runner signal, and a hook claiming OMP on another runtime's seat must not escalate it. */
+ *  an OMP runner signal, and a hook claiming OMP on another runtime's seat must not escalate it. The same
+ *  holds for a pda runner's held-message report (OF-89): `Notification/<held code>` is needs_input on a pda seat only. */
 export function hookEventState(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") return "running";
   // OPR.0.4.1.10 — Codex's official approval hook (openai/codex PR #17563). A PermissionRequest
@@ -338,11 +340,27 @@ export function hookEventState(rawEvent: string | null | undefined, rawSubtype: 
   // the relay forwards tool_name as the subtype, so `evidence` names the tool being approved.
   if (rawEvent === "PermissionRequest") return "needs_input";
   if (rawEvent === "Notification") {
-    if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || (seatRuntime === "omp" && rawSubtype === "runtime_error")) return "needs_input";
+    if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || (seatRuntime === "omp" && rawSubtype === "runtime_error")
+      || (seatRuntime === PDA_RUNTIME && isPdaHeldCode(rawSubtype))) return "needs_input";
     return rawSubtype === "idle_prompt" ? "idle" : "unknown";
   }
   if (rawEvent === "Stop" || rawEvent === "SessionEnd" || rawEvent === "stop" || rawEvent === "idle") return "idle";
   return "unknown";
+}
+
+/** A pda runner's held-message report (OF-89): `Notification/<held code>`. It is DISPLAY evidence. It reads
+ *  needs_input on a pda seat so `rig ps` and the UI show the hold, but it is not a prompt on the pane and no
+ *  consumer that decides whether to send or wake may treat it as one: a pda seat's send gate is its runner's
+ *  sidecar (OF-88), and a hold the runner cannot answer for must behave as it did before this report existed. */
+export function isPdaHeldReport(activity: Pick<AgentActivity, "rawEvent" | "rawSubtype"> | null | undefined): boolean {
+  return activity?.rawEvent === "Notification" && isPdaHeldCode(activity.rawSubtype);
+}
+
+/** The hook activity as a send or wake decision may read it: a held report reads as the unknown it was before
+ *  OF-89 (same reason, same evidence), every other activity is returned as it is. */
+export function decisionView<T extends AgentActivity | null | undefined>(activity: T): T {
+  if (!activity || activity.state !== "needs_input" || !isPdaHeldReport(activity)) return activity;
+  return { ...activity, state: "unknown" };
 }
 
 /** A runtime hook that leaves the agent waiting on a person: an approval, a picker or an elicitation. */
@@ -354,6 +372,7 @@ export function hookMeansNeedsInput(rawEvent: string | null | undefined, rawSubt
  *  retained raw event means. Generation-mismatched or unresolvable evidence says nothing ("unknown"). */
 function latestHookState(activity: AgentActivity | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (activity?.evidenceSource !== "runtime_hook") return "unknown";
+  if (isPdaHeldReport(activity)) return "unknown"; // display evidence only, fresh or past the freshness window
   if (activity.stale !== true) return activity.state;
   return activity.reason === "stale_runtime_hook" ? hookEventState(activity.rawEvent, activity.rawSubtype, seatRuntime) : "unknown";
 }

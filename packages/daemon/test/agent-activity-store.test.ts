@@ -4,7 +4,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import { AgentActivityStore, hookEventState } from "../src/domain/agent-activity-store.js";
 
 const NOW = new Date("2026-04-24T12:00:00.000Z");
 
@@ -592,5 +592,27 @@ describe("AgentActivityStore — generation identity (W2a-1)", () => {
       stale: true,
       generationProvenance: "unresolved",
     });
+  });
+});
+
+describe("OF-89: hookEventState for a pda runner's held-message report", () => {
+  // Restated, not imported: the three codes the runner writes into its sidecar and posts as Notification subtypes.
+  it.each(["pda_message_held", "pda_agent_missing", "pda_unauthorized"])("Notification/%s is needs_input on a pda seat", (code) => {
+    expect(hookEventState("Notification", code, "pda")).toBe("needs_input");
+  });
+
+  it.each(["pda_message_held", "pda_agent_missing", "pda_unauthorized"])("Notification/%s is unknown on every other seat runtime", (code) => {
+    for (const runtime of ["claude-code", "codex", "omp", "pi", "terminal", "stub", null]) {
+      expect(hookEventState("Notification", code, runtime), String(runtime)).toBe("unknown");
+    }
+  });
+
+  it("only a Notification holds: the same subtype under another event, and the runner's other subtypes, are not needs_input on a pda seat", () => {
+    expect(hookEventState("active", "pda_message_held", "pda")).toBe("running");
+    expect(hookEventState("Stop", "pda_message_held", "pda")).toBe("idle");
+    expect(hookEventState("Notification", "pda_disconnected", "pda")).toBe("unknown");
+    expect(hookEventState("Notification", "held_cleared", "pda")).toBe("unknown");
+    expect(hookEventState("Stop", "held_cleared", "pda")).toBe("idle");
+    expect(hookEventState("active", "held_cleared", "pda")).toBe("running");
   });
 });

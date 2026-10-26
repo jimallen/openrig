@@ -55,6 +55,11 @@ const cases: Case[] = [
     nearMisses: [
       ["a running activity", (f, key, h) => f.activity({ seat: key, rawEvent: "Stop", rawSubtype: null, state: "running", hoursAgo: h })],
       ["an idle activity", (f, key, h) => f.activity({ seat: key, rawEvent: "Stop", rawSubtype: null, state: "idle", hoursAgo: h })],
+      // OF-89: a pda runner's re-reported held message reads needs_input for rig ps; it is not a permission stall.
+      // Restated, not imported: the three codes the runner reports.
+      ["a pda held-message report (pda_message_held)", (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: "pda_message_held", state: "needs_input", hoursAgo: h })],
+      ["a pda held-message report (pda_agent_missing)", (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: "pda_agent_missing", state: "needs_input", hoursAgo: h })],
+      ["a pda held-message report (pda_unauthorized)", (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: "pda_unauthorized", state: "needs_input", hoursAgo: h })],
     ],
     wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: null, state: "needs_input", hoursAgo: h, type: "agent.session_identity" }),
     fingerprint: (key) => `rsi.permission-stall/seat:${key}`,

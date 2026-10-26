@@ -178,6 +178,11 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
 
+/** OF-89: a held report is repeated at least this often while the hold lasts, inside the daemon's 5 minute activity
+ *  freshness window (AGENT_ACTIVITY_FRESHNESS_MS), at the alive tick's granularity. Not a heartbeat: nothing posts while
+ *  no message is held. */
+const HELD_REASSERT_MS = 2 * 60_000;
+
 /** Leave the stream, then reconnect. `error` is what the sidecar should say while detached. */
 class Detach extends Error {
   constructor(readonly why: "stream_end" | "protocol" | "unreachable" | "unauthorized", readonly error?: PdaRunnerErrorCode) { super(why); }
@@ -215,6 +220,11 @@ export class PdaRunner {
   private everAttached = false;
   private unknownEvents = 0;
   private aliveTimer: ReturnType<typeof setInterval> | undefined;
+  /** OF-89: the held code the daemon was last told about, and when; null when the daemon was told nothing or was told
+   *  the hold ended. In memory only: a new runner re-reports a hold it finds in the outbox log. */
+  private heldReported: { code: PdaHeldCode; at: number } | null = null;
+  /** Other activity was posted after the held report, which on its own means running, idle or unknown. */
+  private heldReportOverwritten = false;
 
   /** Streamed assistant text is in progress (some deltas were printed and no message_end has closed them). */
   private streaming = false;
@@ -957,7 +967,30 @@ export class PdaRunner {
 
   // ── Activity ──
 
+  /** OF-89: keep the daemon's view of the seat in step with the outbox's held head. A hold is reported as
+   *  `Notification/<held code>` (needs_input for a pda seat); it is re-reported after any other activity post, which
+   *  would otherwise replace it, and before the daemon's 5 minute freshness window lapses. The end of a hold posts what
+   *  the seat is doing (`active` or `Stop`, subtype `held_cleared`). Runs before the sidecar is written, so a reader
+   *  that sees the hold in the sidecar can already see it in the activity. */
+  private syncHeldActivity(held: PdaRunnerState["held"] | null | undefined): void {
+    const reported = this.heldReported;
+    if (held) {
+      const due = reported === null || reported.code !== held.code || this.heldReportOverwritten
+        || this.now().getTime() - reported.at >= HELD_REASSERT_MS;
+      if (!due) return;
+      this.heldReported = { code: held.code, at: this.now().getTime() };
+      this.postActivity("Notification", held.code);
+      this.heldReportOverwritten = false;
+      return;
+    }
+    if (reported === null) return;
+    this.heldReported = null;
+    this.heldReportOverwritten = false;
+    this.postActivity(this.busy ? "active" : "Stop", "held_cleared");
+  }
+
   private postActivity(hookEvent: string, subtype: string | null): void {
+    if (this.heldReported !== null && subtype !== this.heldReported.code) this.heldReportOverwritten = true;
     const safeSubtype = subtype === null ? null : sanitizeForPane(subtype).slice(0, 64);
     try {
       this.deps.postActivity({
@@ -987,6 +1020,7 @@ export class PdaRunner {
 
   private writeSidecar(): void {
     const snap = this.deps.outbox.snapshot();
+    this.syncHeldActivity(snap.held);
     const at = this.stamp();
     const error = this.error ?? (snap.setAside > 0 ? { code: "pda_outbox_binding_mismatch" as const, at } : null);
     const state: PdaRunnerState = {
