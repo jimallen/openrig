@@ -27,6 +27,7 @@ import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
+import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
 import {
   piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState,
@@ -181,8 +182,8 @@ export interface RunnerIo {
   /** Terminate OMP when get_state cannot establish a resumable seat. */
   stopChild?(): void;
   /** OPR.0.7.0.2 (only with --usage-facts): POST usage facts from persisted entries to the daemon. Best-effort;
-   *  resolves true only when the daemon accepted them. */
-  postUsageFacts?(payload: Record<string, unknown>): Promise<boolean | { charged: string[] }>;
+   *  resolves true only when the daemon accepted them, `{ refused }` (the daemon's code) when it answered 413. */
+  postUsageFacts?(payload: Record<string, unknown>): Promise<boolean | { charged: string[] } | { refused: string }>;
   /** OPR.0.7.0.2 K4 (only with --openrouter-charge): queue OpenRouter charge lookups for facts the daemon stored;
    *  `charged` already have a charge there. */
   enqueueChargeLookups?(piSessionId: string, items: Array<{ fact: PiUsageFact; provenance: ChargeProvenance }>, charged: ReadonlySet<string>): void;
@@ -193,6 +194,30 @@ export interface RunnerIo {
   /** The entry ids of a complete, valid Pi session file (a fork's parent); null when it isn't one. Never blocks. */
   readSessionEntryIds?(path: string): Promise<ReadonlySet<string> | null>;
   now(): string;
+}
+
+/** The `code` of a daemon refusal body (usage_facts_too_many, usage_body_too_large), or "http_413" when it has none. */
+async function refusalCode(res: Response): Promise<string> {
+  const body = await res.json().catch(() => null) as { code?: unknown } | null;
+  return typeof body?.code === "string" ? body.code : "http_413";
+}
+
+/** What a /pi-usage reply means to the runner: `{ refused }` for a 413 (given up, never resent), false for any other
+ *  failure (resent on the next refresh), else the entries the daemon already has a charge for. */
+export async function interpretUsageFactsReply(res: Response): Promise<false | { charged: string[] } | { refused: string }> {
+  if (res.status === 413) return { refused: await refusalCode(res) };
+  if (!res.ok) return false;
+  const reply = await res.json().catch(() => null) as { charged?: unknown } | null;
+  return { charged: Array.isArray(reply?.charged) ? reply.charged.filter((id): id is string => typeof id === "string") : [] };
+}
+
+/** What a /pi-usage-charges reply means to the charge lookup: `{ refused }` for a 413, false for any other failure,
+ *  else the entry ids the daemon acknowledged storing. */
+export async function interpretChargesReply(res: Response): Promise<ReadonlySet<string> | false | { refused: string }> {
+  if (res.status === 413) return { refused: await refusalCode(res) };
+  if (!res.ok) return false;
+  const reply = await res.json().catch(() => null) as { acknowledged?: unknown } | null;
+  return new Set(Array.isArray(reply?.acknowledged) ? reply.acknowledged.filter((id): id is string => typeof id === "string") : []);
 }
 
 const GET_STATE_ID = "pi-runner-get-state";
@@ -488,29 +513,50 @@ export class RunnerCore {
     }
     const fresh = facts.filter((fact) => !this.postedUsageEntryIds.has(fact.entryId));
     if (fresh.length === 0 && malformed === 0) return;
-    void this.io.postUsageFacts({
-      sessionName: this.identity.sessionName,
-      nodeId: this.identity.nodeId,
-      generation: this.identity.generation,
-      piSessionId: this.sessionId,
-      sessionCreatedAt: this.usageBoundary?.createdAt ?? null,
-      forked: this.usageBoundary ? this.usageBoundary.parentSession !== null : null,
-      facts: fresh,
-      malformed,
-      ...(this.opts.openRouterCharge ? { wantCharged: true } : {}),
-    }).then((result) => {
+    void this.postFreshUsageFacts(fresh, malformed);
+  }
+
+  /** OF-90: post the fresh facts in chunks the daemon accepts (at most USAGE_MAX_FACTS and USAGE_CHUNK_BODY_BYTES), in
+   *  order, one chunk at a time. A chunk the daemon refuses with a 413 is given up with a logged code, never resent:
+   *  resending the same chunk would be refused the same way on every refresh, forever. */
+  private async postFreshUsageFacts(fresh: PiUsageFact[], malformed: number): Promise<void> {
+    const post = this.io.postUsageFacts;
+    if (!post) return;
+    const chunks = fresh.length > 0 ? chunkUsagePost(fresh) : [[] as PiUsageFact[]];
+    for (const [index, chunk] of chunks.entries()) {
+      let result: boolean | { charged: string[] } | { refused: string };
+      try {
+        result = await post.call(this.io, {
+          sessionName: this.identity.sessionName,
+          nodeId: this.identity.nodeId,
+          generation: this.identity.generation,
+          piSessionId: this.sessionId,
+          sessionCreatedAt: this.usageBoundary?.createdAt ?? null,
+          forked: this.usageBoundary ? this.usageBoundary.parentSession !== null : null,
+          facts: chunk,
+          malformed: index === 0 ? malformed : 0,
+          ...(this.opts.openRouterCharge ? { wantCharged: true } : {}),
+        });
+      } catch {
+        return; // best-effort: resent on the next refresh
+      }
       // Only a stored fact with a known origin is done: a failed post, or an origin not settled yet (no readable
       // header, or a tie with an unreadable parent), is sent again with the next refresh (the store upgrades an
-      // unknown origin once it is known).
+      // unknown origin once it is known). The chunks after a failed one wait for that refresh too.
       if (result === false) return;
-      for (const fact of fresh) if (fact.origin !== "unknown") this.postedUsageEntryIds.add(fact.entryId);
+      if (typeof result === "object" && "refused" in result) {
+        for (const fact of chunk) this.postedUsageEntryIds.add(fact.entryId);
+        this.io.mirrorLine(`[pi-runner] usage facts refused: code=${result.refused} count=${chunk.length}; not retried`);
+        continue;
+      }
+      for (const fact of chunk) if (fact.origin !== "unknown") this.postedUsageEntryIds.add(fact.entryId);
       // K4: the charge is looked up only for facts the daemon has stored, never for one it already has.
       if (this.opts.openRouterCharge && this.sessionId && this.io.enqueueChargeLookups) {
-        this.io.enqueueChargeLookups(this.sessionId, fresh.map((fact) => ({
+        this.io.enqueueChargeLookups(this.sessionId, chunk.map((fact) => ({
           fact, provenance: this.chargeProvenance.get(fact.entryId) ?? { ok: false, reason: "its credential wasn't observed" },
         })), new Set(typeof result === "object" ? result.charged : []));
       }
-    }, () => { /* best-effort: resent on the next refresh */ });
+    }
   }
 
   private raiseAttention(subtype: "runtime_error" | "permission_prompt"): void {
@@ -948,11 +994,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         headers: { "content-type": "application/json", authorization: `Bearer ${endpoint.token}` },
         body: JSON.stringify({ sessionName: args.sessionName, nodeId: process.env.OPENRIG_NODE_ID, piSessionId, charges }),
         signal: controller.signal,
-      }).then(async (res) => {
-        if (!res.ok) return false as const;
-        const reply = await res.json().catch(() => null) as { acknowledged?: unknown } | null;
-        return new Set(Array.isArray(reply?.acknowledged) ? reply.acknowledged.filter((id): id is string => typeof id === "string") : []);
-      }, () => false as const).finally(() => clearTimeout(timeout));
+      }).then(interpretChargesReply, () => false as const).finally(() => clearTimeout(timeout));
     },
     schedule: (fn, ms) => { setTimeout(fn, ms).unref(); },
     notice: (line) => { process.stdout.write(`${line}\n`); },
@@ -1002,11 +1044,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         headers: { "content-type": "application/json", authorization: `Bearer ${endpoint.token}` },
         body: JSON.stringify(payload),
         signal: controller.signal,
-      }).then(async (res) => {
-        if (!res.ok) return false;
-        const reply = await res.json().catch(() => null) as { charged?: unknown } | null;
-        return { charged: Array.isArray(reply?.charged) ? reply.charged.filter((id): id is string => typeof id === "string") : [] };
-      }, () => false /* best-effort: a later refresh re-sends what wasn't stored */).finally(() => clearTimeout(timeout));
+      }).then(interpretUsageFactsReply, () => false /* best-effort: a later refresh re-sends what wasn't stored */).finally(() => clearTimeout(timeout));
     },
     ...(args.openRouterCharge === true && runtime === "pi" ? {
       enqueueChargeLookups: (piSessionId: string, items: Array<{ fact: PiUsageFact; provenance: ChargeProvenance }>, charged: ReadonlySet<string>) =>

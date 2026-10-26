@@ -15,6 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
+import { USAGE_MAX_BODY_BYTES,USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
 import { parsePdaUsageFact } from "../adapters/pda-runner-protocol.js";
@@ -65,13 +66,6 @@ function nextHookSeq(key: string): number {
 }
 
 export const activityRoutes = new Hono();
-
-/** OF-90: the most facts (or charges) one usage post may carry, and the most bytes its body may hold. A holder of the
- *  local hook token could otherwise post 100k facts (~0.55s of event loop, review-pda-l2c) and grow the table without
- *  bound. The limits sit well above the legitimate posters: the pda sink holds at most 2000 pending facts per post
- *  (PDA_USAGE_PENDING_MAX), and a Pi runner posts one session's unposted facts per refresh. */
-const USAGE_MAX_FACTS = 5000;
-const USAGE_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /** The JSON object body of a usage post, read with a byte ceiling (the stream is cut off at the ceiling, so an
  *  oversize or chunked body is never buffered whole). Run after the token check, so only a token holder reaches it. */
