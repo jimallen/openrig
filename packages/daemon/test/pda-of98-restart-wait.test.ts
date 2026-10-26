@@ -149,6 +149,18 @@ describe("(a) launchHarness waits, bounded, for the seat's previous runner to fi
     expect(garbage.log[0]).toBe("typed");
   });
 
+  it("a launch refused by the wait releases the binding claim it took (unit 2's reservation): failed() once, launched() never", async () => {
+    writeLock();
+    const calls: string[] = [];
+    const { adapter } = adapterWith({
+      pidAlive: () => true,
+      reserveBinding: () => ({ ok: true as const, reservation: { launched: () => { calls.push("launched"); }, failed: () => { calls.push("failed"); } } }),
+    });
+    const result = await adapter.launchHarness(binding(), { name: "x" });
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual(["failed"]);
+  });
+
   it("a launch refused for another reason (no binding) never reads the lock", async () => {
     writeLock();
     const { adapter, log } = adapterWith({ pidAlive: () => true });
