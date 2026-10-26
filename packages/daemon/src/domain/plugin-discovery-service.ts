@@ -32,6 +32,7 @@
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { checkGuardedFile, SPEC_FILE_KIND } from "./culture-file-guard.js";
 
 export type PluginRuntime = "claude" | "codex";
 // Slice 3.3 fix-C — `rig-cwd` source per DESIGN §5.4 union (4th category):
@@ -756,12 +757,11 @@ function walkAgentYamls(rootDir: string): AgentYamlCandidate[] {
         continue;
       }
       if (entry === "agent.yaml" || entry === "agent.yml") {
-        try {
-          const content = readFileSync(p, "utf8");
-          out.push({ path: p, content });
-        } catch {
-          // best-effort; skip unreadable files
-        }
+        // Guarded read (OF-16): a FIFO, device, oversize file or hard link named agent.yaml in a scanned
+        // root is skipped and logged, never read plain (a FIFO would block the scan forever).
+        const checked = checkGuardedFile(SPEC_FILE_KIND, p, p);
+        if (checked.ok) out.push({ path: p, content: checked.content });
+        else console.warn(`[openrig] plugin discovery skipped ${p}: ${checked.message}`);
       }
     }
   }
