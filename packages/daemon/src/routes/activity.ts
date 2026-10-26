@@ -15,6 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
+import { USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
 import { parsePdaUsageFact } from "../adapters/pda-runner-protocol.js";
@@ -66,6 +67,43 @@ function nextHookSeq(key: string): number {
 
 export const activityRoutes = new Hono();
 
+/** The JSON object body of a usage post, read with a byte ceiling (the stream is cut off at the ceiling, so an
+ *  oversize or chunked body is never buffered whole). Run after the token check, so only a token holder reaches it. */
+async function readUsageBody(c: Context, what: string, notObjectCode: "invalid_pi_usage" | "invalid_pda_usage"): Promise<{ body: Record<string, unknown> } | { error: Response }> {
+  const tooLarge = () => ({ error: c.json({ ok: false, code: "usage_body_too_large", error: `${what} bodies are limited to ${USAGE_MAX_BODY_BYTES} bytes.` }, 413) });
+  const declared = Number(c.req.header("content-length"));
+  if (Number.isFinite(declared) && declared > USAGE_MAX_BODY_BYTES) return tooLarge();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = c.req.raw.body?.getReader();
+  if (reader) {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > USAGE_MAX_BODY_BYTES) { await reader.cancel().catch(() => undefined); return tooLarge(); }
+      chunks.push(value);
+    }
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return { error: c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400) };
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { error: c.json({ ok: false, code: notObjectCode, error: `${what} require a JSON object` }, 400) };
+  }
+  return { body: body as Record<string, unknown> };
+}
+
+/** OF-90: 413 for a list of facts or charges longer than USAGE_MAX_FACTS; null when it fits. */
+function usageListTooLong(c: Context, list: unknown[], what: string): Response | null {
+  return list.length > USAGE_MAX_FACTS
+    ? c.json({ ok: false, code: "usage_facts_too_many", error: `${what} are limited to ${USAGE_MAX_FACTS} per post.` }, 413)
+    : null;
+}
+
 /** The shared front of the Pi usage routes: configuration, the local hook token, a JSON object body, and the
  *  managed Pi seat it names. Returns the response to send on any failure. */
 async function piUsageRequest(c: Context, what: string, needs: (db: SessionRegistry["db"]) => boolean):
@@ -81,15 +119,9 @@ async function piUsageRequest(c: Context, what: string, needs: (db: SessionRegis
   if (bearerToken !== expectedToken && (c.req.header("x-openrig-activity-token") ?? null) !== expectedToken) {
     return { error: c.json({ ok: false, code: "activity_hook_unauthorized", error: `${what} require the configured local hook token.` }, 401) };
   }
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json() as Record<string, unknown>;
-  } catch {
-    return { error: c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400) };
-  }
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return { error: c.json({ ok: false, code: "invalid_pi_usage", error: `${what} require a JSON object` }, 400) };
-  }
+  const read = await readUsageBody(c, what, "invalid_pi_usage");
+  if ("error" in read) return read;
+  const body = read.body;
   const sessionName = stringOrNull(body.sessionName);
   const piSessionId = stringOrNull(body.piSessionId);
   if (!sessionName || !piSessionId) {
@@ -113,6 +145,8 @@ activityRoutes.post("/pi-usage", async (c) => {
   if (!Array.isArray(req.body.facts)) {
     return c.json({ ok: false, code: "invalid_pi_usage", error: "pi-usage requires sessionName, piSessionId and facts[]" }, 400);
   }
+  const tooMany = usageListTooLong(c, req.body.facts, "Pi usage facts");
+  if (tooMany) return tooMany;
   const facts = (req.body.facts as unknown[]).map(validPiUsageFact);
   const valid = facts.filter((fact): fact is NonNullable<typeof fact> => fact !== null);
   const store = new PiUsageEntriesStore(req.db);
@@ -133,6 +167,8 @@ activityRoutes.post("/pi-usage-charges", async (c) => {
   if (!Array.isArray(req.body.charges)) {
     return c.json({ ok: false, code: "invalid_pi_usage", error: "pi-usage-charges requires sessionName, piSessionId and charges[]" }, 400);
   }
+  const tooMany = usageListTooLong(c, req.body.charges, "Pi provider charges");
+  if (tooMany) return tooMany;
   const charges = (req.body.charges as unknown[]).map(validPiProviderCharge);
   const valid = charges.filter((charge): charge is NonNullable<typeof charge> => charge !== null);
   const result = new PiUsageEntriesStore(req.db).recordCharges(
@@ -168,15 +204,9 @@ activityRoutes.post("/pda-usage", async (c) => {
   if (!pdaCostFactsEnabled(c)) {
     return c.json({ ok: false, code: "pda_usage_disabled", error: "pda usage facts are off (usage.pda_cost_facts); nothing was stored." }, 503);
   }
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json() as Record<string, unknown>;
-  } catch {
-    return c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400);
-  }
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return c.json({ ok: false, code: "invalid_pda_usage", error: "pda usage facts require a JSON object" }, 400);
-  }
+  const read = await readUsageBody(c, "pda usage facts", "invalid_pda_usage");
+  if ("error" in read) return read.error;
+  const body = read.body;
   const sessionName = stringOrNull(body.sessionName);
   const agent = stringOrNull(body.agent);
   if (!sessionName || !agent || !Array.isArray(body.facts)) {
@@ -186,6 +216,8 @@ activityRoutes.post("/pda-usage", async (c) => {
   if (!seat || seat.runtime !== "pda") {
     return c.json({ ok: false, code: "session_not_found", error: `No managed pda seat named ${sessionName}` }, 404);
   }
+  const tooMany = usageListTooLong(c, body.facts as unknown[], "pda usage facts");
+  if (tooMany) return tooMany;
   const facts = (body.facts as unknown[]).map(parsePdaUsageFact);
   const valid = facts.filter((fact): fact is NonNullable<typeof fact> => fact !== null);
   const result = new PdaUsageEntriesStore(sessionRegistry.db).record({
@@ -283,6 +315,9 @@ activityRoutes.post("/hooks", async (c) => {
       if (sessionName !== resolved.sessionName) {
         return c.json({ ok: false, code: "session_not_found", tokenPersisted: false, error: "Session identity does not match the managed seat." }, 404);
       }
+      // OF-97: since the OF-91 check above, a non-null `runtime` here already equals `resolved.runtime` (an exact,
+      // case- and whitespace-sensitive compare), so this refuses only the remaining case: a hook that names NO
+      // runtime (null) against an OMP seat. OMP identity must be claimed, never inferred. Do not remove it as dead.
       if (runtime !== resolved.runtime) {
         return c.json({ ok: false, code: "runtime_mismatch", tokenPersisted: false, error: "Session identity runtime does not match the managed seat." }, 409);
       }

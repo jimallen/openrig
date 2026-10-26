@@ -15,6 +15,7 @@
 // another lookup. Work never waits on any of this.
 import { OPENROUTER_GENERATION_URL, openRouterChargeTarget, parseOpenRouterGeneration, type PiProviderCharge } from "../domain/openrouter-charge.js";
 import type { PiUsageFact } from "../domain/pi-usage-facts.js";
+import { chunkUsagePost } from "../domain/usage-post-limits.js";
 
 /** Whether a request's credential is established (from pi-readiness judgeChargeProvenance). */
 export type ChargeProvenance = { ok: true; credentialSource: string } | { ok: false; reason: string };
@@ -29,7 +30,7 @@ export interface ChargeLookupIo {
   /** GET /api/v1/generation?id=… with the forwarded key. Never throws. */
   fetchGeneration(generationId: string): Promise<GenerationReply>;
   /** POST the outcomes to the daemon; the entry ids it stored or already had (false when the post failed). */
-  postCharges(piSessionId: string, charges: PiProviderCharge[]): Promise<ReadonlySet<string> | false>;
+  postCharges(piSessionId: string, charges: PiProviderCharge[]): Promise<ReadonlySet<string> | false | { refused: string }>;
   schedule(fn: () => void, ms: number): void;
   /** A line for the seat's pane (an outcome the daemon kept refusing). */
   notice?(line: string): void;
@@ -161,9 +162,16 @@ export class OpenRouterChargeLookup {
   private async flush(): Promise<void> {
     const bySession = new Map<string, Unposted[]>();
     for (const item of this.unposted.values()) bySession.set(item.piSessionId, [...(bySession.get(item.piSessionId) ?? []), item]);
-    for (const [piSessionId, items] of bySession) {
-      let acknowledged: ReadonlySet<string> | false = false;
+    for (const [piSessionId, sessionItems] of bySession) for (const items of chunkUsagePost(sessionItems)) {
+      // OF-90: a post carries at most USAGE_MAX_FACTS charges within the daemon's byte cap (chunkUsagePost); a chunk
+      // the daemon still refuses with a 413 is given up at once with its code, never posted again.
+      let acknowledged: ReadonlySet<string> | false | { refused: string } = false;
       try { acknowledged = await this.io.postCharges(piSessionId, items.map((item) => item.charge)); } catch { acknowledged = false; }
+      if (acknowledged && "refused" in acknowledged) {
+        for (const item of items) this.unposted.delete(`${piSessionId}\u0000${item.charge.entryId}`);
+        this.io.notice?.(`[pi-runner] OpenRouter charge outcomes refused: code=${acknowledged.refused} count=${items.length}; not retried`);
+        continue;
+      }
       for (const item of items) {
         const key = `${piSessionId}\u0000${item.charge.entryId}`;
         if (acknowledged && acknowledged.has(item.charge.entryId)) { this.unposted.delete(key); continue; }
