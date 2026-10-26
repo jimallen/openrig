@@ -58,6 +58,11 @@ export type ResolveResult =
   | { ok: false; code: "cycle_detected"; error: string }
   | { ok: false; code: "ref_refused"; error: string };
 
+/** The real location of a folder (itself when it cannot be resolved): identity for cycle detection, since a recorded path may run through a symlink. */
+function realOrSame(fsOps: AgentResolverFsOps, p: string): string {
+  try { return fsOps.realpath ? fsOps.realpath(p) : p; } catch { return p; }
+}
+
 // -- Resource category keys --
 
 const RESOURCE_CATEGORIES: (keyof AgentResources)[] = [
@@ -90,7 +95,7 @@ export function resolveAgentRef(
   if (!baseResult.ok) return baseResult;
 
   // Resolve flat imports — import local: refs resolve relative to the base spec's directory
-  return resolveWithImports(baseResult.resolved, baseResult.resolved.sourcePath, fsOps, new Set([baseResult.resolved.sourcePath]), target.importRoot);
+  return resolveWithImports(baseResult.resolved, baseResult.resolved.sourcePath, fsOps, new Set([realOrSame(fsOps, baseResult.resolved.sourcePath)]), target.importRoot);
 }
 
 /**
@@ -104,7 +109,7 @@ export function resolveImports(
   resolved: ResolvedAgentSpec,
   fsOps: AgentResolverFsOps,
 ): ResolveResult {
-  return resolveWithImports(resolved, resolved.sourcePath, fsOps, new Set([resolved.sourcePath]));
+  return resolveWithImports(resolved, resolved.sourcePath, fsOps, new Set([realOrSame(fsOps, resolved.sourcePath)]));
 }
 
 /**
@@ -240,7 +245,7 @@ function resolveWithImports(
     const importDir = importTarget.dir;
 
     // Cycle detection
-    if (visitedPaths.has(importDir)) {
+    if (visitedPaths.has(realOrSame(fsOps, importDir))) {
       return { ok: false, code: "cycle_detected", error: `Import cycle detected: "${imp.ref}" resolves to already-visited path ${importDir}` };
     }
 

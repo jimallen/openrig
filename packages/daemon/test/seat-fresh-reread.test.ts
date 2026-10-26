@@ -367,7 +367,7 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(!cli.ok && "guidance" in cli && cli.guidance).toBe("Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.");
   });
 
-  it("control: an agent folder linked to a sibling inside the spec tree is accepted", async () => {
+  it("control: an agent folder linked to a sibling inside the spec tree is accepted (and recorded as typed, OF-99)", async () => {
     const seat = await launchRig();
     retarget("bbbbbbb");
     const inside = path.join(releaseB, "agents", "impl-real");
@@ -375,9 +375,10 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     fs.symlinkSync(inside, path.join(releaseB, "agents", "impl"));
     const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "inside link" });
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    // As at first launch, the agent is resolved through the guard's realpath: the saved role file names the real folder.
+    // OF-99: the agent is CONFINED by the guard's realpath but recorded as typed: the saved role file names the link, so a
+    // later retarget of that link is followed on the next replay.
     const role = storedFiles(seat.node.id).find((f) => f.path === "guidance/role.md")!;
-    expect(role.absolutePath).toBe(path.join(inside, "guidance", "role.md"));
+    expect(role.absolutePath).toBe(path.join(releaseB, "agents", "impl", "guidance", "role.md"));
   });
 
   // N1: a launch that fails leaves the saved context (what --startup-from stored and restore replay) as it was.

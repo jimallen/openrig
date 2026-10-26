@@ -121,12 +121,28 @@ describe("local: refs stay inside their spec tree", () => {
     refusedWith(resolveAgentRef("local:agents/impl", rig, realFs), "import_error", /outside/);
   });
 
-  it("X22: a local: ref that goes through an in-tree symlink resolves to the REAL persona folder", () => {
+  it("X22 (OF-99): a local: ref that goes through an in-tree symlink is recorded as typed, and still confined by its real location", () => {
     persona(nodePath.join(root, "rig", "agents", "impl"), "impl");
     fs.symlinkSync(nodePath.join(root, "rig", "agents", "impl"), nodePath.join(root, "rig", "agents", "alias"));
     const r = resolveAgentRef("local:agents/alias", nodePath.join(root, "rig"), realFs);
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(root, "rig", "agents", "impl"));
+    if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(root, "rig", "agents", "alias"));
+  });
+
+  it("X23 (OF-99): a typed form that would name a DIFFERENT folder than the real one is not used: the real folder is recorded", () => {
+    // lib/team -> tree/rigs/team. `local:../../agents/engineer` from the typed lib/team is lib/../agents = root/agents/engineer
+    // (a decoy), but relative to the real location it is tree/agents/engineer, which is what resolves.
+    persona(nodePath.join(root, "tree", "agents", "engineer"), "engineer");
+    persona(nodePath.join(root, "agents", "engineer"), "decoy");
+    fs.mkdirSync(nodePath.join(root, "tree", "rigs", "team"), { recursive: true });
+    fs.mkdirSync(nodePath.join(root, "lib"));
+    fs.symlinkSync(nodePath.join(root, "tree", "rigs", "team"), nodePath.join(root, "lib", "team"));
+    const r = resolveAgentRef("local:../../agents/engineer", nodePath.join(root, "lib", "team"), realFs);
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (r.ok) {
+      expect(r.resolved.spec.name).toBe("engineer");
+      expect(r.resolved.sourcePath).toBe(nodePath.join(root, "tree", "agents", "engineer"));
+    }
   });
 
   it("POSITIVE (release layout through a symlinked rig folder): refs are relative to the REAL location", () => {
@@ -168,7 +184,7 @@ describe("local: refs stay inside their spec tree", () => {
   });
 });
 
-describe("path: refs are normalised and realpath'd, with no allowlist", () => {
+describe("path: refs are normalised, checked by realpath and recorded as typed, with no allowlist", () => {
   it("P1: .. segments are normalised away (path:/a/../../b style) and the persona is found at the normalised place", () => {
     persona(nodePath.join(root, "b"), "b");
     fs.mkdirSync(nodePath.join(root, "a", "deep"), { recursive: true });
@@ -177,12 +193,45 @@ describe("path: refs are normalised and realpath'd, with no allowlist", () => {
     if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(root, "b"));
   });
 
-  it("P2: a symlinked persona folder is realpath'd, so a later retarget cannot change what was resolved", () => {
+  it("P2 (OF-99): a symlinked persona folder is CHECKED by its realpath but RECORDED as typed, so a later retarget is followed", () => {
     persona(nodePath.join(root, "real"), "real");
+    persona(nodePath.join(root, "real2"), "real2");
     fs.symlinkSync(nodePath.join(root, "real"), nodePath.join(root, "link"));
-    const r = resolveAgentRef(`path:${root}/link`, "/unused", realFs);
+    const first = resolveAgentRef(`path:${root}/link`, "/unused", realFs);
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (first.ok) { expect(first.resolved.sourcePath).toBe(nodePath.join(root, "link")); expect(first.resolved.spec.name).toBe("real"); }
+    fs.unlinkSync(nodePath.join(root, "link"));
+    fs.symlinkSync(nodePath.join(root, "real2"), nodePath.join(root, "link"));
+    const second = resolveAgentRef(`path:${root}/link`, "/unused", realFs);
+    expect(second.ok, JSON.stringify(second)).toBe(true);
+    if (second.ok) { expect(second.resolved.sourcePath).toBe(nodePath.join(root, "link")); expect(second.resolved.spec.name).toBe("real2"); }
+  });
+
+  it("P2b (OF-99): a persona reached through a symlink imports local: siblings recorded as typed too (the release's shared persona follows `current`)", () => {
+    persona(nodePath.join(root, "rel1", "agents", "lead"), "lead", ["local:../shared"]);
+    persona(nodePath.join(root, "rel1", "agents", "shared"), "shared");
+    fs.mkdirSync(nodePath.join(root, "rel1", "rigs"));
+    fs.symlinkSync(nodePath.join(root, "rel1"), nodePath.join(root, "current"));
+    const r = resolveAgentRef(`path:${root}/current/agents/lead`, "/unused", realFs);
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    if (r.ok) expect(r.resolved.sourcePath).toBe(nodePath.join(root, "real"));
+    if (r.ok) {
+      expect(r.resolved.sourcePath).toBe(nodePath.join(root, "current", "agents", "lead"));
+      expect(r.imports.map((i) => i.sourcePath)).toEqual([nodePath.join(root, "current", "agents", "shared")]);
+    }
+  });
+
+  it("P2c (OF-99): an import cycle through a symlinked alias of the base persona is still detected by real location", () => {
+    persona(nodePath.join(root, "real"), "real", ["path:" + nodePath.join(root, "alias")]);
+    fs.symlinkSync(nodePath.join(root, "real"), nodePath.join(root, "alias"));
+    const r = resolveAgentRef(`path:${root}/real`, "/unused", realFs);
+    refusedWith(r, "cycle_detected", /already-visited/);
+  });
+
+  it("P2d (OF-99): a base persona reached through a symlink that imports its own real folder is a cycle (identity is the real location)", () => {
+    persona(nodePath.join(root, "real"), "real", ["path:" + nodePath.join(root, "real")]);
+    fs.symlinkSync(nodePath.join(root, "real"), nodePath.join(root, "alias"));
+    const r = resolveAgentRef(`path:${root}/alias`, "/unused", realFs);
+    refusedWith(r, "cycle_detected", /already-visited/);
   });
 
   it("P3: NO allowlist: an absolute path outside the rig resolves (the daemon caller is trusted)", () => {
