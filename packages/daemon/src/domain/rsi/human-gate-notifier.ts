@@ -68,7 +68,8 @@ export interface NotificationStore {
   deleteBannersBefore(cutoff: string): void;
 }
 
-export type BannerSpawner = (command: string, args: string[]) => Promise<{ ok: boolean }>;
+/** `exitCode` is the child's exit code; null when it never exited normally (spawn error, timeout kill, signal). */
+export type BannerSpawner = (command: string, args: string[]) => Promise<{ ok: boolean; exitCode?: number | null }>;
 
 export type NotifierTickResult =
   | { status: "noop-platform" }
@@ -238,13 +239,22 @@ export class HumanGateNotifier {
     // New entries lead over reminders, so the named item is the one that just arrived.
     const lead = pending.find((p) => !byKey.has(episodeKey(p))) ?? pending[0]!;
     const message = composeBannerMessage(waiting, lead);
-    const { command, args } = bannerCommand(this.deps.findExecutable("terminal-notifier"), NOTIFICATION_TITLE, message);
-    const result = await this.deps.spawner(command, args);
+    const terminalNotifier = this.deps.findExecutable("terminal-notifier");
+    let { command, args } = bannerCommand(terminalNotifier, NOTIFICATION_TITLE, message);
+    let result = await this.deps.spawner(command, args);
+    if (!result.ok && terminalNotifier) {
+      // OF-83: terminal-notifier can be installed yet unable to post (exit 3: notifications are off for
+      // fr.julienxx.oss.terminal-notifier). osascript posts under a different app identity, so try it once
+      // before giving up. The exit code is the one number that tells an operator why the first attempt failed.
+      this.log(`[rsi-notifier] terminal-notifier banner failed exit=${result.exitCode ?? "none"}; falling back to osascript`);
+      ({ command, args } = bannerCommand(null, NOTIFICATION_TITLE, message));
+      result = await this.deps.spawner(command, args);
+    }
     this.lastResult = { at: nowIso, command: path.basename(command), ok: result.ok };
     this.deps.store.recordBanner({ sentAt: nowIso, itemCount: pending.length, ok: result.ok });
     this.deps.store.deleteBannersBefore(new Date(dayAgo).toISOString());
     if (!result.ok) {
-      this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)}`);
+      this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)} exit=${result.exitCode ?? "none"}`);
       // The items stay unnotified: they are retried after the gap.
       return { status: "failed", waiting: waiting.length, command: path.basename(command) };
     }
@@ -306,13 +316,13 @@ export function sqliteNotificationStore(db: Database.Database): NotificationStor
 export const defaultBannerSpawner: BannerSpawner = (command, args) =>
   new Promise((resolve) => {
     let settled = false;
-    const done = (ok: boolean) => { if (!settled) { settled = true; resolve({ ok }); } };
+    const done = (ok: boolean, exitCode: number | null = null) => { if (!settled) { settled = true; resolve({ ok, exitCode }); } };
     try {
       const child = spawn(command, args, { stdio: "ignore", shell: false });
       const timer = setTimeout(() => { child.kill(); done(false); }, SPAWN_TIMEOUT_MS);
       timer.unref?.();
       child.on("error", () => { clearTimeout(timer); done(false); });
-      child.on("exit", (code) => { clearTimeout(timer); done(code === 0); });
+      child.on("exit", (code) => { clearTimeout(timer); done(code === 0, code); });
     } catch {
       done(false);
     }

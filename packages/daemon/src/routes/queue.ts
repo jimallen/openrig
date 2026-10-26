@@ -1220,6 +1220,7 @@ export function queueRoutes(): Hono {
       tags: body.tags,
       urgency: body.urgency,
       auditPointer: body.auditPointer,
+      origin: "manual-record", // OF-77: daemon-written, so RSI D8 can tell audit rows from send rows
       identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
     });
     return c.json(entry, 201);

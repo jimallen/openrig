@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDaemon } from "../src/startup.js";
 import { isSettingsValidKey } from "../src/domain/user-settings/settings-store.js";
 import {
+  defaultBannerSpawner,
   defaultFindExecutable,
   HumanGateNotifier,
   MAX_BANNERS_PER_DAY,
@@ -81,12 +82,12 @@ interface Harness {
   notifier: HumanGateNotifier;
 }
 
-function harness(opts: { platform?: NodeJS.Platform; terminalNotifier?: string | null; spawnOk?: boolean; db?: Database.Database; now?: { ms: number } } = {}): Harness {
+function harness(opts: { platform?: NodeJS.Platform; terminalNotifier?: string | null; spawnOk?: boolean; spawn?: (command: string) => { ok: boolean; exitCode?: number | null }; db?: Database.Database; now?: { ms: number } } = {}): Harness {
   const db = opts.db ?? freshDb();
   const now = opts.now ?? { ms: T0 };
   const calls: Array<{ command: string; args: string[] }> = [];
   const logs: string[] = [];
-  const spawner: BannerSpawner = async (command, args) => { calls.push({ command, args }); return { ok: opts.spawnOk ?? true }; };
+  const spawner: BannerSpawner = async (command, args) => { calls.push({ command, args }); return opts.spawn ? opts.spawn(command) : { ok: opts.spawnOk ?? true }; };
   const notifier = new HumanGateNotifier({
     listBlocked: sqliteBlockedRows(db),
     stewardSession: STEWARD,
@@ -265,7 +266,7 @@ describe("rate limits", () => {
       else expect(result.status).toBe("capped");
       h.now.ms += MIN_BANNER_GAP_MS;
     }
-    expect(h.calls).toHaveLength(MAX_BANNERS_PER_DAY);
+    expect(h.calls).toHaveLength(2 * MAX_BANNERS_PER_DAY); // each attempt tries terminal-notifier, then osascript
   });
 
   it("counts the cap from banner rows, so item-row churn cannot undercount it", async () => {
@@ -308,12 +309,14 @@ describe("rate limits", () => {
     const h = harness({ spawnOk: false });
     insertQueueRow(h.db, "q-a");
     expect((await h.notifier.tick()).status).toBe("failed");
-    expect(h.notifier.lastResult).toMatchObject({ ok: false, command: "terminal-notifier" });
+    // Both banner programs failed: terminal-notifier first, then the osascript fallback (OF-83).
+    expect(h.calls.map((c) => path.basename(c.command))).toEqual(["terminal-notifier", "osascript"]);
+    expect(h.notifier.lastResult).toMatchObject({ ok: false, command: "osascript" });
     expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications").get()).toEqual({ n: 0 });
     expect(h.db.prepare("SELECT sent_at, item_count, ok FROM rsi_notification_banners").all()).toEqual([{ sent_at: new Date(T0).toISOString(), item_count: 1, ok: 0 }]);
     h.now.ms += MIN;
     expect((await h.notifier.tick()).status).toBe("coalesced");
-    expect(h.calls).toHaveLength(1);
+    expect(h.calls).toHaveLength(2);
   });
 
   it("counts failed spawn attempts against the daily cap", async () => {
@@ -544,5 +547,81 @@ describe("daemon wiring", () => {
     const lines = error.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[rsi-notifier]"));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^\[rsi-notifier\] disabled: construction failed class=SqliteError$/);
+  });
+});
+
+// OF-83. HARD RULE: nothing here can post a real macOS notification. The notifier tests inject a spawner; the
+// default-spawner tests run stub scripts from a temp dir by absolute path, never terminal-notifier or osascript.
+describe("terminal-notifier that is installed but fails (OF-83)", () => {
+  const isTn = (command: string) => path.basename(command) === "terminal-notifier";
+
+  it("falls back to osascript on a nonzero exit, delivers the same message, and logs the exit code", async () => {
+    const h = harness({ spawn: (command) => (isTn(command) ? { ok: false, exitCode: 3 } : { ok: true, exitCode: 0 }) });
+    insertQueueRow(h.db, "q-a");
+    const result = await h.notifier.tick();
+    expect(result).toMatchObject({ status: "sent", command: "osascript", notified: [expect.stringMatching(/^q-a@/)] });
+    expect(h.calls.map((c) => c.command)).toEqual(["/opt/homebrew/bin/terminal-notifier", "/usr/bin/osascript"]);
+    expect(h.calls[1]!.args.slice(h.calls[1]!.args.indexOf("--") + 1)[0]).toBe(messageOf(h.calls[0]!));
+    expect(h.logs).toEqual(["[rsi-notifier] terminal-notifier banner failed exit=3; falling back to osascript"]);
+    expect(h.notifier.lastResult).toMatchObject({ ok: true, command: "osascript" });
+    // One banner attempt for the tick, however many programs it tried; the item is recorded as notified.
+    expect(h.db.prepare("SELECT item_count, ok FROM rsi_notification_banners").all()).toEqual([{ item_count: 1, ok: 1 }]);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications").get()).toEqual({ n: 1 });
+  });
+
+  it("derives the fallback from the failure, not from a fixed code: another code and a never-exited child both fall back", async () => {
+    for (const exitCode of [1, null] as const) {
+      const h = harness({ spawn: (command) => (isTn(command) ? { ok: false, exitCode } : { ok: true, exitCode: 0 }) });
+      insertQueueRow(h.db, "q-a");
+      expect((await h.notifier.tick()).status).toBe("sent");
+      expect(h.calls).toHaveLength(2);
+      expect(h.logs[0]).toBe(`[rsi-notifier] terminal-notifier banner failed exit=${exitCode ?? "none"}; falling back to osascript`);
+    }
+  });
+
+  it("does not fall back when terminal-notifier succeeded", async () => {
+    const h = harness({ spawn: () => ({ ok: true, exitCode: 0 }) });
+    insertQueueRow(h.db, "q-a");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(h.calls).toHaveLength(1);
+    expect(h.logs).toEqual([]);
+  });
+
+  it("reports failure with both exit codes when the fallback fails too, and the items stay unnotified", async () => {
+    const h = harness({ spawn: (command) => ({ ok: false, exitCode: isTn(command) ? 3 : 1 }) });
+    insertQueueRow(h.db, "q-a");
+    expect(await h.notifier.tick()).toMatchObject({ status: "failed", command: "osascript" });
+    expect(h.logs).toEqual([
+      "[rsi-notifier] terminal-notifier banner failed exit=3; falling back to osascript",
+      "[rsi-notifier] banner spawn failed command=osascript exit=1",
+    ]);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications").get()).toEqual({ n: 0 });
+    expect(h.db.prepare("SELECT ok FROM rsi_notification_banners").all()).toEqual([{ ok: 0 }]);
+  });
+
+  it("tries osascript only once when terminal-notifier is not installed, and logs its exit code on failure", async () => {
+    const h = harness({ terminalNotifier: null, spawn: () => ({ ok: false, exitCode: 1 }) });
+    insertQueueRow(h.db, "q-a");
+    expect((await h.notifier.tick()).status).toBe("failed");
+    expect(h.calls.map((c) => c.command)).toEqual(["/usr/bin/osascript"]);
+    expect(h.logs).toEqual(["[rsi-notifier] banner spawn failed command=osascript exit=1"]);
+  });
+});
+
+describe("defaultBannerSpawner reports the exit code (OF-83)", () => {
+  const stub = (name: string, body: string): string => {
+    const file = join(tempDir("rsi-notifier-stub-"), name);
+    writeFileSync(file, `#!/bin/sh\n${body}\n`);
+    chmodSync(file, 0o755);
+    return file;
+  };
+
+  it("returns the child's exit code: 0 is ok, 3 is not ok and says 3", async () => {
+    expect(await defaultBannerSpawner(stub("exit-zero", "exit 0"), [])).toEqual({ ok: true, exitCode: 0 });
+    expect(await defaultBannerSpawner(stub("exit-three", "exit 3"), [])).toEqual({ ok: false, exitCode: 3 });
+  });
+
+  it("returns a null exit code when the child cannot be started", async () => {
+    expect(await defaultBannerSpawner(join(tempDir("rsi-notifier-stub-"), "missing"), [])).toEqual({ ok: false, exitCode: null });
   });
 });

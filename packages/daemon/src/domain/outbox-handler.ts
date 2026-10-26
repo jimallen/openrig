@@ -87,6 +87,15 @@ interface OutboxEntryRow {
   retirement_reason?: string | null;
 }
 
+/**
+ * Daemon-written origin marker (OF-77, RSI D8). A row recorded through the manual audit route
+ * (`POST /outbox/record`) carries this tag; the send path never does, so the D8 "outbox never
+ * settles" detector can tell an audit row (which has no delivery to settle) from a send row.
+ * Callers cannot forge or fake it: `record` strips any caller-supplied copy of the tag and adds
+ * it only when the route passes `origin: "manual-record"`.
+ */
+export const OUTBOX_ORIGIN_MANUAL_RECORD_TAG = "origin:manual-record";
+
 export interface OutboxRecordInput {
   outboxId?: string;
   senderSession: string;
@@ -98,6 +107,8 @@ export interface OutboxRecordInput {
   /** P21 §4 era-stamp: the route passes `transport:v1` (senderSession derived from the transport
    *  header chokepoint). Written onto the outbox row; absence = claimed-era. */
   identityProvenance?: string | null;
+  /** Set only by the manual audit route; stamps OUTBOX_ORIGIN_MANUAL_RECORD_TAG onto the row. */
+  origin?: "manual-record";
 }
 
 export class OutboxHandlerError extends Error {
@@ -140,7 +151,9 @@ export class OutboxHandler {
     if (existing) return this.rowToEntry(existing);
 
     const ts = new Date().toISOString();
-    const tags = input.tags ? JSON.stringify(input.tags) : null;
+    const callerTags = input.tags?.filter((t) => t !== OUTBOX_ORIGIN_MANUAL_RECORD_TAG);
+    const stamped = input.origin === "manual-record" ? [...(callerTags ?? []), OUTBOX_ORIGIN_MANUAL_RECORD_TAG] : callerTags;
+    const tags = stamped ? JSON.stringify(stamped) : null;
     const urgency = input.urgency ?? "routine";
 
     if (this.hasIdentityProvenanceColumn) {

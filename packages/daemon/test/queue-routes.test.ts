@@ -493,6 +493,25 @@ describe("queue routes", () => {
     expect(row?.identity_provenance).toBe("transport:v1");
   });
 
+  it("outbox record — daemon stamps the manual-record origin marker (OF-77); a caller-supplied copy is not duplicated", async () => {
+    const res = await app.request("/api/queue/outbox/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "me@rig" },
+      body: JSON.stringify({ destinationSession: "you@rig", body: "audit row", tags: ["note", "origin:manual-record"] }),
+    });
+    expect(res.status).toBe(201);
+    const { outboxId } = (await res.json()) as { outboxId: string };
+    const row = db.prepare("SELECT tags FROM outbox_entries WHERE outbox_id = ?").get(outboxId) as { tags: string };
+    expect(JSON.parse(row.tags)).toEqual(["note", "origin:manual-record"]);
+    const bare = await app.request("/api/queue/outbox/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "me@rig" },
+      body: JSON.stringify({ destinationSession: "you@rig", body: "audit row without tags" }),
+    });
+    const bareId = ((await bare.json()) as { outboxId: string }).outboxId;
+    expect(JSON.parse((db.prepare("SELECT tags FROM outbox_entries WHERE outbox_id = ?").get(bareId) as { tags: string }).tags)).toEqual(["origin:manual-record"]);
+  });
+
   it("POST /api/queue/create creates a qitem", async () => {
     const res = await app.request("/api/queue/create", {
       method: "POST",
