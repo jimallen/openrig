@@ -200,13 +200,26 @@ export class EventBus {
       )
       .all(rigId, seq) as EventRow[];
 
-    return rows.map((row) => this.rowToPersistedEvent(row));
+    return this.readableEvents(rows);
   }
 
   replayAll(seq: number): PersistedEvent[] {
     const rows = this.rowsAfter(seq);
 
-    return rows.map((row) => this.rowToPersistedEvent(row));
+    return this.readableEvents(rows);
+  }
+
+  /** OF-51: replay serves the events it can read. A row whose payload is damaged is left out here (live delivery
+   *  records the same row as `event.delivery_poisoned`, see drainNotifyRowsToQuiescence) so one bad row never ends
+   *  the replay, the event stream or the history route for every other event. */
+  private readableEvents(rows: EventRow[]): PersistedEvent[] {
+    return rows.flatMap((row) => {
+      try {
+        return [this.rowToPersistedEvent(row)];
+      } catch {
+        return [];
+      }
+    });
   }
 
   private drainNotifyRowsToQuiescence(startAfter: number): void {

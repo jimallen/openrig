@@ -26,6 +26,7 @@ import { SettingsStore } from "./user-settings/settings-store.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister } from "./native-process-lineage.js";
+import { readStoredJsonObject } from "./stored-json.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
 const STARTUP_SUBMIT_CAPTURE_LINES = 200;
@@ -38,7 +39,9 @@ const STARTUP_SUBMIT_SETTLE_LOOKS = 25;
 export function hasPendingFreshStartup(db: Database.Database, nodeId: string, sessionId: string): boolean {
   const row = db.prepare("SELECT payload FROM events WHERE node_id = ? AND type IN ('node.startup_pending', 'node.startup_ready', 'node.startup_failed') ORDER BY seq DESC LIMIT 1").get(nodeId) as { payload: string } | undefined;
   if (!row) return false;
-  const event = JSON.parse(row.payload);
+  // OF-51: a damaged row names no pending context.
+  const event = readStoredJsonObject(row.payload);
+  if (!event) return false;
   return event.type === "node.startup_failed" && event.sessionId === sessionId && event.freshContextPending === true;
 }
 

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { readStoredJsonObject } from "./stored-json.js";
 
 /** Read an existing fresh-launch effect, fenced by the current generation.
  * Older builds could leave a detached predecessor unsuperseded. The owning
@@ -17,7 +18,9 @@ export function readFreshOccupantRelations(db: Database.Database, rigId: string)
     .all(rigId) as Array<{ payload: string }>;
   const relation: Record<string, string | null> = {};
   for (const row of events) {
-    const event = JSON.parse(row.payload) as Record<string, unknown>;
+    // OF-51: a damaged event row is no relation evidence; it is skipped, never a 500 for the route that asks.
+    const event = readStoredJsonObject(row.payload);
+    if (!event) continue;
     if (typeof event.nodeId !== "string" || !current.has(event.nodeId)
       || event.newGeneration !== current.get(event.nodeId)) continue;
     const id = typeof event.sessionId === "string" && event.sessionId ? event.sessionId : null;

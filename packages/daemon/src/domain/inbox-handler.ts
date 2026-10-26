@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { EventBus } from "./event-bus.js";
 import { QueueRepository } from "./queue-repository.js";
+import { readStoredJsonStrings } from "./stored-json.js";
 
 export const INBOX_STATES = ["pending", "absorbed", "denied"] as const;
 export type InboxState = (typeof INBOX_STATES)[number];
@@ -297,7 +298,7 @@ export class InboxHandler {
       destinationSession: row.destination_session,
       senderSession: row.sender_session,
       body: row.body,
-      tags: row.tags ? (JSON.parse(row.tags) as string[]) : null,
+      tags: readStoredJsonStrings(row.tags),
       urgency: row.urgency,
       tsDropped: row.ts_dropped,
       state: row.state as InboxState,

@@ -7,6 +7,7 @@ import { WorkflowSpecCache } from "./workflow-spec-cache.js";
 import type { WorkflowInstance, WorkflowSpec } from "./workflow-types.js";
 import type { EventBus } from "./event-bus.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { readStoredJsonObject } from "./stored-json.js";
 
 export interface GraphReconciliation {
   status: "current" | "source-only" | "compatible" | "incompatible" | "unavailable" | "unbound";
@@ -179,7 +180,7 @@ export function recoverGraphOperation(db: Database.Database, key: string): { kin
   } };
   const match = db.prepare("SELECT wi.instance_id, revision.value AS receipt FROM workflow_instances wi, json_each(wi.lifecycle_binding_json, '$.revisionHistory') revision WHERE json_extract(revision.value, '$.operationKey') = ?")
     .get(key) as { instance_id: string; receipt: string } | undefined;
-  return match ? { kind: "revision", instance: store.getByIdOrThrow(match.instance_id), receipt: JSON.parse(match.receipt) } : null;
+  return match ? { kind: "revision", instance: store.getByIdOrThrow(match.instance_id), receipt: readStoredJsonObject(match.receipt) ?? {} } : null;
 }
 
 export function reviseGraph(db: Database.Database, bus: EventBus, input: {

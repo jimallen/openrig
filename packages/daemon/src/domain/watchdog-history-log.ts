@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { readStoredJsonObject } from "./stored-json.js";
 
 /**
  * Watchdog history log (PL-004 Phase C; append-only audit writer).
@@ -131,6 +132,6 @@ function rowToEntry(row: HistoryRow): WatchdogHistoryEntry {
     deliveryTargetSession: row.delivery_target_session,
     deliveryStatus: row.delivery_status,
     deliveryMessage: row.delivery_message,
-    evaluationNotes: row.evaluation_notes ? JSON.parse(row.evaluation_notes) : null,
+    evaluationNotes: readStoredJsonObject(row.evaluation_notes),
   };
 }

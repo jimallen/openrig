@@ -248,6 +248,39 @@ function ActionButtonsRow({ rigId, logicalId, data }: { rigId: string; logicalId
   );
 }
 
+/** OF-56: the seat's saved rows the daemon could not read. An empty startup list or package list on such a seat is
+ *  damage, not "declared none", so it is said outright wherever the seat's state is shown. */
+export function savedRowDamageNotes(data: NodeDetailData): Array<{ key: string; label: string; reason: string }> {
+  return [
+    { key: "startup", label: "Saved startup setup", reason: data.startupUnreadable },
+    { key: "session-source", label: "Saved session source", reason: data.sessionSourceUnreadable },
+    { key: "package-refs", label: "Saved package list", reason: data.packageRefsUnreadable },
+  ].flatMap((note) => (note.reason ? [{ key: note.key, label: note.label, reason: note.reason }] : []));
+}
+
+function SavedRowDamageNotice({ data }: { data: NodeDetailData }) {
+  const notes = savedRowDamageNotes(data);
+  if (notes.length === 0) return null;
+  return (
+    <section
+      data-testid="detail-saved-row-damage"
+      className="border border-orange-200 bg-orange-50 p-3"
+    >
+      <div className="font-mono text-[9px] font-bold text-orange-700 mb-1">Saved row damaged</div>
+      <ul className="space-y-0.5">
+        {notes.map((note) => (
+          <li key={note.key} className="font-mono text-[9px] text-orange-700" data-testid={`detail-saved-row-damage-${note.key}`}>
+            {note.label} is unreadable ({note.reason}); what is shown for it is empty because it cannot be read, not because the seat declared none.
+          </li>
+        ))}
+      </ul>
+      <div className="font-mono text-[8px] text-on-surface-variant mt-1">
+        Restore, snapshot and export refuse this seat until the row is repaired.
+      </div>
+    </section>
+  );
+}
+
 function StatusSection({ data }: { data: NodeDetailData }) {
   const showFailure =
     data.startupStatus === "failed" ||
@@ -455,6 +488,7 @@ function OverviewTab({ data, activityVisual }: { data: NodeDetailData; activityV
   return (
     <div data-testid="live-overview-section" className="space-y-4">
       <SeatNotificationBanner data={data} />
+      <SavedRowDamageNotice data={data} />
       <SeatOverviewTable data={data} activityVisual={activityVisual} />
       <SeatOverviewSecondary data={data} />
       <InlineTerminal data={data} />
@@ -544,6 +578,7 @@ function StartupContent({ rigId: _rigId, logicalId: _logicalId, data }: { rigId:
   return (
     <div data-testid="live-startup-section" className="space-y-4">
       <StatusSection data={data} />
+      <SavedRowDamageNotice data={data} />
 
       {data.infrastructureStartupCommand && (
         <section data-testid="live-node-infra-startup" className={SECTION_CLASS}>

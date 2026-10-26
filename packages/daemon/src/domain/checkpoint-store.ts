@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import type { Checkpoint } from "./types.js";
+import { readStoredJsonStrings } from "./stored-json.js";
 
 interface CreateCheckpointData {
   summary: string;
@@ -88,7 +89,7 @@ export class CheckpointStore {
       currentTask: row.current_task,
       nextStep: row.next_step,
       blockedOn: row.blocked_on,
-      keyArtifacts: row.key_artifacts ? JSON.parse(row.key_artifacts) as string[] : [],
+      keyArtifacts: readStoredJsonStrings(row.key_artifacts) ?? [],
       confidence: row.confidence,
       podId: row.pod_id ?? null,
       continuitySource: row.continuity_source ?? null,

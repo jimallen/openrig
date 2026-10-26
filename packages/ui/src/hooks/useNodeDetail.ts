@@ -63,6 +63,11 @@ export interface NodeDetailData {
     ownerRoot?: string | null;
   }>;
   startupActions: Array<{ type: string; value: string }>;
+  /** OF-45/OF-56: why the seat's saved row cannot be read, as the daemon serves it (null: readable; absent: an older
+   *  daemon that does not report it). When set the matching list above is empty, not "the seat declared none". */
+  startupUnreadable?: string | null;
+  sessionSourceUnreadable?: string | null;
+  packageRefsUnreadable?: string | null;
   recentEvents: Array<{ type: string; createdAt: string }>;
   infrastructureStartupCommand: string | null;
   peers: NodeDetailPeer[];

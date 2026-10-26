@@ -20,6 +20,7 @@ import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import type { RunningCodexLaunch } from "../adapters/codex-runtime-adapter.js";
 import { emittedEffortFromArgv } from "./seat-effort.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
+import { readStoredJsonObject } from "./stored-json.js";
 
 /**
  * OPR.0.7.0.5 — restart ONE Codex seat in place so it reads its Codex home's current account: the same
@@ -340,7 +341,9 @@ export class CodexInPlaceRestart {
     const latest = rows[0];
     if (!latest) return { ok: false, code: "no_restart_recorded", message: "This seat has no recorded in-place restart to verify." };
     if (latest.type === RESTART_STARTED) return { ok: false, code: "restart_not_completed", message: "The latest in-place restart of this seat has not finished." };
-    const finished = JSON.parse(latest.payload) as { outcome: string; newPid: number | null; newStartedAt: string | null; codexHome: string; finishedAt: string; accountLinesAtRestart?: Record<string, number> | null };
+    // OF-51: a damaged restart record cannot be verified against; say so rather than throw.
+    const finished = readStoredJsonObject<{ outcome: string; newPid: number | null; newStartedAt: string | null; codexHome: string; finishedAt: string; accountLinesAtRestart?: Record<string, number> | null }>(latest.payload);
+    if (!finished) return { ok: false, code: "restart_not_completed", message: "The latest in-place restart's saved record is damaged (not JSON), so there is nothing to verify." };
     if (finished.outcome !== "restarted_account_unverified") {
       return { ok: false, code: "restart_not_completed", message: `The latest in-place restart ended ${finished.outcome}; there is nothing to verify.` };
     }
@@ -497,16 +500,15 @@ export class CodexInPlaceRestart {
       .all(nodeId, RESTART_STARTED, RESTART_FINISHED) as Array<{ seq: number; type: string; payload: string; created_at: string }>;
     const latest = rows[0];
     const lastFinished = rows.find((row) => row.type === RESTART_FINISHED);
-    const lastRestart = lastFinished ? (() => {
-      const payload = JSON.parse(lastFinished.payload) as { outcome: string; finishedAt: string };
-      return { lastRestart: { outcome: payload.outcome, finishedAt: payload.finishedAt } };
-    })() : {};
+    // OF-51: a damaged finished record reports no lastRestart.
+    const finishedPayload = lastFinished ? readStoredJsonObject<{ outcome: string; finishedAt: string }>(lastFinished.payload) : null;
+    const lastRestart = finishedPayload ? { lastRestart: { outcome: finishedPayload.outcome, finishedAt: finishedPayload.finishedAt } } : {};
     if (seenStartedSeq !== null && this.latestStartedSeq(nodeId) > seenStartedSeq) {
       return { ok: false, code: "restart_in_progress", message: "Another in-place restart of this seat ran while this request waited; not restarting again. Inspect its result first (--plan shows it as lastRestart)." };
     }
     if (latest?.type !== RESTART_STARTED) return lastRestart;
     const startedAt = new Date(`${latest.created_at.replace(" ", "T")}Z`);
-    const started = JSON.parse(latest.payload) as { oldPid?: number; pane?: string };
+    const started = readStoredJsonObject<{ oldPid?: number; pane?: string }>(latest.payload) ?? {};
     if (!(startedAt.getTime() < this.daemonStartedAt.getTime())) {
       return { ok: false, code: "restart_in_progress", message: `An in-place restart of this seat started at ${startedAt.toISOString()} under this daemon and has not recorded a result yet; it is still running. --plan shows its result once it finishes.` };
     }

@@ -10,6 +10,7 @@ import { predictSeatStops } from "../domain/restore-seat-gates.js";
 import { findOtherSessionOwner } from "../domain/session-owner.js";
 import { activeOccupantAmbiguityError, deriveRehydrateOccupantsByNode } from "../domain/active-occupant.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
+import { savedRowDamage } from "../domain/node-row-damage.js";
 import { classifyRunningSessions } from "../domain/restore-running-sessions.js";
 import { SessionRegistry } from "../domain/session-registry.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
@@ -235,6 +236,11 @@ export function createRestoreCheckService(
     },
     // OF-32: a seat started fresh re-reads this recorded spec; the advice and the restore prediction say so.
     getRigSpecSource: (rigId: string) => rigRepo.getRigSpecSource(rigId),
+    // OF-62: the same predicate restore's pre-restore snapshot refuses on.
+    getSavedRowDamage: (rigId: string) => (rigRepo.getRig(rigId)?.nodes ?? []).flatMap((node) => {
+      const damage = savedRowDamage(node);
+      return damage.length > 0 ? [{ logicalId: node.logicalId, damage }] : [];
+    }),
     hasSnapshot: (rigId: string) => {
       return snapshotRepo.listSnapshots(rigId).length > 0;
     },

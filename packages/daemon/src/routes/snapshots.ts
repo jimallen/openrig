@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { RigNotFoundError } from "../domain/errors.js";
 import type { SnapshotCapture } from "../domain/snapshot-capture.js";
-import type { SnapshotRepository } from "../domain/snapshot-repository.js";
+import { UnreadableSnapshotError, type SnapshotRepository } from "../domain/snapshot-repository.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import type { SessionRegistry } from "../domain/session-registry.js";
 import type { ResumeMetadataRefresher } from "../domain/resume-metadata-refresher.js";
@@ -104,7 +104,14 @@ snapshotsRoutes.get("/:id", (c) => {
   const id = c.req.param("id")!;
   const { snapshotRepo } = getDeps(c);
 
-  const snapshot = snapshotRepo.getSnapshot(id);
+  let snapshot;
+  try {
+    snapshot = snapshotRepo.getSnapshot(id);
+  } catch (err) {
+    // OF-51: a damaged saved snapshot is named as damaged, not a 500.
+    if (err instanceof UnreadableSnapshotError) return c.json({ error: err.message, code: "snapshot_unreadable" }, 422);
+    throw err;
+  }
   if (!snapshot || snapshot.rigId !== rigId) {
     return c.json({ error: "Snapshot not found" }, 404);
   }
@@ -129,7 +136,13 @@ restoreRoutes.post("/:snapshotId", async (c) => {
   const { snapshotRepo, restoreOrchestrator } = getDeps(c);
 
   // Cross-rig guard: verify snapshot belongs to this rig
-  const snapshot = snapshotRepo.getSnapshot(snapshotId);
+  let snapshot;
+  try {
+    snapshot = snapshotRepo.getSnapshot(snapshotId);
+  } catch (err) {
+    if (err instanceof UnreadableSnapshotError) return c.json({ error: err.message, code: "snapshot_unusable" }, 409);
+    throw err;
+  }
   if (!snapshot || snapshot.rigId !== rigId) {
     return c.json({ error: "Snapshot not found" }, 404);
   }

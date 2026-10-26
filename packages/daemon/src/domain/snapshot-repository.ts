@@ -2,6 +2,16 @@ import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import type { RestoreSnapshotSelection, RestoreSnapshotSummary, Snapshot, SnapshotData } from "./types.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
+import { readStoredJson } from "./stored-json.js";
+
+/** OF-51: a saved snapshot whose `data` column is not JSON. Listing and "latest" lookups skip such a row; naming one
+ *  snapshot by id throws this so the caller can say so (a 4xx), where it used to surface as a bare SyntaxError (a 500). */
+export class UnreadableSnapshotError extends Error {
+  constructor(readonly snapshotId: string) {
+    super(`Snapshot ${snapshotId} is damaged: its saved data is not JSON`);
+    this.name = "UnreadableSnapshotError";
+  }
+}
 
 export type RestoreSnapshotSelectionOutcome =
   | { ok: true; snapshot: Snapshot; selection: RestoreSnapshotSelection }
@@ -27,25 +37,27 @@ export class SnapshotRepository {
       )
       .run(id, rigId, kind, JSON.stringify(data));
 
-    return this.rowToSnapshot(
+    return this.snapshotOrThrow(
       this.db.prepare("SELECT * FROM snapshots WHERE id = ?").get(id) as SnapshotRow
     );
   }
 
+  /** Throws `UnreadableSnapshotError` when the row exists but its saved data is damaged. */
   getSnapshot(id: string): Snapshot | null {
     const row = this.db
       .prepare("SELECT * FROM snapshots WHERE id = ?")
       .get(id) as SnapshotRow | undefined;
-    return row ? this.rowToSnapshot(row) : null;
+    return row ? this.snapshotOrThrow(row) : null;
   }
 
+  /** The newest readable auto-pre-down snapshot; a damaged row is skipped. */
   findLatestAutoPreDown(rigId: string): Snapshot | null {
-    const row = this.db
+    const rows = this.db
       .prepare(
-        "SELECT * FROM snapshots WHERE rig_id = ? AND kind = 'auto-pre-down' ORDER BY created_at DESC LIMIT 1"
+        "SELECT * FROM snapshots WHERE rig_id = ? AND kind = 'auto-pre-down' ORDER BY created_at DESC"
       )
-      .get(rigId) as SnapshotRow | undefined;
-    return row ? this.rowToSnapshot(row) : null;
+      .all(rigId) as SnapshotRow[];
+    return firstReadable(rows, (row) => this.rowToSnapshot(row));
   }
 
   /**
@@ -77,14 +89,9 @@ export class SnapshotRepository {
       .all(rigId) as SnapshotRow[];
 
     for (const row of rows) {
-      let data: SnapshotData;
-      try {
-        data = JSON.parse(row.data) as SnapshotData;
-      } catch {
-        continue;
-      }
-      if (!isRestoreUsableSnapshotData(data)) continue;
-      return this.rowToSnapshot(row);
+      const snapshot = this.rowToSnapshot(row);
+      if (!snapshot || !isRestoreUsableSnapshotData(snapshot.data)) continue;
+      return snapshot;
     }
     return null;
   }
@@ -138,13 +145,14 @@ export class SnapshotRepository {
     };
   }
 
+  /** The newest readable snapshot of the rig; a damaged row is skipped, never a 500 for the rows beside it. */
   getLatestSnapshot(rigId: string): Snapshot | null {
-    const row = this.db
+    const rows = this.db
       .prepare(
-        "SELECT * FROM snapshots WHERE rig_id = ? ORDER BY created_at DESC LIMIT 1"
+        "SELECT * FROM snapshots WHERE rig_id = ? ORDER BY created_at DESC, rowid DESC"
       )
-      .get(rigId) as SnapshotRow | undefined;
-    return row ? this.rowToSnapshot(row) : null;
+      .all(rigId) as SnapshotRow[];
+    return firstReadable(rows, (row) => this.rowToSnapshot(row));
   }
 
   listSnapshots(rigId: string, opts?: ListOptions): Snapshot[] {
@@ -163,8 +171,12 @@ export class SnapshotRepository {
       params.push(opts.limit);
     }
 
+    // A damaged row is left out (OF-51); the limit then counts rows read, not rows listed.
     const rows = this.db.prepare(sql).all(...params) as SnapshotRow[];
-    return rows.map((r) => this.rowToSnapshot(r));
+    return rows.flatMap((r) => {
+      const snapshot = this.rowToSnapshot(r);
+      return snapshot ? [snapshot] : [];
+    });
   }
 
   pruneSnapshots(rigId: string, keepCount: number): number {
@@ -190,25 +202,37 @@ export class SnapshotRepository {
   }
 
   private restoreUsableRow(row: SnapshotRow): Snapshot | null {
-    let snapshot: Snapshot;
-    try { snapshot = this.rowToSnapshot(row); }
-    catch (err) {
-      if (err instanceof SyntaxError) return null;
-      throw err;
-    }
-    return isRestoreUsableSnapshotData(snapshot.data) ? snapshot : null;
+    const snapshot = this.rowToSnapshot(row);
+    return snapshot && isRestoreUsableSnapshotData(snapshot.data) ? snapshot : null;
   }
 
-  private rowToSnapshot(row: SnapshotRow): Snapshot {
+  /** Null when the row's saved data is not JSON (OF-51). */
+  private rowToSnapshot(row: SnapshotRow): Snapshot | null {
+    const data = readStoredJson<SnapshotData>(row.data);
+    if (data === undefined) return null;
     return {
       id: row.id,
       rigId: row.rig_id,
       kind: row.kind,
       status: row.status,
-      data: JSON.parse(row.data) as SnapshotData,
+      data,
       createdAt: row.created_at,
     };
   }
+
+  private snapshotOrThrow(row: SnapshotRow): Snapshot {
+    const snapshot = this.rowToSnapshot(row);
+    if (!snapshot) throw new UnreadableSnapshotError(row.id);
+    return snapshot;
+  }
+}
+
+function firstReadable(rows: SnapshotRow[], read: (row: SnapshotRow) => Snapshot | null): Snapshot | null {
+  for (const row of rows) {
+    const snapshot = read(row);
+    if (snapshot) return snapshot;
+  }
+  return null;
 }
 
 export function summarizeSnapshot(snapshot: Snapshot, nowMs: number = Date.now()): RestoreSnapshotSummary {

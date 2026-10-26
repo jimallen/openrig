@@ -28,6 +28,7 @@ export function readNodeStartupSnapshot(db: Database.Database, nodeId: string): 
   } : null;
 }
 import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
+import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 
 interface SnapshotCaptureDeps {
   db: Database.Database;
@@ -91,9 +92,9 @@ export class SnapshotCapture {
     // 1b. OF-45: a damaged saved package list / session source reads as empty on the node, which a snapshot would
     // otherwise persist as if the seat had declared none.
     for (const node of rig.nodes) {
-      const damage = [node.sessionSourceUnreadable, node.packageRefsUnreadable].filter((reason): reason is string => !!reason);
+      const damage = savedRowDamage(node);
       if (damage.length === 0) continue;
-      const message = `${node.logicalId}'s saved row is damaged (${damage.join("; ")})`;
+      const message = savedRowDamageMessage(node.logicalId, damage);
       if (!opts?.onUnreadableNodeRow) throw new Error(`Cannot snapshot: ${message}. Repair the row, then snapshot again.`);
       opts.onUnreadableNodeRow(node.id, message);
     }

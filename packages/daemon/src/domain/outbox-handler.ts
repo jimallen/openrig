@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { readStoredJson, readStoredJsonStrings } from "./stored-json.js";
 
 /**
  * The EXECUTABLE wake-intent namespace. A durable wake intent is written by the
@@ -413,14 +414,14 @@ export class OutboxHandler {
       senderSession: row.sender_session,
       destinationSession: row.destination_session,
       body: row.body,
-      tags: row.tags ? (JSON.parse(row.tags) as string[]) : null,
+      tags: readStoredJsonStrings(row.tags),
       urgency: row.urgency,
       tsDispatched: row.ts_dispatched,
       deliveryState: parseDeliveryState(row.delivery_state),
       deliveredAt: row.delivered_at,
       auditPointer: row.audit_pointer,
       ...(row.guard_binding !== undefined ? {
-        guardBinding: row.guard_binding ? JSON.parse(row.guard_binding) : null,
+        guardBinding: readStoredJson(row.guard_binding) ?? null,
         retiredAt: row.retired_at ?? null,
         retiredBy: row.retired_by ?? null,
         retirementReason: row.retirement_reason ?? null,

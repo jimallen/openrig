@@ -10,6 +10,7 @@
 
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { readStoredJsonObject } from "../stored-json.js";
 
 export const MISSION_CONTROL_VERBS = [
   "approve",
@@ -230,19 +231,14 @@ function rowToEntry(row: ActionRow): MissionControlActionEntry {
     qitemId: row.qitem_id,
     actorSession: row.actor_session,
     actedAt: row.acted_at,
-    beforeState: row.before_state_json
-      ? (JSON.parse(row.before_state_json) as Record<string, unknown>)
-      : null,
-    afterState: row.after_state_json
-      ? (JSON.parse(row.after_state_json) as Record<string, unknown>)
-      : null,
+    // OF-51: a damaged state column reads as no recorded state, never a 500 for the whole audit listing.
+    beforeState: readStoredJsonObject(row.before_state_json),
+    afterState: readStoredJsonObject(row.after_state_json),
     reason: row.reason,
     annotation: row.annotation,
     notifyAttempted: row.notify_attempted !== 0,
     notifyResult: row.notify_result,
-    auditNotes: row.audit_notes_json
-      ? (JSON.parse(row.audit_notes_json) as Record<string, unknown>)
-      : null,
+    auditNotes: readStoredJsonObject(row.audit_notes_json),
     identityProvenance: row.identity_provenance ?? null,
   };
 }
