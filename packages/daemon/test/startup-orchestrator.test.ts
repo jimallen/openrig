@@ -869,6 +869,16 @@ describe("StartupOrchestrator", () => {
     expect(db.prepare("SELECT resume_token, resume_type FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ resume_token: token, resume_type: "claude_id" });
   });
 
+  // KNOWN GAP (OF-75, by decision): a runtime with no resume type (terminal, unknown) has no token format to check,
+  // so a token its adapter reports is stored trimmed as before. Nothing types such a token: the resume probe and the
+  // restore launch lines are built only for claude-code and codex. A format for these runtimes is a separate decision.
+  it("KNOWN GAP: a token reported by a runtime with no resume type is still stored, trimmed", async () => {
+    const seed = seedSession();
+    const adapter = mockAdapter({ runtime: "terminal", launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "  tok;x  ", resumeType: "terminal_id" })) });
+    await createOrchestrator().startNode(makeInput(seed, { adapter }));
+    expect(db.prepare("SELECT resume_token FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ resume_token: "tok;x" });
+  });
+
   it("issues a selected startup challenge (oriented=missing, challenge in prompt)", async () => {
     const seed = seedSession();
     const sendText = vi.fn(async () => ({ ok: true as const }));

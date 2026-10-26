@@ -273,6 +273,12 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       expect(f.unlinked).toHaveLength(1);
     });
 
+    it("removes the staged helper script when the surface refuses the line", async () => {
+      const { f, run } = open({ attachmentType: "external_cli", externalSessionName: "ext-1" }, false);
+      expect((await run()).ok).toBe(false);
+      expect(f.unlinked).toHaveLength(1);
+    });
+
     it("helper console: run for real, a hostile name is one argument to rig and executes nothing", async () => {
       const sentinel = nodePath.join(sandbox, "owned");
       const name = `ext\nrm -rf x; touch ${sentinel}; $(touch ${sentinel}) 'q'`;
