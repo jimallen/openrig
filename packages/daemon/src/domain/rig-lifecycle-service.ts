@@ -395,16 +395,20 @@ export class RigLifecycleService {
     const sessionOwner = node.latest_session_name
       ? findOtherSessionOwner(this.db, node.latest_session_name, node.node_id, { ignoreArchived: true })
       : null;
-    const activeQitemIds = this.activeQitemIdsForSessionNames(
-      node.latest_session_name && !sessionOwner ? [node.latest_session_name] : [],
-    );
+    // OF-66: the node's OLDER live rows (an older occupant that outlived a newer row) are its sessions too, and
+    // deleting the node would orphan them in tmux. The rule is the one `rig down` and `rig seat stop` use.
+    const olderSessionNames = this.olderSessionNamesToKill(node);
+    const activeQitemIds = this.activeQitemIdsForSessionNames([
+      ...(node.latest_session_name && !sessionOwner ? [node.latest_session_name] : []),
+      ...olderSessionNames,
+    ]);
     if (activeQitemIds.length > 0 && fallbackDestination === undefined) {
       return {
         ok: false,
         code: "active_qitems",
         activeQitemIds,
         error: this.activeQitemsError(
-          `Node '${node.logical_id}' still has active queue work addressed to '${node.latest_session_name}'.`,
+          `Node '${node.logical_id}' still has active queue work addressed to '${[...(node.latest_session_name && !sessionOwner ? [node.latest_session_name] : []), ...olderSessionNames].join("', '")}'.`,
           activeQitemIds,
           "removing the node",
         ),
@@ -434,8 +438,24 @@ export class RigLifecycleService {
       }
       sessionsKilled = !kill || kill.ok ? 1 : 0;
     }
+    const olderDetached: string[] = [];
+    for (const name of olderSessionNames) {
+      const kill = await this.tmuxAdapter?.killSession(name);
+      if (kill && !kill.ok && kill.code !== "session_not_found") {
+        return {
+          ok: false,
+          code: "kill_failed",
+          error: `Failed to kill older session '${name}' of node '${node.logical_id}': ${kill.message}${sessionsKilled > 0 || olderDetached.length > 0 ? ` (the node's other sessions were already killed; retry to finish removing it)` : ""}`,
+          fallbackDestination,
+          reroutedQitemIds: activeQitemIds,
+        };
+      }
+      if (!kill || kill.ok) sessionsKilled++;
+      olderDetached.push(name);
+    }
 
     const persisted: Array<{ type: "session.detached" | "node.removed"; seq: number; createdAt: string }> = [];
+    const persistedOlder: Array<{ name: string; seq: number; createdAt: string }> = [];
     let rosterEvent: ReturnType<EventBus["persistWithinTransaction"]> | null = null;
     const tx = this.db.transaction(() => {
       if (node.latest_session_name && !keepSession) {
@@ -446,6 +466,12 @@ export class RigLifecycleService {
           sessionName: node.latest_session_name,
         });
         persisted.push({ type: "session.detached", seq: detached.seq, createdAt: detached.createdAt });
+      }
+      for (const name of olderDetached) {
+        const detached = this.eventBus.persistWithinTransaction({
+          type: "session.detached", rigId, nodeId: node.node_id, sessionName: name,
+        });
+        persistedOlder.push({ name, seq: detached.seq, createdAt: detached.createdAt });
       }
       const removed = this.eventBus.persistWithinTransaction({
         type: "node.removed",
@@ -475,6 +501,11 @@ export class RigLifecycleService {
         });
       }
       if (event.type === "node.removed") {
+        for (const older of persistedOlder) {
+          this.eventBus.notifySubscribers({
+            type: "session.detached", rigId, nodeId: node.node_id, sessionName: older.name, seq: older.seq, createdAt: older.createdAt,
+          });
+        }
         this.eventBus.notifySubscribers({
           type: "node.removed",
           rigId,
@@ -515,11 +546,12 @@ export class RigLifecycleService {
 
     const nodes = this.db.prepare(`
       SELECT n.id, n.logical_id,
-        (SELECT s.session_name FROM sessions s WHERE s.node_id = n.id ORDER BY s.created_at DESC, s.id DESC LIMIT 1) AS latest_session_name
+        (SELECT s.session_name FROM sessions s WHERE s.node_id = n.id ORDER BY s.created_at DESC, s.id DESC LIMIT 1) AS latest_session_name,
+        (SELECT s.id FROM sessions s WHERE s.node_id = n.id ORDER BY s.created_at DESC, s.id DESC LIMIT 1) AS latest_session_id
       FROM nodes n
       WHERE n.rig_id = ? AND n.pod_id = ?
       ORDER BY n.logical_id
-    `).all(rigId, pod.id) as Array<{ id: string; logical_id: string; latest_session_name: string | null }>;
+    `).all(rigId, pod.id) as Array<{ id: string; logical_id: string; latest_session_name: string | null; latest_session_id: string | null }>;
 
     const guard = this.tmuxAdapter?.deliveryGuard;
     const ids = nodes.map(node => node.id);
@@ -539,9 +571,13 @@ export class RigLifecycleService {
     // generation) addresses that node's work, which this shrink neither counts nor reroutes. Another member of
     // the target sharing the name doesn't take the name's work out of this check.
     const activeQitemIds = this.activeQitemIdsForSessionNames(
-      nodes.flatMap((node) => node.latest_session_name
-        && !findOtherSessionOwner(this.db, node.latest_session_name, node.id, { ignoreArchived: true, excludeNodeIds: ids })
-        ? [node.latest_session_name] : []),
+      nodes.flatMap((node) => [
+        ...(node.latest_session_name
+          && !findOtherSessionOwner(this.db, node.latest_session_name, node.id, { ignoreArchived: true, excludeNodeIds: ids })
+          ? [node.latest_session_name] : []),
+        // OF-66: removing the member also kills its older live sessions, so their work is checked too.
+        ...this.olderSessionNamesToKill({ node_id: node.id, latest_session_id: node.latest_session_id, latest_session_name: node.latest_session_name }, ids),
+      ]),
     );
     if (activeQitemIds.length > 0 && fallbackDestination === undefined) {
       return {
@@ -727,6 +763,24 @@ export class RigLifecycleService {
       };
     }
     return null;
+  }
+
+  /** OF-66: the tmux names of a node's OLDER live (running / idle / unknown) rows that removing it must also kill:
+   *  not an adopted (`claimed`) session, which is not OpenRig's to kill (`rig seat stop` refuses it); not a name another
+   *  live node owns (the name is only a historical label); not the latest row's own name (its kill covers it); each
+   *  name once. */
+  private olderSessionNamesToKill(node: { node_id: string; latest_session_id: string | null; latest_session_name: string | null }, excludeNodeIds: readonly string[] = []): string[] {
+    if (!node.latest_session_id) return [];
+    const rows = this.db.prepare(
+      "SELECT session_name, origin FROM sessions WHERE node_id = ? AND id <> ? AND status IN ('running', 'idle', 'unknown') ORDER BY created_at, id",
+    ).all(node.node_id, node.latest_session_id) as Array<{ session_name: string; origin: string | null }>;
+    const names: string[] = [];
+    for (const row of rows) {
+      if (row.origin === "claimed" || row.session_name === node.latest_session_name || names.includes(row.session_name)) continue;
+      if (findOtherSessionOwner(this.db, row.session_name, node.node_id, { ignoreArchived: true, excludeNodeIds }) !== null) continue;
+      names.push(row.session_name);
+    }
+    return names;
   }
 
   private resolveNodeRef(rigId: string, nodeRef: string): NodeLifecycleRow | null {

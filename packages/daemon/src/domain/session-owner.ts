@@ -13,7 +13,10 @@ export interface SessionOwnerRow {
  * it, or a node with a live (not superseded, detached or exited) session row under it. A session name
  * can be shared across rigs, for example by an archived duplicate of a live rig, so the name alone
  * never proves which node a session belongs to. `ignoreArchived` skips owners in archived rigs: an
- * archived rig keeps its bindings, so its node would otherwise claim the live seat's session.
+ * archived rig keeps its bindings, so its node would otherwise claim the live seat's session. A released
+ * session also holds its name: `rig unclaim` marks an adopted session `detached` and clears its binding while the
+ * tmux session lives on as the person's own, so a `claimed` row in that state still owns the name (OF-68 F9). A
+ * `detached` row OpenRig launched is only a lost session, which owns nothing.
  * `excludeNodeIds` skips further nodes, such as the rest of a group being removed together; it is applied
  * in both lookups before the first match is taken, so an excluded node can't hide another owner.
  */
@@ -41,7 +44,7 @@ export function findOtherSessionOwner(
     FROM sessions s
     JOIN nodes n ON n.id = s.node_id
     JOIN rigs r ON r.id = n.rig_id
-    WHERE s.session_name = ? AND ${notExcluded} AND s.status NOT IN ('superseded', 'detached', 'exited')${live}
+    WHERE s.session_name = ? AND ${notExcluded} AND (s.status NOT IN ('superseded', 'detached', 'exited') OR (s.status = 'detached' AND s.origin = 'claimed'))${live}
     LIMIT 1
   `).get(tmuxSession, ...excluded) as SessionOwnerRow | undefined ?? null;
 }

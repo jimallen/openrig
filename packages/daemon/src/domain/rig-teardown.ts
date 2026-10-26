@@ -54,6 +54,8 @@ interface LatestNodeSession {
   resumeType: string | null;
   resumeToken: string | null;
   cwd: string | null;
+  /** Set on older rows only: an adopted (`claimed`) session is not OpenRig's to kill. */
+  origin?: "claimed" | "launched";
 }
 
 /**
@@ -151,8 +153,25 @@ export class RigTeardownOrchestrator {
     // 5. Kill each live session
     let killFailures = 0;
     const olderIds = new Set(olderLiveSessions.map(session => session.sessionId));
+    // A tmux name is killed at most once per teardown. Rows sharing a name (a seat's older row often carries the
+    // newest row's name) follow the first row's outcome instead of killing, or reporting a failure, a second time.
+    const handledNames = new Map<string, "ended" | "failed">();
     for (const session of [...liveSessions, ...olderLiveSessions]) {
       const older = olderIds.has(session.sessionId);
+      const handled = handledNames.get(session.sessionName);
+      if (handled === "failed") {
+        // The first row's kill (or probe) failed and already said so: the session is still live, so this row stays
+        // live too, and the rig is not fully down (delete stays blocked).
+        killFailures++;
+        continue;
+      }
+      if (older && session.origin === "claimed" && handled === undefined) {
+        // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it), but the seat has moved past this
+        // row. End the ROW only, with no stop intent (nothing of ours stopped it), and leave its tmux session running.
+        this.deps.sessionRegistry.updateStatus(session.sessionId, "exited");
+        (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim`);
+        continue;
+      }
       // An archived rig may retain a stale row for a name now owned by a live rig.
       // That name cannot identify the archived rig's tmux session for a kill.
       // An OLDER row's name is only a historical label: any other live owner of that name
@@ -160,7 +179,7 @@ export class RigTeardownOrchestrator {
       const ownedByAnotherRig = (older || archived.archived_at !== null) && findOtherSessionOwner(
         this.db, session.sessionName, session.nodeId, { ignoreArchived: true },
       ) !== null;
-      let absent = ownedByAnotherRig;
+      let absent = ownedByAnotherRig || handled === "ended";
       if (!absent && this.deps.tmuxAdapter.probeSession) {
         try {
           const probe = await this.deps.tmuxAdapter.probeSession(session.sessionName);
@@ -168,11 +187,13 @@ export class RigTeardownOrchestrator {
           if (probe.state !== "present" && !absent) {
             result.errors.push(`Could not confirm session '${session.sessionName}' is absent: ${probe.state === "transport_unavailable" ? probe.cause : probe.state}`);
             killFailures++;
+            handledNames.set(session.sessionName, "failed");
             continue;
           }
         } catch (err) {
           result.errors.push(`Could not check session '${session.sessionName}': ${(err as Error).message}`);
           killFailures++;
+          handledNames.set(session.sessionName, "failed");
           continue;
         }
       }
@@ -185,7 +206,10 @@ export class RigTeardownOrchestrator {
         // Stop capture only when termination is confirmed. A failed kill leaves
         // the session running. An archived namesake leaves the live owner's
         // rotation intact even when its stale row is removed.
-        if (!ownedByAnotherRig) stopTranscriptRotation(session.sessionName);
+        if (!ownedByAnotherRig) {
+          stopTranscriptRotation(session.sessionName);
+          handledNames.set(session.sessionName, "ended");
+        }
         // Success or already gone — update DB atomically
         // An older row never owns the node's binding: the newest row's kill outcome decides that.
         if (older) this.deps.sessionRegistry.markIntentionallyStopped(session.sessionId);
@@ -196,6 +220,7 @@ export class RigTeardownOrchestrator {
         // Real kill failure — don't update this node
         result.errors.push(`Kill failed for session '${session.sessionName}': ${(killResult as { message?: string }).message ?? "unknown"}`);
         killFailures++;
+        handledNames.set(session.sessionName, "failed");
       }
     }
     // Stop live sessions before probing historical rows; bookkeeping must not fail down.
