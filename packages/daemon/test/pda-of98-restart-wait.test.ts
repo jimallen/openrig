@@ -26,6 +26,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
+import { createPdaClient } from "../src/adapters/pda-client.js";
 import { PdaRuntimeAdapter, type PdaRuntimeAdapterDeps } from "../src/adapters/pda-runtime-adapter.js";
 import { buildPdaRunnerArgv, parsePdaRunnerLock, pdaSeatPaths, type PdaRunnerState } from "../src/adapters/pda-runner-protocol.js";
 import { createPdaUsageSink, type PdaUsagePostResult } from "../src/adapters/pda-usage-sink.js";
@@ -414,6 +415,28 @@ async function holdingProxy(targetBase: string, shouldHold: (req: http.IncomingM
 
 const pidAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+describe("the client's stopSignal (F4)", () => {
+  it("a call made after the stop is not sent, and a call in flight when it arrives is aborted: both read as unreachable", async () => {
+    const stop = new AbortController();
+    let sent = 0;
+    let sawAbort = false;
+    const fetchImpl = ((_url: unknown, init?: RequestInit) => {
+      sent += 1;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => { sawAbort = true; reject(new DOMException("aborted", "AbortError")); });
+      });
+    }) as unknown as typeof fetch;
+    const client = createPdaClient({ binding: { agent: "research", baseUrl: BASE }, readToken: () => ({ ok: true, token: "t".repeat(43) }), fetchImpl, stopSignal: stop.signal });
+    const inFlight = client.health();
+    expect(sent).toBe(1);
+    stop.abort();
+    expect(await inFlight).toEqual({ ok: false, kind: "unreachable" });
+    expect(sawAbort).toBe(true);
+    expect(await client.health()).toEqual({ ok: false, kind: "unreachable" });
+    expect(sent).toBe(1);                                            // nothing was sent after the stop
+  });
+});
+
 describe("(e) the real hangup, a request in flight, a stop during the startup calls", () => {
   let rig: Rig;
   let daemon: Awaited<ReturnType<typeof fakeDaemon>>;
@@ -464,6 +487,34 @@ describe("(e) the real hangup, a request in flight, a stop during the startup ca
     expect(fs.existsSync(rig.paths.runnerLockPath)).toBe(false);
     expect(rig.outboxRaw()).toContain('"op":"enq"');
     expect(rig.outboxRaw()).not.toContain('"op":"ack"');            // nothing was written after the stop: the message is still queued
+  }, 60000);
+
+  it("F2: activity posts still queued behind a daemon that never answers do not keep the stopped process (and so its lock) alive for their 1.5 s budgets each", async () => {
+    rig = await makeRig({ realStreams: true });
+    daemon = await fakeDaemon("200", { hangHooks: true });
+    const p = spawnRunner(runnerArgv(rig.args.baseUrl, "linger"), tmp(), daemon.port);
+    await waitFor(() => p.out().includes("[pda-runner] READY agent=research"), "READY", 20000);
+    for (let n = 1; n <= 4; n++) {                                  // each run is two activity posts, each held 1.5 s by the daemon
+      p.write(`run ${n}\n`);
+      await waitFor(() => p.out().includes(`queued (submission ${n}`), `the ack of run ${n}`, 10000);
+      rig.fake.streamReply("research", [`reply ${n}`]);
+      await waitFor(() => p.out().split("── idle ──").length > n, `run ${n} to end`, 10000);
+    }
+    const t0 = Date.now();
+    p.child.kill("SIGTERM");
+    expect(await p.exit).toEqual({ code: 0, signal: null });
+    expect(Date.now() - t0).toBeLessThan(2500);                    // unbounded it is 1.5 s x the queue (about 12 s here)
+    expect(fs.existsSync(rig.paths.runnerLockPath)).toBe(false);
+  }, 90000);
+
+  it("EPIPE: a pane whose reader has gone away (not only a hung-up pty) is not fatal either: the stop still ends in exit 0", async () => {
+    rig = await makeRig({ realStreams: true });
+    daemon = await fakeDaemon("200");
+    const p = spawnRunner(runnerArgv(rig.args.baseUrl, "epipe"), tmp(), daemon.port);
+    await waitFor(() => p.out().includes("[pda-runner] READY agent=research"), "READY", 20000);
+    p.child.stdout!.destroy();                                       // the reader of the pane goes away: the runner's next write is EPIPE
+    p.child.kill("SIGTERM");
+    expect(await p.exit).toEqual({ code: 0, signal: null });
   }, 60000);
 
   it("F3: a stop that lands while the startup calls are in flight ends the attach: no READY, no event stream, exit 0, lock released", async () => {

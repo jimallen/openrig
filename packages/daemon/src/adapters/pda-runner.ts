@@ -1168,10 +1168,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   process.stdout.on("error", paneGone);
   process.stdin.on("error", paneGone);
 
-  // The stop signals are handled from here on, not only once the runner exists: one that lands earlier is replayed (F3).
-  const early: { stopRequested: boolean; runner: PdaRunner | null } = { stopRequested: false, runner: null };
-  for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => { early.stopRequested = true; early.runner?.stop(); });
-  await runLocked(args, paths, early);
+  await runLocked(args, paths);
 }
 
 /** Write `runner.lock` for this process. Best effort: a seat dir that cannot be written has bigger problems and the
@@ -1187,7 +1184,7 @@ export function acquireRunnerLock(lockPath: string, launchId: string): () => voi
   };
 }
 
-async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths, early: { stopRequested: boolean; runner: PdaRunner | null }): Promise<void> {
+async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void> {
   const endpoint = resolveActivityEndpoint(process.env);
   const hookToken = endpoint?.token ?? process.env.OPENRIG_ACTIVITY_HOOK_TOKEN?.trim() ?? "";
   const nodeId = process.env.OPENRIG_NODE_ID?.trim() || args.sessionName;
@@ -1247,8 +1244,9 @@ async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths, early: { stop
   ownership = runner;
 
   installPdaRunnerFatalHandlers(process, (label) => runner.fatal(label));
-  early.runner = runner;
-  if (early.stopRequested) runner.stop();
+  // Everything above is synchronous, so no signal can land before this point; the runner's own stop() ends the startup
+  // calls too (the client's calls are aborted by onStop, and attachOnce re-checks the stop after each of them).
+  for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => runner.stop());
 
   const input = wirePdaRunnerInput(runner, process.stdin, process.stdout);
   input.once("close", () => runner.stop());
