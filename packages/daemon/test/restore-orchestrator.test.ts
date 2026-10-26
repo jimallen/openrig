@@ -1464,6 +1464,37 @@ describe("RestoreOrchestrator", () => {
       });
   });
 
+  // OF-75: the restore join fills the relaunched row's empty token slot from the token it resumed. That token is
+  // typed into a pane again by the next restore, so one outside the runtime's format must not be recorded.
+  it.each([
+    ["safe", "01a05645-37a2-7dd0-970c-031d2f2510cb", true],
+    ["a shell separator", "thread;touch-x", false],
+    ["a command substitution", "$(touch-x)", false],
+  ])("fills the relaunched codex row's token slot only from a well-formed token: %s", async (_label, resumeToken, stored) => {
+    const snap = seedRigAndSnapshot({
+      nodes: [{ logicalId: "worker", role: "worker", runtime: "codex" }],
+      edges: [],
+      resumeType: "codex_id",
+      resumeToken,
+    });
+    const tmux = { ...mockTmux(), getPaneCommand: vi.fn(async () => "node") } as unknown as TmuxAdapter;
+    const codexCommand = `/opt/openrig/vendor/bin/codex --model gpt-5.6 resume --add-dir /tmp/openrig-state ${resumeToken}`;
+    const result = await createOrchestrator({
+      tmux,
+      codex: mockCodexResume({ ok: true }),
+      listProcesses: async () => [
+        { pid: 1234, ppid: 1, command: "-zsh", pgid: 1234, tpgid: 54776, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+        { pid: 54776, ppid: 1234, command: codexCommand, pgid: 54776, tpgid: 54776, executableName: "codex", startedAt: "Sat Jan  1 12:00:00 2000" },
+      ],
+    }).restore(snap.id);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const latest = db.prepare("SELECT resume_token FROM sessions WHERE node_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1")
+      .get(result.result.nodes[0]!.nodeId) as { resume_token: string | null };
+    expect(latest.resume_token).toBe(stored ? resumeToken : null);
+  });
+
   it("reports a Codex resume when a preceding profile is also named resume", async () => {
     const resumeToken = "saved-thread-label";
     const snap = seedRigAndSnapshot({

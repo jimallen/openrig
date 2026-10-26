@@ -54,6 +54,7 @@ import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride
 import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { classifySessionLiveness } from "./session-liveness.js";
+import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
 // does NOT meet all four evidence preconditions is a no-op with a missing
@@ -1852,13 +1853,15 @@ export class RestoreOrchestrator {
       const sameSession = current?.node_id === node.id && current.session_name === sessionName && current.status === "running";
       // Startup already retained the managed token. Recheck after the awaited
       // join; a hook/operator may have changed it meanwhile. Never backfill here.
+      const fillable = observedResumeTokenToWrite(node.runtime, resumeToken);
       const retained = sameSession && (managedClaudeResume
         ? this.sessionRegistry.resumeTokenMatches(sessionId, "claude_id", resumeToken)
           // Claude continued the resumed conversation under a new id (its hook said so).
           || this.sessionRegistry.claudeResumeRotatedFrom(sessionId, resumeToken)
         : current.resume_token === resumeToken
           || (node.runtime === "claude-code" && this.sessionRegistry.claudeResumeRotatedFrom(sessionId, resumeToken))
-          || (!current.resume_token && this.sessionRegistry.updateResumeToken(sessionId, node.runtime === "codex" ? "codex_id" : "claude_id", resumeToken, "scrape")));
+          // OF-75: the token is checked against the runtime's format before it fills the empty slot.
+          || (!current.resume_token && fillable !== null && this.sessionRegistry.updateResumeToken(sessionId, node.runtime === "codex" ? "codex_id" : "claude_id", fillable, "scrape")));
       if (!retained) {
         markManagedResumeAttention();
         const store = new SeatIdentityStore(this.db);

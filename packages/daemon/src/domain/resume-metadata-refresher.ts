@@ -19,7 +19,7 @@ import {
 import { runAsyncSite } from "./sync-site-wrap.js";
 import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { observeClaudePaneRuntime, type NativeProcessLister } from "./native-process-lineage.js";
-import { validateResumeToken } from "./resume-token-validation.js";
+import { validateResumeToken, isTypedResumeWord, observedResumeTokenToWrite } from "./resume-token-validation.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -184,9 +184,10 @@ export class ResumeMetadataRefresher {
           const sidecar = this.contextUsageStore?.readSidecar(session.sessionName);
           if (sidecar?.ok) {
             const token = sidecar.data.session_id;
-            if (typeof token === "string" && token.trim().length > 0
+            const writable = typeof token === "string" ? observedResumeTokenToWrite("claude-code", token) : null;
+            if (writable
               && !(await isClaudeSidecarFromEarlierProcess(sidecar.data.sampled_at, session.sessionName, this.claudeProcessStartedAt))) {
-              this.sessionRegistry.updateResumeToken(session.sessionId, "claude_id", token.trim(), "scrape");
+              this.sessionRegistry.updateResumeToken(session.sessionId, "claude_id", writable, "scrape");
             }
           }
           continue;
@@ -295,6 +296,10 @@ export class ResumeMetadataRefresher {
     resumeToken: string,
     cwd?: string | null,
   ): Promise<"resumable" | "not_resumable" | "inconclusive"> {
+    // OF-75: the line below is typed into a pane, so a seat name or token outside the typed-word set is not probed.
+    if (!isTypedResumeWord(sessionName) || !isTypedResumeWord(resumeToken)) {
+      return "inconclusive";
+    }
     const command = buildNativeResumeCommand("claude-code", resumeToken, sessionName);
     if (!command) {
       return "not_resumable";

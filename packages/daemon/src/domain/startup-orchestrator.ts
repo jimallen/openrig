@@ -24,6 +24,7 @@ import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister } from "./native-process-lineage.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
@@ -388,7 +389,10 @@ export class StartupOrchestrator {
             }
             const notice = nonInterruptiveNotice(input.adapter.runtime, input.binding);
             if (notice) warnings.push(`${input.sessionName ?? input.nodeId}: ${notice}`);
-            const normalizedResumeToken = launchResult.resumeToken?.trim();
+            // OF-75: a token the adapter reports is checked against the runtime's format before it is stored.
+            const normalizedResumeToken = launchResult.resumeToken
+              ? observedResumeTokenToWrite(input.adapter.runtime, launchResult.resumeToken)
+              : null;
             if (normalizedResumeToken) {
               try {
                 this.sessionRegistry.updateResumeToken(input.sessionId, launchResult.resumeType ?? "", normalizedResumeToken, "scrape");

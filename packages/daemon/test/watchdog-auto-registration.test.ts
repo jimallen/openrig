@@ -154,19 +154,19 @@ describe("W2c watchdog auto-registration — production composition", () => {
 
       deps.sessionRegistry.registerSession(node.id, "r01-dev-qa");
       deps.sessionRegistry.registerClaimedSession(claimed.id, "external-seat-without-canonical-rig");
-      deps.sessionRegistry.registerClaimedSession(node.id, "bad:seat@exclusion-rig");
+      deps.sessionRegistry.registerClaimedSession(node.id, "bad_seat_no_at_sign");
 
       expect(register).not.toHaveBeenCalled();
       if (ensure) expect(ensure).not.toHaveBeenCalled();
       if (coverage) expect(coverage).not.toHaveBeenCalled();
       expect(autoRows(db, "r01-dev-qa")).toHaveLength(0);
       expect(autoRows(db, "external-seat-without-canonical-rig")).toHaveLength(0);
-      expect(autoRows(db, "bad:seat@exclusion-rig")).toHaveLength(0);
+      expect(autoRows(db, "bad_seat_no_at_sign")).toHaveLength(0);
       const lines = warn.mock.calls.map((args) => args.map(String).join(" "));
       expect(lines.some((line) =>
         line.includes("r01-dev-qa") ||
         line.includes("external-seat-without-canonical-rig") ||
-        line.includes("bad:seat@exclusion-rig")
+        line.includes("bad_seat_no_at_sign")
       ))
         .toBe(false);
     } finally {

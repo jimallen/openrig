@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 
 const ulid = monotonicFactory();
 import type { Session, Binding } from "./types.js";
-import { validateSessionName } from "./session-name.js";
+import { validateSessionName, validateClaimedSessionName } from "./session-name.js";
 import { formatWatchdogRegistrationError } from "./watchdog-auto-registration.js";
 import type { ClaudeLaunchedProcess, ClaudeResumeRotation } from "./native-process-lineage.js";
 
@@ -194,6 +194,11 @@ export class SessionRegistry {
     kind: OccupantKind = "adopt",
     reservedGeneration?: string | null,
   ): Session {
+    if (!validateClaimedSessionName(sessionName)) {
+      throw new Error(
+        `Invalid claimed session name "${sessionName.replace(/[^\x20-\x7e]/g, "?")}": allowed characters are a-z, A-Z, 0-9, -, _, ., @`,
+      );
+    }
     const id = ulid();
     // A claimed session (claim, self-attach, handover) is a new occupant of the same seat, so it inherits the seat's
     // restore policy exactly as `registerSession` does.

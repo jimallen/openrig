@@ -2,7 +2,9 @@ import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { CmuxAdapter, CmuxResult } from "../adapters/cmux.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import { tmuxAttachCommand } from "../adapters/tmux-server.js";
+import { tmuxAttachCommand, shellWord } from "../adapters/tmux-server.js";
+import { stageCmuxLine } from "../adapters/cmux-typed-line.js";
+import { defaultTmuxFileOps, type TmuxFileOps } from "../adapters/tmux.js";
 
 export type OpenCmuxAction = "focused_existing" | "created_new" | "created_helper";
 
@@ -20,6 +22,7 @@ export class NodeCmuxService {
     private sessionRegistry: SessionRegistry,
     private cmuxAdapter: CmuxAdapter,
     tmuxAdapter?: TmuxAdapter,
+    private fileOps: TmuxFileOps = defaultTmuxFileOps(),
   ) {
     this.tmuxAdapter = tmuxAdapter ?? null;
   }
@@ -88,7 +91,9 @@ export class NodeCmuxService {
     // focused_existing without re-attaching.
     const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
     if (isTmux) {
-      const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `${tmuxAttachCommand(sessionName)}\n`, wsResult.data);
+      const attach = await stageCmuxLine(tmuxAttachCommand(sessionName), this.fileOps);
+      const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `${attach.line}\n`, wsResult.data);
+      if (!sendResult.ok) await attach.discard();
       if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
       const focusResult = await this.cmuxAdapter.focusSurface(newSurfaceId, wsResult.data);
       if (!focusResult.ok) return { ok: false, error: focusResult.message, code: focusResult.code };
@@ -101,15 +106,23 @@ export class NodeCmuxService {
 
     // External-cli / no tmux: honest helper console. Defer binding
     // persistence until after helper text + focus succeed (same rule as tmux).
+    // Every display line is printed from a quoted word and every name is quoted, so a session name with a
+    // newline, `;` or `$(...)` is text here, never a command. The last line is a usage hint: it is printed,
+    // not left half-typed for the person to finish, because a staged script cannot leave a line unexecuted.
+    const quotedName = shellWord(sessionName);
     const helperText = [
-      `# Helper console for ${sessionName}`,
-      `# This node is externally attached — no direct terminal session available.`,
-      `# Useful commands:`,
-      `rig capture ${sessionName}`,
-      `rig transcript ${sessionName} --tail 100`,
-      `rig send ${sessionName} "..." --verify`,
+      `printf '%s\\n' ${[
+        `# Helper console for ${sessionName}`,
+        `# This node is externally attached — no direct terminal session available.`,
+        `# Useful commands:`,
+      ].map(shellWord).join(" ")}`,
+      `rig capture ${quotedName}`,
+      `rig transcript ${quotedName} --tail 100`,
+      `printf '%s\\n' ${shellWord(`rig send ${quotedName} "..." --verify`)}`,
     ].join("\n");
-    const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, helperText, wsResult.data);
+    const helper = await stageCmuxLine(helperText, this.fileOps);
+    const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `${helper.line}\n`, wsResult.data);
+    if (!sendResult.ok) await helper.discard();
     if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
     const focusResult = await this.cmuxAdapter.focusSurface(newSurfaceId, wsResult.data);
     if (!focusResult.ok) return { ok: false, error: focusResult.message, code: focusResult.code };
