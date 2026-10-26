@@ -113,6 +113,7 @@ describe("seat paths, argv and request ids", () => {
       ownSubmissionsPath: "/h/.openrig/state/pda/research@r/own-submissions.json",
       usagePendingPath: "/h/.openrig/state/pda/research@r/usage-pending.json",
       releaseRequestPath: "/h/.openrig/state/pda/research@r/release.request",
+      runnerLockPath: "/h/.openrig/state/pda/research@r/runner.lock",
     });
   });
   it("builds the runner argv from a token PATH; --usage-facts only when on", () => {

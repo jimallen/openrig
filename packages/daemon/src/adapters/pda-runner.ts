@@ -33,8 +33,8 @@ import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_LABEL, PDA_RUNNER_READY_MARKER, PDA_RUNTIME,
-  isPdaLoopbackBaseUrl, parsePdaRunnerState, pdaAgentNameProblem, pdaSeatPaths, sanitizeForPane,
-  type PdaHeldCode, type PdaRunnerArgs, type PdaRunnerErrorCode, type PdaRunnerState, type PdaSeatPaths,
+  isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaSeatPaths, sanitizeForPane,
+  type PdaHeldCode, type PdaRunnerArgs, type PdaRunnerLock, type PdaRunnerErrorCode, type PdaRunnerState, type PdaSeatPaths,
 } from "./pda-runner-protocol.js";
 import {
   createPdaClient, pdaTokenSourceFromFile,
@@ -1142,6 +1142,26 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   fs.mkdirSync(paths.seatRoot, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(paths.seatRoot, 0o700); } catch { /* not ours to change */ }
 
+  // OF-98: the seat's runner.lock covers everything below, the usage sink's bounded close included, so a launch
+  // that follows a stop can wait for it. Released last; a SIGKILL or an exit 70 leaves it behind with a dead pid.
+  const release = acquireRunnerLock(paths.runnerLockPath, args.launchId);
+  try { await runLocked(args, paths); } finally { release(); }
+}
+
+/** Write `runner.lock` for this process. Best effort: a seat dir that cannot be written has bigger problems and the
+ *  launch then simply does not wait. The returned release removes the file only while it is still this pid's. */
+export function acquireRunnerLock(lockPath: string, launchId: string): () => void {
+  const lock: PdaRunnerLock = { pid: process.pid, launchId, at: new Date().toISOString() };
+  try { nodeRunnerFs.writeAtomic(lockPath, JSON.stringify(lock)); } catch { /* best effort */ }
+  return () => {
+    try {
+      const held = parsePdaRunnerLock(fs.readFileSync(lockPath, "utf8"));
+      if (held?.pid === process.pid) fs.unlinkSync(lockPath);
+    } catch { /* already gone */ }
+  };
+}
+
+async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void> {
   const endpoint = resolveActivityEndpoint(process.env);
   const hookToken = endpoint?.token ?? process.env.OPENRIG_ACTIVITY_HOOK_TOKEN?.trim() ?? "";
   const nodeId = process.env.OPENRIG_NODE_ID?.trim() || args.sessionName;
