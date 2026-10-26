@@ -185,6 +185,9 @@ export class RigSpecSourceService {
     if (problem) {
       return { ok: false, code: "spec_untrusted", message: `${problem}. Record a reviewed spec from a trusted spec root instead (in the shared-docs rigs folder only <rig name>/rig.yaml qualifies).` };
     }
+    const loaded = loadSpec(specSource);
+    if (!loaded.ok) return { ok: false, code: loaded.code, message: loaded.message };
+    // (Read first, so a path that does not resolve is reported as unreadable, not as untrusted.)
     // The spelling is what gets recorded and read again at every launch, restore and MCP read, with no re-check, so the
     // path AS TYPED must qualify too, not only where it leads today: a link kept in a folder a seat can write (the
     // Codex state folders under the shared-docs rigs folder) could be retargeted to the seat's own file later. So the
@@ -196,8 +199,6 @@ export class RigSpecSourceService {
     if (!typedGeneral && typedFolder === null) {
       return { ok: false, code: "spec_untrusted", message: `${readPath}, as typed, is not itself under a trusted spec root or exactly <shared-docs rigs>/<rig name>/rig.yaml. A link kept anywhere else (a seat's writable folder, say) could be pointed at another file later, so type the path through the trusted folder.` };
     }
-    const loaded = loadSpec(specSource);
-    if (!loaded.ok) return { ok: false, code: loaded.code, message: loaded.message };
     // One rig's folder cannot serve another rig: a spec admitted only by the shared-docs rigs folder must sit in a
     // folder named for this rig or for the spec's own name (a project rig is named after its project, its spec is not).
     const wrongFolder = [exactFolder, typedFolder].find((f) => f !== null && f !== rig.rig.name && f !== loaded.specName);
