@@ -54,12 +54,12 @@ describe("OF-102 rig spec-source route", () => {
 
   /** The route, mounted as server.ts mounts it: the MCP trust roots (released copies under <home>, the library) reach it
    *  as `mcpTrust`; the shared-docs rigs folder is the route's own. */
-  function mount(opts: { bearerToken: string | null; io?: PathJudgeIo }): Hono {
+  function mount(opts: { bearerToken: string | null; io?: PathJudgeIo; extraRoots?: string[] }): Hono {
     const a = new Hono();
     a.use("*", async (c, next) => {
       c.set("rigRepo" as never, rigRepo as never);
       c.set("eventBus" as never, eventBus as never);
-      c.set("mcpTrust" as never, { specRoots: () => mcpSpecRoots({ home, specLibraryRoots: [trusted] }), ...(opts.io ? { io: opts.io } : {}) } as never);
+      c.set("mcpTrust" as never, { specRoots: () => [...mcpSpecRoots({ home, specLibraryRoots: [trusted] }), ...(opts.extraRoots ?? [])], ...(opts.io ? { io: opts.io } : {}) } as never);
       await next();
     });
     a.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: opts.bearerToken, sharedDocsRigsRoot: sharedDocsRigs }));
@@ -454,10 +454,11 @@ edges:
     });
 
     it("a typed path into an install that is gone is judged where the read goes (re-anchored), not skipped", async () => {
-      // /gone/…/@openrig/cli/daemon/specs/… re-anchors to the running install's bundled specs, which are not among this
-      // app's trusted roots: the check must refuse it instead of waving an unresolvable path through to the read.
+      // /gone/…/@openrig/cli/daemon/specs/… re-anchors to the running install's bundled specs. Here the typed spelling lies
+      // under a trusted root (/gone/node_modules) but the file the read uses does not: the check must judge the re-anchored
+      // file instead of waving an unresolvable path through to the read.
       const typed = "/gone/node_modules/@openrig/cli/daemon/specs/rigs/launch/kernel/rig.yaml";
-      const res = await set({ path: typed, operator: "jim@ops" });
+      const res = await set({ path: typed, operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: PERMISSIVE_IO, extraRoots: ["/gone/node_modules"] }));
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
       nothingRecorded();
