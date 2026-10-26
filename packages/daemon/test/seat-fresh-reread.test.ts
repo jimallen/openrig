@@ -14,6 +14,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
+import { FIXTURE_SPEC_SOURCE_TRUST } from "./helpers/spec-source-trust.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan } from "../src/domain/projection-planner.js";
@@ -84,9 +85,12 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
   let inst: PodRigInstantiator;
   let service: SeatLifecycleService;
   let reconciler: ReturnType<typeof vi.fn<typeof reconcileSkillLoadout>>;
+  // OF-103: the roots a recorded spec source must lie under; the fixture folder by default, narrowed by the rows that pin the re-judge.
+  let trustedRoots: string[];
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of32-fresh-")));
+    trustedRoots = [root];
     releaseA = path.join(root, "releases", "aaaaaaa", "rigs", "team");
     releaseB = path.join(root, "releases", "bbbbbbb", "rigs", "team");
     writeRelease(releaseA, "1.0.0");
@@ -143,6 +147,7 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
+      specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => trustedRoots },
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
       // The production agent-ref guard (OF-16): realpath confinement and the guarded agent.yaml read.
       fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
@@ -469,6 +474,64 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(storedFiles(seat.node.id)).toEqual(before);
     expect(nodeSpec(seat.node.id).version).toBe("1.0.0");
     expect(delivered).toEqual([]);
+  });
+
+  // OF-103. A fresh launch delivers the persona the recorded source names into a live seat, so it judges that source again
+  // at every read, by the rules `rig spec-source set` applies: a rig recorded by `rig up` before OF-102 (any path), a link
+  // retargeted or a file swapped after `set`, is not trusted for having been recorded. Deployed entrypoint: startup.ts
+  // constructs PodRigInstantiator (specSourceTrust: the MCP spec roots) and hands it to SeatLifecycleService as the
+  // seatStartupSource and to RestoreOrchestrator; their fresh paths call readSeatStartupFromSpec.
+  describe("OF-103 the recorded source is judged again at every read", () => {
+    it.each([
+      ["no trusted root covers the recorded spelling", () => []],
+      ["the spelling is outside the roots although the file it leads to is inside (typed rule)", () => [path.join(root, "releases")]],
+      ["the spelling is inside the roots but the file it leads to is outside (a retargeted link)", () => [path.join(root, "library")]],
+    ] as const)("refuses before stopping anything when %s, and says nothing was launched", async (_label, rootsOf) => {
+      const seat = await launchRig();
+      retarget("bbbbbbb");
+      trustedRoots = [...rootsOf()];
+      const stopped = vi.mocked(tmux.killSession).mock.calls.length;
+
+      const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_source_untrusted", guidance: expect.stringContaining("--startup-from stored") });
+      expect(!result.ok && result.message).toContain(linkSpec);
+      expect(!result.ok && result.message).toContain("not trusted for a fresh launch");
+      expect(!result.ok && result.message).toContain("nothing was launched or changed for this seat");
+      expect(plan).toMatchObject({ ok: false, code: "startup_source_untrusted", launchable: false });
+      expect(vi.mocked(tmux.killSession).mock.calls.length).toBe(stopped);
+      expect(alive.has(seat.sessionName)).toBe(true);
+      expect(delivered).toEqual([]);
+      expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+    });
+
+    it("an instantiator wired with no trust at all refuses a recorded source: it never fails open", async () => {
+      const seat = await launchRig();
+      (inst as unknown as { deps: { specSourceTrust?: unknown } }).deps.specSourceTrust = undefined;
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "no trust wired" });
+      expect(result).toMatchObject({ ok: false, code: "startup_source_untrusted" });
+      expect(delivered).toEqual([]);
+    });
+
+    it("control: roots that cover the spelling and the file it leads to still deliver the new release", async () => {
+      const seat = await launchRig();
+      retarget("bbbbbbb");
+      trustedRoots = [path.join(root, "library"), path.join(root, "releases")];
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
+    });
+
+    it("the refusal never falls back by itself: the operator's own --startup-from stored still replays, and the result says it was asked", async () => {
+      const seat = await launchRig();
+      retarget("bbbbbbb");
+      trustedRoots = [];
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "keep persona", startupFrom: "stored" });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+      expect(result).toMatchObject({ startupSource: { kind: "stored", reason: "requested" } });
+    });
   });
 });
 

@@ -16,6 +16,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { rigSpecSourceRoutes } from "../src/routes/rig-spec-source.js";
 import { mcpSpecRoots, type PathJudgeIo } from "../src/domain/codex-mcp-servers.js";
+import { runningShippedSpecsRoot } from "../src/domain/builtin-startup-files.js";
 
 const SPEC = (name: string, members: Record<string, string[]>) => `version: "0.2"
 name: ${name}
@@ -479,8 +480,8 @@ edges:
         expect(body.message).toContain("does not exist as typed");
         nothingRecorded();
       });
-      it("the judged path is the recorded path, or its realpath, and nothing else (a packaged-install-shaped path that exists)", async () => {
-        const real = write("node_modules/@openrig/cli/daemon/specs/rigs/team/rig.yaml", GOOD);
+      it("the judged path is the recorded path, or its realpath, and nothing else (a path that exists)", async () => {
+        const real = write("specs-copy/rigs/team/rig.yaml", GOOD);
         fs.mkdirSync(path.join(trusted, "links"));
         const link = path.join(trusted, "links", "rig.yaml");
         fs.symlinkSync(real, link);
@@ -496,6 +497,37 @@ edges:
           db.prepare("UPDATE rigs SET spec_source_path = NULL WHERE id = ?").run(rigId);
           db.prepare("DELETE FROM events").run();
         }
+      });
+    });
+
+    // OF-104. A packaged-install-shaped path (.../@openrig/cli/daemon/specs/...) is always read from the RUNNING install by a
+    // launch, so a path in another install would be judged here and then read from a different file. Refused when recording.
+    describe("OF-104 a packaged-install-shaped path outside the running install", () => {
+      it("is refused with spec_packaged_elsewhere, naming the file a launch would read; nothing is recorded", async () => {
+        const typed = write("old/node_modules/@openrig/cli/daemon/specs/rigs/team/rig.yaml", GOOD);
+        const res = await set({ path: typed, operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        const body = await res.json() as { code: string; message: string };
+        expect(body.code).toBe("spec_packaged_elsewhere");
+        expect(body.message).toContain("other than the running one");
+        expect(body.message).toContain(path.join(runningShippedSpecsRoot(), "rigs", "team", "rig.yaml"));
+        nothingRecorded();
+      });
+      it("control: the same spec outside any install-shaped path is recorded", async () => {
+        const res = await set({ path: write("specs-copy/rigs/team/rig.yaml", GOOD), operator: "jim@ops" });
+        expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+      });
+    });
+
+    // OF-103. `show` reports what a launch would do with the recorded value, including a value `rig up` recorded before OF-102.
+    describe("OF-103 show judges the recorded value as a launch will", () => {
+      it("a recorded source under no trusted root is shown as unavailable, with the launch's reason; one under a root is shown as resolved", async () => {
+        const outside = write("outside/rig.yaml", GOOD, root);
+        rigRepo.setRigSpecSource(rigId, outside);
+        expect(await (await show()).json()).toMatchObject({ ok: true, specSource: outside, resolvedPath: null, unavailable: expect.stringContaining("A launch would refuse this source") });
+        const inside = write("inside/rig.yaml", GOOD);
+        rigRepo.setRigSpecSource(rigId, inside);
+        expect(await (await show()).json()).toMatchObject({ ok: true, specSource: inside, resolvedPath: inside, unavailable: null });
       });
     });
 

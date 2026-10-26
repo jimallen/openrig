@@ -109,6 +109,56 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
     expect(await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" })).toMatchObject({ ok: true });
   });
 
+  // OF-49 / OF-103. The recorded source decides what runs just as an operator-named --spec does, so it is judged by the same
+  // rules `rig spec-source set` applies at every read, not trusted for having been recorded (a rig recorded by `rig up`
+  // before OF-102 can name any path). Deployed entrypoint: startup.ts passes mcpTrust to SeatLifecycleService, whose
+  // setMcpServer calls readDeclaredMcpServer.
+  describe("OF-103 the recorded source is judged again at the read", () => {
+    /** A copy of the good spec in a folder the trusted roots (join(root, "spec")) do not cover. */
+    function untrustedCopy(): string {
+      const dir = join(root, "elsewhere");
+      mkdirSync(dir);
+      chmodSync(dir, 0o755);
+      const file = join(dir, "rig.yaml");
+      writeFileSync(file, fs.readFileSync(specPath, "utf-8"));
+      return file;
+    }
+    it("refuses a recorded source outside the trusted roots, and stores and audits nothing", async () => {
+      const s = seat("eztrack");
+      rigRepo.setRigSpecSource(s.rig.id, untrustedCopy());
+      const result = await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      expect(result).toMatchObject({ ok: false, code: "mcp_spec_source_untrusted" });
+      expect(!result.ok && result.message).toContain("not trusted for MCP servers");
+      expect(column(s.node.id)).toBeNull();
+      expect(events()).toEqual([]);
+    });
+    it("control: the same file in a trusted root is read", async () => {
+      const s = seat("eztrack");
+      expect(await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" })).toMatchObject({ ok: true, declaredIn: specPath });
+    });
+    it("an untrusted recorded source does not make its own folder a trusted root for an operator-named --spec", async () => {
+      const s = seat("eztrack");
+      const copy = untrustedCopy();
+      rigRepo.setRigSpecSource(s.rig.id, copy);
+      const result = await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r", specFile: copy });
+      expect(result).toMatchObject({ ok: false, code: "mcp_spec_file_untrusted" });
+      expect(column(s.node.id)).toBeNull();
+    });
+    it("a file swapped in under the recorded spelling after it was recorded is judged where it now lies", async () => {
+      // Recorded as a link inside the trusted root; the link is then retargeted to a file outside it.
+      const s = seat("eztrack");
+      const link = join(root, "spec", "current.yaml");
+      fs.symlinkSync(specPath, link);
+      rigRepo.setRigSpecSource(s.rig.id, link);
+      expect(await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" })).toMatchObject({ ok: true });
+      await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "off", reason: "reset", actor: "a@r" });
+      fs.unlinkSync(link);
+      fs.symlinkSync(untrustedCopy(), link);
+      const result = await service.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "pilot", actor: "a@r" });
+      expect(result).toMatchObject({ ok: false, code: "mcp_spec_source_untrusted" });
+    });
+  });
+
   it.each([
     ["no recorded spec source", "mcp_spec_source_unrecorded"],
     ["a server the spec does not declare", "mcp_server_undeclared"],
@@ -278,11 +328,41 @@ describe("rig seat set-mcp: one seat instance, from the rig's recorded spec", ()
       await refusedAndNothingStored(s, file, `the spec file ${file} ${NOT_UNDER}`);
     });
 
-    it("the rig's recorded spec directory is a trusted root even when no other root is configured", async () => {
-      const s = seat("eztrack"); // records root/spec/rig.yaml as the rig's spec source
-      const file = goodSpec(); // a sibling of the recorded spec
-      const bare = new SeatLifecycleService({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: fakeTmux(), mcpTrust: { io: TRUST, specRoots: () => [] } });
-      expect(await bare.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "x", actor: "a@r", specFile: file })).toMatchObject({ ok: true, declaredIn: file });
+    // OF-49 / OF-103: the rig's recorded spec directory is a root for a file beside it, but only when the recorded source ITSELF
+    // passes the judgement (here by the exact-depth rule, as the kernel's <shared-docs>/rigs/kernel/rig.yaml does with no other
+    // root configured), and never for what lies deeper in that folder (<rig>/state/<pod> are Codex state folders).
+    describe("the recorded spec's folder as a root", () => {
+      let exactRoot: string;
+      let bare: SeatLifecycleService;
+      const spec = (rel: string, asRig = false) => {
+        const p = join(exactRoot, rel);
+        mkdirSync(join(p, ".."), { recursive: true });
+        for (let d = join(p, ".."); d.startsWith(exactRoot); d = join(d, "..")) chmodSync(d, 0o755);
+        writeFileSync(p, fs.readFileSync(specPath, "utf-8").replace("name: jims-team", asRig ? "name: eztrack" : "name: jims-team"));
+        chmodSync(p, 0o644);
+        return p;
+      };
+      beforeEach(() => {
+        exactRoot = join(root, "shared-docs", "rigs");
+        mkdirSync(exactRoot, { recursive: true });
+        for (const d of [join(root, "shared-docs"), exactRoot]) chmodSync(d, 0o755);
+        bare = new SeatLifecycleService({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter: fakeTmux(),
+          mcpTrust: { io: TRUST, specRoots: () => [], exactDepthRoot: () => exactRoot } });
+      });
+      it("a file beside a trusted recorded source is accepted even when no other root is configured", async () => {
+        const s = seat("eztrack");
+        rigRepo.setRigSpecSource(s.rig.id, spec("jims-team/rig.yaml"));
+        const sibling = spec("jims-team/other.yaml", true);
+        expect(await bare.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "x", actor: "a@r", specFile: sibling })).toMatchObject({ ok: true, declaredIn: sibling });
+      });
+      it("a file deeper in that folder (a Codex state folder) is refused, though it sits under the recorded folder", async () => {
+        const s = seat("eztrack");
+        rigRepo.setRigSpecSource(s.rig.id, spec("jims-team/rig.yaml"));
+        const deep = spec("jims-team/state/queue/evil.yaml", true);
+        const r = await bare.setMcpServer({ seatRef: s.ref, server: "lsp", state: "on", reason: "x", actor: "a@r", specFile: deep });
+        expect(r).toMatchObject({ ok: false, code: "mcp_spec_file_untrusted" });
+        expect(column(s.node.id)).toBeNull();
+      });
     });
 
     it("refuses a spec with more than one hard link, even under a trusted root", async () => {

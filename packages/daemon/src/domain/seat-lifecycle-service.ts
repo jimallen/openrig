@@ -60,7 +60,11 @@ const TERMINAL_SESSION_STATUSES = new Set(["superseded", "detached", "exited"]);
 export interface SeatLifecycleDeps {
   /** Per-seat Codex MCP servers: the roots an operator-named spec (--spec) must lie under, and (tests only) the
    *  trust rule's file-system reads. Absent: no --spec file is accepted. */
-  mcpTrust?: { specRoots?: () => string[]; io?: import("./codex-mcp-servers.js").PathJudgeIo };
+  mcpTrust?: {
+    specRoots?: () => string[]; io?: import("./codex-mcp-servers.js").PathJudgeIo;
+    /** The shared-docs rigs folder a recorded spec source may sit in (exactly <name>/rig.yaml). Default: the daemon's own. */
+    exactDepthRoot?: () => string;
+  };
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
@@ -96,7 +100,7 @@ export interface SeatRefusal {
     // rig seat set-mcp
     | "missing_actor" | "invalid_mcp_server" | "invalid_mcp_state" | "mcp_unsupported_runtime" | "mcp_unavailable"
     | "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
-    | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "invalid_mcp_spec_file" | "mcp_spec_file_untrusted"
+    | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "invalid_mcp_spec_file" | "mcp_spec_file_untrusted" | "mcp_spec_source_untrusted"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -113,6 +117,7 @@ export interface SeatRefusal {
     | "startup_context_runtime_mismatch"
     | "startup_source_unavailable"
     | "startup_source_changed"
+    | "startup_source_untrusted"
     | "invalid_startup_from"
     | "runtime_adapter_missing"
     | "launch_unavailable"
@@ -425,6 +430,7 @@ export class SeatLifecycleService {
         ...(input.specFile !== undefined ? { operatorSpecFile: input.specFile } : {}),
         trustedSpecRoots: this.mcpTrust?.specRoots?.() ?? [],
         ...(this.mcpTrust?.io ? { io: this.mcpTrust.io } : {}),
+        ...(this.mcpTrust?.exactDepthRoot ? { recordedExactDepthRoot: this.mcpTrust.exactDepthRoot } : {}),
         node: { logicalId: seat.logicalId, runtime: node.runtime, agentRef: node.agent_ref, profile: node.profile, cwd: node.cwd },
         now: () => new Date().toISOString(),
       });

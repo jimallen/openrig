@@ -23,6 +23,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
+import { FIXTURE_SPEC_SOURCE_TRUST } from "./helpers/spec-source-trust.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
@@ -160,6 +161,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
+      specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
       fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
       adapters: { "claude-code": adapter },

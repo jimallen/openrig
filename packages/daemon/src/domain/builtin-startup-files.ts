@@ -53,6 +53,14 @@ function shippedSpecsRootOf(p: string): { root: string; layout: InstallLayout } 
   return null;
 }
 
+/** The daemon/specs root of a recognized OpenRig install that is NOT the running one and contains `p`; null when `p` is
+ *  not inside a recognized install's specs, or is inside the running install's. (OF-49: the trust message for such a
+ *  path says so, instead of the general "not under a trusted spec root".) */
+export function otherInstallSpecsRoot(p: string, specsRoot: string = runningShippedSpecsRoot()): string | null {
+  const stored = shippedSpecsRootOf(p);
+  return stored && stored.root !== nodePath.resolve(specsRoot) ? stored.root : null;
+}
+
 /** A stored file from a dev checkout is followed only when it is gone; a packaged one always. */
 function shouldReanchor(layout: InstallLayout, storedFile: string, exists: Exists): boolean {
   return layout === "packaged" || !exists(storedFile);
