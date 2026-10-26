@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync, realpathSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, linkSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SpecLibraryService } from "../src/domain/spec-library-service.js";
@@ -257,5 +258,37 @@ describe("SpecLibraryService", () => {
     for (const dir of NOISE_DIRS) {
       expect(entries.every((e) => !e.sourcePath.includes(`/${dir}/`)), `entry from ${dir} leaked through SKIP_DIRS`).toBe(true);
     }
+  });
+  describe("guarded scan (OF-16)", () => {
+    function warnings(fn: () => void): string[] {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try { fn(); return warn.mock.calls.map((c) => String(c[0])); } finally { warn.mockRestore(); }
+    }
+
+    it("a spec over the spec-sized cap is skipped and logged; a normal sibling is still indexed", () => {
+      writeFileSync(join(tmpDir, "big.yaml"), VALID_RIG_YAML + "# " + "x".repeat(300 * 1024) + "\n");
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      const msgs = warnings(() => lib.scan());
+      expect(lib.list().map((e) => e.sourcePath)).toEqual([join(tmpDir, "ok.yaml")]);
+      expect(msgs.filter((m) => m.includes("big.yaml") && m.includes("limit"))).toHaveLength(1);
+    });
+
+    it("a hard-linked spec is skipped and logged", () => {
+      writeFileSync(join(tmpDir, "orig.yaml"), VALID_RIG_YAML);
+      linkSync(join(tmpDir, "orig.yaml"), join(tmpDir, "alias.yaml"));
+      const lib = createLibrary();
+      const msgs = warnings(() => lib.scan());
+      expect(lib.list()).toEqual([]);
+      expect(msgs.filter((m) => m.includes("hard links"))).toHaveLength(2);
+    });
+
+    it("a FIFO named *.yaml does not stall the scan (the walk already skips non-files; green at base)", () => {
+      execFileSync("mkfifo", [join(tmpDir, "pipe.yaml")]);
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      expect(lib.list()).toHaveLength(1);
+    });
   });
 });

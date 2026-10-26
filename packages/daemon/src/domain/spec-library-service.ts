@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFil
 import { join, relative, dirname, extname, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { checkGuardedFile, SPEC_FILE_KIND } from "./culture-file-guard.js";
 import { SpecReviewService } from "./spec-review-service.js";
 
 export interface SpecLibraryEntry {
@@ -171,12 +172,14 @@ export class SpecLibraryService {
           continue;
         }
 
-        let yaml: string;
-        try {
-          yaml = readFileSync(absPath, "utf-8");
-        } catch {
-          continue; // Can't read — skip
+        // Guarded read (OF-16): the walk's stat said "file", but the entry can change before the read, and
+        // a runaway or hard-linked file is not a spec. Skip and log a refusal; a vanished file is silent.
+        const checked = checkGuardedFile(SPEC_FILE_KIND, absPath, absPath);
+        if (!checked.ok) {
+          if (checked.reason !== "not_found") console.warn(`[openrig] spec library skipped ${absPath}: ${checked.message}`);
+          continue;
         }
+        const yaml = checked.content;
 
         let stat: { mtimeMs: number };
         try {

@@ -57,6 +57,21 @@ export const CULTURE_FILE_KIND: GuardedFileKind = {
 };
 
 /**
+ * Spec-sized cap for the library scans (spec-library-service, plugin-discovery agent.yaml walk). The largest
+ * rig/agent/workflow spec tracked in this repo, measured 2026-10-26 at 18f46db6, is 7,073 bytes. 256 KiB is
+ * ~37x that and far below any credential bundle or log. A scan skips (and logs) a file the guard refuses.
+ */
+export const SPEC_FILE_MAX_BYTES = 256 * 1024;
+
+export const SPEC_FILE_KIND: GuardedFileKind = {
+  label: "spec file",
+  maxBytes: SPEC_FILE_MAX_BYTES,
+  notFoundHint: "it vanished during the scan",
+  notRegularHint: "a spec must be a plain file",
+  article: "a spec file",
+};
+
+/**
  * Check and read one guarded file. Order: realpath (follows every symlink) -> open the RESOLVED path once with
  * O_NOFOLLOW|O_NONBLOCK (a symlink swapped in at the leaf fails; a FIFO swapped in opens instead of hanging)
  * -> fstat that descriptor (regular file, one link, size) -> read from that same descriptor, never past the

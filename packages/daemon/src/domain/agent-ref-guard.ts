@@ -34,6 +34,17 @@ import { checkGuardedFile, type GuardedFileKind } from "./culture-file-guard.js"
  * adapters, projection and bundle vendoring; they are NOT covered here. A CONTENT swap of a regular,
  * single-link, under-cap agent.yaml between the check and the parse is not detected either.
  *
+ * WHEN CONFINEMENT IS CHECKED (OF-101). `local:` confinement, the persona-file guard and the cycle check run
+ * at RESOLVE time only (`rig up`, `rig add/grow`, an import, a fresh re-read). Nothing re-runs them when the
+ * recorded startup files are replayed (restore, resume): they are recorded under the folder AS TYPED (OF-99, asTyped), so a replay reads
+ * whatever that path points to NOW, even if a symlink in it was retargeted outside the spec tree after the ref
+ * was confined. Two windows follow from that, both accepted under the trust decision above (the caller is
+ * trusted; these checks catch accidents and swaps made while resolving): (1) resolve-to-replay, as just
+ * described; (2) check-then-read on agent.yaml: realpath, open, fstat and read share one descriptor and the path
+ * is re-resolved afterwards (a swap is refused as `changed`), but the confinement test and the persona read are
+ * two steps, so a link retargeted between them is judged on the old target and read from the new one. The files
+ * a replay then reads (guidance, skills, startup files) go through the adapters' own reads, not this guard.
+ *
  * Cap: the largest agent.yaml in real use, measured 2026-10-15, is 2,115 bytes (the built-in `shared`
  * persona; the deployed release's largest is 1,218). 64 KiB is ~31x that, and far below any credential
  * bundle or log.

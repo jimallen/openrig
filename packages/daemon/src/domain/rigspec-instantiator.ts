@@ -511,10 +511,11 @@ export class PodRigInstantiator {
   /** Daemon-wide uniqueness of a pda binding (pda-runtime-design-9l, "The seat spec"): one pda agent is driven by one
    *  seat, in whatever rig. Archived rigs hold no live seat and do not count; `excludeRigIds` are the same-name rigs
    *  that `rig up` is about to archive. Returns the refusal text, or null when the agent is free. The text names the
-   *  holding seat and rig, never a token. */
+   *  holding seat and rig, never a token. A seat counts when its saved binding names the agent, when its resume token
+   *  does (OF-95), or while a launch of it holds a claim (OF-96). */
   private pdaBindingConflict(binding: PdaBinding | undefined, opts?: { excludeRigIds?: readonly string[] }): string | null {
     if (!binding) return null;
-    const holder = this.deps.rigRepo.findPdaBindingHolders(binding, opts)[0];
+    const holder = this.deps.rigRepo.findPdaDrivers(binding, opts)[0];
     return holder ? describePdaHolder(binding, holder) : null;
   }
 

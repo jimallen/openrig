@@ -61,21 +61,27 @@ export function validPiUsageFact(raw: unknown): PiUsageFact | null {
   const f = raw as Record<string, unknown>;
   const s = (k: string) => (typeof f[k] === "string" && (f[k] as string).length > 0 ? f[k] as string : null);
   const n = (k: string) => (typeof f[k] === "number" && Number.isFinite(f[k]) ? f[k] as number : null);
+  // OF-90: a token count is a safe integer (a 2**53 count would store a rounded, wrong total); a cost stays a finite number.
+  const count = (k: string) => (typeof f[k] === "number" && Number.isSafeInteger(f[k]) ? f[k] as number : null);
   const nullable = (k: string) => (f[k] === null || f[k] === undefined ? null : s(k));
   const entryId = s("entryId");
   const entryTimestamp = s("entryTimestamp");
   const kind = s("kind") as PiUsageFactKind | null;
   const origin = s("origin") as PiUsageOrigin | null;
-  const input = n("input");
-  const output = n("output");
-  if (!entryId || !entryTimestamp || !kind || !KINDS.has(kind) || !origin || !ORIGINS.has(origin) || input === null || output === null) return null;
+  const input = count("input");
+  const output = count("output");
+  // An absent cache count is 0 (as before); one that is present must be a safe integer, else the fact is refused.
+  const cache = (k: string) => (f[k] === null || f[k] === undefined ? 0 : count(k));
+  const cacheRead = cache("cacheRead");
+  const cacheWrite = cache("cacheWrite");
+  if (!entryId || !entryTimestamp || !kind || !KINDS.has(kind) || !origin || !ORIGINS.has(origin) || input === null || output === null || cacheRead === null || cacheWrite === null) return null;
   const cost = f["costTotal"] === null || f["costTotal"] === undefined ? null : n("costTotal");
   if (f["costTotal"] !== null && f["costTotal"] !== undefined && cost === null) return null;
   return {
     entryId, entryTimestamp, kind, origin, input, output,
     parentEntryId: nullable("parentEntryId"), usageCategory: nullable("usageCategory"),
     provider: nullable("provider"), model: nullable("model"),
-    cacheRead: n("cacheRead") ?? 0, cacheWrite: n("cacheWrite") ?? 0,
+    cacheRead, cacheWrite,
     costTotal: cost, stopReason: nullable("stopReason"),
     api: nullable("api"), responseId: nullable("responseId"),
   };

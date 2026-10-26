@@ -11,7 +11,7 @@
 //     usage.pda_cost_facts is on. The binding is the resume token's when one is given (restore resumes the
 //     token's agent, D2), else the spec's (`NodeBinding.pda`). No binding = refused before any keystroke.
 //   - one pda agent per seat: a launch or restore is refused, before any keystroke, while another seat holds the
-//     binding (`bindingConflicts`, review L2b I-2b / action 3). Both launch and restore come through here.
+//     binding (`reserveBinding`, review L2b I-2b / action 3, and OF-96). Both launch and restore come through here.
 //   - readiness: the runner's launch-scoped sidecar plus its READY marker, never pane heuristics, and never while
 //     the pane is back at a shell.
 //   - outcomes, one rule: what only a person can fix is `attention_required` (the agent is missing, pda refuses the
@@ -65,8 +65,11 @@ export interface PdaRuntimeAdapterDeps {
   tokenFile: () => string;
   /** usage.pda_cost_facts, read at each launch (absent = off). */
   usageFactsEnabled?: () => boolean;
-  /** Why this binding may not be launched for this seat (another seat holds it), or [] (review L2b action 3). */
-  bindingConflicts?: (binding: PdaBinding, nodeId: string) => string[];
+  /** Why this binding may not be launched for this seat (another seat holds it; review L2b action 3), and, when it
+   *  may, the claim on the agent (OF-96): check AND claim in one synchronous step (RigRepository.reservePdaLaunch), so
+   *  two launches that both found the agent free cannot both pass. The claim is held while the launch runs; `failed()`
+   *  frees it, `launched()` hands it to the seat's recorded token. */
+  reserveBinding?: (binding: PdaBinding, nodeId: string) => { ok: true; reservation: { launched(): void; failed(): void } } | { ok: false; conflicts: string[] };
   newLaunchId?: () => string;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
@@ -163,11 +166,23 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
       return { ok: false, error: "pda launch: this seat has no readable pda binding (its spec's pda block is missing or its saved binding is damaged); nothing was started" };
     }
 
-    const conflicts = this.deps.bindingConflicts?.(target, binding.nodeId) ?? [];
-    if (conflicts.length > 0) {
-      return { ok: false, error: `pda launch refused before anything was typed: ${conflicts.join("; ")}` };
+    const taken = this.deps.reserveBinding?.(target, binding.nodeId);
+    if (taken && !taken.ok) {
+      return { ok: false, error: `pda launch refused before anything was typed: ${taken.conflicts.join("; ")}` };
     }
+    const reservation = taken?.reservation;
+    let launchedOk = false;
+    try {
+      const result = await this.launchOnto(sessionName, target);
+      launchedOk = result.ok;
+      return result;
+    } finally {
+      // A throw is a failure too: the claim must never outlive a launch that did not start the runner.
+      if (launchedOk) reservation?.launched(); else reservation?.failed();
+    }
+  }
 
+  private async launchOnto(sessionName: string, target: PdaBinding): Promise<HarnessLaunchResult> {
     const tokenFile = this.deps.tokenFile();
     const token = this.deps.fsOps.lstat(tokenFile);
     if (!token || !token.isFile) {
