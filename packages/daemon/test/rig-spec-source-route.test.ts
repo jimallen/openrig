@@ -82,7 +82,15 @@ describe("OF-102 rig spec-source route", () => {
     expect(events()).toEqual([{ type: "rig.spec_source_changed", rigId, from: null, to: typed, operator: "jim@ops" }]);
     // Never changes any node, session or startup context by itself.
     expect(seatState()).toBe(before);
-    // A later move of the link leads show to the new file; the record is unchanged.
+  });
+
+  it("a later move of the link leads show to the new file; the record stays as typed", async () => {
+    const real = write("rel-a/rigs/team/rig.yaml", GOOD);
+    fs.mkdirSync(path.join(root, "library"));
+    fs.symlinkSync(path.dirname(real), path.join(root, "library", "team"));
+    const typed = path.join(root, "library", "team", "rig.yaml");
+    await set({ path: typed, operator: "jim@ops" });
+    expect(await (await show()).json()).toMatchObject({ specSource: typed, resolvedPath: real });
     fs.rmSync(path.join(root, "library", "team"));
     const other = write("rel-b/rigs/team/rig.yaml", GOOD);
     fs.symlinkSync(path.dirname(other), path.join(root, "library", "team"));
