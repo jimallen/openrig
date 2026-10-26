@@ -153,35 +153,6 @@ export class RigSpecSourceService {
       return { ok: false, code: "spec_untrusted", message: `${problem}. Record a reviewed spec from a trusted spec root instead (in the shared-docs rigs folder only <rig name>/rig.yaml qualifies).` };
     }
     const loaded = loadSpec(specSource);
-        if (loaded.ok) resolvedPath = loaded.resolvedPath; else unavailable = loaded.message;
-      }
-    }
-    return { ok: true, rigId, rigName: rig.rig.name, specSource, resolvedPath, unavailable };
-  }
-
-  set(input: { rigId: string; path: string; operator: string; operatorIdentity: OperatorIdentity; authorizedBy: "operator_bearer" | "trusted_spec_root" }): SpecSourceSetResult {
-    const operator = input.operator.trim();
-    if (!operator) return { ok: false, code: "missing_operator", message: "An operator is required so the change can be audited." };
-    const typed = input.path.trim();
-    if (!typed) return { ok: false, code: "missing_path", message: "A spec path is required." };
-    if (!nodePath.isAbsolute(typed)) return { ok: false, code: "path_not_absolute", message: `${typed} is not an absolute path; a relative one would depend on the daemon's working directory.` };
-    const rig = this.deps.rigRepo.getRig(input.rigId);
-    if (!rig) return { ok: false, code: "rig_not_found", message: `Rig ${input.rigId} not found.` };
-
-    // Lexical clean-up only: a link spelling stays a link (OF-32/OF-99).
-    const specSource = nodePath.resolve(typed);
-
-    // What is recorded decides which startup files, culture and local: personas a later plain --fresh launch or restore
-    // delivers into a live seat, so the file must be one a seat could not have written: under a trusted spec root by its
-    // REAL location, a regular file with one link, not in a temp folder, git tree or seat folder, and owned and
-    // protected along its whole chain (the check `rig seat set-mcp --spec` applies). Unreadable paths fall through
-    // to the read below, which reports them.
-    const seatFolders = [...new Set(rig.nodes.map((n) => n.cwd).filter((c): c is string => !!c))];
-    for (const seatCwd of seatFolders.length > 0 ? seatFolders : [null]) {
-      const problem = specFileTrustProblem(specSource, this.deps.trust.roots(), seatCwd, this.deps.trust.io);
-      if (problem) return { ok: false, code: "spec_untrusted", message: `${problem}. Record a reviewed spec from a trusted spec root instead.` };
-    }
-    const loaded = loadSpec(specSource);
     if (!loaded.ok) return { ok: false, code: loaded.code, message: loaded.message };
     // One rig's folder cannot serve another rig: a spec admitted only by the shared-docs rigs folder must sit in a
     // folder named for this rig or for the spec's own name (a project rig is named after its project, its spec is not).
