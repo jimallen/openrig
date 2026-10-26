@@ -98,7 +98,11 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.listPanes("=seat:1");
   await a.probeSession(SESSION);
   await a.hasSession(SESSION);
-  await a.createSession(SESSION, "/w x", { PATH: "/a b:$HOME", Q: "it's" });
+  await a.createSession(SESSION, "/w x", { PATH: "/a b:$HOME", HOME: "it's" });
+  // The credential channel: source-file, and the cleanup when it cannot be delivered.
+  await a.createSession(SESSION, "/w x", { ANTHROPIC_API_KEY: "it's" });
+  await a.respawnPane("%1", "codex", { env: { ANTHROPIC_API_KEY: "it's" } });
+  await recordingAdapter(calls, { failing: ["source-file"] }).createSession(SESSION, undefined, { ANTHROPIC_API_KEY: "it's" });
   await a.sendText(SESSION, "hello");
   await a.sendText(SESSION, "1", undefined, { bracketed: false });
   await a.sendShellCommand(SESSION, "echo 'hi there'", undefined, { sourceInPane: true });
@@ -106,7 +110,7 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.setWindowOption(SESSION, "@openrig x", "a b'c");
   await a.resizeWindow(SESSION, 120, 40);
   await a.killSession(SESSION);
-  await a.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", env: { A: "b c", Q: "it's" } });
+  await a.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", env: { USER: "b c", LOGNAME: "it's" } });
   await a.respawnPane("%1");
   await a.getPaneLocalOption("%1", "remain-on-exit");
   await a.restorePaneOption("%1", "remain-on-exit", "on");

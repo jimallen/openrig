@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parentSessionEnvKeys } from "../domain/parent-session-env.js";
+import { partitionLaunchEnv, renderSecretEnvScript } from "./tmux-launch-env-channel.js";
 
 export type ExecFn = (cmd: string) => Promise<string>;
 
@@ -617,14 +618,19 @@ export class TmuxAdapter {
       OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "",
       ...env,
     };
+    // Credentials (the activity-hook token, provider keys) never ride this
+    // command line: a tmux argv is readable through `ps`, and the server that
+    // new-session starts keeps it. They reach the session through a 0600 file
+    // the server reads, then the first shell is restarted so it starts with them.
+    const { argv: argvEnv, file: secretEnv } = partitionLaunchEnv(seatEnv);
     const argv = ["tmux", "new-session", "-d", "-s", name];
     if (cwd != null) argv.push("-c", cwd);
-    for (const [k, v] of Object.entries(seatEnv)) argv.push("-e", `${k}=${v}`);
+    for (const [k, v] of Object.entries(argvEnv)) argv.push("-e", `${k}=${v}`);
     // The pane new-session itself made: an after-new-session hook may select another window.
     argv.push("-P", "-F", "#{pane_id}");
     const legacyParts = ["tmux", "new-session", "-d", "-s", shellQuote(name)];
     if (cwd != null) legacyParts.push("-c", shellQuote(cwd));
-    for (const [k, v] of Object.entries(seatEnv)) legacyParts.push("-e", shellQuote(`${k}=${v}`));
+    for (const [k, v] of Object.entries(argvEnv)) legacyParts.push("-e", shellQuote(`${k}=${v}`));
     legacyParts.push("-P", "-F", shellQuote("#{pane_id}"));
     let created: string;
     try {
@@ -632,21 +638,75 @@ export class TmuxAdapter {
     } catch (err) {
       return classifyWriteError(err);
     }
+    const hasSecrets = Object.keys(secretEnv).length > 0;
+    if (hasSecrets) {
+      try {
+        await this.deliverSecretEnv(exactTarget(name, "session"), secretEnv);
+      } catch (err) {
+        // A seat without its credentials must not be left half-launched.
+        await this.discardUnlaunchedSession(name);
+        return classifyWriteError(err);
+      }
+    }
     // A tmux server started from a Claude Code session or Herdr pane hands
     // their identity to every new pane. Mark it removed for this session only
     // and restart the fresh pane so its shell starts without it. The session
-    // exists either way, so a failure here is a warning, never a failed launch.
+    // exists either way, so a failure here is a warning, never a failed launch
+    // (unless credentials were set: the first shell then lacks them, so the
+    // restart is part of delivering them and its failure fails the launch).
+    let warnings: string[] | undefined;
+    let excluded = false;
     try {
-      if (await this.excludeParentSessionEnv(exactTarget(name, "session"), Object.keys(seatEnv))) {
-        if (!/^%\d+$/.test(created)) throw new Error(`new-session reported no pane id ("${created}"), so no pane was restarted`);
-        const respawn = ["tmux", "respawn-pane", "-k", "-t", created];
+      excluded = await this.excludeParentSessionEnv(exactTarget(name, "session"), Object.keys(seatEnv));
+    } catch (err) {
+      warnings = [parentSessionEnvWarning(name, err)];
+    }
+    if (excluded || hasSecrets) {
+      try {
+        const isPaneId = /^%\d+$/.test(created);
+        // Credentials need the restart, so a tmux that printed no pane id gets the session's own pane
+        // (a fresh session has just the one); without credentials the restart stays best-effort.
+        if (!isPaneId && !hasSecrets) throw new Error(`new-session reported no pane id ("${created}"), so no pane was restarted`);
+        const respawn = ["tmux", "respawn-pane", "-k", "-t", isPaneId ? created : exactTarget(name, "pane")];
         if (cwd != null) respawn.push("-c", cwd);
         await this.run(respawn, posixJoinArgv(respawn));
+      } catch (err) {
+        if (hasSecrets) {
+          await this.discardUnlaunchedSession(name);
+          return classifyWriteError(err);
+        }
+        warnings = [parentSessionEnvWarning(name, err)];
       }
-      return { ok: true };
-    } catch (err) {
-      return { ok: true, warnings: [parentSessionEnvWarning(name, err)] };
     }
+    return warnings ? { ok: true, warnings } : { ok: true };
+  }
+
+  /** Write `secret` into one tmux session's environment without a credential
+   * ever appearing in an argv: a 0600 file of `set-environment` lines that the
+   * tmux server reads with `source-file`, removed afterwards. Failures carry no
+   * file content: tmux echoes script text in some parse errors. */
+  private async deliverSecretEnv(sessionTarget: string, secret: Readonly<Record<string, string>>): Promise<void> {
+    const script = renderSecretEnvScript(sessionTarget, secret);
+    const file = this.fileOps.tmpName();
+    let written = false;
+    try {
+      await this.fileOps.writeFile(file, script, { mode: 0o600, flag: "wx" });
+      written = true;
+      const argv = ["tmux", "source-file", file];
+      await this.run(argv, posixJoinArgv(argv));
+    } catch {
+      throw new Error("Could not deliver the seat's launch credentials to tmux.");
+    } finally {
+      if (written) { try { await this.fileOps.unlink(file); } catch { /* best-effort; the file is 0600 and tmux has already read it */ } }
+    }
+  }
+
+  /** Remove the session this call just created, after its launch failed. */
+  private async discardUnlaunchedSession(name: string): Promise<void> {
+    try {
+      const argv = ["tmux", "kill-session", "-t", exactTarget(name, "session")];
+      await this.run(argv, posixJoinArgv(argv));
+    } catch { /* nothing more to do; the caller reports the launch failure */ }
   }
 
   /** Mark the server's inherited parent-session identity as removed in one
@@ -925,13 +985,23 @@ export class TmuxAdapter {
     const exact = exactTarget(paneTarget, "pane");
     const argv = ["tmux", "respawn-pane", "-t", exact];
     if (opts?.cwd != null) argv.push("-c", opts.cwd);
-    if (opts?.env) for (const [k, v] of Object.entries(opts.env)) argv.push("-e", `${k}=${v}`);
+    // Credentials are set in the session environment through a 0600 file (see
+    // createSessionUnchecked); the respawned process starts from that environment.
+    const { argv: argvEnv, file: secretEnv } = partitionLaunchEnv(opts?.env ?? {});
+    for (const [k, v] of Object.entries(argvEnv)) argv.push("-e", `${k}=${v}`);
     // The respawn command is ONE argv unit: tmux runs it via the shell.
     if (command != null && command.length > 0) argv.push(command);
     const legacyRespawn = ["tmux", "respawn-pane", "-t", shellQuote(exact)];
     if (opts?.cwd != null) legacyRespawn.push("-c", shellQuote(opts.cwd));
-    if (opts?.env) for (const [k, v] of Object.entries(opts.env)) legacyRespawn.push("-e", shellQuote(`${k}=${v}`));
+    for (const [k, v] of Object.entries(argvEnv)) legacyRespawn.push("-e", shellQuote(`${k}=${v}`));
     if (command != null && command.length > 0) legacyRespawn.push(shellQuote(command));
+    if (Object.keys(secretEnv).length > 0) {
+      try {
+        await this.deliverSecretEnv(exact, secretEnv);
+      } catch (err) {
+        return classifyWriteError(err); // the pane is untouched
+      }
+    }
     // The successor starts from the session environment: exclude inherited
     // parent-session identity there first (sessions made before this existed).
     // A failure here is a warning; the respawn goes ahead as it did before.

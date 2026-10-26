@@ -1195,8 +1195,12 @@ describe("TmuxAdapter", () => {
 
     it("createSession marks only the listed names removed for this session, keeps explicit seat values, and restarts the fresh pane", async () => {
       const exec = execWithGlobal(POLLUTED);
-      expect(await new TmuxAdapter(exec).createSession("dev-impl@rig", "/w", { HERDR_PANE_ID: "explicit" })).toEqual({ ok: true });
+      // HERDR_PANE_ID is not on the argv-safe list, so the explicit value is delivered through the credential
+      // file (source-file) rather than -e; it still stays in the session and is still not marked removed.
+      const fileOps = { writeFile: vi.fn(async () => {}), unlink: vi.fn(async () => {}), tmpName: () => "/tmp/seat-env", bufferName: () => "b" };
+      expect(await new TmuxAdapter(exec, fileOps).createSession("dev-impl@rig", "/w", { HERDR_PANE_ID: "explicit" })).toEqual({ ok: true });
       expect(exec.mock.calls.map((c) => c[0]).slice(1)).toEqual([
+        "tmux source-file /tmp/seat-env",
         "tmux show-environment -g",
         "tmux set-environment -t =dev-impl@rig -r CLAUDECODE",
         "tmux set-environment -t =dev-impl@rig -r CLAUDE_EFFORT",
