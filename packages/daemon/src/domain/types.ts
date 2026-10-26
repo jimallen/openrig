@@ -125,6 +125,8 @@ export type RigEvent =
   | { type: "proof.judged" | "proof.sources_changed"; scope: string; revision: string }
   | { type: "event.delivery_poisoned"; poisonedSeq: number; error: string; payloadSha: string }
   | { type: "rig.created"; rigId: string }
+  /** OF-102: an operator recorded or replaced the rig's spec source (rigs.spec_source_path); from is null when none was recorded. */
+  | { type: "rig.spec_source_changed"; rigId: string; from: string | null; to: string; operator: string }
   // B8 / slice-07 A3 — the durable model-divergence proclamation record: effective vs pinned at the
   // earliest reliable read, with every channel's delivery outcome (delivered/failed/deferred) named.
   | {

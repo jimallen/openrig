@@ -34,6 +34,7 @@ import type { ClaimService } from "./domain/claim-service.js";
 import type { SelfAttachService } from "./domain/self-attach-service.js";
 import { rigsRoutes } from "./routes/rigs.js";
 import { sessionsRoutes, nodesRoutes, sessionAdminRoutes } from "./routes/sessions.js";
+import { rigSpecSourceRoutes } from "./routes/rig-spec-source.js";
 import { adaptersRoutes } from "./routes/adapters.js";
 import { eventsRoute } from "./routes/events.js";
 import { snapshotsRoutes, restoreRoutes } from "./routes/snapshots.js";
@@ -728,6 +729,7 @@ export function createApp(deps: AppDeps): Hono {
   // Slice 24 — per-rig CMUX workspace launcher.
   app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
   app.route("/api/rigs/:rigId/nodes", nodesRoutes);
+  app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes);
   app.route("/api/sessions", sessionAdminRoutes);
   app.route("/api/adapters", adaptersRoutes);
   app.route("/api/events", eventsRoute);
