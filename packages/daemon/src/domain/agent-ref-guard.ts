@@ -24,7 +24,8 @@ import { checkGuardedFile, type GuardedFileKind } from "./culture-file-guard.js"
  * (every built-in factory/starter rig and every shared-import) and all 9 in the deployed jims-team rig climb
  * out of their own folder to a sibling `agents/` tree (census in the commit message).
  *
- * `path:` refs. Must be absolute; `..` is normalised away and the result is realpath'd. No allowlist.
+ * `path:` refs. Must be absolute; `..` is normalised away. The folder is CHECKED by its realpath but RECORDED as typed
+ * (OF-99, see asTyped). No allowlist.
  *
  * Persona file. The resolver reads exactly one file per persona folder, `agent.yaml`. It must be, after
  * realpath, a regular file with a single link, at most PERSONA_FILE_MAX_BYTES, read through ONE descriptor
@@ -80,6 +81,17 @@ function realOrSame(fs: AgentRefFs, p: string): string {
   try { return fs.realpath ? fs.realpath(p) : p; } catch { return p; }
 }
 
+/**
+ * OF-99: the folder a seat's startup files are recorded under is the path AS TYPED (through any symlink), so a
+ * later replay reads whatever the link points to then (`~/.agents-release/current/agents/x` follows `current`
+ * to the next release). Confinement, the persona-file guard and cycle detection still work on the REAL
+ * location. The typed form is used only when it names the same folder as the real one; otherwise (a `..`
+ * that climbs through a symlink lands somewhere else) the real folder is returned.
+ */
+function asTyped(fs: AgentRefFs, typed: string, real: string): string {
+  return realOrSame(fs, typed) === real ? typed : real;
+}
+
 function isInside(root: string, target: string): boolean {
   const rel = nodePath.relative(root, target);
   return rel === "" || (!rel.startsWith(`..${nodePath.sep}`) && rel !== ".." && !nodePath.isAbsolute(rel));
@@ -118,7 +130,7 @@ export function resolveAgentRefDir(ref: string, baseDir: string, fs: AgentRefFs,
         message: `agent_ref "${ref}" resolves to ${target}, outside ${root} (the tree it is relative to); a local: ref must stay inside that tree, use path:/absolute/dir for a persona outside it`,
       };
     }
-    return { ok: true, dir: target, importRoot: root };
+    return { ok: true, dir: asTyped(fs, nodePath.resolve(baseDir, rel), target), importRoot: root };
   }
   if (ref.startsWith("path:")) {
     const abs = ref.slice("path:".length);
@@ -126,7 +138,9 @@ export function resolveAgentRefDir(ref: string, baseDir: string, fs: AgentRefFs,
     if (!nodePath.isAbsolute(abs)) {
       return { ok: false, kind: "refused", message: `agent_ref "${ref}": a path: ref must be an absolute path (use local: for a path relative to the rig)` };
     }
-    return { ok: true, dir: realOrSame(fs, nodePath.resolve(abs)) };
+    // The path as typed (normalised), not its realpath: see asTyped.
+    const typed = nodePath.resolve(abs);
+    return { ok: true, dir: asTyped(fs, typed, realOrSame(fs, typed)) };
   }
   return { ok: false, kind: "malformed", message: `Cannot resolve agent_ref "${ref}"` };
 }
