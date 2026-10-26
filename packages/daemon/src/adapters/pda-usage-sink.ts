@@ -22,7 +22,10 @@
 // Stop (OF-93): `close()` posts what is pending with a bounded wait, then persists whatever is still unsent to the
 // seat's `usage-pending.json` (tmp + fsync + rename + fsync of the directory, as the outbox persists). The next runner
 // start loads that file into its pending list, and the daemon's (conversation, entry) idempotence makes a resend of a
-// fact that was in fact stored harmless. A hard crash or `proc.exit(70)` skips close(): facts pending at that moment
+// fact that was in fact stored harmless. The file carries the ENVELOPE the facts were produced under (agent, baseUrl,
+// nodeId, generation), as the outbox scopes its records to a binding (A1): a group whose agent and baseUrl equal the
+// current binding is posted under ITS OWN nodeId and generation; any other group is never posted, stays in the file
+// (rewritten at close) and is reported as `usage facts held: reason=binding_mismatch`. A hard crash or `proc.exit(70)` skips close(): facts pending at that moment
 // are lost, as before.
 // Numbers and ids only: never text, tool output or the token (T32).
 
@@ -57,6 +60,8 @@ export interface PdaUsageSinkOptions {
   maxPending?: number;
   /** The seat's `usage-pending.json`. When set, a start loads it and close() persists what is still unsent. */
   spillPath?: string;
+  /** The pda base URL this seat is bound to; with `agent` it scopes the spill file (default ""). */
+  baseUrl?: string;
   /** A line for the operator: codes and numbers only. */
   log?: (line: string) => void;
 }
@@ -74,23 +79,34 @@ export interface PdaUsageReporter extends PdaUsageSink {
   close(budgetMs?: number): Promise<void>;
 }
 
-/** Read a seat's persisted unsent facts. Anything unreadable or failing L0's check is skipped; never throws. */
-export function readPdaUsageSpill(path: string): PdaUsageFact[] {
+/** The posting envelope facts were produced under. `agent` + `baseUrl` is the binding (A1); the rest rides the post. */
+export interface PdaUsageSpillGroup { agent: string; baseUrl: string; nodeId: string | null; generation: string | null; facts: PdaUsageFact[] }
+
+/** Read a seat's persisted unsent facts, grouped by envelope. Anything unreadable or failing L0's check is skipped; never throws. */
+export function readPdaUsageSpill(path: string): PdaUsageSpillGroup[] {
   try {
     const doc = JSON.parse(fs.readFileSync(path, "utf8")) as unknown;
-    const facts = isObj(doc) && Array.isArray(doc.facts) ? doc.facts : [];
-    return facts.map(parsePdaUsageFact).filter((f): f is PdaUsageFact => f !== null);
+    if (!isObj(doc) || doc.v !== 2 || !Array.isArray(doc.groups)) return [];
+    const groups: PdaUsageSpillGroup[] = [];
+    for (const g of doc.groups as unknown[]) {
+      if (!isObj(g) || typeof g.agent !== "string" || typeof g.baseUrl !== "string" || !Array.isArray(g.facts)) continue;
+      const facts = g.facts.map(parsePdaUsageFact).filter((f): f is PdaUsageFact => f !== null);
+      if (facts.length === 0) continue;
+      groups.push({ agent: g.agent, baseUrl: g.baseUrl, nodeId: strOrNull(g.nodeId), generation: strOrNull(g.generation), facts });
+    }
+    return groups;
   } catch { return []; }
 }
 
 /** Persist unsent facts: tmp + fsync + rename + fsync of the directory. No facts removes the file. */
-export function writePdaUsageSpill(path: string, facts: readonly PdaUsageFact[]): void {
-  if (facts.length === 0) { try { fs.unlinkSync(path); } catch { /* already gone */ } return; }
+export function writePdaUsageSpill(path: string, groups: readonly PdaUsageSpillGroup[]): void {
+  const live = groups.filter((g) => g.facts.length > 0);
+  if (live.length === 0) { try { fs.unlinkSync(path); } catch { /* already gone */ } return; }
   const dir = nodePath.dirname(path);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.${process.pid}.tmp`; // per process: an overlapping old runner and its successor never share one
   const fd = fs.openSync(tmp, "w", 0o600);
-  try { fs.writeSync(fd, JSON.stringify({ v: 1, facts })); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.writeSync(fd, JSON.stringify({ v: 2, groups: live })); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, path);
   const dfd = fs.openSync(dir, "r");
   try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
@@ -159,7 +175,22 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
     if (!isObj(entry)) return;
     if (countDrop(entryKey(entry), "unbuildable")) options.log?.("[pda-runner] usage fact dropped: reason=unbuildable count=1");
   };
-  if (options.spillPath) for (const f of readPdaUsageSpill(options.spillPath)) pending.push(f);
+  // Spilled facts keep the envelope they were produced under (F1). Facts without an entry here use this launch's.
+  const baseUrl = options.baseUrl ?? "";
+  type Env = { nodeId: string | null; generation: string | null };
+  const carried = new WeakMap<PdaUsageFact, Env>();
+  const envOf = (f: PdaUsageFact): Env => carried.get(f) ?? { nodeId: options.nodeId, generation: options.generation };
+  const sameEnv = (a: Env, b: Env): boolean => a.nodeId === b.nodeId && a.generation === b.generation;
+  let held: PdaUsageSpillGroup[] = [];
+  if (options.spillPath) {
+    let heldCount = 0;
+    for (const g of readPdaUsageSpill(options.spillPath)) {
+      if (g.agent === options.agent && g.baseUrl === baseUrl) {
+        for (const f of g.facts) { carried.set(f, { nodeId: g.nodeId, generation: g.generation }); pending.push(f); }
+      } else { held.push(g); heldCount += g.facts.length; }
+    }
+    if (heldCount > 0) options.log?.(`[pda-runner] usage facts held: reason=binding_mismatch count=${heldCount}`);
+  }
 
   const queue = (fact: PdaUsageFact): void => {
     const at = pending.findIndex((f) => key(f) === key(fact));
@@ -168,7 +199,12 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
       // a batch in flight holds the old one, and its reply removes exactly the objects it sent, so the upgraded fact
       // stays pending and is posted next, where the store settles unknown -> own/other.
       const existing = pending[at]!;
-      if (existing.origin === "unknown" && fact.origin !== "unknown") pending[at] = { ...existing, origin: fact.origin };
+      if (existing.origin === "unknown" && fact.origin !== "unknown") {
+        const upgraded = { ...existing, origin: fact.origin };
+        const env = carried.get(existing);
+        if (env) carried.set(upgraded, env);
+        pending[at] = upgraded;
+      }
       return;
     }
     pending.push(fact);
@@ -183,9 +219,11 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
 
   const flush = (): void => {
     if (inFlight || pending.length === 0) return;
-    const batch = pending.slice();
+    // One post carries one envelope: the oldest pending fact's, and every pending fact that shares it.
+    const env = envOf(pending[0]!);
+    const batch = pending.filter((f) => sameEnv(envOf(f), env));
     const payload: PdaUsagePayload = {
-      sessionName: options.sessionName, nodeId: options.nodeId, generation: options.generation, agent: options.agent, facts: batch,
+      sessionName: options.sessionName, nodeId: env.nodeId, generation: env.generation, agent: options.agent, facts: batch,
     };
     let settledDefinitively = false;
     inFlight = (async () => {
@@ -249,7 +287,16 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
         const drained = (async () => { while (inFlight) await inFlight; })();
         try { await Promise.race([drained, deadline]); } finally { clearTimeout(timer); }
         if (options.spillPath) {
-          try { writePdaUsageSpill(options.spillPath, pending); }
+          try {
+            const groups: PdaUsageSpillGroup[] = [...held];
+            for (const f of pending) {
+              const env = envOf(f);
+              const g = groups.find((x) => x.agent === options.agent && x.baseUrl === baseUrl && x.nodeId === env.nodeId && x.generation === env.generation);
+              if (g) g.facts.push(f);
+              else groups.push({ agent: options.agent, baseUrl, nodeId: env.nodeId, generation: env.generation, facts: [f] });
+            }
+            writePdaUsageSpill(options.spillPath, groups);
+          }
           catch { options.log?.(`[pda-runner] usage facts could not be persisted: count=${pending.length}`); }
         }
       })();

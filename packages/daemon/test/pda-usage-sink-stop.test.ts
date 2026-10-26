@@ -30,8 +30,8 @@ const endpoint = { baseUrl: "http://127.0.0.1:7433", token: "hook-tok" };
 const fetchWith = (status: number): typeof fetch => (async () => new Response("{}", { status })) as unknown as typeof fetch;
 const fetchThrowing: typeof fetch = (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch;
 
-function sinkOver(post: (p: PdaUsagePayload) => Promise<PdaUsagePostResult>, extra: { spillPath?: string; maxPending?: number; log?: (l: string) => void } = {}) {
-  return createPdaUsageSink({ sessionName: "seat@rig", nodeId: "n1", generation: "g1", agent: "research", isOwnSubmission: () => true, post, ...extra });
+function sinkOver(post: (p: PdaUsagePayload) => Promise<PdaUsagePostResult>, extra: { spillPath?: string; maxPending?: number; log?: (l: string) => void; agent?: string; baseUrl?: string; nodeId?: string; generation?: string } = {}) {
+  return createPdaUsageSink({ sessionName: "seat@rig", nodeId: "n1", generation: "g1", agent: "research", baseUrl: "http://127.0.0.1:8150", isOwnSubmission: () => true, post, ...extra });
 }
 const runOne = async (s: ReturnType<typeof sinkOver>, id: number) => {
   s.onRunStart!({ type: "run_start", inputs: [1] } as never);
@@ -181,7 +181,10 @@ describe("(a) facts pending when the runner stops", () => {
     const spillPath = path.join(tmp(), "usage-pending.json");
     fs.writeFileSync(spillPath, "{not json");
     expect(sinkOver(async () => "stored", { spillPath }).pending()).toEqual([]);
-    fs.writeFileSync(spillPath, JSON.stringify({ v: 1, facts: [{ conversationId: "1", entryId: "1" }] }));
+    const group = (facts: unknown[], over: Record<string, unknown> = {}) => ({ agent: "research", baseUrl: "http://127.0.0.1:8150", nodeId: "n1", generation: "g1", facts, ...over });
+    fs.writeFileSync(spillPath, JSON.stringify({ v: 2, groups: [group([{ conversationId: "1", entryId: "1" }])] }));
+    expect(sinkOver(async () => "stored", { spillPath }).pending()).toEqual([]);
+    fs.writeFileSync(spillPath, JSON.stringify({ v: 2, groups: [{ facts: [] }, group("nope"), group([], { agent: 7 })] }));
     expect(sinkOver(async () => "stored", { spillPath }).pending()).toEqual([]);
   });
 
@@ -264,5 +267,103 @@ describe("(a) facts pending when the runner stops", () => {
     rig.runner.stop();
     await done;
     expect(calls).toEqual(["flush", "close"]);
+  });
+});
+
+// F1 (review of 9e890e2b): persisted facts are runner state from an earlier launch. Like the outbox (A1) they are posted
+// only under the binding they were produced for, and under the envelope (nodeId, generation) they were produced in.
+describe("(a) a spill file is scoped to the binding it was written under", () => {
+  const spill = async (spillPath: string, over: { agent?: string; baseUrl?: string; nodeId?: string; generation?: string } = {}) => {
+    const first = sinkOver(async () => "keep", { spillPath, ...over });
+    await runOne(first, 1);
+    await first.close(50);
+    expect(fs.existsSync(spillPath)).toBe(true);
+  };
+
+  it("a seat rebound to another pda agent never posts the old agent's facts under the new one, and the file stays", async () => {
+    const spillPath = path.join(tmp(), "usage-pending.json");
+    await spill(spillPath, { agent: "research" });
+    const app = pdaUsageApp({ setting: true });
+    const lines: string[] = [];
+    const other = sinkOver(createPdaUsagePoster({ baseUrl: "http://daemon.invalid", token: PDA_USAGE_TOKEN },
+      (async (input: string | URL | Request, init?: RequestInit) => app.hono.request(new URL(String(input)).pathname, init)) as typeof fetch),
+    { spillPath, agent: "other", log: (l) => lines.push(l) });
+    expect(other.pending()).toEqual([]);
+    other.flush!();
+    await other.settled();
+    expect(app.rows()).toEqual([]);
+    expect(lines).toEqual(["[pda-runner] usage facts held: reason=binding_mismatch count=1"]);
+    await other.close(50);
+    const kept = JSON.parse(fs.readFileSync(spillPath, "utf8"));
+    expect(kept.groups).toHaveLength(1);
+    expect(kept.groups[0]).toMatchObject({ agent: "research", facts: [{ entryId: "1" }] });
+  });
+
+  it("the same agent at another base URL is another binding: held, not posted", async () => {
+    const spillPath = path.join(tmp(), "usage-pending.json");
+    await spill(spillPath);
+    const posts: PdaUsagePayload[] = [];
+    const s = sinkOver(async (p) => { posts.push(p); return "stored"; }, { spillPath, baseUrl: "http://127.0.0.1:9999" });
+    expect(s.pending()).toEqual([]);
+    s.flush!();
+    await s.settled();
+    expect(posts).toEqual([]);
+  });
+
+  it("a held group survives a new fact and a close: the file keeps both, each under its own binding", async () => {
+    const spillPath = path.join(tmp(), "usage-pending.json");
+    await spill(spillPath, { agent: "research" });
+    const other = sinkOver(async () => "keep", { spillPath, agent: "other" });
+    await runOne(other, 2);
+    await other.close(50);
+    const groups = JSON.parse(fs.readFileSync(spillPath, "utf8")).groups as Array<{ agent: string; facts: Array<{ entryId: string }> }>;
+    expect(groups.map((g) => [g.agent, g.facts.map((f) => f.entryId)]).sort()).toEqual([["other", ["2"]], ["research", ["1"]]]);
+  });
+
+  it("spilled facts post under the nodeId and generation of the launch that produced them, not the next occupant's", async () => {
+    const spillPath = path.join(tmp(), "usage-pending.json");
+    await spill(spillPath, { nodeId: "n-old", generation: "g-old" });
+    const posts: Array<[string | null, string | null, string[]]> = [];
+    const s = sinkOver(async (p) => { posts.push([p.nodeId, p.generation, p.facts.map((f) => f.entryId)]); return "stored"; }, { spillPath, nodeId: "n-new", generation: "g-new" });
+    s.onRunStart!({ type: "run_start", inputs: [1] } as never);
+    s.onAssistantEntry!(priced(2));
+    s.onRunEnd!({ type: "run_end", inputs: [1] } as never);
+    await s.settled();
+    expect(posts).toEqual([["n-old", "g-old", ["1"]], ["n-new", "g-new", ["2"]]]);
+    expect(s.pending()).toEqual([]);
+  });
+
+  it("a spilled fact upgraded by a live sighting keeps its original envelope", async () => {
+    const spillPath = path.join(tmp(), "usage-pending.json");
+    const first = sinkOver(async () => "keep", { spillPath, nodeId: "n-old", generation: "g-old" });
+    first.onGapEntry!(priced(1)); // unknown origin
+    await first.close(50);
+    const posts: Array<[string | null, string | null, string, string]> = [];
+    const s = sinkOver(async (p) => { posts.push([p.nodeId, p.generation, p.facts[0]!.entryId, p.facts[0]!.origin]); return "stored"; }, { spillPath, nodeId: "n-new", generation: "g-new" });
+    s.onRunStart!({ type: "run_start", inputs: [1] } as never);
+    s.onAssistantEntry!(priced(1)); // seen live inside an own run: unknown -> own
+    s.onRunEnd!({ type: "run_end", inputs: [1] } as never);
+    await s.settled();
+    expect(posts).toEqual([["n-old", "g-old", "1", "own"]]);
+  });
+
+  it("carried and new facts still unsent at close are written as two groups, one per envelope", async () => {
+    const spillPath = path.join(tmp(), "usage-pending.json");
+    await spill(spillPath, { nodeId: "n-old", generation: "g-old" });
+    const s = sinkOver(async () => "keep", { spillPath, nodeId: "n-new", generation: "g-new" });
+    await runOne(s, 2);
+    await s.close(50);
+    const groups = JSON.parse(fs.readFileSync(spillPath, "utf8")).groups as Array<{ nodeId: string; generation: string; facts: Array<{ entryId: string }> }>;
+    expect(groups.map((g) => [g.nodeId, g.generation, g.facts.map((f) => f.entryId)]).sort()).toEqual([["n-new", "g-new", ["2"]], ["n-old", "g-old", ["1"]]]);
+  });
+
+  it("the runner writes a sink notice through its pane (a finished line)", async () => {
+    rig = await makeRig({ realStreams: true });
+    const done = rig.start();
+    await waitFor(() => rig!.pane().includes("READY"), "the runner to attach");
+    rig.runner.note("[pda-runner] usage facts dropped: reason=http_404 count=1");
+    expect(rig.pane()).toContain("[pda-runner] usage facts dropped: reason=http_404 count=1\n");
+    rig.runner.stop();
+    await done;
   });
 });

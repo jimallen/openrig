@@ -288,6 +288,12 @@ export class PdaRunner {
     this.pane.endBatch();
   }
 
+  /** A one-line notice from the usage sink (codes and counts), written through the pane so it never lands mid-line (F3). */
+  note(line: string): void {
+    this.pane.line(line);
+    this.pane.endBatch();
+  }
+
   stop(): void {
     this.stopper.abort();
     this.currentStream?.close();
@@ -1137,14 +1143,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
   // The sink asks the runner whose submissions are its own; the runner exists by the time any event arrives.
-  let ownership: Pick<PdaRunner, "isOwnSubmission"> | null = null;
+  let ownership: Pick<PdaRunner, "isOwnSubmission" | "note"> | null = null;
+  const usageLog = (line: string): void => { if (ownership) ownership.note(line); else process.stdout.write(`${line}\n`); };
   const usage = args.usageFacts
     ? createPdaUsageSink({
       sessionName: args.sessionName, nodeId, generation, agent: args.binding.agent,
       isOwnSubmission: (id) => ownership?.isOwnSubmission(id) ?? false,
       post: createPdaUsagePoster(endpoint),
-      spillPath: paths.usagePendingPath,
-      log: (line) => { process.stdout.write(`${line}\n`); },
+      spillPath: paths.usagePendingPath, baseUrl: args.binding.baseUrl,
+      log: (line) => { usageLog(line); },
     })
     : undefined;
   const runner = new PdaRunner({
