@@ -145,6 +145,10 @@ export interface PdaClientOptions {
   redact?: ReadonlyArray<string | { value: string; marker: string }>;
   /** Test seam; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
+  /** The runner is stopping (OF-98): every request in flight is aborted (it reads as `unreachable`, which every caller
+   *  already treats as transient: a message POST stays in the outbox and is re-sent under its request id), and none
+   *  starts. The event stream is closed by its own `close()`. */
+  stopSignal?: AbortSignal;
 }
 
 const ERROR_BODY_CAP = 64 * 1024;
@@ -220,9 +224,12 @@ export function createPdaClient(options: PdaClientOptions): PdaClient {
         if (!isPdaTokenFormat(read.token)) return tokenFailure("format");
         token = read.token;
       }
+      if (options.stopSignal?.aborted) return { ok: false, kind: "unreachable" };
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const cancelTimer = (): void => clearTimeout(timer);
+      const onStop = (): void => controller.abort();
+      options.stopSignal?.addEventListener("abort", onStop, { once: true });
+      const cancelTimer = (): void => { clearTimeout(timer); options.stopSignal?.removeEventListener("abort", onStop); };
       let res: Response;
       try {
         const headers: Record<string, string> = {};

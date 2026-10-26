@@ -30,10 +30,11 @@ import type {
 } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan } from "../domain/projection-planner.js";
 import type { AgentActivity } from "../domain/types.js";
+import { PDA_USAGE_CLOSE_BUDGET_MS } from "./pda-usage-sink.js";
 import { isShellForeground } from "../domain/shell-classifier.js";
 import {
   PDA_RESUME_TYPE, PDA_RUNTIME, PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_READY_MARKER,
-  buildPdaRunnerArgv, formatPdaResumeToken, parsePdaResumeToken, parsePdaRunnerState, pdaSeatPaths,
+  buildPdaRunnerArgv, formatPdaResumeToken, parsePdaResumeToken, parsePdaRunnerLock, parsePdaRunnerState, pdaSeatPaths,
   type PdaBinding, type PdaRunnerState,
 } from "./pda-runner-protocol.js";
 
@@ -41,6 +42,10 @@ import {
 export const PDA_SIDECAR_ALIVE_WINDOW_MS = 180_000;
 /** How long a launch waits for the runner to attach (design: "The launch wait is 30 s"). */
 export const PDA_LAUNCH_WAIT_MS = 30_000;
+
+/** How long a launch waits for the PREVIOUS runner of the same seat to finish closing (OF-98): the usage sink's
+ *  5 s close budget plus 2 s for the spill's fsyncs and the process teardown. */
+export const PDA_OLD_RUNNER_WAIT_MS = PDA_USAGE_CLOSE_BUDGET_MS + 2000;
 
 export interface PdaAdapterFsOps {
   readFile(path: string): string;
@@ -70,7 +75,15 @@ export interface PdaRuntimeAdapterDeps {
   sleep?: (ms: number) => Promise<void>;
   pollMs?: number;
   launchWaitMs?: number;
+  /** Is this pid a live process? Default: signal 0 (EPERM counts as alive). */
+  pidAlive?: (pid: number) => boolean;
+  /** How long to wait for a previous runner's `runner.lock` to clear (default PDA_OLD_RUNNER_WAIT_MS). */
+  oldRunnerWaitMs?: number;
 }
+
+const processPidAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === "EPERM"; }
+};
 
 /** What the runner's exit code means for a launch (pda-runner.ts header). */
 const EXIT_TEXT: Record<number, string> = {
@@ -179,6 +192,12 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
       };
     }
 
+    // OF-98: never type while the seat's previous runner can still write the spill or the outbox.
+    const previous = await this.awaitPreviousRunner(sessionName);
+    if (previous) {
+      return { ok: false, error: `pda launch: the seat's previous runner (pid ${previous.pid}, runner.lock in the seat's state directory) is still running after ${(this.deps.oldRunnerWaitMs ?? PDA_OLD_RUNNER_WAIT_MS) / 1000} s; nothing was typed, so its pending usage facts and messages are safe. Try again in a moment` };
+    }
+
     const launchId = this.newLaunchId();
     const argv = buildPdaRunnerArgv({
       sessionName, stateRoot: this.deps.stateRoot, launchId, binding: target, tokenFile,
@@ -261,6 +280,36 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     } catch {
       return null;
     }
+  }
+
+  /** The previous runner's lock if it is still live after the bounded wait, else null (no lock, a stale one, or it cleared).
+   *  Stale = its pid is dead (a SIGKILL skips the release), or its sidecar for that launch has not ticked inside
+   *  the alive window (a reused pid). Never throws. */
+  private async awaitPreviousRunner(sessionName: string): Promise<{ pid: number } | null> {
+    const lockPath = pdaSeatPaths(this.deps.stateRoot, sessionName).runnerLockPath;
+    const pollMs = Math.max(this.deps.pollMs ?? 250, 1);
+    const attempts = Math.floor((this.deps.oldRunnerWaitMs ?? PDA_OLD_RUNNER_WAIT_MS) / pollMs) + 1;
+    const pidAlive = this.deps.pidAlive ?? processPidAlive;
+    let live: { pid: number } | null = null;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      live = null;
+      try {
+        if (!this.deps.fsOps.exists(lockPath)) return null;
+        const lock = parsePdaRunnerLock(this.deps.fsOps.readFile(lockPath));
+        if (!lock || !pidAlive(lock.pid)) return null;
+        // A reused pid: the lock's own sidecar stopped ticking, or (no sidecar of that launch ever written) the lock itself is
+        // older than the alive window.
+        const side = this.readState(sessionName);
+        const nowMs = this.now().getTime();
+        const quiet = side && side.launchId === lock.launchId
+          ? !pdaSidecarAlive(side, nowMs)
+          : nowMs - Date.parse(lock.at) > PDA_SIDECAR_ALIVE_WINDOW_MS;
+        if (quiet) return null;
+        live = { pid: lock.pid };
+      } catch { return null; }
+      if (attempt < attempts - 1) await this.sleep(pollMs);
+    }
+    return live;
   }
 
   /** Poll THIS launch's sidecar (stale ones from an earlier runner are ignored by launch id). */

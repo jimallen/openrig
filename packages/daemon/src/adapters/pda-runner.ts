@@ -33,8 +33,8 @@ import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_LABEL, PDA_RUNNER_READY_MARKER, PDA_RUNTIME,
-  isPdaLoopbackBaseUrl, parsePdaRunnerState, pdaAgentNameProblem, pdaSeatPaths, sanitizeForPane,
-  type PdaHeldCode, type PdaRunnerArgs, type PdaRunnerErrorCode, type PdaRunnerState, type PdaSeatPaths,
+  isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaSeatPaths, sanitizeForPane,
+  type PdaHeldCode, type PdaRunnerArgs, type PdaRunnerLock, type PdaRunnerErrorCode, type PdaRunnerState, type PdaSeatPaths,
 } from "./pda-runner-protocol.js";
 import {
   createPdaClient, pdaTokenSourceFromFile,
@@ -158,6 +158,8 @@ export interface PdaRunnerDeps {
   backoffStartMs?: number;
   backoffCapMs?: number;
   usage?: PdaUsageSink;
+  /** Called by `stop()`: main() aborts the client's calls in flight with it (OF-98), so a stop never waits on pda. */
+  onStop?: () => void;
   /** How long a user message waits for the submission that says whose it is. Default 150 ms. */
   userHoldMs?: number;
 }
@@ -306,6 +308,7 @@ export class PdaRunner {
 
   stop(): void {
     this.stopper.abort();
+    try { this.deps.onStop?.(); } catch { /* stopping goes on */ }
     this.currentStream?.close();
   }
 
@@ -408,9 +411,16 @@ export class PdaRunner {
   /** One connection. True once it reached READY (so the caller resets its backoff). Throws Detach or Exit. */
   private async attachOnce(): Promise<boolean> {
     const client = this.deps.client;
-    this.check(await client.health());
-    this.check(await client.getAgent());
+    // OF-98 (F3): a stop that lands during one of these calls must end the attach, not wait for the next read to notice.
+    const stopped = (): boolean => this.stopper.signal.aborted;
+    const health = await client.health();
+    if (stopped()) return false;
+    this.check(health);
+    const agent = await client.getAgent();
+    if (stopped()) return false;
+    this.check(agent);
     const events = await client.openEvents(0);
+    if (stopped()) { if (events.ok) events.value.close(); return false; }
     if (!events.ok) { this.check(events); throw new Detach("unreachable", "pda_unreachable"); }
     const stream = events.value;
     this.currentStream = stream;
@@ -1142,6 +1152,39 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   fs.mkdirSync(paths.seatRoot, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(paths.seatRoot, 0o700); } catch { /* not ours to change */ }
 
+  // OF-98: the seat's runner.lock covers everything below, the usage sink's bounded close included, so a launch
+  // that follows a stop can wait for it. It is released when the PROCESS exits (not when main() returns: a request
+  // still in flight can write seat files after that), so only a SIGKILL leaves it behind, with a dead pid.
+  const release = acquireRunnerLock(paths.runnerLockPath, args.launchId);
+  process.once("exit", release);
+
+  // A hangup (tmux kill-session closes the pty, then sends SIGHUP) makes the next pane write fail with EIO or EPIPE.
+  // The pane being gone is not a reason to skip the close: swallow it and finish the shutdown (F1).
+  const paneGone = (err: unknown): void => {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "EIO" || code === "EPIPE" || code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED") return;
+    throw err;
+  };
+  process.stdout.on("error", paneGone);
+  process.stdin.on("error", paneGone);
+
+  await runLocked(args, paths);
+}
+
+/** Write `runner.lock` for this process. Best effort: a seat dir that cannot be written has bigger problems and the
+ *  launch then simply does not wait. The returned release removes the file only while it is still this pid's. */
+export function acquireRunnerLock(lockPath: string, launchId: string): () => void {
+  const lock: PdaRunnerLock = { pid: process.pid, launchId, at: new Date().toISOString() };
+  try { nodeRunnerFs.writeAtomic(lockPath, JSON.stringify(lock)); } catch { /* best effort */ }
+  return () => {
+    try {
+      const held = parsePdaRunnerLock(fs.readFileSync(lockPath, "utf8"));
+      if (held?.pid === process.pid) fs.unlinkSync(lockPath);
+    } catch { /* already gone */ }
+  };
+}
+
+async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void> {
   const endpoint = resolveActivityEndpoint(process.env);
   const hookToken = endpoint?.token ?? process.env.OPENRIG_ACTIVITY_HOOK_TOKEN?.trim() ?? "";
   const nodeId = process.env.OPENRIG_NODE_ID?.trim() || args.sessionName;
@@ -1161,7 +1204,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     ...(hookToken.length > 0 ? [{ value: hookToken, marker: HOOK_TOKEN_MARKER }] : []),
   ];
 
-  const client = createPdaClient({ binding: args.binding, readToken: trackedSource, redact: pdaClientRedactions(hookToken) });
+  const stopCalls = new AbortController();
+  const client = createPdaClient({ binding: args.binding, readToken: trackedSource, redact: pdaClientRedactions(hookToken), stopSignal: stopCalls.signal });
   let outbox: PdaOutbox;
   try {
     outbox = PdaOutbox.open({ paths, binding: args.binding, nodeId, launchId: args.launchId });
@@ -1195,10 +1239,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     postActivity: createActivityPoster(endpoint),
     fs: nodeRunnerFs,
     usage,
+    onStop: () => stopCalls.abort(),
   });
   ownership = runner;
 
   installPdaRunnerFatalHandlers(process, (label) => runner.fatal(label));
+  // Everything above is synchronous, so no signal can land before this point; the runner's own stop() ends the startup
+  // calls too (the client's calls are aborted by onStop, and attachOnce re-checks the stop after each of them).
   for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => runner.stop());
 
   const input = wirePdaRunnerInput(runner, process.stdin, process.stdout);
@@ -1217,4 +1264,8 @@ const invokedDirectly = (() => {
     return import.meta.url === pathToFileURL(nodePath.resolve(entry)).href;
   } catch { return false; }
 })();
-if (invokedDirectly) void main();
+if (invokedDirectly) {
+  // After main() has closed everything, anything still holding the event loop (a request that ignored its abort) must
+  // not keep the process, and so the seat's runner.lock, alive past the launch's wait.
+  void main().then(() => { setTimeout(() => process.exit(process.exitCode ?? 0), 1000).unref(); });
+}
