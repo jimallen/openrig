@@ -26,7 +26,7 @@ describe("findPdaLaunchConflicts: who stops THIS seat from launching or restorin
     const seat = repo.addNode(a.id, "dev.research", { runtime: "pda", pda: research });
     repo.addNode(b.id, "dev.copy", { runtime: "pda", pda: research });
     expect(repo.findPdaLaunchConflicts(research, seat.id)).toEqual([
-      'pda agent "research" at http://127.0.0.1:8150 is already driven by seat "dev.copy" in rig "rig-b"; one pda agent is driven by one seat',
+      'seat "dev.research" in rig "rig-a" cannot take it: pda agent "research" at http://127.0.0.1:8150 is already driven by seat "dev.copy" in rig "rig-b"; one pda agent is driven by one seat',
     ]);
     repo.archiveRig(b.id);
     expect(repo.findPdaLaunchConflicts(research, seat.id)).toEqual([]);
