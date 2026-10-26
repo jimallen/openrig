@@ -136,6 +136,21 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
     }
     case "queue_update":
       return { mirrorLines: [] };
+    // Pi 1.3.0 RPC events the pane deliberately does not show (types: pi-coding-agent AgentSessionEvent). They are
+    // named so a reader can tell "known and quiet" from "never looked at": the run's idle signal is agent_end (the
+    // seat's Stop), so agent_settled adds nothing; entry_appended is a persisted entry whose message already arrived
+    // as message_end (the runner only advances its cursor from it); tool_execution_update is a partial tool result,
+    // and the one-line tool summaries come from tool_execution_start/_end.
+    case "agent_settled":
+    case "entry_appended":
+    case "tool_execution_update":
+    case "session_info_changed":
+    case "thinking_level_changed":
+    case "summarization_retry_scheduled":
+    case "summarization_retry_attempt_start":
+    case "summarization_retry_finished":
+    case "bash_execution_update":
+      return { mirrorLines: [] };
     case "compaction_start":
       return { mirrorLines: [`[${runtime}] compacting context…`], activity: { hookEvent: "active", subtype: "compaction" } };
     case "compaction_end":
@@ -285,6 +300,12 @@ export async function readPiSessionEntryIds(
   } finally {
     await handle?.close().catch(() => {});
   }
+}
+
+function nestedEntryId(event: Record<string, unknown>): string | undefined {
+  const entry = event.entry;
+  const id = entry !== null && typeof entry === "object" ? (entry as Record<string, unknown>).id : undefined;
+  return typeof id === "string" && id ? id : undefined;
 }
 
 export class RunnerCore {
@@ -605,8 +626,11 @@ export class RunnerCore {
     if (event.type === "agent_start" || (event.type === "message_start" && message?.role === "assistant")) {
       this.assistantErrorShown = false;
     }
-    // Durable cursor: any event carrying a session-entry id advances it.
-    const entryId = typeof event.entryId === "string" ? event.entryId : (typeof event.id === "string" ? event.id : undefined);
+    // Durable cursor: any event carrying a session-entry id advances it. Pi 1.3.0's entry_appended nests the entry
+    // (`entry.id`); bash_execution_update's `id` is the caller's command id, never an entry id.
+    const entryId = event.type === "entry_appended" ? nestedEntryId(event)
+      : typeof event.entryId === "string" ? event.entryId
+      : (typeof event.id === "string" && event.type !== "bash_execution_update" ? event.id : undefined);
     if (entryId) {
       this.lastEntryId = entryId;
       this.writeSidecar({});

@@ -467,6 +467,101 @@ describe("Pi 1.3.0 persisted transcript (real session shapes, scrubbed)", () => 
   });
 });
 
+// A Pi 1.3.0 `pi --mode rpc` stdout stream for one prompt with a tool turn (thinking + bash call, the real turn 11
+// of the qualification session) and a stop turn (the real turn 17). NOT a recorded stdout capture: producing one
+// needs a model call, and the qualification run's stdout was never kept (see above). The event ORDER and FIELDS
+// are taken from Pi 1.3.0's own type definitions (dist/core/agent-session.d.ts AgentSessionEvent, agent-core
+// AgentEvent) and the message bodies are the scrubbed persisted turns above; ids and paths are placeholders.
+const PI13_ENTRY_IDS = { user: "f13e0001", tool: "f13e0002", result: "f13e0003", stop: "f13e0004" };
+const pi13Entry = (id: string, parentId: string | null, message: Record<string, unknown>) =>
+  ({ type: "message", id, parentId, timestamp: "2026-10-23T15:17:54.000Z", message });
+const PI13_USER = { role: "user", content: [{ type: "text", text: "<scrubbed prompt>" }], timestamp: 1792768673128 };
+const PI13_RESULT = { role: "toolResult", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash",
+  content: [{ type: "text", text: "<scrubbed output>" }], isError: false, durationMs: 477, timestamp: 1792768676103 };
+const PI13_TOOL_TURN = pi13Assistant(PI13_TURN_WITH_THINKING);
+const PI13_STOP_TURN = pi13Assistant(17);
+const PI13_RPC_TRANSCRIPT: Record<string, unknown>[] = [
+  { type: "agent_start" },
+  { type: "turn_start" },
+  { type: "message_start", message: PI13_USER },
+  { type: "message_end", message: PI13_USER },
+  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.user, null, PI13_USER) },
+  { type: "message_start", message: { ...PI13_TOOL_TURN, content: [], stopReason: "pending" } },
+  { type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } },
+  { type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "<scrubbed>" } },
+  { type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "<scrubbed>" } },
+  { type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 1 } },
+  { type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 1, toolCall: PI13_TOOL_TURN.content[1] } },
+  { type: "message_end", message: PI13_TOOL_TURN },
+  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.tool, PI13_ENTRY_IDS.user, PI13_TOOL_TURN) },
+  { type: "tool_execution_start", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash", args: { command: "<scrubbed command>", timeout: 20 } },
+  { type: "tool_execution_update", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash", args: { command: "<scrubbed command>" }, partialResult: { content: [{ type: "text", text: "<scrubbed partial>" }] } },
+  { type: "tool_execution_end", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash", result: { content: [{ type: "text", text: "<scrubbed output>" }] }, isError: false },
+  { type: "message_start", message: PI13_RESULT },
+  { type: "message_end", message: PI13_RESULT },
+  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.result, PI13_ENTRY_IDS.tool, PI13_RESULT) },
+  { type: "turn_end", message: PI13_TOOL_TURN, toolResults: [PI13_RESULT] },
+  { type: "turn_start" },
+  { type: "message_start", message: { ...PI13_STOP_TURN, content: [], stopReason: "pending" } },
+  { type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } },
+  { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "<scrubbed" } },
+  { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " reply>" } },
+  { type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "<scrubbed reply>" } },
+  { type: "message_end", message: PI13_STOP_TURN },
+  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.stop, PI13_ENTRY_IDS.result, PI13_STOP_TURN) },
+  { type: "turn_end", message: PI13_STOP_TURN, toolResults: [] },
+  { type: "agent_end", messages: [PI13_USER, PI13_TOOL_TURN, PI13_RESULT, PI13_STOP_TURN], willRetry: false },
+  { type: "agent_settled", aborted: false },
+];
+
+describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one stop turn)", () => {
+  const run = (events: Record<string, unknown>[]) => {
+    const f = fakeIo();
+    const { core } = readyCore(f);
+    let pane = "";
+    f.io.mirrorLine = (line) => { pane += `${line}\n`; };
+    f.io.mirrorAppend = (text) => { pane += text; };
+    f.activity.length = 0; f.rpc.length = 0; f.sidecars.length = 0;
+    for (const event of events) core.handlePiLine(JSON.stringify(event));
+    return { ...f, pane };
+  };
+
+  it("shows the tool call and the reply, and posts active, PreToolUse, then exactly one Stop", () => {
+    // The tool turn is the real thinking turn: its content is [thinking, toolCall] (index 11 of the 18).
+    expect(PI13_TOOL_TURN.content.map(c => c.type)).toEqual(["thinking", "toolCall"]);
+    expect(PI13_STOP_TURN.content.map(c => c.type)).toEqual(["text"]);
+    const r = run(PI13_RPC_TRANSCRIPT);
+    // The thinking turn prints nothing of its thinking, only its tool; the stop turn prints its text once. The blank
+    // lines are message_end's line terminators (the user and tool-result messages also end with one, as before).
+    expect(r.pane).toBe("\n\n  ⚙ bash …\n  ⚙ bash done\n\n<scrubbed reply>\n\n");
+    expect(r.activity.map(a => [a.hookEvent, a.subtype])).toEqual([
+      ["active", "agent_start"], ["PreToolUse", "bash"], ["Stop", "agent_end"],
+    ]);
+    // agent_settled is the quiet tail: it adds no second Stop and no activity of its own.
+    expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);
+  });
+
+  it("refreshes the cursor once, after agent_end, and advances it through each appended entry to the last", () => {
+    const r = run(PI13_RPC_TRANSCRIPT);
+    expect(r.rpc).toEqual([{ type: "get_entries", id: "pi-runner-cursor-refresh" }]);
+    expect(r.sidecars.map(s => s.lastEntryId)).toEqual(
+      [PI13_ENTRY_IDS.user, PI13_ENTRY_IDS.tool, PI13_ENTRY_IDS.result, PI13_ENTRY_IDS.stop]);
+  });
+
+  it("maps every Pi 1.3.0 session event the runner leaves quiet to nothing, by name", () => {
+    for (const type of ["agent_settled", "entry_appended", "tool_execution_update", "session_info_changed", "thinking_level_changed",
+      "summarization_retry_scheduled", "summarization_retry_attempt_start", "summarization_retry_finished", "bash_execution_update"]) {
+      expect(mapPiEvent({ type }), type).toEqual({ mirrorLines: [] });
+    }
+  });
+
+  it("does not take bash_execution_update's command id for a session-entry id", () => {
+    const r = run([{ type: "entry_appended", entry: pi13Entry("f13e0009", null, PI13_USER) },
+      { type: "bash_execution_update", id: "cmd-not-an-entry", delta: "<scrubbed>" }]);
+    expect(r.sidecars.map(s => s.lastEntryId)).toEqual(["f13e0009"]);
+  });
+});
+
 describe.each(["pi", "omp"] as const)("%s terminal diagnostic fallbacks", runtime => {
   const notice = (detail: string) => `[${runtime}-runner] ERROR ${detail}`;
   const unusable = ["", " \n\t ", "\u001b[2J\u001b]0;title\u0007\u202e", null, undefined, {}, 7];
