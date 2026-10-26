@@ -64,17 +64,24 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
       writeFileSync(join(root, "rel", release, "agents", "impl", "agent.yaml"), AGENT);
       writeFileSync(join(root, "rel", release, "agents", "impl", "guidance", "role.md"), `ROLE-${release}\n`);
     }
-    // The rig was created while `current` pointed at A, and its files were stored under A's real folder.
+    // The rig was created while `current` pointed at A.
     symlinkSync(join(root, "rel", "A"), join(root, "current"));
     mkdirSync(join(root, "orig"));
-    writeFileSync(join(root, "orig", "rig.yaml"), RIG(`path:${join(root, "rel", "A", "agents", "impl")}`));
+    writeFileSync(join(root, "orig", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
     project = join(root, "project");
     mkdirSync(project);
     const up = await rig(["up", join(root, "orig", "rig.yaml"), "--cwd", project, "--json", "--yes"]);
     expect(up.code, JSON.stringify(up)).toBe(0);
-    // `current` has since moved on, and this rig predates the recorded spec source.
+    // This rig predates the recorded spec source, and its saved files are pinned to A's real folder, as OpenRig stored
+    // them before OF-99 (the code under test now stores the typed path, so the old row is written by hand). `current`
+    // has since moved on to B.
     retarget("B");
-    withDb((d) => d.prepare("UPDATE rigs SET spec_source_path = NULL WHERE name = ?").run(rigName));
+    withDb((d) => {
+      const files = (JSON.parse((d.prepare("SELECT resolved_files_json AS j FROM node_startup_context").get() as { j: string }).j) as Array<{ absolutePath: string }>)
+        .map((f) => ({ ...f, absolutePath: f.absolutePath.replace(join(root, "current"), join(root, "rel", "A")) }));
+      d.prepare("UPDATE node_startup_context SET resolved_files_json = ?").run(JSON.stringify(files));
+      d.prepare("UPDATE rigs SET spec_source_path = NULL WHERE name = ?").run(rigName);
+    });
     // The spec the operator will name lives behind a library link and reaches the agent through `current`.
     mkdirSync(join(root, "specs", "team"), { recursive: true });
     writeFileSync(join(root, "specs", "team", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
@@ -86,14 +93,16 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (root) rmSync(join(root, "rel"), { recursive: true, force: true }); }
   }, 60_000);
 
-  it("before `set`: the rig records nothing, a spec launch is refused, and the saved files are pinned to A's real folder", async () => {
+  it("before `set`: the rig records nothing, so a spec launch can only replay the saved files, still pinned to A's real folder", async () => {
     expect(recordedSource()).toBeNull();
     expect(storedRole()).toBe(join(root, "rel", "A", "agents", "impl", "guidance", "role.md"));
     const shown = await rig(["spec-source", "show", rigName, "--json"]);
     expect(JSON.parse(shown.stdout)).toMatchObject({ ok: true, specSource: null });
-    const refused = await launch("spec");
-    expect(refused.code).not.toBe(0);
+    const replayed = await launch("spec");
+    expect(replayed.code, JSON.stringify(replayed)).toBe(0);
+    expect(JSON.parse(replayed.stdout).startupSource).toMatchObject({ kind: "stored" });
     expect(storedRole()).toBe(join(root, "rel", "A", "agents", "impl", "guidance", "role.md"));
+    expect(agents()).toContain("ROLE-A");
   }, 300_000);
 
   it("a spec for another rig is refused, and nothing is recorded", async () => {
