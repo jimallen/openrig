@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { CmuxAdapter } from "../src/adapters/cmux.js";
@@ -667,7 +668,13 @@ describe("Session routes", () => {
     // Helper text must include honest commands, NOT tmux attach
     const sendCall = calls.find((c) => c.method === "surface.sendText");
     expect(sendCall).toBeDefined();
-    const text = String((sendCall!.params as Record<string, unknown>)["text"]);
+    // OF-67: what is typed is `/bin/sh <staged script>`; the helper text is the script's content.
+    const typed = String((sendCall!.params as Record<string, unknown>)["text"]);
+    const staged = /^\/bin\/sh '?(\/[^'\n]+)'?\n$/.exec(typed);
+    expect(staged).not.toBeNull();
+    const scriptPath = staged![1]!;
+    const text = fs.readFileSync(scriptPath, "utf8");
+    fs.rmSync(scriptPath, { force: true }); // the shell would remove it as it starts
     expect(text).not.toContain("tmux attach");
     expect(text).toContain("rig capture r01-ext-node");
     expect(text).toContain("rig transcript r01-ext-node --tail 100");
