@@ -228,7 +228,9 @@ export interface PdaRunnerState {
   exited?: { code: number | null; at: string };
 }
 
-const HELD_CODES: ReadonlySet<string> = new Set<PdaHeldCode>(["pda_message_held", "pda_agent_missing", "pda_unauthorized"]);
+/** The held codes, in one place for the sidecar parser, the hook mapping and the RSI permission-stall predicate. */
+export const PDA_HELD_CODES: readonly PdaHeldCode[] = ["pda_message_held", "pda_agent_missing", "pda_unauthorized"];
+const HELD_CODES: ReadonlySet<string> = new Set<PdaHeldCode>(PDA_HELD_CODES);
 
 /** Is this subtype one of the codes the runner reports as a held message (`Notification/<code>`, OF-89)? The daemon
  *  maps exactly these, for a pda seat only, to needs_input. */

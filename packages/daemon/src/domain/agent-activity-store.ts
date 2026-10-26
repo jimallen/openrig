@@ -348,6 +348,21 @@ export function hookEventState(rawEvent: string | null | undefined, rawSubtype: 
   return "unknown";
 }
 
+/** A pda runner's held-message report (OF-89): `Notification/<held code>`. It is DISPLAY evidence. It reads
+ *  needs_input on a pda seat so `rig ps` and the UI show the hold, but it is not a prompt on the pane and no
+ *  consumer that decides whether to send or wake may treat it as one: a pda seat's send gate is its runner's
+ *  sidecar (OF-88), and a hold the runner cannot answer for must behave as it did before this report existed. */
+export function isPdaHeldReport(activity: Pick<AgentActivity, "rawEvent" | "rawSubtype"> | null | undefined): boolean {
+  return activity?.rawEvent === "Notification" && isPdaHeldCode(activity.rawSubtype);
+}
+
+/** The hook activity as a send or wake decision may read it: a held report reads as the unknown it was before
+ *  OF-89 (same reason, same evidence), every other activity is returned as it is. */
+export function decisionView<T extends AgentActivity | null | undefined>(activity: T): T {
+  if (!activity || activity.state !== "needs_input" || !isPdaHeldReport(activity)) return activity;
+  return { ...activity, state: "unknown" };
+}
+
 /** A runtime hook that leaves the agent waiting on a person: an approval, a picker or an elicitation. */
 export function hookMeansNeedsInput(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null): boolean {
   return hookEventState(rawEvent, rawSubtype, seatRuntime) === "needs_input";
@@ -357,6 +372,7 @@ export function hookMeansNeedsInput(rawEvent: string | null | undefined, rawSubt
  *  retained raw event means. Generation-mismatched or unresolvable evidence says nothing ("unknown"). */
 function latestHookState(activity: AgentActivity | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (activity?.evidenceSource !== "runtime_hook") return "unknown";
+  if (isPdaHeldReport(activity)) return "unknown"; // display evidence only, fresh or past the freshness window
   if (activity.stale !== true) return activity.state;
   return activity.reason === "stale_runtime_hook" ? hookEventState(activity.rawEvent, activity.rawSubtype, seatRuntime) : "unknown";
 }

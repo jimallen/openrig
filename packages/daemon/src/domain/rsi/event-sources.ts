@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { HealthScope } from "../health-projection.js";
+import { PDA_HELD_CODES } from "../../adapters/pda-runner-protocol.js";
 import {
   RSI_COMPACTION_STORM, RSI_PERMISSION_STALL, RSI_WATCHDOG_DELIVERY_FAILURE,
 } from "./detector-ids.js";
@@ -187,7 +188,9 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
     subjectSql: `json_extract(payload, '$.sessionName')`,
     subjectNoun: "seat",
     universeSql: `1`,
-    hitSql: `json_extract(payload, '$.activity.state') = 'needs_input'`,
+    // A pda runner's held-message report reads needs_input so the seat shows in rig ps (OF-89); it is a delivery
+    // hold, re-reported while it lasts, not a permission stall, so it is not a hit.
+    hitSql: `json_extract(payload, '$.activity.state') = 'needs_input' AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE(json_extract(payload, '$.activity.rawSubtype'), '') IN (${PDA_HELD_CODES.map((c) => `'${c}'`).join(", ")}))`,
     classSql: `CASE WHEN json_extract(payload, '$.activity.state') IN ${KNOWN_ACTIVITY_STATES} THEN json_extract(payload, '$.activity.state') ELSE 'other' END`,
     classLabel: "activity events by state",
     scope: seatScope,

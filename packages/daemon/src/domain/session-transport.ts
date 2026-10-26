@@ -22,7 +22,7 @@ import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import { latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
+import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
@@ -2462,10 +2462,11 @@ export class SessionTransport {
       if (runner) return runner;
     }
     const now = this.now();
-    const hookActivity = this.agentActivityStore?.getLatestForNode({
+    // decisionView: a pda runner's held report is display evidence (OF-89), never send authority.
+    const hookActivity = decisionView(this.agentActivityStore?.getLatestForNode({
       sessionName: input.sessionName,
       now,
-    });
+    }));
     // Pane-only readiness never lets a hook authorise a send, but a fresh hook showing work or a
     // waiting person still refuses one, as it does for every other send.
     if (

@@ -175,12 +175,12 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
 
-/** Leave the stream, then reconnect. `error` is what the sidecar should say while detached. */
 /** OF-89: a held report is repeated at least this often while the hold lasts, inside the daemon's 5 minute activity
  *  freshness window (AGENT_ACTIVITY_FRESHNESS_MS), at the alive tick's granularity. Not a heartbeat: nothing posts while
  *  no message is held. */
 const HELD_REASSERT_MS = 2 * 60_000;
 
+/** Leave the stream, then reconnect. `error` is what the sidecar should say while detached. */
 class Detach extends Error {
   constructor(readonly why: "stream_end" | "protocol" | "unreachable" | "unauthorized", readonly error?: PdaRunnerErrorCode) { super(why); }
 }
