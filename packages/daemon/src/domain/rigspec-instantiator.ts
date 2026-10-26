@@ -320,6 +320,7 @@ import type { Node, RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, Startup
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { SeatSkillProjection, SeatSkillProjectionResult, SeatStartupRead } from "./seat-startup-source.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
+import { judgeSpecSource, specSourceTrustOf, type SpecSourceTrust } from "./recorded-spec-source-judge.js";
 import fs from "node:fs";
 import { resolveConcreteHint } from "./runtime-adapter.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -345,6 +346,9 @@ function defaultCultureStartupFile(): ResolvedStartupFile {
 
 interface PodInstantiatorDeps {
   db: Database.Database;
+  /** OF-103: where a rig's recorded spec source may live; judged again at every fresh-launch read. Absent: no root is
+   *  trusted, so a recorded source is refused (it never fails open). */
+  specSourceTrust?: SpecSourceTrust;
   rigRepo: RigRepository;
   podRepo: PodRepository;
   sessionRegistry: SessionRegistry;
@@ -2749,6 +2753,20 @@ export class PodRigInstantiator {
     const rig = this.deps.rigRepo.getRig(input.rigId);
     const node = rig?.nodes.find((n) => n.id === input.nodeId);
     if (!rig || !node) return unavailable("the seat no longer exists.");
+
+    // OF-103: the recorded source is judged again here, by the rules `rig spec-source set` applies, because what it names
+    // decides the persona this launch delivers. A refusal stops this seat's launch; it never falls back to the stored files
+    // by itself (the operator may ask for them with --startup-from stored).
+    const judged = judgeSpecSource({
+      specSource, use: "read", rigName: rig.rig.name, seatFolders: rig.nodes.map((n) => n.cwd).filter((c): c is string => !!c),
+      trust: this.deps.specSourceTrust ?? specSourceTrustOf(undefined),
+    });
+    if (!judged.ok && judged.code !== "spec_unreadable") {
+      return {
+        kind: "refused", code: "startup_source_untrusted", specSource,
+        message: `This rig's spec source ${specSource} is not trusted for a fresh launch, so nothing was launched or changed for this seat: ${judged.message}`,
+      };
+    }
 
     let specPath: string;
     let yaml: string;

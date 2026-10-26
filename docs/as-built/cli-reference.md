@@ -900,7 +900,8 @@ spec source as it is now (`rigs.spec_source_path`, migration 111; a spec library
 link keeps its link spelling and is followed again), after the same per-seat
 preflight a first launch runs. A missing, failing or identity-changing source
 refuses (`startup_source_unavailable` / `startup_source_changed`) before anything
-is stopped. `--startup-from stored` replays the startup context saved by the
+is stopped. The recorded source is also judged again at every read by the trusted-folder rules
+`rig spec-source set` applies (OF-103); one that fails refuses with `startup_source_untrusted`. `--startup-from stored` replays the startup context saved by the
 seat's last successful launch (a failed launch never overwrites it); a rig with
 no recorded source, and a seat its spec does not declare, do so with a warning. The source used is
 in the result (`startupSource`) and on `seat.fresh_launched`.

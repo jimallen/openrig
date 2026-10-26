@@ -185,6 +185,7 @@ import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, 
 import { guardedAgentRefFsOps } from "./domain/agent-ref-guard.js";
 import { readSeatMcpServers } from "./domain/seat-mcp-servers.js";
 import { codexConfigLayerFiles, codexConfigServerNames, mcpSpecRoots } from "./domain/codex-mcp-servers.js";
+import { specSourceTrustOf } from "./domain/recorded-spec-source-judge.js";
 import { codexSeatHomePath } from "./domain/codex-seat-home.js";
 import {
   getCompatibleOpenRigPath,
@@ -1061,6 +1062,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const podInstantiator = new PodRigInstantiator({
     db, rigRepo, podRepo,
+    // OF-103: a recorded spec source is judged again at every fresh-launch read, against the same roots as MCP (lazy:
+    // the spec library roots are captured further down, before the library initializer runs).
+    specSourceTrust: specSourceTrustOf({ specRoots: () => mcpTrust.specRoots() }),
     sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
     fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
     adapters: { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() },
@@ -1293,6 +1297,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Capture compatibility before the spec-library initializer creates the primary directory.
   const userSpecLibraryRoot = getDefaultOpenRigPath("specs");
   const compatibleSpecLibraryRoot = getCompatibleOpenRigPath("specs");
+  // Per-seat Codex MCP servers: an operator-named spec (rig seat set-mcp --spec) must lie under the released spec
+  // copies (~/.agents-release) or a spec library root; the rig's recorded spec directory is added per request. The
+  // same roots judge a rig's recorded spec source at every read (OF-103).
+  const mcpTrust = { specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, nodePath.resolve(import.meta.dirname, "../specs")] }) };
 
   // The runtime adapter map the routes see, and the ONE map `rig send`'s runner readiness is built from (pda L0/L2a):
   // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (today: pda), so a
@@ -1478,9 +1486,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     composeAdapter,
     kernelBootTracker,
     specReviewService,
-    // Per-seat Codex MCP servers: an operator-named spec (rig seat set-mcp --spec) must lie under the released spec
-    // copies (~/.agents-release) or a spec library root; the rig's recorded spec directory is added per request.
-    mcpTrust: { specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, nodePath.resolve(import.meta.dirname, "../specs")] }) },
+    mcpTrust,
     specLibraryService: (() => {
       const userSpecsRoot = userSpecLibraryRoot;
       const legacySpecsRoot = compatibleSpecLibraryRoot;

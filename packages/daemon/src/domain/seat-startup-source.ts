@@ -44,7 +44,7 @@ export type SeatStartupRead =
   /** The recorded spec does not declare this seat (added with `rig add` after launch, or dropped from the spec). */
   | { kind: "undeclared"; specSource: string }
   /** A source is recorded but cannot give this seat a startup policy; nothing was launched or written. */
-  | { kind: "refused"; code: "startup_source_unavailable" | "startup_source_changed"; message: string; specSource: string;
+  | { kind: "refused"; code: "startup_source_unavailable" | "startup_source_changed" | "startup_source_untrusted"; message: string; specSource: string;
       /** What to do about this refusal, when the usual "restore the spec, or use the stored files" advice would be wrong for it. */
       guidance?: string }
   | {
@@ -129,6 +129,7 @@ export interface FreshStartupRefusal {
     | "startup_context_runtime_mismatch"
     | "startup_source_unavailable"
     | "startup_source_changed"
+    | "startup_source_untrusted"
     | "runtime_adapter_missing"
     | "launch_unavailable"
     | "fresh_start_unsupported";

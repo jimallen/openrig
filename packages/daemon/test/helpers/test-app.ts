@@ -112,6 +112,7 @@ import { RestoreOrchestrator } from "../../src/domain/restore-orchestrator.js";
 import { RigSpecExporter } from "../../src/domain/rigspec-exporter.js";
 import { RigSpecPreflight } from "../../src/domain/rigspec-preflight.js";
 import { RigInstantiator, PodRigInstantiator } from "../../src/domain/rigspec-instantiator.js";
+import { FIXTURE_SPEC_SOURCE_TRUST } from "./spec-source-trust.js";
 import { PodRepository } from "../../src/domain/pod-repository.js";
 import { StartupOrchestrator } from "../../src/domain/startup-orchestrator.js";
 import type { RuntimeAdapter } from "../../src/domain/runtime-adapter.js";
@@ -361,6 +362,7 @@ export function createTestApp(
     ...opts?.adapters,
   };
   const podInstantiator = new PodRigInstantiator({
+    specSourceTrust: FIXTURE_SPEC_SOURCE_TRUST,
     db, rigRepo, podRepo, sessionRegistry, eventBus, nodeLauncher,
     tmuxAdapter: tmux,
     startupOrchestrator,

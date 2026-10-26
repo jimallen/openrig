@@ -244,7 +244,7 @@ are. The launch is refused with `startup_source_unavailable`, and nothing is sto
 path no longer exists, no longer parses, the seat's agent no longer resolves, a required startup file is missing, or
 the seat fails the same preflight a first launch runs (for example a culture file that is not a single-link regular
 file within the size limit). It is refused with `startup_source_changed` when the spec now gives the seat a different
-runtime, agent ref or profile. A fresh launch never changes a seat's identity; create the rig again for that.
+runtime, agent ref or profile. A fresh launch never changes a seat's identity; create the rig again for that. It is refused with `startup_source_untrusted` when the recorded source no longer lies in a trusted spec folder (a rig recorded by `rig up` from some other folder, or a link retargeted since): the rules `rig spec-source set` applies are checked again at every read.
 
 The **saved startup files** are the ones the seat's last successful launch wrote: its first launch, or the last fresh
 launch that started an occupant (they then hold that release's files). A launch that fails leaves them unchanged.

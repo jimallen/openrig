@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSyn
 import os from "node:os";
 import nodePath from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { otherInstallSpecsRoot, runningShippedSpecsRoot } from "./builtin-startup-files.js";
 
 /**
  * Per-member Codex MCP servers (`mcp_servers` on a codex member of a rig spec).
@@ -340,7 +341,13 @@ export function specFileTrustProblem(
   if (st.nlink > 1) return `the spec file ${file} has ${st.nlink} hard links; a link elsewhere could change it`;
   const chain = new Set(ancestorIdentities(real, io));
   const anchored = trustedRoots.some((root) => { const id = identityOf(root, io); return id !== null && chain.has(id); });
-  if (!anchored) return `the spec file ${file} is not under a trusted spec root (${trustedRoots.join(", ") || "none configured"})`;
+  if (!anchored) {
+    // OF-49: a spec in ANOTHER OpenRig install's bundled specs is not "outside every root" by accident: only the running
+    // install's bundled specs are trusted, so say that instead of the general message.
+    const other = otherInstallSpecsRoot(real) ?? otherInstallSpecsRoot(nodePath.resolve(file));
+    if (other) return `the spec file ${file} lies in the bundled specs of another OpenRig install (${other}); only the running install's bundled specs (${runningShippedSpecsRoot()}) and the other trusted spec roots (${trustedRoots.join(", ") || "none configured"}) are trusted`;
+    return `the spec file ${file} is not under a trusted spec root (${trustedRoots.join(", ") || "none configured"})`;
+  }
   const judged = untrustedPathProblem(file, "the spec file", { seatCwd }, io);
   return judged?.kind === "untrusted" ? judged.why : null;
 }

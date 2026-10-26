@@ -6,6 +6,7 @@ import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
 import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { PROJECT_RIG_WORKSPACES, projectRigSlug } from "./project-rig.js";
+import { judgeSpecSource, specSourceTrustOf } from "./recorded-spec-source-judge.js";
 import {
   commandBinarySha256, mcpArgFilePins, mcpServerPlacementProblem, normalizeMcpServers, serializeMcpServer, specFileTrustProblem, validateMcpServersBlock,
   type McpArgFilePin, type PathJudgeIo, type SeatMcpSelection, type SeatMcpServer,
@@ -107,7 +108,7 @@ export const declarationSha256 = (declaration: Record<string, unknown>) =>
 export type DeclaredServerRead =
   | { ok: true; entry: StoredSeatMcpServer }
   | { ok: false; code: "mcp_spec_source_unrecorded" | "mcp_spec_source_unavailable" | "mcp_spec_source_changed" | "mcp_server_undeclared" | "mcp_server_unusable"
-      | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "mcp_spec_file_untrusted"; message: string };
+      | "mcp_spec_file_unavailable" | "mcp_spec_rig_mismatch" | "mcp_spec_file_untrusted" | "mcp_spec_source_untrusted"; message: string };
 
 /**
  * Read one declared server for one seat from its rig's recorded spec source, as that file is now, and
@@ -130,6 +131,8 @@ export function readDeclaredMcpServer(input: {
   trustedSpecRoots?: string[];
   /** The trust rule's file-system reads; production never passes it. */
   io?: PathJudgeIo;
+  /** The shared-docs rigs folder the recorded source may sit in (exactly <name>/rig.yaml). Default: the daemon's own. */
+  recordedExactDepthRoot?: () => string;
 }): DeclaredServerRead {
   const operator = input.operatorSpecFile !== undefined;
   const specSource = operator ? input.operatorSpecFile! : input.specSource;
@@ -143,13 +146,31 @@ export function readDeclaredMcpServer(input: {
   // The operator-named file decides what runs, and a seat chooses the path it sends, so it must lie under a
   // trusted spec root (Jim, 2026-10-20, "Allow-list": re-check F1, R1, R2), compared by identity, with one link,
   // and pass the deny and ownership rules too.
-  if (operator) {
-    let recordedDir: string[] = [];
-    if (input.specSource) {
-      try { recordedDir = [nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource)))]; } catch { /* unreadable: not a root */ }
+  // OF-103 / OF-49: the RECORDED source is judged by the same rules `rig spec-source set` applies, at every read, because
+  // it decides what runs just as an operator-named file does (a value recorded by `rig up`, or a file or link changed
+  // after `set`, is not trusted for having been recorded). An operator-named file is read with the recorded directory as a
+  // root only when the recorded source itself passes.
+  const trust = specSourceTrustOf({ specRoots: () => input.trustedSpecRoots ?? [], ...(input.io ? { io: input.io } : {}) }, input.recordedExactDepthRoot);
+  let recordedPasses = false;
+  if (input.specSource && nodePath.isAbsolute(input.specSource)) {
+    const judged = judgeSpecSource({ specSource: input.specSource, use: "read", rigName: input.rigName, seatFolders: input.node.cwd ? [input.node.cwd] : [], trust });
+    recordedPasses = judged.ok;
+    if (!operator && !judged.ok && judged.code !== "spec_unreadable") {
+      return { ok: false, code: "mcp_spec_source_untrusted", message: `This rig's spec source ${input.specSource} is not trusted for MCP servers: ${judged.message}` };
     }
-    const roots = [...(input.trustedSpecRoots ?? []), ...recordedDir];
-    const problem = specFileTrustProblem(specSource, roots, input.node.cwd, input.io);
+  }
+  if (operator) {
+    let problem = specFileTrustProblem(specSource, input.trustedSpecRoots ?? [], input.node.cwd, input.io);
+    if (problem && input.specSource && recordedPasses) {
+      // The recorded spec's own folder is a root for a SIBLING file only (a spec file directly beside it), never for what lies
+      // deeper: when the recorded source sits in the shared-docs rigs folder (<rig>/rig.yaml), the folders below it
+      // (<rig>/state/<pod>) are Codex state folders a sandboxed seat can write.
+      try {
+        const recordedDir = nodePath.dirname(fs.realpathSync(reanchorShippedSpecPath(input.specSource)));
+        const operatorDir = nodePath.dirname(fs.realpathSync(specSource));
+        if (operatorDir === recordedDir) problem = specFileTrustProblem(specSource, [recordedDir], input.node.cwd, input.io);
+      } catch { /* unreadable: not a root */ }
+    }
     if (problem) {
       return { ok: false, code: "mcp_spec_file_untrusted", message: `The spec file ${specSource} cannot be trusted for MCP servers: ${problem}. Name the reviewed release copy (~/.agents-release/...), a spec in the spec library, or the rig's own spec file.` };
     }

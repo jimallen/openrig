@@ -20,6 +20,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
+import { FIXTURE_SPEC_SOURCE_TRUST } from "./helpers/spec-source-trust.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
@@ -103,9 +104,12 @@ describe("OF-32 N6: restore-check and the plan predict the skill-conflict refusa
   let inst: PodRigInstantiator;
   let service: SeatLifecycleService;
   let restore: RestoreOrchestrator;
+  // OF-103: the roots a recorded spec source must lie under; the fixture folder by default.
+  let trustedRoots: string[] = [];
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of32-n6-")));
+    trustedRoots = [root];
     // A: alpha and gamma. B: alpha changed, beta added, gamma dropped.
     writeRelease(path.join(root, "releases", "aaaaaaa", "rigs", "team"), "1.0.0", { alpha: "alpha A", gamma: "gamma A" });
     writeRelease(path.join(root, "releases", "bbbbbbb", "rigs", "team"), "2.0.0", { alpha: "alpha B", beta: "beta B" });
@@ -170,6 +174,7 @@ describe("OF-32 N6: restore-check and the plan predict the skill-conflict refusa
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
+      specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => trustedRoots },
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
       fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
       adapters: { "claude-code": adapter },
@@ -302,6 +307,30 @@ describe("OF-32 N6: restore-check and the plan predict the skill-conflict refusa
     expect(node?.status).not.toBe("failed");
     expect(pre.status, pre.evidence).not.toBe("red");
     expect(refusals.size).toBe(0);
+  });
+
+  // OF-103: the re-read judges the recorded source again, so a source that fails the judgement is refused by restore for a
+  // listed seat, and restore-check and the plan say so through the same decision (production: startup.ts wires the one
+  // PodRigInstantiator into restore, restore-check and the plan as their specReader).
+  it("OF-103: a recorded source outside every trusted root is refused by restore for a listed seat, and the check and the plan name the same refusal", async () => {
+    const seat = await launchRig();
+    const snapshotId = await down(seat.rigId);
+    trustedRoots = [];
+    const rig = rigRepo.getRig(seat.rigId)!;
+    const snapshot = new SnapshotRepository(db).getSnapshot(snapshotId)!;
+
+    const pre = (await checkOf(["dev.impl"])).checks.find((c) => c.check.endsWith("restore-preconditions"))!;
+    const refusals = await predictedPlanRefusals(planDeps(), rig, snapshot, ["dev.impl"], "spec");
+    const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(db, rig, snapshot), ["dev.impl"], Date.now(), readFreshOccupantRelations(db, rig.rig.id), refusals);
+    const outcome = await restoreFrom(snapshotId, true);
+    const node = outcome.ok ? outcome.result.nodes.find((n) => n.logicalId === "dev.impl") : undefined;
+
+    expect(node?.status, JSON.stringify(node)).toBe("failed");
+    const refusal = refusalOf(node?.error);
+    expect(refusal, `restore's error: ${node?.error}`).toContain("not trusted for a fresh launch");
+    expect(pre.status, pre.evidence).toBe("red");
+    expect(pre.evidence).toContain(refusal!);
+    expect(plan.nodes.find((n) => n.logicalId === "dev.impl")!.wouldRefuse).toBe(refusal);
   });
 
   it("control: no operator edit, so --fresh is neither refused by restore nor red in the check", async () => {

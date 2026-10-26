@@ -16,6 +16,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
+import { FIXTURE_SPEC_SOURCE_TRUST } from "./helpers/spec-source-trust.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
@@ -72,6 +73,8 @@ function writeRelease(dir: string, version: string) {
 
 describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", () => {
   let root: string;
+  // OF-103: the roots a recorded spec source must lie under; the fixture folder by default.
+  let trustedRoots: string[] = [];
   let current: string;
   let linkSpec: string;
   let workdir: string;
@@ -90,6 +93,7 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of32-restore-")));
+    trustedRoots = [root];
     for (const [sha, version] of [["aaaaaaa", "1.0.0"], ["bbbbbbb", "2.0.0"], ["ccccccc", "3.0.0"]] as const) {
       writeRelease(path.join(root, "releases", sha, "rigs", "team"), version);
     }
@@ -154,6 +158,7 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
     const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter: tmux, sleep: async () => undefined });
     inst = new PodRigInstantiator({
+      specSourceTrust: { ...FIXTURE_SPEC_SOURCE_TRUST, roots: () => trustedRoots },
       db, rigRepo, podRepo: new PodRepository(db), sessionRegistry, eventBus, nodeLauncher, startupOrchestrator,
       fsOps: { ...guardedAgentRefFsOps, readFile: (p: string) => fs.readFileSync(p, "utf-8"), exists: (p: string) => fs.existsSync(p) },
       adapters: { "claude-code": adapter },
@@ -292,6 +297,31 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     expect(listed.status).toBe("failed");
     expect(listed.error).toContain(reason);
     expect(listed.error).toContain("No session was started");
+  });
+
+  // OF-103: the recorded source is judged again at the restore's read, by the rules `rig spec-source set` applies. A rig
+  // recorded by `rig up` before OF-102 (any path), or a link retargeted after `set`, is not trusted for having been recorded.
+  // Only a seat listed with --fresh reads it, so a seat not listed still comes up on its saved setup. Restore-check predicts
+  // the same refusal through the same decision (restore-check-predicts-skill-conflict.test.ts, OF-103 row).
+  it("OF-103: a recorded source outside every trusted root refuses a seat listed with --fresh before launch; a seat not listed still comes up on its saved setup", async () => {
+    const seat = await launchRig();
+    db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+    const snapshotId = await down(seat.rigId);
+    retarget("bbbbbbb");
+    trustedRoots = [];
+
+    const routine = seatResult(await restoreFrom(snapshotId, { fresh: false }));
+    expect(routine.status, JSON.stringify(routine)).toBe("fresh-primed");
+    expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
+
+    await down(seat.rigId);
+    const listed = seatResult(await restoreFrom(snapshotId));
+    expect(listed.status).toBe("failed");
+    expect(listed.error).toContain("not trusted for a fresh launch");
+    expect(listed.error).toContain(linkSpec);
+    expect(listed.error).toContain("No session was started");
+    expect(releaseOf(delivered.flat())).toEqual([]);
+    expect(releaseOf(storedFiles(seat.nodeId))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
   });
 
   // A seat not listed is validated before the restore exactly as at base, but on what it will replay: its own saved

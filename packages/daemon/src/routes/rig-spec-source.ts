@@ -18,6 +18,7 @@ import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import type { EventBus } from "../domain/event-bus.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import { RigSpecSourceService, type SpecSourceRefusalCode } from "../domain/rig-spec-source-service.js";
+import { specSourceTrustOf } from "../domain/recorded-spec-source-judge.js";
 import type { SeatLifecycleDeps } from "../domain/seat-lifecycle-service.js";
 import { getOpenRigHome } from "../openrig-compat.js";
 import { transportSenderSession } from "./require-sender-identity.js";
@@ -46,7 +47,7 @@ export function rigSpecSourceRoutes(opts?: RigSpecSourceRoutesOpts): Hono {
     return new RigSpecSourceService({
       rigRepo: c.get("rigRepo" as never) as RigRepository,
       eventBus: c.get("eventBus" as never) as EventBus,
-      trust: { roots: () => [...(mcpTrust?.specRoots?.() ?? [])], exactDepthRoot: sharedDocsRigsRoot, ...(mcpTrust?.io ? { io: mcpTrust.io } : {}) },
+      trust: specSourceTrustOf(mcpTrust, sharedDocsRigsRoot),
     });
   };
 

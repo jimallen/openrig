@@ -75,6 +75,12 @@ This decides what the rig's seats are started from, so the spec file must be one
 it has to lie (by its real location, links followed) under <OPENRIG_HOME>/shared-docs/rigs, the released copies
 (~/.agents-release) or the spec library, be a regular file with one link, and sit on a path owned by you or root
 and not writable by group or others. A spec in a temp folder, a git work tree or a seat's folder is refused.
+The same rules are applied again every time the recorded source is READ (a fresh launch, a --fresh restore and its
+restore-check, "rig seat set-mcp"), including for a source recorded by "rig up" before this command existed: a source
+that no longer qualifies refuses that seat's launch with startup_source_untrusted (nothing is stopped, and it never
+falls back to the saved files by itself). "rig spec-source show" says whether a launch would refuse it. A path inside
+another OpenRig install's packaged specs (.../@openrig/cli/daemon/specs/...) is refused, because a launch always
+reads a packaged spec from the running install.
 If the daemon was started with OPENRIG_AUTH_BEARER_TOKEN, the call must also carry that token (--bearer or the
 same variable); a daemon without one is gated by the folder rule alone.
 
