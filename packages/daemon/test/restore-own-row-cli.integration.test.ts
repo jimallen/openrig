@@ -4,7 +4,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 
 // OF-36: every command a message about an unusable saved startup context names is typed through a real POSIX shell
@@ -48,11 +49,11 @@ function useRig(opts: { recordSpec: boolean }) {
     return Object.fromEntries((JSON.parse(ps.stdout) as Array<{ logicalId: string; sessionStatus: string }>).map((s) => [s.logicalId, s.sessionStatus]));
   };
   beforeAll(async () => {
-    ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
+    ctx.scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
     const cwd = join(ctx.scaffold.root, "project");
     mkdirSync(cwd);
-    const up = await rig(["up", topology, "--cwd", cwd, "--json", "--yes"]);
+    const up = await rig(["up", installTrustedScenario(ctx.scaffold, topology), "--cwd", cwd, "--json", "--yes"]);
     expect(up.code, JSON.stringify(up)).toBe(0);
     if (!opts.recordSpec) sql("UPDATE rigs SET spec_source_path = NULL WHERE name = ?", rigName);
   }, 200_000);

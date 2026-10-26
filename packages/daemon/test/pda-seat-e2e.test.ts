@@ -35,7 +35,8 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type RigResult, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 import { startFakePda, nonAllowlisted, type FakePda } from "./helpers/fake-pda.js";
 import { assistantEntry, assistantMessage, deltaEvent, messageEnd, messageStart, runEnd, runStart } from "./helpers/pda-real-shapes.js";
@@ -135,7 +136,7 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
   const db = () => new Database(join(scaffold.stateDir, "scenario.db"), { readonly: true, fileMustExist: true });
 
   beforeAll(async () => {
-    scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color" } });
+    scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color" } });
     fake = await startFakePda({ token: BEARER, agents: ["research"] });
     gate = await Gate.open(Number(new URL(fake.baseUrl).port));
     tokenFile = join(scaffold.root, "pda-token");
@@ -169,7 +170,7 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
     mkdirSync(join(scaffold.root, "cwd"), { recursive: true });
     mkdirSync(join(scaffold.root, "stub-cwd"), { recursive: true });
     // The existing runtime in the same daemon: two stub seats (the sender's identity, and row 12's recipient).
-    const stub = await runRig(["up", join(library, "dev-pair-stub.yaml"), "--cwd", join(scaffold.root, "stub-cwd"), "--json", "--yes"], daemon.readEnv, rigBin, 120_000);
+    const stub = await runRig(["up", installTrustedScenario(scaffold, join(library, "dev-pair-stub.yaml")), "--cwd", join(scaffold.root, "stub-cwd"), "--json", "--yes"], daemon.readEnv, rigBin, 120_000);
     expect(stub.code, JSON.stringify(stub)).toBe(0);
     launched.push("dev-pair-stub");
   }, 180_000);

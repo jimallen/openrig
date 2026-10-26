@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -60,11 +61,11 @@ describe("intentional seat stop CLI journey", () => {
   }
 
   beforeAll(async () => {
-    scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color" } });
+    scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color" } });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin });
     const cwd = join(scaffold.root, "project");
     mkdirSync(cwd);
-    await cli(["up", topology, "--cwd", cwd, "--json", "--yes"], 120_000);
+    await cli(["up", installTrustedScenario(scaffold, topology), "--cwd", cwd, "--json", "--yes"], 120_000);
     launched = true;
   }, 120_000);
 

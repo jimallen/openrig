@@ -4,7 +4,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { type HermeticScaffold } from "./helpers/hermetic-env.js";
+import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 
 // N-C2 (review of f55023a1): every command the refusal's guidance names is typed through a real POSIX shell against a
@@ -44,11 +45,11 @@ function useRig(opts: { recordSpec: boolean }) {
   };
   const rigId = async () => (JSON.parse((await rig(["ps", "--json"])).stdout) as Array<{ rigId: string; rigName: string }>).find((r) => r.rigName === rigName)!.rigId;
   beforeAll(async () => {
-    ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
+    ctx.scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
     const cwd = join(ctx.scaffold.root, "project");
     mkdirSync(cwd);
-    const up = await rig(["up", topology, "--cwd", cwd, "--json", "--yes"]);
+    const up = await rig(["up", installTrustedScenario(ctx.scaffold, topology), "--cwd", cwd, "--json", "--yes"]);
     expect(up.code, JSON.stringify(up)).toBe(0);
     if (!opts.recordSpec) sql("UPDATE rigs SET spec_source_path = NULL WHERE name = ?", rigName);
   }, 200_000);
