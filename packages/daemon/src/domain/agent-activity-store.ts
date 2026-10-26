@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, PersistedEvent } from "./types.js";
+import { PDA_RUNTIME, isPdaHeldCode } from "../adapters/pda-runner-protocol.js";
 
 export const AGENT_ACTIVITY_FRESHNESS_MS = 5 * 60 * 1000;
 
@@ -326,7 +327,8 @@ export class AgentActivityStore {
 
 /** The activity a runtime hook event means, before freshness or generation checks. The one mapping behind
  *  ingest, the send gate and the wake ladder. `seatRuntime` is the managed seat's runtime: runtime_error is
- *  an OMP runner signal, and a hook claiming OMP on another runtime's seat must not escalate it. */
+ *  an OMP runner signal, and a hook claiming OMP on another runtime's seat must not escalate it. The same
+ *  holds for a pda runner's held-message report (OF-89): `Notification/<held code>` is needs_input on a pda seat only. */
 export function hookEventState(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") return "running";
   // OPR.0.4.1.10 — Codex's official approval hook (openai/codex PR #17563). A PermissionRequest
@@ -338,7 +340,8 @@ export function hookEventState(rawEvent: string | null | undefined, rawSubtype: 
   // the relay forwards tool_name as the subtype, so `evidence` names the tool being approved.
   if (rawEvent === "PermissionRequest") return "needs_input";
   if (rawEvent === "Notification") {
-    if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || (seatRuntime === "omp" && rawSubtype === "runtime_error")) return "needs_input";
+    if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || (seatRuntime === "omp" && rawSubtype === "runtime_error")
+      || (seatRuntime === PDA_RUNTIME && isPdaHeldCode(rawSubtype))) return "needs_input";
     return rawSubtype === "idle_prompt" ? "idle" : "unknown";
   }
   if (rawEvent === "Stop" || rawEvent === "SessionEnd" || rawEvent === "stop" || rawEvent === "idle") return "idle";

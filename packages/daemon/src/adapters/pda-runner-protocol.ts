@@ -229,6 +229,12 @@ export interface PdaRunnerState {
 }
 
 const HELD_CODES: ReadonlySet<string> = new Set<PdaHeldCode>(["pda_message_held", "pda_agent_missing", "pda_unauthorized"]);
+
+/** Is this subtype one of the codes the runner reports as a held message (`Notification/<code>`, OF-89)? The daemon
+ *  maps exactly these, for a pda seat only, to needs_input. */
+export function isPdaHeldCode(value: string | null | undefined): value is PdaHeldCode {
+  return typeof value === "string" && HELD_CODES.has(value);
+}
 const ERROR_CODES: ReadonlySet<string> = new Set<PdaRunnerErrorCode>([
   "pda_unreachable", "pda_unauthorized", "pda_agent_missing", "pda_protocol", "pda_token_format", "pda_outbox_binding_mismatch",
 ]);

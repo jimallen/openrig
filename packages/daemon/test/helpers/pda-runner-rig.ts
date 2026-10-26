@@ -125,6 +125,8 @@ export interface RigOptions {
   sessionName?: string;
   /** Leave the runner's user-message hold at its production default (the rig otherwise shortens it to 25 ms). */
   defaultHold?: boolean;
+  /** The runner's clock (default real time). A test moves it to cross a freshness window without waiting. */
+  now?: () => Date;
 }
 
 export interface Rig {
@@ -219,6 +221,7 @@ export async function makeRig(options: RigOptions = {}): Promise<Rig> {
       signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
     }),
     aliveIntervalMs: options.aliveIntervalMs ?? 40,
+    ...(options.now ? { now: options.now } : {}),
     ...(options.defaultHold ? {} : { userHoldMs: 25 }), // a user message waits this long for the submission that names it
     backoffStartMs: 5,
     backoffCapMs: 20,
