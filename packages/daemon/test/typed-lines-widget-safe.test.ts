@@ -185,7 +185,7 @@ describe("typed command lines are safe from keystroke-rewriting widgets (OF-65)"
     });
   });
 
-  describe("cmux attach line (typed through the cmux transport, not staged)", () => {
+  describe("cmux attach line (typed as it stands when safe; staged otherwise, see typed-line-charset.test.ts)", () => {
     it("holds no widget character for a canonical session name on the default tmux server", () => {
       const line = tmuxAttachCommand("dev-impl@rig-1");
       expect(line).toBe("tmux attach -t dev-impl@rig-1");

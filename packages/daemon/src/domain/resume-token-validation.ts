@@ -120,3 +120,24 @@ export function validateResumeToken(
   }
   return validateIdShapedToken(resumeType, token);
 }
+
+// OF-75 — the characters a word may hold to be typed into a pane without quoting concerns: the resume probe types
+// `claude --resume '<token>' --name '<seat>'`, and a quoted word is no defence against an autopair widget or a
+// pane that is not a POSIX shell. Outside this set the probe does not run (it answers "inconclusive").
+const TYPED_WORD_RE = /^[A-Za-z0-9._@-]+$/;
+export function isTypedResumeWord(value: string): boolean {
+  return TYPED_WORD_RE.test(value);
+}
+
+/**
+ * The token to persist at a path that writes a token it observed rather than one a person set: the trimmed token
+ * when it is well-formed for the runtime, otherwise null (the caller skips the write). A runtime with no resume
+ * type has no format to check and keeps the trimmed token as before. Never echoes the token.
+ */
+export function observedResumeTokenToWrite(runtime: string | null, rawToken: string): string | null {
+  const token = rawToken.trim();
+  if (token.length === 0) return null;
+  if (resumeTypeForRuntime(runtime) === null) return token;
+  const validation = validateResumeToken(runtime, token);
+  return validation.ok ? validation.token : null;
+}

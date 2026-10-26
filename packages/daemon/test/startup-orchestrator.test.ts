@@ -846,6 +846,39 @@ describe("StartupOrchestrator", () => {
     expect(sendText).toHaveBeenNthCalledWith(2, "r01-impl", "/rename impl");
   });
 
+  // OF-75: a resume token an adapter reports is stored only when it is well-formed for the runtime. The stored
+  // token is later typed into a pane by restore and by the resume probe, so a hostile one must never be recorded.
+  it.each([
+    ["a shell separator", "tok;touch-x"],
+    ["a space", "tok en"],
+    ["a quote", "tok'x"],
+    ["a command substitution", "$(touch-x)"],
+    ["a newline", "tok\nx"],
+  ])("does not store a reported claude token holding %s", async (_label, token) => {
+    const seed = seedSession();
+    const adapter = mockAdapter({ launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: token, resumeType: "claude_id" })) });
+    const result = await createOrchestrator().startNode(makeInput(seed, { adapter }));
+    expect(result.ok).toBe(true);
+    expect(db.prepare("SELECT resume_token, resume_type FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ resume_token: null, resume_type: null });
+  });
+
+  it.each(["abc-123", "0f8fad5b-d9cb-469f-a165-70867728950e", "a.b_c-1"])("control: stores a well-formed reported claude token (%s)", async (token) => {
+    const seed = seedSession();
+    const adapter = mockAdapter({ launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: `  ${token}  `, resumeType: "claude_id" })) });
+    await createOrchestrator().startNode(makeInput(seed, { adapter }));
+    expect(db.prepare("SELECT resume_token, resume_type FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ resume_token: token, resume_type: "claude_id" });
+  });
+
+  // KNOWN GAP (OF-75, by decision): a runtime with no resume type (terminal, unknown) has no token format to check,
+  // so a token its adapter reports is stored trimmed as before. Nothing types such a token: the resume probe and the
+  // restore launch lines are built only for claude-code and codex. A format for these runtimes is a separate decision.
+  it("KNOWN GAP: a token reported by a runtime with no resume type is still stored, trimmed", async () => {
+    const seed = seedSession();
+    const adapter = mockAdapter({ runtime: "terminal", launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "  tok;x  ", resumeType: "terminal_id" })) });
+    await createOrchestrator().startNode(makeInput(seed, { adapter }));
+    expect(db.prepare("SELECT resume_token FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ resume_token: "tok;x" });
+  });
+
   it("issues a selected startup challenge (oriented=missing, challenge in prompt)", async () => {
     const seed = seedSession();
     const sendText = vi.fn(async () => ({ ok: true as const }));

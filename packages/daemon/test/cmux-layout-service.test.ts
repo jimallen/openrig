@@ -216,12 +216,19 @@ describe("CmuxLayoutService.orderAgentsFromRigSpec", () => {
 });
 
 describe("CmuxLayoutService.buildWorkspacePanes (terminal-provider paneCommand core)", () => {
-  it("sends each caller-composed command verbatim + newline (read-only -r / ssh-wrap preserved)", async () => {
+  it("runs each caller-composed command verbatim (read-only -r / ssh-wrap preserved): a quoted one through a staged script (OF-67)", async () => {
     const { adapter, calls } = makeMockAdapter();
     const { sleep } = makeSleepRecorder();
-    const service = new CmuxLayoutService(adapter as never, { sleep });
+    const scripts: Array<{ path: string; content: string }> = [];
+    const fileOps = {
+      tmpName: () => `/tmp/layout-stage-${scripts.length}.txt`,
+      bufferName: () => "buf",
+      writeFile: async (path: string, content: string) => { scripts.push({ path, content }); },
+      unlink: async () => {},
+    };
+    const service = new CmuxLayoutService(adapter as never, { sleep, fileOps });
     const result = await service.buildWorkspacePanes("openrig:v#l1", undefined, [
-      "tmux attach -t 'a@r'",
+      "tmux attach -t a@r",
       "ssh 'user@host' tmux attach -r -t 'b@r'",
     ]);
 
@@ -234,9 +241,13 @@ describe("CmuxLayoutService.buildWorkspacePanes (terminal-provider paneCommand c
     expect(creates).toHaveLength(1); // ONE workspace for the whole page
     const sends = calls.filter((c) => c.method === "sendText");
     expect(sends.map((s) => s.args[1])).toEqual([
-      "tmux attach -t 'a@r'\n",
-      "ssh 'user@host' tmux attach -r -t 'b@r'\n",
+      "tmux attach -t a@r\n",
+      "/bin/sh /tmp/layout-stage-0.txt\n",
     ]);
+    expect(scripts).toEqual([{
+      path: "/tmp/layout-stage-0.txt",
+      content: "/bin/rm -f -- /tmp/layout-stage-0.txt\nssh 'user@host' tmux attach -r -t 'b@r'\n",
+    }]);
   });
 
   // PM ruling: the applied grid must match the modal Auto-grid preview

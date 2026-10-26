@@ -47,6 +47,15 @@ export function validateSessionName(name: string): boolean {
 }
 
 /**
+ * OF-75 — a claimed session keeps the name its tmux session already has, so the canonical-shape rule of
+ * validateSessionName does not apply; the character set does. Names reach typed command lines, so a name outside
+ * the set (a space, `;`, a quote, a newline) is refused rather than recorded.
+ */
+export function validateClaimedSessionName(name: string): boolean {
+  return typeof name === "string" && ALLOWED_CHARS_PATTERN.test(name);
+}
+
+/**
  * Validate characters in a session name component.
  * Returns null if valid, or an error string with the specific invalid character.
  */

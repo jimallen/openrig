@@ -33,6 +33,8 @@
 
 import type { CmuxAdapter, CmuxResult } from "../adapters/cmux.js";
 import { tmuxAttachCommand } from "../adapters/tmux-server.js";
+import { stageCmuxLine } from "../adapters/cmux-typed-line.js";
+import { defaultTmuxFileOps, type TmuxFileOps } from "../adapters/tmux.js";
 
 export const MAX_COLS = 2;
 export const MAX_PER_WORKSPACE = 12;
@@ -94,13 +96,17 @@ export interface RigSpecLike {
 
 export interface CmuxLayoutServiceOptions {
   sleep?: SleepFn;
+  /** Where a staged pane command is written (tests inject; production uses the tmpdir). */
+  fileOps?: TmuxFileOps;
 }
 
 export class CmuxLayoutService {
   private readonly sleep: SleepFn;
+  private readonly fileOps: TmuxFileOps;
 
   constructor(private cmuxAdapter: CmuxAdapter, opts: CmuxLayoutServiceOptions = {}) {
     this.sleep = opts.sleep ?? defaultSleep;
+    this.fileOps = opts.fileOps ?? defaultTmuxFileOps();
   }
 
   static computeLayout(n: number): LayoutShape {
@@ -268,11 +274,16 @@ export class CmuxLayoutService {
       for (let r = 0; r < layout.rows && paneIndex < paneCommands.length; r++) {
         const surface = grid[c]![r]!;
         const command = paneCommands[paneIndex]!;
+        // A pane command is typed as it stands only when it is one widget-safe line (OF-67); otherwise a
+        // staged script is typed in its place. The caller composed the command, so it is run verbatim.
+        const staged = await stageCmuxLine(command, this.fileOps);
+        if (!staged.ok) return { ok: false, code: "stage_failed", message: staged.message };
         const sendResult = await this.cmuxAdapter.sendText(
           surface,
-          `${command}\n`,
+          `${staged.line}\n`,
           workspaceId,
         );
+        if (!sendResult.ok) await staged.discard();
         if (!sendResult.ok) return sendResult;
         paneIndex += 1;
       }
