@@ -111,6 +111,7 @@ describe("seat paths, argv and request ids", () => {
       outboxPath: "/h/.openrig/state/pda/research@r/outbox.log",
       rejectedPath: "/h/.openrig/state/pda/research@r/rejected.log",
       ownSubmissionsPath: "/h/.openrig/state/pda/research@r/own-submissions.json",
+      usagePendingPath: "/h/.openrig/state/pda/research@r/usage-pending.json",
       releaseRequestPath: "/h/.openrig/state/pda/research@r/release.request",
     });
   });

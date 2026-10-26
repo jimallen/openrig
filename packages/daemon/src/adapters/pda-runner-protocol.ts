@@ -134,6 +134,7 @@ export function pdaRestoreBindingWarning(specBinding: PdaBinding | null, tokenBi
 //   outbox.log             append-only PdaOutboxRecord lines (L1a)
 //   rejected.log           rejected records kept before compaction (L1a)
 //   own-submissions.json   the last 500 submission ids this seat made (L1b, J-3 attribution)
+//   usage-pending.json     usage facts not yet stored when the runner stopped (OF-93; the usage sink writes and loads it)
 //   release.request        operator control file for `rig seat pda-release` (L2a writes, runner polls)
 
 export interface PdaSeatPaths {
@@ -142,6 +143,7 @@ export interface PdaSeatPaths {
   outboxPath: string;
   rejectedPath: string;
   ownSubmissionsPath: string;
+  usagePendingPath: string;
   releaseRequestPath: string;
 }
 
@@ -153,6 +155,7 @@ export function pdaSeatPaths(stateRoot: string, sessionName: string): PdaSeatPat
     outboxPath: nodePath.join(seatRoot, "outbox.log"),
     rejectedPath: nodePath.join(seatRoot, "rejected.log"),
     ownSubmissionsPath: nodePath.join(seatRoot, "own-submissions.json"),
+    usagePendingPath: nodePath.join(seatRoot, "usage-pending.json"),
     releaseRequestPath: nodePath.join(seatRoot, "release.request"),
   };
 }
