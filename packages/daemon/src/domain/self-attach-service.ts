@@ -7,6 +7,7 @@ import type { PersistedEvent } from "./types.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { startTmuxTranscriptCapture } from "./transcript-capture.js";
+import { validateClaimedSessionName } from "./session-name.js";
 
 export type SelfAttachSuccess = {
   ok: true;
@@ -33,7 +34,8 @@ export type SelfAttachFailureCode =
   | "duplicate_logical_id"
   | "invalid_member_name"
   | "runtime_required"
-  | "runtime_mismatch";
+  | "runtime_mismatch"
+  | "invalid_session_name";
 
 export type SelfAttachResult =
   | SelfAttachSuccess
@@ -55,6 +57,17 @@ interface SelfAttachServiceDeps {
   // can reach the ingest endpoint. This is a returned env for the caller to
   // export — NOT a mutation of an already-running process.
   activityEnv?: { url?: string; token?: string };
+}
+
+/** The failure for a context whose session name registerClaimedSession would refuse (OF-75), or null. */
+function refuseUnclaimableName(context: SelfAttachContext): SelfAttachResult | null {
+  const name = context.attachmentType === "tmux" ? context.tmuxSession : context.sessionName;
+  if (name === undefined || name === null || validateClaimedSessionName(name)) return null;
+  return {
+    ok: false,
+    code: "invalid_session_name",
+    error: "Session name must use only letters, digits, '-', '_', '.' and '@'.",
+  };
 }
 
 interface AttachToNodeOptions {
@@ -178,6 +191,10 @@ export class SelfAttachService {
       return { ok: false, code: "duplicate_logical_id", error: `Logical ID '${logicalId}' already exists in rig` };
     }
 
+    const context = this.resolveContext(logicalId, rig.rig.name, opts.displayName, opts.context);
+    // OF-75: refuse a name the registry would refuse before any write, with its own code.
+    const refused = refuseUnclaimableName(context);
+    if (refused) return refused;
     const attachTx = this.db.transaction(() => {
       const node = this.rigRepo.addNode(opts.rigId, logicalId, {
         runtime,
@@ -188,7 +205,7 @@ export class SelfAttachService {
         rigId: opts.rigId,
         nodeId: node.id,
         logicalId,
-        context: this.resolveContext(logicalId, rig.rig.name, opts.displayName, opts.context),
+        context,
       });
       return attached;
     });
@@ -213,6 +230,8 @@ export class SelfAttachService {
     cwd?: string | null;
     context: SelfAttachContext;
   }): Promise<SelfAttachResult> {
+    const refused = refuseUnclaimableName(args.context);
+    if (refused) return refused;
     const attachTx = this.db.transaction(() =>
       this.attachExistingNodeWithinTransaction({
         rigId: args.rigId,

@@ -92,6 +92,7 @@ export class NodeCmuxService {
     const isTmux = binding?.attachmentType === "tmux" && binding?.tmuxSession;
     if (isTmux) {
       const attach = await stageCmuxLine(tmuxAttachCommand(sessionName), this.fileOps);
+      if (!attach.ok) return { ok: false, error: attach.message, code: "stage_failed" };
       const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `${attach.line}\n`, wsResult.data);
       if (!sendResult.ok) await attach.discard();
       if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };
@@ -121,6 +122,7 @@ export class NodeCmuxService {
       `printf '%s\\n' ${shellWord(`rig send ${quotedName} "..." --verify`)}`,
     ].join("\n");
     const helper = await stageCmuxLine(helperText, this.fileOps);
+    if (!helper.ok) return { ok: false, error: helper.message, code: "stage_failed" };
     const sendResult = await this.cmuxAdapter.sendText(newSurfaceId, `${helper.line}\n`, wsResult.data);
     if (!sendResult.ok) await helper.discard();
     if (!sendResult.ok) return { ok: false, error: sendResult.message, code: sendResult.code };

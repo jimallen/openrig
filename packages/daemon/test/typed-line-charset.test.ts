@@ -158,14 +158,17 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
     return log.split("\u0001").filter((l) => l.length > 0).map((l) => l.split("\0").slice(0, -1));
   }
 
-  function fileOps() {
+  function fileOps(opts: { writeFails?: boolean } = {}) {
     const files = new Map<string, string>();
     const unlinked: string[] = [];
     let n = 0;
     const ops: TmuxFileOps = {
       tmpName: () => `/tmp/of67-${n++}.txt`,
       bufferName: () => `buf${n++}`,
-      writeFile: vi.fn(async (path: string, content: string) => { files.set(path, content); }),
+      writeFile: vi.fn(async (path: string, content: string) => {
+        if (opts.writeFails) throw new Error("EACCES: permission denied");
+        files.set(path, content);
+      }),
       unlink: vi.fn(async (path: string) => { unlinked.push(path); }),
     };
     return { ops, files, unlinked };
@@ -213,6 +216,15 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       expect(f.ops.writeFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/of67-/), expect.any(String), { mode: 0o600, flag: "wx" });
     });
 
+    it("returns an error result, and does not throw, when the script cannot be written", async () => {
+      const f = fileOps({ writeFails: true });
+      const staged = await stageCmuxLine("echo 'x'", f.ops);
+      expect(staged.ok).toBe(false);
+      if (!staged.ok) expect(staged.message).toContain("EACCES");
+      // a line that needs no script is unaffected by an unwritable tmpdir
+      expect((await stageCmuxLine("echo x", f.ops)).ok).toBe(true);
+    });
+
     it("discard removes the staged script, and does nothing for an unstaged line", async () => {
       const f = fileOps();
       const staged = await stageCmuxLine("echo 'x'", f.ops);
@@ -225,7 +237,7 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
   });
 
   describe("node open-in-cmux", () => {
-    function open(binding: Record<string, unknown>, sendOk = true) {
+    function open(binding: Record<string, unknown>, sendOk = true, writeFails = false) {
       const sent: string[] = [];
       const adapter = {
         currentWorkspace: async () => ({ ok: true as const, data: "ws-1" }),
@@ -234,7 +246,7 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
         focusSurface: async () => ({ ok: true as const, data: undefined }),
       };
       const rigRepo = { getRig: () => ({ nodes: [{ id: "n1", logicalId: "dev.impl", binding }] }) };
-      const f = fileOps();
+      const f = fileOps({ writeFails });
       const service = new NodeCmuxService(rigRepo as never, { updateBinding: vi.fn() } as never, adapter as never, undefined, f.ops);
       return { sent, f, run: () => service.openOrFocusNodeSurface("rig", "dev.impl") };
     }
@@ -265,6 +277,17 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       const calls = runStaged([...f.files.values()][0]!);
       expect(fs.existsSync(sentinel)).toBe(false);
       expect(calls).toEqual([["tmux", "attach", "-t", name]]);
+    });
+
+    it.each([
+      ["attach line", { attachmentType: "tmux", tmuxSession: "x; y" }],
+      ["helper console", { attachmentType: "external_cli", externalSessionName: "ext-1" }],
+    ])("an unwritable script fails the open with stage_failed and types nothing (%s)", async (_label, binding) => {
+      const { sent, run } = open(binding, true, true);
+      const result = await run();
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe("stage_failed");
+      expect(sent).toEqual([]);
     });
 
     it("removes the staged attach script when the surface refuses the line", async () => {
@@ -301,7 +324,7 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
   });
 
   describe("buildWorkspacePanes", () => {
-    function build(commands: string[], sendOk = true) {
+    function build(commands: string[], sendOk = true, writeFails = false) {
       const sent: string[] = [];
       let surface = 0;
       const adapter = {
@@ -312,7 +335,7 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
         equalizeLayout: async () => ({ ok: true as const, data: { equalized: true } }),
         focusSurface: async () => ({ ok: true as const, data: undefined }),
       };
-      const f = fileOps();
+      const f = fileOps({ writeFails });
       const service = new CmuxLayoutService(adapter as never, { sleep: async () => {}, fileOps: f.ops });
       return { sent, f, run: () => service.buildWorkspacePanes("ws", undefined, commands) };
     }
@@ -330,6 +353,14 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       expect((await run()).ok).toBe(true);
       expect(sent).toHaveLength(1);
       expect(sent[0]).toMatch(STAGED);
+    });
+
+    it("an unwritable script fails the build with stage_failed and types nothing for that pane", async () => {
+      const { sent, run } = build(["echo 'x'"], true, true);
+      const result = await run();
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("stage_failed");
+      expect(sent).toEqual([]);
     });
 
     it("removes the staged script of a pane the surface refused", async () => {

@@ -674,6 +674,7 @@ rigsRoutes.post("/:id/attach-self", async (c) => {
     case "pod_not_found":
       return c.json(result, 404);
     case "runtime_required":
+    case "invalid_session_name":
       return c.json(result, 400);
     case "already_bound":
     case "duplicate_logical_id":

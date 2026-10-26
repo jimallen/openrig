@@ -90,6 +90,52 @@ describe("SelfAttachService", () => {
     expect(sessions[0]?.sessionName).toBe("orch1-lead@rigged-buildout");
   });
 
+  // OF-75: a session name the registry refuses is refused before any write, with its own code.
+  describe("a session name outside the claimed-name character set", () => {
+    const counts = (nodeId: string) => ({
+      bindings: (db.prepare("SELECT COUNT(*) AS n FROM bindings WHERE node_id = ?").get(nodeId) as { n: number }).n,
+      sessions: (db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE node_id = ?").get(nodeId) as { n: number }).n,
+      events: (db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'binding.updated'").get() as { n: number }).n,
+    });
+
+    it.each(["bad name", "x;touch-y@rig", "a'b@rig", "$(x)@rig", "bad:seat@rig"])("attachToNode (display name %j) leaves no binding, session or event", async (displayName) => {
+      const rig = rigRepo.createRig("rig");
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+      const result = await selfAttachService.attachToNode({ rigId: rig.id, logicalId: "dev.impl", displayName });
+      expect(result).toMatchObject({ ok: false, code: "invalid_session_name" });
+      expect(counts(node.id)).toEqual({ bindings: 0, sessions: 0, events: 0 });
+    });
+
+    it("attachToNode with a tmux context holding such a name leaves no binding, session or event", async () => {
+      const rig = rigRepo.createRig("rig");
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+      const result = await selfAttachService.attachToNode({
+        rigId: rig.id, logicalId: "dev.impl",
+        context: { attachmentType: "tmux", tmuxSession: "my session;x", tmuxWindow: "0", tmuxPane: "%1" },
+      });
+      expect(result).toMatchObject({ ok: false, code: "invalid_session_name" });
+      expect(counts(node.id)).toEqual({ bindings: 0, sessions: 0, events: 0 });
+    });
+
+    it("attachToPod creates no member node for such a name", async () => {
+      const rig = rigRepo.createRig("rig");
+      const pod = podRepo.createPod(rig.id, "dev", "Dev");
+      const before = rigRepo.getRig(rig.id)!.nodes.length;
+      const result = await selfAttachService.attachToPod({
+        rigId: rig.id, podNamespace: pod.namespace, memberName: "impl", runtime: "claude-code", displayName: "bad name",
+      });
+      expect(result).toMatchObject({ ok: false, code: "invalid_session_name" });
+      expect(rigRepo.getRig(rig.id)!.nodes.length).toBe(before);
+    });
+
+    it("control: an ordinary display name still attaches", async () => {
+      const rig = rigRepo.createRig("rig");
+      rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+      const result = await selfAttachService.attachToNode({ rigId: rig.id, logicalId: "dev.impl", displayName: "dev-impl@rig" });
+      expect(result.ok).toBe(true);
+    });
+  });
+
   it("attachToNode rejects runtime mismatch for an existing node", async () => {
     const rig = rigRepo.createRig("rigged-buildout");
     rigRepo.addNode(rig.id, "orch1.lead", { runtime: "claude-code" });

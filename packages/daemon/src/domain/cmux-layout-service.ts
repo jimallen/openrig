@@ -277,6 +277,7 @@ export class CmuxLayoutService {
         // A pane command is typed as it stands only when it is one widget-safe line (OF-67); otherwise a
         // staged script is typed in its place. The caller composed the command, so it is run verbatim.
         const staged = await stageCmuxLine(command, this.fileOps);
+        if (!staged.ok) return { ok: false, code: "stage_failed", message: staged.message };
         const sendResult = await this.cmuxAdapter.sendText(
           surface,
           `${staged.line}\n`,

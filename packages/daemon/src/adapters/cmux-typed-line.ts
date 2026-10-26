@@ -15,20 +15,27 @@ import { shellWord } from "./tmux-server.js";
 const MAX_TYPED_BYTES = 512;
 const TYPED_SAFE_PATH = /^\/[A-Za-z0-9_./-]*$/;
 
-export interface StagedCmuxLine {
-  /** What to send to the surface, without the trailing newline. */
-  line: string;
-  /** Remove the script when the surface never received the line. A no-op for an unstaged line. */
-  discard(): Promise<void>;
-}
+/**
+ * ok: what to send to the surface (no trailing newline) and `discard`, which removes the script when the surface
+ * never received the line (a no-op for an unstaged line). Not ok: the script could not be written, so nothing is
+ * typed; the caller reports it as a failed open, not a thrown error.
+ */
+export type StagedCmuxLine =
+  | { ok: true; line: string; discard(): Promise<void> }
+  | { ok: false; message: string };
 
 export async function stageCmuxLine(line: string, fileOps: TmuxFileOps = defaultTmuxFileOps()): Promise<StagedCmuxLine> {
   if (!line.includes("\n") && !line.includes("\r") && Buffer.byteLength(line, "utf8") <= MAX_TYPED_BYTES && isTypedLineWidgetSafe(line)) {
-    return { line, discard: async () => {} };
+    return { ok: true, line, discard: async () => {} };
   }
   const path = fileOps.tmpName();
-  await fileOps.writeFile(path, `/bin/rm -f -- ${shellWord(path)}\n${line}\n`, { mode: 0o600, flag: "wx" });
+  try {
+    await fileOps.writeFile(path, `/bin/rm -f -- ${shellWord(path)}\n${line}\n`, { mode: 0o600, flag: "wx" });
+  } catch (err) {
+    return { ok: false, message: `could not stage the terminal line: ${err instanceof Error ? err.message : String(err)}` };
+  }
   return {
+    ok: true,
     line: `/bin/sh ${TYPED_SAFE_PATH.test(path) ? path : shellWord(path)}`,
     discard: async () => { try { await fileOps.unlink(path); } catch { /* already consumed */ } },
   };
