@@ -1053,7 +1053,7 @@ function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec): WorkflowSpe
         version: row.version,
         objective: row.purpose ?? undefined,
         target: row.target_rig ? { rig: row.target_rig } : undefined,
-        roles: parseStoredJson<WorkflowSpec["roles"]>(row.roles_json, []),
+        roles: parseStoredJson<WorkflowSpec["roles"]>(row.roles_json, {}),
         steps: parseStoredJson<WorkflowSpec["steps"]>(row.steps_json, []),
         coordination_terminal_turn_rule: row.coordination_terminal_turn_rule,
       };
