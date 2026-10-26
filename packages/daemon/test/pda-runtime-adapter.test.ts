@@ -153,7 +153,7 @@ describe("PdaRuntimeAdapter.launchHarness", () => {
   it("one agent, one seat (review L2b action 3): a launch is refused with 0 keystrokes while another seat holds the binding", async () => {
     const asked: Array<{ agent: string; nodeId: string }> = [];
     const { adapter: a, tmux } = adapter({
-      bindingConflicts: (b, nodeId) => { asked.push({ agent: b.agent, nodeId }); return ['pda agent "research" at http://127.0.0.1:8150 is already driven by seat "dev.r" in rig "rig-b"; one pda agent is driven by one seat']; },
+      reserveBinding: (b, nodeId) => { asked.push({ agent: b.agent, nodeId }); return { ok: false, conflicts: ['pda agent "research" at http://127.0.0.1:8150 is already driven by seat "dev.r" in rig "rig-b"; one pda agent is driven by one seat'] }; },
     });
     ready(tmux);
     const result = await a.launchHarness(binding(), { name: SESSION });

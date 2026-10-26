@@ -93,4 +93,21 @@ describe("pda L2a startup wiring", () => {
     const pdaAdapter = (deps.runtimeAdapters as Record<string, RuntimeAdapter>).pda!;
     expect(priv<{ tokenFile: () => string }>(pdaAdapter, "deps").tokenFile()).toBe(process.env.OPENRIG_PDA_TOKEN_FILE);
   });
+
+  // OF-95/OF-96: the daemon's pda adapter checks AND claims through the daemon's own rigRepo (one claim table for the
+  // launch check and the creating doors), not a check-only closure.
+  it("the pda adapter's binding guard is the daemon rigRepo's atomic claim: the first seat takes a free agent, the second is refused", () => {
+    const pdaAdapter = (deps.runtimeAdapters as Record<string, RuntimeAdapter>).pda!;
+    const reserve = priv<{ reserveBinding: (b: { agent: string; baseUrl: string }, nodeId: string) => { ok: boolean; conflicts?: string[] } }>(pdaAdapter, "deps").reserveBinding;
+    const rigRepo = deps.rigRepo;
+    const target = { agent: "wired-agent", baseUrl: "http://127.0.0.1:8150" };
+    const rig = rigRepo.createRig("wiring-rig");
+    const one = rigRepo.addNode(rig.id, "dev.one", { runtime: "pda", pda: { agent: "one-own", baseUrl: target.baseUrl } });
+    const two = rigRepo.addNode(rig.id, "dev.two", { runtime: "pda", pda: { agent: "two-own", baseUrl: target.baseUrl } });
+    expect(reserve(target, one.id).ok).toBe(true);
+    const refused = reserve(target, two.id);
+    expect(refused.ok).toBe(false);
+    expect(refused.conflicts?.join(" ")).toContain('seat "dev.one"');
+    expect(rigRepo.findPdaDrivers(target).map((holder) => holder.logicalId)).toEqual(["dev.one"]); // the doors see the claim
+  });
 });
