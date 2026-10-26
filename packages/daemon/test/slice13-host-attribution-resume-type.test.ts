@@ -114,9 +114,15 @@ describe("fix 3 — resume_type derives from the runtime on the identity hook", 
     db.close();
   });
 
-  it("an unmapped runtime SKIPS the persist instead of guessing a label (tokenPersisted: false)", async () => {
+  it("a seat whose own runtime is unmapped SKIPS the persist instead of guessing a label (tokenPersisted: false)", async () => {
+    // OF-91: the claim must be the seat's stored runtime to get this far, so the unmapped runtime is the seat's own.
     const db = createFullTestDb();
-    seedRig(db);
+    const rigRepo = new RigRepository(db);
+    const reg = new SessionRegistry(db);
+    const rig = rigRepo.createRig("r");
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "mystery-runtime" });
+    const sess = reg.registerSession(node.id, "dev-impl@r");
+    reg.updateStatus(sess.id, "running");
     const { app } = createTestApp(db, { activityHookToken: "tok" });
 
     const res = await postIdentity(app, { sessionId: "some-id-123", sessionName: "dev-impl@r", runtime: "mystery-runtime" });
@@ -143,7 +149,7 @@ describe("fix 3 — resume_type derives from the runtime on the identity hook", 
     db.close();
   });
 
-  it("keeps main's 200 for a pi-labelled hook on a claude-code seat (refusals are OMP-only)", async () => {
+  it("refuses a pi-labelled hook on a claude-code seat without persisting (OF-91: the token type follows the seat's stored runtime)", async () => {
     const db = createFullTestDb();
     const { sess } = seedRig(db);
     const reg = new SessionRegistry(db);
@@ -151,7 +157,11 @@ describe("fix 3 — resume_type derives from the runtime on the identity hook", 
     const generation = reg.currentOccupantTenure(sess.nodeId)?.generationUuid ?? null;
 
     const res = await postIdentity(app, { sessionId: "rpc-id", sessionName: "dev-impl@r", runtime: "pi", generation, sessionFile: "/tmp/state/pi/seat/sessions/turn.jsonl" });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "runtime_mismatch", tokenPersisted: false });
+    const row = db.prepare("SELECT resume_type, resume_token FROM sessions WHERE session_name = ?").get("dev-impl@r") as { resume_type: string | null; resume_token: string | null };
+    expect(row.resume_type).toBeNull();
+    expect(row.resume_token).toBeNull();
     db.close();
   });
 
