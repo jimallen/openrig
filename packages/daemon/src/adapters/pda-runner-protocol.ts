@@ -135,7 +135,7 @@ export function pdaRestoreBindingWarning(specBinding: PdaBinding | null, tokenBi
 //   rejected.log           rejected records kept before compaction (L1a)
 //   own-submissions.json   the last 500 submission ids this seat made (L1b, J-3 attribution)
 //   usage-pending.json     usage facts not yet stored when the runner stopped (OF-93; the usage sink writes and loads it)
-//   runner.lock            the live runner's pid and launch id, present from its start to the END of its close (OF-98)
+//   runner.lock            the live runner's pid and launch id, present from its start until its process has exited (OF-98)
 //   release.request        operator control file for `rig seat pda-release` (L2a writes, runner polls)
 
 export interface PdaSeatPaths {
@@ -166,7 +166,7 @@ export function pdaSeatPaths(stateRoot: string, sessionName: string): PdaSeatPat
 /** `runner.lock` (OF-98): written by a runner when it starts and removed as the LAST thing it does, after the usage
  *  sink's bounded close (<= 5 s) has spilled. The sidecar's `exited` cannot say this: it is written before the close.
  *  A launch waits (bounded) while the lock's pid is alive, so the next runner never loads the spill / outbox while
- *  the previous one can still write them. A lock whose pid is dead (SIGKILL, exit 70) is stale and is ignored. */
+ *  the previous one can still write them. The runner releases it when its process exits (exit 70 included); a SIGKILL leaves it with a dead pid, which is stale and ignored. */
 export interface PdaRunnerLock { pid: number; launchId: string; at: string }
 
 export function parsePdaRunnerLock(raw: string): PdaRunnerLock | null {

@@ -8,9 +8,12 @@
 //
 // Pins in this file (all with temp state roots, fake pda and fake daemon; no tmux, no live daemon):
 //   (a) the adapter: waits while the lock's pid is live, refuses (types nothing) when it stays live, and does NOT
-//       wait for a stale lock (SIGKILL / exit 70 skip the release), a reused pid, or garbage.
+//       wait for a stale lock (a SIGKILL skips the release), a reused pid, or garbage.
 //   (b) the REAL runner process: SIGTERM and SIGHUP (main()'s handlers) close the sink, spill, release the lock
 //       and exit 0; SIGKILL leaves the lock with a dead pid and no spill; the lock covers the whole close.
+//   (e) the hangup tmux really sends (pty master closed, then SIGHUP): pane writes fail with EIO and that must not
+//       skip the close (F1); the lock goes only when the process has exited, after a request in flight is aborted
+//       (F2, F4); a stop that lands during the startup calls ends the attach (F3).
 //   (c) exit 70 (the fatal handler) skips the sink's close(): the pending fact is lost, as documented.
 //   (d) the restart race itself, against the real process and the real adapter.
 
@@ -22,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
 import { PdaRuntimeAdapter, type PdaRuntimeAdapterDeps } from "../src/adapters/pda-runtime-adapter.js";
 import { buildPdaRunnerArgv, parsePdaRunnerLock, pdaSeatPaths, type PdaRunnerState } from "../src/adapters/pda-runner-protocol.js";
 import { createPdaUsageSink, type PdaUsagePostResult } from "../src/adapters/pda-usage-sink.js";
@@ -102,11 +106,12 @@ describe("(a) launchHarness waits, bounded, for the seat's previous runner to fi
     expect(result.ok).toBe(false);
     expect((result as { error: string }).error).toContain("pid 31337");
     expect((result as { error: string }).error).toContain("nothing was typed");
+    expect((result as { error: string }).error).toContain("runner.lock");
     expect(log).not.toContain("typed");
     expect(log.filter((l) => l === "slept").length).toBe(10);   // 100 ms / 10 ms polls: bounded, not forever
   });
 
-  it("SIGKILL / exit 70 leave the lock behind with a dead pid: no wait, the launch proceeds at once", async () => {
+  it("a SIGKILLed runner leaves its lock behind with a dead pid: no wait, the launch proceeds at once", async () => {
     writeLock();
     const { adapter, log } = adapterWith({ pidAlive: () => false });
     await adapter.launchHarness(binding(), { name: "x" });
@@ -119,6 +124,18 @@ describe("(a) launchHarness waits, bounded, for the seat's previous runner to fi
     const { adapter, log } = adapterWith({ pidAlive: () => true });
     await adapter.launchHarness(binding(), { name: "x" });
     expect(log[0]).toBe("typed");
+  });
+
+  it("a live pid with no sidecar of the lock's launch: stale once the lock itself is older than the alive window, waited for before", async () => {
+    writeLock({ at: new Date(NOW.getTime() - 3_600_000).toISOString() });   // killed before its first sidecar write, pid since reused
+    const old = adapterWith({ pidAlive: () => true });
+    await old.adapter.launchHarness(binding(), { name: "x" });
+    expect(old.log[0]).toBe("typed");
+    writeLock({ at: new Date(NOW.getTime() - 60_000).toISOString() });      // a runner that has only just started
+    const fresh = adapterWith({ pidAlive: () => true });
+    const result = await fresh.adapter.launchHarness(binding(), { name: "x" });
+    expect(result.ok).toBe(false);
+    expect(fresh.log).not.toContain("typed");
   });
 
   it("no lock, or a lock that is not a lock: no wait", async () => {
@@ -151,7 +168,11 @@ describe("(a) launchHarness waits, bounded, for the seat's previous runner to fi
 
 // ── (b), (d) the real runner process ─────────────────────────────────────────
 
-interface Proc { child: ChildProcess; out: () => string; exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }> }
+interface Proc {
+  child: ChildProcess; out: () => string; exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  /** Pty only: close the master and SIGHUP the runner, as tmux kill-session does. */
+  hangup?: () => void; write: (text: string) => void; pid: () => number;
+}
 function spawnRunner(argv: string[], home: string, daemonPort: number): Proc {
   const child = spawn(process.execPath, ["--import", "tsx", RUNNER_TS, ...argv], {
     env: {
@@ -163,11 +184,38 @@ function spawnRunner(argv: string[], home: string, daemonPort: number): Proc {
   let out = "";
   child.stdout!.on("data", (c) => { out += c.toString(); });
   const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
-  return { child, out: () => out, exit };
+  return { child, out: () => out, exit, write: (t) => { child.stdin!.write(t); }, pid: () => child.pid! };
+}
+
+const PTY_HANGUP_PY = fileURLToPath(new URL("./helpers/pty-hangup.py", import.meta.url));
+/** The runner on a pty (what a tmux pane is), hung up the way tmux does. Output is read from the pty. */
+function spawnRunnerOnPty(argv: string[], home: string, daemonPort: number): Proc {
+  const dir = tmp();
+  const outFile = path.join(dir, "pty.out");
+  const statusFile = path.join(dir, "pty.status");
+  fs.writeFileSync(outFile, "");
+  const wrapper = spawn("python3", ["-I", PTY_HANGUP_PY, outFile, statusFile, process.execPath, "--import", "tsx", RUNNER_TS, ...argv], {
+    env: {
+      PATH: process.env.PATH ?? "", HOME: home, OPENRIG_HOME: home, OPENRIG_NODE_ID: "proc-node", OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK_TOKEN,
+      OPENRIG_URL: `http://127.0.0.1:${daemonPort}`, TERM: "xterm",
+    },
+    stdio: ["pipe", "ignore", "inherit"],
+  });
+  const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => wrapper.on("exit", () => {
+    const status = fs.existsSync(statusFile) ? fs.readFileSync(statusFile, "utf8") : "";
+    const m = /^exit=(\d+)$/.exec(status);
+    const sig = /^signal=(\d+)$/.exec(status);
+    const name = sig ? Object.entries(os.constants.signals).find(([, n]) => n === Number(sig[1]))?.[0] : undefined;
+    resolve(m ? { code: Number(m[1]), signal: null } : { code: null, signal: (name ?? null) as NodeJS.Signals | null });
+  }));
+  return {
+    child: wrapper, exit, out: () => fs.readFileSync(outFile, "utf8"),
+    hangup: () => { wrapper.kill("SIGUSR1"); }, write: (t) => { wrapper.stdin!.write(t); }, pid: () => wrapper.pid!,
+  };
 }
 
 /** A fake daemon: every route answers 200 except /api/activity/pda-usage, which answers `usage` ("503" or "hang"). */
-async function fakeDaemon(usage: "200" | "503" | "hang") {
+async function fakeDaemon(usage: "200" | "503" | "hang", opts: { hangHooks?: boolean } = {}) {
   const usagePosts: string[] = [];
   const sockets = new Set<import("node:net").Socket>();
   const server = http.createServer((req, res) => {
@@ -181,6 +229,7 @@ async function fakeDaemon(usage: "200" | "503" | "hang") {
         res.writeHead(503, { "content-type": "application/json" });
         return res.end("{}");
       }
+      if (opts.hangHooks && req.url === "/api/activity/hooks") return; // an activity post that never answers: it lingers up to its own 1.5 s budget
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
@@ -194,15 +243,15 @@ async function fakeDaemon(usage: "200" | "503" | "hang") {
 }
 
 /** Start the real runner with --usage-facts, run one own run to its end so one fact is pending (the daemon never stores it). */
-async function runnerWithPendingFact(rig: Rig, daemon: Awaited<ReturnType<typeof fakeDaemon>>, launchId: string): Promise<Proc> {
+async function runnerWithPendingFact(rig: Rig, daemon: Awaited<ReturnType<typeof fakeDaemon>>, launchId: string, pty = false): Promise<Proc> {
   const home = tmp();
   const argv = buildPdaRunnerArgv({
     sessionName: rig.args.sessionName, stateRoot: rig.args.stateRoot, launchId,
     binding: { agent: "research", baseUrl: rig.args.baseUrl }, tokenFile: rig.args.tokenFile, usageFacts: true,
   });
-  const p = spawnRunner(argv, home, daemon.port);
+  const p = (pty ? spawnRunnerOnPty : spawnRunner)(argv, home, daemon.port);
   await waitFor(() => p.out().includes("[pda-runner] READY agent=research"), "READY", 20000);
-  p.child.stdin!.write("count my usage\n");
+  p.write("count my usage\n");
   await waitFor(() => p.out().includes("queued (submission"), "the ack", 10000);
   rig.fake.streamReply("research", ["usage reply"]);
   await waitFor(() => p.out().includes("── idle ──"), "the run to end", 10000);
@@ -299,10 +348,10 @@ describe("(d) the restart race: the next runner is not started until the old one
   let daemon: Awaited<ReturnType<typeof fakeDaemon>>;
   afterEach(async () => { await rig?.cleanup(); await daemon?.close(); });
 
-  it("old runner mid-close (its post hangs, so close() runs its 5 s budget): launchHarness types only after the spill is on disk and the lock is gone", async () => {
+  it("old runner hung up on its pty mid-close (its usage post never answers): launchHarness types only after the spill is on disk and the lock is gone", async () => {
     rig = await makeRig({ realStreams: true });
     daemon = await fakeDaemon("hang");
-    const p = await runnerWithPendingFact(rig, daemon, "old-runner");
+    const p = await runnerWithPendingFact(rig, daemon, "old-runner", true);
     let atTyping: { spill: boolean; lock: boolean } | null = null;
     const adapter = new PdaRuntimeAdapter({
       tmux: {
@@ -313,11 +362,123 @@ describe("(d) the restart race: the next runner is not started until the old one
       stateRoot: rig.args.stateRoot, runnerEntryPath: "/dist/pda-runner.js", tokenFile: () => rig.args.tokenFile,
       pollMs: 25, launchWaitMs: 20,
     });
-    p.child.kill("SIGHUP");                  // what tmux kill-session does to the pane's foreground process
+    p.hangup!();                             // what tmux kill-session does: the pty master closes, then SIGHUP
     const result = await adapter.launchHarness({ id: "b", nodeId: "n", tmuxSession: rig.args.sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/", pda: { agent: "research", baseUrl: rig.args.baseUrl } }, { name: "x" });
     expect(result.ok).toBe(false);           // the fake pane starts no new runner, so the attach wait times out: only the typing moment matters
     expect(atTyping).toEqual({ spill: true, lock: false });
     expect(await p.exit).toEqual({ code: 0, signal: null });
+  }, 60000);
+});
+
+
+// ── (e) the hangup tmux sends, a request in flight, a stop during the startup calls ─────────────────────────────────
+
+/** A loopback proxy in front of the fake pda that holds the requests `shouldHold` picks until released (or forever). */
+async function holdingProxy(targetBase: string, shouldHold: (req: http.IncomingMessage) => boolean) {
+  const held: string[] = [];
+  const seen: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const sockets = new Set<import("node:net").Socket>();
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      void (async () => {
+        seen.push(`${req.method} ${req.url}`);
+        if (shouldHold(req)) { held.push(`${req.method} ${req.url}`); await gate; }
+        if (res.destroyed) return;
+        const ac = new AbortController();
+        res.on("close", () => ac.abort());
+        try {
+          const upstream = await fetch(targetBase + req.url, {
+            method: req.method, signal: ac.signal,
+            headers: Object.fromEntries(["authorization", "content-type", "accept"].flatMap((k) => (typeof req.headers[k] === "string" ? [[k, req.headers[k] as string]] : []))),
+            ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+          });
+          const headers: Record<string, string> = {};
+          upstream.headers.forEach((v, k) => { if (!["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)) headers[k] = v; });
+          res.writeHead(upstream.status, headers);
+          if (upstream.body) Readable.fromWeb(upstream.body as never).on("error", () => res.destroy()).pipe(res); else res.end();
+        } catch { res.destroy(); }
+      })();
+    });
+  });
+  server.on("connection", (sock) => { sockets.add(sock); sock.on("close", () => sockets.delete(sock)); });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, held, seen,
+    close: async () => { release(); for (const sock of sockets) sock.destroy(); await new Promise<void>((resolve) => server.close(() => resolve())); },
+  };
+}
+
+const pidAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+describe("(e) the real hangup, a request in flight, a stop during the startup calls", () => {
+  let rig: Rig;
+  let daemon: Awaited<ReturnType<typeof fakeDaemon>>;
+  let proxy: Awaited<ReturnType<typeof holdingProxy>> | null = null;
+  afterEach(async () => { await proxy?.close(); proxy = null; await rig?.cleanup(); await daemon?.close(); });
+
+  const runnerArgv = (baseUrl: string, launchId: string) => buildPdaRunnerArgv({
+    sessionName: rig.args.sessionName, stateRoot: rig.args.stateRoot, launchId, binding: { agent: "research", baseUrl }, tokenFile: rig.args.tokenFile,
+  });
+
+  it("F1: a runner on a pty that is hung up (master closed, then SIGHUP; its pane writes now fail with EIO) still runs its close: the fact is spilled, exit 0, no exit 70", async () => {
+    rig = await makeRig({ realStreams: true });
+    daemon = await fakeDaemon("503");
+    const p = await runnerWithPendingFact(rig, daemon, "pty-hup", true);
+    expect(fs.existsSync(rig.paths.runnerLockPath)).toBe(true);
+    p.hangup!();
+    expect(await p.exit).toEqual({ code: 0, signal: null });
+    expect(JSON.stringify(JSON.parse(fs.readFileSync(rig.paths.usagePendingPath, "utf8")))).toContain('"entryId"');
+    expect(fs.existsSync(rig.paths.runnerLockPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(rig.paths.runnerStatePath, "utf8"))).toMatchObject({ exited: { code: 0 } });
+  }, 60000);
+
+  it("F2 and F4: a message POST in flight when the stop arrives is aborted (the stop does not wait out its 10 s budget), the message stays queued, and the lock is never gone while the process is alive", async () => {
+    rig = await makeRig({ realStreams: true });
+    daemon = await fakeDaemon("200", { hangHooks: true });   // activity posts linger after main() returns: the lock must outlive them
+    proxy = await holdingProxy(rig.args.baseUrl, (req) => req.method === "POST" && /\/messages$/.test(req.url ?? ""));
+    const p = spawnRunner(runnerArgv(proxy.baseUrl, "inflight"), tmp(), daemon.port);
+    await waitFor(() => p.out().includes("[pda-runner] READY agent=research"), "READY", 20000);
+    p.write("hold me\n");
+    await waitFor(() => proxy!.held.length === 1, "the POST to reach the proxy", 10000);
+    const lockPid = parsePdaRunnerLock(fs.readFileSync(rig.paths.runnerLockPath, "utf8"))!.pid;
+    let violation: string | null = null;
+    let goneAt: number | null = null;
+    const sampler = setInterval(() => {
+      // The lock is removed by the process's own exit handler, a few ms before the pid is reaped; what must never happen
+      // is a process that goes on running (and writing) for a while after its lock is gone.
+      if (fs.existsSync(rig.paths.runnerLockPath)) return;
+      goneAt ??= Date.now();
+      if (Date.now() - goneAt > 300 && pidAlive(lockPid)) violation = "the lock was gone while the process kept running";
+    }, 5);
+    const t0 = Date.now();
+    p.child.kill("SIGTERM");
+    const exit = await p.exit;
+    clearInterval(sampler);
+    expect(exit).toEqual({ code: 0, signal: null });
+    expect(Date.now() - t0).toBeLessThan(4000);
+    expect(violation).toBeNull();
+    expect(fs.existsSync(rig.paths.runnerLockPath)).toBe(false);
+    expect(rig.outboxRaw()).toContain('"op":"enq"');
+    expect(rig.outboxRaw()).not.toContain('"op":"ack"');            // nothing was written after the stop: the message is still queued
+  }, 60000);
+
+  it("F3: a stop that lands while the startup calls are in flight ends the attach: no READY, no event stream, exit 0, lock released", async () => {
+    rig = await makeRig({ realStreams: true });
+    daemon = await fakeDaemon("200");
+    proxy = await holdingProxy(rig.args.baseUrl, (req) => req.method === "GET" && req.url === "/agents/research");
+    const p = spawnRunner(runnerArgv(proxy.baseUrl, "startup-stop"), tmp(), daemon.port);
+    await waitFor(() => proxy!.held.length === 1, "getAgent to be in flight", 20000);
+    p.child.kill("SIGTERM");
+    const t0 = Date.now();
+    expect(await p.exit).toEqual({ code: 0, signal: null });
+    expect(Date.now() - t0).toBeLessThan(4000);
+    expect(p.out()).not.toContain("READY");
+    expect(proxy.seen.filter((r) => r.includes("/events"))).toEqual([]);
+    expect(fs.existsSync(rig.paths.runnerLockPath)).toBe(false);
   }, 60000);
 });
 

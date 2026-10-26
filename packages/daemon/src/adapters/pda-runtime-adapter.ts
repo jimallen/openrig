@@ -180,7 +180,7 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     // OF-98: never type while the seat's previous runner can still write the spill or the outbox.
     const previous = await this.awaitPreviousRunner(sessionName);
     if (previous) {
-      return { ok: false, error: `pda launch: the seat's previous runner (pid ${previous.pid}) is still closing after ${(this.deps.oldRunnerWaitMs ?? PDA_OLD_RUNNER_WAIT_MS) / 1000} s; nothing was typed, so its pending usage facts and messages are safe. Try again in a moment` };
+      return { ok: false, error: `pda launch: the seat's previous runner (pid ${previous.pid}, runner.lock in the seat's state directory) is still running after ${(this.deps.oldRunnerWaitMs ?? PDA_OLD_RUNNER_WAIT_MS) / 1000} s; nothing was typed, so its pending usage facts and messages are safe. Try again in a moment` };
     }
 
     const launchId = this.newLaunchId();
@@ -268,7 +268,7 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
   }
 
   /** The previous runner's lock if it is still live after the bounded wait, else null (no lock, a stale one, or it cleared).
-   *  Stale = its pid is dead (SIGKILL, exit 70 skip the release), or its sidecar for that launch has not ticked inside
+   *  Stale = its pid is dead (a SIGKILL skips the release), or its sidecar for that launch has not ticked inside
    *  the alive window (a reused pid). Never throws. */
   private async awaitPreviousRunner(sessionName: string): Promise<{ pid: number } | null> {
     const lockPath = pdaSeatPaths(this.deps.stateRoot, sessionName).runnerLockPath;
@@ -282,8 +282,14 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
         if (!this.deps.fsOps.exists(lockPath)) return null;
         const lock = parsePdaRunnerLock(this.deps.fsOps.readFile(lockPath));
         if (!lock || !pidAlive(lock.pid)) return null;
+        // A reused pid: the lock's own sidecar stopped ticking, or (no sidecar of that launch ever written) the lock itself is
+        // older than the alive window.
         const side = this.readState(sessionName);
-        if (side && side.launchId === lock.launchId && !pdaSidecarAlive(side, this.now().getTime())) return null;
+        const nowMs = this.now().getTime();
+        const quiet = side && side.launchId === lock.launchId
+          ? !pdaSidecarAlive(side, nowMs)
+          : nowMs - Date.parse(lock.at) > PDA_SIDECAR_ALIVE_WINDOW_MS;
+        if (quiet) return null;
         live = { pid: lock.pid };
       } catch { return null; }
       if (attempt < attempts - 1) await this.sleep(pollMs);
