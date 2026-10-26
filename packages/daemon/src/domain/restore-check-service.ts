@@ -512,8 +512,8 @@ export class RestoreCheckService {
         preconditionError = preconditions.error;
         restoreInputsByRig.set(rig.rigId, { snapshot: preconditions.snapshot, error: preconditions.error });
         // OF-62: restore refuses the whole rig at its pre-restore snapshot while a seat's saved row is damaged, however
-        // clean the snapshot it would restore from is. Judged where the preconditions are, so a routine all-ready poll
-        // adds no read.
+        // clean the snapshot it would restore from is. Judged where the preconditions are (same gate), so a routine poll of
+        // an all-ready rig does not ask.
         const damagedRows = this.checkSavedRows(rig);
         if (damagedRows) {
           checks.push(damagedRows);

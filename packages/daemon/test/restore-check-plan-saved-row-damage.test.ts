@@ -71,6 +71,8 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     expect(damage!.evidence).toBe(`Restore would refuse team: its pre-restore snapshot cannot be taken because ${SEAT}'s saved row is damaged (${row.reason})`);
     expect(damage!.remediation).toContain(SEAT);
     expect(result.verdict).toBe("not_restorable");
+    // ... and the rig's own rollup (what `rig ps` / status read) carries it as a blocking check.
+    expect(result.rigs.find((rig) => rig.rigName === "team")!.blockingChecks.map((c) => c.check)).toContain("rig.team.saved-rows");
 
     // The plan, from the snapshot and from live rows (no snapshot): the seat is not forecast to start.
     for (const from of [snapshotId, null]) {
