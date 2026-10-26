@@ -1,8 +1,9 @@
 // pda L2b (pda-runtime-design-9l, "The seat spec", T19): the `pda:` member block, its storage on the node
 // (migration 115), its round trip through the codec and the exporter, and the one-seat-per-pda-agent rule.
 //
-// What nothing here proves: a pda seat launching. Preflight still refuses `runtime: pda` until L2a registers it,
-// so the instantiation paths are pinned in pda-spec-binding-paths.test.ts with preflight stubbed.
+// What nothing here proves: a pda seat launching. Preflight accepts `runtime: pda` (L2a registered it), but these rows
+// stay at the spec, storage and codec layers; the instantiation paths are pinned in pda-spec-binding-paths.test.ts,
+// which stubs preflight, and the launch itself in pda-l2a-runner-seat.test.ts.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";

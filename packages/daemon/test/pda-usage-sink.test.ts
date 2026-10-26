@@ -141,7 +141,7 @@ describe("createPdaUsagePoster", () => {
     expect(await createPdaUsagePoster(endpoint, respond(200))(payload)).toBe("stored");
     expect(await createPdaUsagePoster(endpoint, respond(503))(payload)).toBe("keep");
     expect(await createPdaUsagePoster(endpoint, respond(500))(payload)).toBe("keep");
-    expect(await createPdaUsagePoster(endpoint, respond(404))(payload)).toBe("refused");
+    expect(await createPdaUsagePoster(endpoint, respond(404))(payload)).toEqual({ outcome: "refused", status: 404 });
     expect(await createPdaUsagePoster(endpoint, (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch)(payload)).toBe("keep");
     expect(await createPdaUsagePoster(null)(payload)).toBe("keep");
     expect(seen[0]).toEqual({ url: "http://127.0.0.1:7433/api/activity/pda-usage", auth: "Bearer hook-tok" });

@@ -19,6 +19,7 @@
 //   - ACTIVITY POSTs to the daemon on transitions only; they carry the tool NAME, never its arguments or output.
 //   - USAGE   `--usage-facts` installs the `PdaUsageSink` of `pda-usage-sink.ts` (L2a), which posts the assistant
 //             entries' usage facts to the daemon's /api/activity/pda-usage on each run_end, and keeps them on a 503.
+//             On stop it flushes with a bounded wait and persists what is unsent (usage-pending.json, OF-93).
 //
 // Errors are CODES. No catch block prints an exception's message, cause or stack, and the process-level
 // `uncaughtException` / `unhandledRejection` handlers print a code and exit 70.
@@ -130,6 +131,8 @@ export interface PdaUsageSink {
   onRunEnd?(event: PdaStreamEvent): void;
   /** Post what is pending now (after a gap fill, which no run_end may follow for a long time). */
   flush?(): void;
+  /** The runner is stopping: post what is pending (bounded wait), then persist what is still unsent (OF-93). */
+  close?(): Promise<void>;
 }
 
 export interface PdaRunnerDeps {
@@ -285,6 +288,12 @@ export class PdaRunner {
     this.pane.endBatch();
   }
 
+  /** A one-line notice from the usage sink (codes and counts), written through the pane so it never lands mid-line (F3). */
+  note(line: string): void {
+    this.pane.line(line);
+    this.pane.endBatch();
+  }
+
   stop(): void {
     this.stopper.abort();
     this.currentStream?.close();
@@ -331,6 +340,8 @@ export class PdaRunner {
     }
     this.aliveTimer = setInterval(() => this.tick(), this.deps.aliveIntervalMs ?? 60_000);
     this.aliveTimer.unref();
+    // Facts a prior launch left unsent (usage-pending.json, loaded by the sink) go out now, not at a run_end that may be far off.
+    this.usage.flush?.();
 
     let delay = this.deps.backoffStartMs ?? 500;
     const cap = this.deps.backoffCapMs ?? 10_000;
@@ -350,6 +361,7 @@ export class PdaRunner {
       }
     } finally {
       this.detach();
+      try { await this.usage.close?.(); } catch { /* the sink reports its own failures; stopping goes on */ }
     }
     return this.finish(0);
   }
@@ -1131,12 +1143,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
   // The sink asks the runner whose submissions are its own; the runner exists by the time any event arrives.
-  let ownership: Pick<PdaRunner, "isOwnSubmission"> | null = null;
+  let ownership: Pick<PdaRunner, "isOwnSubmission" | "note"> | null = null;
+  const usageLog = (line: string): void => { if (ownership) ownership.note(line); else process.stdout.write(`${line}\n`); };
   const usage = args.usageFacts
     ? createPdaUsageSink({
       sessionName: args.sessionName, nodeId, generation, agent: args.binding.agent,
       isOwnSubmission: (id) => ownership?.isOwnSubmission(id) ?? false,
       post: createPdaUsagePoster(endpoint),
+      spillPath: paths.usagePendingPath, baseUrl: args.binding.baseUrl,
+      log: (line) => { usageLog(line); },
     })
     : undefined;
   const runner = new PdaRunner({
@@ -1155,6 +1170,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const input = wirePdaRunnerInput(runner, process.stdin, process.stdout);
   input.once("close", () => runner.stop());
   const code = await runner.run();
+  try { await usage?.close(); } catch { /* best effort: every exit path other than the loop's own */ }
   input.close();
   process.exitCode = code;
 }

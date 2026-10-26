@@ -2,8 +2,8 @@
 // driven by only one seat across the daemon (pda-runtime-design-9l, "The seat spec"). Same shape as
 // remote-control-plumb.test.ts.
 //
-// Preflight is STUBBED here: the real one refuses `runtime: pda` as unsupported until L2a registers it, and the
-// paths below must be pinned before that. The stub changes nothing else (validate, normalize, persistence and the
+// Preflight is STUBBED here (the real one accepts `runtime: pda` now that L2a registered it): the persistence and
+// refusal paths below are pinned without launching a seat. The stub changes nothing else (validate, normalize, persistence and the
 // launch core are the real code). So this file proves persistence and refusal, not that a pda seat can launch.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
