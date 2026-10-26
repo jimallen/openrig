@@ -23,8 +23,9 @@
 // from plugin-primitive-v0 branch. After convergence into plugin-primitive-v0,
 // the service continues to work with the shipped PluginResource types.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PluginDiscoveryService } from "../src/domain/plugin-discovery-service.js";
@@ -730,6 +731,62 @@ startup:
       // The implementation parses YAML and walks resources.plugins[].id — comments
       // and unrelated string positions are ignored.
       expect(service.findUsedBy("openrig-core")).toEqual([]);
+    });
+    describe("guarded scan of agent.yaml (OF-16)", () => {
+      const PLUGIN_AGENT = `name: ok-agent
+version: "1.0"
+resources:
+  plugins:
+    - id: openrig-core
+`;
+      function service() {
+        return new PluginDiscoveryService({
+          openrigPluginsDir: dirs.openrigPluginsDir,
+          claudeCacheDir: dirs.claudeCacheDir,
+          codexCacheDir: dirs.codexCacheDir,
+          specLibraryDir: dirs.specLibraryDir,
+        });
+      }
+      function writeGood(name: string): void {
+        mkdirSync(join(dirs.specLibraryDir, name), { recursive: true });
+        writeFileSync(join(dirs.specLibraryDir, name, "agent.yaml"), PLUGIN_AGENT);
+      }
+
+      it("a FIFO named agent.yaml in a scanned root does not stall the scan; the good sibling is still found", () => {
+        mkdirSync(join(dirs.specLibraryDir, "a-fifo"), { recursive: true });
+        execFileSync("mkfifo", [join(dirs.specLibraryDir, "a-fifo", "agent.yaml")]);
+        writeGood("z-good");
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          const refs = service().findUsedBy("openrig-core");
+          expect(refs.map((r) => r.agentName)).toEqual(["ok-agent"]);
+          expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("a-fifo") && m.includes("not a regular file"))).toHaveLength(1);
+        } finally { warn.mockRestore(); }
+      });
+
+      it("an agent.yaml over the spec-sized cap is skipped and logged, not parsed", () => {
+        mkdirSync(join(dirs.specLibraryDir, "big"), { recursive: true });
+        writeFileSync(join(dirs.specLibraryDir, "big", "agent.yaml"), PLUGIN_AGENT + "# " + "x".repeat(300 * 1024) + "\n");
+        writeGood("z-good");
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          const refs = service().findUsedBy("openrig-core");
+          expect(refs).toHaveLength(1);
+          expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("big") && m.includes("limit"))).toHaveLength(1);
+        } finally { warn.mockRestore(); }
+      });
+
+      it("a hard-linked agent.yaml is skipped and logged", () => {
+        writeGood("z-good");
+        mkdirSync(join(dirs.specLibraryDir, "linked"), { recursive: true });
+        linkSync(join(dirs.specLibraryDir, "z-good", "agent.yaml"), join(dirs.specLibraryDir, "linked", "agent.yaml"));
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          // Both names now have two links: neither is trusted.
+          expect(service().findUsedBy("openrig-core")).toEqual([]);
+          expect(warn.mock.calls.filter((c) => String(c[0]).includes("hard links"))).toHaveLength(2);
+        } finally { warn.mockRestore(); }
+      });
     });
   });
 });
