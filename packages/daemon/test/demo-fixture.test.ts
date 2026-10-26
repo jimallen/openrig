@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
+import { resolveLaunchCwd } from "../src/domain/cwd-resolution.js";
 import { parseAgentSpec } from "../src/domain/agent-manifest.js";
 
 const DEMO_ROOT = path.resolve(__dirname, "../../../demo");
@@ -96,14 +97,14 @@ describe("Demo fixture validation", () => {
     // Full preflight should pass (may have runtime warnings in test env, but ready should be true
     // if only runtime availability is the issue)
     const nonRuntimeErrors = result.errors.filter((e: string) => !e.includes("unsupported runtime") && !e.includes("not available"));
-    // OF-63 / OF-69: this is demo/rig.yaml AS SHIPPED, the spec demo/run.sh launches with no --cwd. Its infra.ui seat declares
-    // `cwd: packages/ui`, which resolves to demo/packages/ui and does not exist, so rig up now refuses the demo (before OF-63 it
-    // started that seat in $HOME without saying so). That is the intended outcome until OF-69's demo item gives the seat a real
-    // folder; this assertion then goes back to `ready === true` and the next line is deleted. Everything else must still pass.
-    expect(nonRuntimeErrors).toEqual([
-      `infra.ui: cwd '${path.join(DEMO_ROOT, "packages", "ui")}' does not exist; a seat launched there would silently start in $HOME. Create the directory or change the seat's cwd (preflight does not create it)`,
-    ]);
-    expect(result.ready).toBe(false);
+    // OF-69: demo/rig.yaml AS SHIPPED, the spec demo/run.sh launches with no --cwd. Its infra.ui seat used to declare
+    // `cwd: packages/ui`, which resolves to demo/packages/ui and does not exist, so rig up refused the demo. Every seat's
+    // own cwd must now name a folder that exists: nothing but runtime availability may be left over.
+    expect(nonRuntimeErrors).toEqual([]);
+    const spec = RigSpecSchema.normalize(RigSpecCodec.parse(yaml) as Record<string, unknown>);
+    const seatCwds = spec.pods.flatMap((pod) => pod.members.filter((m) => m.agentRef === "builtin:terminal").map((m) => ({ id: `${pod.id}.${m.id}`, dir: resolveLaunchCwd(m.cwd, DEMO_ROOT) })));
+    expect(seatCwds.map((c) => c.id)).toEqual(["infra.daemon", "infra.ui"]);
+    for (const c of seatCwds) expect(fs.statSync(c.dir).isDirectory(), `${c.id} cwd ${c.dir}`).toBe(true);
   });
 
   // Test 8: Demo teardown leaves clean state (via RigTeardownOrchestrator mock)

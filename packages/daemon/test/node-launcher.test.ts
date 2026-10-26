@@ -737,4 +737,75 @@ describe("NodeLauncher", () => {
     });
   });
 
+  // OF-69: tmux starts a session whose `-c` folder is missing in $HOME with no error. Every launch (first start, restore,
+  // relaunch, up --existing, --startup-from stored, the TUI) goes through launchNode, so the folder is judged there.
+  describe("seat cwd (OF-69)", () => {
+    function seatWithCwd(cwd: string | undefined) {
+      const rig = rigRepo.createRig("r01");
+      rigRepo.addNode(rig.id, "dev1-impl", { role: "worker", runtime: "claude-code", ...(cwd === undefined ? {} : { cwd }) });
+      return rig;
+    }
+    let scratch: string;
+    beforeEach(async () => { scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nl-cwd-")); });
+    afterEach(async () => { await fs.rm(scratch, { recursive: true, force: true }); });
+
+    it("a deleted seat folder is refused before tmux, with the folder named and nothing recorded", async () => {
+      const gone = path.join(scratch, "deleted-after-first-launch");
+      const rig = seatWithCwd(gone);
+      const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+
+      const result = await createLauncher(mockTmuxAdapter({ createSession: createSpy })).launchNode(rig.id, "dev1-impl");
+
+      expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect(!result.ok && result.message).toContain(`its cwd '${gone}' does not exist, and a seat launched there would silently start in $HOME`);
+      expect(!result.ok && result.message).toContain(`Create the folder ${gone}, then launch it again.`);
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(sessionRegistry.getSessionsForRig(rig.id)).toHaveLength(0);
+      expect(rigRepo.getRig(rig.id)!.nodes[0]!.binding).toBeNull();
+    });
+
+    it("a seat folder that is a file is refused with what is wrong, not told to create it", async () => {
+      const file = path.join(scratch, "a-file");
+      await fs.writeFile(file, "x");
+      const rig = seatWithCwd(file);
+      const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+
+      const result = await createLauncher(mockTmuxAdapter({ createSession: createSpy })).launchNode(rig.id, "dev1-impl");
+
+      expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect(!result.ok && result.message).toContain(`Fix ${file}: it is not a directory`);
+      expect(!result.ok && result.message).not.toContain("Create the folder");
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it("an explicit launch cwd is judged in place of the recorded one", async () => {
+      const gone = path.join(scratch, "explicit-gone");
+      const rig = seatWithCwd(scratch);
+      const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+
+      const result = await createLauncher(mockTmuxAdapter({ createSession: createSpy })).launchNode(rig.id, "dev1-impl", { cwd: gone });
+
+      expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect(!result.ok && result.message).toContain(`its cwd '${gone}'`);
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it("an existing folder launches there; a seat recorded with no cwd is left to tmux's default", async () => {
+      const withDir = seatWithCwd(scratch);
+      const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+      expect((await createLauncher(mockTmuxAdapter({ createSession: createSpy })).launchNode(withDir.id, "dev1-impl")).ok).toBe(true);
+      expect(createSpy.mock.calls[0]![1]).toBe(scratch);
+
+      db.close();
+      db = setupDb();
+      rigRepo = new RigRepository(db);
+      sessionRegistry = new SessionRegistry(db);
+      eventBus = new EventBus(db);
+      const noCwd = seatWithCwd(undefined);
+      const secondSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+      expect((await createLauncher(mockTmuxAdapter({ createSession: secondSpy })).launchNode(noCwd.id, "dev1-impl")).ok).toBe(true);
+      expect(secondSpy.mock.calls[0]![1]).toBeUndefined();
+    });
+  });
+
 });

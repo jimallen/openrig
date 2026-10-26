@@ -24,7 +24,7 @@ rig up /tmp/demo.rigbundle
 - **orch** pod: `lead` (claude-code) — orchestrator
 - **dev** pod: `impl` (claude-code), `qa` (codex), `design` (claude-code)
 - **rev** pod: `r1` (claude-code), `r2` (codex)
-- **infra** pod: `daemon` (terminal, monitoring), `ui` (terminal, cwd: packages/ui)
+- **infra** pod: `daemon` (terminal, monitoring), `ui` (terminal; its start command changes into the repo's `packages/ui`)
 - Edges: `orch.lead` delegates to `dev.impl`, `dev.qa` observes `dev.impl`, `rev.r1` collaborates with `rev.r2`
 
 8 nodes across 4 pods. 6 agent harnesses + 2 terminal infrastructure nodes.

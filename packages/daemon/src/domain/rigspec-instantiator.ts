@@ -19,7 +19,7 @@ import { deriveCanonicalSessionName, validateSessionComponents } from "./session
 import { LegacyRigSpecSchema as RigSpecSchema } from "./rigspec-schema.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { LegacyRigSpecCodec as RigSpecCodec } from "./rigspec-codec.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import type { LegacyRigSpec as RigSpec, LegacyRigSpecEdge as RigSpecEdge, InstantiateOutcome, InstantiateResult } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
-import { getSeatCwdFault, resolveLaunchCwd, SEAT_CWD_CHANGE_HINT, seatCwdFixAdvice } from "./cwd-resolution.js";
+import { getSeatCwdFault, resolveLaunchCwd, seatCwdFixAdvice } from "./cwd-resolution.js";
 
 // Only these edge kinds constrain launch order
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
@@ -310,7 +310,7 @@ import { RigSpecCodec as PodRigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema as PodRigSpecSchema, VALID_EDGE_KINDS } from "./rigspec-schema.js";
 import { rigPreflight, preflightValidatedSpec } from "./rigspec-preflight.js";
 import { resolveAgentRef, type GuardedAgentResolverFsOps } from "./agent-resolver.js";
-import { resolveNodeConfig } from "./profile-resolver.js";
+import { resolveNodeConfig, type ResolvedNodeConfig } from "./profile-resolver.js";
 import { resolveStartup } from "./startup-resolver.js";
 import { planProjection, claudeConflictTargetPath, projectionConflictWarnings, filterProtectedProjections, type ProjectionPlan } from "./projection-planner.js";
 import { ProjectionManifestStore } from "./projection-manifest-store.js";
@@ -2801,17 +2801,42 @@ export class PodRigInstantiator {
     ].filter((d): d is string => d !== null);
     if (drift.length > 0) return changed(`it now declares ${drift.join(", ")}; a fresh launch never changes a seat's identity.`);
 
-    const resolveResult = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
-    if (!resolveResult.ok) return unavailable(`its agent ${member.agentRef} does not resolve (${agentRefFailureMessage(resolveResult)}).`);
-    const config = this.resolveMemberConfig({ resolveResult, rigSpec, rigRoot, pod, member, cwdOverride: node.cwd ?? undefined });
-    if (!config.ok) return unavailable(`its configuration does not resolve (${config.errors.join("; ")}).`);
-    const startup = this.buildMemberStartup({
-      rigId: input.rigId, rigSpec, rigRoot, pod, member, resolveResult, config: config.config,
-      adapter: input.adapter, tmuxSession: input.sessionName, sessionName: input.sessionName,
-    });
-    if (!startup.ok) return unavailable(`its projection plan does not resolve (${startup.errors.join("; ")}).`);
+    // OF-71: a builtin:terminal seat has no agent to resolve ("Cannot resolve agent_ref" for any non local:/path: ref).
+    // Like first launch (processTerminalMember), it takes the terminal path: no agent, profile, starter or skills.
+    const isTerminal = member.agentRef === "builtin:terminal";
+    let agentConfig: ResolvedNodeConfig | null = null;
+    let startup: { plan: ProjectionPlan; resolvedStartupFiles: ResolvedStartupFile[]; startupActions: StartupAction[]; conflictWarnings: string[] };
+    if (isTerminal) {
+      const terminalStartup = resolveStartup({
+        specStartup: { files: [], actions: [] },
+        profileStartup: undefined,
+        rigCultureFile: rigSpec.cultureFile,
+        rigStartup: rigSpec.startup,
+        podStartup: pod.startup,
+        memberStartup: member.startup,
+        operatorStartup: undefined,
+      });
+      startup = {
+        plan: { entries: [], diagnostics: [], conflicts: [], noOps: [], runtime: "terminal", cwd: resolveLaunchCwd(member.cwd, rigRoot, node.cwd ?? undefined) },
+        resolvedStartupFiles: this.buildTerminalResolvedStartupFiles(rigSpec, rigRoot, pod, member),
+        startupActions: terminalStartup.actions,
+        conflictWarnings: [],
+      };
+    } else {
+      const resolveResult = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
+      if (!resolveResult.ok) return unavailable(`its agent ${member.agentRef} does not resolve (${agentRefFailureMessage(resolveResult)}).`);
+      const config = this.resolveMemberConfig({ resolveResult, rigSpec, rigRoot, pod, member, cwdOverride: node.cwd ?? undefined });
+      if (!config.ok) return unavailable(`its configuration does not resolve (${config.errors.join("; ")}).`);
+      const built = this.buildMemberStartup({
+        rigId: input.rigId, rigSpec, rigRoot, pod, member, resolveResult, config: config.config,
+        adapter: input.adapter, tmuxSession: input.sessionName, sessionName: input.sessionName,
+      });
+      if (!built.ok) return unavailable(`its projection plan does not resolve (${built.errors.join("; ")}).`);
+      agentConfig = config.config;
+      startup = built;
+    }
     let starterFiles: ResolvedStartupFile[] = [];
-    if (member.starterRef) {
+    if (member.starterRef && !isTerminal) {
       const { AgentStarterResolver } = await import("./agent-starter-resolver.js");
       try {
         starterFiles = new AgentStarterResolver().resolveStarter(member.starterRef.name).files;
@@ -2825,21 +2850,21 @@ export class PodRigInstantiator {
       { ...rigSpec, pods: [{ ...pod, members: [member], edges: [] }], edges: [] },
       {
         rigRoot, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext(),
-        cwdOverride: node.cwd ?? undefined, rigNameOverride: rig.rig.name,
+        cwdOverride: node.cwd ?? undefined, rigNameOverride: rig.rig.name, specDecidesSeatCwd: false,
         inheritedPermissionPolicy: this.inheritedPermissionPolicy(input.rigId), exec: this.deps.exec,
       },
     );
     if (!preflight.ready) {
-      // The fresh preflight judges the seat's RECORDED folder, which no command changes, so the first-launch hint
-      // "or change the seat's cwd" is wrong here and is removed from the message (OF-79 N2-2).
-      const refused = unavailable(`it does not pass the launch preflight (${preflight.errors.map((e) => e.split(SEAT_CWD_CHANGE_HINT).join("")).join("; ")}).`);
+      // The fresh preflight judges the seat's RECORDED folder, which no command changes, so it is told the spec does
+      // not decide the folder (specDecidesSeatCwd above) and offers no "or change the seat's cwd" (OF-79 N2-2, OF-81).
+      const refused = unavailable(`it does not pass the launch preflight (${preflight.errors.join("; ")}).`);
       // A missing seat folder is not a spec problem: restoring the spec cannot fix it, and the stored-files route skips
       // this check, so it would start the seat in $HOME. Say what does fix it.
       const fault = node.cwd ? getSeatCwdFault(node.cwd) : null;
       if (refused.kind === "refused" && node.cwd && fault) {
         // The fresh preflight judges the seat's recorded folder, not the spec's cwd, and no command changes that record:
         // the only fix is on disk.
-        refused.guidance = `${seatCwdFixAdvice(node.cwd, fault)}, then run the fresh launch again. The seat's saved startup files are not a way around this: that route does not check the folder and would start the seat in $HOME.`;
+        refused.guidance = `${seatCwdFixAdvice(node.cwd, fault)}, then run the fresh launch again. The seat's saved startup files are not a way around this: every launch checks the folder.`;
       }
       return refused;
     }
@@ -2849,7 +2874,7 @@ export class PodRigInstantiator {
     if (missing) return unavailable(`its required startup file ${missing.path} (${missing.absolutePath}) does not exist.`);
     // OF-32 N6: the re-read release's skills, reconciled as first launch reconciles them. Checked here, before anything
     // is stopped; the caller applies them once it has cleared the way to launch.
-    const skills = this.seatSkillProjection(config.config, deriveCanonicalSessionName(pod.id, member.id, rigSpec.name));
+    const skills = agentConfig ? this.seatSkillProjection(agentConfig, deriveCanonicalSessionName(pod.id, member.id, rigSpec.name)) : null;
     const skillCheck = skills ? this.reconcileSeatSkills(skills, false) : null;
     if (skills && skillCheck && !skillCheck.ok) return unavailable(`its skills cannot be projected into ${skills.cwd} (${skillCheck.error}).`);
     return {
@@ -2859,8 +2884,9 @@ export class PodRigInstantiator {
       plan: startup.plan,
       resolvedStartupFiles,
       startupActions: startup.startupActions,
-      resolvedSpec: { name: config.config.resolvedSpecName, version: config.config.resolvedSpecVersion, hash: config.config.resolvedSpecHash },
-      warnings: [...(config.config.skillWarnings ?? []), ...startup.conflictWarnings, ...preflight.warnings],
+      // A terminal seat has no agent spec, so first launch records no provenance for it either.
+      ...(agentConfig ? { resolvedSpec: { name: agentConfig.resolvedSpecName, version: agentConfig.resolvedSpecVersion, hash: agentConfig.resolvedSpecHash } } : {}),
+      warnings: [...(agentConfig?.skillWarnings ?? []), ...startup.conflictWarnings, ...preflight.warnings],
       skills,
     };
   }

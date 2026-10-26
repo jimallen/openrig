@@ -5,9 +5,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
-import { rigPreflight } from "../src/domain/rigspec-preflight.js";
+import { rigPreflight, preflightValidatedSpec } from "../src/domain/rigspec-preflight.js";
 import { getSeatCwdFault, getSeatCwdPresenceError, seatCwdFixAdvice } from "../src/domain/cwd-resolution.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
+import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RigSpec as PodRigSpec } from "../src/domain/types.js";
 
@@ -108,6 +109,24 @@ describe("rig up preflight: seat cwd must be an existing directory (OF-63)", () 
     expect(result.errors).toHaveLength(2);
     expect(result.errors[0]).toContain("dev.impl");
     expect(result.errors[1]).toContain("dev.second");
+  });
+
+  // OF-81: the first-launch hint is a flag on the refusal, not text cut out of it afterwards.
+  it("OF-81: the missing-folder refusal offers changing the spec's cwd on first launch only", async () => {
+    const missing = nodePath.join(tmp, "gone");
+    const first = await run(rigYaml([agentSeat(missing), { ...terminalSeat(missing), id: "t" }]));
+    expect(first.errors).toHaveLength(2);
+    for (const e of first.errors) expect(e).toContain(`Create the directory or change the seat's cwd (preflight does not create it)`);
+
+    const spec = RigSpecSchema.normalize(RigSpecCodec.parse(rigYaml([agentSeat(missing), { ...terminalSeat(missing), id: "t" }])) as Record<string, unknown>);
+    const fresh = await preflightValidatedSpec(spec, { rigRoot: RIG_ROOT, fsOps: mockFs(AGENT_FILES) as never, specDecidesSeatCwd: false });
+    expect(fresh.errors).toHaveLength(2);
+    for (const e of fresh.errors) {
+      expect(e).toContain(`does not exist; a seat launched there would silently start in $HOME. Create the directory (preflight does not create it)`);
+      expect(e).not.toContain("change the seat");
+    }
+    expect(getSeatCwdPresenceError(missing, undefined, false)).toBe(`cwd '${missing}' does not exist; a seat launched there would silently start in $HOME. Create the directory (preflight does not create it)`);
+    expect(getSeatCwdPresenceError(missing)).toContain("Create the directory or change the seat's cwd");
   });
 
   it("names a cwd it cannot stat as 'not accessible' (with the errno), not as missing and not as fine", () => {
