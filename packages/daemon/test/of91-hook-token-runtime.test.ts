@@ -41,7 +41,8 @@ const CLAIM: Record<Runtime, { sessionId: string; sessionFile?: string; type: st
   pda: { sessionId: "http://127.0.0.1:9999/agents/evil", type: "pda_agent", token: "http://127.0.0.1:9999/agents/evil" },
 };
 
-async function post(seatRuntime: string, claim: Runtime | "terminal" | null) {
+/** `spelling`: post this text as the runtime claim instead of the claim's own name (the OF-97 case/whitespace rows). */
+async function post(seatRuntime: string, claim: Runtime | "terminal" | null, spelling?: string) {
   const db = createFullTestDb();
   try {
     const rigRepo = new RigRepository(db);
@@ -62,7 +63,7 @@ async function post(seatRuntime: string, claim: Runtime | "terminal" | null) {
     const res = await app.request("/api/activity/hooks", {
       method: "POST",
       headers: { "content-type": "application/json", "x-openrig-activity-token": "tok" },
-      body: JSON.stringify({ eventFamily: "session_identity", sessionName: "dev-worker@of91", runtime: claim, generation, ...c }),
+      body: JSON.stringify({ eventFamily: "session_identity", sessionName: "dev-worker@of91", runtime: spelling ?? claim, generation, ...c }),
     });
     return { status: res.status, body: await res.json() as Record<string, unknown>, before, after: row(), eventsAdded: events() - eventsBefore };
   } finally {
@@ -113,6 +114,36 @@ describe("OF-91: the resume-token type is bound to the seat's stored runtime", (
   it("the table is exhaustive: 6 seat runtimes x 6 claims = 36 cells, 6 diagonal, 30 off-diagonal", () => {
     expect(SEAT_RUNTIMES.length * (CLAIMS.length + 1)).toBe(36);
     expect(offDiagonal.length).toBe(30);
+  });
+
+  // OF-97 (review-of91 N1): the runtime compare is exact. A case-insensitive or trimming compare would treat
+  // "Codex" / " codex " as the seat's OWN runtime and write the token (the body is otherwise the seat's own, so the
+  // write would succeed). Written literally here; the spellings are what a sloppy or hostile poster could send.
+  const SPELLINGS: Record<string, string[]> = {
+    "claude-code": ["Claude-Code", "CLAUDE-CODE", " claude-code ", "claude-code\n"],
+    codex: ["Codex", "CODEX", " codex ", "codex\n", "\tcodex"],
+    pi: ["Pi", "PI", " pi ", "pi\n"],
+    omp: ["Omp", "OMP", " omp ", "omp\n"],
+  };
+  const variantRows: Array<[Runtime, string]> = [];
+  for (const [rt, spellings] of Object.entries(SPELLINGS)) for (const s of spellings) variantRows.push([rt as Runtime, s]);
+  it.each(variantRows)("%s seat, hook claims its own runtime spelled %j: not the own-runtime claim, refused 409, nothing written", async (rt, spelling) => {
+    const r = await post(rt, rt, spelling);
+    expect(r.after).toEqual(r.before); // the seat's seeded token is not overwritten by the claimed one
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ ok: false, code: "runtime_mismatch", tokenPersisted: false });
+    expect(r.eventsAdded).toBe(0);
+  });
+  // The OMP block's own runtime check (activity.ts, after the OF-91 compare) is reachable only by a null claim.
+  it("omp seat, hook names no runtime: refused 409 runtime_mismatch (OMP identity is claimed, never inferred), nothing written", async () => {
+    const r = await post("omp", null);
+    expect(r.after).toEqual(r.before);
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ ok: false, code: "runtime_mismatch", tokenPersisted: false });
+    expect(r.eventsAdded).toBe(0);
+  });
+  it("the variant table is exhaustive: 4 own-runtimes, 4+5+4+4 = 17 spellings", () => {
+    expect(variantRows.length).toBe(17);
   });
 
   // A claim-less hook is not a claim: it never persisted anything and must not start to.
