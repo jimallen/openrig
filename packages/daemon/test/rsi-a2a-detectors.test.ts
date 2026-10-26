@@ -556,7 +556,7 @@ describe("registration", () => {
     // The one registry (integration): D4, D1-D3, D13 and the A2b sources. Restated, not derived.
     expect([...bySource.keys()].sort()).toEqual([
       "rsi-bootstrap-failure-class", "rsi-compaction-storm", "rsi-context-high-water", "rsi-orphaned-parked-owner-job",
-      "rsi-outbox-unsettled", "rsi-permission-stall", "rsi-project-report", "rsi-provider-weekly-window", "rsi-retention-lag",
+      "rsi-outbox-unsettled", "rsi-permission-stall", "rsi-project-report", "rsi-provider-weekly-window", "rsi-retention-disabled-growth", "rsi-retention-lag",
       "rsi-slow-op-file", "rsi-startup-failure-class", "rsi-telemetry", "rsi-watchdog-delivery-failure",
     ]);
     for (const name of ["rsi-startup-failure-class", "rsi-bootstrap-failure-class", "rsi-orphaned-parked-owner-job"]) {

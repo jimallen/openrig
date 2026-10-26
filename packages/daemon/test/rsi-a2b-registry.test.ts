@@ -22,6 +22,7 @@ const EXPECTED = [
   ["rsi-watchdog-delivery-failure", "rsi.watchdog-delivery-failure"],
   ["rsi-project-report", "rsi.project-report"],
   ["rsi-retention-lag", "rsi.retention-lag"],
+  ["rsi-retention-disabled-growth", "rsi.retention-disabled-growth"],
 ] as const;
 
 describe("the A2b registry", () => {
@@ -41,7 +42,7 @@ describe("the A2b registry", () => {
 
     expect([...ids].sort()).toEqual([...RSI_A2B_DETECTORS].sort());
     expect(new Set(ids).size).toBe(ids.length);
-    expect(RSI_A2B_DETECTORS).toHaveLength(8);
+    expect(RSI_A2B_DETECTORS).toHaveLength(9);
     for (const id of RSI_A2B_DETECTORS) expect(RSI_DETECTORS as readonly string[]).toContain(id);
   });
 

@@ -82,17 +82,29 @@ export class TelemetryHealthSource implements HealthObservationSource {
     const population = controls.population ?? 0;
     const controlTotal = controls.control ?? 0;
     const total = controls.stale_total ?? 0;
-    this.lastCoverage = [{
+    const coverage = {
       source: this.name, evaluatedAt, unit: "sessions", limit, total, evaluated: rows.length,
       omitted: Math.max(0, total - rows.length), partial: total > rows.length,
       order: "rig id, session rowid",
-    }];
+    };
+    this.lastCoverage = [coverage];
 
+    // OF-70: a session stamped after the daemon clock (clock skew) is clamped to the evaluation
+    // time. Left raw, its episode would start after the window ends, the evidence bound would
+    // refuse it, and one skewed row would make D4 unavailable for every rig. Clamping is counted
+    // on the coverage row, never silent.
+    const evaluatedMs = Date.parse(evaluatedAt);
+    let clamped = 0;
+    const seenAt = (row: StaleSessionRow): number => {
+      const ms = parseSqliteUtcMs(row.created_at);
+      if (ms > evaluatedMs) { clamped += 1; return evaluatedMs; }
+      return ms;
+    };
     const byRig = new Map<string, StaleSessionRow[]>();
     for (const row of rows) byRig.set(row.rig_id, [...byRig.get(row.rig_id) ?? [], row]);
     const observations: HealthDetectorObservation[] = [];
     for (const [rigId, group] of byRig) {
-      const seen = group.map((row) => parseSqliteUtcMs(row.created_at));
+      const seen = group.map(seenAt);
       const firstSeen = new Date(Math.min(...seen)).toISOString();
       const lastSeen = new Date(Math.max(...seen)).toISOString();
       const fingerprint = rsiFingerprint(RSI_ARCHIVED_RIG_LIVE_SESSION, `rig:${rigId}`);
@@ -123,6 +135,12 @@ export class TelemetryHealthSource implements HealthObservationSource {
         explanation: `${group.length} of ${total} such sessions fleet-wide; control: ${controlTotal} running or detached latest sessions on un-archived rigs, out of ${population} nodes with a session.`,
         suggestedInspection: `Inspect the latest session of each node of rig ${rigId} (${rigName}) and whether its tmux session still exists.`,
       });
+    }
+    if (clamped > 0) {
+      this.lastCoverage = [{
+        ...coverage,
+        note: `${clamped} session${clamped === 1 ? "" : "s"} created_at later than the daemon clock ${clamped === 1 ? "was" : "were"} clamped to the evaluation time`,
+      }];
     }
     return observations;
   }

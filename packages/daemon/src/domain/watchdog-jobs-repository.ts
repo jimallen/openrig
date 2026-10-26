@@ -583,6 +583,11 @@ export class WatchdogJobsRepository {
       .run(receipt, jobId);
   }
 
+  /** Forget the banked condition receipt: the job's next qualifying evaluation wakes as if it had never woken. */
+  clearConditionReceipt(jobId: string): void {
+    this.db.prepare(`UPDATE watchdog_jobs SET last_fired_condition = NULL WHERE job_id = ?`).run(jobId);
+  }
+
   markTerminal(jobId: string, reason: string): void {
     this.db
       .prepare(
