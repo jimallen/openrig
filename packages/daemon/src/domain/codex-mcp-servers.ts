@@ -401,12 +401,14 @@ export function mcpArgFilePins(
   place?: { seatCwd: string | null; io?: PathJudgeIo },
 ): { ok: true; pins: McpArgFilePin[] } | { ok: false; error: string } {
   const pins: McpArgFilePin[] = [];
-  const regularFile = (value: string): { realPath: string; sha256: string } | "unreadable" | null => {
+  const regularFile = (value: string): { realPath: string; sha256: string } | "unreadable" | { linked: number } | null => {
     if (!nodePath.isAbsolute(value)) return null;
     let real: string;
     try {
       real = realpathSync(value);
-      if (!statSync(real).isFile()) return null;
+      const st = statSync(real);
+      if (!st.isFile()) return null;
+      if (st.nlink > 1) return { linked: st.nlink }; // a link elsewhere could change the bytes after the pin (as for spec files)
     } catch { return null; }
     try { return { realPath: real, sha256: createHash("sha256").update(readFileSync(real)).digest("hex") }; } catch { return "unreadable"; }
   };
@@ -419,6 +421,7 @@ export function mcpArgFilePins(
     const mustBeFile = afterFlag || short !== null || (eq !== null && MCP_CONFIG_FLAGS.includes(eq[1]!));
     const hit = regularFile(value);
     if (hit === "unreadable") return { ok: false, error: `the file argument ${value} cannot be read to pin its checksum` };
+    if (hit && "linked" in hit) return { ok: false, error: `the file argument ${value} has ${hit.linked} hard links; a link elsewhere could change it after it is pinned` };
     if (!hit) {
       if (mustBeFile) return { ok: false, error: `the config file argument ${value} is not an absolute path to an existing regular file, so it cannot be pinned` };
       continue;
