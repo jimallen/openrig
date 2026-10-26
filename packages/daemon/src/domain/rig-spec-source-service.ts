@@ -42,12 +42,13 @@ type Declared = { runtime: string | null; agentRef: string | null; profile: stri
 type Loaded = { ok: true; resolvedPath: string; specName: string; raw: Record<string, unknown>; members: Map<string, Declared> }
   | { ok: false; code: "spec_unreadable" | "spec_invalid"; message: string };
 
-/** Read a spec source the way a fresh launch reads it: re-anchored, links followed, parsed and validated. */
-function loadSpec(specSource: string): Loaded {
+/** Read a spec source: links followed, parsed and validated. `show` reads it the way a fresh launch does (re-anchored to the
+ *  running install when it is a shipped spec); `set` reads exactly the file it judges and records (`reanchor: false`). */
+function loadSpec(specSource: string, reanchor = true): Loaded {
   let resolvedPath: string;
   let yaml: string;
   try {
-    resolvedPath = fs.realpathSync(reanchorShippedSpecPath(specSource));
+    resolvedPath = fs.realpathSync(reanchor ? reanchorShippedSpecPath(specSource) : specSource);
     yaml = fs.readFileSync(resolvedPath, "utf-8");
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -163,10 +164,15 @@ export class RigSpecSourceService {
     // REAL location, a regular file with one link, not in a temp folder, git tree or seat folder, and owned and
     // protected along its whole chain (the check `rig seat set-mcp --spec` applies). The exact-depth root admits only
     // <root>/<name>/rig.yaml, judged by real location, because deeper folders (<rig>/state/<pod>) are seat-writable.
-    // The file judged is the one the read below uses (re-anchored), so the check and the read agree. A path that does
-    // not resolve falls through to the read, which reports it.
-    const readPath = reanchorShippedSpecPath(specSource);
+    // INVARIANT: the value judged below is the value recorded, never a re-anchored stand-in. Everything here (the
+    // ownership and trust judgement, the typed-path check, the read) runs on `specSource`, or on its realpath, which is
+    // what the judge resolves it to. A dev-checkout-shaped path that does not exist would otherwise be re-anchored to the
+    // installed specs for the judgement and then recorded as typed, and a seat could write that file afterwards.
     const io = this.deps.trust.io ?? DEFAULT_PATH_JUDGE_IO;
+    try { io.realpath(specSource); } catch {
+      return { ok: false, code: "spec_unreadable", message: `${specSource} does not exist as typed (a missing path is not re-anchored when recording; name the real file).` };
+    }
+    const readPath = specSource;
     const seatFolders = [...new Set(rig.nodes.map((n) => n.cwd).filter((c): c is string => !!c))];
     const judge = (roots: string[]): string | null => {
       for (const seatCwd of seatFolders.length > 0 ? seatFolders : [null]) {
@@ -185,7 +191,7 @@ export class RigSpecSourceService {
     if (problem) {
       return { ok: false, code: "spec_untrusted", message: `${problem}. Record a reviewed spec from a trusted spec root instead (in the shared-docs rigs folder only <rig name>/rig.yaml qualifies).` };
     }
-    const loaded = loadSpec(specSource);
+    const loaded = loadSpec(specSource, false);
     if (!loaded.ok) return { ok: false, code: loaded.code, message: loaded.message };
     // (Read first, so a path that does not resolve is reported as unreadable, not as untrusted.)
     // The spelling is what gets recorded and read again at every launch, restore and MCP read, with no re-check, so the

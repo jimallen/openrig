@@ -453,15 +453,50 @@ edges:
       });
     });
 
-    it("a typed path into an install that is gone is judged where the read goes (re-anchored), not skipped", async () => {
-      // /gone/…/@openrig/cli/daemon/specs/… re-anchors to the running install's bundled specs. Here the typed spelling lies
-      // under a trusted root (/gone/node_modules) but the file the read uses does not: the check must judge the re-anchored
-      // file instead of waving an unresolvable path through to the read.
-      const typed = "/gone/node_modules/@openrig/cli/daemon/specs/rigs/launch/kernel/rig.yaml";
-      const res = await set({ path: typed, operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: PERMISSIVE_IO, extraRoots: ["/gone/node_modules"] }));
-      expect(res.status).toBe(409);
-      expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
-      nothingRecorded();
+    // Review T6: a dev-checkout-shaped path (.../packages/daemon/specs/...) that does not exist is re-anchored to the installed
+    // specs when it is READ. Recording judged the re-anchored file but stored the typed spelling, so a seat could name a missing
+    // /tmp/.../packages/daemon/specs/... path, then write that file, and later reads would follow the seat's file.
+    // Recording therefore names a real file as typed, and judges exactly the value it records.
+    describe("what is judged is what is recorded", () => {
+      const bundledSpecs = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../specs");
+      it("the reviewer's T6: a missing dev-checkout-shaped path whose re-anchored file is trusted is refused as not existing", async () => {
+        const typed = path.join(trusted, "dev", "packages", "daemon", "specs", "rigs", "launch", "kernel", "rig.yaml");
+        expect(fs.existsSync(typed)).toBe(false);
+        const res = await set({ path: typed, operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: PERMISSIVE_IO, extraRoots: [bundledSpecs] }));
+        expect(res.status).toBe(409);
+        const body = await res.json() as { code: string; message: string };
+        expect(body.code).toBe("spec_unreadable");
+        expect(body.message).toContain("does not exist as typed");
+        nothingRecorded();
+      });
+      it("a missing release-root path is refused as not existing", async () => {
+        fs.mkdirSync(path.join(home, ".agents-release", "rel1", "rigs"), { recursive: true });
+        fs.symlinkSync(path.join(home, ".agents-release", "rel1"), path.join(home, ".agents-release", "current"));
+        const res = await set({ path: path.join(home, ".agents-release", "current", "rigs", "nope", "rig.yaml"), operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        const body = await res.json() as { code: string; message: string };
+        expect(body.code).toBe("spec_unreadable");
+        expect(body.message).toContain("does not exist as typed");
+        nothingRecorded();
+      });
+      it("the judged path is the recorded path, or its realpath, and nothing else (a packaged-install-shaped path that exists)", async () => {
+        const real = write("node_modules/@openrig/cli/daemon/specs/rigs/team/rig.yaml", GOOD);
+        fs.mkdirSync(path.join(trusted, "links"));
+        const link = path.join(trusted, "links", "rig.yaml");
+        fs.symlinkSync(real, link);
+        for (const typed of [real, link]) {
+          const seen = new Set<string>();
+          const spy = (read: (p: string) => unknown) => (p: string) => { if (p.endsWith(`${path.sep}rig.yaml`)) seen.add(p); return read(p); };
+          const io: PathJudgeIo = { ...PERMISSIVE_IO, lstat: spy(PERMISSIVE_IO.lstat) as never, stat: spy(PERMISSIVE_IO.stat) as never, realpath: spy(PERMISSIVE_IO.realpath) as never };
+          const res = await set({ path: typed, operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io }));
+          expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+          expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
+          expect(seen.size).toBeGreaterThan(0);   // the instrument saw the judged file
+          expect([...seen].filter((p) => p !== typed && p !== fs.realpathSync(typed))).toEqual([]);
+          db.prepare("UPDATE rigs SET spec_source_path = NULL WHERE id = ?").run(rigId);
+          db.prepare("DELETE FROM events").run();
+        }
+      });
     });
 
     // The ownership and protection rules of the existing check, shown with the production judge's own rules switched
