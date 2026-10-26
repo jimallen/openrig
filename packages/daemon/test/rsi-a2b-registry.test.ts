@@ -123,3 +123,46 @@ describe("daemon wiring: the live retention setting moves D10's line", () => {
     }
   });
 });
+
+describe("daemon wiring: D15 follows retention.enabled (read at boot) and the live watchdog retention settings", () => {
+  const variables = ["OPENRIG_RETENTION_ENABLED", "OPENRIG_RETENTION_WATCHDOG_DAYS", "OPENRIG_RETENTION_WATCHDOG_KEEP_PER_JOB"] as const;
+  type Daemon = Awaited<ReturnType<typeof createDaemon>>;
+
+  async function withDaemon(enabled: "true" | "false", body: (daemon: Daemon) => void) {
+    const dir = mkdtempSync(join(tmpdir(), "rsi-d15-wiring-"));
+    const previous = variables.map((name) => process.env[name]);
+    process.env.OPENRIG_RETENTION_ENABLED = enabled;
+    delete process.env.OPENRIG_RETENTION_WATCHDOG_DAYS;
+    delete process.env.OPENRIG_RETENTION_WATCHDOG_KEEP_PER_JOB;
+    const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite") });
+    try {
+      daemon.db.pragma("foreign_keys = OFF");
+      const insert = daemon.db.prepare("INSERT INTO watchdog_history (history_id, job_id, evaluated_at, outcome) VALUES (?, 'job-x', ?, 'skipped')");
+      const base = Date.now() - 20 * 86_400_000; // 20 days old: past the 14-day default
+      daemon.db.transaction(() => { for (let i = 0; i < 10_100; i++) insert.run(`h-${i}`, new Date(base - i * 1000).toISOString()); })();
+      body(daemon);
+    } finally {
+      variables.forEach((name, i) => { if (previous[i] === undefined) delete process.env[name]; else process.env[name] = previous[i]; });
+      daemon.db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const growth = (daemon: Daemon) => daemon.deps.healthProjection!.list().records.filter((r) => r.detector === "rsi.retention-disabled-growth");
+
+  it("with the sweep off, fires on 10,100 old watchdog rows (10,050 outside the newest 50), and the live window and keep settings move the line", async () => {
+    await withDaemon("false", (daemon) => {
+      expect(growth(daemon)).toHaveLength(1);
+      process.env.OPENRIG_RETENTION_WATCHDOG_DAYS = "30"; // the 20-day-old rows are now inside retention
+      expect(growth(daemon)).toEqual([]);
+      delete process.env.OPENRIG_RETENTION_WATCHDOG_DAYS;
+      process.env.OPENRIG_RETENTION_WATCHDOG_KEEP_PER_JOB = "200"; // 9,900 stale: under the 10,000 threshold
+      expect(growth(daemon)).toEqual([]);
+    });
+  });
+
+  it("with the sweep on, the same rows are the sweep's backlog and D15 stays silent", async () => {
+    await withDaemon("true", (daemon) => {
+      expect(growth(daemon)).toEqual([]);
+    });
+  });
+});
