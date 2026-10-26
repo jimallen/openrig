@@ -11,7 +11,6 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import type { WorkflowExitKind, WorkflowStepTrailEntry } from "./workflow-types.js";
-import { readStoredJsonObject } from "./stored-json.js";
 
 export interface WorkflowStepTrailRecordInput {
   instanceId: string;
@@ -121,7 +120,9 @@ function rowToEntry(row: TrailRow): WorkflowStepTrailEntry {
     stepRole: row.step_role,
     closedAt: row.closed_at,
     closureReason: row.closure_reason as WorkflowExitKind,
-    closureEvidence: readStoredJsonObject(row.closure_evidence_json),
+    closureEvidence: row.closure_evidence_json
+      ? (JSON.parse(row.closure_evidence_json) as Record<string, unknown>)
+      : null,
     actorSession: row.actor_session,
     nextQitemId: row.next_qitem_id,
     priorQitemId: row.prior_qitem_id,

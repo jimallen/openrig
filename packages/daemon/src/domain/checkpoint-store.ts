@@ -90,6 +90,7 @@ export class CheckpointStore {
       nextStep: row.next_step,
       blockedOn: row.blocked_on,
       keyArtifacts: readStoredJsonStrings(row.key_artifacts) ?? [],
+      ...(row.key_artifacts && readStoredJsonStrings(row.key_artifacts) === null && row.key_artifacts !== "null" ? { keyArtifactsUnreadable: true as const } : {}),
       confidence: row.confidence,
       podId: row.pod_id ?? null,
       continuitySource: row.continuity_source ?? null,

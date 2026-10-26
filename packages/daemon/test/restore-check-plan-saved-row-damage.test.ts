@@ -37,11 +37,13 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     return { result, damage: result.checks.find((c) => c.check === "rig.team.saved-rows") };
   }
 
-  function plan(rigId: string, snapshotId: string | null) {
+  function planWhole(rigId: string, snapshotId: string | null) {
     const rig = h.rigRepo.getRig(rigId)!;
     const snapshot = snapshotId ? h.snapshotRepo.getSnapshot(snapshotId)! : null;
-    return buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(h.db, rig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(h.db, rig))
-      .nodes.find((n) => n.logicalId === SEAT)!;
+    return buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(h.db, rig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(h.db, rig));
+  }
+  function plan(rigId: string, snapshotId: string | null) {
+    return planWhole(rigId, snapshotId).nodes.find((n) => n.logicalId === SEAT)!;
   }
 
   async function restoreError(snapshotId: string): Promise<string> {
@@ -71,6 +73,13 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     expect(damage!.evidence).toBe(`Restore would refuse team: its pre-restore snapshot cannot be taken because ${SEAT}'s saved row is damaged (${row.reason})`);
     expect(damage!.remediation).toContain(SEAT);
     expect(result.verdict).toBe("not_restorable");
+    // Review B1: the recovery block must not advise the restore that refuses. It is blocked, with the evidence and the remedy.
+    expect(result.recovery.status).not.toBe("actionable");
+    expect(result.recovery.actions).toEqual([]);
+    expect(JSON.stringify(result.recovery)).not.toContain("rig up --existing");
+    const blockedWhy = result.recovery.blocked.map((issue) => issue.reason).join("\n");
+    expect(blockedWhy).toContain(`${SEAT}'s saved row is damaged (${row.reason})`);
+    expect(blockedWhy).toContain(`Repair the damaged saved row (${SEAT})`);
     // ... and the rig's own rollup (what `rig ps` / status read) carries it as a blocking check.
     expect(result.rigs.find((rig) => rig.rigName === "team")!.blockingChecks.map((c) => c.check)).toContain("rig.team.saved-rows");
 
@@ -95,6 +104,28 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     expect(plan(seat.rigId, snapshotId).savedRowDamage).toEqual(["session_source_json is not JSON", "package_refs is not JSON"]);
   });
 
+  // Review B2: the damaged seat's own status is `failed`, which the plan's other consumers read as "a removed seat, the rest
+  // restore". Restore refuses the WHOLE rig, so the plan carries a rig-level refusal beside the per-seat one.
+  it("a multi-seat rig: the plan refuses the whole rig and names the seat, while the undamaged seat keeps its own forecast", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    const second = h.rigRepo.addNode(seat.rigId, "dev.second", { runtime: "claude-code" });
+    const snapshotId = await h.down(seat.rigId);
+    h.db.prepare("UPDATE nodes SET package_refs = ? WHERE id = ?").run("{not json", seat.nodeId);
+    for (const from of [snapshotId, null]) {
+      const whole = planWhole(seat.rigId, from);
+      expect(whole.nodes.map((n) => n.logicalId).sort()).toEqual([SEAT, "dev.second"]);
+      expect(whole.restoreRefusal, from ? "snapshot" : "live").toEqual({
+        reason: `restore would refuse the whole rig and start no seat: its pre-restore snapshot cannot be taken because ${SEAT}'s saved row is damaged (package_refs is not JSON). Repair the row first.`,
+        seats: [SEAT],
+      });
+      expect(whole.nodes.find((n) => n.logicalId === "dev.second")!.savedRowDamage).toBeUndefined();
+    }
+    // Two damaged seats are both named, in rig order.
+    h.db.prepare("UPDATE nodes SET session_source_json = ? WHERE id = ?").run("[1]", second.id);
+    expect(planWhole(seat.rigId, snapshotId).restoreRefusal!.seats.sort()).toEqual([SEAT, "dev.second"]);
+  });
+
   describe("controls: a readable row is not reported", () => {
     it("an undamaged rig: restore does not refuse, no saved-rows check, the plan resumes the seat", async () => {
       h = createRestoreHarness();
@@ -104,6 +135,7 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
       expect((await check()).damage).toBeUndefined();
       const node = plan(seat.rigId, snapshotId);
       expect(node.savedRowDamage).toBeUndefined();
+      expect(planWhole(seat.rigId, snapshotId).restoreRefusal).toBeUndefined();
       expect(node.intendedAction).toBe("resume-original");
     });
 

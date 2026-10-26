@@ -250,12 +250,12 @@ function ActionButtonsRow({ rigId, logicalId, data }: { rigId: string; logicalId
 
 /** OF-56: the seat's saved rows the daemon could not read. An empty startup list or package list on such a seat is
  *  damage, not "declared none", so it is said outright wherever the seat's state is shown. */
-export function savedRowDamageNotes(data: NodeDetailData): Array<{ key: string; label: string; reason: string }> {
+export function savedRowDamageNotes(data: NodeDetailData): Array<{ key: string; label: string; reason: string; effect: string }> {
   return [
-    { key: "startup", label: "Saved startup setup", reason: data.startupUnreadable },
-    { key: "session-source", label: "Saved session source", reason: data.sessionSourceUnreadable },
-    { key: "package-refs", label: "Saved package list", reason: data.packageRefsUnreadable },
-  ].flatMap((note) => (note.reason ? [{ key: note.key, label: note.label, reason: note.reason }] : []));
+    { key: "startup", label: "Saved startup setup", reason: data.startupUnreadable, effect: "The startup files and actions shown are empty because it cannot be read. Restore does not stop on it alone: a seat started fresh replays a snapshot's copy, and is refused when none is usable." },
+    { key: "session-source", label: "Saved session source", reason: data.sessionSourceUnreadable, effect: "Restore, snapshot and export refuse until the row is repaired." },
+    { key: "package-refs", label: "Saved package list", reason: data.packageRefsUnreadable, effect: "Restore, snapshot and export refuse until the row is repaired." },
+  ].flatMap((note) => (note.reason ? [{ key: note.key, label: note.label, reason: note.reason, effect: note.effect }] : []));
 }
 
 function SavedRowDamageNotice({ data }: { data: NodeDetailData }) {
@@ -270,13 +270,10 @@ function SavedRowDamageNotice({ data }: { data: NodeDetailData }) {
       <ul className="space-y-0.5">
         {notes.map((note) => (
           <li key={note.key} className="font-mono text-[9px] text-orange-700" data-testid={`detail-saved-row-damage-${note.key}`}>
-            {note.label} is unreadable ({note.reason}); what is shown for it is empty because it cannot be read, not because the seat declared none.
+            {note.label} is unreadable ({note.reason}). {note.effect}
           </li>
         ))}
       </ul>
-      <div className="font-mono text-[8px] text-on-surface-variant mt-1">
-        Restore, snapshot and export refuse this seat until the row is repaired.
-      </div>
     </section>
   );
 }

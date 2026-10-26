@@ -134,7 +134,9 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
   const failingSeats = planNodes.filter((n) => n.restoreStatus === "failed");
   const blockedSeats = planNodes.filter((n) => n.intendedAction === "awaiting-decision" && n.restoreStatus !== "failed");
   const isBlocked = policy === "restore-original" && blockedSeats.length > 0;
-  const canExecute = !isBlocked && planNodes.length > 0 && !planMut.isPending && !launchMut.isPending;
+  // OF-62: restore refuses the whole rig (a damaged saved row), under either policy; no per-seat status undoes that.
+  const refusal = planMut.data?.restoreRefusal ?? null;
+  const canExecute = !refusal && !isBlocked && planNodes.length > 0 && !planMut.isPending && !launchMut.isPending;
 
   function execute() {
     // fresh = an explicit, labeled all-seats operator choice → per-seat freshLogicalIds.
@@ -190,7 +192,19 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
           </div>
         ) : null}
 
-        {failingSeats.length > 0 && policy === "restore-original" ? (
+        {refusal ? (
+          <div
+            data-testid="launch-refused-banner"
+            className="border border-tertiary bg-tertiary/10 px-3 py-2 flex items-start gap-2"
+          >
+            <Ban className="h-3.5 w-3.5 text-tertiary shrink-0" />
+            <div className="font-mono text-[9px] leading-relaxed text-tertiary">
+              <span className="font-bold uppercase">restore refused</span> — {refusal.reason}
+            </div>
+          </div>
+        ) : null}
+
+        {failingSeats.length > 0 && policy === "restore-original" && !refusal ? (
           <p data-testid="launch-will-fail-note" className="font-mono text-[9px] leading-relaxed text-warning">
             {failingSeats.length} seat(s) will fail and be reported as failed ({failingSeats.map((n) => n.logicalId).join(", ")}); the
             other seats are restored.
@@ -266,7 +280,9 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
             data-testid="launch-execute"
             className="font-mono text-[10px] tracking-widest"
           >
-            {isBlocked
+            {refusal
+              ? "Restore refused"
+              : isBlocked
               ? "Resolve blockers to restore"
               : policy === "fresh"
                 ? "Fresh-prime all seats ▸"

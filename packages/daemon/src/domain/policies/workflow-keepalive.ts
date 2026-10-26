@@ -127,10 +127,11 @@ export function makeWorkflowKeepalivePolicy(deps: WorkflowKeepaliveDeps): Policy
         };
       }
 
-      // OF-51: a damaged frontier column ends this keepalive as terminal with its own reason; it is not an empty frontier.
+      // OF-51: a damaged frontier column skips this evaluation with its own reason (the job stays active and is retried
+      // once the row is repaired); it is neither an empty frontier nor the end of the job.
       const wholeFrontier = readStoredJson<string[] | null>(instance.current_frontier_json);
       if (wholeFrontier === undefined) {
-        return { action: "terminal", reason: "workflow_frontier_unreadable", notes: { instanceId } };
+        return { action: "skip", reason: "workflow_frontier_unreadable", notes: { instanceId } };
       }
       const packetId = context.workflow_packet_id;
       if (packetId && !(wholeFrontier ?? []).includes(packetId)) {

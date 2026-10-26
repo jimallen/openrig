@@ -453,6 +453,9 @@ export interface Checkpoint {
   nextStep: string | null;
   blockedOn: string | null;
   keyArtifacts: string[];
+  /** OF-51 (review N1): the saved `key_artifacts` column could not be read. `keyArtifacts` is then empty BECAUSE of that,
+   *  not because none were recorded; a snapshot keeps the flag instead of persisting a quiet empty list. Absent: readable. */
+  keyArtifactsUnreadable?: true;
   confidence: string | null;
   podId: string | null;
   continuitySource: string | null;

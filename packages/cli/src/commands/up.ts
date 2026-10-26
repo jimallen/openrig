@@ -659,6 +659,8 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           // OF-32 follow-up: a seat listed with --fresh that apply would refuse before launching it, in restore's own words.
           if (n.wouldRefuse) console.log(`      would be refused: Fresh start refused: ${n.wouldRefuse} No session would be started.`);
         }
+        const refusal = res.data["restoreRefusal"] as { reason: string; seats: string[] } | undefined;
+        if (refusal) console.log(`Restore would be refused for the whole rig: ${refusal.reason}`);
         const predictionError = res.data["refusalPredictionError"] as string | undefined;
         if (predictionError) console.log(`Could not predict which listed seats apply would refuse: ${predictionError}`);
         console.log("No changes made.");

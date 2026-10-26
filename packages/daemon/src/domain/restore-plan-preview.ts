@@ -85,6 +85,11 @@ export interface RestorePlanPreview {
   mutated: false;
   /** Set when the refusal prediction for the listed seats could not be made; absent otherwise. */
   refusalPredictionError?: string;
+  /** OF-62 (review B2): apply mode would refuse the WHOLE rig, so no seat is started and a per-seat reading ("this seat
+   *  fails, the rest are restored") is wrong. Today: a seat's saved row is damaged and restore's pre-restore snapshot
+   *  refuses on it. `seats` names them. Every consumer of the plan checks this before it reads a seat's own status.
+   *  Absent: restore is not refused for this reason. */
+  restoreRefusal?: { reason: string; seats: string[] };
 }
 
 export interface PreviewSessionRow {
@@ -326,6 +331,7 @@ export function buildRestorePlanPreview(
       }));
     }
   }
+  const damagedSeats = nodes.filter((node) => node.savedRowDamage);
   return {
     status: "plan",
     mode: "restore",
@@ -335,6 +341,12 @@ export function buildRestorePlanPreview(
     wouldCaptureCurrentState: snapshot === null,
     nodes,
     mutated: false,
+    ...(damagedSeats.length > 0 ? {
+      restoreRefusal: {
+        reason: `restore would refuse the whole rig and start no seat: its pre-restore snapshot cannot be taken because ${damagedSeats.map((node) => savedRowDamageMessage(node.logicalId, node.savedRowDamage!)).join("; ")}. Repair the row first.`,
+        seats: damagedSeats.map((node) => node.logicalId),
+      },
+    } : {}),
   };
 }
 

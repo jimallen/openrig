@@ -30,4 +30,18 @@ describe("rig start readiness label", () => {
       { logicalId: "b", intendedAction: "awaiting-decision" },
     ]))).toBe("[will ask before fresh]");
   });
+  // OF-62 (review B2): a damaged saved row makes restore refuse the whole rig; the damaged seat's own status is `failed`
+  // (the removed-seat reading above), so only the rig-level restoreRefusal tells the picker the rig is not ready.
+  it("a rig-level restoreRefusal reads restore refused, though every other seat is resumable and the damaged seat is `failed`", () => {
+    const c = candidate([
+      { logicalId: "a", intendedAction: "resume-original" },
+      { logicalId: "b", intendedAction: "resume-original" },
+      { logicalId: "damaged", intendedAction: "awaiting-decision", restoreStatus: "failed" },
+    ]);
+    c.preview!.restoreRefusal = { reason: "restore would refuse the whole rig", seats: ["damaged"] };
+    expect(summarizeReadiness(c)).toBe("[restore refused]");
+    // Control: the same plan without the rig-level field is the removed-seat reading.
+    delete c.preview!.restoreRefusal;
+    expect(summarizeReadiness(c)).toBe("[ready to resume]");
+  });
 });

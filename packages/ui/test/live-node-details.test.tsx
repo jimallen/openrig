@@ -692,7 +692,15 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
       expect(screen.getByTestId("detail-saved-row-damage-startup").textContent).toContain("Saved startup setup is unreadable (resolved_files_json is not JSON)");
       expect(screen.getByTestId("detail-saved-row-damage-session-source").textContent).toContain("Saved session source is unreadable (session_source_json is not an object)");
       expect(screen.getByTestId("detail-saved-row-damage-package-refs").textContent).toContain("Saved package list is unreadable (package_refs is not a list of strings)");
-      expect(notice.textContent).toContain("not because the seat declared none");
+      // Review N4: each note says what restore actually does for ITS column. The startup setup does not stop a restore
+      // (N-C3, and the exporter does not list it); the session source and package list do.
+      const startup = screen.getByTestId("detail-saved-row-damage-startup").textContent!;
+      expect(startup).toContain("Restore does not stop on it alone");
+      expect(startup).not.toContain("refuse");
+      for (const key of ["session-source", "package-refs"]) {
+        expect(screen.getByTestId(`detail-saved-row-damage-${key}`).textContent).toContain("Restore, snapshot and export refuse until the row is repaired.");
+      }
+      expect(notice.textContent).not.toContain("Restore, snapshot and export refuse this seat");
     });
 
     it("Details tab: the Startup section carries the same note next to its empty list", async () => {

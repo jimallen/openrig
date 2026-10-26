@@ -36,13 +36,23 @@ const STARTUP_SUBMIT_CAPTURE_LINES = 200;
 const STARTUP_SUBMIT_SETTLE_LOOKS = 25;
 
 /** Pending context belongs to this occupant and is consumed before delivery starts. */
-export function hasPendingFreshStartup(db: Database.Database, nodeId: string, sessionId: string): boolean {
+export type FreshStartupPending = "pending" | "not_pending" | "unreadable";
+
+/** Tri-state (OF-51, review B3). `unreadable`: the newest startup event of the seat is damaged, so it cannot be said
+ *  whether the saved context was delivered. Callers that PROMOTE a seat (context-monitor marks it ready) must not on
+ *  `unreadable`; callers that CONTINUE a fresh delivery (canContinueFresh) must not either. */
+export function readFreshStartupPending(db: Database.Database, nodeId: string, sessionId: string): FreshStartupPending {
   const row = db.prepare("SELECT payload FROM events WHERE node_id = ? AND type IN ('node.startup_pending', 'node.startup_ready', 'node.startup_failed') ORDER BY seq DESC LIMIT 1").get(nodeId) as { payload: string } | undefined;
-  if (!row) return false;
-  // OF-51: a damaged row names no pending context.
+  if (!row) return "not_pending";
   const event = readStoredJsonObject(row.payload);
-  if (!event) return false;
-  return event.type === "node.startup_failed" && event.sessionId === sessionId && event.freshContextPending === true;
+  if (!event) return "unreadable";
+  return event.type === "node.startup_failed" && event.sessionId === sessionId && event.freshContextPending === true ? "pending" : "not_pending";
+}
+
+/** Whether a fresh delivery is pending. An unreadable newest startup event is NOT pending (never replay an uncertain
+ *  delivery); use `readFreshStartupPending` where the difference matters. */
+export function hasPendingFreshStartup(db: Database.Database, nodeId: string, sessionId: string): boolean {
+  return readFreshStartupPending(db, nodeId, sessionId) === "pending";
 }
 
 // -- Types --

@@ -33,7 +33,8 @@ import { MissionControlAuditBrowse } from "../src/domain/mission-control/audit-b
 import { WorkflowStepTrailLog } from "../src/domain/workflow-step-trail-log.js";
 import { WorkflowInstanceStore } from "../src/domain/workflow-instance-store.js";
 import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relation.js";
-import { hasPendingFreshStartup } from "../src/domain/startup-orchestrator.js";
+import { hasPendingFreshStartup, readFreshStartupPending } from "../src/domain/startup-orchestrator.js";
+import { captureSkippingUnreadable } from "../src/domain/snapshot-capture.js";
 import { makeWorkflowKeepalivePolicy } from "../src/domain/policies/workflow-keepalive.js";
 
 const NOT_JSON = "{not json";
@@ -189,18 +190,44 @@ describe("OF-51 events: a damaged event payload never ends a replay, and never r
     expect(hasPendingFreshStartup(db, node.id, "s1"), "control: the readable row is pending").toBe(true);
     insert("node.startup_failed", NOT_JSON);
     expect(hasPendingFreshStartup(db, node.id, "s1")).toBe(false);
+    // Review B3: the tri-state tells "no pending" from "cannot tell"; a promoter must not read the second as the first.
+    expect(readFreshStartupPending(db, node.id, "s1")).toBe("unreadable");
+  });
+
+  it("readFreshStartupPending: pending / not_pending / unreadable are three different answers", () => {
+    const rig = setup.rigRepo.createRig("r");
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
+    const insert = (type: string, payload: string) => db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(rig.id, node.id, type, payload);
+    expect(readFreshStartupPending(db, node.id, "s1"), "no startup event at all").toBe("not_pending");
+    insert("node.startup_failed", JSON.stringify({ type: "node.startup_failed", sessionId: "s1", freshContextPending: true }));
+    expect(readFreshStartupPending(db, node.id, "s1")).toBe("pending");
+    expect(readFreshStartupPending(db, node.id, "other"), "another occupant's pending context").toBe("not_pending");
+    insert("node.startup_ready", JSON.stringify({ type: "node.startup_ready" }));
+    expect(readFreshStartupPending(db, node.id, "s1")).toBe("not_pending");
+    insert("node.startup_pending", "[1]");
+    expect(readFreshStartupPending(db, node.id, "s1"), "parses but is not an event").toBe("unreadable");
   });
 });
 
 describe("OF-51 stores read for display or audit: a damaged JSON column reads as absent, the row and its neighbours are still served", () => {
-  it("checkpoints: key_artifacts", () => {
+  it("checkpoints: key_artifacts reads empty WITH a flag, never as a quiet empty list; an automatic capture warns and keeps the flag", () => {
     const rig = setup.rigRepo.createRig("r");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
     setup.checkpointStore.createCheckpoint(node.id, { summary: "one", keyArtifacts: ["a.md"] });
     const damaged = setup.checkpointStore.createCheckpoint(node.id, { summary: "two", keyArtifacts: ["b.md"] });
     db.prepare("UPDATE checkpoints SET key_artifacts = ? WHERE id = ?").run(NOT_JSON, damaged.id);
-    expect(setup.checkpointStore.getCheckpointsForNode(node.id).map((c) => [c.summary, c.keyArtifacts])).toEqual([["one", ["a.md"]], ["two", []]]);
+    const listed = setup.checkpointStore.getCheckpointsForNode(node.id);
+    expect(listed.map((c) => [c.summary, c.keyArtifacts, c.keyArtifactsUnreadable])).toEqual([["one", ["a.md"], undefined], ["two", [], true]]);
     expect(setup.checkpointStore.getCheckpointsForRig(rig.id)[node.id]!.summary).toBe("two");
+    // The snapshot a rig-down capture writes keeps the flag and says so.
+    const { snapshot, warnings } = captureSkippingUnreadable(setup.snapshotCapture, rig.id, "auto-pre-down");
+    expect(warnings.join("\n")).toContain("holds dev.impl's newest checkpoint with an empty key-artifact list");
+    expect(snapshot.data.checkpoints[node.id]).toMatchObject({ summary: "two", keyArtifacts: [], keyArtifactsUnreadable: true });
+    // Controls: a literal JSON null and a null column are the real "none": no flag, no warning.
+    db.prepare("UPDATE checkpoints SET key_artifacts = 'null' WHERE id = ?").run(damaged.id);
+    expect(setup.checkpointStore.getCheckpointsForNode(node.id)[1]!.keyArtifactsUnreadable).toBeUndefined();
+    db.prepare("UPDATE checkpoints SET key_artifacts = NULL WHERE id = ?").run(damaged.id);
+    expect(captureSkippingUnreadable(setup.snapshotCapture, rig.id, "auto-pre-down").warnings).toEqual([]);
   });
 
   it("stream: hint_tags", () => {
@@ -229,18 +256,19 @@ describe("OF-51 stores read for display or audit: a damaged JSON column reads as
   describe("workflow", () => {
     const instance = () => new WorkflowInstanceStore(db).create({ workflowName: "wf", workflowVersion: "1", createdBySession: "a@r" } as never);
 
-    it("step trails: closure_evidence_json", () => {
+    // Review N2: the waiting-replay absorption (workflow-projector matchesStoredWaitingDecision) compares a stored trail's
+    // closureEvidence; reading damage as null would let a re-park with no evidence be absorbed. Strict, as at base.
+    it("step trails: closure_evidence_json stays strict (a decision reader), it is not read as null", () => {
       const inst = instance();
       db.pragma("foreign_keys = OFF"); // the trail's prior qitem is not what this reads
       const trail = new WorkflowStepTrailLog(db);
-      const record = (closedAt: string) => trail.record({ instanceId: inst.instanceId, stepId: "s", stepRole: "r", closureReason: "done", closedAt, actorSession: "a@r", priorQitemId: "q", closureEvidence: { ok: true } } as never);
-      record("2026-05-04T03:00:00.000Z");
-      const bad = record("2026-05-04T03:01:00.000Z");
+      const bad = trail.record({ instanceId: inst.instanceId, stepId: "s", stepRole: "r", closureReason: "done", closedAt: "2026-05-04T03:01:00.000Z", actorSession: "a@r", priorQitemId: "q", closureEvidence: { ok: true } } as never);
+      expect(trail.listForInstance(inst.instanceId)[0]!.closureEvidence, "control: readable").toEqual({ ok: true });
       db.prepare("UPDATE workflow_step_trails SET closure_evidence_json = ? WHERE trail_id = ?").run(NOT_JSON, bad.trailId);
-      expect(trail.listForInstance(inst.instanceId).map((e) => e.closureEvidence).sort((x, y) => String(x).localeCompare(String(y)))).toEqual([{ ok: true }, null].sort((x, y) => String(x).localeCompare(String(y))));
+      expect(() => trail.listForInstance(inst.instanceId)).toThrow(SyntaxError);
     });
 
-    it("keepalive policy: a damaged frontier ends the keepalive as terminal workflow_frontier_unreadable, not a throw", async () => {
+    it("keepalive policy: a damaged frontier skips with workflow_frontier_unreadable (the job stays active), not a throw and not terminal", async () => {
       const q = await queueRepo.create({ sourceSession: "a@r", destinationSession: "owner@r", body: "x" });
       const insert = (id: string, frontier: string) => db.prepare(
         `INSERT INTO workflow_instances (instance_id, workflow_name, workflow_version, created_by_session, created_at, status, current_frontier_json)
@@ -254,7 +282,7 @@ describe("OF-51 stores read for display or audit: a damaged JSON column reads as
         context: { workflow_instance_id: instanceId },
       }) as never;
       expect((await policy.evaluate(job("inst-good"))).action, "control: the readable frontier is served").toBe("send");
-      expect(await policy.evaluate(job("inst-bad"))).toMatchObject({ action: "terminal", reason: "workflow_frontier_unreadable", notes: { instanceId: "inst-bad" } });
+      expect(await policy.evaluate(job("inst-bad"))).toMatchObject({ action: "skip", reason: "workflow_frontier_unreadable", notes: { instanceId: "inst-bad" } });
     });
   });
 });

@@ -31,6 +31,9 @@ export interface LaunchPlan {
   wouldCaptureCurrentState: boolean;
   nodes: LaunchPlanNode[];
   mutated: false;
+  /** Apply would refuse the WHOLE rig (a seat's saved row is damaged): nothing can be executed, whatever each seat's own
+   *  status says. Absent on older daemons or when not refused. */
+  restoreRefusal?: { reason: string; seats: string[] };
 }
 
 async function fetchLaunchPlan(rigId: string, freshLogicalIds?: string[]): Promise<LaunchPlan> {

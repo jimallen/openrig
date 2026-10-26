@@ -1734,7 +1734,7 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `No exact recovery action is known in v0 because restore-input blockers remain: ${restoreInputBlockers.map((check) => check.evidence).join("; ")}`,
+          reason: `No exact recovery action is known in v0 because restore-input blockers remain: ${restoreInputBlockers.map((check) => this.isSavedRowsCheck(check) ? `${check.evidence}. ${check.remediation}` : check.evidence).join("; ")}`,
         });
         continue;
       }
@@ -1871,10 +1871,18 @@ export class RestoreCheckService {
     });
   }
 
+  private isSavedRowsCheck(check: CheckEntry): boolean {
+    return check.check.startsWith("rig.") && check.check.endsWith(".saved-rows");
+  }
+
   private classifyRecoveryBlockingCheck(check: CheckEntry): "restore_input" | "runtime" | "other" {
     if (check.status !== "red") return "other";
 
     if (check.check.startsWith("rig.") && check.check.endsWith(".restore-preconditions")) return "restore_input";
+
+    // OF-62 (review B1): restore refuses the whole rig at its pre-restore snapshot while a saved row is damaged, so no
+    // `rig up --existing` is advised; the blocked reason carries the check's evidence and its remedy.
+    if (this.isSavedRowsCheck(check)) return "restore_input";
 
     if (check.check.startsWith("seat.") && check.check.endsWith(".readiness")) {
       if (check.evidence.includes("Missing canonical session identity")) {
