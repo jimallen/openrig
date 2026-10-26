@@ -28,13 +28,13 @@ describe("tmux argv exec path", () => {
   it("createSession passes cwd/env as verbatim argv units", async () => {
     const seen: string[][] = [];
     const { adapter, exec } = argvAdapter(seen);
-    await adapter.createSession("r01-dev1-impl", "/home/user/my project/code", { PATH: "/a b:/c", EMPTY: "" });
+    await adapter.createSession("r01-dev1-impl", "/home/user/my project/code", { PATH: "/a b:/c", USER: "" });
     expect(exec).not.toHaveBeenCalled();
     expect(seen).toEqual([[
       "tmux", "new-session", "-d", "-s", "r01-dev1-impl",
       "-c", "/home/user/my project/code",
       "-e", "OPENRIG_TRANSCRIPTS_LINES=", "-e", "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS=",
-      "-e", "PATH=/a b:/c", "-e", "EMPTY=",
+      "-e", "PATH=/a b:/c", "-e", "USER=",
       "-P", "-F", "#{pane_id}",
     ], ["tmux", "show-environment", "-g"]]);
   });
@@ -56,8 +56,8 @@ describe("tmux argv exec path", () => {
   it("respawn keeps the command as ONE trailing unit", async () => {
     const seen: string[][] = [];
     const { adapter } = argvAdapter(seen);
-    await adapter.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w", env: { A: "b c" } });
-    expect(seen).toEqual([["tmux", "show-environment", "-g"], ["tmux", "respawn-pane", "-t", "%1", "-c", "/w", "-e", "A=b c", "codex resume 'tok en'"]]);
+    await adapter.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w", env: { HOME: "b c" } });
+    expect(seen).toEqual([["tmux", "show-environment", "-g"], ["tmux", "respawn-pane", "-t", "%1", "-c", "/w", "-e", "HOME=b c", "codex resume 'tok en'"]]);
   });
 
   it("capture and display probes build atomic argv (no shell join artifacts)", async () => {

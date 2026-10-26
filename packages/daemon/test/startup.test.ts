@@ -22,6 +22,18 @@ import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { DEFAULT_SYSTEM_WORLD_MANIFEST } from "../src/domain/system-world.js";
 
+/** A tmux exec fake that answers new-session with a pane id and keeps what every `source-file` script said at the
+ *  moment tmux was told to read it (the daemon removes the file afterwards). Credentials reach a launched seat
+ *  through that script, never through the new-session command line (OF-46). */
+function credentialCapturingTmux() {
+  const scripts: string[] = [];
+  const tmuxExec = vi.fn<ExecFn>(async (cmd: string) => {
+    if (cmd.startsWith("tmux source-file ")) scripts.push(fs.readFileSync(cmd.slice("tmux source-file ".length).replace(/^'|'$/g, ""), "utf8"));
+    return cmd.includes("tmux new-session") ? "%1\n" : "";
+  });
+  return { tmuxExec, credentials: () => scripts.join("\n") };
+}
+
 function saveEnv(...names: string[]): Record<string, string | undefined> {
   return Object.fromEntries(names.map((name) => [name, process.env[name]]));
 }
@@ -492,7 +504,7 @@ describe("createDaemon startup composition", () => {
     process.env.PATH = "/proof/openrig/bin:/usr/bin:/bin";
     process.env.OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST = "OPENAI_API_KEY";
     process.env.OPENAI_API_KEY = "gap7-openai-key";
-    const tmuxExec = vi.fn<ExecFn>(async () => "");
+    const { tmuxExec, credentials } = credentialCapturingTmux();
     let result: Awaited<ReturnType<typeof createDaemon>> | undefined;
 
     try {
@@ -524,7 +536,9 @@ describe("createDaemon startup composition", () => {
       expect(command).toContain(`-e 'CODEX_HOME=${seatHome}'`);
       // PATH carries the worktree-placement shim first (daemon-projected OPENRIG_HOME root)
       expect(command).toContain(`-e 'PATH=${result.deps.sessionEnv["OPENRIG_HOME"]}/rig-bin:/proof/openrig/bin:/usr/bin:/bin'`);
-      expect(command).toContain("-e 'OPENAI_API_KEY=gap7-openai-key'");
+      // The provider key reaches the seat through the credential file, never the command line.
+      expect(command).not.toContain("gap7-openai-key");
+      expect(credentials()).toContain("OPENAI_API_KEY 'gap7-openai-key'");
     } finally {
       result?.db.close();
       restoreEnv(saved);
@@ -632,7 +646,7 @@ describe("createDaemon startup composition", () => {
     const cmuxFactory: CmuxTransportFactory = async () => {
       throw Object.assign(new Error(""), { code: "ENOENT" });
     };
-    const tmuxExec = vi.fn<ExecFn>(async () => "");
+    const { tmuxExec, credentials } = credentialCapturingTmux();
 
     try {
       const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
@@ -646,10 +660,12 @@ describe("createDaemon startup composition", () => {
         .map((call) => call[0])
         .find((cmd) => cmd.includes("tmux new-session"));
       expect(newSessionCmd).toBeDefined();
-      expect(newSessionCmd).toContain("-e 'ANTHROPIC_API_KEY=anthropic-test-key'");
-      expect(newSessionCmd).toContain("-e 'CLAUDE_CODE_OAUTH_TOKEN=claude-oauth-test-token'");
-      expect(newSessionCmd).toContain("-e 'OPENAI_API_KEY=openai-test-key'");
+      for (const key of ["anthropic-test-key", "claude-oauth-test-token", "openai-test-key"]) expect(newSessionCmd).not.toContain(key);
+      expect(credentials()).toContain("ANTHROPIC_API_KEY 'anthropic-test-key'");
+      expect(credentials()).toContain("CLAUDE_CODE_OAUTH_TOKEN 'claude-oauth-test-token'");
+      expect(credentials()).toContain("OPENAI_API_KEY 'openai-test-key'");
       expect(newSessionCmd).not.toContain("BOGUS_TOKEN");
+      expect(credentials()).not.toContain("BOGUS_TOKEN");
 
       db.close();
     } finally {
@@ -665,13 +681,14 @@ describe("createDaemon startup composition", () => {
       const cmuxFactory: CmuxTransportFactory = async () => {
         throw Object.assign(new Error(""), { code: "ENOENT" });
       };
-      const tmuxExec = vi.fn<ExecFn>(async () => "");
+      const { tmuxExec, credentials } = credentialCapturingTmux();
       const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
       try {
         const rig = deps.rigRepo.createRig("bedrock-forwarding-rig");
         deps.rigRepo.addNode(rig.id, "worker", { runtime: "codex" });
         expect((await deps.nodeLauncher.launchNode(rig.id, "worker")).ok).toBe(true);
-        return tmuxExec.mock.calls.map((call) => call[0]).find((cmd) => cmd.includes("tmux new-session")) ?? "";
+        // Everything tmux was told: the new-session line plus what the credential file said.
+        return [tmuxExec.mock.calls.map((call) => call[0]).find((cmd) => cmd.includes("tmux new-session")) ?? "", credentials()].join("\n");
       } finally {
         db.close();
       }
@@ -679,12 +696,32 @@ describe("createDaemon startup composition", () => {
 
     try {
       const optedIn = await launchCommand("AWS_BEARER_TOKEN_BEDROCK,AWS_SECRET_ACCESS_KEY");
-      expect(optedIn).toContain("-e 'AWS_BEARER_TOKEN_BEDROCK=synthetic-bedrock-token'");
+      expect(optedIn).toContain("AWS_BEARER_TOKEN_BEDROCK 'synthetic-bedrock-token'");
+      expect(optedIn).not.toContain("-e 'AWS_BEARER_TOKEN_BEDROCK");
       expect(optedIn).not.toContain("AWS_SECRET_ACCESS_KEY");
 
       const notNamed = await launchCommand("OPENAI_API_KEY");
       expect(notNamed).toContain("tmux new-session");
       expect(notNamed).not.toContain("AWS_BEARER_TOKEN_BEDROCK");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("OF-46: the production composition keeps the activity-hook token off the new-session command line and delivers it through the credential file", async () => {
+    const token = "synthetic-of46-hook-token-7d21";
+    vi.stubEnv("OPENRIG_ACTIVITY_HOOK_TOKEN", token);
+    const { tmuxExec, credentials } = credentialCapturingTmux();
+    try {
+      const { db, deps } = await createDaemon({ cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); }, tmuxExec });
+      const rig = deps.rigRepo.createRig("of46-hook-token-rig");
+      deps.rigRepo.addNode(rig.id, "worker", { runtime: "claude-code" });
+      expect((await deps.nodeLauncher.launchNode(rig.id, "worker")).ok).toBe(true);
+      const everyTmuxCommand = tmuxExec.mock.calls.map((call) => call[0]);
+      expect(everyTmuxCommand.some((cmd) => cmd.includes("tmux new-session"))).toBe(true);
+      expect(everyTmuxCommand.filter((cmd) => cmd.includes(token))).toEqual([]);
+      expect(credentials()).toContain(`OPENRIG_ACTIVITY_HOOK_TOKEN '${token}'`);
+      db.close();
     } finally {
       vi.unstubAllEnvs();
     }
