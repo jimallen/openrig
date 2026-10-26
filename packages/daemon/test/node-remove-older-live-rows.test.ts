@@ -143,6 +143,20 @@ describe("node removal ends every live row of the node (OF-66)", () => {
     expect(killed()).toContain(OLD);
   });
 
+  it("does not kill the NEWEST session when a released (detached claimed) session holds its name; it names the holder", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl", { newerStatus: "running" });
+    const other = rigRepo.createRig("other");
+    const otherNode = rigRepo.addNode(other.id, "human");
+    const released = sessionRegistry.registerSession(otherNode.id, NEW);
+    db.prepare("UPDATE sessions SET status = 'detached', origin = 'claimed' WHERE id = ?").run(released.id);
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(result).toMatchObject({ ok: true, sessionKeptFor: "human@other" });
+    expect(killed()).toEqual([OLD]);
+  });
+
   it("a row sharing the newest row's name is covered by that one kill", async () => {
     const rig = rigRepo.createRig("team");
     seat(rig, "dev.impl", { olderName: NEW });
