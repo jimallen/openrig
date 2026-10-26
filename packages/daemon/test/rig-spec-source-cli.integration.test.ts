@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -67,8 +67,9 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
   const file = (p: string, text: string) => { writeFileSync(p, text); chmodSync(p, 0o644); };
 
   beforeAll(async () => {
-    // The scaffold root normally sits in the temp folder, which the trust check refuses; build it under the home folder.
-    ctx.base = mkdtempSync(join(homedir(), ".of102-e2e-"));
+    // The scaffold root normally sits in the temp folder, which the trust check refuses; build it under the real home folder
+    // (the test runner points HOME at a temp fixture, so ask the account database instead).
+    ctx.base = mkdtempSync(join(userInfo().homedir, ".of102-e2e-"));
     const savedTmp = process.env.TMPDIR;
     process.env.TMPDIR = ctx.base;
     try { ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } }); }
