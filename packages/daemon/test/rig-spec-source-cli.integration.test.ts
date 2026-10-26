@@ -48,8 +48,9 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
   const ctx: { scaffold?: HermeticScaffold; daemon?: ScenarioDaemon; base?: string } = {};
   let root = "";
   let project = "";
-  let typedSpec = "";
+  let typedSpec = "";   // through ~/.agents-release/current (a link inside a trusted root)
   let realSpec = "";
+  let exactSpec = "";   // <shared-docs rigs>/<rig name>/rig.yaml
   const rig = (args: string[], t = 180_000) => runRig(args, ctx.daemon!.readEnv, rigBin, t);
   const withDb = <T>(fn: (db: Database.Database) => T): T => { const d = new Database(join(ctx.scaffold!.stateDir, "scenario.db")); try { return fn(d); } finally { d.close(); } };
   const storedRole = () => withDb((d) => {
@@ -99,14 +100,17 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
       d.prepare("UPDATE node_startup_context SET resolved_files_json = ?").run(JSON.stringify(files));
       d.prepare("UPDATE rigs SET spec_source_path = NULL WHERE name = ?").run(rigName);
     });
-    // The spec the operator names lives in the daemon's own <OPENRIG_HOME>/shared-docs/rigs, behind a folder link that
-    // stays inside that root (a link to its real <rig name>/rig.yaml), and reaches the agent through `current`.
+    // Two places the operator may name a spec from. The daemon's own <OPENRIG_HOME>/shared-docs/rigs takes exactly
+    // <rig name>/rig.yaml. The released copies under the daemon's home (~/.agents-release) may be reached through a
+    // link kept in that protected folder, which is how the live kernel's agents are typed. Both reach the agent through `current`.
     const rigs = dir(ctx.scaffold.openrigHome, "shared-docs", "rigs");
-    const realDir = dir(rigs, rigName);
-    realSpec = join(realDir, "rig.yaml");
+    exactSpec = join(dir(rigs, rigName), "rig.yaml");
+    file(exactSpec, RIG(`path:${join(root, "current", "agents", "impl")}`));
+    const released = join(ctx.scaffold.env.HOME!, ".agents-release");
+    realSpec = join(dir(released, "rel1", "rigs", "team"), "rig.yaml");
     file(realSpec, RIG(`path:${join(root, "current", "agents", "impl")}`));
-    symlinkSync(realDir, join(rigs, "current"));
-    typedSpec = join(rigs, "current", "rig.yaml");
+    symlinkSync(join(released, "rel1"), join(released, "current"));
+    typedSpec = join(released, "current", "rigs", "team", "rig.yaml");
   }, 200_000);
   afterAll(async () => {
     try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (ctx.base) rmSync(ctx.base, { recursive: true, force: true }); }
@@ -140,6 +144,13 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     expect(`${inState.stderr}${inState.stdout}`).toContain("only <rig name>/rig.yaml qualifies");
     expect(recordedSource()).toBeNull();
     expect(changeEvents()).toEqual([]);
+    // A link kept in that seat-writable state folder that leads to the real, trusted spec: the typed spelling must qualify too.
+    symlinkSync(exactSpec, join(state, "link.yaml"));
+    const viaLink = await rig(["spec-source", "set", rigName, join(state, "link.yaml"), "--operator", "dev-impl@x"]);
+    expect(viaLink.code).not.toBe(0);
+    expect(`${viaLink.stderr}${viaLink.stdout}`).toContain("as typed, is not itself under a trusted spec root");
+    expect(recordedSource()).toBeNull();
+    expect(changeEvents()).toEqual([]);
   }, 60_000);
 
   it("a spec for another rig is refused, and nothing is recorded", async () => {
@@ -153,13 +164,22 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
 
   it("`set` then `rig seat launch --fresh --stop --startup-from spec` stores files through the typed link; a moved link is followed on replay", async () => {
     const before = seatRows();
+    // First the exact shared-docs path (the kernel's shape) ...
+    const first = await rig(["spec-source", "set", rigName, exactSpec, "--operator", "jim@ops", "--json"]);
+    expect(first.code, JSON.stringify(first)).toBe(0);
+    expect(JSON.parse(first.stdout)).toMatchObject({ ok: true, from: null, to: exactSpec, changed: true });
+    expect(recordedSource()).toBe(exactSpec);
+    // ... then replaced by the release link, whose spelling is kept.
     const set = await rig(["spec-source", "set", rigName, typedSpec, "--operator", "jim@ops", "--json"]);
     expect(set.code, JSON.stringify(set)).toBe(0);
-    expect(JSON.parse(set.stdout)).toMatchObject({ ok: true, from: null, to: typedSpec, changed: true });
+    expect(JSON.parse(set.stdout)).toMatchObject({ ok: true, from: exactSpec, to: typedSpec, changed: true });
     expect(JSON.parse(set.stdout).effect).toContain("a plain `rig seat launch --fresh`");
-    expect(recordedSource()).toBe(typedSpec);                       // as typed: the folder link, not the real file
+    expect(recordedSource()).toBe(typedSpec);                       // as typed: the release link, not the real file
     expect(seatRows()).toBe(before);                                // set alone changed no node, session or saved context
-    expect(changeEvents()).toMatchObject([{ from: null, to: typedSpec, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "trusted_spec_root" }]);
+    expect(changeEvents()).toMatchObject([
+      { from: null, to: exactSpec, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "trusted_spec_root" },
+      { from: exactSpec, to: typedSpec, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "trusted_spec_root" },
+    ]);
     expect(JSON.parse((await rig(["spec-source", "show", rigName, "--json"])).stdout)).toMatchObject({ specSource: typedSpec, resolvedPath: realSpec });
 
     const fresh = await launch("spec");

@@ -72,13 +72,46 @@ function loadSpec(specSource: string): Loaded {
   return { ok: true, resolvedPath, specName: spec.name, raw: raw as Record<string, unknown>, members };
 }
 
-/** The <name> when the REAL location of `file` is exactly <root>/<name>/rig.yaml (one path component, nothing deeper), else null. */
+/** `child` relative to `root` when it lies strictly inside it (no `..` step), else null. Purely lexical. */
+function insideRoot(child: string, root: string): string | null {
+  const rel = nodePath.relative(root, child);
+  return rel !== "" && rel !== ".." && !rel.startsWith(".." + nodePath.sep) && !nodePath.isAbsolute(rel) ? rel : null;
+}
+
+/** The ways a root can be spelled: as given, and by its real location. */
+function rootSpellings(root: string, io: PathJudgeIo): string[] {
+  const out = new Set([nodePath.resolve(root)]);
+  try { out.add(io.realpath(root)); } catch { /* absent: only the given spelling */ }
+  return [...out];
+}
+
+/** The <name> when `rel` is exactly <name>/rig.yaml (one path component, nothing deeper), else null. */
+function exactShapeName(rel: string | null): string | null {
+  if (rel === null) return null;
+  const parts = rel.split(nodePath.sep);
+  return parts.length === 2 && parts[1] === "rig.yaml" && parts[0] !== "" ? parts[0]! : null;
+}
+
+/** The <name> when the REAL location of `file` is exactly <root>/<name>/rig.yaml, else null. */
 function exactDepthFolder(file: string, root: string, io: PathJudgeIo): string | null {
   let real: string;
   let rootReal: string;
   try { real = io.realpath(file); rootReal = io.realpath(root); } catch { return null; }
-  const parts = nodePath.relative(rootReal, real).split(nodePath.sep);
-  return parts.length === 2 && parts[1] === "rig.yaml" && parts[0] !== "" && parts[0] !== ".." ? parts[0]! : null;
+  return exactShapeName(insideRoot(real, rootReal));
+}
+
+/** The <name> when the path AS TYPED (normalised, no link followed) is exactly <root>/<name>/rig.yaml, else null. */
+function typedExactFolder(typed: string, root: string, io: PathJudgeIo): string | null {
+  for (const spelling of rootSpellings(root, io)) {
+    const name = exactShapeName(insideRoot(typed, spelling));
+    if (name !== null) return name;
+  }
+  return null;
+}
+
+/** Whether the path AS TYPED lies lexically under one of the roots. */
+function typedUnderRoots(typed: string, roots: string[], io: PathJudgeIo): boolean {
+  return roots.some((root) => rootSpellings(root, io).some((spelling) => insideRoot(typed, spelling) !== null));
 }
 
 export class RigSpecSourceService {
@@ -152,12 +185,24 @@ export class RigSpecSourceService {
     if (problem) {
       return { ok: false, code: "spec_untrusted", message: `${problem}. Record a reviewed spec from a trusted spec root instead (in the shared-docs rigs folder only <rig name>/rig.yaml qualifies).` };
     }
+    // The spelling is what gets recorded and read again at every launch, restore and MCP read, with no re-check, so the
+    // path AS TYPED must qualify too, not only where it leads today: a link kept in a folder a seat can write (the
+    // Codex state folders under the shared-docs rigs folder) could be retargeted to the seat's own file later. So the
+    // typed path itself must lie lexically under a general trusted root (where the links, like ~/.agents-release/current,
+    // sit in a protected place) or be exactly <shared-docs rigs>/<name>/rig.yaml. Its own folders get the ownership and
+    // mode checks above, which judge the written chain as well as the real one.
+    const typedGeneral = typedUnderRoots(readPath, this.deps.trust.roots(), io);
+    const typedFolder = !typedGeneral && exactRoot ? typedExactFolder(readPath, exactRoot, io) : null;
+    if (!typedGeneral && typedFolder === null) {
+      return { ok: false, code: "spec_untrusted", message: `${readPath}, as typed, is not itself under a trusted spec root or exactly <shared-docs rigs>/<rig name>/rig.yaml. A link kept anywhere else (a seat's writable folder, say) could be pointed at another file later, so type the path through the trusted folder.` };
+    }
     const loaded = loadSpec(specSource);
     if (!loaded.ok) return { ok: false, code: loaded.code, message: loaded.message };
     // One rig's folder cannot serve another rig: a spec admitted only by the shared-docs rigs folder must sit in a
     // folder named for this rig or for the spec's own name (a project rig is named after its project, its spec is not).
-    if (exactFolder !== null && exactFolder !== rig.rig.name && exactFolder !== loaded.specName) {
-      return { ok: false, code: "spec_untrusted", message: `${readPath} lies in the shared-docs folder '${exactFolder}', which is neither this rig's name ('${rig.rig.name}') nor its spec's name ('${loaded.specName}'). Record a reviewed spec from a trusted spec root instead.` };
+    const wrongFolder = [exactFolder, typedFolder].find((f) => f !== null && f !== rig.rig.name && f !== loaded.specName);
+    if (wrongFolder !== undefined && wrongFolder !== null) {
+      return { ok: false, code: "spec_untrusted", message: `${readPath} lies in the shared-docs folder '${wrongFolder}', which is neither this rig's name ('${rig.rig.name}') nor its spec's name ('${loaded.specName}'). Record a reviewed spec from a trusted spec root instead.` };
     }
 
     // The spec's own name, or, for a project rig (named after its project folder at launch), the name the launch path

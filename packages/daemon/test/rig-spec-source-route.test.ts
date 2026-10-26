@@ -101,9 +101,9 @@ describe("OF-102 rig spec-source route", () => {
 
   it("records the path as typed: a link spelling stays a link, with who changed it, from what and to what", async () => {
     const real = write("rel-a/rigs/team/rig.yaml", GOOD);
-    fs.mkdirSync(path.join(root, "library"));
-    fs.symlinkSync(path.dirname(real), path.join(root, "library", "team"));
-    const typed = path.join(root, "library", "team", "rig.yaml");
+    fs.mkdirSync(path.join(trusted, "library"));
+    fs.symlinkSync(path.dirname(real), path.join(trusted, "library", "team"));
+    const typed = path.join(trusted, "library", "team", "rig.yaml");
     const before = seatState();
     expect(before).toContain("dev-impl@team");   // the instrument sees a session and a saved startup context
     expect(before).toContain("guidance/role.md");
@@ -127,14 +127,14 @@ describe("OF-102 rig spec-source route", () => {
 
   it("a later move of the link leads show to the new file; the record stays as typed", async () => {
     const real = write("rel-a/rigs/team/rig.yaml", GOOD);
-    fs.mkdirSync(path.join(root, "library"));
-    fs.symlinkSync(path.dirname(real), path.join(root, "library", "team"));
-    const typed = path.join(root, "library", "team", "rig.yaml");
+    fs.mkdirSync(path.join(trusted, "library"));
+    fs.symlinkSync(path.dirname(real), path.join(trusted, "library", "team"));
+    const typed = path.join(trusted, "library", "team", "rig.yaml");
     await set({ path: typed, operator: "jim@ops" });
     expect(await (await show()).json()).toMatchObject({ specSource: typed, resolvedPath: real });
-    fs.rmSync(path.join(root, "library", "team"));
+    fs.rmSync(path.join(trusted, "library", "team"));
     const other = write("rel-b/rigs/team/rig.yaml", GOOD);
-    fs.symlinkSync(path.dirname(other), path.join(root, "library", "team"));
+    fs.symlinkSync(path.dirname(other), path.join(trusted, "library", "team"));
     expect(await (await show()).json()).toMatchObject({ ok: true, specSource: typed, resolvedPath: other, unavailable: null });
   });
 
@@ -330,6 +330,64 @@ edges:
       expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
     });
 
+    // Review L1: the recorded value is the TYPED spelling, read again at every launch, restore and MCP read with no re-check.
+    // A link kept in a folder a seat can write could be retargeted to the seat's own file after it was recorded, so the typed
+    // path itself must qualify as well as where it leads: lexically under a general trusted root, or exactly
+    // <shared-docs rigs>/<name>/rig.yaml.
+    describe("the path as typed must qualify too", () => {
+      it("the reviewer's link in a seat-writable state folder (<root>/team/state/queue/rig.yaml -> the real <root>/team/rig.yaml) is refused", async () => {
+        const real = write("team/rig.yaml", GOOD, sharedDocsRigs);
+        fs.mkdirSync(path.join(sharedDocsRigs, "team", "state", "queue"), { recursive: true });
+        const link = path.join(sharedDocsRigs, "team", "state", "queue", "rig.yaml");
+        fs.symlinkSync(real, link);
+        const res = await set({ path: link, operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+        nothingRecorded();
+        // control: the real path itself is fine, so it is the typed spelling that was refused
+        expect((await set({ path: real, operator: "jim@ops" })).status).toBe(200);
+      });
+      it("a link outside every root that leads to a trusted spec is refused", async () => {
+        const real = write("a/rig.yaml", GOOD);
+        fs.mkdirSync(path.join(root, "elsewhere"));
+        const link = path.join(root, "elsewhere", "rig.yaml");
+        fs.symlinkSync(real, link);
+        const res = await set({ path: link, operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+        nothingRecorded();
+        // control: the real path itself is fine
+        expect((await set({ path: real, operator: "jim@ops" })).status).toBe(200);
+      });
+      it("the same link inside a trusted root is accepted (the link's own folder is protected), recorded as typed", async () => {
+        const real = write("a/rig.yaml", GOOD);
+        fs.mkdirSync(path.join(trusted, "links"));
+        const link = path.join(trusted, "links", "rig.yaml");
+        fs.symlinkSync(real, link);
+        const res = await set({ path: link, operator: "jim@ops" });
+        expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+        expect(rigRepo.getRigSpecSource(rigId)).toBe(link);
+      });
+      it("the typed path's own folders get the ownership and mode checks too: a link kept in a group-writable folder is refused", async () => {
+        const real = write("a/rig.yaml", GOOD);
+        fs.mkdirSync(path.join(trusted, "ldir"));
+        const link = path.join(trusted, "ldir", "rig.yaml");
+        fs.symlinkSync(real, link);
+        // `ldir` is on the typed chain only; the link's target never passes through it.
+        const present = (bits: number): PathJudgeIo => {
+          const mask = (p: string, st: fs.Stats): fs.Stats => Object.create(st, { mode: { value: (st.mode & ~0o022) | (p === path.join(trusted, "ldir") ? bits : 0) } }) as fs.Stats;
+          return { ...PERMISSIVE_IO, uid: () => process.getuid?.(), lstat: (p) => mask(p, fs.lstatSync(p)), stat: (p) => mask(p, fs.statSync(p)) };
+        };
+        const accepted = await set({ path: link, operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: present(0) }));
+        expect(accepted.status, JSON.stringify(await accepted.clone().json())).toBe(200);
+        db.prepare("UPDATE rigs SET spec_source_path = NULL WHERE id = ?").run(rigId);
+        db.prepare("DELETE FROM events").run();
+        const refused = await set({ path: link, operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: present(0o020) }));
+        expect(refused.status).toBe(409);
+        nothingRecorded();
+      });
+    });
+
     // Review R6: sandboxed Codex seats get <shared-docs>/rigs/<rig>/state/<pod> as a WRITABLE folder, and it sits inside the
     // route's own root, which spans every rig. That root therefore takes exactly <root>/<name>/rig.yaml, by real location.
     describe("the shared-docs rigs folder takes exactly <name>/rig.yaml", () => {
@@ -367,14 +425,19 @@ edges:
         expect((await set({ path: path.join(sharedDocsRigs, "team", "rig.yaml"), operator: "jim@ops" })).status).toBe(409);
         nothingRecorded();
       });
-      it("this rig's own <name>/rig.yaml is accepted, and a link inside the root to it keeps its spelling", async () => {
-        const real = write("team/rig.yaml", GOOD, sharedDocsRigs);
-        fs.symlinkSync(path.join(sharedDocsRigs, "team"), path.join(sharedDocsRigs, "current"));
-        const typed = path.join(sharedDocsRigs, "current", "rig.yaml");
+      it("this rig's own <name>/rig.yaml is accepted, recorded as typed", async () => {
+        const typed = write("team/rig.yaml", GOOD, sharedDocsRigs);
         const res = await set({ path: typed, operator: "jim@ops" });
         expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
         expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
-        expect(real).not.toBe(typed);
+      });
+      it("a link inside the root typed as <root>/current/rig.yaml is refused: the typed folder must be this rig's or its spec's name", async () => {
+        write("team/rig.yaml", GOOD, sharedDocsRigs);
+        fs.symlinkSync(path.join(sharedDocsRigs, "team"), path.join(sharedDocsRigs, "current"));
+        const res = await set({ path: path.join(sharedDocsRigs, "current", "rig.yaml"), operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+        nothingRecorded();
       });
       it("a project rig's spec sits in a folder named for the rig or for the spec: both accepted", async () => {
         const spec = `version: "0.2"\nname: jims-team\nproject_rig: true\npods:\n  - id: dev\n    label: dev\n    members:\n      - id: impl\n        agent_ref: "local:agents/impl"\n        profile: default\n        runtime: claude-code\n        cwd: .\n    edges: []\nedges: []\n`;
