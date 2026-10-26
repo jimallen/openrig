@@ -69,6 +69,12 @@ export interface PiRunnerState {
   updatedAt: string;
   /** Set when the pi process exited; the seat is honestly non-running. */
   exited?: { code: number | null; at: string };
+  /** OF-88: the runner's own turn state, which `rig send` reads as the seat's readiness (PiRuntimeAdapter.sendReadiness).
+   *  true while an agent turn is streaming. Absent in a sidecar written by a runner older than OF-88; the adapter
+   *  then gives no answer and send gating stays on today's hook-and-pane logic. */
+  busy?: boolean;
+  /** OF-88: OMP attention that outlives the turn (the operator must act). Absent when there is none. */
+  attention?: "runtime_error" | "permission_prompt";
 }
 
 /** The launch-scoped pending record every writer uses when resetting the

@@ -18,8 +18,9 @@ import { piTrust, yoloEnabled } from "./yolo-mode.js";
 import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
   InstalledResource, ProjectionResult, StartupDeliveryResult, ReadinessResult,
-  HarnessLaunchResult, ForkSource,
+  HarnessLaunchResult, ForkSource, RunnerReadinessTarget,
 } from "../domain/runtime-adapter.js";
+import type { AgentActivity } from "../domain/types.js";
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
@@ -373,6 +374,23 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       return { ready: true };
     }
     return { ready: false, reason: `${this.runtime}-runner has not reported ready yet`, code: "awaiting_runtime" };
+  }
+
+  /** OF-88: the runner's answer for `rig send`, from its sidecar, so a runner pane is never read by the pane
+   *  classifier (a reply ending in a question looked like a prompt). Null (never a throw) means "no runner answer"
+   *  and send gating falls back to today's hook-and-pane logic: no sidecar, not ready, exited, or a sidecar from a
+   *  runner older than OF-88 (no `busy` field). The transport applies the shell-foreground clause at the seam,
+   *  which is what retires a sidecar left by a killed runner (Pi's sidecar has no alive tick). */
+  async sendReadiness(target: RunnerReadinessTarget): Promise<AgentActivity | null> {
+    let state: PiRunnerState | null;
+    try { state = this.readRunnerState(target.sessionName); } catch { return null; }
+    if (!state || !state.ready || state.exited || typeof state.busy !== "boolean") return null;
+    const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date().toISOString(), evidence: null, runtime: this.runtime };
+    if (state.attention === "runtime_error" || state.attention === "permission_prompt") {
+      return { ...base, state: "needs_input", reason: state.attention };
+    }
+    if (state.busy) return { ...base, state: "running", reason: "run_active" };
+    return { ...base, state: "idle", reason: "runner_idle" };
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
