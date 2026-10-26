@@ -921,10 +921,30 @@ describe("RigTeardownOrchestrator", () => {
         expect(result).toMatchObject({ sessionsKilled: 0, errors: [] });
         expect(result.warnings?.join(" ")).toContain(`Session '${OLD}'`);
         expect(result.warnings?.join(" ")).toContain("rig unclaim");
-        expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 0 });
+        expect(row(olderId)).toEqual({ status: "detached", intentionally_stopped: 0 });
         expect(row(newerId)).toMatchObject({ status: "exited" });
         // The consequence for restore: no DB-running row is left to refuse rig_not_stopped.
         expect(runningRows(rigId)).toBe(0);
+      });
+
+      it("the ended adopted row still holds its name, so another seat's older row of that name is not killed (N4)", async () => {
+        const { rigId, olderId } = olderLiveSeat("exited");
+        db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(olderId);
+        await buildTeardown(tmuxWith([OLD])).teardown(rigId);
+
+        const other = rigRepo.createRig("other-rig");
+        const node = rigRepo.addNode(other.id, "dev");
+        const older = sessionRegistry.registerSession(node.id, OLD);
+        sessionRegistry.updateStatus(older.id, "running");
+        const newer = sessionRegistry.registerSession(node.id, "r01-other-new");
+        sessionRegistry.updateStatus(newer.id, "exited");
+        db.prepare("UPDATE sessions SET created_at = '2020-01-01 00:00:00' WHERE id = ?").run(older.id);
+        db.prepare("UPDATE sessions SET created_at = '2021-01-01 00:00:00' WHERE id = ?").run(newer.id);
+        const tmux = tmuxWith([OLD]);
+
+        await buildTeardown(tmux).teardown(other.id);
+
+        expect(tmux.killSession).not.toHaveBeenCalled();
       });
 
       it("control: the same row launched by OpenRig is killed", async () => {
@@ -948,7 +968,7 @@ describe("RigTeardownOrchestrator", () => {
         expect((tmux.killSession as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0])).toEqual([NEW]);
         expect(result.sessionsKilled).toBe(1);
         expect(row(newerId)).toEqual({ status: "exited", intentionally_stopped: 1 });
-        expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 0 });
+        expect(row(olderId)).toEqual({ status: "detached", intentionally_stopped: 0 });
       });
     });
 

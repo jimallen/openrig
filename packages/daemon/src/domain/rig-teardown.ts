@@ -131,7 +131,7 @@ export class RigTeardownOrchestrator {
         // Keep that row's own token in the snapshot, just as the kill below
         // leaves the other owner's session alone.
         const refreshableSessions = archived.archived_at === null ? liveSessions : liveSessions.filter(
-          session => findOtherSessionOwner(this.db, session.sessionName, session.nodeId, { ignoreArchived: true }) === null,
+          session => findOtherSessionOwner(this.db, session.sessionName, session.nodeId, { countReleased: true, ignoreArchived: true }) === null,
         );
         await this.deps.resumeMetadataRefresher.refresh(refreshableSessions);
       }
@@ -168,7 +168,8 @@ export class RigTeardownOrchestrator {
       if (older && session.origin === "claimed" && handled === undefined) {
         // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it), but the seat has moved past this
         // row. End the ROW only, with no stop intent (nothing of ours stopped it), and leave its tmux session running.
-        this.deps.sessionRegistry.updateStatus(session.sessionId, "exited");
+        // `detached` (what `rig unclaim` writes), not `exited`, so the row still holds the name against another seat's kill.
+        this.deps.sessionRegistry.updateStatus(session.sessionId, "detached");
         (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim`);
         continue;
       }
@@ -177,7 +178,7 @@ export class RigTeardownOrchestrator {
       // An OLDER row's name is only a historical label: any other live owner of that name
       // (OF-54) means the tmux session is not this seat's to kill, whatever the rig's state.
       const ownedByAnotherRig = (older || archived.archived_at !== null) && findOtherSessionOwner(
-        this.db, session.sessionName, session.nodeId, { ignoreArchived: true },
+        this.db, session.sessionName, session.nodeId, { countReleased: true, ignoreArchived: true },
       ) !== null;
       let absent = ownedByAnotherRig || handled === "ended";
       if (!absent && this.deps.tmuxAdapter.probeSession) {

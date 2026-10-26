@@ -34,7 +34,13 @@ describe("findOtherSessionOwner: released and lost sessions", () => {
     ["a released session in an archived rig owns nothing when archived rigs are ignored", "detached", "claimed", true, false],
   ] as const)("%s", (_name, status, origin, archived, owned) => {
     const holderNode = holder(status, origin, archived);
-    const owner = findOtherSessionOwner(db, "dev-shared@team", asker(), { ignoreArchived: true });
+    const owner = findOtherSessionOwner(db, "dev-shared@team", asker(), { ignoreArchived: true, countReleased: true });
     expect(owner?.node_id ?? null).toBe(owned ? holderNode : null);
+  });
+
+  it("without countReleased (seat handover's question, 'is it managed?') a released session owns nothing", () => {
+    holder("detached", "claimed");
+    expect(findOtherSessionOwner(db, "dev-shared@team", asker(), { ignoreArchived: true })).toBeNull();
+    expect(findOtherSessionOwner(db, "dev-shared@team", asker(), { ignoreArchived: false })).toBeNull();
   });
 });

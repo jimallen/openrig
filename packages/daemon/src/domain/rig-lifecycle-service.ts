@@ -65,6 +65,8 @@ export type RemoveNodeResult =
       nodeId: string;
       logicalId: string;
       sessionsKilled: number;
+      /** OF-66: older adopted (claimed) sessions the removal left running. */
+      warnings?: string[];
       /** #174: the session name belonged to another node's seat (logical id @ rig), so it was kept. */
       sessionKeptFor?: string;
       fallbackDestination?: string;
@@ -393,7 +395,7 @@ export class RigLifecycleService {
     // addressed to it are the other seat's: removal neither kills it nor routes its work. Owners in
     // archived rigs don't count, since archiving keeps their stale bindings.
     const sessionOwner = node.latest_session_name
-      ? findOtherSessionOwner(this.db, node.latest_session_name, node.node_id, { ignoreArchived: true })
+      ? findOtherSessionOwner(this.db, node.latest_session_name, node.node_id, { countReleased: true, ignoreArchived: true })
       : null;
     // OF-66: the node's OLDER live rows (an older occupant that outlived a newer row) are its sessions too, and
     // deleting the node would orphan them in tmux. The rule is the one `rig down` and `rig seat stop` use.
@@ -425,6 +427,23 @@ export class RigLifecycleService {
     const keepSession = preserveDetachedClaimedSession || sessionOwner !== null;
 
     let sessionsKilled = 0;
+    // The older (already superseded) sessions go first: if one cannot be killed the removal is refused with the seat's
+    // working newest session still alive.
+    const olderDetached: string[] = [];
+    for (const name of olderSessionNames) {
+      const kill = await this.tmuxAdapter?.killSession(name);
+      if (kill && !kill.ok && kill.code !== "session_not_found") {
+        return {
+          ok: false,
+          code: "kill_failed",
+          error: `Failed to kill older session '${name}' of node '${node.logical_id}': ${kill.message}${olderDetached.length > 0 ? ` (older sessions ${olderDetached.map((n) => `'${n}'`).join(", ")} were already killed; the seat's current session is untouched; retry to finish removing it)` : ""}`,
+          fallbackDestination,
+          reroutedQitemIds: activeQitemIds,
+        };
+      }
+      if (!kill || kill.ok) sessionsKilled++;
+      olderDetached.push(name);
+    }
     if (node.latest_session_name && !keepSession) {
       const kill = await this.tmuxAdapter?.killSession(node.latest_session_name);
       if (kill && !kill.ok && kill.code !== "session_not_found") {
@@ -436,23 +455,11 @@ export class RigLifecycleService {
           reroutedQitemIds: activeQitemIds,
         };
       }
-      sessionsKilled = !kill || kill.ok ? 1 : 0;
+      sessionsKilled += !kill || kill.ok ? 1 : 0;
     }
-    const olderDetached: string[] = [];
-    for (const name of olderSessionNames) {
-      const kill = await this.tmuxAdapter?.killSession(name);
-      if (kill && !kill.ok && kill.code !== "session_not_found") {
-        return {
-          ok: false,
-          code: "kill_failed",
-          error: `Failed to kill older session '${name}' of node '${node.logical_id}': ${kill.message}${sessionsKilled > 0 || olderDetached.length > 0 ? ` (the node's other sessions were already killed; retry to finish removing it)` : ""}`,
-          fallbackDestination,
-          reroutedQitemIds: activeQitemIds,
-        };
-      }
-      if (!kill || kill.ok) sessionsKilled++;
-      olderDetached.push(name);
-    }
+    const adoptedOlderNames = (this.db.prepare(
+      "SELECT DISTINCT session_name FROM sessions WHERE node_id = ? AND id <> ? AND origin = 'claimed' AND status IN ('running', 'idle', 'unknown')",
+    ).all(node.node_id, node.latest_session_id ?? "") as Array<{ session_name: string }>).map((r) => r.session_name);
 
     const persisted: Array<{ type: "session.detached" | "node.removed"; seq: number; createdAt: string }> = [];
     const persistedOlder: Array<{ name: string; seq: number; createdAt: string }> = [];
@@ -523,6 +530,7 @@ export class RigLifecycleService {
       nodeId: node.node_id,
       logicalId: node.logical_id,
       sessionsKilled,
+      ...(adoptedOlderNames.length > 0 ? { warnings: adoptedOlderNames.map((n) => `Older session '${n}' was adopted (origin=claimed), not launched by OpenRig: the node was removed and its tmux session was left running. Release it with: rig unclaim`) } : {}),
       ...(sessionOwner ? { sessionKeptFor: `${sessionOwner.logical_id}@${sessionOwner.rig_name}` } : {}),
       ...(fallbackDestination !== undefined ? { fallbackDestination } : {}),
       reroutedQitemIds: activeQitemIds,
@@ -573,7 +581,7 @@ export class RigLifecycleService {
     const activeQitemIds = this.activeQitemIdsForSessionNames(
       nodes.flatMap((node) => [
         ...(node.latest_session_name
-          && !findOtherSessionOwner(this.db, node.latest_session_name, node.id, { ignoreArchived: true, excludeNodeIds: ids })
+          && !findOtherSessionOwner(this.db, node.latest_session_name, node.id, { countReleased: true, ignoreArchived: true, excludeNodeIds: ids })
           ? [node.latest_session_name] : []),
         // OF-66: removing the member also kills its older live sessions, so their work is checked too.
         ...this.olderSessionNamesToKill({ node_id: node.id, latest_session_id: node.latest_session_id, latest_session_name: node.latest_session_name }, ids),
@@ -777,7 +785,7 @@ export class RigLifecycleService {
     const names: string[] = [];
     for (const row of rows) {
       if (row.origin === "claimed" || row.session_name === node.latest_session_name || names.includes(row.session_name)) continue;
-      if (findOtherSessionOwner(this.db, row.session_name, node.node_id, { ignoreArchived: true, excludeNodeIds }) !== null) continue;
+      if (findOtherSessionOwner(this.db, row.session_name, node.node_id, { countReleased: true, ignoreArchived: true, excludeNodeIds }) !== null) continue;
       names.push(row.session_name);
     }
     return names;

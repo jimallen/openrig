@@ -90,6 +90,25 @@ describe("node removal ends every live row of the node (OF-66)", () => {
     expect(killed()).toEqual([NEW]);
   });
 
+  it("leaving an older adopted session running is reported as a warning (N4)", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl", { olderOrigin: "claimed" });
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(result.ok && result.warnings?.join(" ")).toContain(`Older session '${OLD}' was adopted`);
+    expect(result.ok && result.warnings?.join(" ")).toContain("rig unclaim");
+  });
+
+  it("control: no warning when no older session was adopted", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl");
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(result.ok && result.warnings).toBeUndefined();
+  });
+
   it("does not kill an older session whose name another live node owns", async () => {
     const rig = rigRepo.createRig("team");
     seat(rig, "dev.impl");
@@ -158,6 +177,8 @@ describe("node removal ends every live row of the node (OF-66)", () => {
     expect(!result.ok && result.error).toContain(`older session '${OLD}'`);
     expect(!result.ok && result.error).toContain("boom");
     expect(rigRepo.getRig(rig.id)!.nodes).toHaveLength(1);
+    // N2: the older sessions go first, so the failed removal leaves the seat's working newest session alive.
+    expect(killed()).not.toContain(NEW);
   });
 
   it("queue work addressed to the older session blocks the removal without a fallback, and nothing is killed", async () => {
