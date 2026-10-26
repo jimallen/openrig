@@ -31,6 +31,9 @@ ${ids.map((id) => `      - id: ${id}
 `).join("")}edges: []
 `;
 
+// A stand-in for the daemon's OPENRIG_AUTH_BEARER_TOKEN; not a secret.
+const OPERATOR_TOKEN = "of102-operator-token";
+
 describe("OF-102 rig spec-source route", () => {
   let root: string;
   let db: Database.Database;
@@ -45,10 +48,10 @@ describe("OF-102 rig spec-source route", () => {
     const eventBus = new EventBus(db);
     app = new Hono();
     app.use("*", async (c, next) => { c.set("rigRepo" as never, rigRepo as never); c.set("eventBus" as never, eventBus as never); await next(); });
-    app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes);
+    app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: OPERATOR_TOKEN }));
     rigId = rigRepo.createRig("team").id;
-    const impl = rigRepo.addNode(rigId, "dev.impl", { runtime: "claude-code" });
-    rigRepo.addNode(rigId, "dev.qa", { runtime: "claude-code" });
+    const impl = rigRepo.addNode(rigId, "dev.impl", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
+    rigRepo.addNode(rigId, "dev.qa", { runtime: "claude-code", agentRef: "local:agents/qa", profile: "default" });
     // A seat with a saved startup context and a session: the rows the command must leave alone.
     db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', ?, '[]', 'claude-code')")
       .run(impl.id, JSON.stringify([{ path: "guidance/role.md", absolutePath: "/rel/a/agents/impl/guidance/role.md" }]));
@@ -58,8 +61,9 @@ describe("OF-102 rig spec-source route", () => {
 
   const write = (rel: string, text: string) => { const p = path.join(root, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); return p; };
   const GOOD = SPEC("team", { dev: ["impl", "qa"] });
-  const set = (body: Record<string, unknown>, id = rigId, headers: Record<string, string> = {}) =>
-    app.request(`/api/rigs/${id}/spec-source`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  /** POST as the operator (bearer token) unless `headers` says otherwise. */
+  const set = (body: Record<string, unknown>, id = rigId, headers: Record<string, string> = { authorization: `Bearer ${OPERATOR_TOKEN}` }, target: Hono = app) =>
+    target.request(`/api/rigs/${id}/spec-source`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
   const show = (id = rigId) => app.request(`/api/rigs/${id}/spec-source`);
   const events = () => (db.prepare("SELECT payload FROM events WHERE type = 'rig.spec_source_changed' ORDER BY seq").all() as Array<{ payload: string }>).map((r) => JSON.parse(r.payload));
   const seatState = () => JSON.stringify(["nodes", "sessions", "node_startup_context", "bindings"].map((t) => db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()));
@@ -79,7 +83,13 @@ describe("OF-102 rig spec-source route", () => {
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ ok: true, from: null, to: typed, changed: true, resolvedPath: real });
     expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
-    expect(events()).toEqual([{ type: "rig.spec_source_changed", rigId, from: null, to: typed, operator: "jim@ops" }]);
+    // The audit says the write passed the operator token, and that the operator name was only claimed (no session header).
+    expect(events()).toEqual([{ type: "rig.spec_source_changed", rigId, from: null, to: typed, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "operator_bearer" }]);
+    // The message names what changes for the operator: plain --fresh launches and --fresh restores now re-read the spec.
+    expect(String(body["effect"])).toContain("a plain `rig seat launch --fresh`");
+    expect(String(body["effect"])).toContain("restore");
+    expect(String(body["effect"])).toContain("--startup-from stored");
+    expect(body["warnings"]).toEqual([]);
     // Never changes any node, session or startup context by itself.
     expect(seatState()).toBe(before);
   });
@@ -116,8 +126,108 @@ describe("OF-102 rig spec-source route", () => {
 
   it("the operator is the transport session when there is one, else the named operator", async () => {
     const a = write("a/rig.yaml", GOOD);
-    await set({ path: a, operator: "claimed@ops" }, rigId, { "x-openrig-session": "dev-impl@team" });
-    expect(events()[0]!.operator).toBe("dev-impl@team");
+    await set({ path: a, operator: "claimed@ops" }, rigId, { authorization: `Bearer ${OPERATOR_TOKEN}`, "x-openrig-session": "dev-impl@team" });
+    expect(events()[0]).toMatchObject({ operator: "dev-impl@team", operatorIdentity: "transport:v1", authorizedBy: "operator_bearer" });
+  });
+
+  // F1 of the review of 27ffebc8: what is recorded decides which startup files, culture and local: personas a later
+  // plain --fresh launch or --fresh restore delivers into a live seat, so only the operator bearer may record it.
+  describe("the write needs the operator bearer token", () => {
+    const nothingRecorded = () => { expect(rigRepo.getRigSpecSource(rigId)).toBeNull(); expect(events()).toEqual([]); };
+
+    it("a spec a seat wrote itself under the temp folder: no token is refused, nothing is recorded", async () => {
+      // The reviewer's scenario: a managed seat, naming its own session, points its rig at a spec it wrote.
+      const evil = write("seat-wrote-this/rig.yaml", GOOD);
+      expect(evil.startsWith(os.tmpdir()) || evil.startsWith(fs.realpathSync(os.tmpdir()))).toBe(true);
+      const res = await set({ path: evil, operator: "dev-impl@team" }, rigId, { "x-openrig-session": "dev-impl@team" });
+      expect(res.status).toBe(401);
+      nothingRecorded();
+    });
+
+    it("a wrong token is refused, even beside a seat session header", async () => {
+      const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }, rigId, { authorization: "Bearer not-the-token", "x-openrig-session": "dev-impl@team" });
+      expect(res.status).toBe(401);
+      nothingRecorded();
+    });
+
+    it("a token sent in a form that is not 'Bearer <token>' is refused", async () => {
+      const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }, rigId, { authorization: OPERATOR_TOKEN });
+      expect(res.status).toBe(401);
+      nothingRecorded();
+    });
+
+    it("the operator token is accepted", async () => {
+      const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" });
+      expect(res.status).toBe(200);
+      expect(events()).toHaveLength(1);
+    });
+
+    it("a daemon with no operator token configured refuses the write too, whatever the caller sends", async () => {
+      const open = new Hono();
+      open.use("*", async (c, next) => { c.set("rigRepo" as never, rigRepo as never); c.set("eventBus" as never, new EventBus(db) as never); await next(); });
+      open.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: null }));
+      for (const headers of [{}, { authorization: `Bearer ${OPERATOR_TOKEN}` }, { "x-openrig-session": "dev-impl@team" }]) {
+        const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }, rigId, headers, open);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ ok: false, code: "operator_token_not_configured" });
+      }
+      nothingRecorded();
+    });
+
+    it("reading stays open: show needs no token", async () => {
+      expect((await show()).status).toBe(200);
+    });
+  });
+
+  describe("a project rig is named after its project folder, not its spec", () => {
+    const projectSpec = (extra = "project_rig: true\n") => `version: "0.2"\nname: jims-team\n${extra}pods:\n  - id: dev\n    label: dev\n    members:\n      - id: impl\n        agent_ref: "local:agents/impl"\n        profile: default\n        runtime: claude-code\n        cwd: .\n    edges: []\nedges: []\n`;
+    const projectRig = (name: string, cwd: string) => {
+      const id = rigRepo.createRig(name).id;
+      rigRepo.addNode(id, "dev.impl", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default", cwd });
+      return id;
+    };
+
+    it("a project rig spec repoints a project rig whose seat folder is <project>/.workspaces/<seat>", async () => {
+      const id = projectRig("myproj", path.join(root, "myproj", ".workspaces", "dev-impl"));
+      const spec = write("p/rig.yaml", projectSpec());
+      const res = await set({ path: spec, operator: "jim@ops" }, id);
+      expect(res.status).toBe(200);
+      expect(rigRepo.getRigSpecSource(id)).toBe(spec);
+    });
+
+    it("the same spec is refused for a rig that is not that project's (the seat folder names another project)", async () => {
+      const id = projectRig("myproj", path.join(root, "otherproj", ".workspaces", "dev-impl"));
+      const res = await set({ path: write("p/rig.yaml", projectSpec()), operator: "jim@ops" }, id);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: "spec_mismatch" });
+      expect(rigRepo.getRigSpecSource(id)).toBeNull();
+    });
+
+    it("a spec that is not a project rig spec is still refused on its name", async () => {
+      const id = projectRig("myproj", path.join(root, "myproj", ".workspaces", "dev-impl"));
+      const res = await set({ path: write("p/rig.yaml", projectSpec("")), operator: "jim@ops" }, id);
+      expect(res.status).toBe(409);
+      expect(rigRepo.getRigSpecSource(id)).toBeNull();
+    });
+  });
+
+  describe("warnings: seats a fresh launch from this spec would refuse", () => {
+    it("a seat whose agent_ref differs is named; the spec is still recorded", async () => {
+      const a = write("a/rig.yaml", GOOD.replace('"local:agents/qa"', '"local:agents/qa-v2"'));
+      const body = await (await set({ path: a, operator: "jim@ops" })).json() as { ok: boolean; warnings: string[] };
+      expect(body.ok).toBe(true);
+      expect(body.warnings).toHaveLength(1);
+      expect(body.warnings[0]).toContain("dev.qa");
+      expect(body.warnings[0]).toContain("agent_ref local:agents/qa-v2 (seat: local:agents/qa)");
+      expect(rigRepo.getRigSpecSource(rigId)).toBe(a);
+    });
+
+    it("a seat whose runtime or profile differs is named with each difference", async () => {
+      const a = write("a/rig.yaml", GOOD.replace("runtime: claude-code", "runtime: codex").replace("profile: default", "profile: other"));
+      const body = await (await set({ path: a, operator: "jim@ops" })).json() as { warnings: string[] };
+      expect(body.warnings.join("\n")).toContain("runtime codex (seat: claude-code)");
+      expect(body.warnings.join("\n")).toContain("profile other (seat: default)");
+    });
   });
 
   describe("refusals leave the record and the audit trail untouched", () => {

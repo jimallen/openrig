@@ -729,7 +729,7 @@ export function createApp(deps: AppDeps): Hono {
   // Slice 24 — per-rig CMUX workspace launcher.
   app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
   app.route("/api/rigs/:rigId/nodes", nodesRoutes);
-  app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes);
+  app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: deps.missionControlBearerToken ?? null }));
   app.route("/api/sessions", sessionAdminRoutes);
   app.route("/api/adapters", adaptersRoutes);
   app.route("/api/events", eventsRoute);

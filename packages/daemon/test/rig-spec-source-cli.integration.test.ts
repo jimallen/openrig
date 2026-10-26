@@ -15,6 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
 const rigName = "spec-source-stub";
 const seat = `dev-impl@${rigName}`;
+const TOKEN = "of102-e2e-operator-token";
 
 const RIG = (agentRef: string) => `version: "0.2"
 name: ${rigName}
@@ -58,6 +59,9 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
   beforeAll(async () => {
     ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
     root = realpathSync(ctx.scaffold.root);
+    // The operator bearer: the daemon reads it from its environment at start, the CLI from the same variable. (The
+    // harness scrubs it by default; this is a stand-in for the operator's own, not a secret.)
+    ctx.scaffold.env.OPENRIG_AUTH_BEARER_TOKEN = TOKEN;
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
     for (const release of ["A", "B", "C"]) {
       mkdirSync(join(root, "rel", release, "agents", "impl", "guidance"), { recursive: true });
@@ -105,6 +109,18 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     expect(agents()).toContain("ROLE-A");
   }, 300_000);
 
+  it("without the operator token (what a seat has) the same command is refused, and nothing is recorded", async () => {
+    const noToken = { ...ctx.daemon!.readEnv, OPENRIG_AUTH_BEARER_TOKEN: undefined };
+    const none = await runRig(["spec-source", "set", rigName, typedSpec, "--operator", "dev-impl@x"], noToken, rigBin, 60_000);
+    expect(none.code).not.toBe(0);
+    expect(`${none.stderr}${none.stdout}`).toContain("Unauthorized");
+    const wrong = await runRig(["spec-source", "set", rigName, typedSpec, "--operator", "dev-impl@x", "--bearer", "not-the-token"], noToken, rigBin, 60_000);
+    expect(wrong.code).not.toBe(0);
+    expect(`${wrong.stderr}${wrong.stdout}`).toContain("Unauthorized");
+    expect(recordedSource()).toBeNull();
+    expect(withDb((d) => d.prepare("SELECT count(*) AS n FROM events WHERE type = 'rig.spec_source_changed'").get() as { n: number }).n).toBe(0);
+  }, 60_000);
+
   it("a spec for another rig is refused, and nothing is recorded", async () => {
     mkdirSync(join(root, "other"));
     writeFileSync(join(root, "other", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`).replace(`name: ${rigName}`, "name: not-this-rig"));
@@ -122,7 +138,8 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     expect(recordedSource()).toBe(typedSpec);                       // as typed: the link, not the real file
     expect(seatRows()).toBe(before);                                // set alone changed no node, session or saved context
     const event = withDb((d) => d.prepare("SELECT payload FROM events WHERE type = 'rig.spec_source_changed'").all() as Array<{ payload: string }>);
-    expect(event.map((e) => JSON.parse(e.payload))).toMatchObject([{ from: null, to: typedSpec, operator: "jim@ops" }]);
+    expect(event.map((e) => JSON.parse(e.payload))).toMatchObject([{ from: null, to: typedSpec, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "operator_bearer" }]);
+    expect(JSON.parse(set.stdout).effect).toContain("a plain `rig seat launch --fresh`");
     expect(JSON.parse((await rig(["spec-source", "show", rigName, "--json"])).stdout)).toMatchObject({ specSource: typedSpec, resolvedPath: join(root, "specs", "team", "rig.yaml") });
 
     const fresh = await launch("spec");

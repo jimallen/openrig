@@ -63,29 +63,45 @@ export function specSourceCommand(depsOverride?: StatusDeps): Command {
     .argument("<rig>", "Rig name or ID")
     .argument("<path>", "Rig spec file (rig.yaml); a link keeps its spelling")
     .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
+    .option("--bearer <token>", "Operator bearer token (or set OPENRIG_AUTH_BEARER_TOKEN; the daemon must have been started with it).")
     .option("--json", "JSON output")
-    .description("Record or replace the rig's spec source (audited; changes no seat, session or saved startup context)")
+    .description("Record or replace the rig's spec source (operator bearer required; audited; changes no seat, session or saved startup context)")
     .addHelpText("after", `
-The spec must exist, parse as a rig spec, be named like this rig, and declare every seat the rig has.
-The path is recorded as typed (relative paths are made absolute against this directory, but links
-are not followed), so a library link keeps leading to whatever release it points at later.
+The spec must exist, parse as a rig spec, be named like this rig (or be a project rig spec for it), and
+declare every seat the rig has. The path is recorded as typed (relative paths are made absolute against this
+directory, but links are not followed), so a library link keeps leading to whatever release it points at later.
+
+This decides what the rig's seats are started from, so it needs the operator bearer token: the daemon must have
+been started with OPENRIG_AUTH_BEARER_TOKEN set, and you pass the same token with --bearer or that variable.
+
+AFTER THIS, startup files come from the spec by default: a plain "rig seat launch <seat> --fresh" and every
+seat listed with --fresh in a restore or "rig up --existing" re-read the spec instead of replaying the saved
+files (not only --startup-from spec). Pass --startup-from stored to replay the saved files.
 
 Examples:
   rig spec-source set kernel ~/.openrig/shared-docs/rigs/kernel/rig.yaml --operator me@kernel
   rig seat launch operator.agent@kernel --fresh --stop --startup-from spec --reason "re-read spec"`)
-    .action(async (rig: string, path: string, opts: { operator?: string; json?: boolean }) => {
+    .action(async (rig: string, path: string, opts: { operator?: string; bearer?: string; json?: boolean }) => {
       const deps = getDeps();
       const status = await getDaemonStatus(deps.lifecycleDeps);
       if (!daemonStatusGuard(status)) return;
       const client = deps.clientFactory(getDaemonUrl(status));
       const rigId = await resolveRig(client, rig, opts.json);
       if (!rigId) return;
+      const bearer = opts.bearer ?? process.env.OPENRIG_AUTH_BEARER_TOKEN;
       const res = await client.post<Record<string, unknown>>(`/api/rigs/${encodeURIComponent(rigId)}/spec-source`, {
         path: nodePath.resolve(path), ...(opts.operator ? { operator: opts.operator } : {}),
-      });
+      }, { headers: bearer ? { Authorization: `Bearer ${bearer}` } : {} });
       if (opts.json) {
         console.log(JSON.stringify(res.data, null, 2));
         if (res.status >= 400) process.exitCode = res.status >= 500 ? 2 : 1;
+        return;
+      }
+      if (res.status === 401 || res.status === 403) {
+        console.error(res.status === 403
+          ? "This daemon has no operator bearer token, so it will not record a spec source. Start it with OPENRIG_AUTH_BEARER_TOKEN set."
+          : "Unauthorized. Pass the operator bearer token with --bearer <token> or export OPENRIG_AUTH_BEARER_TOKEN, then re-run.");
+        process.exitCode = 1;
         return;
       }
       if (res.status >= 400) {
@@ -98,6 +114,8 @@ Examples:
       if (res.data["changed"] === false) { console.log(`Spec source already ${res.data["to"]}; nothing changed.`); return; }
       console.log(`Spec source of ${res.data["rigName"]}: ${res.data["from"] ?? "(none)"} -> ${res.data["to"]}`);
       console.log(String(res.data["effect"]));
+      const warnings = res.data["warnings"];
+      if (Array.isArray(warnings)) for (const w of warnings) console.error(`Warning: ${String(w)}`);
     });
 
   return cmd;

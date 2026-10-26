@@ -208,7 +208,7 @@ export function readDeclaredMcpServer(input: {
  * nothing about who wrote the file (security re-check of aa8b6af1). What makes an operator-named spec safe to
  * act on is the file's place and ownership (untrustedPathProblem above), never this comparison.
  */
-function declaresRig(raw: Record<string, unknown>, rigName: string, seatCwd: string | null): boolean {
+export function declaresRig(raw: Record<string, unknown>, rigName: string, seatCwd: string | null): boolean {
   if (raw["name"] === rigName) return true;
   if (raw["project_rig"] !== true || !seatCwd) return false;
   const workspaces = nodePath.dirname(seatCwd);
