@@ -63,16 +63,20 @@ export function specSourceCommand(depsOverride?: StatusDeps): Command {
     .argument("<rig>", "Rig name or ID")
     .argument("<path>", "Rig spec file (rig.yaml); a link keeps its spelling")
     .option("--operator <address>", "Operator recorded on the audit event when no session identity is present")
-    .option("--bearer <token>", "Operator bearer token (or set OPENRIG_AUTH_BEARER_TOKEN; the daemon must have been started with it).")
+    .option("--bearer <token>", "Operator bearer token, needed only when the daemon was started with one (or set OPENRIG_AUTH_BEARER_TOKEN).")
     .option("--json", "JSON output")
-    .description("Record or replace the rig's spec source (operator bearer required; audited; changes no seat, session or saved startup context)")
+    .description("Record or replace the rig's spec source (trusted spec folders only; audited; changes no seat, session or saved startup context)")
     .addHelpText("after", `
 The spec must exist, parse as a rig spec, be named like this rig (or be a project rig spec for it), and
 declare every seat the rig has. The path is recorded as typed (relative paths are made absolute against this
 directory, but links are not followed), so a library link keeps leading to whatever release it points at later.
 
-This decides what the rig's seats are started from, so it needs the operator bearer token: the daemon must have
-been started with OPENRIG_AUTH_BEARER_TOKEN set, and you pass the same token with --bearer or that variable.
+This decides what the rig's seats are started from, so the spec file must be one a seat could not have written:
+it has to lie (by its real location, links followed) under <OPENRIG_HOME>/shared-docs/rigs, the released copies
+(~/.agents-release) or the spec library, be a regular file with one link, and sit on a path owned by you or root
+and not writable by group or others. A spec in a temp folder, a git work tree or a seat's folder is refused.
+If the daemon was started with OPENRIG_AUTH_BEARER_TOKEN, the call must also carry that token (--bearer or the
+same variable); a daemon without one is gated by the folder rule alone.
 
 AFTER THIS, startup files come from the spec by default: a plain "rig seat launch <seat> --fresh" and every
 seat listed with --fresh in a restore or "rig up --existing" re-read the spec instead of replaying the saved
@@ -97,10 +101,8 @@ Examples:
         if (res.status >= 400) process.exitCode = res.status >= 500 ? 2 : 1;
         return;
       }
-      if (res.status === 401 || res.status === 403) {
-        console.error(res.status === 403
-          ? "This daemon has no operator bearer token, so it will not record a spec source. Start it with OPENRIG_AUTH_BEARER_TOKEN set."
-          : "Unauthorized. Pass the operator bearer token with --bearer <token> or export OPENRIG_AUTH_BEARER_TOKEN, then re-run.");
+      if (res.status === 401) {
+        console.error("Unauthorized. This daemon requires its operator bearer token: pass --bearer <token> or export OPENRIG_AUTH_BEARER_TOKEN, then re-run.");
         process.exitCode = 1;
         return;
       }

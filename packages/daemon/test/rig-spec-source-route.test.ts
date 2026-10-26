@@ -15,6 +15,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { rigSpecSourceRoutes } from "../src/routes/rig-spec-source.js";
+import { mcpSpecRoots, type PathJudgeIo } from "../src/domain/codex-mcp-servers.js";
 
 const SPEC = (name: string, members: Record<string, string[]>) => `version: "0.2"
 name: ${name}
@@ -34,21 +35,50 @@ ${ids.map((id) => `      - id: ${id}
 // A stand-in for the daemon's OPENRIG_AUTH_BEARER_TOKEN; not a secret.
 const OPERATOR_TOKEN = "of102-operator-token";
 
+/** The real file system, judged without owner, temp-folder and writable-bit rules (test fixtures live in the temp folder). */
+const PERMISSIVE_IO: PathJudgeIo = {
+  lstat: (p) => fs.lstatSync(p), stat: (p) => fs.statSync(p), realpath: (p) => fs.realpathSync(p),
+  uid: () => undefined, tempRoots: () => [],
+};
+
 describe("OF-102 rig spec-source route", () => {
   let root: string;
   let db: Database.Database;
   let rigRepo: RigRepository;
   let app: Hono;
   let rigId: string;
+  let eventBus: EventBus;
+  let trusted: string;
+  let home: string;
+  let sharedDocsRigs: string;
+
+  /** The route, mounted as server.ts mounts it: the MCP trust roots (released copies under <home>, the library) reach it
+   *  as `mcpTrust`; the shared-docs rigs folder is the route's own. */
+  function mount(opts: { bearerToken: string | null; io?: PathJudgeIo }): Hono {
+    const a = new Hono();
+    a.use("*", async (c, next) => {
+      c.set("rigRepo" as never, rigRepo as never);
+      c.set("eventBus" as never, eventBus as never);
+      c.set("mcpTrust" as never, { specRoots: () => mcpSpecRoots({ home, specLibraryRoots: [trusted] }), ...(opts.io ? { io: opts.io } : {}) } as never);
+      await next();
+    });
+    a.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: opts.bearerToken, sharedDocsRigsRoot: sharedDocsRigs }));
+    return a;
+  }
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of102-")));
     db = createFullTestDb();
     rigRepo = new RigRepository(db);
-    const eventBus = new EventBus(db);
-    app = new Hono();
-    app.use("*", async (c, next) => { c.set("rigRepo" as never, rigRepo as never); c.set("eventBus" as never, eventBus as never); await next(); });
-    app.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: OPERATOR_TOKEN }));
+    eventBus = new EventBus(db);
+    trusted = path.join(root, "trusted");           // stands in for the spec library root
+    home = path.join(root, "home");                 // stands in for the daemon's home (released copies: <home>/.agents-release)
+    sharedDocsRigs = path.join(root, "openrig-home", "shared-docs", "rigs");
+    for (const dir of [trusted, home, sharedDocsRigs]) fs.mkdirSync(dir, { recursive: true });
+    // The fixtures live under the temp folder, which the real judge refuses, so the main app judges with the real
+    // file system but no owner, temp-folder or writable-bit rules; the trusted-root anchoring, one-link and
+    // real-location rules are the real ones. `realJudge` (below) is the production judge, used where a row needs it.
+    app = mount({ bearerToken: OPERATOR_TOKEN, io: PERMISSIVE_IO });
     rigId = rigRepo.createRig("team").id;
     const impl = rigRepo.addNode(rigId, "dev.impl", { runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" });
     rigRepo.addNode(rigId, "dev.qa", { runtime: "claude-code", agentRef: "local:agents/qa", profile: "default" });
@@ -59,7 +89,8 @@ describe("OF-102 rig spec-source route", () => {
   });
   afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
-  const write = (rel: string, text: string) => { const p = path.join(root, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); return p; };
+  /** Write a spec file under the trusted library root (or under `base`). */
+  const write = (rel: string, text: string, base = trusted) => { const p = path.join(base, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); return p; };
   const GOOD = SPEC("team", { dev: ["impl", "qa"] });
   /** POST as the operator (bearer token) unless `headers` says otherwise. */
   const set = (body: Record<string, unknown>, id = rigId, headers: Record<string, string> = { authorization: `Bearer ${OPERATOR_TOKEN}` }, target: Hono = app) =>
@@ -135,11 +166,8 @@ describe("OF-102 rig spec-source route", () => {
   describe("the write needs the operator bearer token", () => {
     const nothingRecorded = () => { expect(rigRepo.getRigSpecSource(rigId)).toBeNull(); expect(events()).toEqual([]); };
 
-    it("a spec a seat wrote itself under the temp folder: no token is refused, nothing is recorded", async () => {
-      // The reviewer's scenario: a managed seat, naming its own session, points its rig at a spec it wrote.
-      const evil = write("seat-wrote-this/rig.yaml", GOOD);
-      expect(evil.startsWith(os.tmpdir()) || evil.startsWith(fs.realpathSync(os.tmpdir()))).toBe(true);
-      const res = await set({ path: evil, operator: "dev-impl@team" }, rigId, { "x-openrig-session": "dev-impl@team" });
+    it("a seat session header with no token is refused when the daemon has a token, nothing is recorded", async () => {
+      const res = await set({ path: write("a/rig.yaml", GOOD), operator: "dev-impl@team" }, rigId, { "x-openrig-session": "dev-impl@team" });
       expect(res.status).toBe(401);
       nothingRecorded();
     });
@@ -162,20 +190,167 @@ describe("OF-102 rig spec-source route", () => {
       expect(events()).toHaveLength(1);
     });
 
-    it("a daemon with no operator token configured refuses the write too, whatever the caller sends", async () => {
-      const open = new Hono();
-      open.use("*", async (c, next) => { c.set("rigRepo" as never, rigRepo as never); c.set("eventBus" as never, new EventBus(db) as never); await next(); });
-      open.route("/api/rigs/:rigId/spec-source", rigSpecSourceRoutes({ bearerToken: null }));
-      for (const headers of [{}, { authorization: `Bearer ${OPERATOR_TOKEN}` }, { "x-openrig-session": "dev-impl@team" }]) {
-        const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }, rigId, headers, open);
-        expect(res.status).toBe(403);
-        expect(await res.json()).toMatchObject({ ok: false, code: "operator_token_not_configured" });
-      }
-      nothingRecorded();
+    it("a daemon with no token configured is gated by the trusted-root rule alone: a trusted spec is accepted without a token", async () => {
+      const open = mount({ bearerToken: null, io: PERMISSIVE_IO });
+      const a = write("a/rig.yaml", GOOD);
+      const res = await set({ path: a, operator: "jim@ops" }, rigId, {}, open);
+      expect(res.status).toBe(200);
+      expect(events()).toMatchObject([{ to: a, authorizedBy: "trusted_spec_root" }]);
     });
 
     it("reading stays open: show needs no token", async () => {
       expect((await show()).status).toBe(200);
+    });
+  });
+
+  // Jim, 2026-10-26, "Trusted folders instead": the spec must be one a seat could not have written. The anchor is the
+  // spec's REAL location under a trusted root; the same check `rig seat set-mcp --spec` applies, plus this route's own
+  // root <OPENRIG_HOME>/shared-docs/rigs. Whoever asks, a spec outside the roots is refused.
+  describe("the spec must lie under a trusted spec root", () => {
+    const nothingRecorded = () => { expect(rigRepo.getRigSpecSource(rigId)).toBeNull(); expect(events()).toEqual([]); };
+    const KERNEL = (name: string) => `version: "0.2"
+name: ${name}
+permission_policy: builtin:yolo
+summary: >
+  A kernel-shaped spec: absolute path: agent refs, startup actions, an mcp_servers block and an improve pod.
+culture_file: culture/CULTURE.md
+pods:
+  - id: advisor
+    label: Advisor
+    members:
+      - id: lead
+        agent_ref: "path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/rigs/launch/kernel/agents/advisor/lead"
+        runtime: claude-code
+        profile: default
+        cwd: "/Users/jima/.workspaces/advisor-lead"
+  - id: operator
+    label: Operator
+    members:
+      - id: human
+        agent_ref: "builtin:terminal"
+        runtime: terminal
+        profile: none
+        cwd: "/Users/jima/.workspaces/operator-human"
+        startup:
+          actions:
+            - type: send_text
+              value: rig tui
+              phase: after_ready
+              applies_on: [fresh_start]
+              idempotent: true
+      - id: agent
+        agent_ref: "path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/rigs/launch/kernel/agents/operator/agent"
+        runtime: codex
+        profile: default
+        cwd: "/Users/jima/.workspaces/operator-agent"
+        mcp_servers:
+          lsp:
+            command: /Users/jima/.local/opt/mcpls-0.8.0/bin/mcpls
+            args: ["--config", "/Users/jima/.agents-release/current/rigs/kernel/mcpls.toml"]
+            startup_timeout_sec: 30
+            tool_timeout_sec: 60
+            enabled_tools: [get_definition, get_references]
+    edges:
+      - kind: collaborates_with
+        from: agent
+        to: human
+  - id: queue
+    label: Queue
+    members:
+      - id: worker
+        agent_ref: "path:/opt/homebrew/lib/node_modules/@openrig/cli/daemon/specs/rigs/launch/kernel/agents/queue/worker"
+        runtime: codex
+        profile: default
+        cwd: "/Users/jima/.workspaces/queue-worker"
+  - id: improve
+    label: Improve
+    members:
+      - id: steward
+        agent_ref: "path:/Users/jima/.agents-release/current/agents/rsi-steward"
+        runtime: claude-code
+        profile: default
+        permission_policy: builtin:yolo
+        cwd: "/Users/jima/.workspaces/improve-steward"
+edges:
+  - kind: delegates_to
+    from: advisor.lead
+    to: operator.agent
+`;
+    const kernelRig = () => {
+      const id = rigRepo.createRig("kernel").id;
+      for (const logicalId of ["advisor.lead", "operator.human", "operator.agent", "queue.worker", "improve.steward"]) rigRepo.addNode(id, logicalId, { runtime: "claude-code" });
+      return id;
+    };
+
+    it("the reviewer's scenario: a spec a seat wrote itself under the temp folder is refused with no token configured, whoever asks", async () => {
+      const evil = write("seat-wrote-this/rig.yaml", GOOD, root);          // outside every trusted root
+      const production = mount({ bearerToken: null });                     // no token; the production judge
+      const res = await set({ path: evil, operator: "dev-impl@team" }, rigId, { "x-openrig-session": "dev-impl@team" }, production);
+      expect(res.status).toBe(409);
+      const body = await res.json() as { code: string; message: string };
+      expect(body.code).toBe("spec_untrusted");
+      expect(body.message).toContain("not under a trusted spec root");
+      nothingRecorded();
+    });
+
+    it("the operator token does not make an untrusted spec acceptable", async () => {
+      const evil = write("seat-wrote-this/rig.yaml", GOOD, root);
+      const res = await set({ path: evil, operator: "jim@ops" });          // main app: token configured, valid token sent
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+      nothingRecorded();
+    });
+
+    it("a link under a trusted root that points outside it is refused: the real location decides", async () => {
+      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of102-outside-")));
+      try {
+        fs.writeFileSync(path.join(outside, "rig.yaml"), GOOD);
+        fs.symlinkSync(outside, path.join(trusted, "escape"));
+        const res = await set({ path: path.join(trusted, "escape", "rig.yaml"), operator: "jim@ops" });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+        nothingRecorded();
+      } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+    });
+
+    it("a kernel-shaped spec under <OPENRIG_HOME>/shared-docs/rigs is accepted, recorded as typed", async () => {
+      const id = kernelRig();
+      const typed = write("kernel/rig.yaml", KERNEL("kernel"), sharedDocsRigs);
+      const res = await set({ path: typed, operator: "jim@ops" }, id);
+      expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+      expect(rigRepo.getRigSpecSource(id)).toBe(typed);
+    });
+
+    it("a release-root spec reached through ~/.agents-release/current is accepted, recorded as typed (the link stays a link)", async () => {
+      write("rel1/rigs/team/rig.yaml", GOOD, path.join(home, ".agents-release"));
+      fs.symlinkSync(path.join(home, ".agents-release", "rel1"), path.join(home, ".agents-release", "current"));
+      const typed = path.join(home, ".agents-release", "current", "rigs", "team", "rig.yaml");
+      const res = await set({ path: typed, operator: "jim@ops" });
+      expect(res.status).toBe(200);
+      expect(rigRepo.getRigSpecSource(rigId)).toBe(typed);
+    });
+
+    // The ownership and protection rules of the existing check, shown with the production judge's own rules switched
+    // on (the owner rule and the writable-bits rule) over a file system that presents the bits: group- or
+    // other-writable folders and files are refused; the same tree without those bits is accepted.
+    describe("the existing protection rules apply", () => {
+      const presenting = (bits: { dir?: number; file?: number }): PathJudgeIo => {
+        const present = (p: string, st: fs.Stats): fs.Stats => {
+          const mode = (st.mode & ~0o022) | (p === trusted ? (bits.dir ?? 0) : p.endsWith("rig.yaml") ? (bits.file ?? 0) : 0);
+          return Object.create(st, { mode: { value: mode } }) as fs.Stats;
+        };
+        return { ...PERMISSIVE_IO, uid: () => process.getuid?.(), lstat: (p) => present(p, fs.lstatSync(p)), stat: (p) => present(p, fs.statSync(p)) };
+      };
+      it("control: the tree without writable bits is accepted", async () => {
+        const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: presenting({}) }));
+        expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+      });
+      it.each([["the spec's folder is writable by group", { dir: 0o020 }], ["the spec file is writable by others", { file: 0o002 }]] as const)("%s: refused", async (_name, bits) => {
+        const res = await set({ path: write("a/rig.yaml", GOOD), operator: "jim@ops" }, rigId, undefined, mount({ bearerToken: null, io: presenting(bits) }));
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: "spec_untrusted" });
+        nothingRecorded();
+      });
     });
   });
 

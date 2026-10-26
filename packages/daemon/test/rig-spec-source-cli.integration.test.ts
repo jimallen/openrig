@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -7,18 +8,22 @@ import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-en
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
 
 // OF-102, typed through the shipped CLI against a scratch daemon (own OPENRIG_HOME, ephemeral port, private tmux
-// socket; never port 7433 or ~/.openrig), on the stub runtime. The situation it repairs: a rig created before OpenRig
-// recorded a spec source, whose seat's saved startup files are pinned to an old release's real folder while the
-// library link has moved on. `rig spec-source set` must make `rig seat launch --fresh --startup-from spec` rewrite
-// the seat's saved files through the link as typed, and a later move of the link must be followed on replay.
+// socket; never port 7433 or ~/.openrig), on the stub runtime, with NO operator bearer configured (as the live
+// daemon). The situation it repairs: a rig created before OpenRig recorded a spec source, whose seat's saved startup
+// files are pinned to an old release's real folder while the release link has moved on. `rig spec-source set` must
+// make `rig seat launch --fresh --startup-from spec` rewrite the seat's saved files through the link as typed, and a
+// later move of the link must be followed on replay.
+//
+// The daemon judges the spec file with the production trust check (under a trusted root by its real location, owned
+// and protected along its whole chain, not in a temp folder), so the scaffold is built under the runner's home
+// folder, not /tmp, with the folders this test creates at mode 0755 whatever the umask.
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
 const rigName = "spec-source-stub";
 const seat = `dev-impl@${rigName}`;
-const TOKEN = "of102-e2e-operator-token";
 
-const RIG = (agentRef: string) => `version: "0.2"
-name: ${rigName}
+const RIG = (agentRef: string, name = rigName) => `version: "0.2"
+name: ${name}
 pods:
   - id: dev
     label: Dev
@@ -40,10 +45,11 @@ startup:
 `;
 
 describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typed link on a fresh launch", () => {
-  const ctx: { scaffold?: HermeticScaffold; daemon?: ScenarioDaemon } = {};
+  const ctx: { scaffold?: HermeticScaffold; daemon?: ScenarioDaemon; base?: string } = {};
   let root = "";
   let project = "";
   let typedSpec = "";
+  let realSpec = "";
   const rig = (args: string[], t = 180_000) => runRig(args, ctx.daemon!.readEnv, rigBin, t);
   const withDb = <T>(fn: (db: Database.Database) => T): T => { const d = new Database(join(ctx.scaffold!.stateDir, "scenario.db")); try { return fn(d); } finally { d.close(); } };
   const storedRole = () => withDb((d) => {
@@ -51,29 +57,35 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     return (JSON.parse(row.resolved_files_json) as Array<{ path: string; absolutePath: string }>).find((f) => f.path === "guidance/role.md")!.absolutePath;
   });
   const recordedSource = () => withDb((d) => (d.prepare("SELECT spec_source_path AS p FROM rigs WHERE name = ?").get(rigName) as { p: string | null }).p);
+  const changeEvents = () => withDb((d) => (d.prepare("SELECT payload FROM events WHERE type = 'rig.spec_source_changed'").all() as Array<{ payload: string }>).map((e) => JSON.parse(e.payload)));
   const seatRows = () => withDb((d) => JSON.stringify(["nodes", "sessions", "node_startup_context"].map((t) => d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all())));
   const agents = () => readFileSync(join(project, "AGENTS.md"), "utf-8");
   const retarget = (release: string) => { unlinkSync(join(root, "current")); symlinkSync(join(root, "rel", release), join(root, "current")); };
   const launch = (from: "spec" | "stored") => rig(["seat", "launch", seat, "--fresh", "--stop", "--startup-from", from, "--reason", `of102 ${from}`, "--json"]);
+  /** A folder this test makes, at 0755 whatever the umask: the trust check refuses group- or other-writable folders. */
+  const dir = (...parts: string[]) => { const p = join(...parts); mkdirSync(p, { recursive: true }); for (let d = p; d.length > root.length; d = dirname(d)) chmodSync(d, 0o755); return p; };
+  const file = (p: string, text: string) => { writeFileSync(p, text); chmodSync(p, 0o644); };
 
   beforeAll(async () => {
-    ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
+    // The scaffold root normally sits in the temp folder, which the trust check refuses; build it under the home folder.
+    ctx.base = mkdtempSync(join(homedir(), ".of102-e2e-"));
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = ctx.base;
+    try { ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } }); }
+    finally { if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp; }
     root = realpathSync(ctx.scaffold.root);
-    // The operator bearer: the daemon reads it from its environment at start, the CLI from the same variable. (The
-    // harness scrubs it by default; this is a stand-in for the operator's own, not a secret.)
-    ctx.scaffold.env.OPENRIG_AUTH_BEARER_TOKEN = TOKEN;
+    for (const d of [root, ctx.scaffold.openrigHome]) chmodSync(d, 0o755);
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
     for (const release of ["A", "B", "C"]) {
-      mkdirSync(join(root, "rel", release, "agents", "impl", "guidance"), { recursive: true });
-      writeFileSync(join(root, "rel", release, "agents", "impl", "agent.yaml"), AGENT);
-      writeFileSync(join(root, "rel", release, "agents", "impl", "guidance", "role.md"), `ROLE-${release}\n`);
+      dir(root, "rel", release, "agents", "impl", "guidance");
+      file(join(root, "rel", release, "agents", "impl", "agent.yaml"), AGENT);
+      file(join(root, "rel", release, "agents", "impl", "guidance", "role.md"), `ROLE-${release}\n`);
     }
     // The rig was created while `current` pointed at A.
     symlinkSync(join(root, "rel", "A"), join(root, "current"));
-    mkdirSync(join(root, "orig"));
-    writeFileSync(join(root, "orig", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
-    project = join(root, "project");
-    mkdirSync(project);
+    dir(root, "orig");
+    file(join(root, "orig", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
+    project = dir(root, "project");
     const up = await rig(["up", join(root, "orig", "rig.yaml"), "--cwd", project, "--json", "--yes"]);
     expect(up.code, JSON.stringify(up)).toBe(0);
     // This rig predates the recorded spec source, and its saved files are pinned to A's real folder, as OpenRig stored
@@ -86,15 +98,17 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
       d.prepare("UPDATE node_startup_context SET resolved_files_json = ?").run(JSON.stringify(files));
       d.prepare("UPDATE rigs SET spec_source_path = NULL WHERE name = ?").run(rigName);
     });
-    // The spec the operator will name lives behind a library link and reaches the agent through `current`.
-    mkdirSync(join(root, "specs", "team"), { recursive: true });
-    writeFileSync(join(root, "specs", "team", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
-    mkdirSync(join(root, "lib"));
-    symlinkSync(join(root, "specs", "team"), join(root, "lib", "team"));
-    typedSpec = join(root, "lib", "team", "rig.yaml");
+    // The spec the operator names lives in the daemon's own <OPENRIG_HOME>/shared-docs/rigs, behind a folder link that
+    // stays inside that root, and reaches the agent through `current`.
+    const rigs = dir(ctx.scaffold.openrigHome, "shared-docs", "rigs");
+    const realDir = dir(rigs, "team-v1");
+    realSpec = join(realDir, "rig.yaml");
+    file(realSpec, RIG(`path:${join(root, "current", "agents", "impl")}`));
+    symlinkSync(realDir, join(rigs, "team"));
+    typedSpec = join(rigs, "team", "rig.yaml");
   }, 200_000);
   afterAll(async () => {
-    try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (root) rmSync(join(root, "rel"), { recursive: true, force: true }); }
+    try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (ctx.base) rmSync(ctx.base, { recursive: true, force: true }); }
   }, 60_000);
 
   it("before `set`: the rig records nothing, so a spec launch can only replay the saved files, still pinned to A's real folder", async () => {
@@ -109,22 +123,20 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     expect(agents()).toContain("ROLE-A");
   }, 300_000);
 
-  it("without the operator token (what a seat has) the same command is refused, and nothing is recorded", async () => {
-    const noToken = { ...ctx.daemon!.readEnv, OPENRIG_AUTH_BEARER_TOKEN: undefined };
-    const none = await runRig(["spec-source", "set", rigName, typedSpec, "--operator", "dev-impl@x"], noToken, rigBin, 60_000);
-    expect(none.code).not.toBe(0);
-    expect(`${none.stderr}${none.stdout}`).toContain("Unauthorized");
-    const wrong = await runRig(["spec-source", "set", rigName, typedSpec, "--operator", "dev-impl@x", "--bearer", "not-the-token"], noToken, rigBin, 60_000);
-    expect(wrong.code).not.toBe(0);
-    expect(`${wrong.stderr}${wrong.stdout}`).toContain("Unauthorized");
+  it("a spec outside the trusted folders (one a seat could have written) is refused, and nothing is recorded", async () => {
+    const outside = dir(root, "seat-wrote-this");
+    file(join(outside, "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`));
+    const res = await rig(["spec-source", "set", rigName, join(outside, "rig.yaml"), "--operator", "dev-impl@x"]);
+    expect(res.code).not.toBe(0);
+    expect(`${res.stderr}${res.stdout}`).toContain("not under a trusted spec root");
     expect(recordedSource()).toBeNull();
-    expect(withDb((d) => d.prepare("SELECT count(*) AS n FROM events WHERE type = 'rig.spec_source_changed'").get() as { n: number }).n).toBe(0);
+    expect(changeEvents()).toEqual([]);
   }, 60_000);
 
   it("a spec for another rig is refused, and nothing is recorded", async () => {
-    mkdirSync(join(root, "other"));
-    writeFileSync(join(root, "other", "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`).replace(`name: ${rigName}`, "name: not-this-rig"));
-    const res = await rig(["spec-source", "set", rigName, join(root, "other", "rig.yaml"), "--operator", "jim@ops"]);
+    const other = dir(ctx.scaffold!.openrigHome, "shared-docs", "rigs", "other");
+    file(join(other, "rig.yaml"), RIG(`path:${join(root, "current", "agents", "impl")}`, "not-this-rig"));
+    const res = await rig(["spec-source", "set", rigName, join(other, "rig.yaml"), "--operator", "jim@ops"]);
     expect(res.code).not.toBe(0);
     expect(`${res.stderr}${res.stdout}`).toContain("the spec is named 'not-this-rig'");
     expect(recordedSource()).toBeNull();
@@ -135,12 +147,11 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     const set = await rig(["spec-source", "set", rigName, typedSpec, "--operator", "jim@ops", "--json"]);
     expect(set.code, JSON.stringify(set)).toBe(0);
     expect(JSON.parse(set.stdout)).toMatchObject({ ok: true, from: null, to: typedSpec, changed: true });
-    expect(recordedSource()).toBe(typedSpec);                       // as typed: the link, not the real file
-    expect(seatRows()).toBe(before);                                // set alone changed no node, session or saved context
-    const event = withDb((d) => d.prepare("SELECT payload FROM events WHERE type = 'rig.spec_source_changed'").all() as Array<{ payload: string }>);
-    expect(event.map((e) => JSON.parse(e.payload))).toMatchObject([{ from: null, to: typedSpec, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "operator_bearer" }]);
     expect(JSON.parse(set.stdout).effect).toContain("a plain `rig seat launch --fresh`");
-    expect(JSON.parse((await rig(["spec-source", "show", rigName, "--json"])).stdout)).toMatchObject({ specSource: typedSpec, resolvedPath: join(root, "specs", "team", "rig.yaml") });
+    expect(recordedSource()).toBe(typedSpec);                       // as typed: the folder link, not the real file
+    expect(seatRows()).toBe(before);                                // set alone changed no node, session or saved context
+    expect(changeEvents()).toMatchObject([{ from: null, to: typedSpec, operator: "jim@ops", operatorIdentity: "claimed:v1", authorizedBy: "trusted_spec_root" }]);
+    expect(JSON.parse((await rig(["spec-source", "show", rigName, "--json"])).stdout)).toMatchObject({ specSource: typedSpec, resolvedPath: realSpec });
 
     const fresh = await launch("spec");
     expect(fresh.code, JSON.stringify(fresh)).toBe(0);

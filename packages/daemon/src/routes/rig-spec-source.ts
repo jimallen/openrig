@@ -1,28 +1,30 @@
 // OF-102: read and record a rig's spec source (rigs.spec_source_path). Mounted at /api/rigs/:rigId/spec-source.
 //
-// Authority: reading is open. WRITING needs the daemon's operator bearer (OPENRIG_AUTH_BEARER_TOKEN, the same one the
-// rig-mode and mission-control writes use). What is recorded here decides which startup files, culture and `local:`
-// personas a later plain `--fresh` launch or `--fresh` restore delivers into a live seat, so a seat must not be able
-// to point its rig at a spec it wrote itself. Unlike rig-mode, a daemon with NO bearer configured refuses the write
-// instead of passing it through: pass-through would leave this open to every local caller. A seat's own session
-// header proves nothing here (a caller can simply omit it); the token is the boundary.
-import { Hono, type MiddlewareHandler } from "hono";
+// What is recorded here decides which startup files, culture and `local:` personas a later plain `--fresh` launch or
+// `--fresh` restore delivers into a live seat, so a seat must not be able to point its rig at a spec it wrote itself.
+// Two gates on the write (reading is open):
+//  1. The spec file must be one a seat could not have written: it must lie, by its REAL location, under a trusted
+//     spec root and pass the ownership and placement rules `rig seat set-mcp --spec` applies (Jim, 2026-10-26,
+//     "Trusted folders instead"). The roots are the MCP ones (released copies, spec library) plus this route's own,
+//     <OPENRIG_HOME>/shared-docs/rigs, taken from the daemon's home and never from the caller. No other caller's
+//     roots change. Whoever asks, a spec outside the roots is refused.
+//  2. When the daemon was started with an operator bearer (OPENRIG_AUTH_BEARER_TOKEN) the call must carry it, as the
+//     rig-mode writes do. With none configured the trusted-root rule alone gates the write.
+import nodePath from "node:path";
+import { Hono } from "hono";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import type { EventBus } from "../domain/event-bus.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import { RigSpecSourceService, type SpecSourceRefusalCode } from "../domain/rig-spec-source-service.js";
+import type { SeatLifecycleDeps } from "../domain/seat-lifecycle-service.js";
+import { getOpenRigHome } from "../openrig-compat.js";
 import { transportSenderSession } from "./require-sender-identity.js";
 
 export interface RigSpecSourceRoutesOpts {
-  /** The operator bearer token the daemon was started with; null when none is configured (writes are then refused). */
+  /** The operator bearer token the daemon was started with; null/absent when none is configured. */
   bearerToken?: string | null;
-}
-
-function service(c: { get: (key: string) => unknown }): RigSpecSourceService {
-  return new RigSpecSourceService({
-    rigRepo: c.get("rigRepo" as never) as RigRepository,
-    eventBus: c.get("eventBus" as never) as EventBus,
-  });
+  /** This route's own trusted root. Default: <OPENRIG_HOME>/shared-docs/rigs of this daemon. */
+  sharedDocsRigsRoot?: string;
 }
 
 function statusOf(code: SpecSourceRefusalCode): 400 | 404 | 409 {
@@ -33,17 +35,17 @@ function statusOf(code: SpecSourceRefusalCode): 400 | 404 | 409 {
 
 export function rigSpecSourceRoutes(opts?: RigSpecSourceRoutesOpts): Hono {
   const router = new Hono();
-  const bearer = opts?.bearerToken ?? null;
-  const checkToken = authBearerTokenMiddleware({ expectedToken: bearer });
-  const requireOperator: MiddlewareHandler = async (c, next) => {
-    if (bearer === null) {
-      return c.json({
-        ok: false, code: "operator_token_not_configured",
-        message: "This daemon has no operator bearer token, so it will not record a rig's spec source.",
-        what_to_do: "Start the daemon with OPENRIG_AUTH_BEARER_TOKEN set, then run the command with that token (--bearer or the same env var).",
-      }, 403);
-    }
-    return checkToken(c, next);
+  const requireOperator = authBearerTokenMiddleware({ expectedToken: opts?.bearerToken ?? null });
+  const sharedDocsRigsRoot = () => opts?.sharedDocsRigsRoot ?? nodePath.join(getOpenRigHome(), "shared-docs", "rigs");
+
+  const service = (c: { get: (key: string) => unknown }) => {
+    // The MCP trust roots (released copies, spec library) and their judging io, read here, never widened for them.
+    const mcpTrust = c.get("mcpTrust" as never) as SeatLifecycleDeps["mcpTrust"] | undefined;
+    return new RigSpecSourceService({
+      rigRepo: c.get("rigRepo" as never) as RigRepository,
+      eventBus: c.get("eventBus" as never) as EventBus,
+      trust: { roots: () => [...(mcpTrust?.specRoots?.() ?? []), sharedDocsRigsRoot()], ...(mcpTrust?.io ? { io: mcpTrust.io } : {}) },
+    });
   };
 
   router.get("/", (c) => {
@@ -60,6 +62,7 @@ export function rigSpecSourceRoutes(opts?: RigSpecSourceRoutesOpts): Hono {
       path: typeof body["path"] === "string" ? body["path"] : "",
       operator,
       operatorIdentity: transport ? "transport:v1" : "claimed:v1",
+      authorizedBy: opts?.bearerToken ? "operator_bearer" : "trusted_spec_root",
     });
     return c.json(result, result.ok ? 200 : statusOf(result.code));
   });

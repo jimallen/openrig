@@ -9,10 +9,11 @@ import { reanchorShippedSpecPath } from "./builtin-startup-files.js";
 import { RigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema } from "./rigspec-schema.js";
 import { declaresRig } from "./seat-mcp-servers.js";
+import { specFileTrustProblem, type PathJudgeIo } from "./codex-mcp-servers.js";
 
 export type SpecSourceRefusalCode =
   | "rig_not_found" | "missing_operator" | "missing_path" | "path_not_absolute"
-  | "spec_unreadable" | "spec_invalid" | "spec_mismatch";
+  | "spec_untrusted" | "spec_unreadable" | "spec_invalid" | "spec_mismatch";
 
 export type SpecSourceShow = {
   ok: true; rigId: string; rigName: string;
@@ -72,7 +73,12 @@ function loadSpec(specSource: string): Loaded {
 }
 
 export class RigSpecSourceService {
-  constructor(private readonly deps: { rigRepo: RigRepository; eventBus: EventBus }) {
+  constructor(private readonly deps: {
+    rigRepo: RigRepository;
+    eventBus: EventBus;
+    /** Where a recorded spec may live. A spec outside these roots is refused whoever asks (Jim, 2026-10-26). */
+    trust: { roots: () => string[]; io?: PathJudgeIo };
+  }) {
     if (deps.rigRepo.db !== deps.eventBus.db) throw new Error("RigSpecSourceService: eventBus must share the rig repository's db handle");
   }
 
@@ -92,7 +98,7 @@ export class RigSpecSourceService {
     return { ok: true, rigId, rigName: rig.rig.name, specSource, resolvedPath, unavailable };
   }
 
-  set(input: { rigId: string; path: string; operator: string; operatorIdentity: OperatorIdentity }): SpecSourceSetResult {
+  set(input: { rigId: string; path: string; operator: string; operatorIdentity: OperatorIdentity; authorizedBy: "operator_bearer" | "trusted_spec_root" }): SpecSourceSetResult {
     const operator = input.operator.trim();
     if (!operator) return { ok: false, code: "missing_operator", message: "An operator is required so the change can be audited." };
     const typed = input.path.trim();
@@ -103,6 +109,17 @@ export class RigSpecSourceService {
 
     // Lexical clean-up only: a link spelling stays a link (OF-32/OF-99).
     const specSource = nodePath.resolve(typed);
+
+    // What is recorded decides which startup files, culture and local: personas a later plain --fresh launch or restore
+    // delivers into a live seat, so the file must be one a seat could not have written: under a trusted spec root by its
+    // REAL location, a regular file with one link, not in a temp folder, git tree or seat folder, and owned and
+    // protected along its whole chain (the check `rig seat set-mcp --spec` applies). Unreadable paths fall through
+    // to the read below, which reports them.
+    const seatFolders = [...new Set(rig.nodes.map((n) => n.cwd).filter((c): c is string => !!c))];
+    for (const seatCwd of seatFolders.length > 0 ? seatFolders : [null]) {
+      const problem = specFileTrustProblem(specSource, this.deps.trust.roots(), seatCwd, this.deps.trust.io);
+      if (problem) return { ok: false, code: "spec_untrusted", message: `${problem}. Record a reviewed spec from a trusted spec root instead.` };
+    }
     const loaded = loadSpec(specSource);
     if (!loaded.ok) return { ok: false, code: loaded.code, message: loaded.message };
 
@@ -138,7 +155,7 @@ export class RigSpecSourceService {
     }
     const persisted = eventBus.db.transaction(() => {
       rigRepo.setRigSpecSource(input.rigId, specSource);
-      return eventBus.persistWithinTransaction({ type: "rig.spec_source_changed", rigId: input.rigId, from, to: specSource, operator, operatorIdentity: input.operatorIdentity, authorizedBy: "operator_bearer" });
+      return eventBus.persistWithinTransaction({ type: "rig.spec_source_changed", rigId: input.rigId, from, to: specSource, operator, operatorIdentity: input.operatorIdentity, authorizedBy: input.authorizedBy });
     })();
     eventBus.notifySubscribers(persisted);
     return { ok: true, rigId: input.rigId, rigName: rig.rig.name, from, to: specSource, changed: true, resolvedPath: loaded.resolvedPath, effect: EFFECT, warnings };
