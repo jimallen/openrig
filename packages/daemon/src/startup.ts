@@ -701,7 +701,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     runnerEntryPath: nodePath.resolve(import.meta.dirname, "./adapters/pda-runner.js"),
     tokenFile: () => resolvePdaTokenFile(process.env, daemonHome),
     usageFactsEnabled: pdaUsageFactsEnabled,
-    bindingConflicts: (binding, nodeId) => rigRepo.findPdaLaunchConflicts(binding, nodeId),
+    reserveBinding: (binding, nodeId) => rigRepo.reservePdaLaunch(binding, nodeId),
   });
   const pdaResume = new PdaResumeAdapter(pdaAdapter);
   // Services infrastructure (RigEnv) — created early so restore/bootstrap can use it

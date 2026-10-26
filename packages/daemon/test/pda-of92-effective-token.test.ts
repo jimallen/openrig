@@ -96,7 +96,7 @@ function pda() {
     } as unknown as PdaRuntimeAdapterDeps["tmux"],
     fsOps: { readFile: (p) => fs.readFileSync(p, "utf8"), exists: (p) => fs.existsSync(p), lstat: (p) => { try { return { isFile: fs.lstatSync(p).isFile() }; } catch { return null; } } },
     stateRoot, runnerEntryPath: "/opt/openrig/dist/adapters/pda-runner.js", tokenFile: () => tokenFile,
-    bindingConflicts: (binding, nodeId) => repo.findPdaLaunchConflicts(binding, nodeId),
+    reserveBinding: (binding, nodeId) => repo.reservePdaLaunch(binding, nodeId),
     newLaunchId: () => "launch-1", sleep: async () => {}, pollMs: 1, launchWaitMs: 5,
     // The runner attaches: the sidecar it would write for this launch, naming the agent the command was typed for.
     now: () => new Date("2026-10-26T09:00:00.000Z"),

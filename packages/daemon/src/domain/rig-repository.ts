@@ -17,6 +17,7 @@ import type {
   SnapshotData,
   SessionSourceSpec,
 } from "./types.js";
+import { PdaLaunchReservations, type PdaLaunchReservation } from "./pda-launch-reservations.js";
 import { PDA_RESUME_TYPE, parsePdaResumeToken, parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
 
 /**
@@ -206,6 +207,8 @@ export interface PdaBindingHolder {
   /** Set when the seat is a holder because its RESUME TOKEN names the agent (what a restore of that seat would
    *  launch with), not because its saved binding does. The two can differ: an operator may set a token. */
   viaResumeToken?: true;
+  /** Set when the seat is a holder only because a launch of it holds a claim on the agent right now (OF-96). */
+  viaLaunch?: true;
 }
 
 /** The ONE refusal text for "this pda agent is already taken", used by instantiation, unarchive and the rollback of a
@@ -216,6 +219,9 @@ export function describePdaHolder(binding: PdaBinding, holder: PdaBindingHolder)
   }
   if (holder.viaResumeToken) {
     return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}" (that seat's resume token names it); one pda agent is driven by one seat`;
+  }
+  if (holder.viaLaunch) {
+    return `pda agent "${binding.agent}" at ${binding.baseUrl} is being taken by seat "${holder.logicalId}" in rig "${holder.rigName}" (its launch is under way); one pda agent is driven by one seat`;
   }
   return `pda agent "${binding.agent}" at ${binding.baseUrl} is already driven by seat "${holder.logicalId}" in rig "${holder.rigName}"; one pda agent is driven by one seat`;
 }
@@ -234,8 +240,11 @@ export class RigRepository {
    *  protection arms in the same act that creates the rig. Wired at startup;
    *  optional so repo construction stays dependency-free. */
   onRigCreated?: (rig: Rig) => void;
-  constructor(db: Database.Database) {
+  /** OF-96: pda agents claimed by launches in flight (see reservePdaLaunch). */
+  private readonly pdaReservations: PdaLaunchReservations;
+  constructor(db: Database.Database, opts?: { pdaReservationNow?: () => number }) {
     this.db = db;
+    this.pdaReservations = new PdaLaunchReservations(opts?.pdaReservationNow);
   }
 
   createRig(name: string, installRoot?: string): Rig {
@@ -586,20 +595,67 @@ export class RigRepository {
     const own = this.db.prepare(
       "SELECT n.rig_id AS rig_id, n.logical_id AS logical_id, r.name AS rig_name FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?",
     ).get(nodeId) as { rig_id: string; logical_id: string; rig_name: string } | undefined;
-    const byBinding = this.findPdaBindingHolders(binding, { excludeNodeId: nodeId })
-      .filter((holder) => !(holder.unreadable !== undefined && own !== undefined && holder.rigId === own.rig_id));
-    // OF-92: a restore launches the agent the seat's RESUME TOKEN names, which an operator can set to another seat's
-    // agent. Every other seat whose token names this agent drives it (or will on its next restore) too.
-    const seen = new Set(byBinding.map((holder) => holder.nodeId));
-    const byToken = this.findPdaResumeTokenHolders(binding, { excludeNodeId: nodeId }).filter((holder) => !seen.has(holder.nodeId));
+    const holders = this.findPdaDrivers(binding, { excludeNodeId: nodeId, ...(own ? { ignoreDamagedInRigId: own.rig_id } : {}) });
     const who = own ? `seat "${own.logical_id}" in rig "${own.rig_name}" cannot take it: ` : "";
-    return [...byBinding, ...byToken].map((holder) => who + describePdaHolder(binding, holder));
+    return holders.map((holder) => who + describePdaHolder(binding, holder));
+  }
+
+  /** OF-96: take the agent for ONE launch, atomically with the check. Synchronous from the check to the claim, so two
+   *  launches that both found the agent free cannot both pass: the second sees the first's claim. The claim lasts for the
+   *  launch (`failed()` frees it at once) and, after a launch that succeeded (`launched()`), until the seat's resume token
+   *  names the agent in the database (the token is then the holder) or `PDA_RESERVATION_LEASE_MS` has passed. In memory
+   *  by design: only this process launches, and a crash must not leave a claim behind. */
+  reservePdaLaunch(binding: PdaBinding, nodeId: string): { ok: true; reservation: PdaLaunchReservation } | { ok: false; conflicts: string[] } {
+    const conflicts = this.findPdaLaunchConflicts(binding, nodeId);
+    if (conflicts.length > 0) return { ok: false, conflicts };
+    return { ok: true, reservation: this.pdaReservations.claim(binding, nodeId) };
+  }
+
+  /** Every seat that drives, or may drive, this pda agent: those whose saved binding names it (or is damaged), those whose
+   *  resume token names it (OF-92), and any seat whose launch holds a claim on it right now (OF-96). A seat appears once.
+   *  `excludeRigIds` are rigs about to be archived by the same operation; `excludeNodeId` is the seat being re-checked. */
+  findPdaDrivers(binding: PdaBinding, opts?: { excludeRigIds?: readonly string[]; excludeNodeId?: string; ignoreDamagedInRigId?: string }): PdaBindingHolder[] {
+    const seen = new Set<string>();
+    const out: PdaBindingHolder[] = [];
+    const add = (holders: PdaBindingHolder[]) => {
+      for (const holder of holders) {
+        if (seen.has(holder.nodeId)) continue;
+        seen.add(holder.nodeId);
+        out.push(holder);
+      }
+    };
+    // A damaged sibling in the asking seat's OWN rig is dropped before the union, so the same seat can still count
+    // through its resume token (the order the OF-92 launch check always had).
+    add(this.findPdaBindingHolders(binding, opts).filter((holder) => !(holder.unreadable !== undefined && holder.rigId === opts?.ignoreDamagedInRigId)));
+    add(this.findPdaResumeTokenHolders(binding, opts));
+    add(this.findPdaReservationHolders(binding, opts));
+    return out;
+  }
+
+  /** Seats whose launch holds a claim on this agent and that no stored row names yet. A claim whose launch succeeded
+   *  is dropped as soon as the database names its seat (token holder) or its lease ran out. */
+  private findPdaReservationHolders(binding: PdaBinding, opts?: { excludeRigIds?: readonly string[]; excludeNodeId?: string }): PdaBindingHolder[] {
+    const claimed = this.pdaReservations.claimants(binding);
+    if (claimed.length === 0) return [];
+    const tokenHolderIds = new Set(this.findPdaResumeTokenHolders(binding).map((holder) => holder.nodeId));
+    const excludedRigs = new Set(opts?.excludeRigIds ?? []);
+    const holders: PdaBindingHolder[] = [];
+    for (const claim of claimed) {
+      if (claim.launched && tokenHolderIds.has(claim.nodeId)) { this.pdaReservations.settle(binding, claim.nodeId); continue; }
+      if (claim.nodeId === opts?.excludeNodeId) continue;
+      const row = this.db.prepare(
+        "SELECT n.id AS node_id, n.rig_id AS rig_id, r.name AS rig_name, n.logical_id AS logical_id FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ? AND r.archived_at IS NULL",
+      ).get(claim.nodeId) as { node_id: string; rig_id: string; rig_name: string; logical_id: string } | undefined;
+      if (!row || excludedRigs.has(row.rig_id)) continue;
+      holders.push({ nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id, viaLaunch: true });
+    }
+    return holders;
   }
 
   /** Every seat, in a rig that is not archived, whose current pda resume token names this agent at this base URL.
    *  The token of a seat is that of its most recent session that has one (the row a restore resumes from). A token that
    *  does not parse, or a token of another resume type, names no pda agent and holds nothing. */
-  findPdaResumeTokenHolders(binding: PdaBinding, opts?: { excludeNodeId?: string }): PdaBindingHolder[] {
+  findPdaResumeTokenHolders(binding: PdaBinding, opts?: { excludeRigIds?: readonly string[]; excludeNodeId?: string }): PdaBindingHolder[] {
     const rows = this.db.prepare(
       "SELECT s.node_id AS node_id, s.resume_token AS resume_token, n.rig_id AS rig_id, r.name AS rig_name, n.logical_id AS logical_id " +
       "FROM sessions s JOIN nodes n ON n.id = s.node_id JOIN rigs r ON r.id = n.rig_id " +
@@ -609,8 +665,9 @@ export class RigRepository {
     const latest = new Map<string, (typeof rows)[number]>();
     for (const row of rows) if (!latest.has(row.node_id)) latest.set(row.node_id, row);
     const holders: PdaBindingHolder[] = [];
+    const excludedRigs = new Set(opts?.excludeRigIds ?? []);
     for (const row of latest.values()) {
-      if (row.node_id === opts?.excludeNodeId) continue;
+      if (row.node_id === opts?.excludeNodeId || excludedRigs.has(row.rig_id)) continue;
       const named = parsePdaResumeToken(row.resume_token.trim());
       if (named && named.agent === binding.agent && named.baseUrl === binding.baseUrl) {
         holders.push({ nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id, viaResumeToken: true });
@@ -652,7 +709,7 @@ export class RigRepository {
     for (const row of own) {
       const binding = readSavedPdaBinding(row.pda_binding).value;
       if (binding === undefined) continue;
-      for (const holder of this.findPdaBindingHolders(binding, { excludeRigIds: [rigId] })) {
+      for (const holder of this.findPdaDrivers(binding, { excludeRigIds: [rigId] })) {
         conflicts.push({ binding, seat: row.logical_id, holder });
       }
     }
