@@ -52,7 +52,9 @@ describe("Demo fixture validation", () => {
     const uiMember = infraPod?.members.find((member) => member.id === "ui");
     const startupAction = uiMember?.startup?.actions?.[0];
 
-    expect(startupAction?.value).toBe("npm run dev -- --host 127.0.0.1");
+    // OF-69: the seat's cwd is the demo folder (no path traversal in the fixture), so the command first changes into the
+    // repo's UI package; what this row pins is still the dev server's command and its 127.0.0.1 binding.
+    expect(startupAction?.value).toBe('cd "$(git rev-parse --show-toplevel)/packages/ui" && npm run dev -- --host 127.0.0.1');
   });
 
   // Test 4: Demo rig-root inference resolves correctly
