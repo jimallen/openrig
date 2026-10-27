@@ -1233,6 +1233,9 @@ export class TmuxAdapter {
     // A scratch variable a crashed daemon (or a failed unset) left behind holds a credential candidate outside every key list
     // the restore manages: remove it before writing a new one.
     await this.sweepEscapeProbeKeys(sessionTarget);
+    // From here the scratch variable is this probe's own and live: a concurrent probe or restore on the same session
+    // must not sweep it away (OF-149). It leaves the set only after its unset has been tried.
+    this.liveEscapeProbeKeys.add(key);
     try {
       for (const candidate of candidates) {
         await this.deliverSecretEnv(sessionTarget, { [key]: candidate });
@@ -1243,7 +1246,11 @@ export class TmuxAdapter {
     } catch {
       throw new Error("Cannot tell how this tmux prints '$' in the session environment.");
     } finally {
-      await this.unsetEscapeProbeKey(sessionTarget, key);
+      try {
+        await this.unsetEscapeProbeKey(sessionTarget, key);
+      } finally {
+        this.liveEscapeProbeKeys.delete(key);
+      }
     }
     if (confirmed.length !== 1) throw new Error("Cannot tell how this tmux prints '$' in the session environment.");
     return confirmed[0]!;
@@ -1259,7 +1266,11 @@ export class TmuxAdapter {
     }
   }
 
-  /** Remove every `OPENRIG_TMUX_ESCAPE_PROBE_*` variable from one session: what a failed unset or a crash mid-probe left. Reads
+  /** Scratch variables of probes that are running now in this process. The sweep leaves them alone: it removes what a failed
+   *  unset or a crash left, not what another probe on the same session is still reading back. */
+  private readonly liveEscapeProbeKeys = new Set<string>();
+
+  /** Remove every `OPENRIG_TMUX_ESCAPE_PROBE_*` variable from one session that no live probe of this adapter owns: what a failed unset or a crash mid-probe left. Reads
    *  names only (no value is kept or logged); best-effort, because the session may be gone. */
   private async sweepEscapeProbeKeys(sessionTarget: string): Promise<void> {
     let listing: string;
@@ -1270,7 +1281,7 @@ export class TmuxAdapter {
     }
     for (const line of listing.split(/\r?\n/)) {
       const name = line.startsWith("-") ? line.slice(1) : line.slice(0, Math.max(line.indexOf("="), 0));
-      if (name.startsWith(ESCAPE_PROBE_PREFIX) && /^[A-Za-z0-9_]+$/.test(name)) await this.unsetEscapeProbeKey(sessionTarget, name);
+      if (name.startsWith(ESCAPE_PROBE_PREFIX) && /^[A-Za-z0-9_]+$/.test(name) && !this.liveEscapeProbeKeys.has(name)) await this.unsetEscapeProbeKey(sessionTarget, name);
     }
   }
 
