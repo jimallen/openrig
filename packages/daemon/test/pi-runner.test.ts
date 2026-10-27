@@ -252,8 +252,12 @@ describe("RunnerCore identity + sidecar", () => {
     expect(f.rpc).toContainEqual({ type: "get_entries", since: "entry-42", id: "pi-runner-catch-up" });
   });
 
-  it("events carrying entry ids advance the sidecar cursor", () => {
-    const { core, sidecars } = readyCore();
+  it("OMP: events carrying entry ids advance the sidecar cursor (Pi takes its cursor only from get_entries)", () => {
+    const f = fakeIo();
+    const core = new RunnerCore(f.io, { sessionName: SESSION, nodeId: "node-1", launchId: "launch-77" }, { runtime: "omp" });
+    const { sidecars } = f;
+    core.start();
+    core.handlePiLine(JSON.stringify({ type: "response", id: "pi-runner-get-state", data: { sessionFile: SESSION_FILE, sessionId: "0197a2f0" } }));
     core.handlePiLine(JSON.stringify({ type: "agent_start", entryId: "entry-7" }));
     expect(sidecars.at(-1)!.lastEntryId).toBe("entry-7");
   });
@@ -468,24 +472,30 @@ describe("Pi 1.3.0 persisted transcript (real session shapes, scrubbed)", () => 
 });
 
 // A Pi 1.3.0 `pi --mode rpc` stdout stream for one prompt with a tool turn (thinking + bash call, the real turn 11
-// of the qualification session) and a stop turn (the real turn 17). NOT a recorded stdout capture: producing one
-// needs a model call, and the qualification run's stdout was never kept (see above). The event ORDER and FIELDS
-// are taken from Pi 1.3.0's own type definitions (dist/core/agent-session.d.ts AgentSessionEvent, agent-core
-// AgentEvent) and the message bodies are the scrubbed persisted turns above; ids and paths are placeholders.
-const PI13_ENTRY_IDS = { user: "f13e0001", tool: "f13e0002", result: "f13e0003", stop: "f13e0004" };
-const pi13Entry = (id: string, parentId: string | null, message: Record<string, unknown>) =>
-  ({ type: "message", id, parentId, timestamp: "2026-10-23T15:17:54.000Z", message });
+// of the qualification session) and a stop turn (the real turn 17). SYNTHESIZED, not a capture: producing one needs
+// a model call, which this unit did not make, and the qualification run's stdout was never kept (see above).
+// Its event order and which events exist at all are derived from Pi 1.3.0's executed code, read on Sparky
+// (dist/bundle/chunks/chunk-66G7ITPS.js, same as dist/core/agent-session.js and session-manager.js):
+//  - user, assistant and tool-result messages are saved at message_end by `sessionManager.appendMessage` and Pi emits
+//    NO entry_appended for them;
+//  - entry_appended is emitted at exactly 5 sites, all non-message entries: the cache-warm entry, the virtual-model
+//    state custom entry, extension boundary drafts, recovery-omission context edits, and an extension's appendEntry
+//    (a `{ type: "custom", customType, data, id, parentId, timestamp }` entry). One such custom entry is used here,
+//    appended by an extension while the tool runs;
+//  - agent_end is followed by agent_settled; every emit comes after its append, so ids in `get_entries` are the
+//    ones the entries carry.
 const PI13_USER = { role: "user", content: [{ type: "text", text: "<scrubbed prompt>" }], timestamp: 1792768673128 };
 const PI13_RESULT = { role: "toolResult", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash",
   content: [{ type: "text", text: "<scrubbed output>" }], isError: false, durationMs: 477, timestamp: 1792768676103 };
 const PI13_TOOL_TURN = pi13Assistant(PI13_TURN_WITH_THINKING);
 const PI13_STOP_TURN = pi13Assistant(17);
+const PI13_CUSTOM_ENTRY = { type: "custom", customType: "fixture-ext", data: { note: "<scrubbed>" }, id: "f13c0001",
+  parentId: "f13e0002", timestamp: "2026-10-23T15:17:55.000Z" };
 const PI13_RPC_TRANSCRIPT: Record<string, unknown>[] = [
   { type: "agent_start" },
   { type: "turn_start" },
   { type: "message_start", message: PI13_USER },
   { type: "message_end", message: PI13_USER },
-  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.user, null, PI13_USER) },
   { type: "message_start", message: { ...PI13_TOOL_TURN, content: [], stopReason: "pending" } },
   { type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } },
   { type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "<scrubbed>" } },
@@ -493,13 +503,13 @@ const PI13_RPC_TRANSCRIPT: Record<string, unknown>[] = [
   { type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 1 } },
   { type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 1, toolCall: PI13_TOOL_TURN.content[1] } },
   { type: "message_end", message: PI13_TOOL_TURN },
-  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.tool, PI13_ENTRY_IDS.user, PI13_TOOL_TURN) },
   { type: "tool_execution_start", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash", args: { command: "<scrubbed command>", timeout: 20 } },
+  { type: "extension_ui_request", id: "11111111-2222-4333-8444-555555555555", method: "setStatus", statusKey: "fixture", statusText: "<scrubbed>" },
+  { type: "entry_appended", entry: PI13_CUSTOM_ENTRY },
   { type: "tool_execution_update", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash", args: { command: "<scrubbed command>" }, partialResult: { content: [{ type: "text", text: "<scrubbed partial>" }] } },
   { type: "tool_execution_end", toolCallId: "call_fixture_11|fc_fixture_11", toolName: "bash", result: { content: [{ type: "text", text: "<scrubbed output>" }] }, isError: false },
   { type: "message_start", message: PI13_RESULT },
   { type: "message_end", message: PI13_RESULT },
-  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.result, PI13_ENTRY_IDS.tool, PI13_RESULT) },
   { type: "turn_end", message: PI13_TOOL_TURN, toolResults: [PI13_RESULT] },
   { type: "turn_start" },
   { type: "message_start", message: { ...PI13_STOP_TURN, content: [], stopReason: "pending" } },
@@ -508,23 +518,29 @@ const PI13_RPC_TRANSCRIPT: Record<string, unknown>[] = [
   { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " reply>" } },
   { type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "<scrubbed reply>" } },
   { type: "message_end", message: PI13_STOP_TURN },
-  { type: "entry_appended", entry: pi13Entry(PI13_ENTRY_IDS.stop, PI13_ENTRY_IDS.result, PI13_STOP_TURN) },
   { type: "turn_end", message: PI13_STOP_TURN, toolResults: [] },
   { type: "agent_end", messages: [PI13_USER, PI13_TOOL_TURN, PI13_RESULT, PI13_STOP_TURN], willRetry: false },
   { type: "agent_settled", aborted: false },
 ];
+const PI13_QUIET_EVENTS = ["agent_settled", "entry_appended", "tool_execution_update", "session_info_changed", "thinking_level_changed",
+  "summarization_retry_scheduled", "summarization_retry_attempt_start", "summarization_retry_finished", "bash_execution_update",
+  "extension_ui_request"];
 
 describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one stop turn)", () => {
-  const run = (events: Record<string, unknown>[]) => {
+  const run = (events: Record<string, unknown>[], runtime: "pi" | "omp" = "pi") => {
     const f = fakeIo();
-    const { core } = readyCore(f);
+    const core = new RunnerCore(f.io, { sessionName: SESSION, nodeId: "node-1", launchId: "launch-77" }, { runtime });
+    core.start();
+    core.handlePiLine(JSON.stringify({ type: "response", id: "pi-runner-get-state", data: { sessionFile: SESSION_FILE, sessionId: "0197a2f0" } }));
     let pane = "";
     f.io.mirrorLine = (line) => { pane += `${line}\n`; };
     f.io.mirrorAppend = (text) => { pane += text; };
     f.activity.length = 0; f.rpc.length = 0; f.sidecars.length = 0;
     for (const event of events) core.handlePiLine(JSON.stringify(event));
-    return { ...f, pane };
+    return { ...f, core, pane };
   };
+  const refreshReply = (ids: string[]) => ({ type: "response", id: "pi-runner-cursor-refresh", success: true,
+    data: { entries: ids.map(id => ({ type: "message", id })) } });
 
   it("shows the tool call and the reply, and posts active, PreToolUse, then exactly one Stop", () => {
     // The tool turn is the real thinking turn: its content is [thinking, toolCall] (index 11 of the 18).
@@ -541,24 +557,62 @@ describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one 
     expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);
   });
 
-  it("refreshes the cursor once, after agent_end, and advances it through each appended entry to the last", () => {
+  it("no event in the stream moves the cursor; only the get_entries refresh after agent_end does", () => {
     const r = run(PI13_RPC_TRANSCRIPT);
     expect(r.rpc).toEqual([{ type: "get_entries", id: "pi-runner-cursor-refresh" }]);
-    expect(r.sidecars.map(s => s.lastEntryId)).toEqual(
-      [PI13_ENTRY_IDS.user, PI13_ENTRY_IDS.tool, PI13_ENTRY_IDS.result, PI13_ENTRY_IDS.stop]);
+    // The custom entry_appended and the extension_ui_request UUID left it unset.
+    expect(r.sidecars.every(s => s.lastEntryId === undefined)).toBe(true);
+    r.core.handlePiLine(JSON.stringify(refreshReply(["f13e0001", "f13e0002", "f13e0003", "f13e0004"])));
+    expect(r.sidecars.at(-1)!.lastEntryId).toBe("f13e0004");
   });
 
-  it("maps every Pi 1.3.0 session event the runner leaves quiet to nothing, by name", () => {
-    for (const type of ["agent_settled", "entry_appended", "tool_execution_update", "session_info_changed", "thinking_level_changed",
-      "summarization_retry_scheduled", "summarization_retry_attempt_start", "summarization_retry_finished", "bash_execution_update"]) {
+  it("a restart after an entry_appended that no get_entries batch has returned still catches that entry up (F1)", () => {
+    // Runner A: a completed turn's refresh returned a0; then an extension entry w1 was appended and A died.
+    const a = run([{ type: "agent_end", messages: [], willRetry: false }]);
+    a.core.handlePiLine(JSON.stringify(refreshReply(["a0"])));
+    a.core.handlePiLine(JSON.stringify({ type: "entry_appended", entry: { ...PI13_CUSTOM_ENTRY, id: "w1" } }));
+    const cursor = a.sidecars.at(-1)!.lastEntryId;
+    expect(cursor).toBe("a0");
+    // Runner B resumes from A's sidecar cursor: it asks Pi for everything AFTER a0, which includes w1.
+    const b = fakeIo();
+    new RunnerCore(b.io, { sessionName: SESSION }, { catchUpSince: cursor }).start();
+    expect(b.rpc).toContainEqual({ type: "get_entries", since: "a0", id: "pi-runner-catch-up" });
+  });
+
+  it("a Pi extension_ui_request's UUID and a bash command id are never taken for an entry id (F4)", () => {
+    const r = run([refreshReply(["a0"]),
+      { type: "extension_ui_request", id: "11111111-2222-4333-8444-555555555555", method: "notify", message: "<scrubbed>" },
+      { type: "bash_execution_update", id: "cmd-not-an-entry", delta: "<scrubbed>" },
+      { type: "agent_start", entryId: "not-from-pi" }]);
+    expect(r.sidecars.at(-1)!.lastEntryId).toBe("a0");
+  });
+
+  it("OMP keeps its generic path: an event carrying entryId or id still advances the cursor", () => {
+    const r = run([{ type: "agent_start", entryId: "omp-entry-1" }, { type: "turn_start", id: "omp-entry-2" }], "omp");
+    expect(r.sidecars.map(s => s.lastEntryId)).toEqual(["omp-entry-1", "omp-entry-2"]);
+  });
+
+  it("the transcript triggers no unhandled-event marker, and each named quiet event is known by name", () => {
+    const r = run(PI13_RPC_TRANSCRIPT);
+    expect(r.pane).not.toContain("unhandled event");
+    for (const type of PI13_QUIET_EVENTS) {
+      const q = run([{ type }]);
+      expect(q.pane, type).toBe("");
       expect(mapPiEvent({ type }), type).toEqual({ mirrorLines: [] });
     }
   });
 
-  it("does not take bash_execution_update's command id for a session-entry id", () => {
-    const r = run([{ type: "entry_appended", entry: pi13Entry("f13e0009", null, PI13_USER) },
-      { type: "bash_execution_update", id: "cmd-not-an-entry", delta: "<scrubbed>" }]);
-    expect(r.sidecars.map(s => s.lastEntryId)).toEqual(["f13e0009"]);
+  it("an event type no case handles is reported once per type, by name only, for Pi; never its payload", () => {
+    const r = run([{ type: "agent_before_settle", secret: "payload-must-not-appear" }, { type: "agent_before_settle", secret: "x" },
+      { type: "brand_new_event", data: "payload-must-not-appear" }, { type: "evil\ntype with spaces" }]);
+    expect(r.pane).toBe("[pi-runner] unhandled event type=agent_before_settle\n[pi-runner] unhandled event type=brand_new_event\n"
+      + "[pi-runner] unhandled event type=<unnamed>\n");
+    expect(r.activity).toEqual([]);
+    // The marker is bounded: 40 distinct types print at most 16 lines.
+    const many = run(Array.from({ length: 40 }, (_, i) => ({ type: `novel_${i}` })));
+    expect(many.pane.split("\n").filter(Boolean)).toHaveLength(16);
+    // OMP's event surface is not enumerated, so it stays silent.
+    expect(run([{ type: "agent_before_settle" }], "omp").pane).toBe("");
   });
 });
 
