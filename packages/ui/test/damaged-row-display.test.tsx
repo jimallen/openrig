@@ -203,8 +203,6 @@ describe("OF-136 the For You feed card", () => {
     body: "approve the cut",
     ...over,
   });
-  const withQuery = (node: ReactElement) =>
-    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{node}</QueryClientProvider>);
 
   it("the adapter carries the marker onto the card, and only when there is one", () => {
     expect(attentionItemToFeedCard(attention({ tags: null, unreadable: ["tags"] })).unreadable).toEqual(["tags"]);
@@ -212,10 +210,10 @@ describe("OF-136 the For You feed card", () => {
     expect("unreadable" in attentionItemToFeedCard(attention({ unreadable: [] }))).toBe(false);
   });
 
-  it("a card for a damaged queue row names the damage and offers neither APPROVE nor CHAT", () => {
+  it("a card for a damaged queue row names the damage and offers neither APPROVE nor CHAT", async () => {
     const card = attentionItemToFeedCard(attention({ tags: null, unreadable: ["tags", "chain_of_record"] }));
-    const view = withQuery(<FeedCard card={card} />);
-    const notice = view.getByTestId(`feed-card-damaged-${card.id}`);
+    const view = inRouter(<FeedCard card={card} />);
+    const notice = await waitFor(() => view.getByTestId(`feed-card-damaged-${card.id}`));
     expect(notice.getAttribute("role")).toBe("alert");
     expect(notice.textContent).toContain("tags, chain_of_record");
     expect(notice.textContent).toContain("unknown, not empty");
@@ -224,10 +222,10 @@ describe("OF-136 the For You feed card", () => {
     expect(view.queryByTestId(`feed-card-actions-${card.id}`)).toBeNull();
   });
 
-  it("control: the same card without the marker offers APPROVE and CHAT and shows no damaged notice", () => {
+  it("control: the same card without the marker offers APPROVE and CHAT and shows no damaged notice", async () => {
     const card = attentionItemToFeedCard(attention());
-    const view = withQuery(<FeedCard card={card} />);
-    expect(view.getByTestId("mc-verb-approve")).toBeTruthy();
+    const view = inRouter(<FeedCard card={card} />);
+    await waitFor(() => view.getByTestId("mc-verb-approve"));
     expect(view.getByTestId(`feed-card-chat-${card.id}`)).toBeTruthy();
     expect(view.queryByTestId(`feed-card-damaged-${card.id}`)).toBeNull();
   });

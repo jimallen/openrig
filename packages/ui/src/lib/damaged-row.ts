@@ -32,14 +32,19 @@ export class SavedRowUnreadableError extends Error {
   }
 }
 
+type RefusalBody = { code?: unknown; error?: unknown; table?: unknown; rowId?: unknown; columns?: unknown };
+
+async function readBody(res: Response): Promise<RefusalBody | null> {
+  try {
+    return (await res.clone().json()) as RefusalBody | null;
+  } catch {
+    return null;
+  }
+}
+
 /** Throws SavedRowUnreadableError for a 422 `saved_row_unreadable` response; otherwise returns without consuming the body. */
 export async function throwIfSavedRowUnreadable(res: Response): Promise<void> {
   if (res.status !== 422) return;
-  let body: { code?: unknown; error?: unknown; table?: unknown; rowId?: unknown; columns?: unknown } | null = null;
-  try {
-    body = (await res.clone().json()) as typeof body;
-  } catch {
-    body = null;
-  }
+  const body = await readBody(res);
   if (body && body.code === "saved_row_unreadable") throw new SavedRowUnreadableError(body);
 }
