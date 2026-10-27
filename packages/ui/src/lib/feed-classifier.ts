@@ -36,6 +36,9 @@ export interface FeedCard {
   /** OPR.0.4.4.15: origin host id on aggregated multi-host items ('local'
    *  or a registered host id). Absent = local (zero-config unchanged). */
   hostId?: string;
+  /** OF-136: the queue item behind this card has saved columns the daemon could not read (OF-117). The card says so and
+   *  offers no action on it. Absent = readable. */
+  unreadable?: string[];
 }
 
 function asString(v: unknown): string | undefined {

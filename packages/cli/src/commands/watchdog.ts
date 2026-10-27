@@ -6,6 +6,7 @@ import { positiveIntArg } from "../cli-error.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
+import { damagedRowsIn, warnDamagedRows, warnSavedRowRefusal } from "../lib/damaged-rows.js";
 
 /**
  * `rig watchdog` — coordination primitive Watchdog (PL-004 Phase C).
@@ -35,6 +36,8 @@ function printResult(json: boolean, body: unknown, status: number): void {
   } else {
     console.log(JSON.stringify(body, null, 2));
   }
+  // OF-136: a refusal of a damaged saved row says so in words, on stderr (stdout is unchanged).
+  warnSavedRowRefusal(status, body);
   if (status >= 400) process.exitCode = status >= 500 ? 2 : 1;
 }
 
@@ -244,6 +247,9 @@ The pre-0.5.8 complete array remains available with: rig watchdog list --all --f
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/watchdog/${encodeURIComponent(jobId)}/status`);
         printResult(opts.json ?? false, res.data, res.status);
+        // OF-136: history entries whose saved notes are damaged are served flagged; name them (stderr).
+        if (res.status < 400) warnDamagedRows("watchdog history entry", damagedRowsIn((res.data as { recentHistory?: unknown })?.recentHistory));
+
       });
     });
 

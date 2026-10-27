@@ -13,6 +13,7 @@ import { shellQuote } from "../cross-host-executor.js";
 import { omittedReadField, readView } from "../read-view.js";
 import { buildWriteReceipt, compactOutputEnabled, type ReceiptContext } from "../queue-receipt.js";
 import { TRANSITIONS_SHOWN, compactShow, compactTransitions, showEmptyNotice, transitionsNotice } from "../queue-read-compact.js";
+import { damagedRowsIn, warnDamagedRows, warnSavedRowRefusal, type DamagedKind } from "../lib/damaged-rows.js";
 
 /**
  * `rig queue` — coordination primitive L3/inbox/outbox commands (PL-004 Phase A).
@@ -339,7 +340,15 @@ function printResult(json: boolean, body: unknown, status: number): void {
   } else {
     console.log(JSON.stringify(body, null, 2));
   }
+  // OF-136: a refusal of a damaged saved row says so in words, on stderr (stdout is unchanged).
+  warnSavedRowRefusal(status, body);
   if (status >= 400) process.exitCode = status >= 500 ? 2 : 1;
+}
+
+/** OF-136: print a list response, then (stderr) name every row the daemon served flagged `unreadable`. */
+function printListResult(json: boolean, body: unknown, status: number, kind: DamagedKind): void {
+  printResult(json, body, status);
+  if (status < 400) warnDamagedRows(kind, damagedRowsIn(body));
 }
 
 /** Slice 15: the receipt context when a write should print its receipt — the
@@ -1486,7 +1495,7 @@ Examples:
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/list?${params.toString()}`);
         const useJson = opts.json || opts.o === "json";
-        printResult(useJson, res.data, res.status);
+        printListResult(useJson, res.data, res.status, "queue item");
       });
     });
 
@@ -1514,7 +1523,7 @@ Examples:
       if (opts.limit) params.set("limit", String(opts.limit));
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/overdue?${params.toString()}`);
-        printResult(opts.json ?? false, res.data, res.status);
+        printListResult(opts.json ?? false, res.data, res.status, "queue item");
       });
     });
 
@@ -1541,7 +1550,7 @@ Examples:
       if (opts.limit) params.set("limit", String(opts.limit));
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/undelivered?${params.toString()}`);
-        printResult(opts.json ?? false, res.data, res.status);
+        printListResult(opts.json ?? false, res.data, res.status, "queue item");
       });
     });
 
@@ -1638,7 +1647,7 @@ Examples:
       const params = new URLSearchParams({ destinationSession });
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/inbox/pending?${params.toString()}`);
-        printResult(opts.json ?? false, res.data, res.status);
+        printListResult(opts.json ?? false, res.data, res.status, "inbox entry");
       });
     });
 
@@ -1705,7 +1714,7 @@ Examples:
       const params = new URLSearchParams({ senderSession, limit: opts.limit });
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/outbox/list?${params.toString()}`);
-        printResult(opts.json ?? false, res.data, res.status);
+        printListResult(opts.json ?? false, res.data, res.status, "outbox entry");
       });
     });
 

@@ -34,6 +34,9 @@ export interface AttentionQueueItem {
   priority: string;
   tier: string | null;
   tags: string[] | null;
+  /** OF-117/OF-136: saved columns (tags, chain_of_record, human_questions, human_answers) the daemon could not read. They
+   *  read as null/empty BECAUSE of that. The daemon refuses to act on such a row, so the feed must not offer to. */
+  unreadable?: string[];
   blockedOn: string | null;
   handedOffTo: string | null;
   handedOffFrom: string | null;

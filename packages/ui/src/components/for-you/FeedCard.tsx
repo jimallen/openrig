@@ -10,6 +10,7 @@ import type { QueueItemViewerData } from "../drawer-viewers/QueueItemViewer.js";
 import type { QueueItemDetail } from "../../hooks/useSlices.js";
 import type { FeedCard as FeedCardModel, FeedCardKind } from "../../lib/feed-classifier.js";
 import { isSyntheticFeedCard } from "../../lib/attention-feed.js";
+import { damagedColumns, damagedExplanation } from "../../lib/damaged-row.js";
 import { VerbActions } from "../mission-control/components/VerbActions.js";
 import { ProgressiveTerminal } from "../terminal/ProgressiveTerminal.js";
 import { buildChatPreamble } from "../review/chat.js";
@@ -417,6 +418,7 @@ export function FeedCard({
     if (!onDismiss) return;
     onDismiss(card);
   };
+  const damaged = damagedColumns(card);
   const qitemViewerData = qitemViewerDataFromItem(card, queueItem);
   const body = compactQueueBody(queueItem?.body || card.body);
   const tags = queueItem?.tags ?? qitemViewerData?.tags ?? [];
@@ -543,8 +545,20 @@ export function FeedCard({
             </div>
           </div>
         ) : null}
+        {damaged.length > 0 ? (
+          // OF-136: the daemon refuses to act on this row (its saved columns are unreadable), so the card says so, in words,
+          // and offers neither APPROVE nor CHAT: an action here would rest on fields that are unknown, not empty.
+          <div
+            role="alert"
+            data-testid={`feed-card-damaged-${card.id}`}
+            className="mt-3 border border-tertiary/60 bg-tertiary/5 p-3 font-mono text-[11px] text-on-surface"
+          >
+            <span className="font-bold uppercase text-tertiary">Damaged</span>{" "}
+            {damagedExplanation(damaged)}
+          </div>
+        ) : null}
         {renderedOutcome ? <ActionOutcomePanel outcome={renderedOutcome} /> : null}
-        {qitemViewerData && isActionableCard(card.kind, queueItem, renderedOutcome) ? (
+        {damaged.length === 0 && qitemViewerData && isActionableCard(card.kind, queueItem, renderedOutcome) ? (
           <div
             data-testid={`feed-card-actions-${card.id}`}
             className="mt-3 bg-background/40 p-3"

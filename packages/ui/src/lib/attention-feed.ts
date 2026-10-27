@@ -21,6 +21,7 @@ import type { AttentionQueueItem } from "../hooks/useAttentionItems.js";
 // OPR.0.4.6.MH1 FR-8: the human-seat predicate rides the shared
 // session-name contract (was a local regex copy of the same pattern).
 import { isHumanSeatSessionRef } from "./session-name.js";
+import { damagedColumns } from "./damaged-row.js";
 
 /**
  * Classify a queue item's attention kind. Mirrors the mission-control
@@ -96,6 +97,8 @@ export function attentionItemToFeedCard(item: AttentionQueueItem): FeedCard {
     // OPR.0.4.4.15: origin host carried through the SAME classifier path —
     // a display/filter dimension only, no parallel remote card model.
     ...(item.hostId !== undefined ? { hostId: item.hostId } : {}),
+    // OF-136: a damaged queue row is carried through so the card names it and offers no action.
+    ...(damagedColumns(item).length > 0 ? { unreadable: damagedColumns(item) } : {}),
   };
 }
 
