@@ -9,6 +9,7 @@
 
 import { Link } from "@tanstack/react-router";
 import { cn } from "../../lib/utils.js";
+import { damagedColumns, damagedExplanation } from "../../lib/damaged-row.js";
 import {
   useWorkflowInstances,
   type WorkflowInstanceWithDeadline,
@@ -17,6 +18,9 @@ import {
 /** Attention-first ordering: exceptions outrank the healthy, live outranks the
  *  finished — the NEEDS-YOU-first reading order at every altitude. */
 export function instanceAttentionRank(i: WorkflowInstanceWithDeadline): number {
+  // OF-136: a damaged instance's frontier and deadline are unknown. The daemon serves its deadline as "healthy" only to keep
+  // the shape, so it must never rank as healthy: it needs a person first.
+  if (damagedColumns(i).length > 0) return 0;
   if (i.status === "failed") return 0;
   if (i.deadline.state !== "healthy") return 1;
   if (i.status === "waiting") return 2;
@@ -25,6 +29,7 @@ export function instanceAttentionRank(i: WorkflowInstanceWithDeadline): number {
 }
 
 function statusChip(i: WorkflowInstanceWithDeadline): { glyph: string; label: string; cls: string } {
+  if (damagedColumns(i).length > 0) return { glyph: "▲", label: "DAMAGED", cls: "text-on-surface font-bold" };
   if (i.status === "failed") return { glyph: "▲", label: "FAILED", cls: "text-red-700" };
   if (i.deadline.state !== "healthy") return { glyph: "▲", label: i.deadline.state.toUpperCase(), cls: "text-amber-700" };
   if (i.status === "waiting") return { glyph: "◐", label: "WAITING", cls: "text-on-surface-variant" };
@@ -47,6 +52,7 @@ function ageLabel(iso: string): string {
  *  instance has the durable currentStepId binding; terminal instances have it
  *  cleared (read the trail on the instance page for where it ended). */
 function positionLabel(i: WorkflowInstanceWithDeadline): string {
+  if (damagedColumns(i).length > 0) return "position unknown";
   if (i.currentStepId) return `at ${i.currentStepId}`;
   if (i.status === "completed") return "closed";
   if (i.status === "failed") return "felled";
@@ -55,13 +61,14 @@ function positionLabel(i: WorkflowInstanceWithDeadline): string {
 
 export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWithDeadline }) {
   const chip = statusChip(instance);
+  const damaged = damagedColumns(instance);
   return (
     <li>
       <Link
         to="/workflow/instance/$instanceId"
         params={{ instanceId: instance.instanceId }}
         data-testid={`workflow-instance-row-${instance.instanceId}`}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-variant/50"
+        className="flex w-full flex-wrap items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-variant/50"
       >
         <span className={cn("font-mono text-[11px]", chip.cls)} aria-hidden>
           {chip.glyph}
@@ -77,7 +84,16 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
             <span className="text-on-surface-variant"> · resumed {instance.resumeCount}×</span>
           ) : null}
         </span>
-        {instance.deadline.state !== "healthy" && instance.deadline.evidence ? (
+        {damaged.length > 0 ? (
+          <span
+            data-testid={`workflow-instance-damaged-${instance.instanceId}`}
+            title={damagedExplanation(damaged)}
+            className="basis-full pl-5 font-mono text-[10px] text-on-surface"
+          >
+            {damaged.join(", ")} unreadable · do not act on it
+          </span>
+        ) : null}
+        {damaged.length === 0 && instance.deadline.state !== "healthy" && instance.deadline.evidence ? (
           <span className="hidden font-mono text-[10px] text-amber-800 md:inline truncate max-w-64">
             {instance.deadline.evidence.ownerSession} · {Math.floor(instance.deadline.evidence.overdueBySeconds / 60)}m over
           </span>

@@ -16,6 +16,7 @@
  */
 
 import { shellQuote } from "../cross-host-executor.js";
+import { damagedColumnsOf } from "../lib/damaged-rows.js";
 
 export interface RenderInstance {
   guidance?: {lines: string[]};
@@ -23,6 +24,9 @@ export interface RenderInstance {
   workflowName?: string;
   workflowVersion?: string;
   status: string;
+  /** OF-117/OF-136: the saved columns of this instance the daemon could not read. Its frontier, packets and deadline are
+   *  UNKNOWN (served empty/"healthy" only to keep the shape); no attention class, action or "healthy" claim rests on them. */
+  unreadable?: string[];
   createdBySession?: string;
   createdAt?: string;
   currentStepId?: string | null;
@@ -236,11 +240,17 @@ export function renderTraceTree(
  * instance (exactly-once, combined reasons).
  */
 export function attentionMarker(instance: RenderInstance): string {
+  // OF-136: a damaged instance is never "stuck", "failed" or "healthy": its frontier and deadline are unknown.
+  if (isDamaged(instance)) return `▲ DAMAGED (${damagedColumnsOf(instance.unreadable).join(", ")})`;
   if (instance.status === "failed") return "▲ failed";
   if (actionableFailures(instance).length > 0) return "▲ failed-branch";
   if (isStuck(instance)) return "▲ stuck";
   if (instance.status === "waiting") return "▲ waiting";
   return "";
+}
+
+export function isDamaged(instance: RenderInstance): boolean {
+  return damagedColumnsOf(instance.unreadable).length > 0;
 }
 
 /** Rail 1: stuck-ness is READ from the API field, never derived. */
@@ -287,6 +297,18 @@ export function composeAttentionRollup(instances: RenderInstance[]): AttentionRo
 
     const classes: string[] = [];
     const reasons: string[] = [];
+    if (isDamaged(inst)) {
+      // OF-136: the daemon served this instance with a healthy-looking deadline only to keep the shape. Count it as needing
+      // attention, say it is damaged, and offer no action that would act on it.
+      attention.push({
+        instanceId: inst.instanceId,
+        workflowName: inst.workflowName ?? "",
+        classes: ["damaged"],
+        reasons: [`saved ${damagedColumnsOf(inst.unreadable).join(", ")} not readable JSON; frontier, packets and deadline are unknown`],
+        affordance: "do not route, resume or abort it: repair or remove the saved row, then run rig workflow show " + inst.instanceId,
+      });
+      continue;
+    }
     if (inst.status === "failed") {
       classes.push("failed");
       reasons.push("workflow failed");
@@ -360,7 +382,7 @@ export function renderInstanceList(
   lines.push(`${fitCell("", 2)}${fitCell("INSTANCE", 30)}${fitCell("WORKFLOW", 22)}${fitCell("STATUS", 11)}${fitCell("STEP", 20)}${fitCell("AGE", 6)}ATTN`);
   for (const inst of instances) {
     lines.push(
-      `${fitCell(statusGlyph(inst.status), 2)}${fitCell(inst.instanceId, 30)}${fitCell(inst.workflowName ?? "", 22)}${fitCell(inst.status, 11)}${fitCell(renderStepCell(inst), 20)}${fitCell(humanAge(inst.createdAt, nowIso), 6)}${attentionMarker(inst)}`,
+      `${fitCell(statusGlyph(inst.status), 2)}${fitCell(inst.instanceId, 30)}${fitCell(inst.workflowName ?? "", 22)}${fitCell(inst.status, 11)}${fitCell(isDamaged(inst) ? "(unknown)" : renderStepCell(inst), 20)}${fitCell(humanAge(inst.createdAt, nowIso), 6)}${attentionMarker(inst)}`,
     );
   }
   return lines;
@@ -373,6 +395,10 @@ export function renderInstanceShow(
 ): string[] {
   const lines: string[] = [];
   lines.push(`${statusGlyph(instance.status)} ${instance.instanceId}  status=${instance.status}`);
+  if (isDamaged(instance)) {
+    lines.push(`  ▲ DAMAGED: saved ${damagedColumnsOf(instance.unreadable).join(", ")} not readable JSON. Frontier, packets and deadline are UNKNOWN, not empty or healthy.`);
+    lines.push("    Do not route, resume or abort it. Repair or remove the saved row, then run this command again.");
+  }
   if (instance.workflowName) lines.push(`  workflow: ${instance.workflowName}${instance.workflowVersion ? ` v${instance.workflowVersion}` : ""}`);
   // OPR.0.4.6.FAC1: the bound rig renders when present (unbound rows unchanged).
   if (instance.boundRig) lines.push(`  rig:      ${instance.boundRig}`);

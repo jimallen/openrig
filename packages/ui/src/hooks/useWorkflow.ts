@@ -13,6 +13,7 @@
 //   workflow SHAPE rides the Library review payload, useSpecLibrary.ts)
 
 import { useQuery } from "@tanstack/react-query";
+import { throwIfSavedRowUnreadable } from "../lib/damaged-row.js";
 
 export type WorkflowInstanceStatus = "active" | "waiting" | "completed" | "failed";
 export type WorkflowExitKind = "handoff" | "waiting" | "done" | "failed";
@@ -31,7 +32,7 @@ export interface WorkflowStepDeadlineEvidence {
 }
 
 export interface WorkflowDeadlineVerdict {
-  state: "healthy" | "overdue-claimed" | "overdue-unclaimed";
+  state: "healthy" | "overdue-claimed" | "overdue-unclaimed" | "unknown"; // "unknown": a flagged (unreadable) instance, once the daemon serves it so
   evidence: WorkflowStepDeadlineEvidence | null;
 }
 
@@ -52,6 +53,11 @@ export interface WorkflowInstanceWithDeadline {
   resumeCount: number;
   hopsBaseline: number;
   deadline: WorkflowDeadlineVerdict;
+  /** OF-117/OF-136: the saved columns of this instance the daemon could not read. When set, `currentFrontier` and `deadline`
+   *  are served empty/"healthy" only to keep the shape: they are UNKNOWN, and nothing may act on the instance. */
+  unreadable?: string[];
+  /** The daemon's named unknowns for this instance (list rows). */
+  unknowns?: string[];
 }
 
 export interface WorkflowStepTrailEntry {
@@ -76,6 +82,8 @@ export interface WorkflowSpecSummary {
   sourcePath: string;
   cachedAt: string;
   isBuiltIn: boolean;
+  /** OF-117/OF-136: saved spec columns the daemon could not read; the spec is listed but cannot be used. */
+  unreadable?: string[];
 }
 
 export interface WorkflowTrace {
@@ -85,6 +93,7 @@ export interface WorkflowTrace {
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
+  await throwIfSavedRowUnreadable(res);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()) as T;
 }

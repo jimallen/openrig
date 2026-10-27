@@ -6,6 +6,7 @@ import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-life
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { shellQuote } from "../cross-host-executor.js";
+import { damagedRowsIn, unreadableHeldIn, warnDamagedRows, warnSavedRowRefusal } from "../lib/damaged-rows.js";
 
 export type SeatDeps = StatusDeps;
 
@@ -312,6 +313,12 @@ export function seatCommand(depsOverride?: SeatDeps & { readStdin?: () => Promis
     const client = deps.clientFactory(getDaemonUrl(daemon));
     const result = method === "GET" ? await client.get<Record<string, unknown>>(path) : await client.post<Record<string, unknown>>(path, body ?? {});
     console.log(JSON.stringify(result.data, null, json ? undefined : 2));
+    // OF-136: held entries the daemon served flagged `unreadable`, and those it could not attribute to any seat.
+    if (result.status < 400 && path.startsWith("/api/seat/held-messages/")) {
+      warnDamagedRows("outbox entry", damagedRowsIn(result.data, "items"));
+      warnDamagedRows("held outbox entry", unreadableHeldIn(result.data));
+    }
+    warnSavedRowRefusal(result.status, result.data);
     if (result.status >= 400) process.exitCode = result.status >= 500 ? 2 : 1;
   };
   cmd.command("set-typing-guard").argument("<seat>").requiredOption("--enabled <boolean>", "true pauses all automatic terminal input; false permits new sends")

@@ -21,6 +21,7 @@ import {
   type WorkflowInstanceWithDeadline,
 } from "../../hooks/useWorkflow.js";
 import { WorkflowInstanceRow, instanceAttentionRank } from "./WorkflowInstancesBand.js";
+import { damagedColumns, damagedExplanation } from "../../lib/damaged-row.js";
 
 function groupByWorkflow(
   rows: WorkflowInstanceWithDeadline[],
@@ -55,6 +56,12 @@ export function WorkflowsPage() {
 
   const instantiatedNames = new Set(rows.map((r) => `${r.workflowName}:${r.workflowVersion}`));
   const idleSpecs = (specsData?.specs ?? []).filter((s) => !instantiatedNames.has(`${s.name}:${s.version}`));
+  // OF-136: cached specs the daemon listed but could not read in full (name:version -> damaged columns).
+  const damagedSpecs = new Map<string, string[]>();
+  for (const s of specsData?.specs ?? []) {
+    const cols = damagedColumns(s);
+    if (cols.length > 0) damagedSpecs.set(`${s.name}:${s.version}`, cols);
+  }
 
   return (
     <WorkspacePage>
@@ -87,6 +94,15 @@ export function WorkflowsPage() {
           return (
             <section key={g.key} data-testid={`workflows-group-${g.name}`} className="space-y-2">
               <div className="flex items-center gap-2">
+                {damagedSpecs.has(g.key) ? (
+                  // OF-136: the library review of a damaged spec cannot be built, so it is not offered here either.
+                  <span
+                    data-testid={`workflows-group-spec-unopenable-${g.name}`}
+                    className="font-mono text-[11px] font-bold text-on-surface"
+                  >
+                    {g.name} v{g.version}
+                  </span>
+                ) : (
                 <button
                   type="button"
                   data-testid={`workflows-group-spec-${g.name}`}
@@ -100,10 +116,20 @@ export function WorkflowsPage() {
                 >
                   {g.name} v{g.version}
                 </button>
+                )}
                 <span className="font-mono text-[10px] text-on-surface-variant">
                   {g.rows.length} instance{g.rows.length === 1 ? "" : "s"} · {gLive} live
                   {gAttention > 0 ? ` · ▲ ${gAttention}` : ""}
                 </span>
+                {damagedSpecs.has(g.key) ? (
+                  <span
+                    data-testid={`workflows-group-spec-damaged-${g.name}`}
+                    title={damagedExplanation(damagedSpecs.get(g.key)!)}
+                    className="font-mono text-[10px] text-on-surface"
+                  >
+                    ▲ spec DAMAGED ({damagedSpecs.get(g.key)!.join(", ")}) · cannot be opened
+                  </span>
+                ) : null}
               </div>
               <ul className="divide-y divide-outline-variant/50 border border-outline-variant">
                 {g.rows.map((i) => (
@@ -120,7 +146,25 @@ export function WorkflowsPage() {
               Cached Specs — No Instances
             </div>
             <ul className="divide-y divide-outline-variant/50 border border-outline-variant">
-              {idleSpecs.map((s) => (
+              {idleSpecs.map((s) => {
+                const damaged = damagedColumns(s);
+                if (damaged.length > 0) {
+                  // OF-136: listed, named, and not openable: the library review of it cannot be built from unreadable columns.
+                  return (
+                    <li key={`${s.name}:${s.version}`} data-testid={`workflows-idle-spec-damaged-${s.name}`} className="flex w-full items-center gap-2 px-2 py-1.5">
+                      <span className="font-mono text-[11px] text-on-surface" aria-hidden>
+                        ▲
+                      </span>
+                      <span className="font-mono text-[11px] text-on-surface">
+                        {s.name} v{s.version}
+                      </span>
+                      <span className="min-w-0 flex-1 font-mono text-[10px] text-on-surface">
+                        DAMAGED: {damagedExplanation(damaged)}
+                      </span>
+                    </li>
+                  );
+                }
+                return (
                 <li key={`${s.name}:${s.version}`}>
                   <button
                     type="button"
@@ -147,7 +191,8 @@ export function WorkflowsPage() {
                     </span>
                   </button>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           </section>
         ) : null}

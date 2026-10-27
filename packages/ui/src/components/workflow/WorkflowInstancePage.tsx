@@ -27,6 +27,7 @@ import {
   type WorkflowInstanceWithDeadline,
   type WorkflowStepTrailEntry,
 } from "../../hooks/useWorkflow.js";
+import { SavedRowUnreadableError, damagedColumns, damagedExplanation } from "../../lib/damaged-row.js";
 import { WorkflowTopologyGraph } from "./WorkflowTopologyGraph.js";
 import { InstanceTrailTimeline } from "./InstanceTrailTimeline.js";
 
@@ -77,6 +78,20 @@ export function ExceptionBanner({
   resuming: boolean;
   resumeError: string | null;
 }) {
+  // OF-136: a damaged instance has no known frontier or deadline. Say so, and offer no Resume (or any other action).
+  const damaged = damagedColumns(instance);
+  if (damaged.length > 0) {
+    return (
+      <div data-testid="workflow-exception-banner" className="space-y-2 border border-red-700/60 bg-red-700/5 px-3 py-2">
+        <p data-testid="workflow-instance-damaged" className="font-mono text-[11px] text-on-surface">
+          ▲ DAMAGED — {damagedExplanation(damaged)}
+        </p>
+        <span className="font-mono text-[10px] text-on-surface-variant">
+          CLI: rig workflow show {instance.instanceId}
+        </span>
+      </div>
+    );
+  }
   const gated = instance.status === "waiting" && instance.currentStepId != null;
   const overdue = instance.deadline.state !== "healthy" && instance.deadline.evidence;
   const failed = instance.status === "failed";
@@ -162,6 +177,23 @@ export function WorkflowInstancePage({
     return (
       <WorkspacePage>
         <div className="font-mono text-[10px] text-on-surface-variant">Loading workflow instance…</div>
+      </WorkspacePage>
+    );
+  }
+  if (error instanceof SavedRowUnreadableError) {
+    // OF-136: the daemon refuses to read a damaged instance (HTTP 422). That is not "not found".
+    return (
+      <WorkspacePage>
+        <div data-testid="workflow-instance-damaged-page" className="space-y-4">
+          <WorkflowHeader
+            eyebrow="Workflow — Instance"
+            title="Instance Is Damaged"
+            description={`${error.rowId || instanceId}: ${damagedExplanation(error.columns)}`}
+          />
+          <Button variant="outline" size="sm" onClick={() => navigate({ to: "/workflows" })}>
+            Back to Workflows
+          </Button>
+        </div>
       </WorkspacePage>
     );
   }

@@ -16,6 +16,7 @@ import {
   renderTraceTree,
 } from "./workflow-render.js";
 import { describeDaemonRejection, formatThreePart } from "./workflow-errors.js";
+import { damagedColumnsOf, damagedRowsIn, describeSavedRowRefusal, warnDamagedRows } from "../lib/damaged-rows.js";
 
 /**
  * `rig workflow` — daemon-native Workflow Runtime (PL-004 Phase D).
@@ -49,7 +50,8 @@ function printResult(json: boolean, body: unknown, status: number): void {
     // 3-part in human mode; unrecognized bodies keep the raw-JSON
     // fallback. --json (above) stays the RAW body byte-identically;
     // exit codes below are unchanged.
-    const rejection = describeDaemonRejection(body);
+    // OF-136: the daemon refusing a damaged saved row (HTTP 422 saved_row_unreadable) is named in plain words.
+    const rejection = describeSavedRowRefusal(body) ?? describeDaemonRejection(body);
     if (rejection) {
       for (const line of formatThreePart(rejection)) process.stderr.write(`${line}\n`);
     } else {
@@ -466,11 +468,14 @@ Examples:
         // WF3 FR-2: human mode renders the table; --json byte-identical (BR-2).
         if (opts.json || res.status >= 400) {
           printResult(opts.json ?? false, res.data, res.status);
+          // OF-136: stdout stays the JSON; the damaged instances are named on stderr.
+          if (res.status < 400) warnDamagedRows("workflow instance", damagedRowsIn(res.data, "instances"));
           return;
         }
         const body = res.data as { instances?: unknown[] } | unknown[];
         const rows = (Array.isArray(body) ? body : body?.instances ?? []) as Parameters<typeof renderInstanceList>[0];
         for (const line of renderInstanceList(rows)) console.log(line);
+        warnDamagedRows("workflow instance", damagedRowsIn(rows));
       });
     });
 
@@ -495,10 +500,11 @@ Examples:
         const res = await client.get<{ specs: Array<{
           name: string; version: string; purpose: string | null;
           targetRig: string | null; coordinationTerminalTurnRule: string;
-          sourcePath: string; cachedAt: string; isBuiltIn: boolean;
+          sourcePath: string; cachedAt: string; isBuiltIn: boolean; unreadable?: string[];
         }> }>("/api/workflow/specs");
         if (opts.json) {
           printResult(true, res.data, res.status);
+          if (res.status < 400) warnDamagedRows("workflow spec", damagedRowsIn(res.data, "specs"));
           return;
         }
         if (res.status >= 400) {
@@ -513,10 +519,12 @@ Examples:
         // Compact human table — name, version, source, indicator.
         for (const row of rows) {
           const indicator = row.isBuiltIn ? " (built-in)" : "";
-          console.log(`${row.name} v${row.version}${indicator}`);
+          // OF-136: a cached spec with a damaged saved column is listed, marked, and not offered for use.
+          console.log(`${row.name} v${row.version}${indicator}${damagedColumnsOf(row.unreadable).length ? `  ▲ DAMAGED (${damagedColumnsOf(row.unreadable).join(", ")})` : ""}`);
           if (row.purpose) console.log(`  purpose: ${row.purpose.replace(/\n/g, " ").slice(0, 120)}`);
           console.log(`  source: ${row.sourcePath}`);
         }
+        warnDamagedRows("workflow spec", damagedRowsIn(rows));
       });
     });
 
