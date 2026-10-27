@@ -57,10 +57,10 @@ describe("pda L2a startup wiring", () => {
     expect(inst.deps.adapters.pda).toBe((deps.runtimeAdapters as Record<string, RuntimeAdapter>).pda);
   });
 
-  it("rig send's runner readiness is the factory's source over the adapter map: it asks pda, and only pda", async () => {
+  it("rig send's runner readiness is the factory's source over the adapter map: it asks pda, pi and omp, and only those", async () => {
     const source = priv<RunnerSendReadinessSource | undefined>(deps.sessionTransport, "runnerSendReadiness");
     expect(source).toBeDefined();
-    expect([...source!.runtimes]).toEqual(["pda"]);
+    expect([...source!.runtimes].sort()).toEqual(["omp", "pda", "pi"]); // OF-88: Pi and OMP declare sendReadiness too
     // A hand-built source claiming every runtime would also answer for claude-code; the factory's answers null.
     expect(await source!.ask({ sessionName: "x@y", nodeId: null, runtime: "claude-code" })).toBeNull();
     // It reaches the registered adapter: a ready, alive sidecar under this daemon's state root reads idle.

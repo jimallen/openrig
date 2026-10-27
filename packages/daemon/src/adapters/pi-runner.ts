@@ -663,7 +663,10 @@ export class RunnerCore {
     }
     const mapped = mapPiEvent(event, this.runtime);
     if (mapped.unhandledType !== undefined) this.noteUnhandledEvent(mapped.unhandledType);
-    if (mapped.streaming !== undefined) this.streaming = mapped.streaming;
+    if (mapped.streaming !== undefined && mapped.streaming !== this.streaming) {
+      this.streaming = mapped.streaming;
+      this.writeSidecar({});
+    }
     // OMP writes its JSONL lazily; re-announce identity after each turn until
     // the daemon confirms the token. Pi's get_state identity is final.
     if (event.type === "agent_end" && this.runtime === "omp") this.postSessionIdentity();
@@ -751,6 +754,9 @@ export class RunnerCore {
       sessionFile: this.sessionFile,
       sessionId: this.sessionId,
       lastEntryId: this.lastEntryId,
+      // OF-88: the runner's turn state, for `rig send` readiness. OMP attention is NOT written here: it is display
+      // evidence (the Notification hook, rig ps, the UI), never send gating, as a pda hold is after OF-89.
+      busy: this.streaming,
       updatedAt: this.io.now(),
       ...patch,
     });
@@ -772,6 +778,13 @@ interface RunnerArgs {
   /** OPR.0.7.0.2: report usage facts from persisted entries (the daemon passes it when usage.pi_cost_facts is on). */
   usageFacts?: boolean;
   openRouterCharge?: boolean;
+}
+
+/** OF-87: the pane editor for the Pi and OMP runners. A Ctrl-C byte inside a bracketed paste is pasted text, so one
+ *  paste is one message and only a real key press submits /abort. (A paste whose closing marker never arrives
+ *  therefore keeps swallowing Ctrl-C until it does, as in the pda runner.) */
+export function wirePiRunnerInput(core: Pick<RunnerCore, "handleUserBlock">, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
+  return createRunnerInput(input, output, (block) => core.handleUserBlock(block), { interruptInsidePaste: "content" });
 }
 
 export function parseRunnerArgs(argv: string[]): RunnerArgs {
@@ -1167,7 +1180,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
     }
   });
-  const input = createRunnerInput(process.stdin, process.stdout, (block) => core.handleUserBlock(block));
+  const input = wirePiRunnerInput(core, process.stdin, process.stdout);
 
   if (runtime === "pi") {
     child.on("error", (err) => {

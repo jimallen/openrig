@@ -1307,7 +1307,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const mcpTrust = { specRoots: () => mcpSpecRoots({ home: daemonHome, specLibraryRoots: [userSpecLibraryRoot, compatibleSpecLibraryRoot, nodePath.resolve(import.meta.dirname, "../specs")] }) };
 
   // The runtime adapter map the routes see, and the ONE map `rig send`'s runner readiness is built from (pda L0/L2a):
-  // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (today: pda), so a
+  // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (pda, pi and omp), so a
   // mis-wired source can never touch another runtime's send.
   const runtimeAdapterMap: Record<string, RuntimeAdapter> = { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() };
   const deps: AppDeps = {
