@@ -30,7 +30,7 @@ function stubDeps() {
 
 // Mount sessionAdminRoutes behind a context middleware that sets the terminal
 // bearer token (null = loopback/no-token mode) plus the stubbed deps.
-function mountApp(bearerToken: string | null): { request: (p: string, init?: RequestInit) => Promise<Response> } {
+function mountApp(bearerToken: string | null): { request: (p: string, init?: RequestInit) => Response | Promise<Response> } {
   const deps = stubDeps();
   const app = new Hono();
   app.use("*", async (c, next) => {
@@ -45,7 +45,7 @@ function mountApp(bearerToken: string | null): { request: (p: string, init?: Req
   return app;
 }
 
-function post(app: { request: (p: string, init?: RequestInit) => Promise<Response> }, path: string, headers?: Record<string, string>) {
+function post(app: { request: (p: string, init?: RequestInit) => Response | Promise<Response> }, path: string, headers?: Record<string, string>) {
   return app.request(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(headers ?? {}) },

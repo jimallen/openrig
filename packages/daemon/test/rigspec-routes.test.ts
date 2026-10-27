@@ -16,7 +16,6 @@ import { RigInstantiator } from "../src/domain/rigspec-instantiator.js";
 import { RigSpecPreflight } from "../src/domain/rigspec-preflight.js";
 import { RigRepository as RigRepoClass } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { createApp } from "../src/server.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 
 const VALID_YAML = `
@@ -228,15 +227,11 @@ describe("Rigspec wiring", () => {
   it("createApp throws on mismatched exporter db handle", () => {
     const db1 = createFullTestDb();
     const db2 = createFullTestDb();
-    const goodDeps = createTestApp(db1);
     const otherRepo = new RigRepoClass(db2);
     const otherRegistry = new SessionRegistry(db2);
     const badExporter = new RigSpecExporterClass({ rigRepo: otherRepo, sessionRegistry: otherRegistry });
 
-    expect(() => createApp({
-      ...extractDeps(goodDeps),
-      rigSpecExporter: badExporter,
-    })).toThrow(/rigSpecExporter.*same db handle/);
+    expect(() => createTestApp(db1, { appDeps: { rigSpecExporter: badExporter } })).toThrow(/rigSpecExporter.*same db handle/);
     db1.close();
     db2.close();
   });
@@ -244,11 +239,7 @@ describe("Rigspec wiring", () => {
   it("createApp throws on mismatched instantiator db handle", () => {
     const db1 = createFullTestDb();
     const db2 = createFullTestDb();
-    const goodDeps = createTestApp(db1);
-    expect(() => createApp({
-      ...extractDeps(goodDeps),
-      rigInstantiator: { db: db2 } as any,
-    })).toThrow(/rigInstantiator.*same db handle/);
+    expect(() => createTestApp(db1, { appDeps: { rigInstantiator: { db: db2 } as any } })).toThrow(/rigInstantiator.*same db handle/);
     db1.close();
     db2.close();
   });
@@ -256,11 +247,7 @@ describe("Rigspec wiring", () => {
   it("createApp throws on mismatched preflight db handle", () => {
     const db1 = createFullTestDb();
     const db2 = createFullTestDb();
-    const goodDeps = createTestApp(db1);
-    expect(() => createApp({
-      ...extractDeps(goodDeps),
-      rigSpecPreflight: { db: db2 } as any,
-    })).toThrow(/rigSpecPreflight.*same db handle/);
+    expect(() => createTestApp(db1, { appDeps: { rigSpecPreflight: { db: db2 } as any } })).toThrow(/rigSpecPreflight.*same db handle/);
     db1.close();
     db2.close();
   });
@@ -803,22 +790,3 @@ describe("Rigspec import routes (pod-aware dual-stack)", () => {
     expect(body.nodes).toEqual([{ logicalId: "research.scout", status: "materialized" }]);
   });
 });
-
-function extractDeps(setup: ReturnType<typeof createTestApp>) {
-  return {
-    rigRepo: setup.rigRepo,
-    sessionRegistry: setup.sessionRegistry,
-    eventBus: setup.eventBus,
-    nodeLauncher: setup.nodeLauncher,
-    tmuxAdapter: (setup as any).tmuxAdapter ?? setup.app,
-    cmuxAdapter: (setup as any).cmuxAdapter ?? setup.app,
-    snapshotCapture: setup.snapshotCapture,
-    snapshotRepo: setup.snapshotRepo,
-    restoreOrchestrator: setup.restoreOrchestrator,
-    rigSpecExporter: setup.rigSpecExporter,
-    rigSpecPreflight: setup.rigSpecPreflight,
-    rigInstantiator: setup.rigInstantiator,
-    podInstantiator: (setup as any).podInstantiator,
-    podBundleSourceResolver: (setup as any).podBundleSourceResolver,
-  };
-}

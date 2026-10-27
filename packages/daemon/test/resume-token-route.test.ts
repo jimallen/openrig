@@ -17,7 +17,7 @@ function seedRigNodes(db: Database.Database) {
   db.prepare("INSERT INTO nodes (id, rig_id, logical_id, role, runtime) VALUES (?, ?, ?, ?, ?)").run("node-3", "rig-1", "infra.term", "infra", "terminal");
 }
 
-function post(app: { request: (p: string, init?: RequestInit) => Promise<Response> }, name: string, body: unknown, headers?: Record<string, string>) {
+function post(app: { request: (p: string, init?: RequestInit) => Response | Promise<Response> }, name: string, body: unknown, headers?: Record<string, string>) {
   return app.request(`/api/sessions/${encodeURIComponent(name)}/resume-token`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(headers ?? {}) },

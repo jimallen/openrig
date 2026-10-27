@@ -583,7 +583,7 @@ profiles:
       RIG_ROOT,
     );
     expect(existing.ok).toBe(true);
-    if (!existing.ok) throw new Error(existing.error);
+    if (!existing.ok) throw new Error(`instantiate failed: ${JSON.stringify(existing)}`);
 
     const existingNodeId = existing.result.nodes[0]!.id;
     const readStartup = (nodeId: string) => db.prepare(`
@@ -599,7 +599,7 @@ profiles:
       RIG_ROOT,
     );
     expect(future.ok).toBe(true);
-    if (!future.ok) throw new Error(future.error);
+    if (!future.ok) throw new Error(`instantiate failed: ${JSON.stringify(future)}`);
 
     expect(readStartup(existingNodeId)).toEqual(before);
 
@@ -1223,14 +1223,14 @@ profiles:
       expect(down.every(cmd => !cmd.includes("--volumes"))).toBe(true);
       if (scenario.includes("cleanup-failure")) {
         expect(rigRepo.getServicesRecord(currentId!)).not.toBeNull();
-        if (!result.ok) expect(result.message).toContain("retained for recovery");
+        expect(result).toMatchObject({ ok: false, message: expect.stringContaining("retained for recovery") });
       } else {
         expect(rigRepo.getRig(currentId!)).toBeNull();
       }
       if (predecessor) {
         expect(rigRepo.findUnarchivedRigsByName("test-rig").map(rig => rig.id)).toContain(predecessor.id);
         expect(commands.some(cmd => cmd.includes("-p 'legacy-project'") && cmd.includes("up -d"))).toBe(true);
-        if (scenario === "inherited-boot-failure" && !result.ok) expect(result.message).toContain("Compose up may have changed its runtime");
+        if (scenario === "inherited-boot-failure") expect(result).toMatchObject({ ok: false, message: expect.stringContaining("Compose up may have changed its runtime") });
       }
     } finally { db.close(); }
   });
