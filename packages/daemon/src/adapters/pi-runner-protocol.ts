@@ -76,17 +76,23 @@ export interface PiRunnerState {
   /** OF-119: ISO time the runner last proved it was running (every sidecar write, and a tick every PI_SIDECAR_TICK_MS
    *  while it is ready). `rig send` believes `busy` only while this is within PI_SIDECAR_ALIVE_WINDOW_MS of now, so a
    *  hung runner frozen at `busy: false` cannot read idle forever. Absent in a sidecar from a runner older than OF-119:
-   *  the adapter then gives no answer (today's hook-and-pane logic decides). */
+   *  that sidecar is believed as before, from `busy` (see piSidecarAlive). */
   aliveAt?: string;
 }
 
 /** OF-119: how often a ready runner rewrites its sidecar, and how old `aliveAt` may be before the sidecar is no answer. */
 export const PI_SIDECAR_TICK_MS = 60_000;
+/** How often the runner checks whether a tick is due (and whether the wall clock jumped, as after a host sleep). */
+export const PI_SIDECAR_CHECK_MS = 5_000;
 export const PI_SIDECAR_ALIVE_WINDOW_MS = 180_000;
 
-/** The ONE alive rule for the Pi/OMP sidecar (as pdaSidecarAlive is for pda): `aliveAt` is a time within the window on
- *  either side of now. Older means the runner died without an `exited` or hung; a future one is a clock jump or a forged file. */
+/** The ONE alive rule for the Pi/OMP sidecar (as pdaSidecarAlive is for pda). A sidecar WITHOUT `aliveAt` was written by
+ *  a runner older than OF-119, which is still running after a daemon release until its seat is relaunched: it is believed
+ *  as before, from `busy` (refusing it would bring the OF-88 question-frame refusal back for every live seat). One WITH
+ *  `aliveAt` is believed only while that is a time within the window on either side of now: older means the runner died
+ *  without an `exited` or hung, and a future one is a clock jump or a forged file. A malformed `aliveAt` is not a time. */
 export function piSidecarAlive(state: PiRunnerState, nowMs: number): boolean {
+  if (state.aliveAt === undefined) return true;
   const alive = typeof state.aliveAt === "string" ? Date.parse(state.aliveAt) : NaN;
   return Number.isFinite(alive) && Math.abs(nowMs - alive) <= PI_SIDECAR_ALIVE_WINDOW_MS;
 }

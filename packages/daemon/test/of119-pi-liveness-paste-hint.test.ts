@@ -81,6 +81,37 @@ describe("OF-119 runner: the sidecar carries aliveAt, and a ready runner ticks",
     expect(sidecars.at(-1)).toBe(last);
   });
 
+  it("a host wake (the wall clock jumps an hour while timers stood still) writes at the next 5 s check, not up to 60 s later", () => {
+    vi.useFakeTimers();
+    try {
+      const tickAlive = vi.fn();
+      const timer = startAliveTick({ tickAlive });
+      vi.advanceTimersByTime(10_000);
+      expect(tickAlive).toHaveBeenCalledTimes(0);
+      vi.setSystemTime(Date.now() + 3_600_000); // sleep: Date moved an hour, the timers did not
+      vi.advanceTimersByTime(5_000);
+      expect(tickAlive).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(55_000); // the cadence restarts from the wake write
+      expect(tickAlive).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(5_000);
+      expect(tickAlive).toHaveBeenCalledTimes(2);
+      clearInterval(timer);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a wall clock stepped back an hour also writes at the next check (aliveAt would otherwise read as the far future)", () => {
+    vi.useFakeTimers();
+    try {
+      const tickAlive = vi.fn();
+      const timer = startAliveTick({ tickAlive });
+      vi.advanceTimersByTime(10_000);
+      vi.setSystemTime(Date.now() - 3_600_000);
+      vi.advanceTimersByTime(5_000);
+      expect(tickAlive).toHaveBeenCalledTimes(1);
+      clearInterval(timer);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("startAliveTick ticks once per 60 s, and never keeps the process alive (unref'd)", () => {
     vi.useFakeTimers();
     try {
@@ -187,13 +218,30 @@ describe("OF-119 adapter and transport: a sidecar that stopped ticking is no ans
   });
 
   it.each([
-    ["no aliveAt (a runner older than OF-119)", undefined],
     ["an unparseable aliveAt", "not a time"],
     ["a non-string aliveAt", 12345],
+    ["a null aliveAt", null],
   ])("adapter: %s is no answer", async (_name, aliveAt) => {
     const { pi } = setup();
     sidecar({ aliveAt });
     expect(await pi.sendReadiness(target)).toBeNull();
+  });
+
+  it("adapter: a sidecar with no aliveAt is a runner older than OF-119, believed as before from busy (idle, and running)", async () => {
+    const { pi, omp } = setup();
+    sidecar({ aliveAt: undefined });
+    expect(await pi.sendReadiness(target)).toMatchObject({ state: "idle", reason: "runner_idle", evidenceSource: "runner_sidecar" });
+    expect(await omp.sendReadiness(target)).toMatchObject({ state: "idle", reason: "runner_idle", evidenceSource: "runner_sidecar" });
+    sidecar({ aliveAt: undefined, busy: true });
+    expect(await pi.sendReadiness(target)).toMatchObject({ state: "running", reason: "run_active" });
+  });
+
+  it("transport: a runner started before this release (no aliveAt) still decides, so a question-ending frame does not refuse the send after the daemon is released", async () => {
+    sidecar({ aliveAt: undefined });
+    const { transport, sendText } = setup();
+    const r = await transport.send(SEAT, "hello");
+    expect(r.ok).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(1);
   });
 
   it("adapter: a busy runner is believed running only while it ticks too", async () => {
@@ -257,6 +305,29 @@ describe("OF-119 pane editor: an unclosed paste says what holds Ctrl-C and Enter
       vi.advanceTimersByTime(120_000);
       expect(t.hints()).toHaveLength(1); // once per open paste
     } finally { t.rl.close(); }
+  });
+
+  it("the Pi/OMP hint says Ctrl-C also aborts the current turn; the pda editor (own interrupt) says it only clears the line", () => {
+    const pi = editor("pi");
+    try {
+      pi.input.write(START + "torn");
+      vi.advanceTimersByTime(10_000);
+      expect(pi.hints()[0]).toContain("clears the line and aborts the current turn");
+    } finally { pi.rl.close(); }
+    const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode: vi.fn() });
+    const out = new PassThrough();
+    const output = Object.assign(out, { isTTY: true, columns: 80 });
+    let text = "";
+    out.on("data", (b) => { text += b.toString(); });
+    const rl = createRunnerInput(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream, () => undefined,
+      { label: "pda-runner", interruptInsidePaste: "content", onInterrupt: () => undefined });
+    try {
+      input.write(START + "torn");
+      vi.advanceTimersByTime(10_000);
+      expect(text).toContain("[pda-runner] paste still open");
+      expect(text).toContain("clears the line.");
+      expect(text).not.toContain("abort");
+    } finally { rl.close(); }
   });
 
   it("the hint's way out works: typing Esc then [201~ closes the paste, and the next Ctrl-C clears and aborts", () => {

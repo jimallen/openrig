@@ -31,7 +31,7 @@ import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
 import {
   piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState,
-  PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, PI_RUNNER_ERROR_MARKER, PI_PROVIDER_ENV_VARS, PI_SIDECAR_TICK_MS,
+  PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, PI_RUNNER_ERROR_MARKER, PI_PROVIDER_ENV_VARS, PI_SIDECAR_TICK_MS, PI_SIDECAR_CHECK_MS,
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
 
@@ -883,10 +883,19 @@ export function prepareRunnerSidecar(
   return { catchUpSince: resuming ? prior?.lastEntryId : undefined };
 }
 
-/** OF-119: rewrite the runner's sidecar every PI_SIDECAR_TICK_MS (unref'd, so it never keeps the process alive). A runner
+/** OF-119: keep the runner's sidecar fresh while it idles: rewrite it once `everyMs` of WALL-CLOCK time has passed since the
+ *  last tick, checking every PI_SIDECAR_CHECK_MS (unref'd, so it never keeps the process alive). Wall clock, because the
+ *  reader judges `aliveAt` by it and Node's timers stand still while a laptop sleeps: a plain 60 s interval would leave a
+ *  healthy runner looking stale for up to 60 s after a wake, so the check notices the jump and writes at once. A runner
  *  whose event loop is blocked stops ticking, and `rig send` stops believing its last `busy` after the alive window. */
 export function startAliveTick(core: Pick<RunnerCore, "tickAlive">, everyMs = PI_SIDECAR_TICK_MS): ReturnType<typeof setInterval> {
-  const timer = setInterval(() => core.tickAlive(), everyMs);
+  let last = Date.now();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    if (now - last < everyMs && now >= last) return; // a clock stepped back also writes
+    last = now;
+    core.tickAlive();
+  }, PI_SIDECAR_CHECK_MS);
   timer.unref();
   return timer;
 }
@@ -1195,8 +1204,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     core.handlePiLine(line);
   });
-  // Re-deliver OMP identity until the daemon confirms the resume token.
   startAliveTick(core);
+  // Re-deliver OMP identity until the daemon confirms the resume token.
   const identityRetry = runtime === "omp" ? setInterval(() => core.retrySessionIdentity(), IDENTITY_RETRY_MS) : undefined;
   identityRetry?.unref();
   // The last few stderr lines, so an OMP that exits during startup is

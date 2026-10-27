@@ -76,7 +76,7 @@ export function createRunnerInput(
     if (!etxInPasteIsContent) return;
     pasteHint = setTimeout(() => {
       pasteHint = null;
-      output.write(`\n[${label}] paste still open (its end marker has not arrived): Ctrl-C and Enter are pasted text until it closes. Paste anything, or type Esc then [201~, to close it; Ctrl-C then clears the line.\n`);
+      output.write(`\n[${label}] paste still open (its end marker has not arrived): Ctrl-C and Enter are pasted text until it closes. Paste anything, or type Esc then [201~, to close it. Ctrl-C after that clears the line${options.onInterrupt ? "" : " and aborts the current turn"}.\n`);
     }, options.pasteOpenHintMs ?? PASTE_OPEN_HINT_MS);
     pasteHint.unref?.();
   };

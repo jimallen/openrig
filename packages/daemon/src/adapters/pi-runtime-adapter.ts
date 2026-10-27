@@ -382,10 +382,11 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
 
   /** OF-88: the runner's answer for `rig send`, from its sidecar, so a runner pane is never read by the pane
    *  classifier (a reply ending in a question looked like a prompt). Null (never a throw) means "no runner answer"
-   *  and send gating falls back to today's hook-and-pane logic: no sidecar, not ready, exited, or a sidecar from a
-   *  runner older than OF-88 (no `busy` field) or older than OF-119 (no alive tick), or one whose alive tick has
-   *  stopped (a runner that hung, or died without an `exited`). The transport also applies the shell-foreground
-   *  clause at the seam, which retires a sidecar left by a killed runner whose pane went back to a shell. */
+   *  and send gating falls back to today's hook-and-pane logic: no sidecar, not ready, exited, a sidecar from a
+   *  runner older than OF-88 (no `busy` field), or one whose alive tick (`aliveAt`, OF-119) has stopped: a runner
+   *  that hung, or died without an `exited`. A sidecar with no `aliveAt` at all is a runner older than OF-119 and is
+   *  believed as before. The transport also applies the shell-foreground clause at the seam, which retires a
+   *  sidecar left by a killed runner whose pane went back to a shell. */
   async sendReadiness(target: RunnerReadinessTarget): Promise<AgentActivity | null> {
     let state: PiRunnerState | null;
     try { state = this.readRunnerState(target.sessionName); } catch { return null; }
