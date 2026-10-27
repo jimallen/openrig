@@ -292,11 +292,12 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
   const unquote = (s: string) => s.replace(/'"'"'/g, "\u0000").replace(/^'|'$/g, "").replace(/\u0000/g, "'");
 
   /** A tmux with a session environment: source-file applies the set-environment lines of a file the adapter wrote. */
-  function fakeTmux(build: Build, initial: Record<string, string>, options: { respawnFails?: boolean; failShow?: boolean; failSource?: boolean; failUnsetProbe?: boolean; holdFirstProbeReadBack?: { reached: () => void; release: Promise<void> } } = {}) {
+  function fakeTmux(build: Build, initial: Record<string, string>, options: { respawnFails?: boolean; failShow?: boolean; failSource?: boolean; failUnsetProbe?: boolean; holdFirstProbeReadBack?: { reached: () => void; release: Promise<void> }; duringFirstProbeUnset?: () => Promise<void> } = {}) {
     const env = new Map(Object.entries(initial));
     const calls: string[][] = [];
     const { ops, seen } = recordingFileOps();
     let hold = options.holdFirstProbeReadBack;
+    let duringUnset = options.duringFirstProbeUnset;
     const adapter = new TmuxAdapter(async () => "", ops, async argv => {
       calls.push(argv);
       if (hold && argv[1] === "show-environment" && argv.at(-1)?.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")) {
@@ -315,6 +316,11 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
         return "";
       }
       if (argv[1] === "set-environment" && argv.includes("-u")) {
+        if (duringUnset && argv.at(-1)!.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")) {
+          const hook = duringUnset;
+          duringUnset = undefined; // only the first probe key's unset
+          await hook(); // another caller runs while this probe's own unset is still in flight
+        }
         if (options.failUnsetProbe && argv.at(-1)!.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")) throw new Error("set-environment failed");
         env.delete(argv.at(-1)!);
         return "";
@@ -442,6 +448,22 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
       expect(env.has(live!)).toBe(true);
       release();
       expect(await first).toBe(SECRET);
+    });
+
+    // OF-149: a probe's key leaves the live set only after its own unset has been tried. While that unset is in flight the
+    // key is still the probe's: a sweep of another caller must not issue a second unset for it.
+    it("while a probe's own unset is in flight, a concurrent sweep does not unset that key a second time", async () => {
+      const holder: { adapter?: ReturnType<typeof fakeTmux>["adapter"] } = {};
+      const { adapter, calls } = fakeTmux("ubuntu", { K_VAR: SECRET, K_OTHER: "other$value" }, {
+        duringFirstProbeUnset: async () => { expect(await holder.adapter!.getSessionEnv("s", "K_OTHER")).toBe("other$value"); },
+      });
+      holder.adapter = adapter;
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      const unsets = calls.filter(a => a[1] === "set-environment" && a.includes("-u")).map(a => a.at(-1)!);
+      const [first] = unsets; // the first probe key unset is the outer probe's own
+      expect(first!.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")).toBe(true);
+      expect(unsets.filter(k => k === first)).toHaveLength(1); // positive control: the concurrent read really ran (it unset its own key too)
+      expect(unsets.filter(k => k.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")).length).toBeGreaterThanOrEqual(2);
     });
 
     it("a sweep whose unset fails is named by key (never a value) and does not fail the read it ran in", async () => {

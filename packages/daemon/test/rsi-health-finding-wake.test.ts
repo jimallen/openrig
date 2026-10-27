@@ -1,7 +1,9 @@
 import { pruneWatchdogHistory } from "../src/domain/queue-retention.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { OPENRIG_HOME } from "../src/openrig-compat.js";
+import { knownFixesPath } from "../src/domain/rsi/registry.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -908,6 +910,47 @@ describe("RSI B1 boot registration (rsi.steward_session)", () => {
       const outcome = await policy!.evaluate({ jobId: wakeJob.jobId, target: { session: STEWARD } } as never);
       expect(outcome).toMatchObject({ action: "send", target: { session: STEWARD } });
       expect(outcome.action === "send" ? outcome.message : "").toContain(fp("rig-dead"));
+    });
+
+    // OF-145 wiring: startup.ts hands the wake policy the sweep's own retention.watchdog_days. Without that line the policy
+    // judges "older than retention" by the 14-day default, and an episode between the configured window and 14 days whose
+    // naming row the sweep deleted is named a second time.
+    it("the wake judges an episode against the configured retention.watchdog_days, not the default (startup wiring)", async () => {
+      const savedDays = process.env.OPENRIG_RETENTION_WATCHDOG_DAYS;
+      const cleanup: string[] = [];
+      process.env.OPENRIG_RSI_STEWARD_SESSION = STEWARD;
+      process.env.OPENRIG_RETENTION_WATCHDOG_DAYS = "3";
+      try {
+        const dir = mkdtempSync(join(tmpdir(), "rsi-b1-window-"));
+        dirs.push(dir);
+        const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite") });
+        dbs.push(daemon.db);
+        const wakeJob = rsiJobs(daemon.db).find((j) => j.policy === HEALTH_FINDING_WAKE_POLICY)!;
+        const policy = daemon.deps.watchdogPolicyEngine!.resolvePolicy(HEALTH_FINDING_WAKE_POLICY)!;
+        // Three real sources read blind when their known-fixes anchor file is not a regular file (a directory here), in the
+        // hermetic fixture home only: never a real home.
+        expect(OPENRIG_HOME.startsWith(tmpdir()), `OPENRIG_HOME ${OPENRIG_HOME} is not a fixture home`).toBe(true);
+        const anchors = knownFixesPath(OPENRIG_HOME);
+        mkdirSync(anchors, { recursive: true });
+        cleanup.push(anchors);
+        const job = { jobId: wakeJob.jobId, target: { session: STEWARD } } as never;
+        const newlyBlind = (outcome: { notes?: Record<string, unknown> }) => (outcome.notes?.newlyBlind ?? []) as Array<{ source: string; reason: string }>;
+        const blind = newlyBlind(await policy.evaluate(job));
+        expect(blind.length, "positive control: some source reads blind at wall clock, and this job names it").toBeGreaterThan(0);
+        // The episode began 5 days ago, after this job was registered 6 days ago, and its naming row is gone (the sweep, 3-day window).
+        const day = 24 * HOUR;
+        daemon.db.prepare("UPDATE watchdog_jobs SET registered_at = ? WHERE job_id = ?").run(new Date(Date.now() - 6 * day).toISOString(), wakeJob.jobId);
+        const open = daemon.db.prepare("INSERT INTO rsi_finding_state (fingerprint, source, state, activated_at, last_seen_at) VALUES (?, ?, 'active', ?, ?)");
+        for (const pair of blind) open.run(`rsi.source-blind/${pair.source}/${pair.reason}`, pair.source, new Date(Date.now() - 5 * day).toISOString(), new Date(Date.now() - 5 * day).toISOString());
+        expect(daemon.db.prepare("SELECT COUNT(*) AS n FROM watchdog_history WHERE job_id = ?").get(wakeJob.jobId)).toEqual({ n: 0 });
+        // 5 days is inside the default 14-day window and outside the configured 3-day one: only the configured window reads it as named.
+        expect(newlyBlind(await policy.evaluate(job))).toEqual([]);
+      } finally {
+        for (const path of cleanup) rmSync(path, { recursive: true, force: true });
+        if (savedDays === undefined) delete process.env.OPENRIG_RETENTION_WATCHDOG_DAYS;
+        else process.env.OPENRIG_RETENTION_WATCHDOG_DAYS = savedDays;
+        delete process.env.OPENRIG_RSI_STEWARD_SESSION;
+      }
     });
 
     it("ONE RSI source array with retention OFF too: every RSI detector id still maps to a wake source the projection serves", async () => {
