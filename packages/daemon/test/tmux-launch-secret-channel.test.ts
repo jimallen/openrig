@@ -4,7 +4,7 @@ import path from "node:path";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter, defaultTmuxFileOps, type TmuxFileOps } from "../src/adapters/tmux.js";
 import { ARGV_SAFE_LAUNCH_ENV_KEYS, partitionLaunchEnv, renderSecretEnvScript } from "../src/adapters/tmux-launch-env-channel.js";
 
@@ -292,7 +292,7 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
   const unquote = (s: string) => s.replace(/'"'"'/g, "\u0000").replace(/^'|'$/g, "").replace(/\u0000/g, "'");
 
   /** A tmux with a session environment: source-file applies the set-environment lines of a file the adapter wrote. */
-  function fakeTmux(build: Build, initial: Record<string, string>, options: { respawnFails?: boolean; failShow?: boolean; failSource?: boolean } = {}) {
+  function fakeTmux(build: Build, initial: Record<string, string>, options: { respawnFails?: boolean; failShow?: boolean; failSource?: boolean; failUnsetProbe?: boolean } = {}) {
     const env = new Map(Object.entries(initial));
     const calls: string[][] = [];
     const { ops, seen } = recordingFileOps();
@@ -307,7 +307,11 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
         }
         return "";
       }
-      if (argv[1] === "set-environment" && argv.includes("-u")) { env.delete(argv.at(-1)!); return ""; }
+      if (argv[1] === "set-environment" && argv.includes("-u")) {
+        if (options.failUnsetProbe && argv.at(-1)!.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")) throw new Error("set-environment failed");
+        env.delete(argv.at(-1)!);
+        return "";
+      }
       if (argv[1] === "show-environment" && !argv.includes("-g")) {
         if (options.failShow && argv.length > 4) throw new Error("tmux gone");
         const key = argv[4];
@@ -323,7 +327,8 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
 
   const VALUES = ["plain", "a$b", "$a", "a$", "a$1", "a${b}", "a$(b)", "a$$b", "a\\$b", "\\$e", "x\\$", "p\\$q \\\\$r \\$", "a\\\\$b", "$", "$$$", "tok$_en", "q'$a'z"];
   for (const build of ["raw", "ubuntu", "every"] as const) {
-    it.each(VALUES)(`build ${build}: the value ${"%j"} comes back exactly as it was stored`, async value => {
+    // The title carries the value with its `$` written as \u0024: vitest reads `$name` in a title as a placeholder.
+    it.each(VALUES.map(v => [JSON.stringify(v).replace(/\$/g, "\\u0024"), v] as const))(`build ${build}: the value %s comes back exactly as it was stored`, async (_label, value) => {
       const { adapter, env } = fakeTmux(build, { K_VAR: value });
       expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(value);
       expect(probeKeys(env)).toEqual([]); // the scratch variable is gone
@@ -350,6 +355,56 @@ describe("OF-132: getSessionEnv returns the value the session holds, on any tmux
     expect(calls.flat().some(a => a.includes("s3cr3t"))).toBe(false);
     expect(seen.writes.length).toBeGreaterThan(0);
     for (const w of seen.writes) { expect(w.mode).toBe(0o600); expect(w.flag).toBe("wx"); }
+  });
+
+  // N1 (review of 1c4a649e): the scratch variable holds a credential candidate and sits outside every key list the restore manages,
+  // so a failed unset is named (key only) and a leftover is swept the next time the session is probed or restored.
+  describe("a scratch variable that outlives its probe", () => {
+    const LEFT = "OPENRIG_TMUX_ESCAPE_PROBE_0123456789abcdef0123456789abcdef";
+    const SECRET = "cand1date$s3cr3t";
+    const logs: string[] = [];
+    beforeEach(() => { logs.length = 0; vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => { logs.push(args.join(" ")); }); });
+    afterEach(() => { vi.restoreAllMocks(); });
+    const warned = () => logs;
+
+    it("a failing unset is named by key (never a value), does not fail the read, and the leftover is swept by the next read before anything new is written", async () => {
+      const options = { failUnsetProbe: true };
+      const { adapter, env, calls } = fakeTmux("ubuntu", { K_VAR: SECRET }, options);
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      expect(probeKeys(env)).toHaveLength(1); // left behind
+      const [left] = probeKeys(env);
+      expect(warned().some(m => m.includes(left!) && m.includes("could not remove"))).toBe(true);
+      expect(warned().join("\n")).not.toContain("s3cr3t");
+      options.failUnsetProbe = false;
+      const before = calls.length;
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      expect(probeKeys(env)).toEqual([]);
+      const second = calls.slice(before);
+      const sweep = second.findIndex(a => a[1] === "set-environment" && a.includes("-u") && a.at(-1) === left);
+      const firstWrite = second.findIndex(a => a[1] === "source-file");
+      expect(sweep).toBeGreaterThanOrEqual(0);
+      expect(sweep).toBeLessThan(firstWrite);
+    });
+
+    it("a leftover from a crashed probe is removed by the next probe, and only probe keys are touched", async () => {
+      const { adapter, env } = fakeTmux("ubuntu", { K_VAR: SECRET, [LEFT]: "old$candidate", OPENRIG_PROBE_LOOKALIKE: "keep", ANTHROPIC_API_KEY: "keep" });
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      expect(env.has(LEFT)).toBe(false);
+      expect([...env.keys()].sort()).toEqual(["ANTHROPIC_API_KEY", "K_VAR", "OPENRIG_PROBE_LOOKALIKE"]);
+    });
+
+    it("a leftover is removed by a respawn restore too (the refused respawn of a credentialed seat)", async () => {
+      const { adapter, env } = fakeTmux("raw", { OPENRIG_ACTIVITY_HOOK_TOKEN: "old-token", [LEFT]: "old$candidate" }, { respawnFails: true });
+      expect((await adapter.respawnPane("%3", "/bin/sh", { env: { OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK } })).ok).toBe(false);
+      expect(env.has(LEFT)).toBe(false);
+      expect(env.get("OPENRIG_ACTIVITY_HOOK_TOKEN")).toBe("old-token");
+    });
+
+    it("control: a read of a value with no $ neither probes nor sweeps", async () => {
+      const { adapter, env } = fakeTmux("raw", { K_VAR: "plain", [LEFT]: "x" });
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("plain");
+      expect(env.has(LEFT)).toBe(true);
+    });
   });
 
   it("a build whose rule nothing can undo refuses (no guess), and leaves no scratch variable", async () => {
