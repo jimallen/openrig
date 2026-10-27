@@ -1758,6 +1758,13 @@ export class PodRigInstantiator {
       return { ok: false, code: "instantiate_error", message: `all node launches/startups failed — ${details}${serviceCleanupError ? `; ${serviceCleanupError}` : ""}${restoreNote}` };
     }
 
+    // OF-107: the rig now records a spec source that a later fresh launch will refuse. Said here, while the operator is
+    // looking at the launch, not first when a restore or `rig seat launch --fresh` is refused.
+    if (opts?.specSourcePath) {
+      const untrusted = this.untrustedSpecSourceWarning(rigId, opts.specSourcePath);
+      if (untrusted) podInstantiateWarnings.push(untrusted);
+    }
+
     if (hasAttention && !hasLaunched) {
       // All-attention_required path — rig + sessions PRESERVED; no
       // tear-down. Inspect the session and reason to distinguish native
@@ -2729,6 +2736,49 @@ export class PodRigInstantiator {
     return { ok: true, plan: planResult.plan, resolvedStartupFiles, startupActions, conflictWarnings };
   }
 
+  /** OF-107: the `rig up` warning for a spec source a later fresh launch will refuse, or null when it is trusted. */
+  private untrustedSpecSourceWarning(rigId: string, specSource: string): string | null {
+    const rig = this.deps.rigRepo.getRig(rigId);
+    if (!rig) return null;
+    const judged = this.judgeRecordedSpec(specSource, rig);
+    if (judged.ok || judged.code === "spec_unreadable") return null;
+    return `This rig was started from ${specSource}, which is not a trusted spec source, so a later fresh launch of its seats from the spec (rig seat launch --fresh, or a restore of a seat listed with --fresh) will be refused with startup_source_untrusted (${judged.message}) Your seats are running as launched. Fix: rig spec-source set ${rigId} <path-to-a-reviewed-rig.yaml-in-a-trusted-spec-root> --operator <address>; or start such a seat from its saved files with --startup-from stored.`;
+  }
+
+  /** OF-103: the one judgement of a rig's recorded spec source, by the rules `rig spec-source set` applies (a read). */
+  private judgeRecordedSpec(specSource: string, rig: { rig: { name: string }; nodes: Array<{ cwd?: string | null }> }) {
+    return judgeSpecSource({
+      specSource, use: "read", rigName: rig.rig.name, seatFolders: rig.nodes.map((n) => n.cwd).filter((c): c is string => !!c),
+      trust: this.deps.specSourceTrust ?? specSourceTrustOf(undefined),
+    });
+  }
+
+  /**
+   * OF-107: whether a fresh launch of this rig's seats is refused for want of a trusted spec source
+   * (`startup_source_untrusted`). False when none is recorded, when it is trusted, or when it cannot be judged because
+   * its file is missing (that is "unavailable", a different refusal). Reads only.
+   */
+  recordedSpecSourceUntrusted(rigId: string): boolean {
+    const specSource = this.deps.rigRepo.getRigSpecSource(rigId);
+    const rig = specSource ? this.deps.rigRepo.getRig(rigId) : null;
+    if (!specSource || !rig || !nodePath.isAbsolute(specSource)) return false;
+    const judged = this.judgeRecordedSpec(specSource, rig);
+    return !judged.ok && judged.code !== "spec_unreadable";
+  }
+
+  /**
+   * OF-122: the agent provenance of the persona a seat's `path:` agent_ref reaches now (through the guarded reader, as
+   * at first launch). A `local:` ref is relative to a rig root a stored-context launch does not have, so it is not
+   * re-read here. Reads only.
+   */
+  readSeatAgentProvenance(input: { nodeId: string }): { name: string; version: string; hash: string } | null {
+    const row = this.deps.db.prepare("SELECT agent_ref FROM nodes WHERE id = ?").get(input.nodeId) as { agent_ref: string | null } | undefined;
+    const ref = row?.agent_ref;
+    if (!ref || !ref.startsWith("path:")) return null;
+    const resolved = resolveAgentRef(ref, nodePath.dirname(ref.slice("path:".length)), this.deps.fsOps);
+    return resolved.ok ? { name: resolved.resolved.spec.name, version: resolved.resolved.spec.version, hash: resolved.resolved.hash } : null;
+  }
+
   /**
    * OF-32: re-read one existing agent seat's startup policy from its rig's recorded spec source, as that source
    * is now. The recorded spelling is re-anchored (a shipped spec follows the running install) and its links are
@@ -2757,10 +2807,7 @@ export class PodRigInstantiator {
     // OF-103: the recorded source is judged again here, by the rules `rig spec-source set` applies, because what it names
     // decides the persona this launch delivers. A refusal stops this seat's launch; it never falls back to the stored files
     // by itself (the operator may ask for them with --startup-from stored).
-    const judged = judgeSpecSource({
-      specSource, use: "read", rigName: rig.rig.name, seatFolders: rig.nodes.map((n) => n.cwd).filter((c): c is string => !!c),
-      trust: this.deps.specSourceTrust ?? specSourceTrustOf(undefined),
-    });
+    const judged = this.judgeRecordedSpec(specSource, rig);
     if (!judged.ok && judged.code !== "spec_unreadable") {
       return {
         kind: "refused", code: "startup_source_untrusted", specSource,

@@ -4,7 +4,7 @@
 // what restore WOULD decide (`predictListedSeatRefusals`), so a prediction cannot be looser than the restore it
 // predicts: they run one code path over the same inputs.
 import type Database from "better-sqlite3";
-import { resolveFreshSeatStartup, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { resolveFreshSeatStartup, specSourceUntrusted, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
 import { liveSeatGateInputs } from "./restore-seat-gates.js";
 import { freshSeatReplaysSnapshotStartup, startupInputFindings, validatePreRestore, type FreshSeatStartupOverride } from "./restore-preconditions.js";
@@ -41,7 +41,7 @@ type LiveRig = { rig: { name: string }; nodes: Array<{ id: string; logicalId: st
  * `selectedCopy`: the restored snapshot's copy of this seat's context.
  */
 export function startupToValidateForSeat(
-  deps: { db: Database.Database; rigRepo: { getRig(rigId: string): LiveRig | null; getRigSpecSource(rigId: string): string | null } },
+  deps: { db: Database.Database; rigRepo: { getRig(rigId: string): LiveRig | null; getRigSpecSource(rigId: string): string | null }; specReader?: SeatStartupSpecReader | null },
   input: { rigId: string; logicalId: string; adapters: Record<string, RuntimeAdapter | undefined> | undefined; freshLogicalIds?: string[]; startupFrom?: StartupFrom; selectedCopy?: NodeStartupSnapshot | null },
 ): FreshSeatStartupOverride {
   const rig = deps.rigRepo.getRig(input.rigId);
@@ -75,7 +75,7 @@ export function startupToValidateForSeat(
         logicalId: input.logicalId,
         target: "node_startup_context",
         message: `${noUsableCopyMessage(input.logicalId, pick.why)} Restore would start this seat fresh, so it starts nothing.`,
-        remediation: noUsableCopyRemedy({ scope: "restore", rigName: rig.rig.name, logicalId: input.logicalId, specRecorded: !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow }),
+        remediation: noUsableCopyRemedy({ scope: "restore", rigName: rig.rig.name, logicalId: input.logicalId, specRecorded: !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow, ...(specSourceUntrusted(deps.specReader, input.rigId) ? { specUntrusted: { rigId: input.rigId } } : {}) }),
       },
     };
   }
@@ -125,6 +125,7 @@ export async function decideListedFreshSeat(deps: ListedSeatDecisionDeps, input:
       rigId: input.rigId, nodeId: input.nodeId, logicalId: input.logicalId, runtime: input.runtime,
       cwd: input.cwd, sessionName: input.sessionName, startupFrom: input.startupFrom,
       refusalGuidance: `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(input.logicalId, input.rigName, "stored")}.`,
+      storedEscapeGuidance: `start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(input.logicalId, input.rigName, "stored")}.`,
     },
   );
   let refusal: string | null = null;
@@ -146,6 +147,7 @@ export async function decideListedFreshSeat(deps: ListedSeatDecisionDeps, input:
       refusal = `${noUsableCopyMessage(input.logicalId, pick.why)} ${noUsableCopyRemedy({
         scope: "seat", rigName: input.rigName, logicalId: input.logicalId,
         specRecorded: input.startupFrom === "stored" && !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow,
+        ...(specSourceUntrusted(deps.specReader, input.rigId) ? { specUntrusted: { rigId: input.rigId } } : {}),
       })}`;
     } else {
       chosen = pick.context;

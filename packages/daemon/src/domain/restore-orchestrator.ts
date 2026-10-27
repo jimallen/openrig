@@ -43,7 +43,7 @@ import type {
   NodeStartupSnapshot,
   RestoreStartupSource,
 } from "./types.js";
-import { projectRereadSkills, readSnapshotStartupCopy, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
+import { projectRereadSkills, readSnapshotStartupCopy, specSourceUntrusted, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { asReplayContext, decideListedFreshSeat, startupToValidateForSeat } from "./fresh-seat-restore-decision.js";
 import { writeStartupContext } from "./startup-orchestrator.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
@@ -972,7 +972,7 @@ export class RestoreOrchestrator {
    *  will act (see validatePreRestore's `freshSeatStartup`). */
   private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined, selectedCopy: NodeStartupSnapshot | null): FreshSeatStartupOverride {
     // Shared with restore-check (startupToValidateForSeat), so the check validates what restore validates.
-    return startupToValidateForSeat({ db: this.db, rigRepo: this.rigRepo }, {
+    return startupToValidateForSeat({ db: this.db, rigRepo: this.rigRepo, specReader: this.seatStartupSource }, {
       rigId, logicalId, adapters: opts?.adapters, freshLogicalIds: opts?.freshLogicalIds, startupFrom: opts?.startupFrom, selectedCopy,
     });
   }
@@ -1156,7 +1156,7 @@ export class RestoreOrchestrator {
         const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
         const next = now
           ? `To start it from the newest snapshot copy that can be used now (snapshot ${now.snapshotId}, ${now.kind}, taken ${now.createdAt}): rig seat launch ${quote(`${node.logicalId}@${rigName}`)} --fresh --startup-from snapshot:${now.snapshotId} --reason "<why>".`
-          : noUsableCopyRemedy({ scope: "seat", rigName, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(nodeId) !== undefined });
+          : noUsableCopyRemedy({ scope: "seat", rigName, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(nodeId) !== undefined, ...(specSourceUntrusted(this.seatStartupSource, rigId) ? { specUntrusted: { rigId } } : {}) });
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${node.logicalId}: snapshot ${carried.snapshotId}, whose copy of its startup files this restore checked before it started, was removed before the seat's launch, so restore does not choose another copy unchecked. ${next} No session was started.` };
       }
       const pick: SeatStartupForRestore = carried
@@ -1164,7 +1164,7 @@ export class RestoreOrchestrator {
         : seatStartupForRestore(this.db, { rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime }, data.nodeStartupContext?.[node.id] ?? null);
       if (pick.kind === "none_usable") {
         this.restoreNodeState(nodeId, priorState);
-        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: pick.ownRow });
+        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: pick.ownRow, ...(specSourceUntrusted(this.seatStartupSource, rigId) ? { specUntrusted: { rigId } } : {}) });
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${noUsableCopyMessage(node.logicalId, pick.why)} ${remedy} No session was started.` };
       }
       savedSetup = pick.context;

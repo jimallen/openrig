@@ -3,6 +3,7 @@
 // current when the pod was added. (The kernel rig `path:~/.agents-release/current/agents/rsi-engineer` pinned d4f6a482.)
 import type { StartupFrom } from "../src/domain/seat-startup-source.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -266,21 +267,35 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     expectRoleFrom("2.0.0");
   });
 
-  // OF-100, CHARACTERIZATION (not a statement of what should be): the seat's startup files follow the link, but the
-  // version and hash recorded on the node (what `rig whoami` shows) are those of the release current when the pod was
-  // added. A fresh launch from stored context never re-reads agent.yaml, so nothing refreshes them. Whether they SHOULD
-  // refresh is an open product call; if that lands, this row must change with it.
-  it("after a retarget, a fresh launch replays the new release but the recorded version and hash stay the old release's", async () => {
+  // OF-122 (Jim, 2026-10-27): a launch from stored context refreshes the recorded version and hash to the release the
+  // typed path reaches now, so `rig whoami` names what the seat was actually given. (Characterized as stale until then.)
+  const sha256Of = (file: string) => createHash("sha256").update(fs.readFileSync(file, "utf-8")).digest("hex");
+
+  it("after a retarget, a fresh launch replays the new release and the recorded version and hash become the new release's", async () => {
     const seat = await launchRig();
     expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
     const hashBefore = nodeHash(seat.nodeId);
-    expect(hashBefore).toBeTruthy();
+    expect(hashBefore).toBe(sha256Of(path.join(root, "releases", "aaaaaaa", "agents", "impl", "agent.yaml")));
     retarget("bbbbbbb");
 
     const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
 
     expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
     expectRoleFrom("2.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
+    expect(nodeHash(seat.nodeId)).toBe(sha256Of(path.join(root, "releases", "bbbbbbb", "agents", "impl", "agent.yaml")));
+    expect(nodeHash(seat.nodeId)).not.toBe(hashBefore);
+  });
+
+  it("a launch that fails leaves the recorded version and hash as they were", async () => {
+    const seat = await launchRig();
+    const hashBefore = nodeHash(seat.nodeId);
+    retarget("bbbbbbb");
+    tmux.createSession = vi.fn(async () => ({ ok: false as const, code: "unknown", message: "tmux refused" }));
+
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+
+    expect(fresh.ok).toBe(false);
     expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
     expect(nodeHash(seat.nodeId)).toBe(hashBefore);
   });
@@ -294,6 +309,7 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
 
     expect(node.status, JSON.stringify(node)).toBe("fresh-primed");
     expectRoleFrom("2.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("2.0.0");
   });
 
   it("a restore of a seat not listed with --fresh (a compaction-style restore of its saved setup) also follows the link", async () => {

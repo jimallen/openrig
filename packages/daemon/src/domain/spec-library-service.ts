@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative, dirname, extname, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -229,19 +229,16 @@ export class SpecLibraryService {
     // Workflow entries: yaml is read from the source path on demand.
     const wfEntry = this.workflowEntries.get(id);
     if (wfEntry) {
-      let yaml = "";
-      try { yaml = readFileSync(wfEntry.sourcePath, "utf-8"); } catch { /* tolerate */ }
-      return { entry: wfEntry, yaml };
+      // OF-111: the guarded reader the scan uses (a FIFO, runaway or hard-linked file swapped in since the scan is refused).
+      const checked = checkGuardedFile(SPEC_FILE_KIND, wfEntry.sourcePath, wfEntry.sourcePath);
+      return { entry: wfEntry, yaml: checked.ok ? checked.content : "" };
     }
     const entry = this.entries.get(id);
     if (!entry) return null;
 
-    try {
-      const yaml = readFileSync(entry.sourcePath, "utf-8");
-      return { entry, yaml };
-    } catch {
-      return null;
-    }
+    // OF-111: guarded as the scan is; a refused or vanished file is "not readable", as a failed read was.
+    const checked = checkGuardedFile(SPEC_FILE_KIND, entry.sourcePath, entry.sourcePath);
+    return checked.ok ? { entry, yaml: checked.content } : null;
   }
 
   /** True when a library path reaches its file through a symlink, so a library edit
@@ -294,8 +291,12 @@ export class SpecLibraryService {
       return { ok: false, code: "conflict", error: `Spec name '${trimmedName}' already exists in the library.` };
     }
 
-    const yaml = readFileSync(entry.sourcePath, "utf-8");
-    const raw = parseYaml(yaml) as Record<string, unknown> | null;
+    // OF-111: nothing is written over a file the guarded reader refuses (rename rewrites it in place).
+    const checked = checkGuardedFile(SPEC_FILE_KIND, entry.sourcePath, entry.sourcePath);
+    if (!checked.ok) {
+      return { ok: false, code: "invalid_spec", error: `Spec '${entry.name}' could not be read for rename: ${checked.message}` };
+    }
+    const raw = parseYaml(checked.content) as Record<string, unknown> | null;
     if (!raw || typeof raw !== "object") {
       return { ok: false, code: "invalid_spec", error: `Spec '${entry.name}' could not be parsed for rename.` };
     }

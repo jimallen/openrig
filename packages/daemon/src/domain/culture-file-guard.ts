@@ -72,6 +72,18 @@ export const SPEC_FILE_KIND: GuardedFileKind = {
 };
 
 /**
+ * OF-111: the plugin scan's JSON files (a plugin manifest and the hooks registry it names) live inside scanned plugin
+ * roots, so the same accidents apply (a FIFO, a runaway file, a hard link that aliases another file). Spec-sized cap.
+ */
+export const PLUGIN_JSON_KIND: GuardedFileKind = {
+  label: "plugin file",
+  maxBytes: SPEC_FILE_MAX_BYTES,
+  notFoundHint: "it vanished during the scan",
+  notRegularHint: "a plugin manifest or hooks registry must be a plain file",
+  article: "a plugin file",
+};
+
+/**
  * Check and read one guarded file. Order: realpath (follows every symlink) -> open the RESOLVED path once with
  * O_NOFOLLOW|O_NONBLOCK (a symlink swapped in at the leaf fails; a FIFO swapped in opens instead of hanging)
  * -> fstat that descriptor (regular file, one link, size) -> read from that same descriptor, never past the

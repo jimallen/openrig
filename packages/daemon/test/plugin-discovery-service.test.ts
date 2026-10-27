@@ -732,6 +732,76 @@ startup:
       // and unrelated string positions are ignored.
       expect(service.findUsedBy("openrig-core")).toEqual([]);
     });
+    // OF-111: a plugin manifest and its hooks registry are read from inside scanned plugin roots, through the guarded reader.
+    describe("guarded plugin JSON reads (OF-111)", () => {
+      const OVER_CAP = "x".repeat(300 * 1024);
+      function service() {
+        return new PluginDiscoveryService({
+          openrigPluginsDir: dirs.openrigPluginsDir,
+          claudeCacheDir: dirs.claudeCacheDir,
+          codexCacheDir: dirs.codexCacheDir,
+          specLibraryDir: dirs.specLibraryDir,
+        });
+      }
+
+      it("CONTROL: a normal manifest and hooks registry are read", () => {
+        const dir = join(dirs.openrigPluginsDir, "openrig-ok");
+        writeClaudePluginManifest(dir, { name: "openrig-ok", version: "0.1.0" });
+        writeHookManifest(dir, "claude", "Stop", "true");
+        const detail = service().getPlugin("openrig-ok");
+        expect(detail?.claudeManifest?.version).toBe("0.1.0");
+        expect(detail?.hooks.find((h) => h.runtime === "claude")?.events).toEqual(["Stop"]);
+      });
+
+      it("a manifest past the cap is not parsed, so the plugin is not listed (a plugin with no readable manifest never is)", () => {
+        const dir = join(dirs.openrigPluginsDir, "openrig-big");
+        writeClaudePluginManifest(dir, { name: "openrig-big", version: "0.1.0", pad: OVER_CAP });
+        expect(service().listPlugins().map((p) => p.id)).not.toContain("openrig-big");
+        expect(service().getPlugin("openrig-big")).toBeNull();
+      });
+
+      it("a hooks registry past the cap lists no events", () => {
+        const dir = join(dirs.openrigPluginsDir, "openrig-bighooks");
+        writeClaudePluginManifest(dir, { name: "openrig-bighooks", version: "0.1.0" });
+        writeHookRegistry(dir, "claude", { Stop: [{ hooks: [{ type: "command", command: OVER_CAP }] }] });
+        const detail = service().getPlugin("openrig-bighooks");
+        expect(detail?.hooks.find((h) => h.runtime === "claude")?.events).toEqual([]);
+      });
+
+      it("a hard-linked hooks registry lists no events", () => {
+        const dir = join(dirs.openrigPluginsDir, "openrig-linkedhooks");
+        writeClaudePluginManifest(dir, { name: "openrig-linkedhooks", version: "0.1.0" });
+        writeHookManifest(dir, "claude", "Stop", "true");
+        linkSync(join(dir, "hooks", "claude.json"), join(dirs.root, "alias.json"));
+        const detail = service().getPlugin("openrig-linkedhooks");
+        expect(detail?.hooks.find((h) => h.runtime === "claude")?.events).toEqual([]);
+      });
+
+      it("the duplicate-hook check does not count identities from a registry past the cap", () => {
+        const core = join(dirs.openrigPluginsDir, "openrig-core");
+        const rogue = join(dirs.openrigPluginsDir, "openrig-rogue");
+        writeClaudePluginManifest(core, { name: "openrig-core", version: "0.1.0", hooks: "./hooks/claude.json" });
+        writeClaudePluginManifest(rogue, { name: "openrig-rogue", version: "0.1.0", hooks: "./hooks/claude.json" });
+        writeHookManifest(core, "claude", "Stop", 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/refocus.cjs"');
+        // Same hook as core's, but the registry is padded past the cap, so it is not read.
+        writeHookRegistry(rogue, "claude", {
+          Stop: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/refocus.cjs"' }], pad: OVER_CAP }],
+        });
+        expect(() => service()).not.toThrow();
+      });
+
+      it("the openrig-lab migration leaves a hooks registry past the cap exactly as it was", () => {
+        const lab = join(dirs.openrigPluginsDir, "openrig-lab");
+        writeClaudePluginManifest(lab, { name: "openrig-lab", version: "0.1.0", hooks: "./hooks/claude.json" });
+        writeHookRegistry(lab, "claude", {
+          Stop: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/refocus.cjs"' }], pad: OVER_CAP }],
+        });
+        const before = readFileSync(join(lab, "hooks", "claude.json"), "utf8");
+        service();
+        expect(readFileSync(join(lab, "hooks", "claude.json"), "utf8")).toBe(before);
+        expect(readJson(join(lab, ".claude-plugin", "plugin.json"))).toHaveProperty("hooks", "./hooks/claude.json");
+      });
+    });
     describe("guarded scan of agent.yaml (OF-16)", () => {
       const PLUGIN_AGENT = `name: ok-agent
 version: "1.0"

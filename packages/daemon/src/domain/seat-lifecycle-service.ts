@@ -988,6 +988,9 @@ export class SeatLifecycleService {
       {
         rigId: seat.rigId, nodeId: node.id, logicalId: seat.logicalId, runtime: node.runtime ?? null, cwd: node.cwd ?? ".",
         sessionName: canonicalSessionName, startupFrom,
+        storedEscapeGuidance: storedEscape === "command"
+          ? `start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`
+          : "run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.",
         refusalGuidance: storedEscape === "command"
           // OF-38: a surface that cannot pass `startupFrom` (the TUI's explicit-fresh action) is told the CLI command.
           ? `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`
