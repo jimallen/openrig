@@ -150,8 +150,8 @@ export interface RunnerReadinessTarget {
 
 /** What SessionTransport consults for a runner-hosted seat's send readiness (review N3 seam guard). The
  *  transport asks, and believes, ONLY a runtime in `runtimes`: a runtime whose adapter declares
- *  `sendReadiness`. A mis-wired source can therefore never touch claude-code, codex, pi, omp, terminal or
- *  stub. Build it with `runnerSendReadinessFromAdapters`, never by hand. */
+ *  `sendReadiness` (today: pda, pi and omp). A mis-wired source can therefore never touch claude-code, codex,
+ *  terminal or stub. Build it with `runnerSendReadinessFromAdapters`, never by hand. */
 export interface RunnerSendReadinessSource {
   readonly runtimes: ReadonlySet<string>;
   ask(target: RunnerReadinessTarget & { runtime: string }): Promise<import("./types.js").AgentActivity | null>;
@@ -254,7 +254,7 @@ export interface RuntimeAdapter {
   /**
    * pda L0 (design 9l Rev 2 D7/A3; review D1). Send readiness from a runner-authored surface (the runner's
    * sidecar), consulted by `rig send` BEFORE any pane heuristic. Null = no runner answer: today's logic
-   * decides. Absent on every adapter today.
+   * decides. Declared today by the pda, pi and omp adapters; absent on the rest.
    *
    * ASYNC by contract (review D1). The answer is believed only while the pane's foreground is not a shell:
    * a sidecar outlives a SIGKILLed runner for up to its alive window, and on `--wait-for-idle` the transport's

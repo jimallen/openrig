@@ -72,10 +72,7 @@ export interface PiRunnerState {
   /** OF-88: the runner's own turn state, which `rig send` reads as the seat's readiness (PiRuntimeAdapter.sendReadiness).
    *  true while an agent turn is streaming. Absent in a sidecar written by a runner older than OF-88; the adapter
    *  then gives no answer and send gating stays on today's hook-and-pane logic. */
-  busy?: boolean;
-  /** OF-88: OMP attention that outlives the turn (the operator must act). Absent when there is none. */
-  attention?: "runtime_error" | "permission_prompt";
-}
+  busy?: boolean;}
 
 /** The launch-scoped pending record every writer uses when resetting the
  *  sidecar for a new attempt. It deliberately CARRIES the prior lastEntryId:

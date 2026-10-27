@@ -3,7 +3,7 @@
 // refused once the hook went 15 s stale and --wait-for-idle timed out after 5 minutes idle.
 // Deployed chain: startup.ts builds runtimeAdapterMap (piAdapter, ompAdapter) and passes
 // runnerSendReadinessFromAdapters(map) to SessionTransport; the runner (pi-runner.ts RunnerCore) writes the sidecar.
-// Three layers here: the runner writes busy/attention; the adapter reads them; the real transport acts on the answer.
+// Three layers here: the runner writes busy; the adapter reads it; the real transport acts on the answer.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,24 +50,25 @@ describe("OF-88 runner: the sidecar carries the runner's turn state", () => {
     expect(last()).toMatchObject({ ready: true, busy: false });
   });
 
-  it("OMP: a cancelled approval is attention in the sidecar, through the end of the turn, cleared by the next agent_start", () => {
-    const { c, last } = core("omp");
+  it("OMP: attention is display-only. The sidecar never carries it (any write), and the next turn clears it (the turn's Stop is posted)", () => {
+    const sidecars: PiRunnerState[] = [];
+    const activity: Record<string, unknown>[] = [];
+    const io: RunnerIo = {
+      sendRpc: () => undefined, mirrorLine: () => undefined, mirrorAppend: () => undefined,
+      postActivity: (p) => activity.push(p), writeSidecar: (st) => sidecars.push(st), now: () => "2026-10-27T10:00:00Z",
+    };
+    const c = new RunnerCore(io, { sessionName: SEAT, launchId: "l1" }, { runtime: "omp" });
+    c.start();
+    c.handlePiLine(JSON.stringify({ type: "response", id: "pi-runner-get-state", data: { sessionFile: SESSION_FILE, sessionId: "s" } }));
     c.handlePiLine(JSON.stringify({ type: "agent_start" }));
     c.handlePiLine(JSON.stringify({ type: "extension_ui_request", method: "confirm", id: "a1" }));
-    expect(last()).toMatchObject({ attention: "permission_prompt" });
     c.handlePiLine(JSON.stringify({ type: "agent_end" }));
-    expect(last()).toMatchObject({ busy: false, attention: "permission_prompt" });
+    expect(activity.at(-1)).toMatchObject({ hookEvent: "Notification", subtype: "permission_prompt" }); // still visible as today
     c.handlePiLine(JSON.stringify({ type: "agent_start" }));
-    expect(last().attention).toBeUndefined();
-  });
-
-  it("OMP: a successful automatic retry clears the runtime_error attention from the sidecar (no agent_start in between)", () => {
-    const { c, last } = core("omp");
-    c.handlePiLine(JSON.stringify({ type: "agent_start" }));
-    c.handlePiLine(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "529 overloaded" } }));
-    expect(last()).toMatchObject({ attention: "runtime_error" });
-    c.handlePiLine(JSON.stringify({ type: "auto_retry_start" }));
-    expect(last().attention).toBeUndefined();
+    c.handlePiLine(JSON.stringify({ type: "agent_end" }));
+    expect(activity.at(-1)).toMatchObject({ hookEvent: "Stop" }); // cleared by the next turn
+    expect(sidecars.length).toBeGreaterThan(2);
+    for (const st of sidecars) expect(JSON.stringify(st)).not.toContain("attention");
   });
 });
 
@@ -130,14 +131,16 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
     expect([...runnerSendReadinessFromAdapters(map).runtimes].sort()).toEqual(["omp", "pi"]);
   });
 
-  it("adapter: idle, running, attention read from the sidecar; evidence is the runner sidecar", async () => {
+  it("adapter: idle and running read from the sidecar; an attention field is ignored (display-only)", async () => {
     const { pi, omp } = setup("node");
     sidecar();
     expect(await pi.sendReadiness(target)).toMatchObject({ state: "idle", reason: "runner_idle", evidenceSource: "runner_sidecar", runtime: "pi" });
     sidecar({ busy: true });
     expect(await pi.sendReadiness(target)).toMatchObject({ state: "running", reason: "run_active" });
     sidecar({ attention: "runtime_error" });
-    expect(await omp.sendReadiness(target)).toMatchObject({ state: "needs_input", reason: "runtime_error", runtime: "omp" });
+    expect(await omp.sendReadiness(target)).toMatchObject({ state: "idle", reason: "runner_idle", runtime: "omp" });
+    sidecar({ attention: "permission_prompt", busy: true });
+    expect(await omp.sendReadiness(target)).toMatchObject({ state: "running", reason: "run_active", runtime: "omp" });
   });
 
   it.each([
@@ -182,16 +185,29 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
     expect(sendKeys).not.toHaveBeenCalled();
   });
 
-  it("transport: runner needs-input offers no unbracketed override: --dangerously-interact is refused, 0 bytes", async () => {
-    sidecar({ attention: "permission_prompt" });
+  it("transport: an OMP seat with runner attention accepts a plain send and --dangerously-interact; the next turn clears the attention (end to end from a real RunnerCore)", async () => {
+    db.prepare("UPDATE nodes SET runtime = 'omp'").run();
+    const activity: Record<string, unknown>[] = [];
+    const core = new RunnerCore({
+      sendRpc: () => undefined, mirrorLine: () => undefined, mirrorAppend: () => undefined,
+      postActivity: (p) => activity.push(p), writeSidecar: (st) => fs.writeFileSync(sidecarPath(), JSON.stringify(st)), now: () => new Date().toISOString(),
+    } as RunnerIo, { sessionName: SEAT, launchId: "l1" }, { runtime: "omp" });
+    core.start();
+    core.handlePiLine(JSON.stringify({ type: "response", id: "pi-runner-get-state", data: { sessionFile: SESSION_FILE, sessionId: "s" } }));
+    core.handlePiLine(JSON.stringify({ type: "agent_start" }));
+    core.handlePiLine(JSON.stringify({ type: "extension_ui_request", method: "confirm", id: "a1" }));
+    core.handlePiLine(JSON.stringify({ type: "agent_end" }));
+    expect(activity.at(-1)).toMatchObject({ subtype: "permission_prompt" }); // the attention is raised and still displayed
     const { transport, sendText } = setup("node");
-    const r = await transport.send(SEAT, "next");
-    expect(r.ok).toBe(false);
-    expect(r.activity).toMatchObject({ state: "needs_input", reason: "permission_prompt", evidenceSource: "runner_sidecar" });
-    const forced = await transport.send(SEAT, "next", { dangerouslyInteract: true, reason: "drive it" });
-    expect(forced.ok).toBe(false);
-    expect(forced.reason).toBe("runner_input_no_override");
-    expect(sendText).not.toHaveBeenCalled();
+    expect((await transport.send(SEAT, "re-send a safe instruction")).ok).toBe(true);
+    expect((await transport.send(SEAT, "driven", { dangerouslyInteract: true, reason: "drive it" })).ok).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(2);
+    // The next turn clears the attention and the seat keeps accepting sends.
+    core.handlePiLine(JSON.stringify({ type: "agent_start" }));
+    core.handlePiLine(JSON.stringify({ type: "agent_end" }));
+    expect(activity.at(-1)).toMatchObject({ hookEvent: "Stop" });
+    expect((await transport.send(SEAT, "after the turn")).ok).toBe(true);
+    expect(sendText).toHaveBeenCalledTimes(3);
   });
 
   it("transport: an old-runner sidecar (no busy) falls back to the pane logic, which reads the question frame as a prompt (today's behaviour)", async () => {

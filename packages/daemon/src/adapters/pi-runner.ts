@@ -579,15 +579,12 @@ export class RunnerCore {
     if (this.attention === next && this.attentionIsLatest) return;
     this.attention = next;
     this.attentionIsLatest = true;
-    this.writeSidecar({});
     this.io.postActivity(this.activityPayload("Notification", next));
   }
 
   private clearAttention(): void {
-    const had = this.attention !== null;
     this.attention = null;
     this.attentionIsLatest = false;
-    if (had) this.writeSidecar({});
   }
 
   private handleEvent(event: Record<string, unknown>): void {
@@ -714,9 +711,9 @@ export class RunnerCore {
       sessionFile: this.sessionFile,
       sessionId: this.sessionId,
       lastEntryId: this.lastEntryId,
-      // OF-88: the runner's turn state, for `rig send` readiness.
+      // OF-88: the runner's turn state, for `rig send` readiness. OMP attention is NOT written here: it is display
+      // evidence (the Notification hook, rig ps, the UI), never send gating, as a pda hold is after OF-89.
       busy: this.streaming,
-      attention: this.attention ?? undefined,
       updatedAt: this.io.now(),
       ...patch,
     });

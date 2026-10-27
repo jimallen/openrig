@@ -386,9 +386,9 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     try { state = this.readRunnerState(target.sessionName); } catch { return null; }
     if (!state || !state.ready || state.exited || typeof state.busy !== "boolean") return null;
     const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date().toISOString(), evidence: null, runtime: this.runtime };
-    if (state.attention === "runtime_error" || state.attention === "permission_prompt") {
-      return { ...base, state: "needs_input", reason: state.attention };
-    }
+    // Only idle or running, from `busy`. OMP attention (a model error, a cancelled approval) is display-only for send
+    // gating: the runner cancels the approval itself, so no prompt waits in the pane, and its remedy is a new
+    // instruction, which `rig send` must be able to deliver. The code stays visible through the Notification hook.
     if (state.busy) return { ...base, state: "running", reason: "run_active" };
     return { ...base, state: "idle", reason: "runner_idle" };
   }
