@@ -245,7 +245,7 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
     // Restore's own refusal carries the same remediation (not only the check that predicts it).
     const refused = await h.restore.restore(s1, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
     expect(refused.ok).toBe(false);
-    const remediations = !refused.ok ? (refused.result?.blockers ?? []).map((b) => b.remediation) : [];
+    const remediations = !refused.ok && "result" in refused ? (refused.result?.blockers ?? []).map((b: { remediation?: string }) => b.remediation ?? "") : [];
     expect(remediations.some((r) => r.includes(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`))).toBe(true);
     expect(remediations.some((r) => r.includes("Start this seat from the rig's recorded spec instead"))).toBe(false);
   });
