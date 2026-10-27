@@ -907,6 +907,160 @@ describe("RigTeardownOrchestrator", () => {
       expect(sessionRegistry.getBindingForNode(nodeId)?.tmuxSession).toBe(NEW);
     });
 
+    // OF-68 F6: `rig seat stop` refuses an adopted (origin=claimed) session as "not launched by OpenRig"; down used to kill an
+    // older claimed row the seat had moved past. Production consequence: a person's own adopted tmux session ended by `rig down`.
+    describe("an older claimed row (OF-68 F6)", () => {
+      it("ends the ROW, records no stop intent, leaves the adopted tmux session running, and says so", async () => {
+        const { rigId, olderId, newerId } = olderLiveSeat("exited");
+        db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(olderId);
+        const tmux = tmuxWith([OLD]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect(tmux.killSession).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ sessionsKilled: 0, errors: [] });
+        expect(result.warnings?.join(" ")).toContain(`Session '${OLD}'`);
+        expect(result.warnings?.join(" ")).toContain("rig unclaim");
+        expect(row(olderId)).toEqual({ status: "detached", intentionally_stopped: 0 });
+        expect(row(newerId)).toMatchObject({ status: "exited" });
+        // The consequence for restore: no DB-running row is left to refuse rig_not_stopped.
+        expect(runningRows(rigId)).toBe(0);
+      });
+
+      it("the ended adopted row still holds its name, so another seat's older row of that name is not killed (N4)", async () => {
+        const { rigId, olderId } = olderLiveSeat("exited");
+        db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(olderId);
+        await buildTeardown(tmuxWith([OLD])).teardown(rigId);
+
+        const other = rigRepo.createRig("other-rig");
+        const node = rigRepo.addNode(other.id, "dev");
+        const older = sessionRegistry.registerSession(node.id, OLD);
+        sessionRegistry.updateStatus(older.id, "running");
+        const newer = sessionRegistry.registerSession(node.id, "r01-other-new");
+        sessionRegistry.updateStatus(newer.id, "exited");
+        db.prepare("UPDATE sessions SET created_at = '2020-01-01 00:00:00' WHERE id = ?").run(older.id);
+        db.prepare("UPDATE sessions SET created_at = '2021-01-01 00:00:00' WHERE id = ?").run(newer.id);
+        const tmux = tmuxWith([OLD]);
+
+        await buildTeardown(tmux).teardown(other.id);
+
+        expect(tmux.killSession).not.toHaveBeenCalled();
+      });
+
+      it("control: the same row launched by OpenRig is killed", async () => {
+        const { rigId, olderId } = olderLiveSeat("exited");
+        const tmux = tmuxWith([OLD]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect(tmux.killSession).toHaveBeenCalledWith(OLD);
+        expect(result.warnings).toBeUndefined();
+        expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      });
+
+      it("a claimed older row beside a launched newest row: the newest is still killed, only the claimed older one is spared", async () => {
+        const { rigId, olderId, newerId } = olderLiveSeat("running");
+        db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(olderId);
+        const tmux = tmuxWith([OLD, NEW]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect((tmux.killSession as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0])).toEqual([NEW]);
+        expect(result.sessionsKilled).toBe(1);
+        expect(row(newerId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+        expect(row(olderId)).toEqual({ status: "detached", intentionally_stopped: 0 });
+      });
+    });
+
+    // OF-68 F8: the newest and an older row share a tmux name. The older row's pass used to probe, find the name present after
+    // a transient first failure, kill it a second time, and leave `errors` naming a kill that the second pass had made stale.
+    describe("rows that share a tmux name (OF-68 F8)", () => {
+      /** One seat whose older running row carries the NEWEST row's name. */
+      function sharedNameSeat() {
+        const seat = olderLiveSeat("running");
+        db.prepare("UPDATE sessions SET session_name = ? WHERE id = ?").run(NEW, seat.olderId);
+        return seat;
+      }
+
+      it("kills the name once and ends both rows", async () => {
+        const { rigId, olderId, newerId } = sharedNameSeat();
+        const tmux = tmuxWith([NEW]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect(tmux.killSession).toHaveBeenCalledTimes(1);
+        expect(result).toMatchObject({ sessionsKilled: 1, errors: [] });
+        expect(row(newerId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+        expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      });
+
+      it("a failed first kill is attempted once, reported once, and leaves BOTH rows running and delete blocked", async () => {
+        const { rigId, olderId, newerId } = sharedNameSeat();
+        const tmux = tmuxWith([NEW], { [NEW]: "transient" });
+
+        const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
+
+        expect(tmux.killSession).toHaveBeenCalledTimes(1);
+        expect(result.errors.filter(e => e.includes("Kill failed"))).toHaveLength(1);
+        expect(result.deleteBlocked).toBe(true);
+        expect(row(newerId)).toMatchObject({ status: "running" });
+        expect(row(olderId)).toMatchObject({ status: "running" });
+      });
+
+      it("an inconclusive first probe is reported once and the name is not probed or killed again", async () => {
+        const { rigId, olderId } = sharedNameSeat();
+        const tmux = tmuxWith([NEW]);
+        tmux.probeSession = vi.fn(async () => ({ state: "transport_unavailable", cause: "socket gone" })) as never;
+
+        const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
+
+        expect(tmux.probeSession).toHaveBeenCalledTimes(1);
+        expect(tmux.killSession).not.toHaveBeenCalled();
+        expect(result.errors.filter(e => e.includes("Could not confirm"))).toHaveLength(1);
+        expect(result.deleteBlocked).toBe(true);
+        expect(row(olderId)).toMatchObject({ status: "running" });
+      });
+    });
+
+    // OF-68 F9: `rig unclaim` marks a released session `detached` and clears its binding while its tmux session lives on as the
+    // person's own. A seat's older row that shares that name used to be killed, ending the released session.
+    describe("a released (detached claimed) session holds its name (OF-68 F9)", () => {
+      function holder(status: string, origin: "claimed" | "launched", archived = false) {
+        const other = rigRepo.createRig("other-rig");
+        const node = rigRepo.addNode(other.id, "human");
+        const held = sessionRegistry.registerSession(node.id, OLD);
+        db.prepare("UPDATE sessions SET status = ?, origin = ? WHERE id = ?").run(status, origin, held.id);
+        if (archived) db.prepare("UPDATE rigs SET archived_at = ? WHERE id = ?").run(new Date().toISOString(), other.id);
+      }
+
+      it("is not killed: the older row is ended, the session is left alone", async () => {
+        const { rigId, olderId } = olderLiveSeat("exited");
+        holder("detached", "claimed");
+        const tmux = tmuxWith([OLD]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect(tmux.killSession).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ sessionsKilled: 0, errors: [] });
+        expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      });
+
+      it.each([
+        ["a detached session OpenRig launched is only a lost session", "detached", "launched", false],
+        ["an exited claimed row owns nothing", "exited", "claimed", false],
+        ["a released session in an ARCHIVED rig does not hold it (the #174 rule is unchanged)", "detached", "claimed", true],
+      ] as const)("control: %s, so the older row's session is killed", async (_name, status, origin, archived) => {
+        const { rigId } = olderLiveSeat("exited");
+        holder(status, origin, archived);
+        const tmux = tmuxWith([OLD]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect(tmux.killSession).toHaveBeenCalledWith(OLD);
+        expect(result.sessionsKilled).toBe(1);
+      });
+    });
+
     it("does not treat the older row as a pre-down snapshot refresh target", async () => {
       const { rigId } = olderLiveSeat("running");
       const refresh = vi.fn(async () => undefined);

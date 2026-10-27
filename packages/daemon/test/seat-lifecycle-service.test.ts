@@ -783,6 +783,21 @@ describe("SeatLifecycleService", () => {
       expect(row(otherSession.id)).toMatchObject({ status: "running" });
     });
 
+    it("never kills a session a person released with rig unclaim (detached, claimed): the older row is ended, the session left alone (OF-68 F9)", async () => {
+      const { older } = olderLiveSeat({ status: "exited", alive: false });
+      const otherNode = rigRepo.addNode(rigRepo.createRig("s5-other").id, "human", { runtime: "claude-code", cwd: "/project" });
+      const released = sessionRegistry.registerSession(otherNode.id, older.sessionName);
+      db.prepare("UPDATE sessions SET status = 'detached', origin = 'claimed' WHERE id = ?").run(released.id);
+
+      const result = await service.stopSeat({ seatRef: "dev.impl", reason: "end the older occupant" });
+
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) throw new Error(result.message);
+      expect(result.olderSessionsEnded).toEqual([{ sessionId: older.session.id, sessionName: older.sessionName, killed: false, staleCleanup: true }]);
+      expect(tmux.killed).toEqual([]);
+      expect(await tmux.adapter.hasSession(older.sessionName)).toBe(true);
+    });
+
     it("an older row sharing the latest row's tmux name is ended by the one kill of that name", async () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
       let older: ReturnType<typeof seatFixture>;

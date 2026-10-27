@@ -1192,6 +1192,22 @@ describe("SeatHandoverService", () => {
     expect(result).toMatchObject({ ok: false, code: "successor_already_managed" });
   });
 
+  // OF-68 F9 / review B1: `rig unclaim` leaves the adopted session `detached` with no binding. That session is no longer
+  // managed by anyone, so it is a valid DISCOVERED successor; only the kill paths treat it as holding its name.
+  it("a session released with rig unclaim (detached, claimed, no binding) is not 'already managed': a discovered handover to it proceeds", async () => {
+    seedSeat();
+    const discovered = seedDiscovery();
+    const otherRig = rigRepo.createRig("other-rig");
+    const otherNode = rigRepo.addNode(otherRig.id, "human", { runtime: "codex" });
+    const released = sessionRegistry.registerClaimedSession(otherNode.id, "successor-session");
+    sessionRegistry.updateStatus(released.id, "detached");
+    sessionRegistry.clearBinding(otherNode.id);
+
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: `discovered:${discovered.id}` });
+
+    expect(result).toMatchObject({ ok: true });
+  });
+
   it("#141 control: an archived rig's binding still blocks a DISCOVERED successor of that name", async () => {
     seedSeat();
     const discovered = seedDiscovery();

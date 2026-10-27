@@ -279,7 +279,7 @@ export function createRestoreCheckService(
         // The probe is global by tmux name: a live name may belong to ANOTHER seat or rig. Teardown asks the same question
         // (findOtherSessionOwner, archived rigs ignored) before it kills; the advice must too.
         const owners = refusingRows.flatMap((s) => {
-          const owner = findOtherSessionOwner(rigRepo.db, s.sessionName, s.nodeId, { ignoreArchived: true });
+          const owner = findOtherSessionOwner(rigRepo.db, s.sessionName, s.nodeId, { countReleased: true, ignoreArchived: true });
           return owner ? [[s.id, owner] as const] : [];
         });
         const sessionOwners = Object.fromEntries(owners.map(([id, owner]) => [id, `${owner.logical_id}@${owner.rig_name}`]));

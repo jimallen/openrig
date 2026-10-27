@@ -680,7 +680,7 @@ export class SeatLifecycleService {
     const olderPlan: OlderPlan = [];
     for (const row of older) {
       // The name is only a historical label: another live node owning it means that tmux session is not this seat's to kill.
-      const foreign = findOtherSessionOwner(this.db, row.session_name, resolved.nodeId, { ignoreArchived: true }) !== null;
+      const foreign = findOtherSessionOwner(this.db, row.session_name, resolved.nodeId, { countReleased: true, ignoreArchived: true }) !== null;
       let present = false;
       if (!foreign && row.session_name !== session.session_name) {
         const olderProbe = await this.probeLiveness(row.session_name, "stop refuses rather than kill or end an older session blind");
@@ -723,7 +723,7 @@ export class SeatLifecycleService {
     if (latest.origin === "claimed" || olderLive.some((row) => row.origin === "claimed")) return false;
     return latest.session_name === name
       || (olderLive.some((row) => row.session_name === name)
-        && findOtherSessionOwner(this.db, name, nodeId, { ignoreArchived: true }) === null);
+        && findOtherSessionOwner(this.db, name, nodeId, { countReleased: true, ignoreArchived: true }) === null);
   }
 
   /** The seat's live-status (running / idle / unknown) rows other than `exceptId`, oldest first. */
