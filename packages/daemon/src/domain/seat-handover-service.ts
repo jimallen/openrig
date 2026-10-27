@@ -24,6 +24,7 @@ import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { findOtherSessionOwner } from "./session-owner.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, HANDOVER_CWD_REFUSAL_GUIDANCE, type SeatCwdFault } from "./cwd-resolution.js";
+import { inertPacketText } from "./packet-text.js";
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
  *  resolved from the predecessor's provider transcript (claude transcript_path / codex rollout_path).
@@ -874,7 +875,7 @@ export class SeatHandoverService {
     if (info.emptyChainReason) {
       lines.push("", `The durable chain is EMPTY: ${info.emptyChainReason}. You start from seat identity alone — say so in your first status report.`);
     }
-    const sent = await this.tmuxAdapter.sendText(successorSession, lines.join("\n"));
+    const sent = await this.tmuxAdapter.sendText(successorSession, inertPacketText(lines.join("\n")));
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }
@@ -907,7 +908,7 @@ export class SeatHandoverService {
     },
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
-    const sent = await this.tmuxAdapter.sendText(successorSession, packet);
+    const sent = await this.tmuxAdapter.sendText(successorSession, inertPacketText(packet));
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }

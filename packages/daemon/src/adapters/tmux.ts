@@ -277,6 +277,8 @@ function exactTarget(target: string, kind: "pane" | "window" | "session"): strin
 }
 
 /** Elements safe to leave bare in a POSIX shell word list. */
+/** Name prefix of the scratch variables the `$` measurement writes; swept from a session whenever it is probed or restored. */
+const ESCAPE_PROBE_PREFIX = "OPENRIG_TMUX_ESCAPE_PROBE_";
 const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 /** Join argv for a POSIX shell — the legacy string form. Only used when
@@ -1036,7 +1038,7 @@ export class TmuxAdapter {
       const values = new Map<string, string>();
       for (const line of out.split(/\r?\n/)) {
         const eq = line.indexOf("=");
-        if (eq > 0 && keys.includes(line.slice(0, eq))) values.set(line.slice(0, eq), await this.unescapeShownValue(line.slice(eq + 1)));
+        if (eq > 0 && keys.includes(line.slice(0, eq))) values.set(line.slice(0, eq), await this.unescapeShownValue(line.slice(eq + 1), sessionTarget));
       }
       return values;
     } catch {
@@ -1048,6 +1050,7 @@ export class TmuxAdapter {
    *  credential file, never an argv), a key it did not hold is unset. With no snapshot (`before` null) every key is
    *  unset. Best-effort: the caller is already reporting the failure that made this necessary. */
   private async restoreSessionEnv(sessionTarget: string, keys: readonly string[], before: Map<string, string> | null): Promise<void> {
+    await this.sweepEscapeProbeKeys(sessionTarget);
     const held: Record<string, string> = {};
     for (const key of keys) {
       const value = before?.get(key);
@@ -1207,19 +1210,68 @@ export class TmuxAdapter {
   }
 
   /**
-   * tmux 3.4 prints every `$` in a `show-environment` value with a backslash before it (measured on 3.4: a value `a$b`
-   * is shown as `a\$b`, and `a\$b` as `a\\$b`); tmux 3.7c prints the value as it is. Nothing else is escaped on either
-   * (measured: backtick, `"`, `\`, `%`, `#`, `~`). Versions between were not measured, so the rule is applied to 3.4 and
-   * earlier only, and an unreadable or unrecognised version string is read as "prints the value as it is".
+   * The value a session really holds, from the text `tmux show-environment` printed for it. Some tmux builds add a
+   * backslash to a `$` when they print (measured, Ubuntu tmux 3.4-1ubuntu0.1: `a$b` is shown as `a\$b`, `$a` as `\$a`,
+   * `a\$b` as `a\\$b`, but `a$`, `a$1`, `a$(b)`, `a$$` and `$` are shown as they are, so the rule depends on the character
+   * after the `$`); tmux 3.7c prints the value as it is; upstream 3.4 and 3.5a read as printing it as it is. The build is not
+   * told by its version, and the rule is not known for every character, so the answer is MEASURED PER VALUE: each plausible
+   * original (the shown text as it is, and the shown text with the extra backslashes taken out under two rules) is put into
+   * a scratch variable of the same session through the credential file channel (never an argv), read back, and kept only if
+   * tmux prints exactly the text that was shown. The original is the one candidate that round-trips. None, or more than one,
+   * means the value cannot be known, and the read REFUSES: a guess hands a seat a wrong credential. The scratch variable
+   * is unset again either way. Only `$` is touched; nothing else was ever escaped (measured: backtick, `"`, `\`, `%`, `#`, `~`).
    */
-  private showEnvironmentEscapesDollar: Promise<boolean> | null = null;
-  private async unescapeShownValue(shown: string): Promise<string> {
+  private async unescapeShownValue(shown: string, sessionTarget: string): Promise<string> {
     if (!shown.includes("$")) return shown;
-    this.showEnvironmentEscapesDollar ??= (async () => {
-      const version = /^tmux (?:next-)?(\d+)\.(\d+)/.exec((await this.run(["tmux", "-V"], "tmux -V")).trim());
-      return version !== null && (Number(version[1]) < 3 || (Number(version[1]) === 3 && Number(version[2]) <= 4));
-    })().catch(() => { this.showEnvironmentEscapesDollar = null; return false; });
-    return (await this.showEnvironmentEscapesDollar) ? shown.replace(/\\\$/g, "$") : shown;
+    const candidates = [...new Set([
+      shown,
+      shown.replace(/\\(\$[A-Za-z_{])/g, "$1"), // a build that escapes `$` before a name or `{`
+      shown.replace(/\\\$/g, "$"), // a build that escapes every `$`
+    ])];
+    const key = `${ESCAPE_PROBE_PREFIX}${randomUUID().replace(/-/g, "")}`;
+    const confirmed: string[] = [];
+    // A scratch variable a crashed daemon (or a failed unset) left behind holds a credential candidate outside every key list
+    // the restore manages: remove it before writing a new one.
+    await this.sweepEscapeProbeKeys(sessionTarget);
+    try {
+      for (const candidate of candidates) {
+        await this.deliverSecretEnv(sessionTarget, { [key]: candidate });
+        const show = ["tmux", "show-environment", "-t", sessionTarget, key];
+        const printed = (await this.run(show)).replace(/\r?\n$/, "");
+        if (printed === `${key}=${shown}`) confirmed.push(candidate);
+      }
+    } catch {
+      throw new Error("Cannot tell how this tmux prints '$' in the session environment.");
+    } finally {
+      await this.unsetEscapeProbeKey(sessionTarget, key);
+    }
+    if (confirmed.length !== 1) throw new Error("Cannot tell how this tmux prints '$' in the session environment.");
+    return confirmed[0]!;
+  }
+
+  /** Unset one scratch variable. A failure is named (the key only, never a value) and left for the next sweep. */
+  private async unsetEscapeProbeKey(sessionTarget: string, key: string): Promise<void> {
+    try {
+      const unset = ["tmux", "set-environment", "-t", sessionTarget, "-u", key];
+      await this.run(unset);
+    } catch {
+      console.warn(`[openrig] tmux: could not remove scratch variable ${key} from session ${sessionTarget}; it is removed the next time the session is read or restored`);
+    }
+  }
+
+  /** Remove every `OPENRIG_TMUX_ESCAPE_PROBE_*` variable from one session: what a failed unset or a crash mid-probe left. Reads
+   *  names only (no value is kept or logged); best-effort, because the session may be gone. */
+  private async sweepEscapeProbeKeys(sessionTarget: string): Promise<void> {
+    let listing: string;
+    try {
+      listing = await this.run(["tmux", "show-environment", "-t", sessionTarget]);
+    } catch {
+      return;
+    }
+    for (const line of listing.split(/\r?\n/)) {
+      const name = line.startsWith("-") ? line.slice(1) : line.slice(0, Math.max(line.indexOf("="), 0));
+      if (name.startsWith(ESCAPE_PROBE_PREFIX) && /^[A-Za-z0-9_]+$/.test(name)) await this.unsetEscapeProbeKey(sessionTarget, name);
+    }
   }
 
   /** A launch metadata read. Callers must never put credential values in terminal input. */
@@ -1231,7 +1283,7 @@ export class TmuxAdapter {
         `tmux show-environment -t ${shellQuote(target)} ${shellQuote(key)}`);
       if (output.trim() === `-${key}`) return undefined;
       if (!output.startsWith(`${key}=`)) throw new Error("Unexpected session environment response.");
-      return await this.unescapeShownValue(output.slice(key.length + 1).replace(/\r?\n$/, ""));
+      return await this.unescapeShownValue(output.slice(key.length + 1).replace(/\r?\n$/, ""), target);
     } catch (error) {
       if (error instanceof Error && error.message.includes(`unknown variable: ${key}`)) return undefined;
       throw new Error("Cannot read the session's launch environment.");

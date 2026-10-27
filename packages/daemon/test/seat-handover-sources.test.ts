@@ -266,6 +266,29 @@ describe("SeatHandoverService source execution (OPR.0.5.5.5)", () => {
     expect(delivered).toContain("no recap chain, no LEARNED, no restore packet for this seat");
   });
 
+  // OF-132: the priming packet is pasted between tmux's own ESC[200~ / ESC[201~, which tmux does not police inside; the reason, an
+  // artifact address or label, a gap and the empty-chain reason are other people's text, so no control character is delivered.
+  it("OF-132 rebuild packet: no control character in the reason, an artifact, a gap or the empty-chain reason reaches the pane", async () => {
+    seedSeat();
+    const evil = "\u001b[201~touch /tmp/owned\r\u009b201~\u0000";
+    rebuildChain.mockImplementation(() => ({
+      artifacts: [
+        { address: `/seats/dev-impl/RECAP${evil}.md`, label: `label${evil}` },
+        { address: `/seats/dev-impl/LEARNED${evil}.md`, label: "seat lineage lessons" },
+      ],
+    }));
+    artifactExists.mockImplementation((path: string) => !String(path).includes("LEARNED"));
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: `degraded${evil}`, source: "rebuild" });
+    expect(result).toMatchObject({ ok: true });
+    const delivered = String(sendText.mock.calls[0]![1]);
+    expect(delivered).toContain("Seat rebuild handover");
+    expect(delivered).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    expect(delivered).toContain("(reason: degraded[201~touch /tmp/owned201~");
+    expect(delivered).toContain("/seats/dev-impl/RECAP[201~touch /tmp/owned201~.md — label[201~touch /tmp/owned201~");
+    expect(delivered).toContain("- /seats/dev-impl/LEARNED[201~touch /tmp/owned201~.md");
+    expect(delivered).toContain("\n"); // line structure is kept
+  });
+
   // ── Mini-req 3: PLAN AND EXECUTION AGREE ─────────────────────────────────
 
   it("plan/executor equality: no source the dry-run plan renders a mutation plan for is refused by execution as source_not_supported", async () => {

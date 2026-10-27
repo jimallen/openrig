@@ -136,6 +136,21 @@ describe("POST /api/activity/pda-usage", () => {
     expect(a.rows().map((r) => r.entry_id)).toEqual(["e7"]);
   });
 
+  it("OF-129: a fact with an over-long label (an older runner has no bound) is stored with the label NULL and its tokens and cost; an over-long id is still rejected", async () => {
+    const a = app();
+    const long = "x".repeat(513);
+    const res = await a.postPdaUsage(pdaPayload([
+      pdaFact("e1", { priced: 0.5, model: long, responseId: long, provider: long, api: long, stopReason: long }),
+      pdaFact(long, { priced: 0.5 }),
+      pdaFact("e3", { priced: 0.5, model: "x".repeat(512) }),
+    ]));
+    expect(await res.json()).toEqual({ ok: true, stored: 2, duplicates: 0, rejected: 1 });
+    expect(a.rows().map((r) => [r.entry_id, r.provider, r.model, r.api, r.response_id, r.stop_reason, r.input_tokens, r.cost_total, r.cost_basis])).toEqual([
+      ["e1", null, null, null, null, null, 100, 0.5, "model_priced"],
+      ["e3", "ollama-cloud", "x".repeat(512), "openai-completions", "resp-e3", "stop", 100, 0.5, "model_priced"],
+    ]);
+  });
+
   it("stores the origin the runner attributed: own, other, unknown", async () => {
     const a = app();
     await a.postPdaUsage(pdaPayload([pdaFact("e1", { origin: "own" }), pdaFact("e2", { origin: "other" }), pdaFact("e3", { origin: "unknown" })]));

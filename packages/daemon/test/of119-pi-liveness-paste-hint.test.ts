@@ -261,6 +261,37 @@ describe("OF-119 adapter and transport: a sidecar that stopped ticking is no ans
     expect(sendText).not.toHaveBeenCalled();
   });
 
+  // OF-129: checkReady uses the same alive window as sendReadiness (the pane here shows `node`, not a shell, with a READY line in scrollback).
+  const binding = { id: "b1", nodeId: "n1", tmuxSession: SEAT, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/p" } as never;
+  it.each([
+    ["just written", NOW, true],
+    ["exactly the 180 s window", NOW - 180_000, true],
+    ["181 s old", NOW - 181_000, false],
+    ["an hour old", NOW - 3_600_000, false],
+    ["180 s in the future", NOW + 180_000, true],
+    ["181 s in the future", NOW + 181_000, false],
+  ])("checkReady: a ready sidecar whose aliveAt is %s", async (_name, aliveMs, ready) => {
+    const { pi, omp } = setup();
+    sidecar({ aliveAt: iso(aliveMs) });
+    for (const adapter of [pi, omp]) {
+      const result = await adapter.checkReady(binding);
+      if (ready) expect(result).toEqual({ ready: true });
+      else expect(result).toMatchObject({ ready: false, code: "runner_stale" });
+    }
+  });
+  it("checkReady: an unparseable aliveAt is stale; no aliveAt at all is an older runner and is believed", async () => {
+    const { pi } = setup();
+    sidecar({ aliveAt: "not a time" });
+    expect(await pi.checkReady(binding)).toMatchObject({ ready: false, code: "runner_stale" });
+    sidecar({ aliveAt: undefined });
+    expect(await pi.checkReady(binding)).toEqual({ ready: true });
+  });
+  it("checkReady: an exited record is still reported as exited, not stale, whatever its age", async () => {
+    const { pi } = setup();
+    sidecar({ aliveAt: iso(NOW - 3_600_000), ready: false, exited: { code: 1, at: iso(NOW - 3_600_000) } });
+    expect(await pi.checkReady(binding)).toMatchObject({ ready: false, code: "runner_exited" });
+  });
+
   it("transport: control, the same sidecar with a fresh tick decides and the send goes", async () => {
     sidecar({ aliveAt: iso(NOW - 1_000) });
     const { transport, sendText } = setup();

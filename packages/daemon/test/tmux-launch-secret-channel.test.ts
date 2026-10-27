@@ -4,7 +4,7 @@ import path from "node:path";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter, defaultTmuxFileOps, type TmuxFileOps } from "../src/adapters/tmux.js";
 import { ARGV_SAFE_LAUNCH_ENV_KEYS, partitionLaunchEnv, renderSecretEnvScript } from "../src/adapters/tmux-launch-env-channel.js";
 
@@ -273,64 +273,175 @@ describe("OF-113: a respawn that does not happen leaves the session environment 
   });
 });
 
-// OF-113: tmux 3.4 prints each `$` in a show-environment value with a backslash before it; 3.7c prints the value as it is.
-// (Both measured with real servers: see the native row below, which runs on whichever tmux the host has.) getSessionEnv
-// undoes the escaping only for the versions known to add it.
-describe("OF-113: getSessionEnv undoes tmux's escaping of $ only where tmux adds it", () => {
-  function reading(version: string | Error, shown: string) {
+// OF-113 / OF-132: some tmux builds (Ubuntu's 3.4-1ubuntu0.1, measured) print a `$` in a show-environment value with a
+// backslash before it, depending on the character after it; others (3.7c, measured) print the value as it is. The version
+// says nothing about it, and the rule is not known for every character, so getSessionEnv MEASURES each value that holds a
+// `$`: every plausible original is put into a scratch variable of the same session (through the credential file, never an
+// argv), read back, and kept only if tmux prints exactly the text that was shown. No match or more than one refuses.
+describe("OF-132: getSessionEnv returns the value the session holds, on any tmux build (measured per value, not by version)", () => {
+  // The builds, as `forward`: the text this build prints for a stored value.
+  const BUILDS = {
+    raw: (v: string) => v, // 3.7c, and what upstream 3.4 / 3.5a read as
+    ubuntu: (v: string) => v.replace(/\$(?=[A-Za-z_{])/g, "\\$"), // measured on 3.4-1ubuntu0.1
+    every: (v: string) => v.replace(/\$/g, "\\$"), // the rule the old version gate assumed
+    doubling: (v: string) => v.replace(/\$/g, "\\\\$"), // a build nothing here knows how to undo
+    twice: (v: string) => v.replace(/\$/g, () => "$$"), // prints a `$` as two, with no backslash to find
+    ambiguous: (v: string) => v.replace(/(?<!\\)\$/g, "\\$"), // `a$b` and `a\$b` are both printed `a\$b`
+  } as const;
+  type Build = keyof typeof BUILDS;
+  const unquote = (s: string) => s.replace(/'"'"'/g, "\u0000").replace(/^'|'$/g, "").replace(/\u0000/g, "'");
+
+  /** A tmux with a session environment: source-file applies the set-environment lines of a file the adapter wrote. */
+  function fakeTmux(build: Build, initial: Record<string, string>, options: { respawnFails?: boolean; failShow?: boolean; failSource?: boolean; failUnsetProbe?: boolean } = {}) {
+    const env = new Map(Object.entries(initial));
     const calls: string[][] = [];
-    const adapter = new TmuxAdapter(async () => "", recordingFileOps().ops, async argv => {
-      calls.push(argv);
-      if (argv[1] === "-V") { if (version instanceof Error) throw version; return `${version}\n`; }
-      if (argv[1] === "show-environment") return `${shown}\n`;
-      return "";
-    });
-    return { adapter, calls };
-  }
-  const probes = (calls: string[][]) => calls.filter(a => a[1] === "-V").length;
-
-  it.each(["tmux 3.4", "tmux 3.3a", "tmux 3.2", "tmux 2.9a", "tmux next-3.4"])("%s: `a\\$b` is shown for the value `a$b`", async version => {
-    const { adapter } = reading(version, "K_VAR=a\\$b ${c} \\\\$d");
-    // each $ lost exactly one backslash; the backslash that was part of the value stays
-    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("a$b ${c} \\$d");
-  });
-
-  it.each(["tmux 3.5", "tmux 3.7c", "tmux next-3.5", "tmux 4.0", "tmux master", "tmux something else"])("%s: the value is exactly what is shown", async version => {
-    const { adapter } = reading(version, "K_VAR=a\\$b ${c}");
-    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("a\\$b ${c}");
-  });
-
-  it("a value with no $ does not ask for the version", async () => {
-    const { adapter, calls } = reading("tmux 3.4", "K_VAR=plain \\ \" ` value");
-    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("plain \\ \" ` value");
-    expect(probes(calls)).toBe(0);
-  });
-
-  it("the version is asked for once, however many reads follow", async () => {
-    const { adapter, calls } = reading("tmux 3.4", "K_VAR=a\\$b");
-    await adapter.getSessionEnv("s", "K_VAR");
-    await adapter.getSessionEnv("s", "K_VAR");
-    expect(probes(calls)).toBe(1);
-  });
-
-  it("a version probe that fails reads the value as shown, and is asked again next time", async () => {
-    const { adapter, calls } = reading(new Error("no tmux"), "K_VAR=a\\$b");
-    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("a\\$b");
-    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("a\\$b");
-    expect(probes(calls)).toBe(2);
-  });
-
-  it("the value a refused respawn restores is unescaped too (the old credential comes back as it was)", async () => {
     const { ops, seen } = recordingFileOps();
-    const old = "old$token";
     const adapter = new TmuxAdapter(async () => "", ops, async argv => {
-      if (argv[1] === "-V") return "tmux 3.4\n";
-      if (argv[1] === "show-environment" && !argv.includes("-g")) return "OPENRIG_ACTIVITY_HOOK_TOKEN=old\\$token\n";
-      if (argv[1] === "respawn-pane") throw new Error("pane %3 is not dead");
+      calls.push(argv);
+      if (argv[1] === "source-file") {
+        if (options.failSource) throw new Error("source-file failed");
+        const file = [...seen.writes].reverse().find(w => w.path === argv[2])!;
+        for (const line of file.content.split("\n")) {
+          const m = /^set-environment -t (?:'[^']*'|\S+) (\S+) (.*)$/.exec(line);
+          if (m) env.set(m[1]!, unquote(m[2]!));
+        }
+        return "";
+      }
+      if (argv[1] === "set-environment" && argv.includes("-u")) {
+        if (options.failUnsetProbe && argv.at(-1)!.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_")) throw new Error("set-environment failed");
+        env.delete(argv.at(-1)!);
+        return "";
+      }
+      if (argv[1] === "show-environment" && !argv.includes("-g")) {
+        if (options.failShow && argv.length > 4) throw new Error("tmux gone");
+        const key = argv[4];
+        if (key === undefined) return [...env].map(([k, v]) => `${k}=${BUILDS[build](v)}`).join("\n") + "\n";
+        return env.has(key) ? `${key}=${BUILDS[build](env.get(key)!)}\n` : `-${key}\n`;
+      }
+      if (argv[1] === "respawn-pane" && options.respawnFails) throw new Error("pane %3 is not dead");
       return "";
     });
+    return { adapter, env, calls, seen };
+  }
+  const probeKeys = (env: Map<string, string>) => [...env.keys()].filter(k => k.startsWith("OPENRIG_TMUX_ESCAPE_PROBE_"));
+
+  const VALUES = ["plain", "a$b", "$a", "a$", "a$1", "a${b}", "a$(b)", "a$$b", "a\\$b", "\\$e", "x\\$", "p\\$q \\\\$r \\$", "a\\\\$b", "$", "$$$", "tok$_en", "q'$a'z"];
+  for (const build of ["raw", "ubuntu", "every"] as const) {
+    // The title carries the value with its `$` written as \u0024: vitest reads `$name` in a title as a placeholder.
+    it.each(VALUES.map(v => [JSON.stringify(v).replace(/\$/g, "\\u0024"), v] as const))(`build ${build}: the value %s comes back exactly as it was stored`, async (_label, value) => {
+      const { adapter, env } = fakeTmux(build, { K_VAR: value });
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(value);
+      expect(probeKeys(env)).toEqual([]); // the scratch variable is gone
+      expect(env.get("K_VAR")).toBe(value); // and the real one untouched
+    });
+  }
+
+  it("a value with no $ is returned as shown, with no scratch variable written", async () => {
+    const { adapter, calls } = fakeTmux("ubuntu", { K_VAR: "plain \\ \" ` value" });
+    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("plain \\ \" ` value");
+    expect(calls.map(a => a[1])).toEqual(["show-environment"]);
+  });
+
+  it("the version is never asked for", async () => {
+    const { adapter, calls } = fakeTmux("ubuntu", { K_VAR: "a$b" });
+    await adapter.getSessionEnv("s", "K_VAR");
+    expect(calls.some(a => a[1] === "-V")).toBe(false);
+  });
+
+  it("the candidate values reach tmux through the credential file only: no argv holds any part of the value", async () => {
+    const secret = "s3cr3tvalue$tail";
+    const { adapter, calls, seen } = fakeTmux("ubuntu", { K_VAR: secret });
+    expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(secret);
+    expect(calls.flat().some(a => a.includes("s3cr3t"))).toBe(false);
+    expect(seen.writes.length).toBeGreaterThan(0);
+    for (const w of seen.writes) { expect(w.mode).toBe(0o600); expect(w.flag).toBe("wx"); }
+  });
+
+  // N1 (review of 1c4a649e): the scratch variable holds a credential candidate and sits outside every key list the restore manages,
+  // so a failed unset is named (key only) and a leftover is swept the next time the session is probed or restored.
+  describe("a scratch variable that outlives its probe", () => {
+    const LEFT = "OPENRIG_TMUX_ESCAPE_PROBE_0123456789abcdef0123456789abcdef";
+    const SECRET = "cand1date$s3cr3t";
+    const logs: string[] = [];
+    beforeEach(() => { logs.length = 0; vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => { logs.push(args.join(" ")); }); });
+    afterEach(() => { vi.restoreAllMocks(); });
+    const warned = () => logs;
+
+    it("a failing unset is named by key (never a value), does not fail the read, and the leftover is swept by the next read before anything new is written", async () => {
+      const options = { failUnsetProbe: true };
+      const { adapter, env, calls } = fakeTmux("ubuntu", { K_VAR: SECRET }, options);
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      expect(probeKeys(env)).toHaveLength(1); // left behind
+      const [left] = probeKeys(env);
+      expect(warned().some(m => m.includes(left!) && m.includes("could not remove"))).toBe(true);
+      expect(warned().join("\n")).not.toContain("s3cr3t");
+      options.failUnsetProbe = false;
+      const before = calls.length;
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      expect(probeKeys(env)).toEqual([]);
+      const second = calls.slice(before);
+      const sweep = second.findIndex(a => a[1] === "set-environment" && a.includes("-u") && a.at(-1) === left);
+      const firstWrite = second.findIndex(a => a[1] === "source-file");
+      expect(sweep).toBeGreaterThanOrEqual(0);
+      expect(sweep).toBeLessThan(firstWrite);
+    });
+
+    it("a leftover from a crashed probe is removed by the next probe, and only probe keys are touched", async () => {
+      const { adapter, env } = fakeTmux("ubuntu", { K_VAR: SECRET, [LEFT]: "old$candidate", OPENRIG_PROBE_LOOKALIKE: "keep", ANTHROPIC_API_KEY: "keep" });
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe(SECRET);
+      expect(env.has(LEFT)).toBe(false);
+      expect([...env.keys()].sort()).toEqual(["ANTHROPIC_API_KEY", "K_VAR", "OPENRIG_PROBE_LOOKALIKE"]);
+    });
+
+    it("a leftover is removed by a respawn restore too (the refused respawn of a credentialed seat)", async () => {
+      const { adapter, env } = fakeTmux("raw", { OPENRIG_ACTIVITY_HOOK_TOKEN: "old-token", [LEFT]: "old$candidate" }, { respawnFails: true });
+      expect((await adapter.respawnPane("%3", "/bin/sh", { env: { OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK } })).ok).toBe(false);
+      expect(env.has(LEFT)).toBe(false);
+      expect(env.get("OPENRIG_ACTIVITY_HOOK_TOKEN")).toBe("old-token");
+    });
+
+    it("control: a read of a value with no $ neither probes nor sweeps", async () => {
+      const { adapter, env } = fakeTmux("raw", { K_VAR: "plain", [LEFT]: "x" });
+      expect(await adapter.getSessionEnv("s", "K_VAR")).toBe("plain");
+      expect(env.has(LEFT)).toBe(true);
+    });
+  });
+
+  it("a build whose rule nothing can undo refuses (no guess), and leaves no scratch variable", async () => {
+    const { adapter, env } = fakeTmux("doubling", { K_VAR: "a$b" });
+    await expect(adapter.getSessionEnv("s", "K_VAR")).rejects.toThrow("Cannot read the session's launch environment.");
+    expect(probeKeys(env)).toEqual([]);
+  });
+
+  it.each([["twice", "a$b"], ["twice", "$"], ["ambiguous", "a$b"], ["ambiguous", "a\\$b"]] as const)(
+    "build %s, value %j: a shown text that two different values would print (or none would) refuses rather than choosing", async (build, value) => {
+      const { adapter, env } = fakeTmux(build, { K_VAR: value });
+      await expect(adapter.getSessionEnv("s", "K_VAR")).rejects.toThrow("Cannot read the session's launch environment.");
+      expect(probeKeys(env)).toEqual([]);
+    });
+
+  it.each([["the scratch variable cannot be written", { failSource: true }], ["it cannot be read back", { failShow: true }]] as const)(
+    "when %s the read refuses, with no scratch variable left", async (_name, options) => {
+      const { adapter, env } = fakeTmux("ubuntu", { K_VAR: "a$b" }, options);
+      await expect(adapter.getSessionEnv("s", "K_VAR")).rejects.toThrow("Cannot read the session's launch environment.");
+      expect(probeKeys(env)).toEqual([]);
+    });
+
+  it("the value a refused respawn restores is the one the session held, on a build that escapes", async () => {
+    for (const build of ["raw", "ubuntu", "every"] as const) {
+      const old = "old$token \\$x";
+      const { adapter, env } = fakeTmux(build, { OPENRIG_ACTIVITY_HOOK_TOKEN: old }, { respawnFails: true });
+      expect((await adapter.respawnPane("%3", "/bin/sh", { env: { OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK } })).ok).toBe(false);
+      expect(env.get("OPENRIG_ACTIVITY_HOOK_TOKEN")).toBe(old);
+      expect(probeKeys(env)).toEqual([]);
+    }
+  });
+
+  it("when the old value cannot be known, a refused respawn unsets the key instead of restoring a guess", async () => {
+    const { adapter, env } = fakeTmux("doubling", { OPENRIG_ACTIVITY_HOOK_TOKEN: "old$token" }, { respawnFails: true });
     expect((await adapter.respawnPane("%3", "/bin/sh", { env: { OPENRIG_ACTIVITY_HOOK_TOKEN: HOOK } })).ok).toBe(false);
-    expect(seen.writes[1]!.content).toBe(`set-environment -t '%3' OPENRIG_ACTIVITY_HOOK_TOKEN '${old}'\n`);
+    expect(env.has("OPENRIG_ACTIVITY_HOOK_TOKEN")).toBe(false);
+    expect(probeKeys(env)).toEqual([]);
   });
 });
 
@@ -423,6 +534,20 @@ describe.skipIf(process.platform === "win32")("OF-46 native tmux: the credential
         expect((await adapter.createSession(`of113-${label}`, home, { OPENRIG_NODE_ID: "n", ANTHROPIC_API_KEY: awkward })).ok).toBe(true);
         expect(await adapter.getSessionEnv(`of113-${label}`, "ANTHROPIC_API_KEY")).toBe(awkward);
         expect(await adapter.getSessionEnv(`of113-${label}`, "OPENRIG_NODE_ID")).toBe("n");
+      }
+    });
+  });
+
+  it("OF-132 native: a value holding a literal backslash-dollar round-trips on THIS tmux build, whichever way it prints $, and the probe leaves no canary behind", async () => {
+    // This is the case a version gate got wrong on a stock 3.4: every `$` in the shown value has a backslash before it
+    // either way (escaped by the build, or the value's own), so only a measurement can tell the two apart.
+    await withShim(async ({ adapters, home, tmux }) => {
+      for (const [label, adapter] of adapters) {
+        const tricky = "p\\$q \\\\$r \\$";
+        const name = `of132-${label}`;
+        expect((await adapter.createSession(name, home, { OPENRIG_NODE_ID: "n", ANTHROPIC_API_KEY: tricky })).ok).toBe(true);
+        expect(await adapter.getSessionEnv(name, "ANTHROPIC_API_KEY")).toBe(tricky);
+        expect(await tmux(["show-environment", "-t", `=${name}`])).not.toContain("OPENRIG_TMUX_ESCAPE_PROBE");
       }
     });
   });

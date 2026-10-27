@@ -13,7 +13,7 @@
 import { describe, it, expect } from "vitest";
 import { RunnerCore, type RunnerIo } from "../src/adapters/pi-runner.js";
 import { OpenRouterChargeLookup } from "../src/adapters/pi-openrouter-charge.js";
-import { createPdaUsageSink, pdaUsageFactFromEntry } from "../src/adapters/pda-usage-sink.js";
+import { createPdaUsagePoster, createPdaUsageSink, pdaUsageFactFromEntry } from "../src/adapters/pda-usage-sink.js";
 import { parsePdaUsageFact, type PdaUsageFact, type PdaUsagePayload } from "../src/adapters/pda-runner-protocol.js";
 import { assistantEntry } from "./helpers/pda-real-shapes.js";
 
@@ -133,15 +133,34 @@ describe("OF-105 pda sink: a batch is split by bytes", () => {
   });
 });
 
-describe("OF-105 pda facts: text fields are bounded at 512 characters", () => {
+describe("OF-105 / OF-129 pda facts: text fields are bounded at 512 characters", () => {
   const good = (): PdaUsageFact => pdaUsageFactFromEntry(bigEntry(1, 4), "own")!;
-  it.each(["conversationId", "entryId", "entryTimestamp", "provider", "model", "api", "responseId", "stopReason"] as const)(
-    "%s: 512 characters pass, 513 are refused", (key) => {
-      expect(parsePdaUsageFact({ ...good(), [key]: pad(512) })).not.toBeNull();
-      expect(parsePdaUsageFact({ ...good(), [key]: pad(513) })).toBeNull();
-    });
+  const IDS = ["conversationId", "entryId", "entryTimestamp"] as const;
+  const LABELS = ["provider", "model", "api", "responseId", "stopReason"] as const;
+  it.each(IDS)("%s (an id or the timestamp): 512 characters pass, 513 refuse the fact", (key) => {
+    expect(parsePdaUsageFact({ ...good(), [key]: pad(512) })).not.toBeNull();
+    expect(parsePdaUsageFact({ ...good(), [key]: pad(513) })).toBeNull();
+  });
+  it.each(LABELS)("%s (a label): 512 characters are kept as given; 513 are read as null and the fact keeps its tokens and cost", (key) => {
+    expect(parsePdaUsageFact({ ...good(), [key]: pad(512) })).toMatchObject({ [key]: pad(512) });
+    const base = { ...good(), input: 11, output: 7, cacheRead: 3, cacheWrite: 2, costTotal: 0.25, costBasis: "model_priced" as const };
+    const kept = parsePdaUsageFact({ ...base, [key]: pad(513) });
+    expect(kept).toEqual({ ...base, [key]: null });
+  });
+  it("a label that is neither a string nor null still refuses the fact", () => {
+    for (const key of LABELS) for (const bad of [5, {}, ["x"], undefined]) expect(parsePdaUsageFact({ ...good(), [key]: bad })).toBeNull();
+  });
+  it("every label over-long at once: all five read as null, nothing else changes", () => {
+    const all = Object.fromEntries(LABELS.map((k) => [k, pad(9000)]));
+    expect(parsePdaUsageFact({ ...good(), ...all })).toEqual({ ...good(), ...Object.fromEntries(LABELS.map((k) => [k, null])) });
+  });
+  it("the receiving side's normalised fact is what the route stores: the input object is left unchanged", () => {
+    const input = { ...good(), model: pad(600) };
+    parsePdaUsageFact(input);
+    expect(input.model).toBe(pad(600));
+  });
 
-  it("a fact built from an entry with a 5 MB model name is dropped as unbuildable (counted, logged), and its neighbours still post", async () => {
+  it("a fact built from an entry with a 5 MB model name keeps its tokens and cost with the model read as null (nothing dropped, nothing logged), and its neighbours still post", async () => {
     const posts: PdaUsagePayload[] = [];
     const lines: string[] = [];
     const s = createPdaUsageSink({
@@ -153,9 +172,75 @@ describe("OF-105 pda facts: text fields are bounded at 512 characters", () => {
     s.onAssistantEntry!(bigEntry(3, 4));
     s.onRunEnd!({ type: "run_end", inputs: [] } as never);
     await s.settled();
-    expect(posts.flatMap((p) => p.facts.map((f) => f.entryId))).toEqual(["1", "3"]);
+    const facts = posts.flatMap((p) => p.facts);
+    expect(facts.map((f) => f.entryId)).toEqual(["1", "2", "3"]);
+    expect(facts[1]).toMatchObject({ model: null, input: 1, output: 1, costTotal: 0.01, costBasis: "model_priced" });
+    expect(JSON.stringify(posts).length).toBeLessThan(100_000);
+    expect(s.droppedReasons()).toEqual({});
+    expect(lines).toEqual([]);
+  });
+
+  it("an entry whose id is over-long is still dropped as unbuildable (counted, logged)", async () => {
+    const posts: PdaUsagePayload[] = [];
+    const lines: string[] = [];
+    const s = createPdaUsageSink({
+      sessionName: "seat@rig", nodeId: "n1", generation: "g1", agent: "research", isOwnSubmission: () => true,
+      post: async (p) => { posts.push(structuredClone(p)); return "stored"; }, log: (l) => lines.push(l),
+    });
+    s.onAssistantEntry!(bigEntry(1, 4));
+    s.onAssistantEntry!({ ...assistantEntry(2, "t", { usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 } }), id: pad(513) } as never);
+    s.onRunEnd!({ type: "run_end", inputs: [] } as never);
+    await s.settled();
+    expect(posts.flatMap((p) => p.facts.map((f) => f.entryId))).toEqual(["1"]);
     expect(s.droppedReasons()).toEqual({ unbuildable: 1 });
-    expect(lines).toEqual(["[pda-runner] usage fact dropped: reason=unbuildable count=1"]);
+  });
+});
+
+// ── OF-129: a 2xx that says `rejected: n` did not store those facts ────────────────────────────────────────────────
+describe("OF-129 pda poster: the daemon's `rejected` count on a 2xx is not read as all stored", () => {
+  const reply = (body: string | null, status = 200): typeof fetch => async () => new Response(body, { status });
+  const good1 = (): PdaUsageFact => pdaUsageFactFromEntry(bigEntry(1, 4), "own")!;
+  const payload = (): PdaUsagePayload => ({ sessionName: "seat@rig", nodeId: "n1", generation: "g1", agent: "research", facts: [good1()] });
+  const poster = (body: string | null, status = 200) => createPdaUsagePoster({ baseUrl: "http://127.0.0.1:1", token: "t" }, reply(body, status));
+  const sinkWith = (body: string, lines: string[]) => createPdaUsageSink({
+    sessionName: "seat@rig", nodeId: "n1", generation: "g1", agent: "research", isOwnSubmission: () => true,
+    post: poster(body), log: (l) => lines.push(l),
+  });
+
+  it("a 2xx with no rejections is stored; an unparseable, oversized or counter-less body is stored too (the reply is advice, not authority)", async () => {
+    expect(await poster('{"ok":true,"stored":1,"rejected":0}')(payload())).toBe("stored");
+    expect(await poster("not json")(payload())).toBe("stored");
+    expect(await poster(null)(payload())).toBe("stored");
+    expect(await poster('{"ok":true}')(payload())).toBe("stored");
+    expect(await poster(`{"rejected":3,"pad":"${"x".repeat(70_000)}"}`)(payload())).toBe("stored");
+    expect(await poster('{"rejected":-1}')(payload())).toBe("stored");
+    expect(await poster('{"rejected":"3"}')(payload())).toBe("stored");
+  });
+  it("a 2xx with rejected > 0 comes back as stored with that count", async () => {
+    expect(await poster('{"ok":true,"stored":1,"rejected":2}')(payload())).toEqual({ outcome: "stored", rejected: 2 });
+  });
+  it("a non-2xx keeps its meaning (503 keep, 400 refused) whatever the body says", async () => {
+    expect(await poster('{"rejected":2}', 503)(payload())).toBe("keep");
+    expect(await poster('{"rejected":2}', 400)(payload())).toEqual({ outcome: "refused", status: 400 });
+  });
+  it("the sink counts and logs the daemon's rejections once, as a drop with its own reason, and does not keep the facts", async () => {
+    const lines: string[] = [];
+    const s = sinkWith('{"ok":true,"stored":0,"rejected":1}', lines);
+    s.onAssistantEntry!(bigEntry(1, 4));
+    s.onRunEnd!({ type: "run_end", inputs: [] } as never);
+    await s.settled();
+    expect(s.droppedReasons()).toEqual({ daemon_rejected: 1 });
+    expect(s.pending()).toHaveLength(0);
+    expect(lines).toEqual(["[pda-runner] usage facts dropped: reason=daemon_rejected count=1"]);
+  });
+  it("control: a clean 2xx logs and counts nothing", async () => {
+    const lines: string[] = [];
+    const s = sinkWith('{"ok":true,"stored":1,"rejected":0}', lines);
+    s.onAssistantEntry!(bigEntry(1, 4));
+    s.onRunEnd!({ type: "run_end", inputs: [] } as never);
+    await s.settled();
+    expect(s.droppedReasons()).toEqual({});
+    expect(lines).toEqual([]);
   });
 });
 

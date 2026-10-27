@@ -97,7 +97,7 @@ describe("managed Claude full down/up", () => {
           : { status: "running", startup_status: "attention_required", resume_token: token, resume_provenance: null },
       });
       expect(latest).not.toMatchObject({ id: old.id });
-      expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto --resume ${token} --name ${name}`, expect.any(Function));
+      expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto --resume ${token} --name=${name}`, expect.any(Function));
       expect(db.prepare("SELECT status, resume_token FROM sessions WHERE id = ?").get(old.id)).toEqual({ status: "exited", resume_token: token });
       expect(tmux.sendText).not.toHaveBeenCalled();
       expect(tmux.sendKeys).not.toHaveBeenCalled();
