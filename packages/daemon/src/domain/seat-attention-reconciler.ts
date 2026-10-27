@@ -242,6 +242,8 @@ interface ClearAttentionDeps {
   >;
 }
 
+/** OF-136: for `prior_reconciliation_unreadable` the token guidance below is beside the point: the saved reconciliation event is what is damaged. */
+const RESTORE_EVENT_RECOVERY_GUIDANCE = "The saved restore.outcome_reconciled event for this node is damaged. Repair that event row, or run a new restore; then rerun rig seat clear-attention <session>.";
 const IDENTITY_RECOVERY_GUIDANCE = "--reason cannot bypass this attention class. If the recorded native token needs correction and you know the actual token, use rig seat set-resume-token <session> --token-stdin --reason <explanation>, then rerun rig seat clear-attention <session> to check the live evidence. Setting a token or stopping/relaunching the seat alone does not prove continuity.";
 
 const POSITIVE_STATES = new Set(["running", "idle"]);
@@ -298,7 +300,7 @@ export class SeatAttentionReconciler {
         return {
           ok: false,
           code: "not_demonstrably_responsive",
-          detail: `Uncleared attention class restore_outcome (full restore): ${restored.code}: ${restored.detail}. ${IDENTITY_RECOVERY_GUIDANCE}`,
+          detail: `Uncleared attention class restore_outcome (full restore): ${restored.code}: ${restored.detail}. ${restored.code === "prior_reconciliation_unreadable" ? RESTORE_EVENT_RECOVERY_GUIDANCE : IDENTITY_RECOVERY_GUIDANCE}`,
         };
       }
 

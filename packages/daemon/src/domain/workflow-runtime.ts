@@ -18,7 +18,7 @@ import type Database from "better-sqlite3";
 import type { WorkflowSpec } from "./workflow-types.js";
 import type { EventBus } from "./event-bus.js";
 import type { PersistedEvent } from "./types.js";
-import type { QueueRepository } from "./queue-repository.js";
+import type { QueueItem, QueueRepository } from "./queue-repository.js";
 import {
   type CreateWorkflowInstanceInput,
   WorkflowInstanceStore,
@@ -54,6 +54,7 @@ import {
 import type { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { disarmAllWorkflowKeepalives, disarmWorkflowKeepalive, ensureWorkflowKeepaliveArmed } from "./workflow-keepalive-arming.js";
 import { evaluateStepDeadline, type WorkflowDeadlineVerdict } from "./workflow-deadline.js";
+import { isUnreadableRowError } from "./unreadable-row.js";
 import {
   rigDeclaresRole,
   rigMemberExists,
@@ -882,8 +883,19 @@ export class WorkflowRuntime {
         const id = one("instance:");
         const packetId = one("occurrence:");
         if (!id || !packetId) continue;
-        const instance = this.instanceStore.getById(id);
-        const packet = this.queueRepo.getById(packetId);
+        // OF-136: an instance or packet whose saved columns are damaged cannot certify recovery either. It is named and left
+        // for the next pass; one damaged row neither ends the pass for the exceptions beside it nor (this runs inside
+        // project()) turns a projection that already succeeded into a failure.
+        let instance: WorkflowInstance | null;
+        let packet: QueueItem | null;
+        try {
+          instance = this.instanceStore.getById(id);
+          packet = this.queueRepo.getById(packetId);
+        } catch (err) {
+          if (!isUnreadableRowError(err)) throw err;
+          console.error(`[workflow-runtime] stuck exception ${row.qitem_id} left open: ${err.table} row ${err.rowId} has a saved ${err.columns.join(", ")} that is not readable JSON (repair or remove the row)`);
+          continue;
+        }
         // Unknown or conflicting provenance cannot certify recovery.
         if (!instance || !packet || one("workflow:") !== instance.workflowName
           || !packet.tags?.includes(`instance:${id}`)
@@ -1793,9 +1805,9 @@ export class WorkflowRuntime {
       if (row.unreadable) {
         return {
           ...row,
-          // No verdict can be made without the frontier. The shape stays a verdict because the UI dereferences it; the
-          // instance's `unreadable` and `unknowns` are what say it is not "healthy" but unknown.
-          deadline: { state: "healthy" as const, evidence: null },
+          // No verdict can be made without the frontier. The shape stays a verdict because the UI dereferences it, and its
+          // state is "unknown", never "healthy" (OF-136): a damaged instance must not read as fine.
+          deadline: { state: "unknown" as const, evidence: null },
           frontierPackets: [],
           failureOccurrences: [],
           unknowns: [`Saved ${row.unreadable.join(", ")} of instance ${row.instanceId} is not readable JSON, so its frontier, packets and deadline are unknown (not empty). Repair or remove the row.`],

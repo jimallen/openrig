@@ -81,7 +81,9 @@ export type ReconcileNodeResult =
         | "process_lineage_mismatch"
         | "fg_process_not_runtime"
         | "resume_token_not_used"
-        | "pane_not_usable";
+        | "pane_not_usable"
+        /** OF-136: an unreadable prior reconciliation event for this attempt and node; whether the node is already reconciled is unknown. */
+        | "prior_reconciliation_unreadable";
       detail: string;
     };
 
@@ -2202,8 +2204,15 @@ export class RestoreOrchestrator {
     }
     const fromStatus: "failed" | "attention_required" = nodeStatus;
 
+    // OF-136: the prior-reconciliation event is the idempotency guard: `nodeStatus` (from restore.completed) never changes after
+    // a reconcile, so only finding the first event stops a second append. A VALID prior returns its evidence. A DAMAGED prior
+    // cannot be skipped: the live proof would pass again and append a duplicate on a guess. `attemptId` is the `seq` of the
+    // latest restore.started and event `seq` only grows, so ANY damaged restore.outcome_reconciled row of this rig and node with
+    // `seq > attemptId` was written during this attempt, whatever is left of its text (overwritten, cut after the digits).
+    // It refuses by name and writes nothing. A damaged row from an older attempt (`seq < attemptId`) is not this attempt's and
+    // is ignored.
     const priorReconciliation = this.db.prepare(
-      "SELECT payload FROM events WHERE rig_id = ? AND node_id = ? AND type = 'restore.outcome_reconciled' AND json_extract(payload, '$.attemptId') = ? ORDER BY seq DESC LIMIT 1",
+      "SELECT payload FROM events WHERE rig_id = ? AND node_id = ? AND type = 'restore.outcome_reconciled' AND json_valid(payload) AND json_extract(payload, '$.attemptId') = ? ORDER BY seq DESC LIMIT 1",
     ).get(rigId, nodeId, attemptId) as { payload: string } | undefined;
     if (priorReconciliation) {
       try {
@@ -2213,6 +2222,13 @@ export class RestoreOrchestrator {
         }
       } catch {
         // A malformed prior row is not positive evidence; continue to the live proof.
+      }
+    } else {
+      const damagedPrior = this.db.prepare(
+        "SELECT seq FROM events WHERE rig_id = ? AND node_id = ? AND type = 'restore.outcome_reconciled' AND NOT json_valid(payload) AND seq > ? ORDER BY seq DESC LIMIT 1",
+      ).get(rigId, nodeId, attemptId) as { seq: number } | undefined;
+      if (damagedPrior) {
+        return { ok: false, code: "prior_reconciliation_unreadable", detail: `Saved events row ${damagedPrior.seq} (restore.outcome_reconciled for attempt ${attemptId}, node ${nodeId}) is not readable JSON, so whether this node is already reconciled is unknown; nothing was written. Repair the event row, or run a new restore.` };
       }
     }
 

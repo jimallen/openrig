@@ -87,7 +87,11 @@ export const WORKFLOW_STEP_STUCK_THRESHOLD_SECONDS = 4 * 60 * 60;
 export type WorkflowStepDeadlineState =
   | "healthy"
   | "overdue-claimed"
-  | "overdue-unclaimed";
+  | "overdue-unclaimed"
+  /** OF-136: no verdict could be made, because the instance's saved frontier is damaged. Never produced by
+   *  `evaluateStepDeadline` (it evaluates a readable frontier); only the read enrichment of a flagged instance carries it.
+   *  It is not "healthy": a consumer that treats every non-healthy state as needing a look shows the instance. */
+  | "unknown";
 
 export interface WorkflowStepDeadlineEvidence {
   instanceId: string;

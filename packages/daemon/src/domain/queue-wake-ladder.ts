@@ -567,11 +567,16 @@ async function ensureUsageLimitBlocker(
   const existing = deps.db.prepare(
     `SELECT qitem_id FROM queue_items
       WHERE state IN ('pending', 'in-progress', 'blocked')
-        AND json_valid(queue_items.tags)
-        AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
-        AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
+        AND CASE WHEN json_valid(queue_items.tags)
+              THEN EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
+               AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
+              -- OF-140: a blocker whose tags are damaged is still THERE. Matched as quoted text (instr: exact, no wildcards) so
+              -- getById refuses it by name and the pool waits, instead of opening a second blocker beside it.
+              -- KNOWN RESIDUAL (review w1 F1, accepted, tracked separately): tags overwritten so that NO pool identity survives in
+              -- the text (e.g. '{not json') match neither branch; that blocker is not found and a second one is opened.
+              ELSE instr(queue_items.tags, '"' || ? || '"') > 0 AND instr(queue_items.tags, '"' || ? || '"') > 0 END
       LIMIT 1`,
-  ).get(USAGE_LIMIT_BLOCKER_TAG, poolTag) as { qitem_id: string } | undefined;
+  ).get(USAGE_LIMIT_BLOCKER_TAG, poolTag, USAGE_LIMIT_BLOCKER_TAG, poolTag) as { qitem_id: string } | undefined;
 
   let blocker = existing ? deps.queueRepo.getById(existing.qitem_id) : null;
   if (blocker) {
@@ -747,12 +752,20 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
       if (usagePool && row.state === "pending") {
         let blocker = blockerByPool.get(usagePool.poolKey);
         if (!blocker) {
-          blocker = await ensureUsageLimitBlocker(
-            deps,
-            usagePool,
-            now,
-            deps.usageLimitJitterSeconds ?? drawUsageLimitJitterSeconds(),
-          );
+          try {
+            blocker = await ensureUsageLimitBlocker(
+              deps,
+              usagePool,
+              now,
+              deps.usageLimitJitterSeconds ?? drawUsageLimitJitterSeconds(),
+            );
+          } catch (err) {
+            // OF-140: the pool's existing blocker row is damaged. It is neither read as absent (that would open a second
+            // blocker for the pool) nor allowed to fail the tick for every other baton: this baton waits for the repair.
+            if (!isUnreadableRowError(err)) throw err;
+            log(`[wake-ladder] ${row.qitemId} skipped: the usage-limit blocker ${err.rowId} for pool ${usagePool.poolKey} has a saved ${err.columns.join(", ")} that is not readable JSON (repair or remove the row)`);
+            continue;
+          }
           blockerByPool.set(usagePool.poolKey, blocker);
         }
         deps.queueRepo.update({
@@ -851,7 +864,9 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
 
       // F3 — the aggregate refresh is detection-gated (the S02 idempotency shape): a
       // live escalation group refreshes its one open row every pass, no wake attached.
-      await refreshEscalationRowIfExists(deps, dest, members);
+      // OF-140: a damaged existing aggregate is named and this destination waits for its repair; it neither fails the tick
+      // nor reads as absent (which would open a second aggregate beside it).
+      if (!(await refreshEscalationRowIfExists(deps, dest, members))) continue;
 
       const actionable = members.filter((m) => m.due && !m.suspended);
       const needsOrchRung = actionable.filter((m) => !m.view.orchRung);
@@ -866,7 +881,7 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
           // the obligation's own creator) so the escalations view and the health count
           // expose it — it stays open past the batons' exhaustion.
           const floorDest = resolveOperatorSeat() ?? needsOrchRung[0]!.row.sourceSession;
-          await ensureEscalationRow(deps, dest, floorDest, needsOrchRung, reason);
+          if (!(await ensureEscalationRow(deps, dest, floorDest, needsOrchRung, reason))) continue;
           for (const m of needsOrchRung) {
             appendMarker(
               deps.queueRepo,
@@ -880,6 +895,7 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
           }
         } else {
           const escRow = await ensureEscalationRow(deps, dest, orch, members, reason);
+          if (!escRow) continue;
           const outcome = await attemptWake(escRow.qitemId, orch);
           for (const m of needsOrchRung) {
             appendMarker(
@@ -1046,8 +1062,9 @@ async function advancePromptRefusals(
     AND json_valid(tags) AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`)
     .all(PROMPT_ALERT_TAG) as Array<{ qitem_id: string }>;
   for (const { qitem_id } of aggregates) {
-    const aggregate = deps.queueRepo.getById(qitem_id);
-    if (!aggregate || !Array.isArray(aggregate.tags)) continue;
+    // OF-140: a damaged prompt aggregate is named and skipped; it neither ends the whole prompt pass nor reads as retired.
+    const aggregate = readOrName(deps, qitem_id);
+    if (!aggregate || aggregate === UNREADABLE || !Array.isArray(aggregate.tags)) continue;
     const destinationTag = aggregate.tags.find(t => typeof t === "string" && t.startsWith("prompt-destination:"));
     const dest = destinationTag?.slice("prompt-destination:".length);
     if (!dest) continue;
@@ -1082,7 +1099,10 @@ async function advancePromptRefusals(
     const ownedElsewhere = members.some(({ row }) => {
       const recovery = findQueueRecovery(deps.db, row.qitemId);
       if (!recovery || !["pending", "in-progress", "blocked"].includes(recovery.state)) return false;
-      const held = deps.queueRepo.getById(recovery.qitemId);
+      const held = readOrName(deps, recovery.qitemId);
+      // OF-140: a recovery that exists but cannot be read is not an absent recovery; its tags decide who owns the
+      // continuation, so the group is left alone until the row is repaired.
+      if (held === UNREADABLE) return true;
       if (!held) return false;
       if (held.tags?.includes(PROMPT_ALERT_TAG)) return false;
       if (held.destinationSession !== dest) return true;
@@ -1099,8 +1119,9 @@ async function advancePromptRefusals(
     const aggregate = await ensureEscalationRow(deps, dest,
       toOperator ? resolveOperatorSeat() ?? members[0]!.row.sourceSession : orch!, members, reason,
       `prompt-destination:${dest}`, [PROMPT_ALERT_TAG, ...group.keys]);
-    const row = deps.queueRepo.getById(aggregate.qitemId);
-    if (!row) continue;
+    if (!aggregate) continue;
+    const row = readOrName(deps, aggregate.qitemId);
+    if (!row || row === UNREADABLE) continue;
     const addedKeys = group.keys.filter(key => !row.tags?.includes(key));
     if (addedKeys.length) {
       deps.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?")
@@ -1215,6 +1236,20 @@ function appendExhausted(repo: QueueRepository, row: QueueItem, why: string): vo
   appendMarker(repo, row, `${LADDER_EXHAUSTED_PREFIX} ${why}`);
 }
 
+const UNREADABLE = Symbol("unreadable-row");
+
+/** OF-140: read a row the ladder found by id. A damaged row is named in the log and answered `UNREADABLE` (distinct from
+ *  `null`, an absent row), so each caller chooses the safe side: never "absent, then act". */
+function readOrName(deps: Pick<WakeLadderDeps, "queueRepo" | "log">, qitemId: string): QueueItem | null | typeof UNREADABLE {
+  try {
+    return deps.queueRepo.getById(qitemId);
+  } catch (err) {
+    if (!isUnreadableRowError(err)) throw err;
+    (deps.log ?? ((line: string) => console.error(line)))(`[wake-ladder] ${qitemId} skipped: its saved ${err.columns.join(", ")} is not readable JSON (repair or remove the row)`);
+    return UNREADABLE;
+  }
+}
+
 /** Ensure the per-destination aggregate escalation row (F3): one open row, deduped by
  *  tag, refreshed on re-detection — never one row per baton. The row is a NEW durable
  *  obligation addressed to the orchestrator; the baton itself is never duplicated. */
@@ -1226,24 +1261,29 @@ async function refreshEscalationRowIfExists(
   dest: string,
   members: Array<{ row: QueueItem }>,
   dedupTag = escalationDedupTag(dest),
-): Promise<void> {
+): Promise<boolean> {
   const existing = deps.db
     .prepare(
       `SELECT qitem_id FROM queue_items
         WHERE state IN ('pending','in-progress','blocked') AND tags LIKE ? LIMIT 1`,
     )
     .get(`%"${dedupTag}"%`) as { qitem_id: string } | undefined;
-  if (!existing) return;
-  const row = deps.queueRepo.getById(existing.qitem_id)!;
+  if (!existing) return true;
+  // OF-140: the aggregate was found by its tag text, so it exists. If its saved columns are damaged it cannot take new
+  // members: false tells the caller to leave this destination alone (named in the log) instead of failing the tick.
+  const row = readOrName(deps, existing.qitem_id);
+  if (row === UNREADABLE) return false;
+  if (!row) return true;
   const tags = row.tags ?? [];
   const added = members.map(m => recoveryTag(m.row.qitemId)).filter(tag => !tags.includes(tag));
-  if (!added.length) return;
+  if (!added.length) return true;
   deps.db.transaction(() => {
     deps.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(JSON.stringify([...tags, ...added]), existing.qitem_id);
     deps.queueRepo.transitionLog.append({ qitemId: existing.qitem_id, state: row.state, actorSession: LADDER_ACTOR,
       transitionNote: `wake-escalation members added: ${added.join(", ")}`,
       closureTarget: row.state === "in-progress" ? deps.queueRepo.retainedClaimBlocker(existing.qitem_id) : undefined });
   })();
+  return true;
 }
 
 async function ensureEscalationRow(
@@ -1254,7 +1294,7 @@ async function ensureEscalationRow(
   reason: string,
   dedupTag = escalationDedupTag(dest),
   extraTags: string[] = [],
-): Promise<{ qitemId: string }> {
+): Promise<{ qitemId: string } | null> {
   const existing = deps.db
     .prepare(
       `SELECT qitem_id FROM queue_items
@@ -1262,7 +1302,9 @@ async function ensureEscalationRow(
     )
     .get(`%"${dedupTag}"%`) as { qitem_id: string } | undefined;
   if (existing) {
-    await refreshEscalationRowIfExists(deps, dest, members, dedupTag);
+    // OF-140: null = the existing aggregate is damaged. It is not "absent" (no second aggregate is created beside it) and
+    // it is not woken or marked on a guess; the caller skips this destination until the row is repaired.
+    if (!(await refreshEscalationRowIfExists(deps, dest, members, dedupTag))) return null;
     return { qitemId: existing.qitem_id };
   }
   const body =
