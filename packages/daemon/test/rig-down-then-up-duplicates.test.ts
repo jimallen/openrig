@@ -14,6 +14,9 @@ import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
+import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
+import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
+import { QueueRepository } from "../src/domain/queue-repository.js";
 import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 
 const SEAT = "dev.impl";
@@ -91,9 +94,39 @@ describe("rig up --existing after rig down, for a seat with more than one live r
     expect(node).toMatchObject({ status: "failed", errorCode: "duplicate_session" });
     expect(node.error).toContain(`a tmux session named '${seat.sessionName}' is already running`);
     expect(node.error).toContain("OpenRig does not kill a session it did not start");
-    expect(node.error).toContain("rig unclaim");
+    // OF-133: the advice does not send the person to a command that cannot free the name (pinned in the next row).
+    expect(node.error).not.toContain("release it with: rig unclaim");
+    expect(node.error).toContain("rig unclaim does not free the name");
+    expect(node.error).toContain("end it yourself, or rename it");
     expect(node.error).not.toBe("duplicate");
     expect(await h.tmux.hasSession(seat.sessionName), "restore did not touch the person's session").toBe(true);
+  });
+
+  // OF-133 (review-v4 nit): R1 once told the person to `rig unclaim` the adopted session that holds the seat's name. Measured here
+  // on the seat state `rig down` leaves for an adopted session (its row `detached`, its tmux session left running): `rig unclaim`
+  // reports ok and changes nothing that matters: the row stays `detached`, the tmux session stays, and the next `rig up --existing`
+  // meets the same duplicate_session. The advice must therefore not offer it as the way to free the name.
+  it("OF-133: rig unclaim on the adopted session that holds the seat's name leaves the name held, so restore still refuses", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    const snapshotId = await h.down(seat.rigId);
+    const adopted = h.sessionRegistry.registerSession(seat.nodeId, seat.sessionName);
+    h.db.prepare("UPDATE sessions SET origin = 'claimed', status = 'detached' WHERE id = ?").run(adopted.id); // as rig down leaves an adopted row
+    await h.tmux.createSession(seat.sessionName); // the person's adopted session, still running
+
+    const eventBus = new EventBus(h.db);
+    const lifecycle = new RigLifecycleService({
+      db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, discoveryRepo: new DiscoveryRepository(h.db),
+      eventBus, queueRepo: new QueueRepository(h.db, eventBus), tmuxAdapter: h.tmux,
+    } as never);
+    const unclaimed = await lifecycle.unclaimSession(adopted.id);
+    expect(unclaimed.ok, JSON.stringify(unclaimed)).toBe(true);
+    expect(h.db.prepare("SELECT status FROM sessions WHERE id = ?").get(adopted.id)).toEqual({ status: "detached" });
+    expect(await h.tmux.hasSession(seat.sessionName), "unclaim does not end the person's session").toBe(true);
+
+    const out: any = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
+    const node = out.result.nodes.find((n: { logicalId: string }) => n.logicalId === SEAT);
+    expect(node).toMatchObject({ status: "failed", errorCode: "duplicate_session" });
   });
 
   // N5 (review-u07): the command restore-check's T6 advice and restore's own stop-for-decision message name,

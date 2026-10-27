@@ -1115,6 +1115,10 @@ export class RestoreOrchestrator {
         // Binding present but the bound name is malformed → observable fallback.
         warnings?.push(`FR-5: durably-bound session name "${pinnedTarget}" for ${node.logicalId} is invalid; falling back to a derived name.`);
       }
+    } else if (this.sessionRegistry.latestSessionWasIntentionallyStopped(nodeId)) {
+      // OF-138: `rig down` and `rig seat stop` end the seat's newest session with a stop intent and clear its binding
+      // (rig-teardown.ts atomicNodeCleanup), so a seat restored after a supported stop never has a binding to pin to.
+      // The derived name is the normal outcome there, not the old-data fallback this warning is for.
     } else {
       // No durably-bound session name (old data / null binding or empty
       // tmux_session) → observable derived-name fallback (PRD back-compat AC).
@@ -1275,7 +1279,7 @@ export class RestoreOrchestrator {
         // OF-116 R1: a tmux session of the seat's own name is still running that this restore did not start, most often an
         // adopted session `rig down` left running (it is not OpenRig's to kill). The raw tmux word says none of that.
         error: launchResult.code === "duplicate_session"
-          ? `${node.logicalId} was not started: a tmux session named '${launchOpts?.sessionName ?? expectedSessionName ?? "(derived)"}' is already running and OpenRig does not kill a session it did not start (${launchResult.message}). If it is a session you adopted into this seat, release it with: rig unclaim, or end it yourself, then run rig up --existing again. (rig seat launch --fresh would meet the same session and refuse.)`
+          ? `${node.logicalId} was not started: a tmux session named '${launchOpts?.sessionName ?? expectedSessionName ?? "(derived)"}' is already running and OpenRig does not kill a session it did not start (${launchResult.message}). That session keeps the seat's name until it ends or is renamed: end it yourself, or rename it with tmux rename-session if you want to keep it, then run rig up --existing again. rig unclaim does not free the name (it only stops OpenRig tracking an adopted session, which keeps running). (rig seat launch --fresh would meet the same session and refuse.)`
           : launchResult.message,
         ...(launchResult.code === "seat_cwd_unusable" || launchResult.code === "duplicate_session" ? { errorCode: launchResult.code } : {}),
       };
@@ -1475,9 +1479,10 @@ export class RestoreOrchestrator {
           writeFile: (path, content) => writeFileSync(path, content, "utf-8"),
           mkdirp: (path) => mkdirSync(path, { recursive: true }),
         });
-        if (repair.restored.length > 0) {
-          warnings?.push(`Restore guidance: ${node.logicalId}: put back missing blocks ${repair.restored.join(", ")} in ${guidance.targetPath} from their current source files.`);
-        }
+        // OF-138: a block put back here is the restore working as designed (`rig down` strips every managed block), and
+        // the file then holds it. It is not a warning: eight seats of one `rig up --existing` each printed "put back
+        // missing blocks" beside a file that carried all five. Only what is STILL missing after the repair is reported,
+        // here as a gap and again by checkRestoredGuidance on the file as it stands once the seat is up.
         for (const gap of repair.gaps) warnings?.push(`Restore guidance: ${node.logicalId}: ${gap}`);
       }
     }
