@@ -484,7 +484,7 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
     .get(recovery.qitemId) as { destination_session: string; tags: string | null } : null;
   const recoveryBackstop = (): WaitingView["nextBackstop"] => ({
     owner: disposition!.destination_session, mechanism: `queue-recovery:${["pending", "in-progress", "blocked"].includes(recovery!.state) ? "delegated" : "resolved"}`,
-    dueAt: null, intervalSeconds: null, recovery: { qitemId: recovery!.qitemId, state: recovery!.state },
+    dueAt: null, intervalSeconds: null, recovery: { qitemId: recovery!.qitemId, state: recovery!.state, ...(recovery!.unreadable ? { unreadable: true as const } : {}) },
     note: "Current recovery disposition owns the continuation; inspect that row. New source evidence is evaluated afresh.",
   });
   if (recovery && !["pending", "in-progress", "blocked"].includes(recovery.state)) return recoveryBackstop();

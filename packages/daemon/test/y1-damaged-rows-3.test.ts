@@ -26,7 +26,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository, type QueueItem } from "../src/domain/queue-repository.js";
 import { findQueueRecovery, recoveryTag } from "../src/domain/queue-recovery.js";
-import { queueRecoveryOwnsWake, runWakeLadderTick } from "../src/domain/queue-wake-ladder.js";
+import { queueRecoveryOwnsWake, readWakeLadderBackstop, runWakeLadderTick } from "../src/domain/queue-wake-ladder.js";
 import { LADDER_ATTEMPT_PREFIX, LADDER_RUNG_PREFIX } from "../src/domain/queue-stuck-sweep.js";
 import { USAGE_LIMIT_BLOCKER_TAG } from "../src/domain/queue-wake-repository.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
@@ -149,6 +149,31 @@ describe("OF-143: a recovery row whose tags are damaged is not 'no recovery'", (
     expect(plan).toContain("idx_queue_items_recovery_tags");
   });
 
+  it("a CLOSED damaged recovery stops holding once the original changes after it (like a readable closed one)", async () => {
+    const baton = await spentBaton("worker@r");
+    const recovery = await recoveryFor(baton);
+    repo.update({ qitemId: recovery.qitemId, actorSession: "elsewhere@r", state: "done", closureReason: "no-follow-on", transitionNote: "recovered by hand" });
+    setTags(recovery.qitemId, truncated(recovery.qitemId));
+    expect(findQueueRecovery(db, baton.qitemId), "control: still holds before the original changes").toMatchObject({ qitemId: recovery.qitemId, unreadable: true });
+
+    // The original changes after the disposition: a meaningful owner transition dated well after the recovery closed.
+    db.prepare("INSERT INTO queue_transitions(qitem_id,ts,state,actor_session,transition_note) VALUES (?,?,'pending','owner@r','actual owner change')")
+      .run(baton.qitemId, new Date(Date.now() + 60 * 60_000).toISOString());
+
+    expect(findQueueRecovery(db, baton.qitemId)).toBeNull();
+  });
+
+  it("readWakeLadderBackstop keeps the unreadable marker on the recovery it names", async () => {
+    const src = await repo.create({ sourceSession: "sender@r", destinationSession: "relay@r", body: "obligation" });
+    const baton = (await repo.handoff({ qitemId: src.qitemId, fromSession: "relay@r", toSession: "worker@r", nudge: false })).created;
+    const recovery = await recoveryFor(baton);
+    expect(readWakeLadderBackstop(db, baton.qitemId)?.recovery, "control: readable carries no marker").toEqual({ qitemId: recovery.qitemId, state: "pending" });
+
+    setTags(recovery.qitemId, truncated(recovery.qitemId));
+
+    expect(readWakeLadderBackstop(db, baton.qitemId)?.recovery).toEqual({ qitemId: recovery.qitemId, state: "pending", unreadable: true });
+  });
+
   it("queueRecoveryOwnsWake: an open recovery with damaged tags still owns the continuation (the consumer does not deliver a second wake)", async () => {
     // A baton with no failed wake of its own: the recovery link is the ONLY thing that makes the answer true.
     const src = await repo.create({ sourceSession: "sender@r", destinationSession: "relay@r", body: "obligation" });
@@ -236,7 +261,8 @@ describe("OF-143: the stuck-exception ensurer does not open a second item beside
     queueRepo.attachOutbox(new OutboxHandler(db));
     const runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo });
     const watchdogJobsRepo = new WatchdogJobsRepository(db);
-    const ensurer = makeEnsureStuckExceptionItem({ db, queueRepo, resolveRoute: (n, v, c) => runtime.resolveExceptionRouteFor(n, v, c), humanFallbackSeat: "human@host" });
+    const ensureLines: string[] = [];
+    const ensurer = makeEnsureStuckExceptionItem({ db, queueRepo, log: (line: string) => ensureLines.push(line), resolveRoute: (n, v, c) => runtime.resolveExceptionRouteFor(n, v, c), humanFallbackSeat: "human@host" });
     tmp = mkdtempSync(join(tmpdir(), "y1-stuck-"));
     const specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);
@@ -264,6 +290,7 @@ describe("OF-143: the stuck-exception ensurer does not open a second item beside
     // that line is the observable of "the damaged item was read as absent and a second one was attempted".
     expect(lines.filter((line) => line.includes("exception-item ensure failed")), lines.join("\n")).toEqual([]);
     expect(second.exceptionItemsCreated, "a damaged item is not an absent one").toBe(0);
+    expect(ensureLines.filter((line) => line.includes(item!.qitem_id) && line.includes("not readable JSON")), "the damaged item is named").toHaveLength(1);
     expect(exceptionRows().map((row) => row.qitem_id)).toEqual([item!.qitem_id]);
   });
 });

@@ -74,7 +74,11 @@ export function makeEnsureStuckExceptionItem(deps: StuckExceptionDeps): EnsureSt
     if (!exception) return { outcome: "skipped-healthy" };
 
     const previous = findQueueRecovery(deps.db, exception.deadlineEvidence!.packetId);
-    if (previous) return { outcome: "deduped", qitemId: previous.qitemId };
+    if (previous) {
+      // OF-143: a recovery whose saved tags are damaged is still the occurrence's item (nothing second is opened), but it is named.
+      if (previous.unreadable) log(`workflow exception: stuck_overdue item ${previous.qitemId} for instance ${exception.deadlineEvidence!.instanceId} has saved tags that are not readable JSON; not opening a second item (repair or remove the row)`);
+      return { outcome: "deduped", qitemId: previous.qitemId };
+    }
 
     // Honor historical occurrence rows, including their closed disposition.
     // Modern rows were already resolved through the current source episode above.
