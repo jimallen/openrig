@@ -987,6 +987,27 @@ describe("SeatHandoverService", () => {
     });
   });
 
+  // OF-142 review F3: the no-occupant refusal by its message (the other current_occupant_required refusal, "no session row
+  // to supersede", is unreachable here: current_occupant is the latest session row's name, node-inventory.ts), and the
+  // occupant/fork refusals come before the folder's, in the dry-run as in the real handover.
+  describe("the dry-run's occupant refusals: which one, and their order against the folder's", () => {
+    it("no current occupant: the 'no current occupant' refusal", async () => {
+      seedSeat({ withSession: false });
+      const dry = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", dryRun: true });
+      expect(dry).toEqual({ ok: false, code: "current_occupant_required", message: `Seat "dev-impl@seat-rig" has no current occupant to hand over from.`, guidance: "Start or claim the current seat occupant first, then retry handover." });
+    });
+    it.each([
+      ["no current occupant", "current_occupant_required", "fresh", () => { seedSeat({ withSession: false }); }],
+      ["a fork of a session that does not exist", "fork_source_not_found", "fork:nobody@seat-rig", () => { seedSeat(); }],
+    ] as const)("%s AND an unusable folder: the occupant/fork refusal wins, dry-run and real alike", async (_label, code, source, seed) => {
+      seed();
+      const gone = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }));
+      const dry = await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source, dryRun: true });
+      expect(dry).toMatchObject({ ok: false, code });
+      expect(await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source })).toEqual(dry);
+    });
+  });
+
   // OF-131 (review-v6 N3): `rig seat handover --dry-run` printed a plan for a seat whose real handover is refused for its folder.
   describe("the dry-run foresees the seat_cwd_unusable refusal the real handover gives", () => {
     const plan = (svc: SeatHandoverService, source: string | undefined) =>

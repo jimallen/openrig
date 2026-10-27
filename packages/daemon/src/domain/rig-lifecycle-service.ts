@@ -51,6 +51,8 @@ export type UnclaimSessionResult =
       logicalId: string;
       sessionId: string;
       sessionName: string;
+      /** OF-144 review F1: what was left as it was, and why (an older row whose tmux name a live row of the seat also carries). */
+      warnings?: string[];
     }
   | {
       ok: false;
@@ -212,6 +214,11 @@ export class RigLifecycleService {
       "SELECT id FROM sessions WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
     ).get(session.node_id) as { id: string } | undefined;
     const bound = latest?.id === session.session_id;
+    // A discovery record is keyed by tmux name, not by row. When another live row of this node carries the same name (the
+    // session was adopted again), the record cannot be told apart from that row's, so it stays claimed (review F1).
+    const sharedLiveName = !bound && this.db.prepare(
+      "SELECT 1 FROM sessions WHERE node_id = ? AND id <> ? AND session_name = ? AND status IN ('running', 'idle', 'unknown') LIMIT 1",
+    ).get(session.node_id, session.session_id, session.session_name) !== undefined;
 
     // Best-effort: clear OpenRig-owned tmux metadata from the adopted session.
     if (bound && this.tmuxAdapter && session.tmux_session) {
@@ -238,7 +245,7 @@ export class RigLifecycleService {
       if (bound) {
         this.sessionRegistry.clearBinding(session.node_id);
         this.discoveryRepo.releaseClaimByNodeId(session.node_id);
-      } else {
+      } else if (!sharedLiveName) {
         this.discoveryRepo.releaseClaimByNodeAndSession(session.node_id, session.session_name);
       }
       const event = this.eventBus.persistWithinTransaction({
@@ -268,6 +275,7 @@ export class RigLifecycleService {
       logicalId: session.logical_id,
       sessionId: session.session_id,
       sessionName: session.session_name,
+      ...(sharedLiveName ? { warnings: [`Session '${session.session_name}' is also held by a live row of this seat, so its discovery record was left claimed for that row; release that row to free it.`] } : {}),
     };
   }
 

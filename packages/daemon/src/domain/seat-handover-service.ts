@@ -900,12 +900,6 @@ export class SeatHandoverService {
   }
 
   /**
-   * OF-131: the real handover refuses a seat whose recorded folder is unusable (`seat_cwd_unusable`, OF-124) before it touches
-   * the retiree, because every source except `discovered` (the operator already made that successor) launches a successor
-   * into that folder. The dry-run judges the same folder with the same check and wording and touches nothing. A seat with
-   * no recorded folder has none to judge. A custom `successorLauncher` carries its own check; this one uses `seatCwdFault`.
-   */
-  /**
    * What the handover hands over from, read before anything is changed: the seat's current occupant, its latest session
    * row and, for a fork, the native conversation id. Each missing piece is the refusal the handover gives. The real
    * handover and the dry-run both ask here (OF-142), so a plan is never printed for a handover these refuse.
@@ -928,7 +922,7 @@ export class SeatHandoverService {
     }
     const node = this.lookupNode(statusResult.status);
     const latestSession = this.lookupLatestSession(node.id);
-    if (!latestSession) {
+    if (!latestSession) { // defensive: current_occupant is the latest row's name (node-inventory), so a row exists
       return { ok: false, refusal: {
         ok: false,
         code: "current_occupant_required",
@@ -966,6 +960,12 @@ export class SeatHandoverService {
     return { ok: true, status: statusResult, node, latestSession, forkSource: { kind: "native_id", value: discovery.result.nativeId, pendingIdAllowed: true } };
   }
 
+  /**
+   * OF-131: the real handover refuses a seat whose recorded folder is unusable (`seat_cwd_unusable`, OF-124) before it touches
+   * the retiree, because every source except `discovered` (the operator already made that successor) launches a successor
+   * into that folder. The dry-run judges the same folder with the same check and wording and touches nothing. A seat with
+   * no recorded folder has none to judge. A custom `successorLauncher` carries its own check; this one uses `seatCwdFault`.
+   */
   private foreseeSeatCwdRefusal(seatRef: string, sourceMode: SeatHandoverSourceMode): SeatHandoverResult | null {
     if (sourceMode === "discovered") return null;
     const status = this.statusService.getStatus(seatRef);
@@ -989,6 +989,8 @@ export class SeatHandoverService {
     ).get(status.rig_id, status.logical_id) as NodeRow;
   }
 
+  /** The seat's latest session row, by id: the same definition node-inventory uses for the `current_occupant` this hands over
+   *  from (OF-144 review F2: kept, so the departing row is always the occupant's). */
   private lookupLatestSession(nodeId: string): SessionRow | null {
     return this.db.prepare(
       "SELECT id, session_name, status FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1"

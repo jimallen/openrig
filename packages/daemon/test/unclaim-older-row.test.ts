@@ -64,6 +64,45 @@ describe("rig unclaim of an adopted row that is not its seat's latest (OF-144)",
     expect(await h.tmux.hasSession(seat.sessionName)).toBe(true);
   });
 
+  // Review F1: the same tmux session adopted twice on one node. A discovery record is keyed by tmux name, so the older row's
+  // record cannot be told apart from the live row's: it stays claimed, and unclaim says so.
+  it("an older row whose tmux name a live row of the seat also carries leaves the shared discovery record claimed, and says so", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    const older = h.sessionRegistry.registerSession(seat.nodeId, ADOPTED);
+    h.db.prepare("UPDATE sessions SET created_at = '2020-01-01 00:00:00', origin = 'claimed', status = 'detached' WHERE id = ?").run(older.id);
+    const again = h.sessionRegistry.registerSession(seat.nodeId, ADOPTED); // adopted again: now the seat's latest, live
+    h.sessionRegistry.updateStatus(again.id, "running");
+    h.db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(again.id);
+    const shared = claimedRecord(ADOPTED, seat.nodeId);
+
+    const out = await lifecycle().unclaimSession(older.id);
+
+    expect(out).toMatchObject({ ok: true, sessionId: older.id });
+    expect(out.ok && out.warnings).toEqual([`Session '${ADOPTED}' is also held by a live row of this seat, so its discovery record was left claimed for that row; release that row to free it.`]);
+    expect(record(shared)).toEqual({ status: "claimed", claimed_node_id: seat.nodeId });
+    expect(h.db.prepare("SELECT status FROM sessions WHERE id = ?").get(again.id)).toEqual({ status: "running" });
+  });
+
+  // Review F2: "latest" is created_at, then id (ULIDs are monotonic; created_at is per second, so ties are real).
+  it("a created_at tie is broken by id: the later-registered row is the latest, so the earlier adopted row is released as an older one", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    const first = h.db.prepare("SELECT id FROM sessions WHERE node_id = ?").get(seat.nodeId) as { id: string };
+    h.db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(first.id);
+    const later = h.sessionRegistry.registerSession(seat.nodeId, "dev-impl-later@team");
+    h.sessionRegistry.updateStatus(later.id, "running");
+    h.db.prepare("UPDATE sessions SET created_at = '2026-10-27 12:00:00' WHERE node_id = ?").run(seat.nodeId);
+    expect(later.id > first.id, "the population: ULIDs order the two rows").toBe(true);
+    const bindingBefore = h.sessionRegistry.getBindingForNode(seat.nodeId);
+    expect(bindingBefore).not.toBeNull();
+
+    expect(await lifecycle().unclaimSession(first.id)).toMatchObject({ ok: true, sessionId: first.id });
+
+    expect(h.sessionRegistry.getBindingForNode(seat.nodeId)).toEqual(bindingBefore);
+    expect(vi.mocked(h.tmux.setSessionOption)).not.toHaveBeenCalled();
+  });
+
   it("control: the seat's LATEST adopted row is released as before: binding cleared, its session's options blanked, the node's records freed", async () => {
     h = createRestoreHarness();
     const seat = await h.launchRig();
