@@ -490,7 +490,13 @@ function projectionIndeterminateReason(draft: HealthRecordDraft): string | null 
   return null;
 }
 
+const HEALTH_SCOPE_TYPES = ["instance", "rig", "seat", "mission", "slice"] as const;
+
 function cloneScope(scope: HealthScope): HealthScope {
+  // Untyped input can reach here without a scope or with a type no reader knows (review-w6 F1). Refuse it by
+  // name: served as `scope: undefined`, it made every filtered list throw and lose every source's records.
+  const raw: unknown = scope;
+  if (typeof raw !== "object" || raw === null) throw new Error("scope must be an object");
   switch (scope.type) {
     case "instance": return { type: "instance", instanceId: requiredText("scope.instanceId", scope.instanceId) };
     case "rig": return { type: "rig", rigId: requiredText("scope.rigId", scope.rigId) };
@@ -510,6 +516,7 @@ function cloneScope(scope: HealthScope): HealthScope {
       missionId: requiredText("scope.missionId", scope.missionId),
       sliceId: requiredText("scope.sliceId", scope.sliceId),
     };
+    default: throw new Error(`scope.type must be one of ${HEALTH_SCOPE_TYPES.join(", ")}`);
   }
 }
 

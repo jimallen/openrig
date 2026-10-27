@@ -39,6 +39,23 @@ it("names the missing scope id when a source's finding has none (OF-78)", () => 
   expect(result.coverage).toEqual([{ source: "telemetry", status: "unavailable", partial: true,
     evaluatedAt: expect.any(String), reason: "scope.instanceId must be a non-empty string" }]);
 });
+// review-w6 F1: a record served with `scope: undefined` made every FILTERED list throw, losing every source's records.
+it.each([
+  ['{"type":"bogus"}', "scope.type must be one of instance, rig, seat, mission, slice"],
+  ["null", "scope must be an object"],
+])("a finding with scope %s is refused by name and a filtered list still serves the healthy source", (scopeJson, refusal) => {
+  const [finding] = working.read();
+  const scope = JSON.parse(scopeJson);
+  const malformed = { ...working, name: "telemetry", read: () => [finding!, { ...finding!, scope }] };
+  const service = new HealthProjectionService([malformed, working]);
+  for (const query of [{}, { scopeType: "seat" as const }, { scopeType: "seat" as const, scopeId: "seat" }]) {
+    const result = service.list(query);
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0]!.scope).toEqual({ type: "seat", rigId: "rig", seatId: "seat" });
+    expect(result.coverage).toEqual([{ source: "telemetry", status: "unavailable", partial: true,
+      evaluatedAt: expect.any(String), reason: refusal }]);
+  }
+});
 it("isolates a coverage-read error and discards the failed source's records", () => {
   const service = new HealthProjectionService([{ ...working, name: "broken-coverage", coverage: () => { throw new Error("coverage unavailable"); } }, working]);
   const result = service.list();

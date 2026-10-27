@@ -278,6 +278,23 @@ describe("health projection contract", () => {
     expect(() => projectHealthRecord({ ...draft(), scope })).toThrow(`${field} must be a non-empty string`);
   });
 
+  // review-w6 F1: an unknown scope type used to be served as `scope: undefined`, and a missing scope
+  // failed as "Cannot read properties of null (reading 'type')".
+  it.each([
+    ['{"type":"bogus","rigId":"rig"}', "scope.type must be one of instance, rig, seat, mission, slice"],
+    ["{}", "scope.type must be one of instance, rig, seat, mission, slice"],
+    ["null", "scope must be an object"],
+    ['"seat"', "scope must be an object"],
+  ])("refuses the scope %s by name", (scopeJson, refusal) => {
+    const scope = JSON.parse(scopeJson);
+    expect(() => projectHealthRecord({ ...draft(), scope })).toThrow(refusal);
+  });
+
+  it("refuses a draft with no scope at all by name", () => {
+    const scope = JSON.parse("{}").scope;
+    expect(() => projectHealthRecord({ ...draft(), scope })).toThrow("scope must be an object");
+  });
+
   it("does not project a qualifying interval beyond the source window", () => {
     const record = projectHealthRecord({
       ...draft(),
