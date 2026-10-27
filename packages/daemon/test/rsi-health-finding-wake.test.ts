@@ -84,9 +84,10 @@ function harness(script: Script = () => "ok") {
   const projection = new HealthProjectionService([source, sourceB]);
   const jobsRepo = new WatchdogJobsRepository(db, now);
   const historyLog = new WatchdogHistoryLog(db);
+  const logs: string[] = [];
   const sends: Array<{ targetSession: string; message: string; occurrenceId: string; status: string }> = [];
   const engine = new WatchdogPolicyEngine({
-    jobsRepo, historyLog, eventBus: new EventBus(db), now,
+    jobsRepo, historyLog, eventBus: new EventBus(db), now, log: (line) => { logs.push(line); },
     deliver: async (req, src) => {
       const status = script(src);
       sends.push({ targetSession: req.targetSession, message: req.message, occurrenceId: src.occurrenceId!, status });
@@ -117,7 +118,7 @@ function harness(script: Script = () => "ok") {
     .all(wake.jobId) as Array<{ outcome: string; skip_reason: string | null }>;
   const state = (fingerprint: string) => db.prepare("SELECT state, activated_at FROM rsi_finding_state WHERE fingerprint = ?")
     .get(fingerprint) as { state: string; activated_at: string } | undefined;
-  return { db, jobsRepo, historyLog, rearm, jobId: () => wake.jobId, projection, source, sourceB, sends, scan, receipt, history, historyNotes, state, setClock: (ms: number) => { clock = new Date(ms); } };
+  return { db, jobsRepo, historyLog, logs, rearm, jobId: () => wake.jobId, projection, source, sourceB, sends, scan, receipt, history, historyNotes, state, setClock: (ms: number) => { clock = new Date(ms); } };
 }
 
 describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
@@ -598,6 +599,28 @@ describe("OF-72: RSI blindness is recorded, reported, and does not outlive its c
         expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
         expect(h.sends).toHaveLength(1);                         // still only the original wake
         expect(episodes(h)).toHaveLength(1);
+      });
+
+      it("a hook that fails is named in the log (policy, job id, error) and writes nothing a wake or the budget counts; a healthy hook logs nothing", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        h.sourceB.rigs = ["r2"];
+        const events = () => (h.db.prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n;
+        await h.scan();                                          // healthy hook: positive control, nothing logged
+        expect(h.logs).toEqual([]);
+        h.db.prepare("UPDATE rsi_finding_state SET state = 'quiet' WHERE fingerprint LIKE 'rsi.source-blind/%'").run(); // the episode only, not r2's finding
+        h.db.exec("CREATE TRIGGER w5_refuse_episode BEFORE INSERT ON rsi_finding_state WHEN NEW.fingerprint LIKE 'rsi.source-blind/%' BEGIN SELECT RAISE(ABORT, 'episode write refused'); END");
+        const rowsBefore = h.history().length;
+        const eventsBefore = events();
+        await h.scan();                                          // the blind skip row is written, the hook fails
+        expect(h.logs).toHaveLength(1);
+        expect(h.logs[0]).toContain("afterRecorded hook failed");
+        expect(h.logs[0]).toContain(`policy ${HEALTH_FINDING_WAKE_POLICY}`);
+        expect(h.logs[0]).toContain(`job ${h.jobId()}`);
+        expect(h.logs[0]).toContain("episode write refused");
+        expect(h.history()).toHaveLength(rowsBefore + 1);        // only the engine's own loud row; the log adds none
+        expect(events()).toBe(eventsBefore + 1);                 // and only its own evaluation_skipped event
+        expect(h.sends).toHaveLength(1);                         // no wake
       });
 
       it("the scan alone opens nothing (an evaluation that writes no row, such as a throttled send, leaves no episode); recordEpisodes opens it", () => {
