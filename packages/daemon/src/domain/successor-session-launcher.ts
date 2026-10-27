@@ -197,6 +197,7 @@ export class SuccessorSessionLauncher {
     // frozen first-launcher identity. Fail-open: a seeding failure keeps the
     // sessionEnv's projected (shared) CODEX_HOME rather than blocking the
     // handover.
+    const seatHomeWarnings: string[] = [];
     if (input.node.runtime === "codex") {
       try {
         const seatHome = await ensureCodexSeatHome(departingSession, {
@@ -204,8 +205,10 @@ export class SuccessorSessionLauncher {
           sharedCodexHome: this.sessionEnv?.["CODEX_HOME"],
         });
         env["CODEX_HOME"] = seatHome.path;
-      } catch {
-        // seeding failed — keep the sessionEnv projection
+        seatHomeWarnings.push(...seatHome.warnings); // OF-115: told to the operator in the handover result
+      } catch (err) {
+        // seeding failed — keep the sessionEnv projection, and say so (a fresh launch says it too)
+        seatHomeWarnings.push(`codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); the successor launches on the shared home and may inherit a foreign session identity`);
       }
     }
     const cwd = input.node.cwd ?? undefined;
@@ -325,7 +328,7 @@ export class SuccessorSessionLauncher {
       resumeToken: started.resumeToken,
       resumeType: started.resumeType,
       appliedLaunch: started.appliedLaunch,
-      ...(respawned.warnings ? { warnings: respawned.warnings } : {}),
+      ...(respawned.warnings || seatHomeWarnings.length > 0 ? { warnings: [...seatHomeWarnings, ...(respawned.warnings ?? [])] } : {}),
     };
   }
 

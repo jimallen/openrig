@@ -7,7 +7,7 @@ import type { PersistedEvent } from "./types.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { startTmuxTranscriptCapture } from "./transcript-capture.js";
-import { validateClaimedSessionName } from "./session-name.js";
+import { validateClaimedSessionName, MAX_CLAIMED_SESSION_NAME_LENGTH } from "./session-name.js";
 
 export type SelfAttachSuccess = {
   ok: true;
@@ -66,7 +66,7 @@ function refuseUnclaimableName(context: SelfAttachContext): SelfAttachResult | n
   return {
     ok: false,
     code: "invalid_session_name",
-    error: "Session name must use only letters, digits, '-', '_', '.' and '@'.",
+    error: `Session name must use only letters, digits, '-', '_', '.' and '@', and be at most ${MAX_CLAIMED_SESSION_NAME_LENGTH} characters.`,
   };
 }
 

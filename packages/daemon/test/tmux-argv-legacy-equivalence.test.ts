@@ -44,7 +44,7 @@ function respond(cmd: string, failing: string[]): string {
     case "list-panes": return "%1|0|/w|80|24|1\n";
     case "display-message":
       return cmd.includes("session_id") ? "$7\n" : cmd.includes("pane_pid") ? "4242\n" : "1\n";
-    case "show-environment": return "OPENRIG_NODE_ID=n1\nCLAUDECODE=1\nHERDR_PANE_ID=p1\n";
+    case "show-environment": return cmd.includes("DOLLAR_KEY") ? "DOLLAR_KEY=a\\$b\n" : "OPENRIG_NODE_ID=n1\nCLAUDECODE=1\nHERDR_PANE_ID=p1\nANTHROPIC_API_KEY=it's\n";
     case "new-session": return "%1\n";
     default: return "";
   }
@@ -103,6 +103,9 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.createSession(SESSION, "/w x", { ANTHROPIC_API_KEY: "it's" });
   await a.respawnPane("%1", "codex", { env: { ANTHROPIC_API_KEY: "it's" } });
   await recordingAdapter(calls, { failing: ["source-file"] }).createSession(SESSION, undefined, { ANTHROPIC_API_KEY: "it's" });
+  // A respawn that does not happen puts the session environment back (OF-113): the old value through the file, the
+  // other key unset.
+  await recordingAdapter(calls, { failing: ["respawn-pane"] }).respawnPane("%1", "codex", { env: { ANTHROPIC_API_KEY: "new", OPENRIG_NEW_SECRET: "new" } });
   await a.sendText(SESSION, "hello");
   await a.sendText(SESSION, "1", undefined, { bracketed: false });
   await a.sendShellCommand(SESSION, "echo 'hi there'", undefined, { sourceInPane: true });
@@ -123,6 +126,7 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.getDefaultShell();
   await a.getPaneCommand(SESSION);
   await a.getSessionEnv(SESSION, "OPENRIG_NODE_ID");
+  await a.getSessionEnv(SESSION, "DOLLAR_KEY"); // a $ in the value asks which tmux this is
   await a.hasSessionEnv(SESSION, "OPENRIG_NODE_ID");
   await a.startPipePane(SESSION, "/tmp/out dir/it's.log");
   await a.stopPipePane(SESSION);

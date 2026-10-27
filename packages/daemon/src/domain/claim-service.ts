@@ -15,6 +15,7 @@ import {
   type PaneBindingObservation,
 } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
+import { isTypedResumeWord } from "./resume-token-validation.js";
 
 export type ClaimResult =
   | { ok: true; nodeId: string; sessionId: string }
@@ -196,6 +197,9 @@ export class ClaimService {
     rigName: string; logicalId: string;
   }): Promise<void> {
     if (!this.tmuxAdapter) return;
+    // OF-108: the hint is typed into the adopted pane, which may be a shell, and it holds the rig and node names inside a
+    // double-quoted string. A name that is not one plain word is not typed: the claim stands without its hint.
+    if (!isTypedResumeWord(meta.rigName) || !isTypedResumeWord(meta.logicalId)) return;
     const hint = `--- OpenRig: You have been adopted into rig "${meta.rigName}" as ${meta.logicalId}. Run: rig whoami --json ---`;
     const write = async () => {
       const sent = await this.tmuxAdapter!.sendText(tmuxSession, hint);

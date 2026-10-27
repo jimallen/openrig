@@ -15,7 +15,7 @@ import { transportSenderSession } from "./require-sender-identity.js";
 import {
   PiUsageEntriesStore, hasPiUsageChargesTable, hasPiUsageEntriesTable, validPiProviderCharge, validPiUsageFact,
 } from "../domain/pi-usage-entries-store.js";
-import { USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
+import { ACTIVITY_HOOK_MAX_BODY_BYTES, USAGE_MAX_BODY_BYTES, USAGE_MAX_FACTS } from "../domain/usage-post-limits.js";
 import { PdaUsageEntriesStore, hasPdaUsageEntriesTable } from "../domain/pda-usage-store.js";
 import { pdaSeatCosts } from "../domain/usage-series.js";
 import { parsePdaUsageFact } from "../adapters/pda-runner-protocol.js";
@@ -67,12 +67,12 @@ function nextHookSeq(key: string): number {
 
 export const activityRoutes = new Hono();
 
-/** The JSON object body of a usage post, read with a byte ceiling (the stream is cut off at the ceiling, so an
- *  oversize or chunked body is never buffered whole). Run after the token check, so only a token holder reaches it. */
-async function readUsageBody(c: Context, what: string, notObjectCode: "invalid_pi_usage" | "invalid_pda_usage"): Promise<{ body: Record<string, unknown> } | { error: Response }> {
-  const tooLarge = () => ({ error: c.json({ ok: false, code: "usage_body_too_large", error: `${what} bodies are limited to ${USAGE_MAX_BODY_BYTES} bytes.` }, 413) });
+/** The JSON value of a request body, read with a byte ceiling: the stream is cut off at the ceiling, so an oversize
+ *  or chunked body is never buffered whole. Run after the token check, so only a token holder reaches it. */
+async function readCappedJson(c: Context, what: string, maxBytes: number, tooLargeCode: string): Promise<{ value: unknown } | { error: Response }> {
+  const tooLarge = () => ({ error: c.json({ ok: false, code: tooLargeCode, error: `${what} bodies are limited to ${maxBytes} bytes.` }, 413) });
   const declared = Number(c.req.header("content-length"));
-  if (Number.isFinite(declared) && declared > USAGE_MAX_BODY_BYTES) return tooLarge();
+  if (Number.isFinite(declared) && declared > maxBytes) return tooLarge();
   const chunks: Uint8Array[] = [];
   let total = 0;
   const reader = c.req.raw.body?.getReader();
@@ -81,16 +81,22 @@ async function readUsageBody(c: Context, what: string, notObjectCode: "invalid_p
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > USAGE_MAX_BODY_BYTES) { await reader.cancel().catch(() => undefined); return tooLarge(); }
+      if (total > maxBytes) { await reader.cancel().catch(() => undefined); return tooLarge(); }
       chunks.push(value);
     }
   }
-  let body: unknown;
   try {
-    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return { value: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
   } catch {
     return { error: c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400) };
   }
+}
+
+/** The JSON object body of a usage post (see readCappedJson). */
+async function readUsageBody(c: Context, what: string, notObjectCode: "invalid_pi_usage" | "invalid_pda_usage"): Promise<{ body: Record<string, unknown> } | { error: Response }> {
+  const read = await readCappedJson(c, what, USAGE_MAX_BODY_BYTES, "usage_body_too_large");
+  if ("error" in read) return read;
+  const body = read.value;
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return { error: c.json({ ok: false, code: notObjectCode, error: `${what} require a JSON object` }, 400) };
   }
@@ -269,12 +275,10 @@ activityRoutes.post("/hooks", async (c) => {
     }, 401);
   }
 
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json() as Record<string, unknown>;
-  } catch {
-    return c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400);
-  }
+  // OF-106: the same byte ceiling as the usage routes, read after the token check. A hook body is a few hundred bytes.
+  const read = await readCappedJson(c, "activity hook", ACTIVITY_HOOK_MAX_BODY_BYTES, "hook_body_too_large");
+  if ("error" in read) return read.error;
+  const body = read.value as Record<string, unknown>;
 
   if (body.eventFamily === "session_identity") {
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;

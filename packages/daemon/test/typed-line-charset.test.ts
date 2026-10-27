@@ -10,7 +10,10 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { NodeCmuxService } from "../src/domain/node-cmux-service.js";
 import { CmuxLayoutService } from "../src/domain/cmux-layout-service.js";
-import { setDaemonTmuxServer } from "../src/adapters/tmux-server.js";
+import { setDaemonTmuxServer, shellWord } from "../src/adapters/tmux-server.js";
+import { ClaimService } from "../src/domain/claim-service.js";
+import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
+import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { stageCmuxLine } from "../src/adapters/cmux-typed-line.js";
 import type { TmuxFileOps, TmuxAdapter } from "../src/adapters/tmux.js";
 
@@ -54,6 +57,22 @@ describe("resume probe types only shell-inert words (OF-75)", () => {
     }) as unknown as { defaultProbeClaudeResume(s: string, t: string, c: string): Promise<string> };
     return { tmux, result: refresher.defaultProbeClaudeResume(sessionName, token, "/tmp") };
   }
+
+  it.each([
+    ["a token of 201 characters", "seat@rig", "t".repeat(201)],
+    ["a seat name of 201 characters", `${"s".repeat(199)}@r`, "tok-1"],
+  ])("%s is inconclusive and nothing is created or typed (OF-108)", async (_label, name, token) => {
+    const { tmux, result } = probeWith(name, token);
+    expect(await result).toBe("inconclusive");
+    expect(tmux.createSession).not.toHaveBeenCalled();
+    expect(tmux.sendText).not.toHaveBeenCalled();
+  });
+
+  it("control: a token and a seat name of exactly 200 characters are typed (OF-108)", async () => {
+    const { tmux, result } = probeWith(`${"s".repeat(198)}@r`, "t".repeat(200));
+    await result;
+    expect(tmux.sendText).toHaveBeenCalledTimes(1);
+  });
 
   it.each(HOSTILE)("a token holding %s is inconclusive and nothing is created or typed", async (_label, token) => {
     const { tmux, result } = probeWith("seat@rig", token);
@@ -105,6 +124,42 @@ describe("sidecar token fill stores only a well-formed token (OF-75)", () => {
   });
 });
 
+describe("the codex thread id read from a live process is stored only when well-formed (OF-108)", () => {
+  // The id comes from Codex's own logs database, and the next restore types it back into a pane
+  // (`codex resume '<id>'`), so the census write is held to the same format as every other observed token.
+  function census(threadId: string) {
+    const sessionRegistry = { isForkClaimingHeldToken: vi.fn(() => false), updateResumeToken: vi.fn(), markResumeProbeResult: vi.fn() } as unknown as SessionRegistry;
+    const refresher = new ResumeMetadataRefresher({
+      sessionRegistry,
+      tmuxAdapter: { getPanePid: vi.fn(async () => 100) } as unknown as TmuxAdapter,
+      listProcesses: async () => [{ pid: 100, ppid: 1, command: "-zsh" }, { pid: 200, ppid: 100, command: "codex --no-alt-screen" }],
+      readCodexThreadIdByPid: async () => threadId,
+      sleep: async () => {},
+    });
+    return { sessionRegistry, run: () => refresher.refresh([
+      { sessionId: "sess-x", sessionName: "seat@rig", runtime: "codex", resumeType: null, resumeToken: null },
+    ]) };
+  }
+
+  it.each(HOSTILE)("a thread id holding %s is not written", async (_label, id) => {
+    const { sessionRegistry, run } = census(id);
+    await run();
+    expect(sessionRegistry.updateResumeToken).not.toHaveBeenCalled();
+  });
+
+  it("a thread id past 200 characters is not written", async () => {
+    const { sessionRegistry, run } = census("a".repeat(201));
+    await run();
+    expect(sessionRegistry.updateResumeToken).not.toHaveBeenCalled();
+  });
+
+  it("control: a well-formed thread id is written trimmed, as scrape", async () => {
+    const { sessionRegistry, run } = census("  019a-bc12_x.y  ");
+    await run();
+    expect(sessionRegistry.updateResumeToken).toHaveBeenCalledWith("sess-x", "codex_id", "019a-bc12_x.y", "scrape");
+  });
+});
+
 describe("a claimed session name is one shell word (OF-75)", () => {
   let db: Database.Database;
   let registry: SessionRegistry;
@@ -134,6 +189,117 @@ describe("a claimed session name is one shell word (OF-75)", () => {
   it.each(["dev-impl@my-rig", "adopted-session", "r01-dev1-impl", "a.b_c-d@e"])("control: admits %s", (name) => {
     expect(registry.registerClaimedSession(nodeId, name).sessionName).toBe(name);
     expect(rows()).toBe(1);
+  });
+
+  // OF-108: the cap is restated here (200), not imported.
+  it("admits a name of exactly 200 characters", () => {
+    const name = `${"a".repeat(198)}@r`;
+    expect(name).toHaveLength(200);
+    expect(registry.registerClaimedSession(nodeId, name).sessionName).toBe(name);
+  });
+
+  it("refuses a name of 201 characters, records no session, and does not echo the whole name", () => {
+    const name = `${"a".repeat(199)}@r`;
+    expect(name).toHaveLength(201);
+    let message = "";
+    try { registry.registerClaimedSession(nodeId, name); } catch (err) { message = (err as Error).message; }
+    expect(message).toMatch(/Invalid claimed session name/);
+    expect(message.length).toBeLessThan(200);
+    expect(rows()).toBe(0);
+  });
+
+  it("truncates the echo of a long hostile name too", () => {
+    const name = "a;".repeat(400);
+    let message = "";
+    try { registry.registerClaimedSession(nodeId, name); } catch (err) { message = (err as Error).message; }
+    expect(message).toMatch(/Invalid claimed session name/);
+    expect(message.length).toBeLessThan(200);
+  });
+});
+
+describe("a claim hint is typed only with plain names (OF-108)", () => {
+  // The hint is typed into the adopted pane, which may be a shell, inside a double-quoted string.
+  async function hintFor(rigName: string, logicalId: string) {
+    const sendText = vi.fn(async (_target: string, _text: string) => ({ ok: true as const }));
+    const sendKeys = vi.fn(async (_target: string, _keys: string[]) => ({ ok: true as const }));
+    const db = {};
+    const claim = new ClaimService({ db, rigRepo: { db }, sessionRegistry: { db }, discoveryRepo: { db }, eventBus: { db }, tmuxAdapter: { sendText, sendKeys } } as never);
+    await (claim as unknown as { deliverClaimHint(s: string, m: { rigName: string; logicalId: string }): Promise<void> }).deliverClaimHint("worker@rig", { rigName, logicalId });
+    return { sendText, sendKeys };
+  }
+
+  it.each(HOSTILE)("a rig name holding %s types nothing", async (_label, value) => {
+    const { sendText, sendKeys } = await hintFor(`rig${value}`, "dev.impl");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it.each(HOSTILE)("a logical id holding %s types nothing", async (_label, value) => {
+    const { sendText } = await hintFor("my-rig", `dev.${value}`);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("control: plain names type the hint and submit it", async () => {
+    const { sendText, sendKeys } = await hintFor("my-rig", "dev.impl");
+    expect(sendText).toHaveBeenCalledWith("worker@rig", '--- OpenRig: You have been adopted into rig "my-rig" as dev.impl. Run: rig whoami --json ---');
+    expect(sendKeys).toHaveBeenCalledWith("worker@rig", ["Enter"]);
+  });
+});
+
+describe("the claude launch line quotes the seat name (OF-108)", () => {
+  // A claude seat's launch line is parsed by the pane shell. The name is a session name (validated where a seat is
+  // launched), but the adapter is the last place before the shell, so it quotes whatever it is given.
+  const SEAT = "exec-cos@eztrack";
+  async function sentOf(name: string, extra: { resumeToken?: string; forkSource?: { kind: "native_id"; value: string } } = {}): Promise<string> {
+    const sendText = vi.fn(async (_target: string, _text: string) => ({ ok: true as const }));
+    const tmux = mockShellCommand({
+      sendText, hasSession: vi.fn(async () => true), getPaneCommand: vi.fn(async () => "claude"), capturePaneContent: vi.fn(async () => ""),
+      createSession: vi.fn(async () => ({ ok: true as const })), killSession: vi.fn(async () => ({ ok: true as const })),
+      listSessions: vi.fn(async () => []), listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []),
+      getPanePid: vi.fn(async () => null), sendKeys: vi.fn(async () => ({ ok: true as const })),
+    } as unknown as TmuxAdapter);
+    const fsOps = { readFile: () => { throw new Error("not found"); }, writeFile: () => {}, exists: () => false, mkdirp: () => {}, copyFile: () => {}, listFiles: () => [] } as unknown as ClaudeAdapterFsOps;
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, sessionIdFactory: () => "sess-1" });
+    const binding = { id: "b1", nodeId: "n1", tmuxSession: SEAT, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/project" } as never;
+    await adapter.launchHarness(binding, { name, ...extra });
+    const calls = sendText.mock.calls;
+    return calls[calls.length - 1]![1];
+  }
+  const HOSTILE_NAME = "x; touch /tmp/owned";
+
+  it("fresh launch: a name that is more than one word is one quoted word after --name", async () => {
+    expect(await sentOf(HOSTILE_NAME)).toMatch(/ --session-id sess-1 --name 'x; touch \/tmp\/owned'$/);
+  });
+  it("resume launch: the same", async () => {
+    expect(await sentOf(HOSTILE_NAME, { resumeToken: "tok-1" })).toMatch(/ --resume 'tok-1' --name 'x; touch \/tmp\/owned'$/);
+  });
+  it("fork launch: the same", async () => {
+    expect(await sentOf(HOSTILE_NAME, { forkSource: { kind: "native_id", value: "parent-1" } })).toMatch(/ --fork-session --session-id sess-1 --name 'x; touch \/tmp\/owned'$/);
+  });
+  it("control: a canonical name stays bare, as the neighbouring launch pins expect", async () => {
+    expect(await sentOf(SEAT)).toMatch(/ --session-id sess-1 --name exec-cos@eztrack$/);
+  });
+  it("a name that starts with = is quoted (zsh would rewrite =ls to /bin/ls)", async () => {
+    expect(await sentOf("=ls")).toMatch(/ --name '=ls'$/);
+  });
+});
+
+describe("shellWord is a shell word for zsh and sh (OF-114)", () => {
+  it("quotes a value that starts with =, and keeps = inside a word", () => {
+    expect(shellWord("=ls")).toBe("'=ls'");
+    expect(shellWord("a=b")).toBe("a=b");
+    expect(shellWord("dev-impl@rig-1")).toBe("dev-impl@rig-1");
+    expect(shellWord("a b")).toBe("'a b'");
+  });
+
+  const zsh = ["/bin/zsh", "/usr/bin/zsh"].find((z) => fs.existsSync(z));
+  it.skipIf(!zsh)("run for real under zsh: a name starting with = reaches the command as itself, not as a path", () => {
+    // `zsh -fc 'echo =ls'` prints the path of ls (EQUALS expansion); the quoted word prints =ls.
+    const out = execFileSync(zsh!, ["-fc", `printf '%s\\n' ${shellWord("=ls")}`], { encoding: "utf8" });
+    expect(out).toBe("=ls\n");
+    // Positive control: the unquoted form is rewritten, so the row above can fail.
+    const unquoted = execFileSync(zsh!, ["-fc", "printf '%s\\n' =ls"], { encoding: "utf8" });
+    expect(unquoted).not.toBe("=ls\n");
   });
 });
 
@@ -202,6 +368,14 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       const staged = await stageCmuxLine(line, f.ops);
       expect(`${staged.line}\n`).toMatch(STAGED);
       expect(staged.line).not.toMatch(/[\r\n]/);
+    });
+
+    it("quotes a script path that needs it, in the typed line and in the script's own removal command (OF-114)", async () => {
+      const f = fileOps();
+      const ops: TmuxFileOps = { ...f.ops, tmpName: () => "/tmp/a b/x.txt" };
+      const staged = await stageCmuxLine("echo 'x'", ops);
+      expect(staged.ok && staged.line).toBe("/bin/sh '/tmp/a b/x.txt'");
+      expect(f.files.get("/tmp/a b/x.txt")).toBe("/bin/rm -f -- '/tmp/a b/x.txt'\necho 'x'\n");
     });
 
     it("stages a line over the 512-byte terminal bound", async () => {
@@ -312,6 +486,23 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       const calls = runStaged([...f.files.values()][0]!);
       expect(fs.existsSync(sentinel)).toBe(false);
       expect(calls).toEqual([["rig", "capture", name], ["rig", "transcript", name, "--tail", "100"]]);
+    });
+
+    it("helper console: a name that starts with - reaches rig after `--`, with its options before it (OF-114)", async () => {
+      const { f, run } = open({ attachmentType: "external_cli", externalSessionName: "-ext@rig" });
+      expect((await run()).ok).toBe(true);
+      const script = [...f.files.values()][0]!;
+      expect(runStaged(script)).toEqual([["rig", "capture", "--", "-ext@rig"], ["rig", "transcript", "--tail", "100", "--", "-ext@rig"]]);
+      expect(script).toContain(`printf '%s\\n' 'rig send --verify -- -ext@rig "..."'\n`);
+    });
+
+    it("attach line: a session name that starts with = reaches tmux as itself (OF-114)", async () => {
+      const { sent, f, run } = open({ attachmentType: "tmux", tmuxSession: "=ls" });
+      expect((await run()).ok).toBe(true);
+      expect(sent[0]).toMatch(STAGED);
+      const script = [...f.files.values()][0]!;
+      expect(runStaged(script)).toEqual([["tmux", "attach", "-t", "=ls"]]);
+      expect(script.split("\n")[1]).toBe("tmux attach -t '=ls'");
     });
 
     it("helper console for a plain name keeps the capture and transcript commands and prints the send hint", async () => {

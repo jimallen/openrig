@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 
 const ulid = monotonicFactory();
 import type { Session, Binding } from "./types.js";
-import { validateSessionName, validateClaimedSessionName } from "./session-name.js";
+import { validateSessionName, validateClaimedSessionName, MAX_CLAIMED_SESSION_NAME_LENGTH } from "./session-name.js";
 import { formatWatchdogRegistrationError } from "./watchdog-auto-registration.js";
 import type { ClaudeLaunchedProcess, ClaudeResumeRotation } from "./native-process-lineage.js";
 
@@ -198,7 +198,7 @@ export class SessionRegistry {
   ): Session {
     if (!validateClaimedSessionName(sessionName)) {
       throw new Error(
-        `Invalid claimed session name "${sessionName.replace(/[^\x20-\x7e]/g, "?")}": allowed characters are a-z, A-Z, 0-9, -, _, ., @`,
+        `Invalid claimed session name "${sessionName.slice(0, 40).replace(/[^\x20-\x7e]/g, "?")}${sessionName.length > 40 ? "..." : ""}": allowed characters are a-z, A-Z, 0-9, -, _, ., @, at most ${MAX_CLAIMED_SESSION_NAME_LENGTH} of them`,
       );
     }
     const id = ulid();

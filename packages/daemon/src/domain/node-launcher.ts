@@ -200,6 +200,9 @@ export class NodeLauncher {
           sharedCodexHome: this.sessionEnv["CODEX_HOME"],
         });
         openRigEnv["CODEX_HOME"] = seatHome.path;
+        // OF-115: a profile withheld for carrying a seat identity, or a shared config.toml that sets one, is told to the
+        // operator in the launch result, not only on the daemon console.
+        codexSeatWarnings.push(...seatHome.warnings);
       } catch (err) {
         codexSeatWarnings.push(
           `codex per-seat CODEX_HOME seeding failed (${err instanceof Error ? err.message : String(err)}); seat launches on the shared home and may inherit a foreign session identity`,

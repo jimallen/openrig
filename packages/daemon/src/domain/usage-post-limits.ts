@@ -5,6 +5,11 @@
 export const USAGE_MAX_FACTS = 5000;
 /** The most bytes one usage post body may hold. */
 export const USAGE_MAX_BODY_BYTES = 4 * 1024 * 1024;
+/** OF-106: the most bytes one /api/activity/hooks body may hold. Every poster (the Claude relay, the stub, Pi and pda
+ *  runners, `rig` startup proof) sends a flat object of a few hundred bytes; the longest field is a 1024-character
+ *  session-file path. 64 KiB is two orders of magnitude over that and small enough that a token holder cannot make the
+ *  daemon buffer more. */
+export const ACTIVITY_HOOK_MAX_BODY_BYTES = 64 * 1024;
 /** What a poster fills a chunk to: the cap less room for the envelope (session ids, flags) around the list. */
 export const USAGE_CHUNK_BODY_BYTES = 3 * 1024 * 1024;
 

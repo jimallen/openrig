@@ -106,6 +106,17 @@ describe("SelfAttachService", () => {
       expect(counts(node.id)).toEqual({ bindings: 0, sessions: 0, events: 0 });
     });
 
+    // OF-108: the cap is restated here (200), not imported.
+    it("attachToNode refuses a 201-character name with its own message, and a 200-character name attaches", async () => {
+      const rig = rigRepo.createRig("rig");
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+      const tooLong = await selfAttachService.attachToNode({ rigId: rig.id, logicalId: "dev.impl", displayName: `${"a".repeat(199)}@r` });
+      expect(tooLong).toMatchObject({ ok: false, code: "invalid_session_name" });
+      expect(!tooLong.ok && tooLong.error).toContain("at most 200 characters");
+      expect(counts(node.id)).toEqual({ bindings: 0, sessions: 0, events: 0 });
+      expect((await selfAttachService.attachToNode({ rigId: rig.id, logicalId: "dev.impl", displayName: `${"a".repeat(198)}@r` })).ok).toBe(true);
+    });
+
     it("attachToNode with a tmux context holding such a name leaves no binding, session or event", async () => {
       const rig = rigRepo.createRig("rig");
       const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });

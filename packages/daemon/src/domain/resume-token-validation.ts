@@ -124,9 +124,12 @@ export function validateResumeToken(
 // OF-75 — the characters a word may hold to be typed into a pane without quoting concerns: the resume probe types
 // `claude --resume '<token>' --name '<seat>'`, and a quoted word is no defence against an autopair widget or a
 // pane that is not a POSIX shell. Outside this set the probe does not run (it answers "inconclusive").
+// OF-108: and a word is at most 200 characters (the cap a token already has), so the line stays well inside the
+// 1024-byte canonical input a pane takes: two words of 200 plus the fixed text is about 450 bytes.
 const TYPED_WORD_RE = /^[A-Za-z0-9._@-]+$/;
+export const MAX_TYPED_WORD_LENGTH = 200;
 export function isTypedResumeWord(value: string): boolean {
-  return TYPED_WORD_RE.test(value);
+  return value.length <= MAX_TYPED_WORD_LENGTH && TYPED_WORD_RE.test(value);
 }
 
 /**

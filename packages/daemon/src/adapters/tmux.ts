@@ -995,10 +995,17 @@ export class TmuxAdapter {
     if (opts?.cwd != null) legacyRespawn.push("-c", shellQuote(opts.cwd));
     for (const [k, v] of Object.entries(argvEnv)) legacyRespawn.push("-e", shellQuote(`${k}=${v}`));
     if (command != null && command.length > 0) legacyRespawn.push(shellQuote(command));
-    if (Object.keys(secretEnv).length > 0) {
+    // The credentials are set in the SESSION environment, which outlives this call: a later window or respawn
+    // inherits it. So a respawn that does not happen puts the session environment back as it was (OF-113); the
+    // pane itself is untouched either way.
+    const secretKeys = Object.keys(secretEnv);
+    let before: Map<string, string> | null = null;
+    if (secretKeys.length > 0) {
+      before = await this.readSessionEnvValues(exact, secretKeys);
       try {
         await this.deliverSecretEnv(exact, secretEnv);
       } catch (err) {
+        await this.restoreSessionEnv(exact, secretKeys, before); // a partial delivery may have set some keys
         return classifyWriteError(err); // the pane is untouched
       }
     }
@@ -1015,7 +1022,43 @@ export class TmuxAdapter {
       await this.run(argv, legacyRespawn.join(" "));
       return warnings ? { ok: true, warnings } : { ok: true };
     } catch (err) {
+      if (secretKeys.length > 0) await this.restoreSessionEnv(exact, secretKeys, before);
       return classifyWriteError(err);
+    }
+  }
+
+  /** The current values of `keys` in one session's environment (a key the session does not set is absent from the
+   *  map), or null when tmux could not be read. Values stay in memory: nothing here logs or returns them to a caller. */
+  private async readSessionEnvValues(sessionTarget: string, keys: readonly string[]): Promise<Map<string, string> | null> {
+    try {
+      const argv = ["tmux", "show-environment", "-t", sessionTarget];
+      const out = await this.run(argv, posixJoinArgv(argv));
+      const values = new Map<string, string>();
+      for (const line of out.split(/\r?\n/)) {
+        const eq = line.indexOf("=");
+        if (eq > 0 && keys.includes(line.slice(0, eq))) values.set(line.slice(0, eq), await this.unescapeShownValue(line.slice(eq + 1)));
+      }
+      return values;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Put `keys` in one session's environment back to `before`: a key it held is set to that value again (through the
+   *  credential file, never an argv), a key it did not hold is unset. With no snapshot (`before` null) every key is
+   *  unset. Best-effort: the caller is already reporting the failure that made this necessary. */
+  private async restoreSessionEnv(sessionTarget: string, keys: readonly string[], before: Map<string, string> | null): Promise<void> {
+    const held: Record<string, string> = {};
+    for (const key of keys) {
+      const value = before?.get(key);
+      if (value !== undefined) { held[key] = value; continue; }
+      try {
+        const argv = ["tmux", "set-environment", "-t", sessionTarget, "-u", key];
+        await this.run(argv, posixJoinArgv(argv));
+      } catch { /* best-effort */ }
+    }
+    if (Object.keys(held).length > 0) {
+      try { await this.deliverSecretEnv(sessionTarget, held); } catch { /* best-effort */ }
     }
   }
 
@@ -1163,6 +1206,22 @@ export class TmuxAdapter {
     }
   }
 
+  /**
+   * tmux 3.4 prints every `$` in a `show-environment` value with a backslash before it (measured on 3.4: a value `a$b`
+   * is shown as `a\$b`, and `a\$b` as `a\\$b`); tmux 3.7c prints the value as it is. Nothing else is escaped on either
+   * (measured: backtick, `"`, `\`, `%`, `#`, `~`). Versions between were not measured, so the rule is applied to 3.4 and
+   * earlier only, and an unreadable or unrecognised version string is read as "prints the value as it is".
+   */
+  private showEnvironmentEscapesDollar: Promise<boolean> | null = null;
+  private async unescapeShownValue(shown: string): Promise<string> {
+    if (!shown.includes("$")) return shown;
+    this.showEnvironmentEscapesDollar ??= (async () => {
+      const version = /^tmux (?:next-)?(\d+)\.(\d+)/.exec((await this.run(["tmux", "-V"], "tmux -V")).trim());
+      return version !== null && (Number(version[1]) < 3 || (Number(version[1]) === 3 && Number(version[2]) <= 4));
+    })().catch(() => { this.showEnvironmentEscapesDollar = null; return false; });
+    return (await this.showEnvironmentEscapesDollar) ? shown.replace(/\\\$/g, "$") : shown;
+  }
+
   /** A launch metadata read. Callers must never put credential values in terminal input. */
   async getSessionEnv(session: string, key: string): Promise<string | undefined> {
     if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("Invalid session environment key.");
@@ -1172,7 +1231,7 @@ export class TmuxAdapter {
         `tmux show-environment -t ${shellQuote(target)} ${shellQuote(key)}`);
       if (output.trim() === `-${key}`) return undefined;
       if (!output.startsWith(`${key}=`)) throw new Error("Unexpected session environment response.");
-      return output.slice(key.length + 1).replace(/\r?\n$/, "");
+      return await this.unescapeShownValue(output.slice(key.length + 1).replace(/\r?\n$/, ""));
     } catch (error) {
       if (error instanceof Error && error.message.includes(`unknown variable: ${key}`)) return undefined;
       throw new Error("Cannot read the session's launch environment.");

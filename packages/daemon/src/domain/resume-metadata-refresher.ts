@@ -156,7 +156,11 @@ export class ResumeMetadataRefresher {
           continue;
         }
 
-        const threadId = await this.captureCodexThreadId(session.sessionName, captureOpts);
+        // OF-108: the id comes from Codex's own logs database, but it is stored and later typed back into a pane
+        // (`codex resume '<id>'`), so it is written only when well-formed for the runtime, as at every other
+        // observed-token write (OF-75).
+        const observed = await this.captureCodexThreadId(session.sessionName, captureOpts);
+        const threadId = observed ? observedResumeTokenToWrite("codex", observed) : null;
         // A fork's pending id: only its own new conversation may fill it, never one an earlier
         // row (its parent or predecessor) holds; that stays honestly pending.
         if (threadId && !this.sessionRegistry.isForkClaimingHeldToken(session.sessionId, "codex_id", threadId)) {

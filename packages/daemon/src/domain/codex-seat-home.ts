@@ -53,6 +53,10 @@ export interface CodexSeatHome {
   /** Profile fragments NOT used because they carry an OpenRig seat identity variable (OF-43): a shared source
    *  is not copied; a seat-home copy is moved aside as `<name>.refused-openrig-identity`. */
   refusedProfiles: string[];
+  /** What an operator should be told about this launch's profiles, one sentence each, names only (OF-115): a profile
+   *  moved aside or not copied, and a shared config.toml that sets an identity variable for every seat. The launchers
+   *  put these in the launch's warnings; the same text is also logged. */
+  warnings: string[];
 }
 
 /** The per-seat identity variables the launcher injects (node-launcher.ts). A profile that sets one of these
@@ -91,19 +95,31 @@ export function codexProfileIdentityVars(text: string): string[] {
   return [...found].sort();
 }
 
-/** Move a refused seat copy to `<dest>.refused-openrig-identity-<ms>-<n>` without ever replacing a file: the
- *  name is claimed with a hard link (EEXIST on a taken name), then the original name is removed. */
-async function moveAsideUnique(dest: string): Promise<string> {
+/** Move a refused seat copy (a file, or a symlink to one) to `<dest>.refused-openrig-identity-<ms>-<n>` without ever
+ *  replacing a file: the name is claimed first (a hard link for a file, a new link to the same target for a symlink;
+ *  EEXIST on a taken name tries the next), then the original name is removed. Returns the new name, or null when the
+ *  copy was already gone: a concurrent launch of the same seat moved it first (ENOENT), which is the outcome wanted,
+ *  not a failure (OF-115: it used to throw, and the launcher then fell back to the shared CODEX_HOME). */
+async function moveAsideUnique(dest: string, symlink: boolean): Promise<string | null> {
   const stamp = Date.now();
+  const linkTarget = symlink ? await fs.readlink(dest).catch(() => null) : null;
+  if (symlink && linkTarget === null) return null;
   for (let n = 0; ; n++) {
     const target = `${dest}.refused-openrig-identity-${stamp}-${n}`;
     try {
-      await fs.link(dest, target);
+      if (symlink) await fs.symlink(linkTarget!, target);
+      else await fs.link(dest, target);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") continue;
+      if (code === "ENOENT") return null;
       throw err;
     }
-    await fs.unlink(dest);
+    try {
+      await fs.unlink(dest);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
     return target;
   }
 }
@@ -439,7 +455,20 @@ export async function ensureCodexSeatHome(
   // per-seat identity edits stay seat-local.
   const copiedProfiles: string[] = [];
   const refusedProfiles: string[] = [];
+  const warnings: string[] = [];
   const log = opts?.log ?? ((message: string) => console.log(message));
+  const say = (message: string): void => { log(message); warnings.push(message); };
+
+  // config.toml is symlinked into every seat and is read without `-p`, so an identity variable set there reaches every
+  // codex seat whatever its profile (OF-115). It is the operator's own file and carries the trust and settings every
+  // seat needs, so it is reported, not withheld.
+  const sharedConfigPath = path.join(shared, "config.toml");
+  const sharedConfig = await fs.readFile(sharedConfigPath, "utf8").catch(() => null);
+  const sharedConfigVars = sharedConfig === null ? [] : codexProfileIdentityVars(sharedConfig);
+  if (sharedConfigVars.length > 0) {
+    say(`codex seat home ${home}: the shared ${sharedConfigPath} sets ${sharedConfigVars.join(", ")}, which every codex seat reads; remove it from that file`);
+  }
+
   let entries: string[] = [];
   try {
     entries = await fs.readdir(shared);
@@ -453,34 +482,30 @@ export async function ensureCodexSeatHome(
     const stat = await fs.lstat(source).catch(() => null);
     if (!stat?.isFile()) continue;
     const dest = path.join(home, entry);
-    let existing = true;
-    try {
-      await fs.lstat(dest);
-    } catch {
-      existing = false;
-    }
+    const existing = await fs.lstat(dest).catch(() => null);
     if (existing) {
       // Copy-once stays, but a copy that carries a seat identity is moved aside on every launch (OF-43); a
-      // clean shared source is then copied fresh below.
-      const stat = await fs.lstat(dest).catch(() => null);
-      if (!stat?.isFile()) continue;
+      // clean shared source is then copied fresh below. A symlink is read through (OF-115): an operator's link to a
+      // file that carries identity is moved aside as the link, never followed or rewritten.
+      const symlink = existing.isSymbolicLink();
+      if (!existing.isFile() && !symlink) continue;
       const text = await fs.readFile(dest, "utf8").catch(() => null);
       const vars = text === null ? [] : codexProfileIdentityVars(text);
       if (vars.length === 0) continue;
-      await moveAsideUnique(dest);
+      await moveAsideUnique(dest, symlink);
       refusedProfiles.push(entry);
-      log(`codex seat home ${home}: moved profile ${entry} aside; it sets ${vars.join(", ")}, which would give the seat another identity`);
+      say(`codex seat home ${home}: moved profile ${entry} aside; it sets ${vars.join(", ")}, which would give the seat another identity`);
     }
     const sourceText = await fs.readFile(source, "utf8").catch(() => null);
     const vars = sourceText === null ? [] : codexProfileIdentityVars(sourceText);
     if (vars.length > 0) {
       if (!refusedProfiles.includes(entry)) refusedProfiles.push(entry);
-      log(`codex seat home ${home}: did not copy profile ${entry}; it sets ${vars.join(", ")}, which would give the seat another identity`);
+      say(`codex seat home ${home}: did not copy profile ${entry}; it sets ${vars.join(", ")}, which would give the seat another identity, so a launch with -p ${entry.replace(/\.config\.toml$/, "")} finds no profile file`);
       continue;
     }
     await fs.copyFile(source, dest);
     copiedProfiles.push(entry);
   }
 
-  return { path: home, linked, copiedProfiles, refusedProfiles };
+  return { path: home, linked, copiedProfiles, refusedProfiles, warnings };
 }
