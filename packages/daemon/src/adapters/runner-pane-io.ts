@@ -25,9 +25,15 @@ import { formatDaemonHostForUrl } from "./daemon-url.js";
 // Canonical TTY buffers can overflow before Node sees even the paste terminator.
 // Use Node's line editor in raw mode, with only paste framing handled here.
 export const MAX_RUNNER_INPUT_BYTES = 1024 * 1024;
-/** OF-119: how long a bracketed paste may stay open before the editor tells the operator what holds Ctrl-C and Enter.
- *  A terminal or tmux delivers a paste in one write, so an open paste after this long has lost its closing marker. */
-export const PASTE_OPEN_HINT_MS = 10_000;
+/** OF-119: how long a bracketed paste may stay open before the editor tells the operator what holds Ctrl-C and Enter,
+ *  and (OF-148) before the runner records `pasteOpen` so `rig send` refuses. A terminal or tmux delivers a paste in one
+ *  write, so an open paste after this long has lost its closing marker. OF-151: 2 s, down from 10 s, to shorten the
+ *  window in which a send after a lost marker is not refused. The largest paste the editor accepts (1 MiB) was fed through
+ *  this editor in 16 KiB writes in about 30 ms (measured, in-process, not through a pty), so 2 s leaves a wide margin for
+ *  tmux and the pty to deliver it. A genuine paste slower than 2 s (a slow link) is flagged open, and when it then closes
+ *  its text is on the line, so OF-153 sets `pasteLeftover`: `rig send` is refused until the line is submitted or cleared
+ *  (Ctrl-C), and a retry does not clear it. */
+export const PASTE_OPEN_HINT_MS = 2_000;
 
 export interface RunnerInputOptions {
   /** The "[<label>]" prefix of the editor's own pane lines. Default "pi-runner". */
@@ -43,6 +49,12 @@ export interface RunnerInputOptions {
    *  paste that closes in time reports nothing. Used only in "content" mode, with the hint. The runner records it in its
    *  sidecar so `rig send` can refuse instead of delivering text the open paste would swallow. */
   onPasteOpenChange?: (open: boolean) => void;
+  /** OF-153: told when the editor line starts to hold text that came from a paste which had been flagged open (the hint
+   *  fired, so the operator closed it by hand or its marker arrived late) and has since closed without the line being
+   *  cleared (true), and when that line is emptied by any road: Ctrl-C, a submit, backspacing it empty, or the editor
+   *  closing (false). Edge-only. Ordinary typing and a paste that closed in time never report: only a recovered lost
+   *  paste does. The runner records it in its sidecar so `rig send` refuses instead of appending to the stale text. */
+  onPasteLeftoverChange?: (held: boolean) => void;
 }
 
 export function createRunnerInput(
@@ -85,6 +97,13 @@ export function createRunnerInput(
     pasteOpenReported = open;
     try { options.onPasteOpenChange?.(open); } catch { /* a sidecar write failing must not break the editor */ }
   };
+  // OF-153: whether the owner was last told the line holds a recovered lost paste.
+  let pasteLeftoverReported = false;
+  const reportPasteLeftover = (held: boolean) => {
+    if (pasteLeftoverReported === held) return;
+    pasteLeftoverReported = held;
+    try { options.onPasteLeftoverChange?.(held); } catch { /* a sidecar write failing must not break the editor */ }
+  };
   const armPasteHint = () => {
     if (!etxInPasteIsContent) return;
     pasteHint = setTimeout(() => {
@@ -122,6 +141,8 @@ export function createRunnerInput(
       } else paste += text;
     }
   };
+  // OF-153: the recovered paste's text has left the line (Ctrl-C, a submit, or backspaced away): nothing is left to append to.
+  const settleLeftover = () => { if (pasteLeftoverReported && editor.line.length === 0) reportPasteLeftover(false); };
   const receive = (chunk: Buffer) => {
     pending += decoder.write(chunk);
     while (pending) {
@@ -156,7 +177,10 @@ export function createRunnerInput(
         discarded = false;
         armPasteHint();
       } else {
-        disarmPasteHint();
+        // OF-153: a paste that had been reported open (the hint fired) was recovered by hand or arrived late. Its text goes
+        // into the line like any paste, but the operator may not notice it is there, so the next `rig send` would be
+        // appended to it. Leftover is reported BEFORE the open flag is cleared: the sidecar never shows neither.
+        const recoveredLostPaste = pasteOpenReported;
         if (!discarded) {
           const line = editor.line.slice(0, editor.cursor) + paste + editor.line.slice(editor.cursor);
           if (Buffer.byteLength(line) > MAX_RUNNER_INPUT_BYTES) { clear(); reject(); }
@@ -164,8 +188,10 @@ export function createRunnerInput(
             // rl.write(text) treats pasted newlines as submits. These public
             // editing fields insert the whole literal paste without submitting.
             setLine(line, editor.cursor + paste.length);
+            if (recoveredLostPaste && paste.length > 0) reportPasteLeftover(true);
           }
         }
+        disarmPasteHint();
         paste = null;
       }
     }
@@ -174,12 +200,14 @@ export function createRunnerInput(
   const end = () => editor.close();
   input.setRawMode(true);
   output.write("\u001b[?2004h");
-  input.on("data", receive);
+  const onData = (chunk: Buffer) => { receive(chunk); settleLeftover(); };
+  input.on("data", onData);
   input.once("end", end);
   editor.on("line", submit);
   editor.once("close", () => {
     disarmPasteHint();
-    input.removeListener("data", receive);
+    reportPasteLeftover(false);
+    input.removeListener("data", onData);
     input.removeListener("end", end);
     input.setRawMode(wasRaw);
     input.pause();

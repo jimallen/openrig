@@ -83,6 +83,10 @@ export interface PiRunnerState {
    *  true, and only trusted alongside a live `aliveAt` (a dead or hung runner cannot clear it). Absent in a sidecar from
    *  an older runner: no answer, today's behaviour. */
   pasteOpen?: boolean;
+  /** OF-153: true while the pane editor line holds text from a paste that had been flagged open (`pasteOpen`) and later
+   *  closed without the line being cleared, so a `rig send` would be appended to the stale text. Written only when true,
+   *  trusted only alongside a live `aliveAt`, absent from an older runner (today's behaviour). */
+  pasteLeftover?: boolean;
 }
 
 /** OF-119: how often a ready runner rewrites its sidecar, and how old `aliveAt` may be before the sidecar is no answer. */
@@ -130,6 +134,7 @@ export function parsePiRunnerState(raw: string): PiRunnerState | null {
     // OF-148: a present but non-boolean pasteOpen is not a record this reader understands: no runner answer, as for any
     // malformed field (never read as "closed" and acted on).
     if (state.pasteOpen !== undefined && typeof state.pasteOpen !== "boolean") return null;
+    if (state.pasteLeftover !== undefined && typeof state.pasteLeftover !== "boolean") return null;
     return parsed as unknown as PiRunnerState;
   } catch {
     return null;

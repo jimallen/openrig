@@ -145,6 +145,10 @@ export function resolveConcreteHint(
  *  closing marker never arrived. The transport words the refusal's remedy from it. */
 export const RUNNER_PASTE_OPEN_REASON = "paste_open";
 
+/** OF-153: the `reason` of the needs_input a runner adapter answers while its pane editor line holds text from a lost
+ *  paste that was recovered but not cleared. A send now would be appended to that text and submitted with it. */
+export const RUNNER_PASTE_LEFTOVER_REASON = "paste_leftover";
+
 /** pda L0: what `RuntimeAdapter.sendReadiness` is asked about. Identity only: a runner's readiness is a
  *  file the runner writes, found by session name. */
 export interface RunnerReadinessTarget {

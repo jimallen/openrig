@@ -8,7 +8,7 @@
 // Production consequence (a): a runner whose event loop hangs keeps the last answer in its sidecar forever. Frozen at
 // busy:false it reads idle, so a send is reported delivered into a pane that never reads it. (b): a paste whose end
 // marker never arrives swallows Ctrl-C and Enter with nothing on screen saying why.
-// The windows below are literals (60 s tick, 180 s alive window, 10 s hint); nothing here imports them.
+// The windows below are literals (60 s tick, 180 s alive window, 2 s hint); nothing here imports them.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -322,11 +322,11 @@ describe("OF-119 pane editor: an unclosed paste says what holds Ctrl-C and Enter
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("a paste that stays open for 10 s prints one hint naming the held keys and the way out; not before", () => {
+  it("a paste that stays open for 2 s prints one hint naming the held keys and the way out; not before", () => {
     const t = editor("pi");
     try {
       t.input.write(START + "torn paste");
-      vi.advanceTimersByTime(9_999);
+      vi.advanceTimersByTime(1_999);
       expect(t.hints()).toEqual([]);
       vi.advanceTimersByTime(1);
       expect(t.hints()).toHaveLength(1);

@@ -335,6 +335,8 @@ export class RunnerCore {
   private ready = false;
   /** OF-148: the pane editor reports a bracketed paste open past the hint delay; written to the sidecar only while true. */
   private pasteOpen = false;
+  /** OF-153: the editor line holds a recovered lost paste; written to the sidecar only while true. */
+  private pasteLeftover = false;
   private assistantErrorShown = false;
   private started = false;
   /** OMP attention (runtime_error | permission_prompt) that must survive the
@@ -455,6 +457,7 @@ export class RunnerCore {
   /** Child process exit — honest, loud, durable. */
   handlePiExit(code: number | null): void {
     this.ready = false;
+    this.pasteLeftover = false;
     this.pasteOpen = false; // the `exited` record is the last word; an open paste cannot outlive the runner's answer
     this.io.mirrorLine(`[${this.runtime}-runner] EXITED ${this.runtime} exited (code ${code ?? "unknown"})`);
     this.writeSidecar({ exited: { code, at: this.io.now() } });
@@ -801,6 +804,7 @@ export class RunnerCore {
       // OF-119: every write proves the runner is running; tickAlive() keeps proving it while nothing else is written.
       aliveAt: this.io.now(),
       ...(this.pasteOpen ? { pasteOpen: true } : {}),
+      ...(this.pasteLeftover ? { pasteLeftover: true } : {}),
       ...patch,
     });
   }
@@ -810,6 +814,12 @@ export class RunnerCore {
    *  replace the pending or `exited` record. */
   setPasteOpen(open: boolean): void {
     this.pasteOpen = open;
+    if (this.ready) this.writeSidecar({});
+  }
+
+  /** OF-153: the editor's recovered-paste edge, written at once like `setPasteOpen`. */
+  setPasteLeftover(held: boolean): void {
+    this.pasteLeftover = held;
     if (this.ready) this.writeSidecar({});
   }
 
@@ -842,7 +852,7 @@ interface RunnerArgs {
  *  therefore keeps swallowing Ctrl-C until it does, as in the pda runner; after PASTE_OPEN_HINT_MS the editor prints a
  *  pane line saying so and how to close it, OF-119.) */
 export function wirePiRunnerInput(
-  core: Pick<RunnerCore, "handleUserBlock"> & Partial<Pick<RunnerCore, "setPasteOpen">>,
+  core: Pick<RunnerCore, "handleUserBlock"> & Partial<Pick<RunnerCore, "setPasteOpen" | "setPasteLeftover">>,
   input: NodeJS.ReadStream,
   output: NodeJS.WriteStream,
 ) {
@@ -850,6 +860,8 @@ export function wirePiRunnerInput(
     interruptInsidePaste: "content",
     // OF-148: `rig send` refuses while this is true (PiRuntimeAdapter.sendReadiness).
     onPasteOpenChange: (open) => core.setPasteOpen?.(open),
+    // OF-153: `rig send` also refuses while the line holds a recovered lost paste (PiRuntimeAdapter.sendReadiness).
+    onPasteLeftoverChange: (held) => core.setPasteLeftover?.(held),
   });
 }
 
