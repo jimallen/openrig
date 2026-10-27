@@ -2260,6 +2260,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           db,
           projection: healthProjection,
           sources: rsiTelemetrySources,
+          // The same window the retention sweep deletes by (index.ts), so "older than retention" means what the sweep means.
+          watchdogRetentionDays: () => { const v = healthSettingsStore.resolveOne("retention.watchdog_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.watchdogRetentionDays; },
         }),
         (await import("./domain/policies/delivery-digest-flush.js")).makeDeliveryDigestFlushPolicy({
           queueRepo: queueRepoInstance,

@@ -4,6 +4,7 @@ import type { HealthSourceCoverage } from "../health-detectors.js";
 import type { HealthRecord } from "../health-projection.js";
 import type { Policy, PolicyEvaluation, PolicyJob } from "../policies/types.js";
 import type { WatchdogJob, WatchdogJobsRepository } from "../watchdog-jobs-repository.js";
+import { RETENTION_DEFAULTS } from "../queue-retention.js";
 
 /**
  * RSI B1 — the health-finding wake (rsi-design-9k-rev2 §3.4).
@@ -34,6 +35,9 @@ import type { WatchdogJob, WatchdogJobsRepository } from "../watchdog-jobs-repos
  *      blind hour is loud for an episode an earlier job opened, and carries it in `newlyBlind`.
  *      Known limit: if the hook itself fails after the row is written, the next hour writes one more
  *      loud row for the same pair (never a lost one).
+ *      Retention (OF-145): the retention sweep deletes history older than its window beyond the newest K rows per job,
+ *      which can delete the row that named a long episode. For an episode older than the window, a job registered
+ *      before the episode began is taken as having named it; a job registered after it still names it once.
  *   6. A fingerprint whose source is no longer registered goes quiet; it is not carried forward
  *      (carrying forward is for a source that is registered but could not be read).
  *   7. Retargeting the steward resets the receipt: the new steward is told what is active.
@@ -133,9 +137,20 @@ export interface FindingScanResult {
  *  with the scan's clock a few milliseconds after the engine stamped the row. The scan cadence is an hour, far above this. */
 const EPISODE_NAMED_SLACK_MS = 60_000;
 
-/** True when a row in THIS wake job's history, evaluated at or after the episode began, names the (source, reason) pair in
- *  its `newlyBlind` notes. Unreadable notes or an unreadable start time count as "not named": the cost is one more loud row. */
-function jobNamedEpisode(db: Database.Database, jobId: string, pair: { source: string; reason: string }, activatedAt: string): boolean {
+/** True when this wake job has already named the (source, reason) pair for the episode that began at `activatedAt`.
+ *  Evidence, in order:
+ *   1. a row in THIS job's history, evaluated at or after the episode began, names the pair in its `newlyBlind` notes;
+ *   2. otherwise, when the episode is OLDER than the history retention window and this job was registered before the episode
+ *      began: the row that named it may have been deleted by the retention sweep (watchdog_history keeps rows beyond the
+ *      window only as the newest K per job), so it is taken as named (OF-145). A job registered before the episode was
+ *      scanning when it opened and wrote its naming row then; a job registered after it (a re-armed wake job) never did, so
+ *      for it the pair stays new. An episode younger than the window cannot have lost its row, so there the first rule is
+ *      the whole answer.
+ *  Unreadable notes or an unreadable start time count as "not named": the cost is one more loud row. */
+function jobNamedEpisode(
+  db: Database.Database, jobId: string, pair: { source: string; reason: string }, activatedAt: string,
+  now: Date, retentionDays: number,
+): boolean {
   const startMs = Date.parse(activatedAt);
   if (!Number.isFinite(startMs)) return false;
   const row = db.prepare(
@@ -146,7 +161,11 @@ function jobNamedEpisode(db: Database.Database, jobId: string, pair: { source: s
            WHERE json_extract(j.value, '$.source') = ? AND json_extract(j.value, '$.reason') = ?)
       LIMIT 1`,
   ).get(jobId, new Date(startMs - EPISODE_NAMED_SLACK_MS).toISOString(), pair.source, pair.reason);
-  return row !== undefined;
+  if (row !== undefined) return true;
+  if (startMs >= now.getTime() - retentionDays * 24 * 60 * 60 * 1000) return false;
+  const job = db.prepare("SELECT registered_at FROM watchdog_jobs WHERE job_id = ?").get(jobId) as { registered_at: string } | undefined;
+  const registeredMs = job ? Date.parse(job.registered_at) : NaN;
+  return Number.isFinite(registeredMs) && registeredMs <= startMs;
 }
 
 function telemetryFingerprint(record: HealthRecord): string | null {
@@ -168,6 +187,9 @@ export function scanFindingState(
   /** The wake job scanning. Blind episodes are global but history is per job, so it decides whether an open episode is
    *  already named in THIS job's history. Absent (a direct caller): an open episode is treated as already named. */
   jobId?: string,
+  /** The history retention window in days (the sweep's own `retention.watchdog_days`); decides when a missing naming row may
+   *  have been deleted rather than never written. */
+  watchdogRetentionDays: number = RETENTION_DEFAULTS.watchdogRetentionDays,
 ): FindingScanResult {
   const nowIso = now.toISOString();
   // The SAME derivation the wake exposes as `detectorSources` (and the F3 conformance test pins):
@@ -251,7 +273,7 @@ export function scanFindingState(
         touch.run(nowIso, key);
         // Episodes are global, history rows are per wake job: a re-armed wake job (a new job id) has never named an episode
         // that is already open, so for it the pair is new and its first row names it.
-        if (jobId === undefined || jobNamedEpisode(db, jobId, pair, row.activated_at)) continue;
+        if (jobId === undefined || jobNamedEpisode(db, jobId, pair, row.activated_at, now, watchdogRetentionDays)) continue;
       }
       newlyBlind.push(pair);
     }
@@ -340,6 +362,8 @@ export interface HealthFindingWakeDeps {
   projection: RsiFindingProjection;
   sources: readonly RsiFindingSource[];
   now?: () => Date;
+  /** The history retention window in days, read when a scan runs (it is a setting). Defaults to the sweep's default. */
+  watchdogRetentionDays?: () => number;
 }
 
 /** Which RSI source answers for each detector id. Built from the ONE RSI source array that
@@ -364,7 +388,7 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
     detectorSources: rsiDetectorSourceMap(deps.sources),
     async evaluate(job: PolicyJob): Promise<PolicyEvaluation> {
       const now = (deps.now ?? (() => new Date()))();
-      const scan = scanFindingState(deps.db, deps.projection, deps.sources, now, job.jobId);
+      const scan = scanFindingState(deps.db, deps.projection, deps.sources, now, job.jobId, deps.watchdogRetentionDays?.());
       const banked = parseWakeReceipt((deps.db.prepare(
         "SELECT last_fired_condition AS c FROM watchdog_jobs WHERE job_id = ?",
       ).get(job.jobId) as { c: string | null } | undefined)?.c);

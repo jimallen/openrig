@@ -1,3 +1,4 @@
+import { pruneWatchdogHistory } from "../src/domain/queue-retention.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -74,7 +75,7 @@ class ScriptedSource implements HealthObservationSource {
 
 type Script = (source: WatchdogDeliverySource) => DeliveryOutcome["status"];
 
-function harness(script: Script = () => "ok") {
+function harness(script: Script = () => "ok", options: { retentionDays?: () => number } = {}) {
   const db = createDb();
   migrate(db, ALL_MIGRATIONS);
   let clock = new Date(T0);
@@ -93,7 +94,7 @@ function harness(script: Script = () => "ok") {
       sends.push({ targetSession: req.targetSession, message: req.message, occurrenceId: src.occurrenceId!, status });
       return { status };
     },
-    additionalPolicies: [makeHealthFindingWakePolicy({ db, projection, sources: [source, sourceB], now })],
+    additionalPolicies: [makeHealthFindingWakePolicy({ db, projection, sources: [source, sourceB], now, watchdogRetentionDays: options.retentionDays })],
   });
   // Read `wake` structurally (not through `armed`) so this harness also runs against the
   // pre-F2 return shape when the new rows are measured red at the previous tip.
@@ -551,6 +552,58 @@ describe("OF-72: RSI blindness is recorded, reported, and does not outlive its c
         await h.scan();
         h.db.prepare("UPDATE watchdog_history SET evaluation_notes = 'not json {' WHERE job_id = ?").run(h.jobId());
         expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      });
+    });
+
+    // OF-145 (review-w5 N2): "named" is read from watchdog_history, which the retention sweep trims (rows older than the window
+    // beyond the newest K per job). A blind episode that outlives the window must not be named again once its row is gone.
+    describe("an episode that outlives history retention is not named again (OF-145)", () => {
+      const DAY = 24 * HOUR;
+      /** The REAL retention sweep, as the daemon runs it, keeping no rows beyond the window so the naming row is the one deleted. */
+      const sweep = (h: ReturnType<typeof harness>, atMs: number, days = 14) =>
+        pruneWatchdogHistory(h.db, { nowIso: new Date(atMs).toISOString(), watchdogRetentionDays: days, watchdogKeepPerJob: 0 });
+      const loud = (h: ReturnType<typeof harness>) => h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND).length;
+
+      it("after the sweep deleted the row that named a 20-day episode, the next blind hour is the quiet ongoing row", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();                                          // T0: this job names the episode
+        expect(loud(h)).toBe(1);
+        h.setClock(T0 + 20 * DAY);
+        expect(sweep(h, T0 + 20 * DAY).deletedRows).toBe(1);     // positive control: the naming row really is gone
+        expect(h.history()).toHaveLength(0);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+        expect(h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND)).toHaveLength(0);
+      });
+
+      it("a wake job re-armed after the episode began still names it, however old the episode", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.setClock(T0 + 20 * DAY);
+        sweep(h, T0 + 20 * DAY);
+        h.rearm();                                               // a NEW job, registered 20 days into the episode
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+        expect(loud(h)).toBe(1);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      });
+
+      it("an episode younger than the window whose row is missing is still named again (the missing row cannot be the sweep's)", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.db.prepare("DELETE FROM watchdog_history WHERE job_id = ?").run(h.jobId());
+        h.setClock(T0 + 13 * DAY);                               // inside the 14-day window
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+      });
+
+      it("the window is the configured one, not the default: with a 3-day window a 5-day episode whose row is gone stays quiet", async () => {
+        const h = harness(() => "ok", { retentionDays: () => 3 });
+        h.source.mode = "throw";
+        await h.scan();
+        h.setClock(T0 + 5 * DAY);
+        expect(sweep(h, T0 + 5 * DAY, 3).deletedRows).toBe(1);
         expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
       });
     });
