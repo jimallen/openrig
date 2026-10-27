@@ -921,8 +921,9 @@ export class WorkflowSpecCache {
   /**
    * #511 — the workflow name and version a cached row stands for. A row that a previous
    * diagnostic writer blanked (status error, no version) still carries them in its stored spec.
+   * `null` = the row carries no stored identity (nothing to look up); `"unreadable"` = its stored spec is damaged.
    */
-  storedIdentity(specId: string): { name: string; version: string } | null {
+  storedIdentity(specId: string): { name: string; version: string } | null | "unreadable" {
     const row = this.db.prepare(`SELECT * FROM workflow_specs WHERE spec_id = ?`).get(specId) as SpecRow | undefined;
     if (!row) return null;
     if (row.version) return { name: row.name, version: row.version };
@@ -931,7 +932,10 @@ export class WorkflowSpecCache {
       const stored = JSON.parse(row.spec_json) as { id?: unknown; version?: unknown };
       return typeof stored.id === "string" && typeof stored.version === "string" ? { name: stored.id, version: stored.version } : null;
     } catch {
-      return null;
+      // OF-136: a stored spec that cannot be parsed is NOT a row with no identity. The caller deletes a vanished file's rows
+      // unless unfinished work pins their version, and the pin is looked up by this identity: "no identity" would delete a
+      // possibly pinned version on a guess. The caller must leave the row alone.
+      return "unreadable";
     }
   }
 

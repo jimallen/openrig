@@ -196,8 +196,27 @@ export function scanWorkflowSpecs(opts: ScanWorkflowSpecsOpts): SpecLibraryWorkf
       roles = JSON.parse(row.roles_json) as WorkflowSpec["roles"];
       steps = JSON.parse(row.steps_json) as WorkflowSpec["steps"];
     } catch {
-      // Malformed JSON in cache — skip with no entry; the daemon's
-      // /api/workflow/specs surface will surface the row anyway.
+      // OF-136: malformed JSON in the cache row. It used to be left out of the library, so a damaged spec looked like a spec
+      // that was never there. It is listed as an error entry (the same shape a diagnostic row has), its message naming the
+      // damage, and the specs beside it are listed as before.
+      out.push({
+        id: `workflow:error:${row.source_path}`,
+        kind: "workflow",
+        name: row.name,
+        version: row.version,
+        sourceType: isBuiltIn ? "builtin" : "user_file",
+        sourcePath: row.source_path,
+        relativePath: row.source_path,
+        updatedAt: row.cached_at,
+        summary: undefined,
+        isBuiltIn,
+        rolesCount: 0,
+        stepsCount: 0,
+        terminalTurnRule: row.coordination_terminal_turn_rule || "hot_potato",
+        targetRig: null,
+        status: "error",
+        errorMessage: `Saved roles or steps of this workflow spec are not readable JSON. Repair the file and rescan, or remove the cached row.`,
+      });
       continue;
     }
     out.push({
@@ -547,6 +566,12 @@ export function scanWorkflowSpecFolder(
     // #511: a version that unfinished work is pinned to stays readable until that work ends;
     // a later scan removes it. Every other row of the vanished file goes, one event per version.
     const identity = opts.cache.storedIdentity(row.spec_id);
+    if (identity === "unreadable") {
+      // OF-136: neither deleted nor retained on a guess: whether unfinished work pins this version is unknown. The row stays
+      // as it is and is named; a later scan decides once the row is repaired or removed by hand.
+      console.error(`workflow spec scan: ${row.source_path} is gone but its cached spec ${row.spec_id} is not readable JSON, so whether work is pinned to it is unknown; left in place (repair or remove the row)`);
+      continue;
+    }
     if (identity && opts.cache.isPinnedByUnfinishedWork(identity.name, identity.version)) {
       opts.cache.retain(row.spec_id);
       continue;

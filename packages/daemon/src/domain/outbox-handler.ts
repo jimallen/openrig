@@ -388,8 +388,10 @@ export class OutboxHandler {
    * left committed-but-undelivered. `idPrefix` is a trusted compile-time constant
    * (e.g. "wake-intent-") with no LIKE wildcards. Oldest-first + bounded `limit`
    * so a caller can page and terminate on a served short batch (never a silent cap).
+   * `offset` (OF-136): a caller that leaves some pending rows in place on purpose (the drain skips damaged intents) pages past
+   * them, so they cannot fill the head of every batch and starve the intents behind them.
    */
-  listPending(idPrefix: string, limit = 200): OutboxEntry[] {
+  listPending(idPrefix: string, limit = 200, offset = 0): OutboxEntry[] {
     // EXACT-CASE prefix match. SQLite `LIKE` is case-insensitive by default, so a
     // `LIKE 'wake-intent-%'` selector would also execute `WAKE-INTENT-…` variants.
     // `substr(...) = ?` uses the binary collation (case-sensitive), so exactly one
@@ -400,9 +402,9 @@ export class OutboxHandler {
       .prepare(
         `SELECT * FROM outbox_entries
           WHERE delivery_state = 'pending' AND substr(outbox_id, 1, ?) = ?
-          ORDER BY ts_dispatched ASC, rowid ASC LIMIT ?`
+          ORDER BY ts_dispatched ASC, rowid ASC LIMIT ? OFFSET ?`
       )
-      .all(idPrefix.length, idPrefix, limit) as OutboxEntryRow[];
+      .all(idPrefix.length, idPrefix, limit, offset) as OutboxEntryRow[];
     // OF-117: marked, not refused: one damaged intent must not end the drain for the intents behind it (the drain skips it).
     return rows.map((r) => this.rowToEntry(r, "mark"));
   }

@@ -673,6 +673,31 @@ describe("SeatAttentionReconciler", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("OF-136: an unreadable saved reconciliation event is answered with its own guidance, not the resume-token recovery", async () => {
+    const rig = rigRepo.createRig("r-unreadable-prior");
+    const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "worker@r-unreadable-prior");
+    sessionRegistry.updateStartupStatus(session.id, "ready");
+    sessionRegistry.updateStatus(session.id, "exited");
+    eventBus.emit({
+      type: "restore.completed",
+      rigId: rig.id, snapshotId: "snap-1",
+      result: { snapshotId: "snap-1", preRestoreSnapshotId: "snap-0", rigResult: "failed",
+        nodes: [{ nodeId: node.id, logicalId: "worker", status: "attention_required" }], warnings: [] },
+    });
+    const unreadableReconciler = new SeatAttentionReconciler({
+      sessionRegistry, eventBus, agentActivityStore: activityStore, db,
+      reconcileRestoreOutcome: async () => ({ ok: false, code: "prior_reconciliation_unreadable", detail: "Saved events row 7 is not readable JSON." }),
+    });
+
+    const result = await unreadableReconciler.clearAttention("worker@r-unreadable-prior", { reason: "manually verified" });
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("prior_reconciliation_unreadable");
+    expect(result.detail).toContain("Repair that event row, or run a new restore");
+    expect(result.detail).not.toContain("set-resume-token");
+  });
+
   // REV1 REGRESSION: non-running restoreOutcome=failed does NOT trigger derived class
   it("OPR.0.4.0.16: non-running restoreOutcome=failed does NOT clear derived class (mirrors deriveNodeLifecycleState)", async () => {
     const rig = rigRepo.createRig("r-nonrun-failed");

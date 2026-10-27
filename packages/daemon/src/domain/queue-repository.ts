@@ -1304,13 +1304,20 @@ export class QueueRepository {
     // not stop the intents behind it. It stays pending and is named in the tally (and the log) until the row is repaired.
     const unreadable = new Set<string>();
     for (;;) {
-      const pending = this.outbox.listPending(WAKE_INTENT_PREFIX, BATCH);
+      // OF-136: the damaged intents stay pending (they are never executed), so they sit at the head of the oldest-first list
+      // every round. Page past exactly those: otherwise >= BATCH damaged intents fill every batch and the good ones behind
+      // them are never reached.
+      const pending = this.outbox.listPending(WAKE_INTENT_PREFIX, BATCH, unreadable.size);
       if (pending.length === 0) break;
       let progressed = 0;
+      let newlyUnreadable = 0;
       for (const intent of pending) {
         if (intent.unreadable) {
-          if (!unreadable.has(intent.outboxId)) console.error(`[queue] wake intent ${intent.outboxId} skipped: its saved ${intent.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
-          unreadable.add(intent.outboxId);
+          if (!unreadable.has(intent.outboxId)) {
+            console.error(`[queue] wake intent ${intent.outboxId} skipped: its saved ${intent.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
+            unreadable.add(intent.outboxId);
+            newlyUnreadable++;
+          }
           continue;
         }
         const outcome = await this.deliverWakeIntent(intent.outboxId);
@@ -1321,7 +1328,8 @@ export class QueueRepository {
       }
       // Nothing left pending changed state this round (e.g. transport gone
       // mid-sweep) — stop rather than spin; the next daemon start retries.
-      if (progressed === 0) break;
+      // A round that only found damaged intents did not stall: the next round pages past them.
+      if (progressed === 0 && newlyUnreadable === 0) break;
       if (pending.length < BATCH) break; // served short batch ⇒ drained
     }
     if (unreadable.size > 0) tally.unreadable = [...unreadable];
@@ -3577,8 +3585,13 @@ export class QueueRepository {
       }
     } else {
       const alreadyRecorded = this.db.prepare(
-        `SELECT 1 FROM events WHERE type = 'qitem.closure_overdue' AND json_extract(payload, '$.qitemId') = ? AND julianday(created_at) >= julianday(?) LIMIT 1`,
-      ).get(qitemId, claimSince);
+        // OF-136: one damaged payload must not throw for every overdue row (json_extract raises on malformed JSON). A damaged
+        // `qitem.closure_overdue` event that still names this item counts as RECORDED: the dedupe stays closed instead of
+        // reading the unreadable event as "not recorded yet" and emitting a second one on the same guess.
+        `SELECT 1 FROM events WHERE type = 'qitem.closure_overdue'
+           AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.qitemId') = ? ELSE instr(payload, ?) > 0 END
+           AND julianday(created_at) >= julianday(?) LIMIT 1`,
+      ).get(qitemId, qitemId, claimSince);
       if (alreadyRecorded) return null;
     }
     const txn = this.db.transaction(() => {

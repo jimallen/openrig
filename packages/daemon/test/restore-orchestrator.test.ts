@@ -4810,6 +4810,36 @@ describe("RestoreOrchestrator", () => {
       expect(tmux.sendText).not.toHaveBeenCalled();
     });
 
+    // OF-136 (review w1 F2): the prior reconciliation event is the only thing that stops a second append for the same attempt.
+    describe("a second reconcile of an already-reconciled node", () => {
+      async function reconcileOnce() {
+        const tmux = mockTmuxForReconciler();
+        vi.mocked(tmux.hasSession).mockResolvedValue(true);
+        vi.mocked(tmux.getPaneCommand).mockResolvedValue("2.1.283");
+        vi.mocked(tmux.capturePaneContent).mockResolvedValue(["Restored conversation", "❯", "⏵⏵ bypass permissions on (shift+tab to cycle)"].join("\n"));
+        const seeded = seedFailedAttempt({ restoreOutcome: "failed", withResumeToken: true });
+        const orchestrator = createOrchestrator({ tmux, listProcesses: async () => managedClaudeRows("tok-abc-123") });
+        expect(await orchestrator.reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId)).toMatchObject({ ok: true });
+        return { orchestrator, seeded };
+      }
+      const reconciledEvents = () => db.prepare("SELECT seq, payload FROM events WHERE type = 'restore.outcome_reconciled'").all() as Array<{ seq: number; payload: string }>;
+
+      it("control: with the event intact the second reconcile returns the same evidence and appends nothing", async () => {
+        const { orchestrator, seeded } = await reconcileOnce();
+        expect(await orchestrator.reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId)).toMatchObject({ ok: true });
+        expect(reconciledEvents()).toHaveLength(1);
+      });
+
+      it("with the first event damaged the second reconcile refuses by name and appends no duplicate (it used to append a second event)", async () => {
+        const { orchestrator, seeded } = await reconcileOnce();
+        const [first] = reconciledEvents();
+        db.prepare("UPDATE events SET payload = ? WHERE seq = ?").run("{not json", first!.seq);
+        const result = await orchestrator.reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId);
+        expect(result).toMatchObject({ ok: false, code: "prior_reconciliation_unreadable" });
+        expect(reconciledEvents()).toHaveLength(1);
+      });
+    });
+
     it.each(["background", "ambiguous", "argv-lookalike", "missing-metadata"].flatMap((failure) =>
       ["2.1.283", "claude"].map((paneCommand) => [failure, paneCommand])
     ))("does not reconcile headerless %s evidence under %s", async (failure, paneCommand) => {
