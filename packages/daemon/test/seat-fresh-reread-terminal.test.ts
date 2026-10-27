@@ -141,7 +141,7 @@ describe("OF-71 a builtin:terminal seat starts fresh from its re-read spec", () 
   it("the plan says the same: launchable from the spec", async () => {
     const seat = await launchKernel();
     const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true });
-    expect(plan).toMatchObject({ ok: true });
+    expect(plan).toMatchObject({ ok: true, startup: { source: { kind: "spec", specPath } } });
   });
 
   it("a terminal seat's missing folder still refuses the fresh launch before stopping anything", async () => {
