@@ -2132,7 +2132,7 @@ describe("RestoreOrchestrator", () => {
       const token = "00000000-0000-4000-8000-000000000086";
       const rig = rigRepo.createRig("headerless");
       db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-headerless", rig.id, "Dev");
-      const node = rigRepo.addNode(rig.id, "dev.owner", { runtime: "claude-code", podId: "pod-headerless", cwd: "/fixture" });
+      const node = rigRepo.addNode(rig.id, "dev.owner", { runtime: "claude-code", podId: "pod-headerless", cwd: WORK_DIR });
       rigRepo.setRigPermissionPolicy(rig.id, "builtin:yolo");
       rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", resolvedTarget: null, declaringDir: null, launchPosture: "full_bypass" });
       const old = sessionRegistry.registerSession(node.id, "dev-owner@headerless");
