@@ -264,6 +264,20 @@ describe("health projection contract", () => {
     }, freshness)).toThrow(/must not be after/);
   });
 
+  // OF-78/OF-134: a scope read from untyped input without its id used to fail as
+  // "Cannot read properties of undefined (reading 'trim')", which names no field.
+  it.each([
+    ['{"type":"instance"}', "scope.instanceId"],
+    ['{"type":"instance","instanceId":7}', "scope.instanceId"],
+    ['{"type":"rig"}', "scope.rigId"],
+    ['{"type":"seat","rigId":"rig"}', "scope.seatId"],
+    ['{"type":"mission","projectId":"openrig"}', "scope.missionId"],
+    ['{"type":"slice","projectId":"openrig","missionId":"m"}', "scope.sliceId"],
+  ])("refuses the scope %s by naming %s", (scopeJson, field) => {
+    const scope = JSON.parse(scopeJson);
+    expect(() => projectHealthRecord({ ...draft(), scope })).toThrow(`${field} must be a non-empty string`);
+  });
+
   it("does not project a qualifying interval beyond the source window", () => {
     const record = projectHealthRecord({
       ...draft(),

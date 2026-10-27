@@ -524,8 +524,10 @@ function checkedSourceOrder(value: number): number {
   return value;
 }
 
-function requiredText(label: string, value: string): string {
-  if (value.trim() === "") throw new Error(`${label} must be a non-empty string`);
+// `unknown`, not `string`: a source may hand over a draft built from untyped input,
+// and a missing field must be refused by name, not as a TypeError on `.trim` (OF-78).
+function requiredText(label: string, value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${label} must be a non-empty string`);
   return value;
 }
 

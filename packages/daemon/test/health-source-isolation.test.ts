@@ -30,6 +30,15 @@ it("serves the remaining sources over HTTP and names a failed source without inv
     evaluatedAt: expect.any(String), reason: "broken checkpoint JSON" }]);
   expect((await app.request("/?limit=201")).status).toBe(400);
 });
+it("names the missing scope id when a source's finding has none (OF-78)", () => {
+  const [finding] = working.read();
+  const scope = JSON.parse('{"type":"instance"}');
+  const malformed = { ...working, name: "telemetry", read: () => [finding!, { ...finding!, scope }] };
+  const result = new HealthProjectionService([malformed, working]).list();
+  expect(result.records).toHaveLength(1);
+  expect(result.coverage).toEqual([{ source: "telemetry", status: "unavailable", partial: true,
+    evaluatedAt: expect.any(String), reason: "scope.instanceId must be a non-empty string" }]);
+});
 it("isolates a coverage-read error and discards the failed source's records", () => {
   const service = new HealthProjectionService([{ ...working, name: "broken-coverage", coverage: () => { throw new Error("coverage unavailable"); } }, working]);
   const result = service.list();
