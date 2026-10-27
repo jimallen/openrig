@@ -189,11 +189,15 @@ rigCmuxRoutes.post("/launch", async (c) => {
 
   if (orderedSessions.length === 0) {
     const rigName = (rigWithRelations.rig as unknown as { name: string }).name;
+    // OF-53: `rig up <name>` alone can resolve to a library spec of that name; `--existing` is the restore door. Rig names are
+    // not unique, so a shared name is given by id (the handle resolver takes either).
+    const sharesName = rigRepo.findUnarchivedRigsByName(rigName).length > 1;
+    const rigRef = sharesName ? rigId : rigName;
     return c.json(
       {
         ok: false,
         error: "rig_not_running",
-        message: `Rig "${rigName}" has no live tmux sessions — can't attach to anything — run: rig up ${rigName}`,
+        message: `Rig "${rigName}" has no live tmux sessions — can't attach to anything — run: rig up ${rigRef} --existing`,
         missing,
       },
       412,

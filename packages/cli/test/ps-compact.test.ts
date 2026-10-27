@@ -603,7 +603,7 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
       const { logs } = await captureLogs(async () => {
         await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--session", "ops-missing@openrig-build", ...extra]);
       });
-      expect(logs.join("\n")).toContain("tmux session missing; restore or relaunch the seat");
+      expect(logs.join("\n")).toContain("tmux session missing; resume with rig up --existing openrig-build (refused while any seat is live), or start only this seat fresh with rig seat launch 'ops.missing@openrig-build' --fresh --reason \"<why>\"");
     }
   });
 

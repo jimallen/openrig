@@ -130,8 +130,9 @@ describe("restore-check and restore agree on whether the rig would run, over eve
         namesake(s.sessionName, false, otherName);
       },
       tmux: (s: Seat) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused" as const, predictsGate: false, recovery: "blocked" as const, noRestoreCommand: true,
-      adviceHas: (s: Seat) => [`${s.sessionName} is held by dev.other@${otherName}, another rig's seat: do not kill it from here, it would end that seat; rig down team ends only this rig's older running row for it, without touching that session, which is what lets restore run. Probing stops`],
-      adviceLacks: () => ["a seat of this rig", "may leave the tmux session itself running", "tmux kill-session"],
+      // OF-76: `rig down team` halts as ambiguous while two active rigs carry the name, so a shared name is given by the rig's id.
+      adviceHas: (s: Seat) => [`${s.sessionName} is held by dev.other@${otherName}, another rig's seat: do not kill it from here, it would end that seat; rig down ${otherName === "team" ? s.rigId : "team"} ends only this rig's older running row for it, without touching that session, which is what lets restore run. Probing stops`],
+      adviceLacks: (s: Seat) => ["a seat of this rig", "may leave the tmux session itself running", "tmux kill-session", ...(otherName === "team" ? ["rig down team "] : [`rig down ${s.rigId}`])],
     })),
     // N2 control: the namesake sits in an ARCHIVED rig (teardown ignores those owners too), so rig down is still the advice.
     { name: "N2 control: the same name in an ARCHIVED rig does not hold it, rig down is still the advice", pre: (s) => {
@@ -197,7 +198,7 @@ describe("restore-check and restore agree on whether the rig would run, over eve
     if (row.seatRemediationOffersRestore !== undefined) {
       const seatRemediations = result.checks.filter((c) => c.check.startsWith("seat.") && c.status !== "green").map((c) => c.remediation);
       expect(seatRemediations.length, "the population of non-green seat checks the remediation claim is read from").toBeGreaterThan(0);
-      expect(seatRemediations.some((r) => /Restore or relaunch/.test(r)), JSON.stringify(seatRemediations)).toBe(row.seatRemediationOffersRestore);
+      expect(seatRemediations.some((r) => /rig up --existing team \(resumes its conversation\)/.test(r)), JSON.stringify(seatRemediations)).toBe(row.seatRemediationOffersRestore);
     }
     if (row.noRestoreCommand) expect(result.recovery.actions, "recovery must not propose a restore command restore refuses").toEqual([]);
   });
