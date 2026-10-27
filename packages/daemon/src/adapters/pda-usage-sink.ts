@@ -41,7 +41,7 @@ export const PDA_USAGE_PENDING_MAX = 2000;
 /** What a post did: `stored` (2xx), `keep` (408, 429, 5xx, timeout, unreachable: retry at the next run_end), `refused`
  *  (any other non-2xx: permanent). A poster may name the status of a refusal with the object form. */
 export type PdaUsagePostOutcome = "stored" | "keep" | "refused";
-export type PdaUsagePostResult = PdaUsagePostOutcome | { outcome: PdaUsagePostOutcome; status?: number };
+export type PdaUsagePostResult = PdaUsagePostOutcome | { outcome: PdaUsagePostOutcome; status?: number; rejected?: number };
 
 /** The statuses a daemon can answer that a resend might outlive. Everything else non-2xx is permanent. */
 export const PDA_USAGE_TRANSIENT_STATUSES: readonly number[] = [408, 429, 503];
@@ -141,7 +141,8 @@ export function pdaUsageFactFromEntry(entry: unknown, origin: PdaUsageOrigin): P
     ...counts, costTotal, costBasis, origin,
   };
   // The receiving side's own check (L0), applied before anything is queued: a fact the route would refuse is never sent.
-  return parsePdaUsageFact(fact) ? fact : null;
+  // OF-129: the checked fact, with an over-long label read as null (its tokens and cost are kept).
+  return parsePdaUsageFact(fact);
 }
 
 export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReporter {
@@ -232,10 +233,12 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
     inFlight = (async () => {
       let outcome: PdaUsagePostOutcome;
       let status: number | undefined;
+      let rejected = 0;
       try {
         const r = await options.post(payload);
         outcome = typeof r === "string" ? r : r.outcome;
         status = typeof r === "string" ? undefined : r.status;
+        rejected = typeof r === "string" ? 0 : r.rejected ?? 0;
       } catch { outcome = "keep"; }
       if (outcome !== "keep") {
         // By identity, not by key: a fact upgraded while this post was in flight is a different object and stays (U1).
@@ -246,6 +249,13 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
           let counted = 0;
           for (const f of batch) if (!pending.includes(f) && countDrop(key(f), reason)) counted += 1;
           if (counted > 0) options.log?.(`[pda-runner] usage facts dropped: reason=${reason} count=${counted}`);
+        }
+        // OF-129: a 2xx that says it did not take some facts (`rejected`) did not store them. Which ones is not named, so the
+        // count is recorded and logged as one; they were not kept, because the daemon will not take them on a resend either.
+        if (outcome === "stored" && rejected > 0) {
+          dropped += rejected;
+          reasons.daemon_rejected = (reasons.daemon_rejected ?? 0) + rejected;
+          options.log?.(`[pda-runner] usage facts dropped: reason=daemon_rejected count=${rejected}`);
         }
         settledDefinitively = true;
       }
@@ -308,6 +318,27 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
   };
 }
 
+const REPLY_MAX_BYTES = 65_536;
+/** The `rejected` count of a 2xx reply; 0 when the body is absent, larger than REPLY_MAX_BYTES (never read past it), not JSON or
+ *  has no such count. The reply is advice about this post, not authority over it, so every doubt reads as 0. */
+async function readRejectedCount(res: Response): Promise<number> {
+  const reader = res.body?.getReader();
+  if (!reader) return 0;
+  try {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > REPLY_MAX_BYTES) { await reader.cancel().catch(() => undefined); return 0; }
+      chunks.push(value);
+    }
+    const n = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { rejected?: unknown } | null)?.rejected;
+    return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : 0;
+  } catch { return 0; }
+}
+
 /** The real poster: `POST /api/activity/pda-usage` with the activity-hook token, a 3 s budget. */
 export function createPdaUsagePoster(
   endpoint: { baseUrl: string; token: string } | null,
@@ -324,8 +355,12 @@ export function createPdaUsagePoster(
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
+      if (res.ok) {
+        // OF-129: a 2xx can still say `rejected: n` (a fact the daemon would not take). Read the count, never the rest.
+        const rejected = await readRejectedCount(res);
+        return rejected > 0 ? { outcome: "stored", rejected } : "stored";
+      }
       await res.body?.cancel().catch(() => undefined);
-      if (res.ok) return "stored";
       return pdaUsageStatusIsTransient(res.status) ? "keep" : { outcome: "refused", status: res.status };
     } catch {
       return "keep";

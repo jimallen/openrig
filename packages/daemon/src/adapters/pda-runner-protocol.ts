@@ -419,7 +419,14 @@ export interface PdaUsagePayload {
  *  reason). A real value is a few dozen characters; an unbounded one let a single fact carry a post past the daemon's
  *  4 MiB cap, which refused the whole batch. */
 export const PDA_USAGE_TEXT_MAX = 512;
-const strOrNull = (v: unknown): v is string | null => v === null || (typeof v === "string" && v.length <= PDA_USAGE_TEXT_MAX);
+/** A label (provider, model, api, response id, stop reason) is a string or null; an over-long one is not an error in the fact
+ *  (OF-129): its tokens and cost still count. It is read as null, not cut to length, because a truncated model name would
+ *  look like a real model. Only the ids and the timestamp (`nonEmpty`) refuse a fact. Anything that is not a string or null
+ *  still refuses. */
+const labelOrNull = (v: unknown): { ok: true; value: string | null } | { ok: false } =>
+  v === null ? { ok: true, value: null }
+    : typeof v === "string" ? { ok: true, value: v.length <= PDA_USAGE_TEXT_MAX ? v : null }
+      : { ok: false };
 const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= PDA_USAGE_TEXT_MAX;
 const COST_BASES: ReadonlySet<string> = new Set<PdaCostBasis>(["model_priced", "declared_zero_price", "absent"]);
 const ORIGINS: ReadonlySet<string> = new Set<PdaUsageOrigin>(["own", "other", "unknown"]);
@@ -431,7 +438,12 @@ export function parsePdaUsageFact(raw: unknown): PdaUsageFact | null {
   if (!isObj(raw)) return null;
   const f = raw;
   if (!nonEmpty(f.conversationId) || !nonEmpty(f.entryId) || !nonEmpty(f.entryTimestamp) || f.kind !== "assistant") return null;
-  for (const key of ["provider", "model", "api", "responseId", "stopReason"] as const) if (!strOrNull(f[key])) return null;
+  const labels: Partial<Record<"provider" | "model" | "api" | "responseId" | "stopReason", string | null>> = {};
+  for (const key of ["provider", "model", "api", "responseId", "stopReason"] as const) {
+    const label = labelOrNull(f[key]);
+    if (!label.ok) return null;
+    labels[key] = label.value;
+  }
   for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) if (!isCount(f[key])) return null;
   if (typeof f.costBasis !== "string" || !COST_BASES.has(f.costBasis)) return null;
   if (typeof f.origin !== "string" || !ORIGINS.has(f.origin)) return null;
@@ -444,5 +456,6 @@ export function parsePdaUsageFact(raw: unknown): PdaUsageFact | null {
     // A zero price is "declared" only for real tokens; 0 tokens is a model_priced 0.
     if (f.costBasis === "declared_zero_price" && tokens === 0) return null;
   }
-  return f as unknown as PdaUsageFact;
+  // The same fact with its over-long labels read as null (a fact whose labels all fit comes back equal to the input).
+  return { ...f, ...labels } as unknown as PdaUsageFact;
 }
