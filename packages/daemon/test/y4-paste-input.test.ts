@@ -353,6 +353,20 @@ describe("OF-153 pane editor: a flagged-open paste that closed leaves its text o
     } finally { t.rl.close(); }
   });
 
+  it.each([
+    ["spaces", "   "],
+    ["newlines", "\n\n"],
+  ])("a recovered paste of only %s still holds the line: it is text the next send would be appended to", (_name, body) => {
+    const t = editor();
+    try {
+      t.input.write(START + body);
+      vi.advanceTimersByTime(2_000);
+      t.input.write(END);
+      t.input.write("x"); // any later key runs the settle check again
+      expect(t.events).toEqual(["open:true", "leftover:true", "open:false"]);
+    } finally { t.rl.close(); }
+  });
+
   it("closing the editor while the line is held reports it free", () => {
     const t = editor();
     t.input.write(START + "stale");
@@ -724,7 +738,7 @@ describe("OF-153 daemon: rig send to a runner seat whose line holds a recovered 
       expect(r.error).not.toContain("left on its runner's input line");
     });
 
-    it("a non-boolean pasteLeftover is a record the daemon does not understand: no runner answer, never read as free", async () => {
+    it("a non-boolean pasteLeftover is an unreadable record: no runner answer, so today's pane logic decides (as for a non-boolean pasteOpen, x1)", async () => {
       write({ pasteLeftover: "yes" });
       const { transport, pi, omp, pda } = setup();
       const adapter = seat === PDA_SEAT ? pda : seat === OMP_SEAT ? omp : pi;

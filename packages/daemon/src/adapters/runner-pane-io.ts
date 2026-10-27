@@ -30,8 +30,9 @@ export const MAX_RUNNER_INPUT_BYTES = 1024 * 1024;
  *  write, so an open paste after this long has lost its closing marker. OF-151: 2 s, down from 10 s, to shorten the
  *  window in which a send after a lost marker is not refused. The largest paste the editor accepts (1 MiB) was fed through
  *  this editor in 16 KiB writes in about 30 ms (measured, in-process, not through a pty), so 2 s leaves a wide margin for
- *  tmux and the pty to deliver it; a paste that is really still arriving at 2 s is rare, and its worst outcome is one
- *  refusal that a retry clears. */
+ *  tmux and the pty to deliver it. A genuine paste slower than 2 s (a slow link) is flagged open, and when it then closes
+ *  its text is on the line, so OF-153 sets `pasteLeftover`: `rig send` is refused until the line is submitted or cleared
+ *  (Ctrl-C), and a retry does not clear it. */
 export const PASTE_OPEN_HINT_MS = 2_000;
 
 export interface RunnerInputOptions {
