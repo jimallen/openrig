@@ -66,6 +66,7 @@ describe("SuccessorSessionLauncher", () => {
       newId: () => "01ABCDEFG",
       runtimeAdapters: { codex: fakeAdapter("codex") },
       readinessTimeoutMs: 50,
+      seatCwdFault: () => null, // "/w" is a fake path: the folder check is a fake, never the disk
       sleep: async () => {},
       exitPollMs: 1,
       exitTimeoutMs: 5,
@@ -209,6 +210,7 @@ describe("SuccessorSessionLauncher", () => {
       newId: () => "01ABCDEFG",
       runtimeAdapters: { codex: fakeAdapter("codex") },
       readinessTimeoutMs: 50,
+      seatCwdFault: () => null, // "/w" is a fake path: the folder check is a fake, never the disk
       sleep: async () => {},
       exitPollMs: 1,
       exitTimeoutMs: 5,
@@ -333,6 +335,7 @@ describe("SuccessorSessionLauncher", () => {
         runtimeAdapters: { codex: fakeAdapter("codex") },
         readinessTimeoutMs: timeoutMs ?? (readinessSettings ? undefined : 30_000),
         readinessSettings,
+        seatCwdFault: () => null,
         sleep: async (ms) => { vi.setSystemTime(Date.now() + ms); },
       });
     }
@@ -449,7 +452,7 @@ describe("SuccessorSessionLauncher", () => {
 
   it("no runtime adapter for the seat's runtime → structured failure, preserved seat NOT killed", async () => {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
-    const noAdapter = new SuccessorSessionLauncher(tmux, discoveryRepo, { newId: () => "01ABCDEFG", runtimeAdapters: {}, exitPollMs: 1, exitTimeoutMs: 5 });
+    const noAdapter = new SuccessorSessionLauncher(tmux, discoveryRepo, { newId: () => "01ABCDEFG", runtimeAdapters: {}, exitPollMs: 1, exitTimeoutMs: 5, seatCwdFault: () => null });
     const res = await noAdapter.createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" });
     expect(res).toMatchObject({ ok: false, step: "start_agent", code: "successor_runtime_unsupported" });
     expect(killSession).not.toHaveBeenCalled();
@@ -599,6 +602,69 @@ describe("SuccessorSessionLauncher", () => {
       expect(res.ok).toBe(true);
       const [, command] = respawnPane.mock.calls[0]!;
       expect(command).toBe("/bin/sh");
+    });
+  });
+
+  // OF-124: respawn-pane starts in $HOME when the folder it is handed is gone, so a handover would put the successor in the
+  // wrong place with no error. The handover must refuse before the live retiree is touched.
+  describe("a seat whose folder is gone (OF-124)", () => {
+    function launcherWith(seatCwdFault?: (cwd: string) => { kind: "missing" } | { kind: "not_directory"; what: string } | null): SuccessorSessionLauncher {
+      const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+      return new SuccessorSessionLauncher(tmux, discoveryRepo, {
+        sessionEnv: { OPENRIG_HOME: seatHomes }, newId: () => "01ABCDEFG", runtimeAdapters: { codex: fakeAdapter("codex") },
+        readinessTimeoutMs: 50, sleep: async () => {}, exitPollMs: 1, exitTimeoutMs: 5,
+        ...(seatCwdFault ? { seatCwdFault } : {}),
+      });
+    }
+    const nothingTouched = () => {
+      expect(listPanes).not.toHaveBeenCalled();
+      expect(setRemainOnExit).not.toHaveBeenCalled();
+      expect(signalPaneProcess).not.toHaveBeenCalled();
+      expect(respawnPane).not.toHaveBeenCalled();
+      expect(killSession).not.toHaveBeenCalled();
+      expect(launchHarness).not.toHaveBeenCalled();
+      expect(discoveryRepo.listDiscovered()).toHaveLength(0);
+    };
+
+    it("a missing folder is refused as seat_cwd_unusable before the retiree is probed, stopped or respawned", async () => {
+      const res = await launcherWith(() => ({ kind: "missing" })).createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/gone" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toEqual({
+        ok: false, code: "seat_cwd_unusable", step: "resolve_pane", replacementStarted: false,
+        message: "dev-impl@rig was not handed over: its cwd '/gone' does not exist, and a seat launched there would silently start in $HOME. Create the folder /gone, then retry the handover. Nothing was stopped.",
+      });
+      nothingTouched();
+    });
+
+    it("a folder that is a file is told what is wrong, not to create it", async () => {
+      const res = await launcherWith(() => ({ kind: "not_directory", what: "is not a directory" })).createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/a-file" }, departingSessionName: "dev-impl@rig" });
+      expect(res).toMatchObject({ ok: false, code: "seat_cwd_unusable", replacementStarted: false });
+      expect((res as { message: string }).message).toContain("Fix /a-file: it is not a directory");
+      expect((res as { message: string }).message).not.toContain("Create the folder");
+      nothingTouched();
+    });
+
+    it("the folder is judged where the successor would be respawned, and a seat with no recorded cwd has nothing to judge", async () => {
+      const judged: string[] = [];
+      const probe = (cwd: string) => { judged.push(cwd); return null; };
+      expect((await launcherWith(probe).createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" })).ok).toBe(true);
+      expect(judged).toEqual(["/w"]);
+      expect(respawnPane.mock.calls[0]![2]!.cwd).toBe("/w");
+      judged.length = 0;
+      expect((await launcherWith(probe).createSuccessor({ node: { id: "n", runtime: "codex", cwd: null }, departingSessionName: "b@r" })).ok).toBe(true);
+      expect(judged).toEqual([]);
+    });
+
+    it("by default the real disk decides: an existing directory hands over, a deleted one is refused", async () => {
+      const here = fs.mkdtempSync(path.join(os.tmpdir(), "ssl-seat-cwd-"));
+      try {
+        expect((await launcherWith().createSuccessor({ node: { id: "n", runtime: "codex", cwd: here }, departingSessionName: "a@r" })).ok).toBe(true);
+        respawnPane.mockClear(); listPanes.mockClear();
+        fs.rmSync(here, { recursive: true });
+        const res = await launcherWith().createSuccessor({ node: { id: "n", runtime: "codex", cwd: here }, departingSessionName: "a@r" });
+        expect(res).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+        expect(respawnPane).not.toHaveBeenCalled();
+        expect(listPanes).not.toHaveBeenCalled();
+      } finally { fs.rmSync(here, { recursive: true, force: true }); }
     });
   });
 });

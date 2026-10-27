@@ -143,3 +143,42 @@ export function prepareProjectRigWorkspaces(projectRoot: string, workspaceDirs: 
   fs.mkdirSync(nodePath.dirname(excludePath), { recursive: true });
   fs.appendFileSync(excludePath, `${current && !current.endsWith("\n") ? "\n" : ""}${entry}\n`);
 }
+
+/** The project folder when `cwd` is the daemon-owned workspace of this seat of a project rig, else null.
+ *  Owned means exactly <project>/.workspaces/<pod>-<member> for the seat `<pod>.<member>` of the rig the project's
+ *  folder name gives (applyProjectRig); any other path, however close, belongs to the person and is never touched. */
+export function projectRigWorkspaceOwner(rigName: string, logicalId: string, cwd: string): string | null {
+  const parts = logicalId.split(".");
+  if (parts.length !== 2 || !parts.every((part) => PROJECT_RIG_ID.test(part))) return null;
+  if (!nodePath.isAbsolute(cwd)) return null;
+  const workspaces = nodePath.dirname(cwd);
+  if (nodePath.basename(workspaces) !== PROJECT_RIG_WORKSPACES) return null;
+  const projectRoot = nodePath.dirname(workspaces);
+  if (nodePath.join(workspaces, parts.join("-")) !== cwd) return null;
+  if (!rigName || projectRigSlug(projectRoot) !== rigName) return null;
+  return projectRoot;
+}
+
+/** The project folder when restore may recreate this seat's missing folder: it is the seat's daemon-owned workspace, the
+ *  project folder itself still exists (it is never created), `.workspaces` is not a link that would carry the new folder
+ *  elsewhere, and nothing is at the seat's path. Otherwise null. */
+export function projectRigWorkspaceRecreatable(rigName: string, logicalId: string, cwd: string): string | null {
+  const projectRoot = projectRigWorkspaceOwner(rigName, logicalId, cwd);
+  if (!projectRoot) return null;
+  try {
+    if (!fs.statSync(projectRoot).isDirectory()) return null;
+    const workspaces = nodePath.join(projectRoot, PROJECT_RIG_WORKSPACES);
+    try { if (fs.lstatSync(workspaces).isSymbolicLink()) return null; } catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+    try { fs.lstatSync(cwd); return null; } catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+  } catch { return null; }
+  return projectRoot;
+}
+
+/** Recreate a missing project-rig seat workspace (and its git-exclude entry) as `rig up` first made it. True when it
+ *  created the folder; false when the path is not a recreatable daemon-owned workspace (nothing is touched). */
+export function recreateProjectRigWorkspace(rigName: string, logicalId: string, cwd: string): boolean {
+  const projectRoot = projectRigWorkspaceRecreatable(rigName, logicalId, cwd);
+  if (!projectRoot) return false;
+  try { prepareProjectRigWorkspaces(projectRoot, [cwd]); } catch { return false; }
+  return true;
+}

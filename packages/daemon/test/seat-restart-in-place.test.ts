@@ -12,6 +12,7 @@ import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
 import type { HarnessLaunchResult, NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { ArbitratedSeatState } from "../src/domain/activity-taxonomy.js";
+import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
 import type { InPlaceRestartIo, ProcessFacts } from "../src/domain/seat-restart-in-place.js";
 import { accountLineNames, parseEffectiveSettings, shellWords } from "../src/domain/seat-restart-in-place.js";
 
@@ -53,6 +54,8 @@ interface WorldOptions {
   holdFails?: "write" | "readback";
   /** The pane disappears when its process is signalled, and tmux doesn't report it dead (review-r2's case). */
   paneVanishes?: boolean;
+  /** What the (fake) folder check says about the cwd the relaunch would be handed; default: a usable directory. */
+  cwdFault?: (cwd: string) => SeatCwdFault | null;
 }
 
 const dbs: Database.Database[] = [];
@@ -96,6 +99,7 @@ function world(options: WorldOptions = {}) {
   let paneGone = false;
   let remainOnExit: string | null = options.remainOnExit === "unreadable" ? null : options.remainOnExit ?? null;
   const calls: string[] = [];
+  const respawnCwds: string[] = [];
   const paneLines: string[] = (options.screenBefore ?? "").split("\n").filter(Boolean);
   let relaunched = false;
   let thrown = false;
@@ -147,7 +151,7 @@ function world(options: WorldOptions = {}) {
     restorePaneOption: async (_pane: string, _option: string, value: string | null): Promise<TmuxResult> => {
       calls.push(`restore remain-on-exit ${value}`); maybeThrow("restorePaneOption"); remainOnExit = value; return { ok: true };
     },
-    respawnPane: async (_pane: string, command?: string): Promise<TmuxResult> => { calls.push(`respawn ${command}`); maybeThrow("respawnPane"); relaunch(); return { ok: true }; },
+    respawnPane: async (_pane: string, command?: string, respawnOptions?: { cwd?: string }): Promise<TmuxResult> => { calls.push(`respawn ${command}`); respawnCwds.push(respawnOptions?.cwd ?? "(none)"); maybeThrow("respawnPane"); relaunch(); return { ok: true }; },
     capturePaneHistory: async () => paneLines.join("\n"),
   } as unknown as TmuxAdapter;
 
@@ -188,6 +192,7 @@ function world(options: WorldOptions = {}) {
     statAuthFile: () => null,
     findRollout: () => (options.rollout === undefined ? null : "/rollout.jsonl"),
     readRolloutTail: () => options.rollout ?? null,
+    seatCwdFault: (cwd) => options.cwdFault?.(cwd) ?? null, // "/work" is a fake path: the folder check is a fake, never the disk
   };
 
   const service = new SeatLifecycleService({
@@ -201,7 +206,7 @@ function world(options: WorldOptions = {}) {
   });
   const events = () => (db.prepare("SELECT type, payload FROM events WHERE type LIKE 'seat.restart_in_place%' ORDER BY seq").all() as Array<{ type: string; payload: string }>)
     .map((row) => ({ type: row.type, ...JSON.parse(row.payload) }));
-  return { db, service, node, session, calls, launches, builds, events, sessionRegistry,
+  return { db, service, node, session, calls, respawnCwds, launches, builds, events, sessionRegistry,
     setRows: (next: NativeProcessRow[]) => { rows = next; },
     print: (text: string) => { paneLines.push(...text.split("\n").filter(Boolean)); } };
 }
@@ -286,6 +291,50 @@ describe("rig seat restart --keep-conversation: gates before any signal", () => 
     expect(await home.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ code: "settings_drift", detail: { differs: ["codex home"] } });
     const cwd = world({ facts: { 200: facts(), 100: facts({ cwd: "/elsewhere" }) } });
     expect(await cwd.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ code: "settings_drift", detail: { differs: ["cwd"] } });
+  });
+
+  // OF-124: respawn-pane starts in $HOME when the folder it is handed is gone, so the restarted Codex would resume in the
+  // wrong place. The restart must refuse, naming the folder, before it stops anything (no signal, no respawn, no event).
+  describe("a seat whose folder is gone (OF-124)", () => {
+    for (const shape of ["shell_backed", "direct_native"] as const) {
+      it(`${shape}: execute refuses with seat_cwd_unusable, names the folder and the fix, and stops nothing`, async () => {
+        const w = world({ shape, cwdFault: () => ({ kind: "missing" }) });
+        const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "new account" });
+        expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+        expect((result as { message: string }).message).toBe(
+          `dev.codex was not restarted: its cwd '/work' does not exist, and a seat launched there would silently start in $HOME. Create the folder /work, then restart it again. Nothing was stopped.`);
+        expect(w.calls).toEqual([]);
+        expect(w.respawnCwds).toEqual([]);
+        expect(w.events()).toEqual([]);
+      });
+    }
+
+    it("the preview refuses the same way, and a folder that is a file is told what is wrong rather than to create it", async () => {
+      const w = world({ cwdFault: () => ({ kind: "not_directory", what: "is not a directory" }) });
+      const plan = await w.service.restartInPlace({ seatRef: SEAT, plan: true });
+      expect(plan).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect((plan as { message: string }).message).toContain("Fix /work: it is not a directory");
+      expect((plan as { message: string }).message).not.toContain("Create the folder");
+      expect(w.calls).toEqual([]);
+    });
+
+    it("the folder judged is the one the relaunch is handed, with Linux's ' (deleted)' suffix removed", async () => {
+      const judged: string[] = [];
+      // direct_native is the shape where tmux respawn-pane is handed the folder (shell_backed resumes in the shell's own).
+      const w = world({ shape: "direct_native", facts: { 100: facts({ cwd: "/work (deleted)" }) }, cwdFault: (cwd) => { judged.push(cwd); return null; } });
+      const result = await w.service.restartInPlace({ seatRef: SEAT, reason: "new account" });
+      expect(result).toMatchObject({ ok: true, outcome: "restarted_account_unverified" });
+      expect(judged).toEqual(["/work"]);
+      expect(w.respawnCwds).toEqual(["/work"]);
+    });
+
+    it("control: a usable folder restarts as before, and the pane is respawned in the folder that was judged", async () => {
+      const judged: string[] = [];
+      const w = world({ shape: "direct_native", cwdFault: (cwd) => { judged.push(cwd); return null; } });
+      expect(await w.service.restartInPlace({ seatRef: SEAT, reason: "new account" })).toMatchObject({ ok: true, outcome: "restarted_account_unverified" });
+      expect(judged).toEqual(["/work"]);
+      expect(w.respawnCwds).toEqual(["/work"]);
+    });
   });
 
   it("accepts a Codex launched through OpenRig's staged launch script, and only that script, between shell and Codex", async () => {

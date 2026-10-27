@@ -11,6 +11,7 @@ import { ensureCodexSeatHome } from "./codex-seat-home.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
+import { getSeatCwdFault, seatCwdFaultReason, seatCwdFixAdvice, type SeatCwdFault } from "./cwd-resolution.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -107,6 +108,7 @@ export class SuccessorSessionLauncher {
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
   private exitPollMs: number;
   private exitTimeoutMs: number;
+  private seatCwdFault: (cwd: string) => SeatCwdFault | null;
 
   constructor(
     tmuxAdapter: TmuxAdapter,
@@ -134,8 +136,11 @@ export class SuccessorSessionLauncher {
       /** Cutover retiree-exit poll interval + total bounded timeout (per graceful/forced phase). */
       exitPollMs?: number;
       exitTimeoutMs?: number;
+      /** What is wrong with the folder the successor is handed (null when it is a directory). Tests inject a fake. */
+      seatCwdFault?: (cwd: string) => SeatCwdFault | null;
     } = {},
   ) {
+    this.seatCwdFault = opts.seatCwdFault ?? ((cwd) => getSeatCwdFault(cwd));
     this.tmuxAdapter = tmuxAdapter;
     this.discoveryRepo = discoveryRepo;
     this.sessionEnv = opts.sessionEnv ?? {};
@@ -204,6 +209,20 @@ export class SuccessorSessionLauncher {
       }
     }
     const cwd = input.node.cwd ?? undefined;
+
+    // OF-124: respawn-pane, like new-session, starts in $HOME when the folder it is handed is gone, so the successor would
+    // run in the wrong place with no error. Refused before the retiree is touched (before any pane probe or stop), with the
+    // launcher's refusal code. A seat with no recorded cwd has no folder to judge. Nothing is created.
+    const cwdFault = cwd ? this.seatCwdFault(cwd) : null;
+    if (cwd && cwdFault) {
+      return {
+        ok: false,
+        code: "seat_cwd_unusable",
+        step: "resolve_pane",
+        replacementStarted: false,
+        message: `${departingSession} was not handed over: its cwd '${cwd}' ${seatCwdFaultReason(cwdFault)}. ${seatCwdFixAdvice(cwd, cwdFault)}, then retry the handover. Nothing was stopped.`,
+      };
+    }
 
     // 1. Resolve the DEPARTING session's active pane — the retiree's pane we take over. A probe throw or
     //    an empty result is a structured resolve_pane failure BEFORE any respawn, so the seat is wholly

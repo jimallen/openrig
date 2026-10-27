@@ -130,6 +130,7 @@ describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)",
       const service = new SeatHandoverService({
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
         tmuxAdapter: realTmux, runtimeAdapters: { codex: codexAdapter },
+        seatCwdFault: () => null, // fixture seat folders are fake paths
         predecessorRecapResolver: () => null, // no recap typed — keep the successor TUI clean for the footer read
         // The readiness verify polls the real successor until it is an interactive agent. Codex boots in
         // ~8s and then shows the workspace-trust gate; a trusted workspace (production) or an operator

@@ -100,7 +100,7 @@ describe("SeatHandoverService", () => {
     return { runtime: "codex", launchHarness, checkReady } as unknown as RuntimeAdapter;
   }
 
-  function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }): SeatHandoverService {
+  function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => { kind: "missing" } | null = () => null): SeatHandoverService {
     return new SeatHandoverService({
       db,
       rigRepo,
@@ -110,6 +110,7 @@ describe("SeatHandoverService", () => {
       tmuxAdapter: adapter,
       now: () => new Date("2026-04-24T18:30:00.000Z"),
       newSuccessorId: () => "01SUCCID0",
+      seatCwdFault, // the fixtures' seat folders are fake paths; the folder check has its own rows (successor-session-launcher.test.ts)
       runtimeAdapters: { codex: codexAdapter() },
       contextUsageStore: { readSidecar } as never,
       resumeTokenCapturer: { captureCodexThreadId } as never,
@@ -756,6 +757,7 @@ describe("SeatHandoverService", () => {
       tmuxAdapter: tmux(),
       now: () => new Date("2026-04-24T18:30:00.000Z"),
       newSuccessorId: () => "01SUCCID0",
+      seatCwdFault: () => null, // the fixtures' seat folders are fake paths; the folder check has its own rows (successor-session-launcher.test.ts)
       runtimeAdapters: { codex: codexAdapter() },
       contextUsageStore: { readSidecar } as never,
       resumeTokenCapturer: { captureCodexThreadId } as never,
@@ -910,6 +912,27 @@ describe("SeatHandoverService", () => {
     expect(sendText).not.toHaveBeenCalled();
     expect(hasSession).not.toHaveBeenCalled();
     // The seat's binding is unchanged — commit never ran.
+    expect(sessionRegistry.getBindingForNode(node.id)?.tmuxSession).toBe("dev-impl@seat-rig");
+    expect(durableRows()).toBe(before);
+  });
+
+  // OF-124: the seat's folder is gone, so respawn-pane would put the successor in $HOME. Refused through the real
+  // SeatHandoverService -> SuccessorSessionLauncher path, before the live retiree is touched.
+  it("a seat whose folder is gone is refused before the retiree is touched, with the folder named and the seat untouched", async () => {
+    const { node } = seedSeat();
+    const before = durableRows();
+
+    const result = await newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }))
+      .handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+
+    expect(result).toMatchObject({ ok: false, code: "successor_create_failed" });
+    expect((result as { message: string }).message).toContain("its cwd '/project' does not exist");
+    expect((result as { message: string }).message).toContain("Create the folder /project");
+    expect((result as { guidance: string }).guidance).toBe("The seat's folder is unusable; the seat was not touched. Fix the folder named above and retry the handover.");
+    expect(listPanes).not.toHaveBeenCalled();
+    expect(respawnPane).not.toHaveBeenCalled();
+    expect(killSession).not.toHaveBeenCalled();
+    expect(launchHarness).not.toHaveBeenCalled();
     expect(sessionRegistry.getBindingForNode(node.id)?.tmuxSession).toBe("dev-impl@seat-rig");
     expect(durableRows()).toBe(before);
   });

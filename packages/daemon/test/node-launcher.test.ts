@@ -790,6 +790,60 @@ describe("NodeLauncher", () => {
       expect(createSpy).not.toHaveBeenCalled();
     });
 
+    // OF-124: the one folder a launch may make is a project rig's own `.workspaces/<pod>-<member>` (daemon-owned, made by `rig up`).
+    describe("a project rig's own workspace (OF-124)", () => {
+      function projectSeat(rigName: string, seatDir: string) {
+        const rig = rigRepo.createRig(rigName);
+        rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "claude-code", cwd: seatDir });
+        return rig;
+      }
+      const launch = async (rigId: string, createSpy: ReturnType<typeof vi.fn>) =>
+        createLauncher(mockTmuxAdapter({ createSession: createSpy as never })).launchNode(rigId, "dev.impl");
+
+      it("a missing workspace folder is made again, then the seat starts in it", async () => {
+        const project = path.join(scratch, "myproj");
+        await fs.mkdir(project);
+        const seatDir = path.join(project, ".workspaces", "dev-impl");
+        const rig = projectSeat("myproj", seatDir);
+        const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+
+        const result = await launch(rig.id, createSpy);
+
+        expect(result.ok).toBe(true);
+        expect((await fs.stat(seatDir)).isDirectory()).toBe(true);
+        expect(createSpy.mock.calls[0]![1]).toBe(seatDir);
+      });
+
+      const refused: Array<[string, () => { rigName: string; project: string; seatDir: string }]> = [
+        ["a rig not named for the project folder", () => ({ rigName: "someone-else", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", ".workspaces", "dev-impl") })],
+        ["another seat's folder under .workspaces", () => ({ rigName: "myproj", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", ".workspaces", "dev-other") })],
+        ["a folder outside .workspaces", () => ({ rigName: "myproj", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", "dev-impl") })],
+      ];
+      for (const [title, shape] of refused) {
+        it(`${title}: refused as before, and nothing is created`, async () => {
+          const { rigName, project, seatDir } = shape();
+          await fs.mkdir(project);
+          const rig = projectSeat(rigName, seatDir);
+          const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+
+          const result = await launch(rig.id, createSpy);
+
+          expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+          expect(createSpy).not.toHaveBeenCalled();
+          expect(await fs.readdir(project)).toEqual([]);
+        });
+      }
+
+      it("a project folder that is gone is not made", async () => {
+        const project = path.join(scratch, "myproj");
+        const rig = projectSeat("myproj", path.join(project, ".workspaces", "dev-impl"));
+        const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });
+
+        expect(await launch(rig.id, createSpy)).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+        await expect(fs.stat(project)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    });
+
     it("an existing folder launches there; a seat recorded with no cwd is left to tmux's default", async () => {
       const withDir = seatWithCwd(scratch);
       const createSpy = vi.fn<(name: string, cwd?: string) => Promise<TmuxResult>>().mockResolvedValue({ ok: true });

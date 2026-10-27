@@ -21,6 +21,7 @@ import type { RunningCodexLaunch } from "../adapters/codex-runtime-adapter.js";
 import { emittedEffortFromArgv } from "./seat-effort.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
 import { readStoredJsonObject } from "./stored-json.js";
+import { getSeatCwdFault, seatCwdFaultReason, seatCwdFixAdvice, type SeatCwdFault } from "./cwd-resolution.js";
 
 /**
  * OPR.0.7.0.5 — restart ONE Codex seat in place so it reads its Codex home's current account: the same
@@ -68,6 +69,8 @@ export interface InPlaceRestartIo {
   statAuthFile(codexHome: string): { mtimeMs: number } | null;
   findRollout(codexHome: string, conversationId: string): string | null;
   readRolloutTail(path: string): string | null;
+  /** What is wrong with the folder the relaunch would be handed (null when it is a directory). Never creates it. */
+  seatCwdFault(cwd: string): SeatCwdFault | null;
 }
 
 export interface InPlaceRestartDeps {
@@ -100,7 +103,7 @@ export interface InPlaceRestartTarget {
 
 export type InPlaceRestartRefusalCode =
   | "pane_unverified" | "pane_shape_unknown" | "resume_binding_unverified" | "settings_unverified"
-  | "settings_drift" | "restart_in_progress" | "relaunch_unavailable" | "tmux_probe_failed";
+  | "settings_drift" | "restart_in_progress" | "relaunch_unavailable" | "tmux_probe_failed" | "seat_cwd_unusable";
 
 export interface InPlaceRestartRefusal { ok: false; code: InPlaceRestartRefusalCode; message: string; guidance?: string; detail?: unknown }
 
@@ -426,6 +429,15 @@ export class CodexInPlaceRestart {
       if (!facts.cwd) return { ok: false, code: "settings_unverified", message: "The running Codex's working directory could not be read. Nothing was stopped." };
       cwd = facts.cwd;
     }
+    // OF-124: respawn-pane, like new-session, starts in $HOME when the folder it is handed is gone, so the relaunched Codex
+    // would resume in the wrong place. Refused here, before anything is stopped, with the launcher's refusal code.
+    // (Linux reports a deleted working directory as "<path> (deleted)"; the folder to judge and to hand tmux is <path>.)
+    cwd = cwd.replace(/ \(deleted\)$/, "");
+    const cwdFault = this.io.seatCwdFault(cwd);
+    if (cwdFault) {
+      return { ok: false, code: "seat_cwd_unusable",
+        message: `${seat.logicalId} was not restarted: its cwd '${cwd}' ${seatCwdFaultReason(cwdFault)}. ${seatCwdFixAdvice(cwd, cwdFault)}, then restart it again. Nothing was stopped.` };
+    }
     const relaunchBinding: NodeBinding = { ...binding, cwd };
     // The probed and prepared launch choices come from the running Codex, so the relaunch keeps them and no
     // Codex process is started to decide them again.
@@ -453,7 +465,7 @@ export class CodexInPlaceRestart {
     const applyChoice = effort.changes && effort.source === "seat_choice";
     const drift = [
       ...settingsDrift(effective, relaunched).filter((key) => key !== "effort" || !applyChoice),
-      ...(facts.cwd && facts.cwd !== cwd ? ["cwd"] : []),
+      ...(facts.cwd && facts.cwd.replace(/ \(deleted\)$/, "") !== cwd ? ["cwd"] : []),
       ...(relaunchHome !== codexHome ? ["codex home"] : []),
     ];
     if (drift.length > 0) {
@@ -983,6 +995,7 @@ export function defaultInPlaceRestartIo(): InPlaceRestartIo {
       }
       return null;
     },
+    seatCwdFault: (cwd) => getSeatCwdFault(cwd),
     readRolloutTail(path) {
       const maxBytes = 4 * 1024 * 1024;
       try {

@@ -20,6 +20,7 @@ import { decideSeatLaunchOutcome, readContinuityRow } from "./restore-seat-gates
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 import { getSeatCwdFault, seatCwdUnusableMessage } from "./cwd-resolution.js";
+import { projectRigWorkspaceRecreatable } from "./project-rig.js";
 
 /** OPR.0.4.3.20 FR-6 — a present token whose last verification is older than this
  *  is surfaced as `stale` (age-based staleness — the "stale while running" signal
@@ -277,7 +278,8 @@ export function buildRestorePlanPreview(
     }
     // OF-69: a seat restore would launch, whose folder the launcher would refuse. Restore reports it failed and starts
     // nothing for it, so the plan says so rather than forecasting a start.
-    const cwdFault = input.cwd && outcome.kind !== "stop" && outcome.kind !== "skip_restoring" ? getSeatCwdFault(input.cwd) : null;
+    // A project rig's own missing workspace is recreated by the launch, so the plan still forecasts a start.
+    const cwdFault = input.cwd && outcome.kind !== "stop" && outcome.kind !== "skip_restoring" && !projectRigWorkspaceRecreatable(rig.rig.name, logicalId, input.cwd) ? getSeatCwdFault(input.cwd) : null;
     if (input.cwd && cwdFault) {
       intendedAction = "awaiting-decision";
       reason = seatCwdUnusableMessage(logicalId, input.cwd, cwdFault);
