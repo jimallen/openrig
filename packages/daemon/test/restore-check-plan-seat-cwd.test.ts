@@ -147,6 +147,8 @@ describe("restore recreates a project rig's own missing workspace, and only that
     const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists }, freshLogicalIds: [SEAT], startupFrom: "spec" } as never);
     const node = out.ok ? out.result.nodes.find((n) => n.logicalId === SEAT) : undefined;
     expect(node?.status).toBe("failed");
+    // Refused by the fresh preflight (before any launch), not merely caught later by the launcher's own backstop.
+    expect(node?.error).toContain("Fresh start refused");
     expect(node?.error).toContain("does not exist");
     expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
   });
