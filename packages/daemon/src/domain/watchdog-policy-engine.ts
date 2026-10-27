@@ -168,6 +168,9 @@ const QUIET_SKIP_REASONS = new Set<string>([
   // scan writes no history (the loud, audited signals are the SENT wake,
   // episode-ended, and all-parked-owners-deferred).
   "no-parked-owner",
+  // RSI wake: a source that is blind this hour was already recorded blind (same source, same
+  // reason) by the loud rsi_source_blind row that opened its episode. One row per episode.
+  "rsi_source_blind_ongoing",
   // OPR.0.4.3.16 rev1-r1 fixback (advisor ruling 2026-07-03): seat_needs_input
   // and activity_stale_unknown are the COMMON recurring states for this
   // policy's own target scenario — a gate qitem pending on a seat that has

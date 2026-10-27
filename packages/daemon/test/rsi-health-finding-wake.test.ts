@@ -356,6 +356,77 @@ describe("OF-72: RSI blindness is recorded, reported, and does not outlive its c
     });
   });
 
+  describe("one history row and one event per blind episode (OF-118), not one per hour", () => {
+    const skippedEvents = (h: ReturnType<typeof harness>) =>
+      (h.db.prepare("SELECT count(*) AS n FROM events WHERE type = 'watchdog.evaluation_skipped'").get() as { n: number }).n;
+    const blindRows = (h: ReturnType<typeof harness>) => h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND).length;
+
+    it("twelve blind hours of one source and reason write exactly one row and one event, and wake nobody", async () => {
+      const h = harness();
+      h.source.rigs = ["r1"];
+      await h.scan();
+      const rows = h.history().length;
+      const events = skippedEvents(h);
+      h.source.mode = "throw";
+
+      const reasons: Array<string> = [];
+      for (let hour = 0; hour < 12; hour++) reasons.push(((await h.scan()).outcome as { reason: string }).reason);
+
+      expect(reasons).toEqual([RSI_SOURCE_BLIND, ...Array(11).fill("rsi_source_blind_ongoing")]);
+      expect(h.history()).toHaveLength(rows + 1);
+      expect(skippedEvents(h)).toBe(events + 1);
+      expect(h.sends).toHaveLength(1);                         // only the original wake
+      expect(h.state(fp("r1"))?.state).toBe("active");         // carried forward all along
+    });
+
+    it("the episode ends when the source reads in full again: the next blindness is a new episode with its own row", async () => {
+      const h = harness();
+      h.source.rigs = ["r1"];
+      await h.scan();
+      h.source.mode = "throw";
+      await h.scan(); await h.scan();
+      h.source.mode = "ok";
+      expect((await h.scan()).outcome).toMatchObject({ reason: RSI_NO_NEW_FINDING });
+      expect(blindRows(h)).toBe(1);
+      h.source.mode = "throw";
+      expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+      expect(blindRows(h)).toBe(2);
+    });
+
+    it("a new reason for the same source, and a second source going blind, each open a new episode; the first stays quiet", async () => {
+      const h = harness();
+      h.source.rigs = ["r1"];
+      await h.scan();
+      h.source.mode = "throw";
+      await h.scan();                                          // rsi-telemetry unavailable: row 1
+      h.source.mode = "partial";
+      expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND }); // same source, reason partial: row 2
+      h.sourceB.mode = "throw";
+      expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND }); // rsi-second joins: row 3
+      expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      expect(blindRows(h)).toBe(3);
+      // Back to the first reason after the partial episode closed it: a new episode again.
+      h.source.mode = "throw";
+      expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+      expect(blindRows(h)).toBe(4);
+    });
+
+    it("a blind episode is never an active finding: it is absent from the active set, the receipt and the wake message", async () => {
+      const h = harness();
+      h.source.mode = "throw";
+      await h.scan();
+      const episode = h.db.prepare("SELECT fingerprint, state FROM rsi_finding_state WHERE fingerprint LIKE 'rsi.source-blind/%'").all();
+      expect(episode).toEqual([{ fingerprint: "rsi.source-blind/rsi-telemetry/unavailable", state: "active" }]);
+      expect(scanFindingState(h.db, h.projection, [h.source, h.sourceB], new Date(T0 + 2 * HOUR)).active).toEqual([]);
+      h.source.mode = "ok";
+      h.source.rigs = ["r1"];
+      await h.scan();                                          // a real finding wakes once, naming only itself
+      expect(h.sends).toHaveLength(1);
+      expect(h.sends[0]!.message).not.toContain("source-blind");
+      expect(h.receipt()!.fps).toEqual([fp("r1")]);
+    });
+  });
+
   it("the daily report asks the steward to list the unavailable or partial sources", () => {
     expect(RSI_DAILY_REPORT_MESSAGE).toContain(RSI_SOURCE_BLIND);
   });
@@ -578,7 +649,7 @@ describe("RSI B1 boot registration (rsi.steward_session)", () => {
           expect(projectionSources.has(detectorSources.get(id)!), `wake source for ${id} is not in the projection`).toBe(true);
         }
         // Positive control that the setting took: D10 reads as the complete "retention disabled" zero.
-        expect(coverage.find((c) => c.source === "rsi-retention-lag")).toMatchObject({ partial: false, total: 0, note: "retention disabled" });
+        expect(coverage.find((c) => c.source === "rsi-retention-lag")).toMatchObject({ partial: false, total: 0, note: "retention disabled at daemon start; a change to retention.enabled takes effect at the next daemon start" });
       } finally {
         if (savedRetention === undefined) delete process.env.OPENRIG_RETENTION_ENABLED;
         else process.env.OPENRIG_RETENTION_ENABLED = savedRetention;
