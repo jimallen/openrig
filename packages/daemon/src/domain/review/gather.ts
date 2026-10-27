@@ -383,11 +383,16 @@ export class ReviewGatherer {
       const now = new Date(nowIso);
       const out: WorkflowExceptionInput[] = [];
       for (const row of instances) {
+        // OF-146: a frontier that cannot be read is NOT an empty frontier. Read as `[]` the instance would yield no deadline
+        // verdict and no anomaly and vanish from the attention band. It is marked instead: the band names the instance.
         let frontier: string[] = [];
+        let frontierUnreadable = false;
         try {
-          frontier = (JSON.parse(row.current_frontier_json) as string[]) ?? [];
+          const parsed: unknown = JSON.parse(row.current_frontier_json);
+          if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) frontier = parsed as string[];
+          else frontierUnreadable = true;
         } catch {
-          frontier = [];
+          frontierUnreadable = true;
         }
         const packets = frontier.map(
           (id) =>
@@ -445,6 +450,7 @@ export class ReviewGatherer {
             ? `step ${verdict.evidence.stepId ?? "?"} packet ${verdict.evidence.packetId} held by ${verdict.evidence.ownerSession} — ${verdict.evidence.overdueBySeconds}s past the ${verdict.evidence.anchor} anchor`
             : null,
           frontierRefsNonOpenPacket,
+          ...(frontierUnreadable ? { unreadable: ["current_frontier_json"] } : {}),
           openItem: item
             ? {
                 qitemId: item.qitem_id,

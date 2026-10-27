@@ -172,6 +172,8 @@ export interface WorkflowBindingPayload {
    *  v1 picks the most recent as the primary binding (per PRD), and
    *  exposes the rest here so the UI can render a "+N more" indicator. */
   additionalInstanceIds: string[];
+  /** OF-146: present only when the instance's saved frontier is not readable (then `currentFrontier` is `[]` because of it). */
+  unreadable?: string[];
 }
 
 export interface SliceDetailPayload {
@@ -264,6 +266,7 @@ export class SliceDetailProjector {
         createdAt: binding.createdAt,
         completedAt: binding.completedAt,
         additionalInstanceIds: bindingResult.additionalInstanceIds,
+        ...(binding.unreadable ? { unreadable: binding.unreadable } : {}),
       } : null,
       story: {
         events: this.buildStory(slice, trailQitemToStep),
