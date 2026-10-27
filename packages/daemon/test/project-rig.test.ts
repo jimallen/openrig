@@ -160,7 +160,7 @@ describe("the daemon-owned workspace of a project rig seat (OF-124)", () => {
     const nearMisses: Array<[string, string, string]> = [
       ["another rig name", "other", seatDir()],
       ["another seat's folder", "my-project", path.join(project, ".workspaces", "dev-other")],
-      ["not under .workspaces", "my-project", path.join(project, "dev-impl")],
+      ["not under .workspaces", "my-project", path.join(project, "elsewhere", "dev-impl")],
       ["one level too deep", "my-project", path.join(project, ".workspaces", "x", "dev-impl")],
       ["a traversal", "my-project", path.join(project, ".workspaces", "dev-impl", "..", "dev-impl") + "/../dev-impl"],
       ["a relative path", "my-project", ".workspaces/dev-impl"],

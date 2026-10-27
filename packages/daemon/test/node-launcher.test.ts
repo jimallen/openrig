@@ -817,7 +817,7 @@ describe("NodeLauncher", () => {
       const refused: Array<[string, () => { rigName: string; project: string; seatDir: string }]> = [
         ["a rig not named for the project folder", () => ({ rigName: "someone-else", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", ".workspaces", "dev-impl") })],
         ["another seat's folder under .workspaces", () => ({ rigName: "myproj", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", ".workspaces", "dev-other") })],
-        ["a folder outside .workspaces", () => ({ rigName: "myproj", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", "dev-impl") })],
+        ["a folder outside .workspaces", () => ({ rigName: "myproj", project: path.join(scratch, "myproj"), seatDir: path.join(scratch, "myproj", "elsewhere", "dev-impl") })],
       ];
       for (const [title, shape] of refused) {
         it(`${title}: refused as before, and nothing is created`, async () => {
