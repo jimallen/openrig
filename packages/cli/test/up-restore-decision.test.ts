@@ -419,6 +419,17 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(logs.join("\n")).toContain("b.two: fresh-primed");
   });
 
+  it("TTY ASK declined names each seat's rig by the daemon's rigHandle when it sends one (OF-135)", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigHandle: "01RIGID", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "no token" }], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => false)).parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    expect(printedSeatLaunchCommands(logs.join("\n"))).toEqual([`rig seat launch 'operator.human@01RIGID' --fresh --reason "<why>"`]);
+  });
+
   it("TTY ASK declined names each seat's rig by the daemon's canonical name, not by what was typed after `rig up`", async () => {
     respond = () => ({
       status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",
