@@ -1,3 +1,4 @@
+import { savedRowDamageMessage } from "./node-row-damage.js";
 import { claudeActivityRelayPath } from "./claude-activity-hooks.js";
 import { existsSync, accessSync, constants } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
@@ -262,6 +263,10 @@ export interface RestoreCheckDeps {
   getClaudeActivityHookEvents?: () => string[];
   /** OF-32: the spec source a rig records (null: none). A seat started fresh re-reads it; advice says so. */
   getRigSpecSource?: (rigId: string) => string | null;
+  /** OF-62: the seats whose saved node row is damaged (session source / package list not what was written), with the
+   *  reasons (node-row-damage.ts, the predicate restore's pre-restore snapshot refuses on). Optional so the service
+   *  stays framework-free; production wires it (routes/restore-check.ts). Without it damage is not judged. */
+  getSavedRowDamage?: (rigId: string) => Array<{ logicalId: string; damage: string[] }>;
   /** OF-32 follow-up: restore's own decisions about saved startup contexts and listed seats. */
   restoreParity?: RestoreParityDeps;
   /** OF-40 review: restore's own classification of the rig's DB-running session rows against tmux
@@ -506,6 +511,14 @@ export class RestoreCheckService {
         rigChecks.push(preconditions.check);
         preconditionError = preconditions.error;
         restoreInputsByRig.set(rig.rigId, { snapshot: preconditions.snapshot, error: preconditions.error });
+        // OF-62: restore refuses the whole rig at its pre-restore snapshot while a seat's saved row is damaged, however
+        // clean the snapshot it would restore from is. Judged where the preconditions are (same gate), so a routine poll of
+        // an all-ready rig does not ask.
+        const damagedRows = this.checkSavedRows(rig);
+        if (damagedRows) {
+          checks.push(damagedRows);
+          rigChecks.push(damagedRows);
+        }
       }
 
       for (const node of nodes) {
@@ -593,6 +606,30 @@ export class RestoreCheckService {
     }
 
     return this.buildResult(checks, rigRollups, hostInfraCheck.hostInfra, recoveryRigInputs, deferredAssessmentChecks);
+  }
+
+  /** OF-62: red naming each seat whose saved row is damaged; null when none is (or the check cannot be asked). */
+  private checkSavedRows(rig: { rigId: string; name: string }): CheckEntry | null {
+    if (!this.deps.getSavedRowDamage) return null;
+    const check = `rig.${rig.name}.saved-rows`;
+    let damaged: Array<{ logicalId: string; damage: string[] }>;
+    try {
+      damaged = this.deps.getSavedRowDamage(rig.rigId);
+    } catch (err) {
+      // Never read as "no damage": an unanswered question is reported yellow.
+      return {
+        check, status: "yellow",
+        evidence: `Saved seat rows were not inspected for ${rig.name}: ${err instanceof Error ? err.message : String(err)}`,
+        remediation: "Retry; or run the restore and read the refusal it gives", remediationSafe: true,
+      };
+    }
+    if (damaged.length === 0) return null;
+    return {
+      check, status: "red",
+      evidence: `Restore would refuse ${rig.name}: its pre-restore snapshot cannot be taken because ${damaged.map((seat) => savedRowDamageMessage(seat.logicalId, seat.damage)).join("; ")}`,
+      remediation: `Repair the damaged saved row${damaged.length > 1 ? "s" : ""} (${damaged.map((seat) => seat.logicalId).join(", ")}), then check again; restore and snapshot refuse until then`,
+      remediationSafe: false,
+    };
   }
 
   private checkRestorePreconditions(rig: { rigId: string; name: string }, opts: RestoreCheckOpts = {}, listedRefusals?: Map<string, string> | Error, restoreRuns: RestoreRuns = "would_run"): {
@@ -1697,7 +1734,7 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `No exact recovery action is known in v0 because restore-input blockers remain: ${restoreInputBlockers.map((check) => check.evidence).join("; ")}`,
+          reason: `No exact recovery action is known in v0 because restore-input blockers remain: ${restoreInputBlockers.map((check) => this.isSavedRowsCheck(check) ? `${check.evidence}. ${check.remediation}` : check.evidence).join("; ")}`,
         });
         continue;
       }
@@ -1834,10 +1871,18 @@ export class RestoreCheckService {
     });
   }
 
+  private isSavedRowsCheck(check: CheckEntry): boolean {
+    return check.check.startsWith("rig.") && check.check.endsWith(".saved-rows");
+  }
+
   private classifyRecoveryBlockingCheck(check: CheckEntry): "restore_input" | "runtime" | "other" {
     if (check.status !== "red") return "other";
 
     if (check.check.startsWith("rig.") && check.check.endsWith(".restore-preconditions")) return "restore_input";
+
+    // OF-62 (review B1): restore refuses the whole rig at its pre-restore snapshot while a saved row is damaged, so no
+    // `rig up --existing` is advised; the blocked reason carries the check's evidence and its remedy.
+    if (this.isSavedRowsCheck(check)) return "restore_input";
 
     if (check.check.startsWith("seat.") && check.check.endsWith(".readiness")) {
       if (check.evidence.includes("Missing canonical session identity")) {

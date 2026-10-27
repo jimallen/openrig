@@ -519,6 +519,27 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(output).toContain("No changes made.");
   });
 
+  // OF-62 (review B2): a rig-level refusal (a damaged saved row) is printed, once, before "No changes made."
+  it("--plan prints the rig-level refusal the daemon reports, and nothing when there is none", async () => {
+    const plan = (extra: Record<string, unknown>) => ({
+      status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig", snapshot: null, wouldCaptureCurrentState: true,
+      nodes: [{ logicalId: "dev.impl", intendedAction: "awaiting-decision", restoreStatus: "failed" }, { logicalId: "dev.qa", intendedAction: "resume-original" }],
+      mutated: false, ...extra,
+    });
+    respond = () => plan({ restoreRefusal: { reason: "restore would refuse the whole rig and start no seat: dev.impl's saved row is damaged (package_refs is not JSON). Repair the row first.", seats: ["dev.impl"] } });
+    const refused = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan"]);
+    });
+    const out = refused.logs.join("\n");
+    expect(out).toContain("Restore would be refused for the whole rig: restore would refuse the whole rig and start no seat: dev.impl's saved row is damaged (package_refs is not JSON). Repair the row first.");
+    expect(out.match(/Restore would be refused/g)).toHaveLength(1);
+    respond = () => plan({});
+    const clean = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan"]);
+    });
+    expect(clean.logs.join("\n")).not.toContain("Restore would be refused");
+  });
+
   it("--plan says so when the daemon could not predict the listed seats' refusals", async () => {
     respond = () => ({
       status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig", snapshot: null, wouldCaptureCurrentState: true,

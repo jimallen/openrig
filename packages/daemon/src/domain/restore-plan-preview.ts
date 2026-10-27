@@ -18,6 +18,7 @@ import { predictListedSeatRefusals, type ListedSeatDecisionDeps } from "./fresh-
 import type { StartupFrom } from "./seat-startup-source.js";
 import { decideSeatLaunchOutcome, readContinuityRow } from "./restore-seat-gates.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
+import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 
 /** OPR.0.4.3.20 FR-6 — a present token whose last verification is older than this
  *  is surfaced as `stale` (age-based staleness — the "stale while running" signal
@@ -62,6 +63,10 @@ export interface RestorePlanPreviewNode {
    *  removed or its occupant cannot be told; `awaiting-decision`: it needs an operator decision). The intended action
    *  of such a seat is `awaiting-decision` either way, since nothing is started; `reason` is restore's own text. */
   restoreStatus?: "failed" | "awaiting-decision";
+  /** OF-62: the seat's saved row is damaged (its session source and/or package list is not what was written), as the
+   *  node carries it. Restore's pre-restore snapshot refuses the whole rig on it, so the plan does not forecast a
+   *  start for this seat. Absent: the row is readable. */
+  savedRowDamage?: string[];
 }
 
 export interface RestorePlanPreview {
@@ -80,6 +85,11 @@ export interface RestorePlanPreview {
   mutated: false;
   /** Set when the refusal prediction for the listed seats could not be made; absent otherwise. */
   refusalPredictionError?: string;
+  /** OF-62 (review B2): apply mode would refuse the WHOLE rig, so no seat is started and a per-seat reading ("this seat
+   *  fails, the rest are restored") is wrong. Today: a seat's saved row is damaged and restore's pre-restore snapshot
+   *  refuses on it. `seats` names them. Every consumer of the plan checks this before it reads a seat's own status.
+   *  Absent: restore is not refused for this reason. */
+  restoreRefusal?: { reason: string; seats: string[] };
 }
 
 export interface PreviewSessionRow {
@@ -293,11 +303,23 @@ export function buildRestorePlanPreview(
       : { kind: "none" as const };
   const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
     const savedNodeId = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId)?.id ?? node.id;
-    return forecast({
+    const forecasted = forecast({
       logicalId: node.logicalId, snapshotNodeId: savedNodeId, live: { runtime: node.runtime ?? null },
       continuityStatus: continuity[node.id] ?? null,
       freshRequested: freshLogicalIds?.includes(node.logicalId) ?? false, occupant: resolveOccupant(savedNodeId, node.id),
     });
+    // OF-62: restore captures a pre-restore snapshot of the LIVE rig first, and that capture refuses on a damaged saved
+    // row (snapshot-capture.ts, the same predicate). Nothing is started, so the plan must not say "fresh-primed".
+    const damage = savedRowDamage(node);
+    if (damage.length === 0) return forecasted;
+    return {
+      ...forecasted,
+      intendedAction: "awaiting-decision" as const,
+      restoreStatus: "failed" as const,
+      reason: `restore would refuse the whole rig: its pre-restore snapshot cannot be taken because ${savedRowDamageMessage(node.logicalId, damage)}. Repair the row first.`,
+      freshRequired: false,
+      savedRowDamage: damage,
+    };
   });
   // A seat the snapshot's restore would attempt but the rig no longer has: restore reports it failed, so the plan lists it.
   if (snapshot && Array.isArray(snapshot.data.nodes)) {
@@ -309,6 +331,7 @@ export function buildRestorePlanPreview(
       }));
     }
   }
+  const damagedSeats = nodes.filter((node) => node.savedRowDamage);
   return {
     status: "plan",
     mode: "restore",
@@ -318,6 +341,12 @@ export function buildRestorePlanPreview(
     wouldCaptureCurrentState: snapshot === null,
     nodes,
     mutated: false,
+    ...(damagedSeats.length > 0 ? {
+      restoreRefusal: {
+        reason: `restore would refuse the whole rig and start no seat: its pre-restore snapshot cannot be taken because ${damagedSeats.map((node) => savedRowDamageMessage(node.logicalId, node.savedRowDamage!)).join("; ")}. Repair the row first.`,
+        seats: damagedSeats.map((node) => node.logicalId),
+      },
+    } : {}),
   };
 }
 

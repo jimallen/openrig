@@ -671,4 +671,65 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
     expect(resumeButton.textContent).not.toContain("Claude");
     expect(resumeButton.querySelector("svg")).toBeDefined();
   });
+
+  // OF-56 (review-of45 delta): the daemon serves startupUnreadable / sessionSourceUnreadable / packageRefsUnreadable on
+  // the node-detail route (node-inventory.ts), but the UI type and the page never read them, so a seat whose saved row
+  // is damaged showed an empty startup list, indistinguishable from "this seat declared none".
+  // Production consequence: the operator reads "No startup files declared" for a seat whose setup could not be read.
+  describe("OF-56: a seat whose saved row is damaged says so", () => {
+    const DAMAGED = {
+      ...NODE_DETAIL,
+      startupFiles: [], startupActions: [],
+      startupUnreadable: "resolved_files_json is not JSON",
+      sessionSourceUnreadable: "session_source_json is not an object",
+      packageRefsUnreadable: "package_refs is not a list of strings",
+    };
+
+    it("Overview tab: one note per damaged column, each with the daemon's reason", async () => {
+      mockNodeDetail(DAMAGED);
+      renderDetails();
+      const notice = await screen.findByTestId("detail-saved-row-damage");
+      expect(screen.getByTestId("detail-saved-row-damage-startup").textContent).toContain("Saved startup setup is unreadable (resolved_files_json is not JSON)");
+      expect(screen.getByTestId("detail-saved-row-damage-session-source").textContent).toContain("Saved session source is unreadable (session_source_json is not an object)");
+      expect(screen.getByTestId("detail-saved-row-damage-package-refs").textContent).toContain("Saved package list is unreadable (package_refs is not a list of strings)");
+      // Review N4: each note says what restore actually does for ITS column. The startup setup does not stop a restore
+      // (N-C3, and the exporter does not list it); the session source and package list do.
+      const startup = screen.getByTestId("detail-saved-row-damage-startup").textContent!;
+      expect(startup).toContain("Restore does not stop on it alone");
+      expect(startup).not.toContain("Restore, snapshot and export");
+      for (const key of ["session-source", "package-refs"]) {
+        expect(screen.getByTestId(`detail-saved-row-damage-${key}`).textContent).toContain("Restore, snapshot and export refuse until the row is repaired.");
+      }
+      expect(notice.textContent).not.toContain("Restore, snapshot and export refuse this seat");
+    });
+
+    it("Details tab: the Startup section carries the same note next to its empty list", async () => {
+      mockNodeDetail(DAMAGED);
+      renderDetails();
+      fireEvent.click(await screen.findByTestId("live-tab-details"));
+      const startup = await screen.findByTestId("live-startup-section");
+      expect(startup.querySelector('[data-testid="detail-saved-row-damage-startup"]')).not.toBeNull();
+      expect(startup.textContent).toContain("No startup files declared");
+    });
+
+    it("only the damaged column is named", async () => {
+      mockNodeDetail({ ...NODE_DETAIL, startupUnreadable: null, sessionSourceUnreadable: "session_source_json is not JSON", packageRefsUnreadable: null });
+      renderDetails();
+      await screen.findByTestId("detail-saved-row-damage-session-source");
+      expect(screen.queryByTestId("detail-saved-row-damage-startup")).toBeNull();
+      expect(screen.queryByTestId("detail-saved-row-damage-package-refs")).toBeNull();
+    });
+
+    it("control: a readable seat (markers null) and an older daemon (markers absent) show no note", async () => {
+      mockNodeDetail({ ...NODE_DETAIL, startupUnreadable: null, sessionSourceUnreadable: null, packageRefsUnreadable: null });
+      renderDetails();
+      await screen.findByTestId("seat-overview-table");
+      expect(screen.queryByTestId("detail-saved-row-damage")).toBeNull();
+      cleanup();
+      mockNodeDetail(NODE_DETAIL);
+      renderDetails();
+      await screen.findByTestId("seat-overview-table");
+      expect(screen.queryByTestId("detail-saved-row-damage")).toBeNull();
+    });
+  });
 });

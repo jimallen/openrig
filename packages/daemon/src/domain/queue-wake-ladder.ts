@@ -64,6 +64,7 @@ import {
   defaultResolveOrchestrator,
   resolveSessionNodeId,
 } from "./queue-stuck-sweep.js";
+import { readStoredJsonStrings } from "./stored-json.js";
 
 export const WAKE_RETRY_INTERVAL_KEY = "queue.wake_retry_interval_seconds";
 export const DEFAULT_WAKE_RETRY_INTERVAL_SECONDS = 300;
@@ -486,7 +487,7 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
     note: "Current recovery disposition owns the continuation; inspect that row. New source evidence is evaluated afresh.",
   });
   if (recovery && !["pending", "in-progress", "blocked"].includes(recovery.state)) return recoveryBackstop();
-  if (recovery && disposition && JSON.parse(disposition.tags ?? "[]").includes(PROMPT_ALERT_TAG)) return recoveryBackstop();
+  if (recovery && disposition && (readStoredJsonStrings(disposition.tags) ?? []).includes(PROMPT_ALERT_TAG)) return recoveryBackstop();
   const mode = unclaimedWakeMode(row);
   const eligible = (row.state === "pending" && !row.claimedAt && row.handedOffFrom)
     || (row.state === "in-progress" && row.claimedAt && mode === "failed" && db.prepare(
@@ -501,7 +502,7 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
   };
   const interval = resolveWakeRetryIntervalSeconds(), cap = resolveWakeRetryCap(), now = new Date();
   const retry = mode === "failed" && ladder.attempts < cap;
-  if (!retry && recovery && !JSON.parse(disposition!.tags ?? "[]").includes(WAKE_ESCALATION_TAG)) return recoveryBackstop();
+  if (!retry && recovery && !(readStoredJsonStrings(disposition!.tags) ?? []).includes(WAKE_ESCALATION_TAG)) return recoveryBackstop();
   const last = ladder.lastMarkerTs ?? (row.lastNudgeAttempt ? Date.parse(row.lastNudgeAttempt) : null);
   let due = last === null || Number.isNaN(last) ? now.getTime() : last + interval * 1000;
   if (mode === "unconfirmed") {

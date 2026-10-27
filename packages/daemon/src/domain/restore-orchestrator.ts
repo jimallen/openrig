@@ -12,7 +12,7 @@ import type { RigRepository } from "./rig-repository.js";
 import { resolvePermissionPolicyAttachment } from "./permission-policy/policy-ref.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
-import type { SnapshotRepository } from "./snapshot-repository.js";
+import { UnreadableSnapshotError, type SnapshotRepository } from "./snapshot-repository.js";
 import type { SnapshotCapture } from "./snapshot-capture.js";
 import type { CheckpointStore } from "./checkpoint-store.js";
 import type { NodeLauncher } from "./node-launcher.js";
@@ -33,6 +33,7 @@ import type {
   RestoreRigResult,
   RestoreResult,
   RestoreNodeResult,
+  Snapshot,
   SnapshotData,
   NodeWithBinding,
   Edge,
@@ -297,7 +298,14 @@ export class RestoreOrchestrator {
     onAttemptStarted?: (attemptId: number) => void;
   }): Promise<RestoreOutcome> {
     // 1. Load snapshot
-    const snapshot = this.snapshotRepo.getSnapshot(snapshotId);
+    let snapshot: Snapshot | null;
+    try {
+      snapshot = this.snapshotRepo.getSnapshot(snapshotId);
+    } catch (err) {
+      // OF-51: a damaged saved snapshot is one that cannot be restored, the same answer as a structurally unusable one.
+      if (err instanceof UnreadableSnapshotError) return { ok: false, code: "snapshot_unusable", message: err.message };
+      throw err;
+    }
     if (!snapshot) {
       return { ok: false, code: "snapshot_not_found", message: `Snapshot ${snapshotId} not found` };
     }

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { monotonicFactory } from "ulid";
 import type { EventBus } from "./event-bus.js";
+import { readStoredJsonStrings } from "./stored-json.js";
 
 const ulid = monotonicFactory();
 
@@ -237,7 +238,7 @@ export class StreamStore {
       hintType: row.hint_type,
       hintUrgency: row.hint_urgency,
       hintDestination: row.hint_destination,
-      hintTags: row.hint_tags ? (JSON.parse(row.hint_tags) as string[]) : null,
+      hintTags: readStoredJsonStrings(row.hint_tags),
       interrupt: row.interrupt === 1,
       archivedAt: row.archived_at,
     };

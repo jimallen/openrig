@@ -54,6 +54,8 @@ interface PlanPreviewResponse {
   wouldCaptureCurrentState: boolean;
   nodes: PlanPreviewNode[];
   mutated: boolean;
+  /** Apply mode would refuse the whole rig (a seat's saved row is damaged); absent on older daemons or when not refused. */
+  restoreRefusal?: { reason: string; seats: string[] };
 }
 
 export interface StartCandidate {
@@ -400,7 +402,7 @@ Examples:
             candidates.map((c) => ({
               label: `${c.rigName}  (${c.nodeCount} seats, ${c.lifecycleState})  ${summarizeReadiness(c)}`,
               value: c.rigId,
-              checked: true,
+              checked: !c.preview?.restoreRefusal,
             })),
           );
           selectedCandidates = candidates.filter((c) => pickedIds.includes(c.rigId));
@@ -549,6 +551,8 @@ Examples:
 
 export function summarizeReadiness(c: StartCandidate): string {
   if (!c.preview) return "";
+  // The whole restore is refused (OF-62): no seat is ready, whatever each seat's own forecast says.
+  if (c.preview.restoreRefusal) return "[restore refused]";
   // A seat restore reports failed (removed since the snapshot) has nothing to ask: the rest is still ready to resume.
   const actions = c.preview.nodes.filter((n) => n.restoreStatus !== "failed").map((n) => n.intendedAction);
   if (actions.length === 0) return "[mixed]";

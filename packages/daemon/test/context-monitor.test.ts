@@ -478,6 +478,22 @@ describe("ContextMonitor", () => {
     expect(checkReadySpy).toHaveBeenCalledWith(expect.objectContaining({ tmuxSession: sessionName }));
   });
 
+  // Review B3 (OF-51): a damaged newest startup event cannot show the saved context was delivered. At base the parse threw
+  // inside the monitor's transaction and the seat stayed as it was; the seat must still not be promoted to ready.
+  it.each(["attention_required", "failed"])("a damaged newest startup event keeps a %s seat from being marked ready on a live prompt", async startup => {
+    const { rig, node } = seedClaudeNode();
+    const session = sessionRegistry.getSessionsForRig(rig.id)[0]!;
+    db.prepare("UPDATE sessions SET startup_status=? WHERE id=?").run(startup, session.id);
+    db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'node.startup_failed', ?)").run(rig.id, node.id, "{not json");
+    checkReadySpy.mockResolvedValue({ ready: true });
+    await monitor.pollOnce();
+    expect(db.prepare("SELECT startup_status FROM sessions WHERE id=?").get(session.id)).toEqual({ startup_status: startup });
+    // Control: with the damaged row replaced by a readable "ready" event the same poll does promote the seat.
+    db.prepare("DELETE FROM events WHERE node_id=? AND type='node.startup_failed'").run(node.id);
+    await monitor.pollOnce();
+    expect(db.prepare("SELECT startup_status FROM sessions WHERE id=?").get(session.id)).toEqual({ startup_status: "ready" });
+  });
+
   it("pollOnce normalizes stale Claude startup failures back to ready when the runtime is live", async () => {
     const { sessionName, session } = (() => {
       const rig = rigRepo.createRig("test-rig-5");

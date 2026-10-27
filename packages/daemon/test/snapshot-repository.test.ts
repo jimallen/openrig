@@ -117,7 +117,11 @@ describe("SnapshotRepository", () => {
     expect(selection.ok && selection.snapshot.id).toBe(good.id);
     expect(selection.ok && selection.selection.newerUsableAlternative).toBeNull();
     expect(repo.selectRestoreUsable("rig-1", "corrupt")).toEqual(expect.objectContaining({ ok: false, code: "snapshot_unusable" }));
-    expect(() => repo.listSnapshots("rig-1")).toThrow();
+    // OF-51: the generic listing does not hide the corrupt row (this row's original point) and does not throw for it either:
+    // it names it, flagged unreadable, beside the readable one.
+    const listed = repo.listSnapshots("rig-1");
+    expect(listed.map((s) => [s.id, "unreadable" in s])).toEqual([["corrupt", true], [good.id, false]]);
+    expect(() => repo.getSnapshot("corrupt")).toThrow(/damaged/);
   });
 
   it("malformed nested roster data cannot throw or block a healthy fallback", () => {
@@ -141,7 +145,10 @@ describe("SnapshotRepository", () => {
     const automatic = repo.selectRestoreUsable("rig-1");
     expect(automatic.ok && automatic.snapshot.id).toBe("snap-a-second");
     expect(automatic.ok && automatic.selection.newerUsableAlternative).toBeNull();
-    expect(() => repo.listSnapshots("rig-1")).toThrow();
+    // OF-51: both damaged JSON rows are named in the listing, flagged; the well-formed-but-unusable one is a normal row.
+    const listed = repo.listSnapshots("rig-1");
+    expect(listed.filter((s) => "unreadable" in s).map((s) => s.id).sort()).toEqual(["broken-json-last", "broken-json-middle"]);
+    expect(listed).toHaveLength(5);
   });
 
   it.each([false, true])("a second SQLite writer pruning the selected row preserves strict newer fallback (newer: %s)", (hasNewer) => {

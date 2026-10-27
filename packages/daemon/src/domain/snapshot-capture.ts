@@ -28,6 +28,7 @@ export function readNodeStartupSnapshot(db: Database.Database, nodeId: string): 
   } : null;
 }
 import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
+import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 
 interface SnapshotCaptureDeps {
   db: Database.Database;
@@ -81,6 +82,9 @@ export class SnapshotCapture {
      *  damage kept on the node (`packageRefsUnreadable` / `sessionSourceUnreadable`, never a quiet empty value) and
      *  reported here. Without it the capture refuses, naming the seat. */
     onUnreadableNodeRow?: (nodeId: string, message: string) => void;
+    /** OF-51: a node's newest checkpoint whose saved key-artifact list is not readable is captured with the flag
+     *  (`keyArtifactsUnreadable`, an empty list) and reported here. Never refuses: the list only feeds a resume prompt. */
+    onUnreadableCheckpoint?: (nodeId: string, message: string) => void;
   }): Snapshot {
     // 1. Get rig with nodes, edges, bindings
     const rig = this.rigRepo.getRig(rigId);
@@ -91,9 +95,9 @@ export class SnapshotCapture {
     // 1b. OF-45: a damaged saved package list / session source reads as empty on the node, which a snapshot would
     // otherwise persist as if the seat had declared none.
     for (const node of rig.nodes) {
-      const damage = [node.sessionSourceUnreadable, node.packageRefsUnreadable].filter((reason): reason is string => !!reason);
+      const damage = savedRowDamage(node);
       if (damage.length === 0) continue;
-      const message = `${node.logicalId}'s saved row is damaged (${damage.join("; ")})`;
+      const message = savedRowDamageMessage(node.logicalId, damage);
       if (!opts?.onUnreadableNodeRow) throw new Error(`Cannot snapshot: ${message}. Repair the row, then snapshot again.`);
       opts.onUnreadableNodeRow(node.id, message);
     }
@@ -125,6 +129,9 @@ export class SnapshotCapture {
 
     // 3. Get checkpoints as map (latest per node)
     const checkpoints = this.checkpointStore.getCheckpointsForRig(rigId);
+    for (const [nodeId, checkpoint] of Object.entries(checkpoints)) {
+      if (checkpoint?.keyArtifactsUnreadable) opts?.onUnreadableCheckpoint?.(nodeId, "its saved key-artifact list is not a JSON list of strings");
+    }
 
     // 4. Get pods + continuity state + startup context
     const podRows = this.db.prepare("SELECT * FROM pods WHERE rig_id = ?")
@@ -238,6 +245,13 @@ export function captureSkippingUnreadable(
     ...opts,
     onUnreadableNodeRow: (_nodeId, message) => {
       warnings.push(`Snapshot (${kind}) records ${message}; that damage is kept on the seat in the snapshot, not read as an empty value. The rest of the rig was captured.`);
+    },
+    onUnreadableCheckpoint: (nodeId, message) => {
+      let logicalId = nodeId;
+      try {
+        logicalId = (capture.db?.prepare("SELECT logical_id FROM nodes WHERE id = ?").get(nodeId) as { logical_id: string } | undefined)?.logical_id ?? nodeId;
+      } catch { /* the node id names it */ }
+      warnings.push(`Snapshot (${kind}) holds ${logicalId}'s newest checkpoint with an empty key-artifact list: ${message}. The snapshot keeps the flag, not a quiet empty list.`);
     },
     onUnreadableStartupContext: (nodeId, message) => {
       let logicalId = nodeId;

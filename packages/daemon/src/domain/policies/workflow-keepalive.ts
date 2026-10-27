@@ -30,6 +30,7 @@ import {
   evaluateStepDeadline,
   type WorkflowDeadlineVerdict,
 } from "../workflow-deadline.js";
+import { readStoredJson } from "../stored-json.js";
 
 interface WorkflowKeepaliveContext {
   /** ULID of the workflow_instances row to keep alive. Required. */
@@ -126,12 +127,17 @@ export function makeWorkflowKeepalivePolicy(deps: WorkflowKeepaliveDeps): Policy
         };
       }
 
-      const wholeFrontier = (JSON.parse(instance.current_frontier_json) as string[]) ?? [];
+      // OF-51: a damaged frontier column skips this evaluation with its own reason (the job stays active and is retried
+      // once the row is repaired); it is neither an empty frontier nor the end of the job.
+      const wholeFrontier = readStoredJson<string[] | null>(instance.current_frontier_json);
+      if (wholeFrontier === undefined) {
+        return { action: "skip", reason: "workflow_frontier_unreadable", notes: { instanceId } };
+      }
       const packetId = context.workflow_packet_id;
-      if (packetId && !wholeFrontier.includes(packetId)) {
+      if (packetId && !(wholeFrontier ?? []).includes(packetId)) {
         return { action: "terminal", reason: "workflow_packet_not_live", notes: { instanceId, packetId } };
       }
-      const frontier = packetId ? [packetId] : wholeFrontier;
+      const frontier = packetId ? [packetId] : (wholeFrontier ?? []);
       let currentStepId = instance.current_step_id;
       if (packetId) {
         try {

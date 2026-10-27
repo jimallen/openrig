@@ -227,6 +227,38 @@ describe("LaunchRecoveryModal — plan-before-mutation + the LOCK + honesty", ()
     expect(screen.getByTestId("plan-verdict-orch.advisor").textContent).toContain("resume-original");
   });
 
+  // OF-62 (review B2): a damaged saved row makes restore refuse the WHOLE rig. The damaged seat's own status is `failed`
+  // (which means "removed seat, the rest restore"), so the plan carries a rig-level restoreRefusal the modal must honour.
+  const REFUSAL = { reason: "restore would refuse the whole rig and start no seat: its pre-restore snapshot cannot be taken because dev.damaged's saved row is damaged (package_refs is not JSON). Repair the row first.", seats: ["dev.damaged"] };
+  it("a rig-level restoreRefusal keeps Execute disabled under restore-original, with the daemon's reason, though the other seats are resume-original", async () => {
+    await openWith({ ...planWith({ logicalId: "dev.damaged", intendedAction: "awaiting-decision", restoreStatus: "failed", tokenState: "present", freshRequired: false }), restoreRefusal: REFUSAL });
+    const execute = screen.getByTestId("launch-execute") as HTMLButtonElement;
+    expect(execute.disabled).toBe(true);
+    expect(execute.textContent).toContain("Restore refused");
+    expect(screen.getByTestId("launch-refused-banner").textContent).toContain("package_refs is not JSON");
+    expect(screen.getByTestId("plan-verdict-orch.advisor").textContent).toContain("resume-original");
+    expect(screen.queryByTestId("launch-will-fail-note")).toBeNull();
+  });
+
+  it("the refusal holds under the fresh policy too (the pre-restore snapshot is taken either way)", async () => {
+    mockFetch.mockImplementation((rawUrl?: unknown, init?: RequestInit) => {
+      const url = typeof rawUrl === "string" ? rawUrl : String((rawUrl as { url?: string })?.url ?? "");
+      if (url.includes("/launch-plan")) return jsonResponse({ ...ALL_FRESH_PLAN, restoreRefusal: REFUSAL });
+      return jsonResponse({});
+    });
+    renderWithClient(<LaunchRecoveryModal rigId="rig1" rigName="openrig-delivery" open onOpenChange={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("launch-plan-table")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("launch-policy-fresh"));
+    await waitFor(() => expect(screen.getByTestId("launch-refused-banner")).toBeTruthy());
+    expect((screen.getByTestId("launch-execute") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("control: a removed seat with no restoreRefusal still leaves Restore original available", async () => {
+    await openWith(planWith({ logicalId: "dev.gone", intendedAction: "awaiting-decision", restoreStatus: "failed", tokenState: "present", freshRequired: false }));
+    expect((screen.getByTestId("launch-execute") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("launch-refused-banner")).toBeNull();
+  });
+
   it("control: a seat that needs a decision (restoreStatus awaiting-decision) still blocks Restore original", async () => {
     await openWith(planWith({ logicalId: "dev1.guard", intendedAction: "awaiting-decision", restoreStatus: "awaiting-decision", tokenState: "missing", freshRequired: true }));
     expect((screen.getByTestId("launch-execute") as HTMLButtonElement).disabled).toBe(true);
