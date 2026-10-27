@@ -376,15 +376,15 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       log(`[stuck-sweep] ${row.qitemId} skipped: its saved ${row.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
       return true;
     };
-    // The same for the two loops below that walk every claimed / every unclaimed row by id: a damaged row is named and skipped
-    // (null), not a failed tick. The wait-notice and custody lookups keep the by-id refusal (a loud, named tick failure).
-    const readRow = (qitemId: string) => {
+    // The same for every loop below that reads a row by id (claimed, unclaimed, wait-notice, custody) and for the lookups that
+    // read a related row: a damaged row is named and skipped (null), never a failed tick for every other row.
+    const readRow = (qitemId: string, existsIfUnreadable = false) => {
       try {
         return deps.queueRepo.getById(qitemId);
       } catch (err) {
         if (!isUnreadableRowError(err)) throw err;
         log(`[stuck-sweep] ${qitemId} skipped: its saved ${err.columns.join(", ")} is not readable JSON (repair or remove the row)`);
-        return null;
+        return existsIfUnreadable ? ({ qitemId } as never) : null;
       }
     };
     for (const row of deps.queueRepo.findOverdue({ now: now.toISOString(), damage: "mark" })) {
@@ -435,7 +435,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const notice = queueWaitNotice(job.spec_yaml);
       if (!notice || now.getTime() - Date.parse(notice.at) <= resolvePickupThresholdMinutes() * 60_000) continue;
       const binding = deps.db.prepare("SELECT qitem_id FROM queue_transition_wakes WHERE wake_ref = ? AND phase = 'armed' ORDER BY transition_id DESC LIMIT 1").get(job.job_id) as { qitem_id: string } | undefined;
-      const row = binding ? deps.queueRepo.getById(binding.qitem_id) : null;
+      const row = binding ? readRow(binding.qitem_id) : null;
       if (!row || row.state !== "blocked" || deps.queueRepo.getParkWakeStatus(row.qitemId)?.ref !== job.job_id) continue;
       const response = lastMeaningfulTransition(deps.db, row.qitemId);
       if (response && Date.parse(response.at) > Date.parse(notice.at)) continue;
@@ -555,7 +555,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       )
       .all(custodyCutoff, JSON.stringify(openDanglingIds)) as Array<{ qitem_id: string }>;
     for (const { qitem_id } of custodyRows) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row || isFindingRow(row)) continue;
       // Local recorded targets were filtered in SQL; remote keys use the same
       // derivation as the cross-host close, without reading successor history.
@@ -581,7 +581,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
               successorId === deriveCrossHostSuccessorId(row.qitemId, row.handedOffTo, hostId)
             );
           }
-          return !deps.queueRepo.getById(target);
+          // A successor row that exists but cannot be read is still a local successor (named in the log, not a failed tick).
+          return readRow(target, true) === null;
         }
         return !hasSeatTargetSuccessor(deps.db, row.qitemId, target);
       });
@@ -605,7 +606,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const dedupTag = findingDedupTag(c.kind, c.row.qitemId);
       const shared = findQueueRecovery(deps.db, c.row.qitemId);
       if (shared) {
-        const existingTags = deps.queueRepo.getById(shared.qitemId)?.tags ?? [];
+        const existingTags = readRow(shared.qitemId)?.tags ?? [];
         for (const tag of existingTags) if (tag.startsWith("stuck-sweep:")) liveDedupTags.add(tag);
         if (["pending", "in-progress", "blocked"].includes(shared.state)) findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: shared.qitemId, action: "refreshed" });
         continue;

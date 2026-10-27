@@ -65,6 +65,7 @@ import {
   resolveSessionNodeId,
 } from "./queue-stuck-sweep.js";
 import { readStoredJsonStrings } from "./stored-json.js";
+import { isUnreadableRowError } from "./unreadable-row.js";
 
 export const WAKE_RETRY_INTERVAL_KEY = "queue.wake_retry_interval_seconds";
 export const DEFAULT_WAKE_RETRY_INTERVAL_SECONDS = 300;
@@ -615,11 +616,26 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
     // Retire only aggregates whose explicitly tagged underlying members all
     // resolved. Legacy untagged history is not interpreted from its body.
     const aggregates = deps.db.prepare("SELECT qitem_id, source_session, tags, ts_created FROM queue_items WHERE state IN ('pending','in-progress','blocked') AND tags LIKE ?").all(`%"${WAKE_ESCALATION_TAG}"%`) as Array<{ qitem_id: string; source_session: string; tags: string; ts_created: string }>;
+    // OF-117: a row the tick cannot read is named and skipped, so one damaged row never stops wake delivery for every seat.
+    const readRow = (qitemId: string): QueueItem | null => {
+      try {
+        return deps.queueRepo.getById(qitemId);
+      } catch (err) {
+        if (!isUnreadableRowError(err)) throw err;
+        log(`[wake-ladder] ${qitemId} skipped: its saved ${err.columns.join(", ")} is not readable JSON (repair or remove the row)`);
+        return null;
+      }
+    };
     for (const aggregate of aggregates) {
-      if ((JSON.parse(aggregate.tags) as string[]).includes(PROMPT_ALERT_TAG)) continue;
-      const ids = (JSON.parse(aggregate.tags) as string[]).filter(t => t.startsWith("recovery-for:")).map(t => t.slice("recovery-for:".length));
+      const aggregateTags = readStoredJsonStrings(aggregate.tags);
+      if (aggregateTags === null) {
+        log(`[wake-ladder] ${aggregate.qitem_id} skipped: its saved tags is not a readable list (repair or remove the row)`);
+        continue;
+      }
+      if (aggregateTags.includes(PROMPT_ALERT_TAG)) continue;
+      const ids = aggregateTags.filter(t => t.startsWith("recovery-for:")).map(t => t.slice("recovery-for:".length));
       if (ids.length && ids.every(id => {
-        const row = deps.queueRepo.getById(id);
+        const row = readRow(id);
         return row && (!["pending", "in-progress", "blocked"].includes(row.state) || row.lastNudgeResult === "verified" || Boolean(row.claimedAt && row.claimedAt > aggregate.ts_created));
       })) await deps.queueRepo.update({ qitemId: aggregate.qitem_id, actorSession: aggregate.source_session, state: "done", closureReason: "no-follow-on", transitionNote: "wake recovery resolved: tagged obligations no longer require delivery recovery" });
     }
@@ -722,7 +738,7 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
     };
 
     for (const { qitem_id } of [...batonRows, ...parkedOwnerFailureRows]) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row) continue;
       const usagePool = usagePoolBySeat.get(row.destinationSession);
       // OPR.0.5.6.24: the usage-limit PARK mutation applies only to pending
@@ -774,7 +790,7 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
       const suspended = due ? suspensionReason(deps.db, row.destinationSession, graceS, now) : null;
 
       const recovery = disposition;
-      const recoveryRow = recovery ? deps.queueRepo.getById(recovery.qitemId) : null;
+      const recoveryRow = recovery ? readRow(recovery.qitemId) : null;
       // The open prompt recovery owns continuation before the retry cap too.
       // Do not retry the blocked original, duplicate its aggregate, or exhaust
       // the original (which would retire that aggregate).

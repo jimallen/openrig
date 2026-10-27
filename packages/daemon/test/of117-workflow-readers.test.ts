@@ -145,8 +145,8 @@ describe("workflow instances", () => {
   it("failure-exception closing (the redrive's tag scan over every open queue row) is not ended by an unrelated row whose tags are not JSON", async () => {
     const unrelated = await queueRepo.create({ sourceSession: "a@rig", destinationSession: "b@rig", body: "unrelated", nudge: false });
     db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(NOT_JSON, unrelated.qitemId);
-    const close = (runtime as unknown as { closeFailureExceptions(instanceId: string, packetId: string, stepId: string, input: { actorSession: string }, register: () => void): number }).closeFailureExceptions;
-    expect(close.call(runtime, "inst-x", "packet-x", "step-x", { actorSession: "ops@rig" }, () => {})).toBe(0);
+    // Bracket access reaches the private method under its real signature: no cast.
+    expect(runtime["closeFailureExceptions"]("inst-x", "packet-x", "step-x", { actorSession: "ops@rig" }, () => {})).toBe(0);
   });
 });
 

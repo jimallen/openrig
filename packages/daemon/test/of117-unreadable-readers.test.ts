@@ -155,6 +155,19 @@ describe("queue items: one damaged saved column names its row; the rows beside i
     expect((await queueApp.request(`/api/queue/whoami?session=${B}`)).status).toBe(422);
   });
 
+  // Review N1: the write routes answered a refused damaged row with 500 internal_error; reads answered 422.
+  it.each([
+    ["claim", "claim", {}],
+    ["update", "update", { transitionNote: "noting" }],
+    ["handoff", "handoff", { toSession: "c@rig", body: "next" }],
+  ])("POST /:id/%s on a damaged row is 422 saved_row_unreadable (like the reads), and the row is unchanged", async (_name, verb, body) => {
+    const bad = await item("bad");
+    damage(bad.qitemId, "tags", NOT_JSON);
+    const res = await queueApp.request(`/api/queue/${bad.qitemId}/${verb}`, { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": B }, body: JSON.stringify(body) });
+    expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 422, body: { code: "saved_row_unreadable", table: "queue_items", rowId: bad.qitemId } });
+    expect(db.prepare("SELECT state, claimed_at FROM queue_items WHERE qitem_id = ?").get(bad.qitemId)).toEqual({ state: "pending", claimed_at: null });
+  });
+
   it("whoami's recent list (display) marks the row", async () => {
     const bad = await item("bad");
     damage(bad.qitemId, "tags", NOT_JSON);
@@ -236,6 +249,71 @@ describe("queue items: one damaged saved column names its row; the rows beside i
       expect(JSON.stringify(result)).toContain(goodOverdue.qitemId);
       for (const row of [badOverdue, badUndelivered, badUnclaimed]) expect(JSON.stringify(result), row.qitemId).not.toContain(row.qitemId);
     });
+
+    // Review F1: the by-id lookups of the custody, wait-notice, successor and finding-link steps used to end the whole tick.
+    describe("the other by-id lookups name a damaged row and skip it; the good overdue row still gets its finding", () => {
+      const sweep = async () => {
+        const lines: string[] = [];
+        const result = await runStuckSweep({ db, queueRepo: repo, log: (line: string) => lines.push(line), now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null } as never);
+        return { lines, result };
+      };
+      const skipped = (id: string) => `[stuck-sweep] ${id} skipped: its saved tags is not readable JSON (repair or remove the row)`;
+      const closedWithTarget = async (target: string) => {
+        const row = await item("closed");
+        db.prepare("UPDATE queue_items SET state = 'done', closure_reason = 'handed_off_to', closure_target = ?, ts_updated = '2026-01-01T00:00:00.000Z' WHERE qitem_id = ?").run(target, row.qitemId);
+        return row;
+      };
+
+      it("custody loop: a recently closed handed_off_to row with damaged tags", async () => {
+        const good = await overdue();
+        const bad = await closedWithTarget("qitem-gone");
+        damage(bad.qitemId, "tags", NOT_JSON);
+        const { lines, result } = await sweep();
+        expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
+        expect(lines).toContain(skipped(bad.qitemId));
+        expect(JSON.stringify(result)).toContain(good.qitemId);
+        expect(JSON.stringify(result)).not.toContain(bad.qitemId);
+      });
+
+      it("successor lookup: a closure whose recorded successor exists but cannot be read counts as having a successor", async () => {
+        const good = await overdue();
+        const successor = await item("successor");
+        const closed = await closedWithTarget(successor.qitemId);
+        damage(successor.qitemId, "tags", NOT_JSON);
+        const { lines, result } = await sweep();
+        expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
+        expect(lines).toContain(skipped(successor.qitemId));
+        expect(JSON.stringify(result)).toContain(good.qitemId);
+        expect(JSON.stringify(result), "the existing successor is not reported dangling").not.toContain(closed.qitemId);
+      });
+
+      it("finding link: an existing recovery row whose tags are the wrong shape is skipped, and the stuck row is still refreshed", async () => {
+        const stuck = await overdue();
+        const recovery = await item("recovery for the stuck row");
+        // Valid JSON of the wrong shape: the SQL link scan still finds it, the reader cannot read it.
+        damage(recovery.qitemId, "tags", JSON.stringify({ link: `recovery-for:${stuck.qitemId}` }));
+        const { lines, result } = await sweep();
+        expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
+        expect(lines).toContain(skipped(recovery.qitemId));
+        expect(result.findings).toContainEqual(expect.objectContaining({ qitemId: stuck.qitemId, findingQitemId: recovery.qitemId, action: "refreshed" }));
+      });
+
+      it("wait-notice loop: a blocked row bound to an overdue wait timer with damaged tags", async () => {
+        const good = await overdue();
+        const bad = await item("blocked");
+        db.prepare("UPDATE queue_items SET state = 'blocked' WHERE qitem_id = ?").run(bad.qitemId);
+        const job = new WatchdogJobsRepository(db).register({
+          policy: "periodic-reminder", targetSession: "b@rig", registeredBySession: "ops@rig", intervalSeconds: 600,
+          specYaml: JSON.stringify({ context: { queue_wait: { notice: { at: "2000-01-01T00:00:00.000Z", deliveryStatus: "failed" } } } }),
+        });
+        db.prepare("INSERT INTO queue_transition_wakes (transition_id, qitem_id, phase, wake_kind, wake_ref) VALUES (1, ?, 'armed', 'watchdog', ?)").run(bad.qitemId, job.jobId);
+        damage(bad.qitemId, "tags", NOT_JSON);
+        const { lines, result } = await sweep();
+        expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
+        expect(lines).toContain(skipped(bad.qitemId));
+        expect(JSON.stringify(result)).toContain(good.qitemId);
+      });
+    });
   });
 });
 
@@ -256,6 +334,10 @@ describe("inbox: a damaged entry is flagged in the listings and refuses to be ab
     expect((await queueApp.request(`/api/queue/inbox/list?destinationSession=${B}`)).status).toBe(200);
     const before = (db.prepare("SELECT count(*) AS n FROM queue_items").get() as { n: number }).n;
     await expect(inbox.absorb(bad.inboxId, B)).rejects.toBeInstanceOf(UnreadableRowError);
+    // Review N1: the route answers the same refusal as 422, not 500 internal_error.
+    const routed = await queueApp.request(`/api/queue/inbox/${bad.inboxId}/absorb`, { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": B }, body: "{}" });
+    expect(routed.status).toBe(422);
+    expect(await routed.json()).toMatchObject({ code: "saved_row_unreadable", table: "inbox_entries", rowId: bad.inboxId });
     expect((db.prepare("SELECT count(*) AS n FROM queue_items").get() as { n: number }).n).toBe(before);
     expect((db.prepare("SELECT state FROM inbox_entries WHERE inbox_id = ?").get(bad.inboxId) as { state: string }).state).toBe("pending");
     // Control: the readable entry is absorbed.

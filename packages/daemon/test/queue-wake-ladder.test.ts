@@ -724,6 +724,69 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     expect(new Set(batons.map((row) => repo.getById(row.qitemId)?.blockedOn))).toEqual(new Set([blockers[0]!.qitemId]));
   });
 
+  // Review F2 (OF-117): the tick used to end for EVERY seat when one baton, aggregate or recovery row had damaged tags
+  // ("TICK FAILED", zero wakes). A row the tick cannot read is named in the log and skipped; the good baton is still woken.
+  describe("OF-117: one damaged row does not stop wake delivery for the other batons", () => {
+    const NOT_JSON = "{not json";
+    async function goodBatonDue(): Promise<QueueItem> {
+      const good = await mkBaton("good-dest@r");
+      setNudgeResult(good.qitemId, "failed:tmux session not found", 10);
+      return good;
+    }
+    async function tickLogged() {
+      const lines: string[] = [];
+      const result = await tick({ log: (line: string) => lines.push(line) });
+      return { lines, result: result as { outcome: string; error?: string } };
+    }
+    const skippedLine = (id: string) => `[wake-ladder] ${id} skipped: its saved tags is not readable JSON (repair or remove the row)`;
+
+    it("baton loop: a damaged baton is skipped by name; the good baton is woken", async () => {
+      const bad = await mkBaton("bad-dest@r");
+      setNudgeResult(bad.qitemId, "failed:tmux session not found", 10);
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(NOT_JSON, bad.qitemId);
+      const good = await goodBatonDue();
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(result.outcome).not.toBe("failed");
+      expect(calls).toEqual([{ qitemId: good.qitemId, target: "good-dest@r" }]);
+      expect(lines).toContain(skippedLine(bad.qitemId));
+    });
+
+    it("aggregate retirement: an escalation aggregate whose tags are not a list is skipped by name", async () => {
+      const good = await goodBatonDue();
+      const aggregate = await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "aggregate", nudge: false, tags: ["wake-escalation"] });
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run('["wake-escalation", "recovery-for:x"', aggregate.qitemId);
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(calls).toEqual([{ qitemId: good.qitemId, target: "good-dest@r" }]);
+      expect(lines).toContain(`[wake-ladder] ${aggregate.qitemId} skipped: its saved tags is not a readable list (repair or remove the row)`);
+    });
+
+    it("aggregate retirement: a tagged member that cannot be read keeps the aggregate open instead of ending the tick", async () => {
+      const good = await goodBatonDue();
+      const member = await repo.create({ sourceSession: "sender@r", destinationSession: "dead@r", body: "member", nudge: false });
+      const aggregate = await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "aggregate", nudge: false, tags: ["wake-escalation", `recovery-for:${member.qitemId}`] });
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(NOT_JSON, member.qitemId);
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(calls).toEqual([{ qitemId: good.qitemId, target: "good-dest@r" }]);
+      expect(lines).toContain(skippedLine(member.qitemId));
+      expect(repo.getById(aggregate.qitemId)!.state).toBe("pending");
+    });
+
+    it("recovery lookup: an open recovery row of a baton whose tags are the wrong shape is skipped by name; the baton is still retried", async () => {
+      const baton = await mkBaton();
+      setNudgeResult(baton.qitemId, "failed:tmux session not found", 10);
+      const recovery = await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "recovery", nudge: false });
+      // Valid JSON, wrong shape: the SQL link scan still finds the row, the reader cannot read it.
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(JSON.stringify({ link: `recovery-for:${baton.qitemId}` }), recovery.qitemId);
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(calls).toEqual([{ qitemId: baton.qitemId, target: "worker@r" }]);
+      expect(lines).toContain(skippedLine(recovery.qitemId));
+    });
+  });
+
   it("slice 01: a ladder tick over the real provider service with usage windows on starts no native read", async () => {
     const fake = makeFakeCodex();
     fake.setPlan({ mode: "ok", account: ACCOUNT_ANSWER, rateLimits: rateLimitsAnswer({ secondaryUsed: 100 }) });

@@ -25,6 +25,7 @@ import type { WhoamiService } from "../domain/whoami-service.js";
 import type Database from "better-sqlite3";
 import type { HumanQuestion } from "../domain/human-questions.js";
 import { queryLimit } from "./query-limit.js";
+import { UnreadableRowError } from "../domain/unreadable-row.js";
 
 /**
  * Coordination L3 — Queue HTTP routes (PL-004 Phase A).
@@ -195,6 +196,8 @@ export function queueRoutes(): Hono {
         : 500;
       return c.json({ error: err.code, message: err.message }, status as 200);
     }
+    // OF-117: a damaged saved row is a named refusal (422), the same answer the read routes give.
+    if (err instanceof UnreadableRowError) return err.getResponse();
     const message = err instanceof Error ? err.message : "internal error";
     return c.json({ error: "internal_error", message }, 500);
   }

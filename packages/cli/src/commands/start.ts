@@ -538,7 +538,7 @@ Examples:
 
       // Exit code: 1 if any rig has non-clean outcome. Include HTTP error codes
       // and non-clean rigResult values (partially_restored, failed, not_attempted).
-      const NON_CLEAN_STATUSES = new Set(["timeout", "error", "skipped", "partially_restored", "failed", "not_attempted", "rig_not_stopped", "ambiguous_name", "pre_restore_validation_failed"]);
+      const NON_CLEAN_STATUSES = new Set(["timeout", "error", "skipped", "partially_restored", "failed", "not_attempted", "rig_not_stopped", "saved_row_damaged", "ambiguous_name", "pre_restore_validation_failed"]);
       const hasFailure = previewErrors.length > 0 || results.some((r) =>
         NON_CLEAN_STATUSES.has(r.status) ||
         r.nodes.some((n) => n.status === "failed" || n.status === "awaiting-decision"),
