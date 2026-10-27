@@ -110,4 +110,22 @@ describe("pda L2a startup wiring", () => {
     expect(refused.conflicts?.join(" ")).toContain('seat "dev.one"');
     expect(rigRepo.findPdaDrivers(target).map((holder) => holder.logicalId)).toEqual(["dev.one"]); // the doors see the claim
   });
+
+  // OF-109: the daemon's repository asks the daemon's pda adapter which agent a seat's live runner is on (the runner's
+  // sidecar, not the database), so the doors see a runner whose agent no stored row names.
+  it("the daemon rigRepo's runner probe is the pda adapter's: a live runner's sidecar agent holds that agent for its seat", () => {
+    const pdaAdapter = (deps.runtimeAdapters as Record<string, RuntimeAdapter>).pda!;
+    const stateRoot = priv<{ stateRoot: string }>(pdaAdapter, "deps").stateRoot;
+    const rigRepo = deps.rigRepo;
+    const rig = rigRepo.createRig("wiring-runner-rig");
+    const node = rigRepo.addNode(rig.id, "dev.runner", { runtime: "pda", pda: { agent: "stored-agent", baseUrl: "http://127.0.0.1:8150" } });
+    deps.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-runner@wiring-runner-rig" });
+    const paths = pdaSeatPaths(stateRoot, "dev-runner@wiring-runner-rig");
+    fs.mkdirSync(paths.seatRoot, { recursive: true });
+    const at = new Date().toISOString();
+    fs.writeFileSync(paths.runnerLockPath, JSON.stringify({ pid: process.pid, launchId: "wired", at }));
+    fs.writeFileSync(paths.runnerStatePath, JSON.stringify({ ready: true, launchId: "wired", updatedAt: at, aliveAt: at, agent: "driven-agent", baseUrl: "http://127.0.0.1:8150", connected: true, busy: false, outboxPending: 0 }));
+    expect(rigRepo.findPdaDrivers({ agent: "driven-agent", baseUrl: "http://127.0.0.1:8150" })).toMatchObject([{ logicalId: "dev.runner", viaRunner: true }]);
+    expect(rigRepo.findPdaDrivers({ agent: "stored-agent", baseUrl: "http://127.0.0.1:8150" }).map((holder) => holder.logicalId)).toEqual(["dev.runner"]); // its saved binding, unchanged
+  });
 });

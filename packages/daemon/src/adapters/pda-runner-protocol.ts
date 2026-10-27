@@ -178,6 +178,36 @@ export function parsePdaRunnerLock(raw: string): PdaRunnerLock | null {
   return { pid: parsed.pid, launchId: parsed.launchId, at: parsed.at };
 }
 
+/** A sidecar whose `aliveAt` is older than this is no runner answer (the runner rewrites it every 60 s). */
+export const PDA_SIDECAR_ALIVE_WINDOW_MS = 180_000;
+
+/** The ONE alive rule every reader of the sidecar applies (review N2, N3): a sidecar is the runner's word only while its
+ *  aliveAt is within the window on either side of now. The runner rewrites it at least every 60 s; one older than the
+ *  window was left by a runner that died (SIGKILL writes no `exited`), and one from the future is a clock jump or a forged
+ *  file. */
+export function pdaSidecarAlive(state: PdaRunnerState, nowMs: number): boolean {
+  const alive = Date.parse(state.aliveAt);
+  return Number.isFinite(alive) && Math.abs(nowMs - alive) <= PDA_SIDECAR_ALIVE_WINDOW_MS;
+}
+
+/** Is this pid a live process? Signal 0; EPERM counts as alive. The one helper in this file that touches the OS. */
+export function processPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** The ONE rule for "this `runner.lock` belongs to a runner that is still there" (OF-98, OF-110, OF-112, OF-109): its pid
+ *  is a live process, and that is not a reused pid. A reused pid shows as a lock whose own sidecar (same launch id) has
+ *  stopped ticking, or, when no sidecar of that launch was ever written, as a lock older than the alive window. The
+ *  launch wait, the runner's own exclusive take, the held claim after a failed launch and the runner-truth holder all
+ *  ask this, so they cannot disagree about what a live runner is. */
+export function pdaRunnerLockLive(lock: PdaRunnerLock, sidecar: PdaRunnerState | null, nowMs: number, pidAlive: (pid: number) => boolean): boolean {
+  if (!pidAlive(lock.pid)) return false;
+  const quiet = sidecar && sidecar.launchId === lock.launchId
+    ? !pdaSidecarAlive(sidecar, nowMs)
+    : nowMs - Date.parse(lock.at) > PDA_SIDECAR_ALIVE_WINDOW_MS;
+  return !quiet;
+}
+
 export const PDA_RUNNER_LABEL = "pda-runner";
 export const PDA_RUNNER_READY_MARKER = "[pda-runner] READY";
 export const PDA_RUNNER_EXIT_MARKER = "[pda-runner] EXITED";

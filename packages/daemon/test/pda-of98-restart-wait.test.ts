@@ -39,6 +39,13 @@ const BASE = "http://127.0.0.1:8150";
 const NOW = new Date("2026-10-24T09:00:00.000Z");
 const RUNNER_TS = fileURLToPath(new URL("../src/adapters/pda-runner.ts", import.meta.url));
 
+/** OF-110 made the take exclusive and able to refuse; these rows take a free lock and want the release. */
+const takeLock = (lockPath: string, launchId: string): (() => void) => {
+  const taken = acquireRunnerLock(lockPath, launchId, { sidecarPath: `${lockPath}.sidecar-absent` });
+  if (!taken.ok) throw new Error("the lock was not free");
+  return taken.release;
+};
+
 const dirs: string[] = [];
 const tmp = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "of98-")); dirs.push(d); return d; };
 afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
@@ -149,12 +156,38 @@ describe("(a) launchHarness waits, bounded, for the seat's previous runner to fi
     expect(garbage.log[0]).toBe("typed");
   });
 
-  it("a launch refused by the wait releases the binding claim it took (unit 2's reservation): failed() once, launched() never", async () => {
+  // OF-112 (Jim: hold a claim until the pane is confirmed gone) supersedes this row's old expectation of `failed()`:
+  // a launch refused because the seat's previous runner is STILL RUNNING has a runner in the pane, and releasing here
+  // would drop the claim an earlier failed launch of this seat kept for exactly that runner. The claim is now held, with
+  // the runner's lock as its release rule; `failed()` stays for launches with no runner in the pane (next row).
+  it("a launch refused by the wait keeps the binding claim, released only when the previous runner is gone: held once, launched/failed never", async () => {
     writeLock();
+    const calls: string[] = [];
+    let gone: (() => boolean) | null = null;
+    const { adapter } = adapterWith({
+      pidAlive: () => true,
+      reserveBinding: () => ({ ok: true as const, reservation: {
+        launched: () => { calls.push("launched"); }, failed: () => { calls.push("failed"); },
+        heldWhileRunnerLives: (g) => { calls.push("held"); gone = g; },
+      } }),
+    });
+    const result = await adapter.launchHarness(binding(), { name: "x" });
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual(["held"]);
+    expect(gone!()).toBe(false); // the previous runner's lock still names a live process
+    fs.rmSync(lockPath);
+    expect(gone!()).toBe(true);  // and once that runner is gone the claim may go
+  });
+
+  it("a launch refused before any runner is involved still releases its claim at once: failed() once", async () => {
+    fs.rmSync(path.join(path.dirname(path.dirname(stateRoot)), "token")); // no token file: refused before the wait
     const calls: string[] = [];
     const { adapter } = adapterWith({
       pidAlive: () => true,
-      reserveBinding: () => ({ ok: true as const, reservation: { launched: () => { calls.push("launched"); }, failed: () => { calls.push("failed"); } } }),
+      reserveBinding: () => ({ ok: true as const, reservation: {
+        launched: () => { calls.push("launched"); }, failed: () => { calls.push("failed"); },
+        heldWhileRunnerLives: () => { calls.push("held"); },
+      } }),
     });
     const result = await adapter.launchHarness(binding(), { name: "x" });
     expect(result.ok).toBe(false);
@@ -295,11 +328,11 @@ describe("(b) the real runner process: main()'s signal handlers, the SIGKILL pat
 
   it("the release removes this process's lock and never a successor's", () => {
     const lockPath = path.join(tmp(), "runner.lock");
-    const release = acquireRunnerLock(lockPath, "mine");
+    const release = takeLock(lockPath, "mine");
     expect(parsePdaRunnerLock(fs.readFileSync(lockPath, "utf8"))).toMatchObject({ pid: process.pid, launchId: "mine" });
     release();
     expect(fs.existsSync(lockPath)).toBe(false);
-    const releaseAgain = acquireRunnerLock(lockPath, "mine");
+    const releaseAgain = takeLock(lockPath, "mine");
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid + 1, launchId: "successor", at: NOW.toISOString() }));
     releaseAgain();
     expect(parsePdaRunnerLock(fs.readFileSync(lockPath, "utf8"))?.launchId).toBe("successor");
