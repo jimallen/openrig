@@ -145,7 +145,7 @@ export interface RetentionLagDeps extends RsiFindingSourceDeps {
 }
 
 /** The coverage note of D10 when the daemon runs no retention sweep. */
-export const RETENTION_DISABLED_NOTE = "retention disabled";
+export const RETENTION_DISABLED_NOTE = "retention disabled at daemon start; a change to retention.enabled takes effect at the next daemon start";
 
 /** D10: `usage_samples` rows older than retention + one sweep interval + slack still exist. */
 export class RetentionLagSource extends RsiFindingSource {

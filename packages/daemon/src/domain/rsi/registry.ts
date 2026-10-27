@@ -23,6 +23,8 @@ export interface RsiSourceContext {
   retentionEnabled?: boolean;
   /** Live `retention.usage_samples_days`, read on every D10 scan. */
   retentionDays?: () => number;
+  /** Live `retention.transitions_days`, read on every D15 scan. */
+  transitionsRetention?: () => number;
   /** Live watchdog retention window and keep-per-job, read on every D15 scan. */
   watchdogRetention?: () => { days: number; keepPerJob: number };
   /** The per-source time budget (read-budget.ts), applied to every source. */
@@ -50,7 +52,7 @@ export function createRsiSources(ctx: RsiSourceContext): HealthObservationSource
     new EventClassHealthSource(BOOTSTRAP_FAILURE_DETECTOR, { dbPath: ctx.dbPath, knownFixesPath: anchors, instanceId, now, budget: ctx.budget }),
     new OrphanedParkedOwnerJobSource({ dbPath: ctx.dbPath, knownFixesPath: anchors, instanceId, now, budget: ctx.budget }),
     new SlowOpFileSource({ logPath: ctx.slowOpLogPath ?? join(ctx.openrigHome, "logs", "slow-operations.jsonl"), instanceId, now, lastAliveAt: ctx.slowOpRecorderAliveAt }),
-    ...createA2bSources({ dbPath: ctx.dbPath, instanceId, now, retentionEnabled: ctx.retentionEnabled ?? true, retentionDays: ctx.retentionDays, watchdogRetention: ctx.watchdogRetention }),
+    ...createA2bSources({ dbPath: ctx.dbPath, instanceId, now, retentionEnabled: ctx.retentionEnabled ?? true, retentionDays: ctx.retentionDays, transitionsRetention: ctx.transitionsRetention, watchdogRetention: ctx.watchdogRetention }),
   ];
   return sources.map((source) => new BudgetedRsiSource(source, { ...ctx.budget, now }));
 }

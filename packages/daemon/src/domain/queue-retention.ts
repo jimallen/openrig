@@ -126,6 +126,58 @@ export interface ArchiveBatchResult {
 }
 
 /**
+ * The qitems the archive pass may move: terminal, newest transition older than the cutoff, and not
+ * on a live workflow frontier (P2 below). ONE statement text shared by the sweep (which appends
+ * LIMIT) and by RSI D15's would-archive count (countArchivableTransitions), so the count cannot
+ * drift from the sweep. Parameters, in order: the terminal states, then the cutoff.
+ * The MAX(ts) rides idx_queue_transitions_qitem as one seek per terminal qitem, and the frontier
+ * test runs only for qitems that already passed the age test.
+ */
+export function archivableQitemsSql(terminalStateCount: number): string {
+  const placeholders = Array.from({ length: terminalStateCount }, () => "?").join(", ");
+  return `SELECT q.qitem_id AS qitemId
+         FROM queue_items q
+        WHERE q.state IN (${placeholders})
+          AND (
+            SELECT MAX(t.ts) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id
+          ) < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_instances wi
+             WHERE wi.status IN ('active','waiting')
+               AND wi.current_frontier_json LIKE '%"' || q.qitem_id || '"%'
+          )`;
+}
+
+export interface ArchivableTransitionCount {
+  /** every queue_transitions row */
+  total: number;
+  /** rows the archive pass would move now */
+  stale: number;
+  firstId: number | null;
+  lastId: number | null;
+  firstSeen: string | null;
+  lastSeen: string | null;
+}
+
+/**
+ * How many queue_transitions rows the archive pass would move now (all batches), under the same
+ * options the sweep takes. Read-only; one pass: the eligible qitems are resolved once, then their
+ * transitions counted. A qitem's eligibility does not depend on another's archival, so the batch
+ * size cannot change the total.
+ */
+export function countArchivableTransitions(db: Database.Database, opts: RetentionOptions): ArchivableTransitionCount {
+  const terminalStates = opts.terminalStates ?? DEFAULT_TERMINAL_STATES;
+  const cutoff = cutoffIso(opts.nowIso, opts.transitionsRetentionDays ?? RETENTION_DEFAULTS.transitionsRetentionDays);
+  const row = db.prepare(
+    `SELECT (SELECT count(*) FROM queue_transitions) AS total, count(*) AS stale,
+            min(t.transition_id) AS firstId, max(t.transition_id) AS lastId, min(t.ts) AS firstSeen, max(t.ts) AS lastSeen
+       FROM queue_transitions t
+      WHERE t.qitem_id IN (${archivableQitemsSql(terminalStates.length)})`,
+  ).get(...terminalStates, cutoff) as ArchivableTransitionCount;
+  return row;
+}
+
+/**
  * ONE bounded batch: move (archive-then-delete, single txn per qitem) the
  * transitions of up to `batchSize` TERMINAL qitems whose LAST transition is
  * older than the cutoff. Returns the counts so the orchestrator can loop until
@@ -158,22 +210,8 @@ export function archiveAgedTerminalTransitions(
   // predicate). It now protects packet-addressed parallel frontiers as well as
   // the legacy serial case. `workflow_instances` is a core
   // migrated table (always present when the tick runs post-migration).
-  const placeholders = terminalStates.map(() => "?").join(", ");
   const eligible = db
-    .prepare(
-      `SELECT q.qitem_id AS qitemId
-         FROM queue_items q
-        WHERE q.state IN (${placeholders})
-          AND (
-            SELECT MAX(t.ts) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id
-          ) < ?
-          AND NOT EXISTS (
-            SELECT 1 FROM workflow_instances wi
-             WHERE wi.status IN ('active','waiting')
-               AND wi.current_frontier_json LIKE '%"' || q.qitem_id || '"%'
-          )
-        LIMIT ?`,
-    )
+    .prepare(`${archivableQitemsSql(terminalStates.length)} LIMIT ?`)
     .all(...terminalStates, cutoff, batchSize) as Array<{ qitemId: string }>;
 
   if (eligible.length === 0) {
