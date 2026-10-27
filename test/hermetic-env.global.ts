@@ -18,6 +18,7 @@ export const FIXTURE_REGISTRY_ENV = "OPENRIG_TEST_FIXTURE_REGISTRY";
 // The pid of the main process that created the registry. A vitest started from inside a test
 // inherits both variables; seeing another pid there, it makes its own registry instead of reusing
 // (and later removing) the outer run's.
+export const FIXTURE_HOME_PREFIX = ".openrig-test-fixture-home-";
 const OWNER_ENV = "OPENRIG_TEST_FIXTURE_REGISTRY_OWNER";
 const ownsRegistry = () => process.env[OWNER_ENV] === String(process.pid);
 
@@ -33,7 +34,8 @@ export function teardown(): void {
   for (const entry of fs.readdirSync(registry)) {
     let home = "";
     try { home = fs.readFileSync(path.join(registry, entry), "utf8"); } catch { continue; }
-    if (!home) continue;
+    // Only paths this suite names as fixture homes are ever removed, whatever a registry file says.
+    if (!path.basename(home).startsWith(FIXTURE_HOME_PREFIX)) continue;
     for (const dir of [home, `${home}-user-home`]) {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
     }

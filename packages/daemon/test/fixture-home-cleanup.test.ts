@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+import { teardown as globalTeardown } from "../../../test/hermetic-env.global.js";
 
 const SETUP = path.resolve(__dirname, "../../../test/hermetic-env.setup.ts");
 const GLOBAL_SETUP = path.resolve(__dirname, "../../../test/hermetic-env.global.ts");
@@ -102,6 +103,30 @@ describe("hermetic setup fixture-home cleanup (OF-80)", () => {
       expect(fs.existsSync(path.join(outerRegistry, "entry"))).toBe(true);
     } finally {
       fs.rmSync(outer, { recursive: true, force: true });
+    }
+  });
+  // The registry holds paths, and teardown deletes recursively: it must delete only fixture homes.
+  it("teardown removes registered fixture homes and refuses any other registered path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "of82-guard-"));
+    const saved = { r: process.env.OPENRIG_TEST_FIXTURE_REGISTRY, o: process.env.OPENRIG_TEST_FIXTURE_REGISTRY_OWNER };
+    try {
+      const registry = path.join(root, "registry");
+      const home = path.join(root, `${PREFIX}real`);
+      const userHome = `${home}-user-home`;
+      const stranger = path.join(root, "not-a-fixture-home");
+      for (const d of [registry, home, userHome, stranger]) fs.mkdirSync(d);
+      fs.writeFileSync(path.join(registry, "a"), home);
+      fs.writeFileSync(path.join(registry, "b"), stranger);
+      process.env.OPENRIG_TEST_FIXTURE_REGISTRY = registry;
+      process.env.OPENRIG_TEST_FIXTURE_REGISTRY_OWNER = String(process.pid);
+      globalTeardown();
+      expect(fs.existsSync(home), "positive control: a registered fixture home is removed").toBe(false);
+      expect(fs.existsSync(userHome)).toBe(false);
+      expect(fs.existsSync(stranger), "a registered path that is not a fixture home survives").toBe(true);
+    } finally {
+      if (saved.r === undefined) delete process.env.OPENRIG_TEST_FIXTURE_REGISTRY; else process.env.OPENRIG_TEST_FIXTURE_REGISTRY = saved.r;
+      if (saved.o === undefined) delete process.env.OPENRIG_TEST_FIXTURE_REGISTRY_OWNER; else process.env.OPENRIG_TEST_FIXTURE_REGISTRY_OWNER = saved.o;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
   it("is wired into every package vitest config that uses the hermetic setup", () => {
