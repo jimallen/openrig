@@ -7,7 +7,7 @@
 // createRunnerInput in "content" mode (wirePiRunnerInput / wirePdaRunnerInput), which is where the paste is observed.
 // Production consequence: a paste whose end marker is lost keeps Ctrl-C and Enter as pasted text. Before this, every
 // later `rig send` was typed into that paste and reported delivered, with nothing on the sender's side saying why.
-// The 10 s delay, the 180 s alive window and the field name are literals here; nothing imports them.
+// The 2 s delay (OF-151; was 10 s), the 180 s alive window and the field name are literals here; nothing imports them.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,11 +68,11 @@ describe("OF-148 pane editor: an open paste is reported once it has stayed open,
     return { ...t, rl, edges };
   }
 
-  it("reports open when the paste has stayed open 10 s (not at 9.999 s), once however long it stays", () => {
+  it("reports open when the paste has stayed open 2 s (not at 1.999 s), once however long it stays", () => {
     const t = editor({ content: true });
     try {
       t.input.write(START + "torn");
-      vi.advanceTimersByTime(9_999);
+      vi.advanceTimersByTime(1_999);
       expect(t.edges).toEqual([]);
       vi.advanceTimersByTime(1);
       expect(t.edges).toEqual([true]);
@@ -266,7 +266,7 @@ describe("OF-148 pda runner: the sidecar carries pasteOpen only while a paste is
     return rig;
   }
 
-  it("an open paste past 10 s is in the sidecar at once; closing it removes the key at once", async () => {
+  it("an open paste past 2 s is in the sidecar at once; closing it removes the key at once", async () => {
     const rig = await attached();
     expect(rig.sidecar()).not.toHaveProperty("pasteOpen");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -274,7 +274,7 @@ describe("OF-148 pda runner: the sidecar carries pasteOpen only while a paste is
     const editor = wirePdaRunnerInput(rig.runner, t.stdin, t.stdout);
     try {
       t.input.write(START + "torn");
-      vi.advanceTimersByTime(9_999);
+      vi.advanceTimersByTime(1_999);
       expect(rig.sidecar()).not.toHaveProperty("pasteOpen");
       vi.advanceTimersByTime(1);
       expect(rig.sidecar()).toMatchObject({ ready: true, connected: true, busy: false, pasteOpen: true });

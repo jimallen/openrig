@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { TmuxResult, TmuxCursorPosition } from "../adapters/tmux.js";
+import { stripPasteTerminators } from "../domain/packet-text.js";
 
 // OPR.0.4.0.38 - real-terminal session broker.
 //
@@ -287,7 +288,9 @@ export class TerminalSessionBroker {
     await this.enqueueInput(async () => {
       const write = async () => {
         if (msg.type === "keys") await this.tmux.sendKeys(this.sessionName, msg.keys);
-        else if (msg.type === "text") await this.tmux.sendText(this.sessionName, msg.text);
+        // A `text` message is a bracketed paste: a paste-end sequence inside it would close the paste early and
+        // let the rest run as typed keys (OF-148). Removed here; `keys` messages are key input and stay as sent.
+        else if (msg.type === "text") await this.tmux.sendText(this.sessionName, stripPasteTerminators(msg.text));
       };
       if (this.tmux.humanInput) await this.tmux.humanInput(this.sessionName, write);
       else await write();

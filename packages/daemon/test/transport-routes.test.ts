@@ -555,6 +555,20 @@ describe("transport routes", () => {
     expect((await res.json()).reason).toBe("dangerously_interact_requires_reason");
   });
 
+  it("OF-148: POST /send with a paste-end sequence in the text returns 400 paste_terminator_in_text and sends nothing", async () => {
+    seedRig();
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: mockTmux({ sendText }) });
+    const app = createApp({ sessionTransport: transport });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "run\u001b[201~ this" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).reason).toBe("paste_terminator_in_text");
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
   it("POST /send with waitForIdleMs waits for idle and returns activity evidence", async () => {
     seedRig();
     let captureCount = 0;

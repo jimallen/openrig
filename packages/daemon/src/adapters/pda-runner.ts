@@ -220,6 +220,8 @@ export class PdaRunner {
   private exited: { code: number | null; at: string } | null = null;
   /** OF-148: the pane editor reports a bracketed paste open past the hint delay; written to the sidecar only while true. */
   private pasteOpen = false;
+  /** OF-153: the editor line holds a recovered lost paste; written to the sidecar only while true. */
+  private pasteLeftover = false;
   private finished = false;
   private finalCode = 0;
   private everAttached = false;
@@ -308,6 +310,12 @@ export class PdaRunner {
    *  the `exited` record is the last word and nothing is rewritten. */
   setPasteOpen(open: boolean): void {
     this.pasteOpen = open;
+    if (!this.finished) this.writeSidecar();
+  }
+
+  /** OF-153: the editor's recovered-paste edge, recorded like `setPasteOpen`. */
+  setPasteLeftover(held: boolean): void {
+    this.pasteLeftover = held;
     if (!this.finished) this.writeSidecar();
   }
 
@@ -1060,6 +1068,7 @@ export class PdaRunner {
       ...(error ? { error } : {}),
       ...(this.exited ? { exited: this.exited } : {}),
       ...(this.pasteOpen && !this.exited ? { pasteOpen: true } : {}),
+      ...(this.pasteLeftover && !this.exited ? { pasteLeftover: true } : {}),
     };
     try {
       this.deps.fs.writeAtomic(this.paths.runnerStatePath, JSON.stringify(state));
@@ -1096,13 +1105,15 @@ export function installPdaRunnerFatalHandlers(proc: FatalProcess, onFatal: (labe
 
 /** The shared editor in pda mode: a paste is content (ETX included), Ctrl-C clears the line, Enter after a
  *  paste is one message. There is no slash command and no prefix handler. */
-export function wirePdaRunnerInput(runner: Pick<PdaRunner, "submit" | "interrupted"> & Partial<Pick<PdaRunner, "setPasteOpen">>, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
+export function wirePdaRunnerInput(runner: Pick<PdaRunner, "submit" | "interrupted"> & Partial<Pick<PdaRunner, "setPasteOpen" | "setPasteLeftover">>, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
   return createRunnerInput(input, output, (block) => runner.submit(block), {
     label: PDA_RUNNER_LABEL,
     interruptInsidePaste: "content",
     onInterrupt: () => runner.interrupted(),
     // OF-148: `rig send` refuses while this is true (PdaRuntimeAdapter.sendReadiness).
     onPasteOpenChange: (open) => runner.setPasteOpen?.(open),
+    // OF-153: `rig send` also refuses while the line holds a recovered lost paste (PdaRuntimeAdapter.sendReadiness).
+    onPasteLeftoverChange: (held) => runner.setPasteLeftover?.(held),
   });
 }
 

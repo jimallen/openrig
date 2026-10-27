@@ -14,3 +14,29 @@ const PACKET_CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 export function inertPacketText(text: string): string {
   return text.replace(PACKET_CONTROLS, "");
 }
+
+/**
+ * The sequences that END a bracketed paste: `ESC[201~` and its 8-bit CSI form (`U+009B` then `201~`). tmux frames a
+ * pasted buffer with its own `ESC[200~` ... `ESC[201~` and leaves the inside alone, so text that carries one of these
+ * closes the paste early and the rest arrives as typed keys (a shell runs it on the next Enter). A message sent to a
+ * seat is prose, never a terminal command, so `rig send` refuses it (`containsPasteTerminator`) and the terminal
+ * broker's bracketed paste removes it (`stripPasteTerminators`). Only these sequences are touched: other bytes, and
+ * unbracketed key input, are not this module's business.
+ */
+const PASTE_TERMINATOR = /\u001b\[201~|\u009b201~/;
+const PASTE_TERMINATORS = /\u001b\[201~|\u009b201~/g;
+
+export function containsPasteTerminator(text: string): boolean {
+  return PASTE_TERMINATOR.test(text);
+}
+
+/** Remove every paste terminator. Repeats until none is left: removing one can join its neighbours into a new one
+ *  (`ESC[2` + `ESC[201~` + `01~`). */
+export function stripPasteTerminators(text: string): string {
+  let current = text;
+  for (;;) {
+    const next = current.replace(PASTE_TERMINATORS, "");
+    if (next === current) return next;
+    current = next;
+  }
+}

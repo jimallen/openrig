@@ -26,12 +26,13 @@ import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
-import { RUNNER_PASTE_OPEN_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
+import { RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
 import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
 import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "../lib/pane-envelope.js";
 import { getSelfHostId } from "./hosts/fanout-contract.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { isShellForeground } from "./shell-classifier.js";
+import { containsPasteTerminator } from "./packet-text.js";
 import { observeClaudeDelivery, verifyCodexPaneProcess, type ClaudeDeliveryObservation, type ClaudeResumeRotation, type NativeProcessLister } from "./native-process-lineage.js";
 import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
@@ -1146,11 +1147,37 @@ function pasteOpenRefusal(sessionName: string, runtime: string | null | undefine
   return `Refused: '${sessionName}' has a paste still open in its runner (the paste's end marker never arrived, so Ctrl-C and Enter are pasted text and a message sent now would be swallowed or torn). Close it in the seat's pane: type Esc then [201~ (or paste anything), then Ctrl-C ${ctrlC}. No override applies. No text was sent.`;
 }
 
+/** OF-153: the refusal while a runner's editor line holds text from a lost paste that was recovered but not cleared. A
+ *  message sent now would be pasted after it and submitted with it. Like every runner-sourced needs_input, no override
+ *  applies. The remedy is Ctrl-C in the seat's pane, worded per runtime as for an open paste. */
+function pasteLeftoverRefusal(sessionName: string, runtime: string | null | undefined): string {
+  const ctrlC = runtime === "pda" ? "clears the line" : "clears the line and aborts the current turn";
+  return `Refused: '${sessionName}' has text left on its runner's input line from a paste that had been stuck open (a message sent now would be appended to it and submitted with it). In the seat's pane, Ctrl-C ${ctrlC} (so does editing it empty). No override applies. No text was sent.`;
+}
+
+/** OF-148: the refusal for text that carries a bracketed-paste end sequence (`ESC[201~`, or its 8-bit CSI form). tmux frames
+ *  every ordinary send as a bracketed paste and does not touch what is inside, so such text would close the paste early
+ *  and the rest would arrive as typed keys (a shell runs it on the next Enter). A refusal, not a strip: the sender
+ *  learns the text was not what they meant to send, and nothing is changed behind their back. */
+const PASTE_TERMINATOR_REFUSAL_REASON = "paste_terminator_in_text";
+function pasteTerminatorRefusal(sessionName: string): SendResult {
+  return {
+    ok: false,
+    sessionName,
+    sent: false,
+    reason: PASTE_TERMINATOR_REFUSAL_REASON,
+    error: `Refused: the text contains a terminal paste-end sequence (ESC[201~, or its 8-bit form), which would close the paste early and let the rest of the message arrive as typed keys. Remove the sequence from the text and send again (a message is prose; to share raw terminal output, save it to a file and send the path). No text was sent.`,
+  };
+}
+
 /** The refusal for positive needs-input evidence. A runner-sourced one never offers the prompt override: a
  *  runner-hosted seat takes only bracketed input, and what holds it is the runner's, not a picker's. */
 function needsInputRefusal(sessionName: string, readiness: AgentActivity): string {
   if (readiness.evidenceSource === "runner_sidecar" && readiness.reason === RUNNER_PASTE_OPEN_REASON) {
     return pasteOpenRefusal(sessionName, readiness.runtime);
+  }
+  if (readiness.evidenceSource === "runner_sidecar" && readiness.reason === RUNNER_PASTE_LEFTOVER_REASON) {
+    return pasteLeftoverRefusal(sessionName, readiness.runtime);
   }
   if (readiness.evidenceSource === "runner_sidecar") {
     return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName} --reason "<why>"). No text was sent.`;
@@ -1495,6 +1522,9 @@ export class SessionTransport {
    * With verification requested, compare rendered message counts, excluding
    * agent input; a confirmed render does not prove agent consumption. */
   async send(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
+    // OF-148: before any wait, hold or retention. `--dangerously-interact` is exempt here only because it may turn out to
+    // send unbracketed key input; sendUnguarded refuses again at the bracketed delivery if it did not.
+    if (!opts?.dangerouslyInteract && containsPasteTerminator(text)) return pasteTerminatorRefusal(sessionName);
     const guard = this.tmuxAdapter.deliveryGuard;
     if (!guard) return this.sendUnguarded(sessionName, text, opts);
     const outbox = new OutboxHandler(this.db);
@@ -2168,6 +2198,10 @@ export class SessionTransport {
     const targetFailure = await checkClaudeTarget();
     if (targetFailure) return observe(targetFailure);
 
+    // OF-148: every delivery except an audited prompt answer (unbracketed key input) is a bracketed paste. The same rule as
+    // the entry of send(), at the one place that decides bracketed or not.
+    if (!promptOverride && containsPasteTerminator(text)) return observe(pasteTerminatorRefusal(sessionName));
+
     // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
     if (observed) observed.sentHash = hashSentText(text);
     const textResult = await this.runStage(
@@ -2361,6 +2395,8 @@ export class SessionTransport {
           reason: "target_needs_input",
           error: activity.evidenceSource === "runner_sidecar" && activity.reason === RUNNER_PASTE_OPEN_REASON
             ? pasteOpenRefusal(input.sessionName, activity.runtime)
+            : activity.evidenceSource === "runner_sidecar" && activity.reason === RUNNER_PASTE_LEFTOVER_REASON
+            ? pasteLeftoverRefusal(input.sessionName, activity.runtime)
             : `Target requires attention (${activity.reason}). No text was sent.`,
           activity,
           waitedMs,
