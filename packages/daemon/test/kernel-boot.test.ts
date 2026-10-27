@@ -411,6 +411,19 @@ describe("classifyClaudeAuthStatus — Claude Code 2.1.x JSON status (OF-58)", (
     const r = classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: "sk-ant secret value with spaces" }), 0));
     expect(r).toEqual({ status: "ok" });
   });
+
+  // OF-61: the 32-character cap on a reported authMethod. Both values use only the allowed charset, so only the
+  // length can separate them (the spaces row above is rejected by the charset alone and cannot pin the cap).
+  it("an authMethod of exactly 32 token characters is reported", () => {
+    const value = "a".repeat(32);
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: value }), 0)))
+      .toEqual({ status: "ok", authMethod: value });
+  });
+
+  it("an authMethod of 33 token characters is never reported", () => {
+    const value = "a".repeat(33);
+    expect(classifyClaudeAuthStatus(out(json({ loggedIn: true, authMethod: value }), 0))).toEqual({ status: "ok" });
+  });
 });
 
 describe("defaultProbeRuntimes — claude auth status through a real process (OF-58)", () => {
@@ -474,5 +487,31 @@ describe("bootKernelIfNeeded — auth method visibility (OF-58)", () => {
     expect(lines.some((l) => l.includes("booting kernel rig from rig.yaml") && l.includes("claude authMethod: api_key"))).toBe(true);
     expect(tracker.getStatus().variant).toBe("rig.yaml");
     tracker.stop();
+  });
+
+  // Jim, 2026-10-26: warn when a seat's sign-in type can't be told apart (OF-61).
+  async function bootLines(probe: { claudeCode: "ok" | "unavailable"; codex: "ok" | "unavailable"; claudeAuthMethod?: string }) {
+    const lines: Array<{ level: string; message: string }> = [];
+    const tracker = await bootKernelIfNeeded(makeBaseDeps({
+      probeRuntimes: async () => probe,
+      log: (level, message) => { lines.push({ level, message }); },
+    }, tmpSpecsDir));
+    tracker.stop();
+    return lines.filter((l) => l.level === "warn");
+  }
+
+  it("warns when Claude is signed in but the sign-in type is unreadable (older CLI, or a value the cap rejected)", async () => {
+    const warns = await bootLines({ claudeCode: "ok", codex: "ok" });
+    expect(warns.map((w) => w.message)).toEqual([expect.stringContaining("sign-in type could not be read")]);
+  });
+
+  it("warns that an API-key sign-in is billed per use", async () => {
+    const warns = await bootLines({ claudeCode: "ok", codex: "ok", claudeAuthMethod: "api_key" });
+    expect(warns.map((w) => w.message)).toEqual([expect.stringContaining("API key")]);
+  });
+
+  it("does not warn for a subscription sign-in, nor when Claude is not the usable runtime", async () => {
+    expect(await bootLines({ claudeCode: "ok", codex: "ok", claudeAuthMethod: "claude.ai" })).toEqual([]);
+    expect(await bootLines({ claudeCode: "unavailable", codex: "ok" })).toEqual([]);
   });
 });
