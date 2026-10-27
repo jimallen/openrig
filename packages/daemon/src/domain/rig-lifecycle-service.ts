@@ -205,9 +205,16 @@ export class RigLifecycleService {
     }
 
     const session = matches[0]!;
+    // OF-144: the node's binding, its tmux options and its discovery claims belong to the seat's LATEST row. An older
+    // adopted row (one rig down detached, or one still live behind a newer occupant) owns none of them: releasing it
+    // ends that row and frees that tmux session's discovery record, and leaves the seat's current occupant alone.
+    const latest = this.db.prepare(
+      "SELECT id FROM sessions WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+    ).get(session.node_id) as { id: string } | undefined;
+    const bound = latest?.id === session.session_id;
 
     // Best-effort: clear OpenRig-owned tmux metadata from the adopted session.
-    if (this.tmuxAdapter && session.tmux_session) {
+    if (bound && this.tmuxAdapter && session.tmux_session) {
       const keys = [
         "@rigged_node_id",
         "@rigged_session_name",
@@ -228,8 +235,12 @@ export class RigLifecycleService {
     let persistedAt = "";
     const tx = this.db.transaction(() => {
       this.sessionRegistry.markDetached(session.session_id);
-      this.sessionRegistry.clearBinding(session.node_id);
-      this.discoveryRepo.releaseClaimByNodeId(session.node_id);
+      if (bound) {
+        this.sessionRegistry.clearBinding(session.node_id);
+        this.discoveryRepo.releaseClaimByNodeId(session.node_id);
+      } else {
+        this.discoveryRepo.releaseClaimByNodeAndSession(session.node_id, session.session_name);
+      }
       const event = this.eventBus.persistWithinTransaction({
         type: "session.detached",
         rigId: session.rig_id,
@@ -534,7 +545,7 @@ export class RigLifecycleService {
       nodeId: node.node_id,
       logicalId: node.logical_id,
       sessionsKilled,
-      ...(adoptedOlderNames.length > 0 ? { warnings: adoptedOlderNames.map((n) => `Older session '${n}' was adopted (origin=claimed), not launched by OpenRig: the node was removed and its tmux session was left running. Release it with: rig unclaim`) } : {}),
+      ...(adoptedOlderNames.length > 0 ? { warnings: adoptedOlderNames.map((n) => `Older session '${n}' was adopted (origin=claimed), not launched by OpenRig: the node was removed and its tmux session was left running.`) } : {}),
       ...(sessionOwner ? { sessionKeptFor: `${sessionOwner.logical_id}@${sessionOwner.rig_name}` } : {}),
       ...(fallbackDestination !== undefined ? { fallbackDestination } : {}),
       reroutedQitemIds: activeQitemIds,

@@ -1279,6 +1279,33 @@ describe("RestoreCheckService", () => {
     expect(JSON.stringify(result)).not.toContain("rig up --existing test-rig");
   });
 
+  // OF-152: with the rig lookup wired, an ARCHIVED rig's id counts too (listRigs alone knows only unarchived rigs).
+  it("a rig named like an archived rig's id is restored by its id in the advised command", () => {
+    const rig = (id: string, name: string) => ({ id, name, createdAt: "", updatedAt: "" });
+    const service = new RestoreCheckService(mockDeps({
+      listRigs: () => [{ rigId: "rig-1", name: "test-rig" }],
+      rigRefs: {
+        findRigById: (id) => id === "test-rig" ? { rig: rig("test-rig", "other"), archived: true } : id === "rig-1" ? { rig: rig("rig-1", "test-rig"), archived: false } : null,
+        findUnarchivedRigsByName: (name) => name === "test-rig" ? [rig("rig-1", "test-rig")] : [],
+      },
+      getNodeInventory: (rigId: string) => rigId !== "rig-1" ? [] : [claudeNode({
+        canonicalSessionName: "dev-impl@test-rig",
+        sessionStatus: "stopped",
+        startupStatus: "failed",
+        tmuxAttachCommand: null,
+        latestError: "seat crashed",
+      })],
+      getLatestSnapshot: (rigId: string) => rigId === "rig-1" ? ({ id: "snap-123", kind: "auto-pre-down" }) : null,
+    }));
+
+    const result = service.check({ noHooks: true });
+
+    expect(result.recovery.actions).toEqual(expect.arrayContaining([expect.objectContaining({
+      rigId: "rig-1", action: "restore_from_latest_snapshot", command: "rig up --existing rig-1",
+    })]));
+    expect(JSON.stringify(result)).not.toContain("rig up --existing test-rig");
+  });
+
   it("missing canonical session identity with latest snapshot is blocked, not actionable", () => {
     const service = new RestoreCheckService(mockDeps({
       getNodeInventory: () => [claudeNode({

@@ -94,6 +94,13 @@ export class DiscoveryRepository {
     ).run(nodeId);
   }
 
+  /** OF-144: release only the discovery record of one tmux session the node claimed (an older adopted row's). */
+  releaseClaimByNodeAndSession(nodeId: string, tmuxSession: string): void {
+    this.db.prepare(
+      "UPDATE discovered_sessions SET status = 'active', claimed_node_id = NULL, last_seen_at = datetime('now') WHERE claimed_node_id = ? AND tmux_session = ?"
+    ).run(nodeId, tmuxSession);
+  }
+
   listDiscovered(status?: DiscoveryStatus): DiscoveredSession[] {
     const rows = status
       ? this.db.prepare("SELECT * FROM discovered_sessions WHERE status = ? ORDER BY last_seen_at DESC").all(status) as DiscoveredSessionRow[]

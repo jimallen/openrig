@@ -269,7 +269,7 @@ export class RigTeardownOrchestrator {
       // row. End the ROW only, with no stop intent (nothing of ours stopped it), and leave its tmux session running.
       // `detached` (what `rig unclaim` writes), not `exited`, so the row still holds the name against another seat's kill.
       this.deps.sessionRegistry.updateStatus(session.sessionId, "detached");
-      (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim`);
+      (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim ${session.sessionId}`);
       return;
     }
     // An archived rig may retain a stale row for a name now owned by a live rig.

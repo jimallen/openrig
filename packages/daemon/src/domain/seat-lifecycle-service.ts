@@ -52,6 +52,9 @@ import {
  */
 
 const SEAT_LOOKUP_GUIDANCE = "List seats with: rig ps --nodes";
+/** OF-144: how to release one adopted row, named by its session id: `rig unclaim` needs an argument, and a name can match
+ *  several adopted rows. The id releases that row alone (an older row leaves the seat's current occupant alone). */
+const unclaimGuidance = (sessionId: string) => `Release the adopted session with: rig unclaim ${sessionId}`;
 
 /** Terminal session statuses — rows the clean verb must NOT touch (they already
  *  record an ended tenancy; the vocabulary is shared with seat-handover-service
@@ -658,7 +661,7 @@ export class SeatLifecycleService {
         ok: false,
         code: "claimed_session",
         message: `Session "${session.session_name}" was adopted (origin=claimed), not launched by OpenRig — stop refuses to kill it.`,
-        guidance: "Release an adopted session with: rig unclaim",
+        guidance: unclaimGuidance(session.id),
       };
     }
 
@@ -676,7 +679,7 @@ export class SeatLifecycleService {
           ok: false,
           code: "claimed_session",
           message: `Session "${row.session_name}" (an older live session of this seat) was adopted (origin=claimed), not launched by OpenRig — stop refuses to end it.`,
-          guidance: "Release an adopted session with: rig unclaim",
+          guidance: unclaimGuidance(row.id),
         };
       }
     }
@@ -843,7 +846,7 @@ export class SeatLifecycleService {
           ok: false,
           code: "claimed_session",
           message: `Session "${row.session_name}" was adopted (origin=claimed) — clean refuses to touch adopted state.`,
-          guidance: "Release an adopted session with: rig unclaim",
+          guidance: unclaimGuidance(row.id),
         };
       }
     }
@@ -1586,7 +1589,7 @@ export class SeatLifecycleService {
     }
     if (session.origin === "claimed") {
       return { ok: false, code: "claimed_session", message: `Session "${session.session_name}" was adopted (origin=claimed), not launched by OpenRig; in-place restart refuses it.`,
-        guidance: "Release an adopted session with: rig unclaim" };
+        guidance: unclaimGuidance(session.id) };
     }
     const probed = await this.probeLiveness(session.session_name, "in-place restart refuses rather than act on an unknown session");
     if ("code" in probed) return probed;

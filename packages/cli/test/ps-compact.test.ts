@@ -207,6 +207,10 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
       } else if (req.url === "/api/ps" && req.method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(PS_DATA));
+      } else if (req.url === "/api/rigs/summary?includeArchived=true" && req.method === "GET") {
+        // OF-152: what the missing-session advice weighs: every rig, archived included (as the daemon's summary gives it).
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(PS_DATA.map((e) => ({ id: e.rigId, name: e.name, archivedAt: e.archivedAt ?? (e.isArchived ? "2026-10-27T00:00:00Z" : null) }))));
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "not found" }));
@@ -612,6 +616,8 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
   it.each([
     ["another rig shares the name", { isArchived: false }, "rig-a"],
     ["control: the namesake is archived", { isArchived: true, archivedAt: "2026-10-27T00:00:00Z" }, "openrig-build"],
+    // OF-152: an archived rig's ID is the name. An id wins (archived included), so the name would reach that rig.
+    ["an archived rig's id is the name", { rigId: "openrig-build", name: "elsewhere", rigName: "elsewhere", isArchived: true, archivedAt: "2026-10-27T00:00:00Z" }, "rig-a"],
   ] as const)("the missing-session advice when %s", async (_label, extra, handle) => {
     PS_DATA.push({ rigId: "rig-d", name: "openrig-build", rigName: "openrig-build", nodeCount: 0, runningCount: 0, status: "stopped", lifecycleState: "stopped", uptime: "", latestSnapshot: null, ...extra });
     try {

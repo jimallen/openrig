@@ -274,9 +274,18 @@ upRoutes.post("/", async (c) => {
       if (byId) {
         return restoreByRigId(byId.rig.id, byId.rig.name, getDeps(c), c, freshLogicalIdsOf(), plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
       }
-      const activeRigs = rigRepo.findUnarchivedRigsByName(sourceRef);
-      const rigs = activeRigs.length > 0 ? activeRigs : rigRepo.findRigsByName(sourceRef);
+      const rigs = rigRepo.findUnarchivedRigsByName(sourceRef);
       if (rigs.length === 0) {
+        // OF-150: a name only archived rigs carry is refused, as the CLI refuses it (OPR.0.3.3.19 AC-7): a restore never wakes an
+        // archived rig, by id (above) or by name. Every client reaches this route (rig up --host, the MCP tool), not only the CLI.
+        const archived = rigRepo.findRigsByName(sourceRef);
+        if (archived.length > 0) {
+          const ids = archived.map((r) => r.id);
+          const how = ids.length === 1
+            ? `Bring it back first: rig unarchive ${ids[0]}, then run rig up ${ids[0]} --existing.`
+            : `Unarchive the one you want by id (rig unarchive <rig-id>), then run rig up <rig-id> --existing. Archived rigs named "${sourceRef}": ${ids.join(", ")}.`;
+          return c.json({ error: `Rig "${sourceRef}" is archived, so rig up does not restore it by name. ${how}`, code: "rig_archived", archivedRigIds: ids }, 409);
+        }
         return c.json({ error: `No rig found named "${sourceRef}". Provide a .yaml spec path to create a new rig.`, code: "rig_not_found" }, 404);
       }
       if (rigs.length > 1) {

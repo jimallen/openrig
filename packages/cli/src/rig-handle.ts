@@ -24,16 +24,31 @@ export type HandleResolution =
   // name posted this way cannot reach the wrong rig.
   | { kind: "passthrough"; handle: string };
 
+/** A rig as advice weighs it: every rig counts by id (an id wins, archived included); only unarchived ones count by name. */
+export interface AdviceRig { id: string; name: string; archived: boolean }
+
 /**
  * OF-135: how advice names a rig in `rig up <rig> --existing`, `rig down <rig>` and `<seat>@<rig>`: its name while that name
- * reaches it and only it, else its id. The same rule as the daemon's rigAdviceHandle (domain/rig-ref.ts), over the
- * unarchived rigs the caller has listed: the name reaches the rig when no listed rig has the name as its id (an id wins,
- * see resolveRigHandle) and this rig is the one listed rig with that name.
+ * reaches it and only it, else its id. The same rule as the daemon's rigAdviceHandle (domain/rig-ref.ts), over EVERY rig the
+ * caller has listed (OF-152: archived ones included, as resolveRigHandle matches ids across them): the name reaches the rig
+ * when no rig has the name as its id and this rig is the one unarchived rig with that name. `null` (the rigs could not be
+ * read) gives the id, which is always exact.
  */
-export function rigAdviceHandle(rigId: string, rigName: string, unarchivedRigs: ReadonlyArray<{ id: string; name: string }>): string {
-  if (unarchivedRigs.some((r) => r.id === rigName)) return rigId;
-  const named = unarchivedRigs.filter((r) => r.name === rigName);
+export function rigAdviceHandle(rigId: string, rigName: string, rigs: ReadonlyArray<AdviceRig> | null): string {
+  if (rigs === null || rigs.some((r) => r.id === rigName)) return rigId;
+  const named = rigs.filter((r) => !r.archived && r.name === rigName);
   return named.length === 1 && named[0]!.id === rigId ? rigName : rigId;
+}
+
+/** Every rig, archived included, for rigAdviceHandle (the summary resolveRigHandle reads). `null` when it cannot be read. */
+export async function fetchAdviceRigs(client: Pick<DaemonClient, "get">): Promise<AdviceRig[] | null> {
+  try {
+    const res = await client.get<RigSummaryEntry[]>("/api/rigs/summary?includeArchived=true");
+    if (res.status !== 200 || !Array.isArray(res.data)) return null;
+    return res.data.map((r) => ({ id: r.id, name: r.name, archived: r.archivedAt != null }));
+  } catch {
+    return null;
+  }
 }
 
 /**

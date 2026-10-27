@@ -221,6 +221,7 @@ export function createRestoreCheckService(
       { exists: existsSync, readFile: (path) => readFileSync(path, "utf-8") },
       resolve(import.meta.dirname, "../../assets/plugins/openrig-core/hooks/claude.json"),
     ).map(({ event }) => event),
+    rigRefs: rigRepo, // OF-152: ids across every rig (archived included), names among unarchived ones
     listRigs: () => {
       const rigs = rigRepo.listRigs();
       return rigs.map((r) => ({ rigId: r.id, name: r.name }));
@@ -287,7 +288,9 @@ export function createRestoreCheckService(
         const sessionOwners = Object.fromEntries(owners.map(([id, owner]) => [id, `${owner.logical_id}@${owner.rig_name}`]));
         // Rig names are not unique: the advice decides "a seat of this same rig" on the owner's rig id.
         const sessionOwnerRigIds = Object.fromEntries(owners.map(([id, owner]) => [id, owner.rig_id]));
-        return { ...classification, sessionNames, sessionOwners, sessionOwnerRigIds };
+        // OF-144: the adopted rows among them, so the advice can name `rig unclaim <session-id>` for each.
+        const adoptedSessionIds = refusingRows.filter((s) => s.origin === "claimed").map((s) => s.id);
+        return { ...classification, sessionNames, sessionOwners, sessionOwnerRigIds, adoptedSessionIds };
       }
       : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,

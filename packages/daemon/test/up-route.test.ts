@@ -91,7 +91,9 @@ describe("Up API route", () => {
     expect((await res.json()).code).toBe("no_snapshot");
   });
 
-  it("restores the sole archived rig by name when no active rig has that name", async () => {
+  // OF-150: this row once pinned the opposite (#513 kept the old fallback to an archived rig). The CLI has refused an
+  // archived-only name since OPR.0.3.3.19 AC-7, but rig up --host and the MCP tool post here directly, so the daemon refuses too.
+  it("refuses the sole archived rig by name when no active rig has that name, with the unarchive command, and restores nothing", async () => {
     const rig = rigRepo.createRig("archived-restore");
     const node = rigRepo.addNode(rig.id, "worker", { role: "worker" });
     const session = sessionRegistry.registerSession(node.id, "worker@archived-restore");
@@ -108,8 +110,32 @@ describe("Up API route", () => {
       body: JSON.stringify({ sourceRef: "archived-restore" }),
     });
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: "restored", rigId: rig.id });
+    expect(res.status).toBe(409);
+    const body = await res.json() as { code: string; error: string; archivedRigIds: string[] };
+    expect(body).toMatchObject({ code: "rig_archived", archivedRigIds: [rig.id] });
+    expect(body.error).toContain(`rig unarchive ${rig.id}, then run rig up ${rig.id} --existing`);
+    expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id)).toEqual({ status: "exited" });
+    expect(rigRepo.findRigById(rig.id)?.archived).toBe(true);
+  });
+
+  it("refuses a name two archived rigs share, listing both ids (OF-150)", async () => {
+    const a = rigRepo.createRig("archived-pair");
+    const b = rigRepo.createRig("archived-pair");
+    rigRepo.archiveRig(a.id);
+    rigRepo.archiveRig(b.id);
+
+    const res = await app.request("/api/up", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceRef: "archived-pair" }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { code: string; error: string; archivedRigIds: string[] };
+    expect(body.code).toBe("rig_archived");
+    expect([...body.archivedRigIds].sort()).toEqual([a.id, b.id].sort());
+    expect(body.error).toContain(`${a.id}`);
+    expect(body.error).toContain(`${b.id}`);
   });
 
   it("keeps two active rigs with the same name ambiguous", async () => {

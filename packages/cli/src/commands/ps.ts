@@ -12,7 +12,7 @@ import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import type { AggregatedPayload, PerHostStatus } from "../lib/hosts/fanout-contract.js";
-import { rigAdviceHandle } from "../rig-handle.js";
+import { rigAdviceHandle, fetchAdviceRigs, type AdviceRig } from "../rig-handle.js";
 
 interface PsEntry {
   rigId: string;
@@ -611,10 +611,10 @@ function hasCurrentUsageLimit(node: NodeEntry): boolean {
     && activity.stale === false && !activity.fallback;
 }
 
-function missingSessionGuidance(node: NodeEntry, rigs: readonly PsEntry[]): string | null {
+function missingSessionGuidance(node: NodeEntry, rigs: readonly AdviceRig[] | null): string | null {
   return node.identityVerdict?.reason === "session_missing"
-    // OF-135: the rig by name while that reaches it alone, else by id, over the unarchived rigs ps listed.
-    ? missingSessionAdvice(node.logicalId, rigAdviceHandle(node.rigId, node.rigName, rigs.filter((r) => !r.isArchived && r.archivedAt == null).map((r) => ({ id: r.rigId, name: r.name }))))
+    // OF-135/OF-152: the rig by name while that reaches it alone, else by id, over every rig (archived ids included).
+    ? missingSessionAdvice(node.logicalId, rigAdviceHandle(node.rigId, node.rigName, rigs))
     : null;
 }
 
@@ -1221,6 +1221,9 @@ async function handleNodes(
     console.error(`1 of ${rigsOnHost} rigs shown (scoped to ${opts.rig}); rig ps lists all — use --rig NAME or -A for others`);
   }
 
+  // OF-152: the rigs the missing-session advice weighs, archived included; read only when a row needs that advice.
+  const adviceRigs = limited.some((n) => (n as NodeEntry).identityVerdict?.reason === "session_missing") ? await fetchAdviceRigs(client) : null;
+
   if (limited.length === 0) {
     if (parsedFilter) {
       console.log(`No nodes match --filter ${parsedFilter.key}=${parsedFilter.value}`);
@@ -1237,7 +1240,7 @@ async function handleNodes(
     console.log(padCompactNodeRow("RIG", "SESSION", "LIFECYCLE", "ACTIVITY", "WORK", "REASON"));
     for (const n of humanList as NodeEntry[]) {
       const attn = needsAttention(n);
-      const reason = missingSessionGuidance(n, rigRes.data ?? []) ?? (attn || hasCurrentUsageLimit(n)
+      const reason = missingSessionGuidance(n, adviceRigs) ?? (attn || hasCurrentUsageLimit(n)
         ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
         : "—");
       console.log(padCompactNodeRow(
@@ -1273,7 +1276,7 @@ async function handleNodes(
         formatActivity(n),
         formatContextUsage(n.contextUsage),
         n.restoreOutcome,
-        missingSessionGuidance(n, rigRes.data ?? []) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—"),
+        missingSessionGuidance(n, adviceRigs) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—"),
       ));
     }
   }
