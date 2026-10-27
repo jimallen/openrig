@@ -21,8 +21,8 @@ import { RSI_ARCHIVED_RIG_LIVE_SESSION, RSI_DETECTORS } from "../src/domain/rsi/
 import { rsiFingerprint } from "../src/domain/rsi/fingerprint.js";
 import {
   HEALTH_FINDING_WAKE_POLICY, RSI_BUDGET_BRAKE, RSI_DAILY_REPORT_ANCHOR, RSI_NO_NEW_FINDING,
-  RSI_WAKE_ANCHOR, RSI_WAKE_BUDGET_EXHAUSTED, ensureRsiStewardJobs, makeHealthFindingWakePolicy,
-  parseWakeReceipt, type HealthFindingWakePolicy,
+  RSI_DAILY_REPORT_MESSAGE, RSI_SOURCE_BLIND, RSI_WAKE_ANCHOR, RSI_WAKE_BUDGET_EXHAUSTED, ensureRsiStewardJobs,
+  makeHealthFindingWakePolicy, parseWakeReceipt, scanFindingState, type HealthFindingWakePolicy,
 } from "../src/domain/rsi/health-finding-wake.js";
 
 // The clock is injected far from wall clock: a wall-clock reversion would land every bucket and
@@ -104,11 +104,13 @@ function harness(script: Script = () => "ok") {
   };
   const receipt = () => parseWakeReceipt((db.prepare("SELECT last_fired_condition AS c FROM watchdog_jobs WHERE job_id = ?")
     .get(wake.jobId) as { c: string | null }).c);
+  const historyNotes = () => db.prepare("SELECT skip_reason, evaluation_notes FROM watchdog_history WHERE job_id = ? ORDER BY evaluated_at, history_id")
+    .all(wake.jobId) as Array<{ skip_reason: string | null; evaluation_notes: string | null }>;
   const history = () => db.prepare("SELECT outcome, skip_reason FROM watchdog_history WHERE job_id = ? ORDER BY evaluated_at, history_id")
     .all(wake.jobId) as Array<{ outcome: string; skip_reason: string | null }>;
   const state = (fingerprint: string) => db.prepare("SELECT state, activated_at FROM rsi_finding_state WHERE fingerprint = ?")
     .get(fingerprint) as { state: string; activated_at: string } | undefined;
-  return { db, source, sourceB, sends, scan, receipt, history, state, setClock: (ms: number) => { clock = new Date(ms); } };
+  return { db, jobsRepo, projection, source, sourceB, sends, scan, receipt, history, historyNotes, state, setClock: (ms: number) => { clock = new Date(ms); } };
 }
 
 describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
@@ -167,7 +169,7 @@ describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
     h.source.mode = mode;
     if (mode === "partial") h.source.rigs = [];
     const during = await h.scan();
-    expect(during.outcome).toMatchObject({ action: "skip", reason: RSI_NO_NEW_FINDING });
+    expect(during.outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
     expect(h.state(fp("r1"))?.state).toBe("active");
     h.source.mode = "ok";
     h.source.rigs = ["r1"];
@@ -256,7 +258,7 @@ describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
     h.source.rigs = [];
     h.sourceB.mode = "throw";
     const during = await h.scan();
-    expect(during.outcome).toMatchObject({ action: "skip", reason: RSI_NO_NEW_FINDING });
+    expect(during.outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
     expect(h.state(fp("a1"))?.state).toBe("quiet");
     expect(h.state(fp("b1", D_B))?.state).toBe("active");
     h.sourceB.mode = "ok";
@@ -305,7 +307,89 @@ describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
       projection: { records: () => { throw new Error("policy unreadable"); }, coverage: () => [] },
     });
     const job = { jobId: "j", target: { session: STEWARD } } as never;
-    await expect(policy.evaluate(job)).resolves.toMatchObject({ action: "skip", reason: RSI_NO_NEW_FINDING });
+    await expect(policy.evaluate(job)).resolves.toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+  });
+});
+
+describe("OF-72: RSI blindness is recorded, reported, and does not outlive its cause", () => {
+  it("an unavailable source with nothing new is a LOUD skip: one history row names the source and the reason", async () => {
+    const h = harness();
+    h.source.rigs = ["r1"];
+    await h.scan();
+    const rows = h.history().length;
+    h.source.mode = "throw";
+
+    const blind = await h.scan();
+
+    expect(blind.outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+    expect(h.history()).toHaveLength(rows + 1);
+    const last = h.historyNotes().at(-1)!;
+    expect(last.skip_reason).toBe(RSI_SOURCE_BLIND);
+    expect(JSON.parse(last.evaluation_notes!)).toMatchObject({ carriedForward: [{ source: "rsi-telemetry", reason: "unavailable" }] });
+    // The fingerprint was carried forward, not removed.
+    expect(h.state(fp("r1"))?.state).toBe("active");
+  });
+
+  it("a partial source is recorded the same way, with reason partial; a healthy hour afterwards is quiet again", async () => {
+    const h = harness();
+    h.source.rigs = ["r1"];
+    await h.scan();
+    h.source.mode = "partial";
+    expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+    expect(JSON.parse(h.historyNotes().at(-1)!.evaluation_notes!).carriedForward).toEqual([{ source: "rsi-telemetry", reason: "partial" }]);
+    const rows = h.history().length;
+    h.source.mode = "ok";
+    expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_NO_NEW_FINDING });
+    expect(h.history()).toHaveLength(rows);
+  });
+
+  it("a projection that refuses the query is recorded as blindness too (every source projection-failed)", async () => {
+    const db = createDb();
+    migrate(db, ALL_MIGRATIONS);
+    const source = new ScriptedSource(() => new Date(T0));
+    const policy = makeHealthFindingWakePolicy({
+      db, sources: [source], now: () => new Date(T0),
+      projection: { records: () => { throw new Error("policy unreadable"); }, coverage: () => [] },
+    });
+    await expect(policy.evaluate({ jobId: "j", target: { session: STEWARD } } as never)).resolves.toMatchObject({
+      action: "skip", reason: RSI_SOURCE_BLIND, notes: { carriedForward: [{ source: "rsi-telemetry", reason: "projection-failed" }] },
+    });
+  });
+
+  it("the daily report asks the steward to list the unavailable or partial sources", () => {
+    expect(RSI_DAILY_REPORT_MESSAGE).toContain(RSI_SOURCE_BLIND);
+  });
+
+  it("an active finding of a source that is no longer registered goes quiet; a source still registered keeps its own", async () => {
+    const h = harness();
+    h.source.rigs = ["a1"];
+    h.sourceB.rigs = ["b1"];
+    await h.scan();
+    expect(h.state(fp("a1"))?.state).toBe("active");
+
+    // The deployment now registers only the second source.
+    const scan = scanFindingState(h.db, h.projection, [h.sourceB], new Date(T0 + HOUR));
+
+    expect(h.state(fp("a1"))?.state).toBe("quiet");
+    expect(h.state(fp("b1", D_B))?.state).toBe("active");
+    expect(scan.active.map((a) => a.fingerprint)).toEqual([fp("b1", D_B)]);
+  });
+
+  it("a retargeted steward does not inherit the old steward's receipt, so it is told every active finding once", async () => {
+    const h = harness();
+    h.source.rigs = ["r1"];
+    await h.scan();
+    expect(h.receipt()).not.toBeNull();
+
+    ensureRsiStewardJobs(h.jobsRepo, STEWARD); // same steward: the receipt stays
+    expect(h.receipt()).not.toBeNull();
+    ensureRsiStewardJobs(h.jobsRepo, "new-steward@kernel");
+    expect(h.receipt()).toBeNull();
+
+    const after = await h.scan();
+    expect(after.outcome.action).toBe("send");
+    expect(h.sends.at(-1)).toMatchObject({ targetSession: "new-steward@kernel" });
+    expect(h.sends.at(-1)!.message).toContain(fp("r1"));
   });
 });
 

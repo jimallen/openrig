@@ -33,7 +33,7 @@ afterEach(() => {
 /** The registry's sources, by name. Restated here, not derived from the list under test. */
 const REGISTRY_SOURCES = [
   "rsi-bootstrap-failure-class", "rsi-compaction-storm", "rsi-context-high-water", "rsi-orphaned-parked-owner-job",
-  "rsi-outbox-unsettled", "rsi-permission-stall", "rsi-project-report", "rsi-provider-weekly-window", "rsi-retention-lag",
+  "rsi-outbox-unsettled", "rsi-permission-stall", "rsi-project-report", "rsi-provider-weekly-window", "rsi-retention-disabled-growth", "rsi-retention-lag",
   "rsi-slow-op-file", "rsi-startup-failure-class", "rsi-telemetry", "rsi-watchdog-delivery-failure",
 ];
 
@@ -227,7 +227,7 @@ describe("known-fix anchors after unification", () => {
   // The A2b and A3 ids, restated: a dropped id must fail here.
   const UNIFIED_IDS = [
     "rsi.compaction-storm", "rsi.context-high-water", "rsi.provider-weekly-window", "rsi.outbox-unsettled",
-    "rsi.permission-stall", "rsi.retention-lag", "rsi.watchdog-delivery-failure", "rsi.project-report",
+    "rsi.permission-stall", "rsi.retention-lag", "rsi.watchdog-delivery-failure", "rsi.project-report", "rsi.retention-disabled-growth",
     "rsi.slow-op-subthreshold-flood",
   ];
 

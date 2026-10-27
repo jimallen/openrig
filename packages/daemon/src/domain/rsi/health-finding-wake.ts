@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { HealthSourceCoverage } from "../health-detectors.js";
 import type { HealthRecord } from "../health-projection.js";
 import type { Policy, PolicyEvaluation, PolicyJob } from "../policies/types.js";
@@ -17,6 +17,12 @@ import type { WatchdogJob, WatchdogJobsRepository } from "../watchdog-jobs-repos
  *      fingerprints carry forward. A failed read is never a removal.
  *   3. A fingerprint that goes quiet and returns gets a new `activated_at` (a recurrence wakes).
  *   4. Removals alone never wake.
+ *   5. A source that is unavailable or partial is never invisible: an hour with nothing new
+ *      and some source blind is a LOUD skip (`rsi_source_blind`, one history row naming each
+ *      source and why), and the daily report asks the steward to list those rows (OF-72).
+ *   6. A fingerprint whose source is no longer registered goes quiet; it is not carried forward
+ *      (carrying forward is for a source that is registered but could not be read).
+ *   7. Retargeting the steward resets the receipt: the new steward is told what is active.
  * Seam to Health: the wake reads the same `HealthProjectionService` that serves
  * `rig health`, so a fingerprint it calls active is one `rig health --json` shows. It never
  * reads detector tables itself.
@@ -25,6 +31,9 @@ import type { WatchdogJob, WatchdogJobsRepository } from "../watchdog-jobs-repos
 export const HEALTH_FINDING_WAKE_POLICY = "health-finding-wake" as const;
 /** Quiet: nothing (re)activated since the last delivered wake. Listed in QUIET_SKIP_REASONS. */
 export const RSI_NO_NEW_FINDING = "rsi_no_new_finding" as const;
+/** Loud: nothing new, but at least one RSI source was unavailable or partial this hour, so the
+ * absence of findings means nothing. Not in QUIET_SKIP_REASONS: the engine writes the history row. */
+export const RSI_SOURCE_BLIND = "rsi_source_blind" as const;
 /** Loud: a wake was due but this job already sent its daily budget. */
 export const RSI_WAKE_BUDGET_EXHAUSTED = "rsi_wake_budget_exhausted" as const;
 /** Loud: a wake was due but the latest weekly provider window is at or above the brake. */
@@ -57,6 +66,7 @@ export const RSI_DAILY_REPORT_MESSAGE = [
   "1. Re-check declined proposals: re-propose any whose detector count has doubled or that were declined 30 or more days ago.",
   "2. List suppressed wakes (rsi_budget_brake, rsi_wake_budget_exhausted in this job's watchdog history) and every known-fix anchor added since the last report.",
   "3. List every RSI resolve with its actor_session and identity_provenance.",
+  "4. List every RSI source that was unavailable or partial (rsi_source_blind rows in this wake job's watchdog history since the last report, and the coverage in `rig health --json`): while a source is blind, no finding from it can be trusted to be absent.",
 ].join("\n");
 
 /** The receipt banked on a delivered wake (§3.4). `bucket` is the UTC hour of the attempt:
@@ -176,6 +186,15 @@ export function scanFindingState(
     })();
   }
 
+  // A fingerprint whose source is no longer registered at all has no reader left to ever
+  // clear it: quiet it. (A registered source that failed this hour is carried forward above.)
+  const staleSources = (db.prepare("SELECT DISTINCT source FROM rsi_finding_state WHERE state = 'active'").all() as Array<{ source: string }>)
+    .map((row) => row.source).filter((name) => !sourceNames.includes(name));
+  if (staleSources.length > 0) {
+    const quietSource = db.prepare("UPDATE rsi_finding_state SET state = 'quiet' WHERE source = ? AND state = 'active'");
+    db.transaction(() => { for (const name of staleSources) quietSource.run(name); })();
+  }
+
   const active = (db.prepare(
     "SELECT fingerprint, source, activated_at FROM rsi_finding_state WHERE state = 'active' ORDER BY fingerprint",
   ).all() as Array<{ fingerprint: string; source: string; activated_at: string }>)
@@ -264,7 +283,10 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
         newSinceLastWake: fresh.length,
         ...(scan.carriedForward.length ? { carriedForward: scan.carriedForward } : {}),
       };
-      if (fresh.length === 0) return { action: "skip", reason: RSI_NO_NEW_FINDING, notes };
+      if (fresh.length === 0) {
+        // Nothing new is only reassuring when every source was read in full.
+        return { action: "skip", reason: scan.carriedForward.length ? RSI_SOURCE_BLIND : RSI_NO_NEW_FINDING, notes };
+      }
 
       const window = latestWeeklyWindow(deps.db);
       if (window && window.percent >= RSI_BRAKE_PERCENT) {
@@ -309,6 +331,16 @@ export function rsiStewardValidity(stewardSession: string): "unset" | "invalid" 
   return steward.includes("@") ? "valid" : "invalid";
 }
 
+/** The `target.session` of a registered spec; null when the spec is unreadable (treated as a different steward). */
+function specTargetSession(specYaml: string): string | null {
+  try {
+    const target = (parseYaml(specYaml) as { target?: { session?: unknown } } | null)?.target?.session;
+    return typeof target === "string" ? target : null;
+  } catch {
+    return null;
+  }
+}
+
 export type RsiStewardJobs =
   | { armed: true; wake: WatchdogJob; report: WatchdogJob }
   | { armed: false; reason: typeof RSI_STEWARD_UNSET_REASON | typeof RSI_STEWARD_INVALID_REASON; disarmed: string[] };
@@ -328,7 +360,7 @@ export type RsiStewardJobs =
  *   quiet, leave the key unset, or stop the job again after setting the key.
  */
 export function ensureRsiStewardJobs(
-  jobsRepo: Pick<WatchdogJobsRepository, "ensureAutoRegistration" | "findAutoRegistration" | "markTerminal">,
+  jobsRepo: Pick<WatchdogJobsRepository, "ensureAutoRegistration" | "findAutoRegistration" | "markTerminal" | "clearConditionReceipt">,
   stewardSession: string,
 ): RsiStewardJobs {
   const validity = rsiStewardValidity(stewardSession);
@@ -345,6 +377,9 @@ export function ensureRsiStewardJobs(
     }
     return { armed: false, reason, disarmed };
   }
+  // A different steward has been told nothing: drop the receipt the previous one banked.
+  const previous = jobsRepo.findAutoRegistration(HEALTH_FINDING_WAKE_POLICY, RSI_WAKE_ANCHOR, null);
+  const retargeted = previous !== null && specTargetSession(previous.specYaml) !== steward;
   const wake = jobsRepo.ensureAutoRegistration({
     policy: HEALTH_FINDING_WAKE_POLICY,
     targetSession: RSI_WAKE_ANCHOR,
@@ -354,6 +389,7 @@ export function ensureRsiStewardJobs(
     scanIntervalSeconds: null,
     specYaml: stringifyYaml({ policy: HEALTH_FINDING_WAKE_POLICY, target: { session: steward } }),
   });
+  if (retargeted) jobsRepo.clearConditionReceipt(wake.jobId);
   const report = jobsRepo.ensureAutoRegistration({
     policy: "periodic-reminder",
     targetSession: RSI_DAILY_REPORT_ANCHOR,

@@ -117,6 +117,44 @@ describe("D4 archived-rig-live-session source", () => {
     expect(capped.coverage()[0]).toMatchObject({ limit: 1, total: 2, evaluated: 1, omitted: 1, partial: true });
   });
 
+  it("OF-70: a session stamped after the daemon clock is clamped to the evaluation time, not allowed to blind D4 for every rig", () => {
+    const f = fixture();
+    // A clock-skewed row (2032) next to a healthy one (2030) under two different archived rigs.
+    f.rig("rig-skew", "skewed", "2030-06-01 00:00:00");
+    f.node("n-skew", "rig-skew");
+    f.session("s-skew", "n-skew", "running", "2032-01-02 03:04:05");
+    f.rig("rig-ok", "ok", "2030-06-01 00:00:00");
+    f.node("n-ok", "rig-ok");
+    f.session("s-ok", "n-ok", "running", "2030-01-02 03:04:05");
+
+    const projection = new HealthProjectionService([f.source()]);
+    const records = projection.records();
+
+    // The source stays available and reports both rigs.
+    expect(projection.coverage()).toEqual([expect.not.objectContaining({ status: "unavailable" })]);
+    expect(records.map((r) => (r.scope as { rigId: string }).rigId).sort()).toEqual(["rig-ok", "rig-skew"]);
+    const skewed = records.find((r) => (r.scope as { rigId: string }).rigId === "rig-skew")!;
+    // The future stamp reads as "now": the episode starts at the evaluation time, never after it.
+    expect(span(skewed)).toMatchObject({ firstSeen: NOW.toISOString(), lastSeen: NOW.toISOString() });
+    // The healthy rig keeps its own stamp.
+    expect(span(records.find((r) => (r.scope as { rigId: string }).rigId === "rig-ok")!).firstSeen).toBe("2030-01-02T03:04:05.000Z");
+    // Clamping is never silent: the coverage row counts the clamped sessions.
+    const source = f.source();
+    source.read();
+    expect(source.coverage()[0]).toMatchObject({ partial: false, total: 2, evaluated: 2 });
+    expect(source.coverage()[0]!.note).toBe("1 session created_at later than the daemon clock was clamped to the evaluation time");
+  });
+
+  it("OF-70: a session stamped exactly at the evaluation time is not clamped and adds no note", () => {
+    const f = fixture();
+    f.rig("rig-a", "a", "2030-06-01 00:00:00");
+    f.node("n-a", "rig-a");
+    f.session("s-a", "n-a", "running", "2031-03-04 05:06:07");
+    const source = f.source();
+    expect(source.read()).toHaveLength(1);
+    expect(source.coverage()[0]).not.toHaveProperty("note");
+  });
+
   it("serves an active, fresh, determinate record whose episode window covers its evidence", () => {
     const f = fixture();
     f.rig("rig-dead", "cel-track", "2030-06-01 00:00:00");
