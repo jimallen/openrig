@@ -11,8 +11,12 @@
 //  - an error with no file position (`error TS5083: ...`, `tsconfig.json: error TS...`) counts under
 //    "(no file)" instead of being ignored once positioned errors exist, and any line that says
 //    `error TSnnnn:` but fits none of the recognised shapes fails the check loudly;
-//  - `as any` in a daemon test file is ratcheted the same way against
-//    scripts/daemon-test-as-any-baseline.json: a cast hides exactly the signal this check exists for.
+//  - type-system escape hatches in a daemon test file are ratcheted the same way against
+//    scripts/daemon-test-cast-baseline.json: `as any`, `as unknown as`, a `<any>x` assertion, and
+//    `@ts-ignore` / `@ts-expect-error` each hide exactly the signal this check exists for. (Plain `!` is not
+//    counted: it asserts one fact and is erased; `Record<string, any>` style annotations are not casts.)
+//  - a tsc run that was killed, could not start, or exited with anything but 0 or 2 fails the check
+//    instead of being read as whatever it managed to print.
 //
 // Counts are per file, not per line, so unrelated edits that move lines do not disturb the baseline.
 import { spawnSync } from "node:child_process";
@@ -44,11 +48,15 @@ export function unrecognisedErrorLines(tscOutput) {
   return tscOutput.split("\n").filter((line) => ANY_ERROR.test(line) && Object.keys(countErrorsByFile(line)).length === 0);
 }
 
-/** Count `as any` casts per file for { relativePath: sourceText }. */
-export function countAsAnyByFile(sources) {
+// `<any>x` only as a prefix assertion: not preceded by an identifier, `]`, `)` or `>` (that is `Array<any>`,
+// `vi.fn<any>(`), and followed by the start of an operand.
+const CAST_ESCAPE = /\bas any\b|\bas unknown as\b|(?<![\w\])>])<any>(?=\s*[\w(\[{"'`!])|@ts-(?:ignore|expect-error)\b/g;
+
+/** Count type-system escape hatches per file for { relativePath: sourceText }. */
+export function countCastEscapesByFile(sources) {
   const counts = {};
   for (const [file, text] of Object.entries(sources)) {
-    const n = (text.match(/\bas any\b/g) ?? []).length;
+    const n = (text.match(CAST_ESCAPE) ?? []).length;
     if (n > 0) counts[file] = n;
   }
   return counts;
@@ -79,6 +87,14 @@ export function tighten(baseline, current) {
   return next;
 }
 
+/** Why a finished tsc run cannot be trusted, or undefined when it ran to a normal 0/2 exit. */
+export function tscRunProblem(run) {
+  if (run.error) return `tsc could not run to completion: ${run.error.message}`;
+  if (run.signal) return `tsc was killed by ${run.signal}`;
+  if (run.status !== 0 && run.status !== 2) return `tsc exited with status ${run.status} (expected 0 or 2)`;
+  return undefined;
+}
+
 function listTestSources(daemonDir) {
   const sources = {};
   const walk = (dir) => {
@@ -104,7 +120,7 @@ function main() {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const daemonDir = join(root, "packages", "daemon");
   const typesBaselinePath = join(root, "scripts", "daemon-test-type-baseline.json");
-  const asAnyBaselinePath = join(root, "scripts", "daemon-test-as-any-baseline.json");
+  const castBaselinePath = join(root, "scripts", "daemon-test-cast-baseline.json");
   const update = process.argv.includes("--update");
   const tightenAuto = !process.argv.includes("--no-tighten");
   const tsc = createRequire(join(root, "package.json")).resolve("typescript/bin/tsc");
@@ -114,6 +130,13 @@ function main() {
     maxBuffer: 256 * 1024 * 1024,
   });
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+  // A killed, truncated (maxBuffer) or crashed run may have printed some errors; its partial count must
+  // neither pass nor tighten the baseline.
+  const problem = tscRunProblem(run);
+  if (problem) {
+    console.error(`daemon test type-check: ${problem}\n${output.slice(0, 2000)}`);
+    process.exit(1);
+  }
   const current = countErrorsByFile(output);
   const total = sum(current);
   // tsc exits 2 when it reports type errors. A non-zero exit with nothing parsed is a crash or a
@@ -128,48 +151,48 @@ function main() {
     console.error(`daemon test type-check: ${unrecognised.length} error line(s) in a shape the parser does not recognise:\n${unrecognised.slice(0, 10).join("\n")}`);
     process.exit(1);
   }
-  const currentAsAny = countAsAnyByFile(listTestSources(daemonDir));
+  const currentCasts = countCastEscapesByFile(listTestSources(daemonDir));
   const typesBaseline = JSON.parse(readFileSync(typesBaselinePath, "utf8"));
-  const asAnyBaseline = JSON.parse(readFileSync(asAnyBaselinePath, "utf8"));
+  const castBaseline = JSON.parse(readFileSync(castBaselinePath, "utf8"));
   const types = compareToBaseline(current, typesBaseline);
-  const asAny = compareToBaseline(currentAsAny, asAnyBaseline);
+  const casts = compareToBaseline(currentCasts, castBaseline);
   if (update) {
-    if (types.regressions.length > 0 || asAny.regressions.length > 0) {
+    if (types.regressions.length > 0 || casts.regressions.length > 0) {
       console.error("daemon test type-check: refusing --update; the baselines can only shrink. Fix these first:");
       for (const r of types.regressions) console.error(`  ${r.file}: ${r.count} errors, baseline ${r.allowed}`);
-      for (const r of asAny.regressions) console.error(`  ${r.file}: ${r.count} \`as any\`, baseline ${r.allowed}`);
+      for (const r of casts.regressions) console.error(`  ${r.file}: ${r.count} cast escapes, baseline ${r.allowed}`);
       process.exit(1);
     }
     writeFileSync(typesBaselinePath, sortedJson(current));
-    writeFileSync(asAnyBaselinePath, sortedJson(currentAsAny));
-    console.log(`daemon test type-check: baselines rewritten, ${total} errors in ${Object.keys(current).length} files, ${sum(currentAsAny)} \`as any\` in ${Object.keys(currentAsAny).length} files`);
+    writeFileSync(castBaselinePath, sortedJson(currentCasts));
+    console.log(`daemon test type-check: baselines rewritten, ${total} errors in ${Object.keys(current).length} files, ${sum(currentCasts)} cast escapes in ${Object.keys(currentCasts).length} files`);
     return;
   }
-  if (types.regressions.length > 0 || asAny.regressions.length > 0) {
+  if (types.regressions.length > 0 || casts.regressions.length > 0) {
     if (types.regressions.length > 0) {
       console.error("daemon test type-check: new type errors in daemon tests (packages/daemon/tsconfig.test.json):");
       for (const r of types.regressions) console.error(`  ${r.file}: ${r.count} errors, baseline allows ${r.allowed}`);
       console.error("Fix them; the baseline (scripts/daemon-test-type-baseline.json) can only shrink.");
     }
-    if (asAny.regressions.length > 0) {
-      console.error("daemon test type-check: new `as any` in daemon tests; narrow the type or fix the fixture instead:");
-      for (const r of asAny.regressions) console.error(`  ${r.file}: ${r.count} \`as any\`, baseline allows ${r.allowed}`);
-      console.error("The allowance (scripts/daemon-test-as-any-baseline.json) can only shrink.");
+    if (casts.regressions.length > 0) {
+      console.error("daemon test type-check: new cast escapes (`as any`, `as unknown as`, `<any>`, `@ts-ignore`) in daemon tests; narrow the type or fix the fixture instead:");
+      for (const r of casts.regressions) console.error(`  ${r.file}: ${r.count} cast escapes, baseline allows ${r.allowed}`);
+      console.error("The allowance (scripts/daemon-test-cast-baseline.json) can only shrink.");
     }
     process.exit(1);
   }
   const improved = [
     ...types.improvements.map((i) => ({ ...i, what: "errors" })),
-    ...asAny.improvements.map((i) => ({ ...i, what: "`as any`" })),
+    ...casts.improvements.map((i) => ({ ...i, what: "cast escapes" })),
   ];
   if (improved.length > 0 && tightenAuto) {
     writeFileSync(typesBaselinePath, sortedJson(tighten(typesBaseline, current)));
-    writeFileSync(asAnyBaselinePath, sortedJson(tighten(asAnyBaseline, currentAsAny)));
+    writeFileSync(castBaselinePath, sortedJson(tighten(castBaseline, currentCasts)));
   }
   for (const i of improved) {
     console.log(`  improved: ${i.file} ${i.what} ${i.allowed} -> ${i.count}${tightenAuto ? " (baseline tightened; commit it)" : " (run: node scripts/check-daemon-test-types.mjs --update)"}`);
   }
-  console.log(`daemon test type-check: ${total} errors, none above baseline (${Object.keys(typesBaseline).length} files allowlisted); ${sum(currentAsAny)} \`as any\`, none above baseline`);
+  console.log(`daemon test type-check: ${total} errors, none above baseline (${Object.keys(typesBaseline).length} files allowlisted); ${sum(currentCasts)} cast escapes, none above baseline`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();

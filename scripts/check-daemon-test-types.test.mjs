@@ -3,7 +3,7 @@
 // counting and the comparison rule, which are where a ratchet can silently stop biting.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NO_FILE, compareToBaseline, countAsAnyByFile, countErrorsByFile, unrecognisedErrorLines, tighten } from "./check-daemon-test-types.mjs";
+import { NO_FILE, compareToBaseline, countCastEscapesByFile, countErrorsByFile, tscRunProblem, unrecognisedErrorLines, tighten } from "./check-daemon-test-types.mjs";
 
 const OUTPUT = [
   "test/a.test.ts(10,5): error TS2322: Type 'null' is not assignable to type 'string'.",
@@ -71,13 +71,33 @@ test("tighten lowers improved entries, drops zeros, and never raises or adds an 
   assert.deepEqual(next, { a: 3, c: 1 });
 });
 
-// OF-127: no new `as any`.
+// OF-127: no new cast escapes.
 test("counts `as any` per file, whole word only, and omits files with none", () => {
-  const counts = countAsAnyByFile({
+  const counts = countCastEscapesByFile({
     "test/a.test.ts": "const x = y as any; const z = (w as any).q; const k = v as anyThing;",
-    "test/b.test.ts": "const ok = y as unknown as Foo;",
+    "test/b.test.ts": "const ok = y as Foo;",
   });
   assert.deepEqual(counts, { "test/a.test.ts": 2 });
+});
+
+test("`as unknown as`, a `<any>x` assertion and ts-ignore / ts-expect-error each count; annotations do not", () => {
+  const counts = countCastEscapesByFile({
+    "test/c.test.ts": "const a = b as unknown as Foo;",
+    "test/d.test.ts": "const a = <any>b; const c = <any>(d);",
+    "test/e.test.ts": "// @ts-ignore\nx(); // @ts-expect-error: why\ny();",
+    "test/f.test.ts": "const a: Array<any> = []; const b: Promise<any> = p; const c = vi.fn<any>(); const d = e as unknown;",
+  });
+  assert.deepEqual(counts, { "test/c.test.ts": 1, "test/d.test.ts": 2, "test/e.test.ts": 2 });
+});
+
+// OF-127 review: a killed or truncated tsc run must not be read as the errors it managed to print.
+test("a tsc run that errored, was killed, or exited other than 0 or 2 is a problem; 0 and 2 are not", () => {
+  assert.equal(tscRunProblem({ status: 0, signal: null }), undefined);
+  assert.equal(tscRunProblem({ status: 2, signal: null }), undefined);
+  assert.match(tscRunProblem({ status: null, signal: "SIGKILL" }), /killed by SIGKILL/);
+  assert.match(tscRunProblem({ status: null, signal: null, error: new Error("spawnSync ENOBUFS") }), /ENOBUFS/);
+  assert.match(tscRunProblem({ status: 1, signal: null }), /status 1/);
+  assert.match(tscRunProblem({ status: null, signal: null }), /status null/);
 });
 
 test("a new `as any` in a file with no allowance is a regression; fewer is an improvement", () => {

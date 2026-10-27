@@ -105,7 +105,6 @@
   "test/provider-codex-usage-windows.test.ts": 3,
   "test/provider-usage-across-hosts.test.ts": 6,
   "test/public-world-pack.test.ts": 1,
-  "test/queue-cross-host-handoff.test.ts": 1,
   "test/queue-list-compact.test.ts": 2,
   "test/queue-list-grammar.test.ts": 1,
   "test/queue-wake-ladder.test.ts": 2,
