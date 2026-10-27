@@ -411,6 +411,45 @@ describe("OF-72: RSI blindness is recorded, reported, and does not outlive its c
       expect(blindRows(h)).toBe(4);
     });
 
+    // Review B1: the episode opens in the scan, but the nothing-new hour is the only one whose outcome is
+    // rsi_source_blind. An episode that starts in an hour another source sends (or the brake or the budget
+    // skips) must still leave a row the report can find: the outcome's own row names it in notes.newlyBlind.
+    it.each(["send", "brake", "budget"] as const)("a source that goes blind in an hour the wake is %s still leaves a row naming the episode, and later hours stay quiet", async (kind) => {
+      const h = harness();
+      if (kind === "brake") {
+        h.db.prepare(`INSERT INTO usage_samples (lane, seat_session, captured_at, window, window_used_percent)
+          VALUES ('provider_window', 'some-seat@kernel', '2031-03-04T05:00:00.000Z', 'weekly', 95)`).run();
+      }
+      if (kind === "budget") {
+        const jobId = (h.db.prepare("SELECT job_id AS id FROM watchdog_jobs WHERE policy = 'health-finding-wake'").get() as { id: string }).id;
+        const evaluatedAt = new Date(T0 - 60_000).toISOString();
+        for (let i = 0; i < 4; i++) {
+          h.db.prepare("INSERT INTO watchdog_history (history_id, job_id, evaluated_at, outcome, delivery_status) VALUES (?, ?, ?, 'sent', 'ok')").run(`sent-${i}`, jobId, evaluatedAt);
+        }
+      }
+      h.source.mode = "throw";                                   // rsi-telemetry goes blind ...
+      h.sourceB.rigs = ["r2"];                                   // ... in the hour rsi-second reports a new finding
+      const first = await h.scan();
+      expect(first.outcome.action).toBe(kind === "send" ? "send" : "skip");
+
+      const later: string[] = [];
+      for (let hour = 0; hour < 3; hour++) later.push(((await h.scan()).outcome as { reason: string }).reason);
+
+      expect(later.every((reason) => reason !== RSI_SOURCE_BLIND)).toBe(true);
+      const episodeRows = h.historyNotes().filter((r) => r.evaluation_notes !== null
+        && (JSON.parse(r.evaluation_notes).newlyBlind ?? []).some((p: { source: string; reason: string }) => p.source === "rsi-telemetry" && p.reason === "unavailable"));
+      expect(episodeRows).toHaveLength(1);                       // exactly one row opens the episode, whatever the hour's outcome
+    });
+
+    it("no detector id can collide with the reserved episode prefix (its real fingerprints would be filtered out of the active set)", () => {
+      expect(RSI_DETECTORS.length).toBeGreaterThan(10);          // positive control: the population checked
+      expect(RSI_DETECTORS.filter((id) => `${id}/`.startsWith("rsi.source-blind") || "rsi.source-blind/".startsWith(`${id}/`))).toEqual([]);
+    });
+
+    it("the daily report names the rows that open an episode in an hour with a new finding", () => {
+      expect(RSI_DAILY_REPORT_MESSAGE).toContain("newlyBlind");
+    });
+
     it("a blind episode is never an active finding: it is absent from the active set, the receipt and the wake message", async () => {
       const h = harness();
       h.source.mode = "throw";
