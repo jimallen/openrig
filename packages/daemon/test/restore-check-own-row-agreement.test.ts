@@ -39,14 +39,20 @@ describe("restore-check and restore agree about a seat's own saved startup row (
     return { status: pre.status, evidence: pre.evidence };
   }
 
-  // A refusal is a result (`ok: false`, restore ended before it started anything). An exception is not: it propagates and
-  // fails the row, so a defect in restore or the harness cannot pass as a refusal the check happens to agree with.
+  // A refusal is a result (`ok: false, code: pre_restore_validation_failed`: restore ended before it started anything). An
+  // exception is not, and neither is `restore_error` (restore's own conversion of one): either fails the row, so a defect in
+  // restore or the harness cannot pass as a refusal the check happens to agree with.
   async function runRestore(snapshotId: string, listed: boolean): Promise<{ outcome: Outcome; error: string | null; warned: boolean; warnings: string[] }> {
     const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists }, ...(listed ? { freshLogicalIds: [SEAT] } : {}) } as never);
     // What makes the check yellow: restore says the seat replays another snapshot's copy of its startup files because what it would
     // replay cannot be used (own-startup-replay.ts words it "the newest snapshot of this rig whose copy can be used").
     const warned = (warnings: string[]) => warnings.some((w) => w.includes("the newest snapshot of this rig whose copy can be used"));
-    if (!out.ok) return { outcome: "restore-ended", error: null, warned: warned(out.result?.warnings ?? []), warnings: out.result?.warnings ?? [] };
+    if (!out.ok) {
+      // restore() turns an exception inside it into `restore_error`; that is a defect, not a refusal. The only refusal a seat's
+      // saved startup row can cause is the pre-restore validation one.
+      if (out.code !== "pre_restore_validation_failed") throw new Error(`restore ended with ${out.code}: ${out.message}`);
+      return { outcome: "restore-ended", error: null, warned: warned(out.result?.warnings ?? []), warnings: out.result?.warnings ?? [] };
+    }
     const node = out.result.nodes.find((n) => n.logicalId === SEAT)!;
     return { outcome: node.status === "failed" || node.status === "awaiting-decision" ? node.status : "ok", error: node.error ?? null, warned: warned(out.result.warnings), warnings: out.result.warnings };
   }

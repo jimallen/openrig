@@ -130,15 +130,13 @@ export function validatePreRestore(
     // resumable seat with no token) or skips (`restoring` continuity) starts nothing and reads none of its startup
     // files, so none are checked: a missing file of such a seat must not refuse the rig. A seat that resumes consumes
     // nothing (its projection entries are still checked, as before). Only a seat started fresh replays its files.
-    const outcome = sessions
-      ? decideSeatLaunchOutcome({
-        data, snapshotNodeId: node.id, logicalId: node.logicalId,
-        freshRequested: opts.freshLogicalIds?.includes(node.logicalId) ?? false,
-        ...(opts.seatGateInputs?.(node) ?? { live: { runtime: snapshotCtx?.runtime ?? null }, continuityStatus: null, rigName: data.rig?.name ?? "" }),
-      })
-      : null;
-    if (outcome && (outcome.kind === "stop" || outcome.kind === "skip_restoring")) continue;
-    const consumesReplay = !outcome || outcome.kind === "fresh";
+    const outcome = decideSeatLaunchOutcome({
+      data, snapshotNodeId: node.id, logicalId: node.logicalId,
+      freshRequested: opts.freshLogicalIds?.includes(node.logicalId) ?? false,
+      ...(opts.seatGateInputs?.(node) ?? { live: { runtime: snapshotCtx?.runtime ?? null }, continuityStatus: null, rigName: data.rig?.name ?? "" }),
+    });
+    if (outcome.kind === "stop" || outcome.kind === "skip_restoring") continue;
+    const consumesReplay = outcome.kind === "fresh";
     const override = consumesReplay ? opts.freshSeatStartup?.(node) : undefined;
     if (override === "resolved_at_launch") continue;
     if (override && "refuse" in override) {
