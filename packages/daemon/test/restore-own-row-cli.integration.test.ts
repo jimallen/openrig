@@ -76,7 +76,8 @@ async function adviseAndDown(t: ReturnType<typeof useRig>, downExit: number, col
   const refused = await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--reason", "probe"]);
   const text = `${refused.stderr}\n${refused.stdout}`;
   expect(refused.code).not.toBe(0);
-  const down = text.match(/rig down '[^']*'/);
+  // OF-123: the advice names the rig by id (`rig down <id>` accepts one; a shared name would halt as ambiguous).
+  const down = text.match(/rig down [A-Za-z0-9_-]+(?=,)/);
   const up = text.match(/rig up '[^']*' --existing --fresh '[^']*' --startup-from stored/);
   expect(down && up, text).toBeTruthy();
   const downRan = await t.run(`${down![0]} --json`);

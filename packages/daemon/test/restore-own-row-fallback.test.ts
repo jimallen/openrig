@@ -219,6 +219,37 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
     expect(check.remediation).toContain("Start this seat from the rig's recorded spec instead (the spec's current startup files, not the saved ones): rig up 'team' --existing --fresh 'dev.impl'.");
   });
 
+  // OF-107: the same refusal when the recorded spec is refused as untrusted: neither the check nor restore offers the start from
+  // that spec (it would be refused); both name the trusted-copy route by rig id, and still agree with each other.
+  it("OF-107 unlisted, spec recorded but untrusted, no snapshot holds a readable copy -> the remediation names rig spec-source set, not the spec re-read", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig();
+    policyFresh(seat.nodeId);
+    const s1 = await h.down(seat.rigId);
+    const row = h.db.prepare("SELECT data FROM snapshots WHERE id = ?").get(s1) as { data: string };
+    const data = JSON.parse(row.data);
+    for (const key of Object.keys(data.nodeStartupContext)) data.nodeStartupContext[key].resolvedStartupFiles = {};
+    h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), s1);
+    setCol(seat.nodeId, "resolved_files_json", "{}");
+    // No trusted root: the recorded source is refused.
+    h.specSourceTrust.roots = () => [];
+
+    const check = await runCheck({ listed: false });
+    const restore = await runRestore(s1, { listed: false });
+
+    expect(restore.outcome).toBe("pre-restore-refused");
+    expectAgreement(check, restore);
+    expect(check.remediation).toContain("recorded spec source is not trusted");
+    expect(check.remediation).toContain(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`);
+    expect(check.remediation).not.toContain("Start this seat from the rig's recorded spec instead");
+    // Restore's own refusal carries the same remediation (not only the check that predicts it).
+    const refused = await h.restore.restore(s1, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
+    expect(refused.ok).toBe(false);
+    const remediations = !refused.ok && "result" in refused ? (refused.result?.blockers ?? []).map((b: { remediation?: string }) => b.remediation ?? "") : [];
+    expect(remediations.some((r) => r.includes(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`))).toBe(true);
+    expect(remediations.some((r) => r.includes("Start this seat from the rig's recorded spec instead"))).toBe(false);
+  });
+
   // The seat has no row of its own (it was removed, or never launched here) and the restored snapshot's copy is broken:
   // the newest usable copy is replayed, and the check says so too.
   it("unlisted, no own row, the restored snapshot's copy is broken, an earlier one is not -> starts from the earlier copy", async () => {

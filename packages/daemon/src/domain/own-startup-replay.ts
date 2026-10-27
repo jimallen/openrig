@@ -15,7 +15,7 @@
 //    start unlisted, before the seat's launch for a listed seat or a `rig launch` target.
 import type Database from "better-sqlite3";
 import { readNodeStartupSnapshot } from "./snapshot-capture.js";
-import { startupContextShapeProblem } from "./seat-startup-source.js";
+import { startupContextShapeProblem, untrustedSpecSourceRemedy } from "./seat-startup-source.js";
 import type { NodeStartupSnapshot } from "./types.js";
 
 export type OwnStartupForRestore =
@@ -148,11 +148,20 @@ export function noUsableCopyMessage(logicalId: string, why: string): string {
  * rig records a spec source. Otherwise the seat's source was already the stored row because the rig records no spec
  * or its spec does not declare the seat.
  */
-export function noUsableCopyRemedy(how: { scope: "restore" | "seat"; rigName: string; logicalId: string; specRecorded: boolean; ownRow: boolean }): string {
+export function noUsableCopyRemedy(how: { scope: "restore" | "seat"; rigName: string; logicalId: string; specRecorded: boolean; ownRow: boolean;
+  /** OF-107: the recorded spec is refused as untrusted, so "start it from the recorded spec" is not offered (the rig's id, for the fix). */
+  specUntrusted?: { rigId: string } }): string {
   const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
   // Review F2 (4728c079): a seat with no saved row has nothing to repair.
   const repair = how.ownRow ? "the saved row has to be repaired outside restore"
     : "nothing can start it from saved files (it has no saved startup context of its own, and no snapshot holds a usable copy)";
+  if (how.specRecorded && how.specUntrusted) {
+    const fix = untrustedSpecSourceRemedy(how.specUntrusted.rigId);
+    const then = how.scope === "restore"
+      ? `then run: rig up ${quote(how.rigName)} --existing --fresh ${quote(how.logicalId)}`
+      : `then run: rig seat launch ${quote(`${how.logicalId}@${how.rigName}`)} --fresh --reason "<why>"`;
+    return `This rig's recorded spec source is not trusted, so a fresh start from it is refused (startup_source_untrusted) and nothing can rebuild this seat's startup files until that is fixed. ${fix} After that, ${then}. Otherwise ${repair}.`;
+  }
   if (how.scope === "restore") {
     const listed = `rig up ${quote(how.rigName)} --existing --fresh ${quote(how.logicalId)}`;
     return how.specRecorded

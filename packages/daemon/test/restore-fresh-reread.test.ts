@@ -546,7 +546,7 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
   // valid one, or refuses the seat (restore-own-row-fallback.test.ts; the commands are run in the CLI integration test).
   // OF-36 Q1: `rig down` snapshots the rig with no copy for a seat whose context is not JSON, so both kinds of damage
   // get the same restore route; only the clause about rig down's snapshot differs.
-  const VIA_RESTORE = (rigId: string, notJson: boolean) => `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down 'team', then rig up 'team' --existing --fresh 'dev.impl' --startup-from stored (this stops and restarts every seat; the snapshot rig down takes ${notJson ? "holds no copy of this context" : "carries the damage"} and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then the saved row has to be repaired outside restore. Note that rig launch ${rigId} dev.impl on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
+  const VIA_RESTORE = (rigId: string, notJson: boolean) => `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down ${rigId}, then rig up 'team' --existing --fresh 'dev.impl' --startup-from stored (this stops and restarts every seat; the snapshot rig down takes ${notJson ? "holds no copy of this context" : "carries the damage"} and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then the saved row has to be repaired outside restore. Note that rig launch ${rigId} dev.impl on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
   const VIA_RESTORE_SHAPE = (rigId: string) => VIA_RESTORE(rigId, false);
   const VIA_RESTORE_JSON = (rigId: string) => VIA_RESTORE(rigId, true);
   // OF-36 Q2: the advice opens with the snapshot route; these rows take no snapshot, so it says there is none.
@@ -598,6 +598,89 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
       expect(!result.ok && result.guidance).toBe(`A column of the saved startup context is not JSON, and there is no spec to re-read for this seat. ${NO_SNAPSHOT_COPY}${VIA_RESTORE_JSON(seat.rigId)}`);
     });
   }
+
+  // OF-107. "Start it from the rig's recorded spec" is not offered when that source is refused as untrusted: the advice
+  // would send the operator to a command that is refused. Each site that builds this advice is one row.
+  describe("OF-107 advice never offers a start from an untrusted recorded spec", () => {
+    it("malformed context, --startup-from stored, spec recorded but untrusted: no spec route in the guidance", async () => {
+      const seat = await launchRig();
+      corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
+      trustedRoots = [];
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable", startupFrom: "stored" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
+      expect(!result.ok && result.guidance).toBe(`The saved startup context is not a valid startup setup, and there is no spec to re-read for this seat. ${NO_SNAPSHOT_COPY}${VIA_RESTORE_SHAPE(seat.rigId)}`);
+    });
+
+    it("restore of a seat listed with --fresh --startup-from stored, own row unreadable, no snapshot copy, spec untrusted: the refusal names the trusted-copy route", async () => {
+      const seat = await launchRig();
+      corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
+      const snapshotId = await down(seat.rigId);
+      trustedRoots = [];
+
+      const node = seatResult(await restoreFrom(snapshotId, { startupFrom: "stored" }));
+
+      expect(node.status, JSON.stringify(node)).toBe("failed");
+      expect(node.error).toContain("no snapshot of this rig holds a readable copy of its startup files");
+      expect(node.error).toContain("recorded spec source is not trusted");
+      expect(node.error).toContain(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`);
+      expect(node.error).not.toContain("To start it from the rig's recorded spec instead");
+      expect(node.error).toContain("No session was started.");
+    });
+
+    // `rig launch` has no pre-restore validation, so it is refused where restore launches the seat (restoreNodeUnisolated).
+    it("rig launch of a checkpoint_only seat whose context and snapshot copy are unreadable, spec untrusted: the refusal names the trusted-copy route", async () => {
+      const seat = await launchRig();
+      db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+      malformed(seat.nodeId, "shape");
+      await down(seat.rigId);
+      trustedRoots = [];
+
+      const launched = await launchWithoutFresh(seat.rigId);
+
+      const text = JSON.stringify(launched);
+      expect(text).toContain("no snapshot of this rig holds a readable copy of its startup files");
+      expect(text).toContain(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`);
+      expect(text).not.toContain("To start it from the rig's recorded spec instead");
+    });
+
+    it("control: the same rig launch with a trusted spec still offers the start from the recorded spec", async () => {
+      const seat = await launchRig();
+      db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+      malformed(seat.nodeId, "shape");
+      await down(seat.rigId);
+
+      const launched = await launchWithoutFresh(seat.rigId);
+
+      const text = JSON.stringify(launched);
+      expect(text).toContain("To start it from the rig's recorded spec instead");
+      expect(text).not.toContain("spec-source set");
+    });
+
+    it("a recorded spec whose file is gone is unavailable, not untrusted: the guidance keeps the spec route", async () => {
+      const seat = await launchRig();
+      corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
+      linkGone();
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable", startupFrom: "stored" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
+      expect(!result.ok && result.guidance).toBe(SPEC_ROUTE_ADVICE(seat.rigId, false));
+    });
+
+    it("control: the same refusal with a trusted spec still offers the start from the recorded spec", async () => {
+      const seat = await launchRig();
+      corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
+      const snapshotId = await down(seat.rigId);
+
+      const node = seatResult(await restoreFrom(snapshotId, { startupFrom: "stored" }));
+
+      expect(node.status, JSON.stringify(node)).toBe("failed");
+      expect(node.error).toContain("To start it from the rig's recorded spec instead");
+      expect(node.error).not.toContain("not trusted");
+    });
+  });
 
   // N-C2 re-check N6: the spec-gone refusal offered `--startup-from stored`, whose refusal (the saved row is unreadable)
   // printed the spec route back. When the saved context cannot be used, that escape is not offered.

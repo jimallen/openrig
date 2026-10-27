@@ -506,6 +506,78 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
       expect(releaseOf(storedFiles(seat.node.id))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
     });
 
+    // OF-107. An untrusted source is not repaired by restoring or fixing the file at its path (the old advice), so the refusal
+    // names `rig spec-source set` with the rig's id (a rig name may be shared), and keeps the stored files as the other way.
+    it("OF-107: the refusal's guidance records a trusted copy by rig id and keeps the stored escape; it does not say to fix the file", async () => {
+      const seat = await launchRig();
+      trustedRoots = [];
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "untrusted" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_source_untrusted" });
+      const guidance = !result.ok ? result.guidance ?? "" : "";
+      expect(guidance).toContain(`rig spec-source set ${seat.rigId} <path-to-rig.yaml> --operator <address>`);
+      expect(guidance).toContain(`rig spec-source show ${seat.rigId}`);
+      expect(guidance).toContain("--startup-from stored");
+      expect(guidance).not.toContain("Restore or fix the spec at that path");
+    });
+
+    it("OF-107: the command surface (the TUI's fresh action) gets the stored command, not the flag", async () => {
+      const seat = await launchRig();
+      trustedRoots = [];
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "untrusted", storedEscape: "command" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_source_untrusted" });
+      expect(!result.ok && result.guidance).toContain(`rig seat launch 'dev.impl@team' --fresh --startup-from stored --reason "<why>"`);
+    });
+
+    it("OF-107: a source that stays unavailable (not untrusted) keeps the restore-or-fix advice", async () => {
+      const seat = await launchRig();
+      fs.unlinkSync(current);
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "gone" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_source_unavailable" });
+      expect(!result.ok && result.guidance).toContain("Restore or fix the spec at that path");
+    });
+
+    // OF-107. `rig up` from a spec outside every trusted root records it as the rig's source, and a later fresh launch
+    // refuses it. Said at `rig up`, in the warnings the launch returns. Deployed entrypoint: BootstrapOrchestrator calls
+    // PodRigInstantiator.instantiate with specSourcePath, and carries the result's warnings to the CLI.
+    it("OF-107: rig up from a spec outside every trusted root warns, naming the fix by rig id; the seats still launch", async () => {
+      trustedRoots = [];
+      const realSpec = fs.realpathSync(linkSpec);
+
+      const outcome = await inst.instantiate(fs.readFileSync(realSpec, "utf-8"), path.dirname(realSpec), { cwdOverride: workdir, specSourcePath: linkSpec });
+
+      expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+      if (!outcome.ok) return;
+      const warnings = outcome.result.warnings ?? [];
+      const untrusted = warnings.filter((w) => w.includes("not a trusted spec source"));
+      expect(untrusted).toHaveLength(1);
+      expect(untrusted[0]).toContain(linkSpec);
+      expect(untrusted[0]).toContain("startup_source_untrusted");
+      expect(untrusted[0]).toContain(`rig spec-source set ${outcome.result.rigId} `);
+      expect(untrusted[0]).toContain("--startup-from stored");
+    });
+
+    it("OF-107: rig up from a trusted spec gives no such warning, and neither does a rig up with no recorded source", async () => {
+      const realSpec = fs.realpathSync(linkSpec);
+      trustedRoots = [path.join(root, "library"), path.join(root, "releases")];
+      const trusted = await inst.instantiate(fs.readFileSync(realSpec, "utf-8"), path.dirname(realSpec), { cwdOverride: workdir, specSourcePath: linkSpec });
+      expect(trusted.ok, JSON.stringify(trusted)).toBe(true);
+      expect(trusted.ok && (trusted.result.warnings ?? []).filter((w) => w.includes("not a trusted spec source"))).toEqual([]);
+    });
+
+    it("OF-107: rig up with no recorded source (specSourcePath absent) gives no such warning", async () => {
+      trustedRoots = [];
+      const realSpec = fs.realpathSync(linkSpec);
+      const outcome = await inst.instantiate(fs.readFileSync(realSpec, "utf-8"), path.dirname(realSpec), { cwdOverride: workdir });
+      expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+      expect(outcome.ok && (outcome.result.warnings ?? []).filter((w) => w.includes("not a trusted spec source"))).toEqual([]);
+    });
+
     it("an instantiator wired with no trust at all refuses a recorded source: it never fails open", async () => {
       const seat = await launchRig();
       (inst as unknown as { deps: { specSourceTrust?: unknown } }).deps.specSourceTrust = undefined;

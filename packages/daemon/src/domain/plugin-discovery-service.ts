@@ -29,10 +29,10 @@
 // (resources.plugins[].id + profile.uses.plugins[]) is exactly what batch 1
 // produces, so post-merge the service continues to work unchanged.
 
-import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { checkGuardedFile, SPEC_FILE_KIND } from "./culture-file-guard.js";
+import { checkGuardedFile, PLUGIN_JSON_KIND, SPEC_FILE_KIND } from "./culture-file-guard.js";
 
 export type PluginRuntime = "claude" | "codex";
 // Slice 3.3 fix-C — `rig-cwd` source per DESIGN §5.4 union (4th category):
@@ -562,6 +562,16 @@ function safeReaddir(dir: string): string[] {
   }
 }
 
+/**
+ * OF-111: parse one plugin JSON file through the guarded reader (regular file, one link, size cap, one descriptor).
+ * Throws on a refusal or a parse error; every caller already treats a throw as "no usable file".
+ */
+function readGuardedJson(path: string): unknown {
+  const checked = checkGuardedFile(PLUGIN_JSON_KIND, path, path);
+  if (!checked.ok) throw new Error(checked.message);
+  return JSON.parse(checked.content);
+}
+
 function isDir(p: string): boolean {
   try {
     return statSync(p).isDirectory();
@@ -573,7 +583,7 @@ function isDir(p: string): boolean {
 function readManifest(manifestPath: string): PluginManifestSummary | null {
   if (!existsSync(manifestPath)) return null;
   try {
-    const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    const raw = readGuardedJson(manifestPath) as Record<string, unknown>;
     return {
       raw,
       name: typeof raw.name === "string" ? raw.name : null,
@@ -619,7 +629,7 @@ function readMcpServers(
 
 function extractHookEvents(hooksJsonPath: string): string[] {
   try {
-    const data = JSON.parse(readFileSync(hooksJsonPath, "utf8")) as { hooks?: Record<string, unknown> };
+    const data = readGuardedJson(hooksJsonPath) as { hooks?: Record<string, unknown> };
     if (data.hooks && typeof data.hooks === "object") {
       return Object.keys(data.hooks);
     }
@@ -631,7 +641,7 @@ function extractHookEvents(hooksJsonPath: string): string[] {
 
 function readJsonObject(path: string): Record<string, unknown> | null {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    const parsed = readGuardedJson(path);
     return isObject(parsed) ? parsed : null;
   } catch {
     return null;
@@ -708,7 +718,7 @@ function extractHookIdentities(
   pluginPath: string,
 ): string[] {
   try {
-    const data = JSON.parse(readFileSync(hooksJsonPath, "utf8")) as { hooks?: Record<string, unknown> };
+    const data = readGuardedJson(hooksJsonPath) as { hooks?: Record<string, unknown> };
     if (!data.hooks || typeof data.hooks !== "object") return [];
 
     const identities: string[] = [];

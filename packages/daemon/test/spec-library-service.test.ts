@@ -291,4 +291,80 @@ describe("SpecLibraryService", () => {
       expect(lib.list()).toHaveLength(1);
     });
   });
+
+  // OF-111: get and rename read an entry's file AFTER the scan indexed it, so the file can have changed since. They use
+  // the scan's guarded reader. (No FIFO row: at base a plain read of a FIFO blocks forever, which would hang the suite.)
+  describe("guarded get and rename (OF-111)", () => {
+    const OVER_CAP = "# " + "x".repeat(300 * 1024) + "\n";
+
+    it("get returns the yaml of an unchanged entry (control)", () => {
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      const got = lib.get(lib.list()[0]!.id);
+      expect(got?.yaml).toBe(VALID_RIG_YAML);
+    });
+
+    it("get refuses an entry whose file grew past the spec-sized cap after the scan", () => {
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      const id = lib.list()[0]!.id;
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML + OVER_CAP);
+      expect(lib.get(id)).toBeNull();
+    });
+
+    it("get refuses an entry whose file gained a second hard link after the scan", () => {
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      const id = lib.list()[0]!.id;
+      const outside = mkdtempSync(join(tmpdir(), "spec-lib-outside-"));
+      try {
+        linkSync(join(tmpDir, "ok.yaml"), join(outside, "alias.yaml"));
+        expect(lib.get(id)).toBeNull();
+      } finally { rmSync(outside, { recursive: true, force: true }); }
+    });
+
+    it("get of a workflow entry gives no yaml for a file past the cap, and the yaml for a normal one", () => {
+      const lib = createLibrary();
+      writeFileSync(join(tmpDir, "wf-ok.yaml"), "name: wf\n");
+      writeFileSync(join(tmpDir, "wf-big.yaml"), "name: wf\n" + OVER_CAP);
+      const wf = (id: string, file: string) => ({
+        id, kind: "workflow" as const, name: id, version: "1", sourceType: "user_file" as const,
+        sourcePath: join(tmpDir, file), relativePath: file, updatedAt: "2026-01-01T00:00:00.000Z", isBuiltIn: false,
+      });
+      lib.setWorkflowEntries([wf("wf-ok", "wf-ok.yaml"), wf("wf-big", "wf-big.yaml")] as never);
+      expect(lib.get("wf-ok")?.yaml).toBe("name: wf\n");
+      expect(lib.get("wf-big")?.yaml).toBe("");
+    });
+
+    it("rename writes nothing through a file that gained a second hard link after the scan", () => {
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      const id = lib.list()[0]!.id;
+      const outside = mkdtempSync(join(tmpdir(), "spec-lib-outside-"));
+      try {
+        const alias = join(outside, "alias.yaml");
+        linkSync(join(tmpDir, "ok.yaml"), alias);
+
+        const result = lib.rename(id, "renamed-rig");
+
+        expect(result.ok).toBe(false);
+        // The alias is some other file; rewriting through the link would have changed it.
+        expect(readFileSync(alias, "utf-8")).toBe(VALID_RIG_YAML);
+        expect(readFileSync(join(tmpDir, "ok.yaml"), "utf-8")).toBe(VALID_RIG_YAML);
+      } finally { rmSync(outside, { recursive: true, force: true }); }
+    });
+
+    it("rename still renames an unchanged entry (control)", () => {
+      writeFileSync(join(tmpDir, "ok.yaml"), VALID_RIG_YAML);
+      const lib = createLibrary();
+      lib.scan();
+      const result = lib.rename(lib.list()[0]!.id, "renamed-rig");
+      expect(result.ok).toBe(true);
+      expect(existsSync(join(tmpDir, "renamed-rig.yaml"))).toBe(true);
+    });
+  });
 });

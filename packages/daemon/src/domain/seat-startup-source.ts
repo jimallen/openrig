@@ -83,6 +83,28 @@ export type SeatSkillProjectionResult = { ok: true; warnings: string[] } | { ok:
 export interface SeatStartupSpecReader {
   readSeatStartupFromSpec(input: { rigId: string; nodeId: string; adapter: RuntimeAdapter; sessionName: string }): Promise<SeatStartupRead>;
   projectSeatSkills(skills: SeatSkillProjection): SeatSkillProjectionResult;
+  /**
+   * OF-122: the agent provenance (name, version, hash) of the persona a seat's `path:` agent_ref reaches NOW, for a launch
+   * that replays the saved startup files (they follow the path as typed, so they deliver that release). Null when the
+   * seat has no `path:` ref or the persona cannot be read: the recorded provenance then stays as it is. Reads only.
+   */
+  readSeatAgentProvenance?(input: { nodeId: string }): { name: string; version: string; hash: string } | null;
+  /**
+   * OF-107: whether the rig's recorded spec source is one a fresh launch refuses (`startup_source_untrusted`). Advice that
+   * offers "start it from the recorded spec" asks this first, so it never names a route that is refused. False when no
+   * source is recorded, when it is trusted, or when it cannot be judged (a missing file is "unavailable", not untrusted).
+   */
+  recordedSpecSourceUntrusted?(rigId: string): boolean;
+}
+
+/** OF-107: `SeatStartupSpecReader.recordedSpecSourceUntrusted`, false when the daemon has no reader. */
+export function specSourceUntrusted(reader: SeatStartupSpecReader | null | undefined, rigId: string): boolean {
+  return reader?.recordedSpecSourceUntrusted?.(rigId) ?? false;
+}
+
+/** OF-107: how to get past a refused (untrusted) recorded spec source: record a reviewed copy from a trusted spec root. */
+export function untrustedSpecSourceRemedy(rigId: string): string {
+  return `Fixing or restoring the file at the recorded path does not help; record a reviewed copy from a trusted spec root instead: rig spec-source set ${rigId} <path-to-rig.yaml> --operator <address> (rig spec-source show ${rigId} says whether a launch would refuse the recorded one).`;
 }
 
 /** OF-32: where a fresh launch took its startup policy from, as reported to the operator and the audit event. */
@@ -179,6 +201,8 @@ export async function resolveFreshSeatStartup(
     startupFrom: StartupFrom;
     /** What the caller's operator can do about a refused re-read (it names that verb's stored escape). */
     refusalGuidance: string;
+    /** OF-107: the stored escape alone, for a refusal where fixing the spec is not the way out (`startup_source_untrusted`). */
+    storedEscapeGuidance?: string;
   },
 ): Promise<{ ok: true; context: FreshStartupContext } | FreshStartupRefusal> {
   // pda L2a (design A4): checked FIRST, before any source is read, for every caller of this one decision (restore of a
@@ -210,7 +234,12 @@ export async function resolveFreshSeatStartup(
       // N-C2 re-check N6: the caller's guidance offers the stored files as the way out; when they cannot be used either,
       // that escape is refused too (it would print the spec-route advice back), so it is not offered.
       const stored = readStoredStartupContext(deps.db, input.nodeId, input.cwd);
-      const guidance = read.guidance ? read.guidance : stored.ok ? input.refusalGuidance
+      // OF-107: an untrusted source is not repaired by restoring or fixing the file at its path, so the usual advice would
+      // send the operator in a circle; it is told to record a trusted copy, with the stored files as the other way out.
+      const untrustedGuidance = read.code === "startup_source_untrusted"
+        ? `${untrustedSpecSourceRemedy(input.rigId)}${stored.ok && input.storedEscapeGuidance ? ` Or ${input.storedEscapeGuidance}` : ""}`
+        : undefined;
+      const guidance = read.guidance ? read.guidance : untrustedGuidance ? untrustedGuidance : stored.ok ? input.refusalGuidance
         : `Restore or fix the spec at that path. The seat's saved startup context cannot be used either (${stored.refusal.message}), so rig seat launch --fresh --startup-from stored is refused too.`;
       return { ok: false, code: read.code, message: read.message, guidance };
     }
@@ -253,14 +282,18 @@ export async function resolveFreshSeatStartup(
         ? { ...startup.refusal, guidance: malformedContextGuidance(input, {
             notJson: startup.unparseable === true,
             // A spec is read on this refusal only when the operator asked for the stored files; and it must be recorded.
-            specRoute: storedReason === "requested" && !!deps.rigRepo.getRigSpecSource(input.rigId),
+            specRoute: storedReason === "requested" && !!deps.rigRepo.getRigSpecSource(input.rigId) && !specSourceUntrusted(deps.specReader, input.rigId),
             rigName: (deps.db.prepare("SELECT name FROM rigs WHERE id = ?").get(input.rigId) as { name: string } | undefined)?.name ?? input.rigId,
             snapshotRoute: newestUsableSnapshotCopy(deps.db, input.rigId, input.logicalId, input.runtime),
           }) }
         : startup.refusal;
     }
+    // OF-122: the stored files follow the typed path, so the launch delivers the release it reaches now; the node's
+    // recorded version and hash (what `rig whoami` shows) are refreshed to that release when the launch succeeds.
+    const provenance = deps.specReader?.readSeatAgentProvenance?.({ nodeId: input.nodeId }) ?? null;
     context = {
       ...startup.context,
+      ...(provenance ? { resolvedSpec: provenance } : {}),
       source: { kind: "stored", reason: storedReason },
       sourceWarnings: storedReason === "no_recorded_source" ? [NO_RECORDED_SOURCE_WARNING]
         : storedReason === "not_in_spec" ? [notInSpecWarning(input.logicalId, undeclaredSource ?? "")] : [],
@@ -304,7 +337,7 @@ function malformedContextGuidance(
     : "No snapshot of this rig holds a valid copy of this seat's startup files. ";
   // OF-36 Q1: `rig down` now snapshots the rig even when this seat's context is not JSON (that seat gets no copy), so
   // one restore route serves both kinds of damage.
-  const viaRestore = `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down ${quote(how.rigName)}, then rig up ${quote(how.rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from stored (this stops and restarts every seat; the snapshot rig down takes ${how.notJson ? "holds no copy of this context" : "carries the damage"} and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then ${repair}. Note that rig launch ${input.rigId} ${input.logicalId} on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
+  const viaRestore = `A restore that starts this seat fresh replays the newest snapshot copy of its startup files that is valid and saves it as its new context: rig down ${input.rigId}, then rig up ${quote(how.rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from stored (this stops and restarts every seat; the snapshot rig down takes ${how.notJson ? "holds no copy of this context" : "carries the damage"} and is passed over). If no snapshot holds a valid copy, that restore refuses this seat and starts nothing for it; then ${repair}. Note that rig launch ${input.rigId} ${input.logicalId} on its own resumes a seat that has a resume token under the default restore policy (resume_if_possible), delivers nothing and leaves the context unreadable.`;
   if (how.specRoute) {
     return `${viaSnapshot}Or start it from the rig's recorded spec instead: rig seat launch ${quote(`${input.logicalId}@${how.rigName}`)} --fresh --stop --reason "<why>". That re-reads the spec and delivers the spec's current startup files, not the saved ones, saves them as the seat's new context, and leaves the other seats running. If the spec can no longer start the seat, that launch is refused and changes nothing. ${viaRestore}`;
   }
