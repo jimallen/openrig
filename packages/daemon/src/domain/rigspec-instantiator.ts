@@ -2775,6 +2775,20 @@ export class PodRigInstantiator {
     const row = this.deps.db.prepare("SELECT agent_ref FROM nodes WHERE id = ?").get(input.nodeId) as { agent_ref: string | null } | undefined;
     const ref = row?.agent_ref;
     if (!ref || !ref.startsWith("path:")) return null;
+    // The refresh is only true when the saved files came through the typed path (OF-99 and later): then the launch delivers
+    // the release it reaches now. A context saved before OF-99 holds the release's real path and replays that release, so
+    // refreshing from the typed path would name a release the seat is not given: it keeps its recorded provenance.
+    const typed = nodePath.resolve(ref.slice("path:".length));
+    const saved = this.deps.db.prepare("SELECT projection_entries_json, resolved_files_json FROM node_startup_context WHERE node_id = ?")
+      .get(input.nodeId) as { projection_entries_json: string; resolved_files_json: string } | undefined;
+    if (!saved) return null;
+    try {
+      const files = JSON.parse(saved.resolved_files_json) as Array<{ ownerRoot?: unknown }>;
+      const entries = JSON.parse(saved.projection_entries_json) as Array<{ sourcePath?: unknown }>;
+      const throughTyped = [...files.map((f) => f?.ownerRoot), ...entries.map((e) => e?.sourcePath)]
+        .some((p) => typeof p === "string" && nodePath.resolve(p) === typed);
+      if (!throughTyped) return null;
+    } catch { return null; }
     const resolved = resolveAgentRef(ref, nodePath.dirname(ref.slice("path:".length)), this.deps.fsOps);
     return resolved.ok ? { name: resolved.resolved.spec.name, version: resolved.resolved.spec.version, hash: resolved.resolved.hash } : null;
   }

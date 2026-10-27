@@ -231,8 +231,8 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
     for (const key of Object.keys(data.nodeStartupContext)) data.nodeStartupContext[key].resolvedStartupFiles = {};
     h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), s1);
     setCol(seat.nodeId, "resolved_files_json", "{}");
-    // No trust wired: every recorded source is refused (it never fails open).
-    (h.inst as unknown as { deps: { specSourceTrust?: unknown } }).deps.specSourceTrust = undefined;
+    // No trusted root: the recorded source is refused.
+    h.specSourceTrust.roots = () => [];
 
     const check = await runCheck({ listed: false });
     const restore = await runRestore(s1, { listed: false });

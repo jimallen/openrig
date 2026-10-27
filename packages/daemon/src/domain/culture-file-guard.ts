@@ -46,6 +46,8 @@ export interface GuardedFileKind {
   notRegularHint: string;
   /** "a culture file": completes "..., so X must have exactly one" and "over the N-byte limit for X". */
   article: string;
+  /** A read-only parse may accept a file with more than one hard link (a `cp -al` or pnpm-style tree). Default: refused. */
+  allowHardLinks?: boolean;
 }
 
 export const CULTURE_FILE_KIND: GuardedFileKind = {
@@ -81,6 +83,9 @@ export const PLUGIN_JSON_KIND: GuardedFileKind = {
   notFoundHint: "it vanished during the scan",
   notRegularHint: "a plugin manifest or hooks registry must be a plain file",
   article: "a plugin file",
+  // Plugins are installed with `cp -al` and pnpm-style layouts; the files are only parsed here (the openrig-lab migration
+  // rewrites by temp file and rename, which never writes through a link). Regular file, size cap and one descriptor still apply.
+  allowHardLinks: true,
 };
 
 /**
@@ -114,7 +119,7 @@ export function checkGuardedFile(
     if (!st.isFile()) {
       return { ok: false, reason: "not_regular_file", message: `${label} "${requested}" (${realPath}) is not a regular file (a directory, pipe, device or socket); ${kind.notRegularHint}` };
     }
-    if (st.nlink > 1) {
+    if (st.nlink > 1 && !kind.allowHardLinks) {
       return { ok: false, reason: "hard_linked", message: `${label} "${requested}" (${realPath}) has ${st.nlink} hard links; a hard link can alias a file from somewhere else, so ${kind.article} must have exactly one` };
     }
     if (st.size > maxBytes) {

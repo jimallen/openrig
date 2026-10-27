@@ -287,6 +287,27 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     expect(nodeHash(seat.nodeId)).not.toBe(hashBefore);
   });
 
+  // Review v7 finding 2: a context saved before OF-99 holds the release's real path, so a replay of it delivers that release;
+  // refreshing from the typed path (which reaches another release now) would name a release the seat is not given.
+  it("a saved context recorded under the release's real path (before OF-99) keeps its recorded version and hash", async () => {
+    const seat = await launchRig();
+    const hashBefore = nodeHash(seat.nodeId);
+    const typedDir = path.join(current, "agents", "impl");
+    const realDir = path.join(root, "releases", "aaaaaaa", "agents", "impl");
+    for (const col of ["resolved_files_json", "projection_entries_json"]) {
+      const text = (db.prepare(`SELECT ${col} AS v FROM node_startup_context WHERE node_id = ?`).get(seat.nodeId) as { v: string }).v;
+      db.prepare(`UPDATE node_startup_context SET ${col} = ? WHERE node_id = ?`).run(text.split(typedDir).join(realDir), seat.nodeId);
+    }
+    retarget("bbbbbbb");
+
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "legacy row" });
+
+    expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
+    expectRoleFrom("1.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    expect(nodeHash(seat.nodeId)).toBe(hashBefore);
+  });
+
   it("a seat whose agent_ref is not a typed path keeps its recorded version and hash (a local: ref has no rig root to re-read from)", async () => {
     const seat = await launchRig();
     const hashBefore = nodeHash(seat.nodeId);

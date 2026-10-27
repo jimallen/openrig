@@ -768,13 +768,23 @@ startup:
         expect(detail?.hooks.find((h) => h.runtime === "claude")?.events).toEqual([]);
       });
 
-      it("a hard-linked hooks registry lists no events", () => {
+      // Review v7 finding 1: a plugin installed with `cp -al` or a pnpm-style layout has hard-linked files and was listed
+      // before the guard; it must still be (the files are only parsed here).
+      it("a hard-linked hooks registry still lists its events", () => {
         const dir = join(dirs.openrigPluginsDir, "openrig-linkedhooks");
         writeClaudePluginManifest(dir, { name: "openrig-linkedhooks", version: "0.1.0" });
         writeHookManifest(dir, "claude", "Stop", "true");
         linkSync(join(dir, "hooks", "claude.json"), join(dirs.root, "alias.json"));
         const detail = service().getPlugin("openrig-linkedhooks");
-        expect(detail?.hooks.find((h) => h.runtime === "claude")?.events).toEqual([]);
+        expect(detail?.hooks.find((h) => h.runtime === "claude")?.events).toEqual(["Stop"]);
+      });
+
+      it("a hard-linked plugin.json still lists the plugin, with its manifest", () => {
+        const dir = join(dirs.openrigPluginsDir, "openrig-linkedmanifest");
+        writeClaudePluginManifest(dir, { name: "openrig-linkedmanifest", version: "0.2.0" });
+        linkSync(join(dir, ".claude-plugin", "plugin.json"), join(dirs.root, "alias-plugin.json"));
+        expect(service().listPlugins().map((p) => p.id)).toContain("openrig-linkedmanifest");
+        expect(service().getPlugin("openrig-linkedmanifest")?.claudeManifest?.version).toBe("0.2.0");
       });
 
       it("the duplicate-hook check does not count identities from a registry past the cap", () => {
