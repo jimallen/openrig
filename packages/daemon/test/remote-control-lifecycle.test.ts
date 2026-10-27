@@ -18,6 +18,9 @@ import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import type { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
+// OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
+const WORKSPACE = existingRigRoot("workspace");
 
 // The user-facing promise: a CoS seat declared `remote_control: true` comes back WITH Remote Control
 // after `rig down` + `rig up <rig> --existing` (restore) and after rig-here's restore. Restore reads the
@@ -103,7 +106,7 @@ describe("legacy (non-pod) restore passes the persisted declaration to the resum
     const checkpointStore = new CheckpointStore(db);
     const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
     const rig = rigRepo.createRig("legacy-rig");
-    const node = rigRepo.addNode(rig.id, "cos", { runtime: "claude-code", cwd: "/workspace", ...(remoteControl ? { remoteControl: true } : {}) });
+    const node = rigRepo.addNode(rig.id, "cos", { runtime: "claude-code", cwd: WORKSPACE, ...(remoteControl ? { remoteControl: true } : {}) });
     const session = sessionRegistry.registerSession(node.id, "cos@legacy-rig");
     sessionRegistry.updateStatus(session.id, "running");
     sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());

@@ -19,6 +19,9 @@ import type { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import type { ResolvedAgentSpec } from "../src/domain/agent-resolver.js";
 import type { RigSpecPodMember } from "../src/domain/types.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
+// OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
+const WORKSPACE = existingRigRoot("workspace");
 
 function setup() {
   const db = createFullTestDb();
@@ -75,7 +78,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       agentRef: "local:agents/analyst",
       profile: "reasoner",
       runtime: "claude-code",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
     };
 
     // 1. Profile resolution: effort resolves from profile preferences
@@ -139,7 +142,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       tmuxPane: "%0",
       cmuxSurface: null,
       updatedAt: "",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
       model: dbNode!.model ?? undefined,
       effort: dbNode!.effort ?? undefined,
     }, { name: "analyst" });
@@ -221,7 +224,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       agentRef: "local:agents/coder",
       profile: "reasoner",
       runtime: "codex",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
     };
 
     const resCtx: ResolutionContext = {
@@ -282,7 +285,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       tmuxPane: "%0",
       cmuxSurface: null,
       updatedAt: "",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
       model: dbNode!.model ?? undefined,
       effort: dbNode!.effort ?? undefined,
     }, { name: "coder" });
@@ -388,7 +391,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       agentRef: "local:agents/analyst",
       profile: "reasoner",
       runtime: "claude-code",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
     };
 
     // 1. Initial launch with effort = "high"
@@ -398,7 +401,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       profile: member.profile,
       model: "claude-3-7-sonnet-20250219",
       effort: "high",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
     });
 
     const tmux = mockShellCommand({
@@ -432,7 +435,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       tmuxPane: "%0",
       cmuxSurface: null,
       updatedAt: "",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
       model: "claude-3-7-sonnet-20250219",
       effort: "high",
     }, { name: "analyst" });
@@ -480,7 +483,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       tmuxPane: "%0",
       cmuxSurface: null,
       updatedAt: "",
-      cwd: "/workspace",
+      cwd: WORKSPACE,
       model: refreshedNode.model ?? undefined,
       effort: refreshedNode.effort ?? undefined,
     }, { name: "analyst" });
@@ -551,7 +554,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
   it("restore launches the seat's saved choice, not the snapshot's effort, says so, and keeps the choice", async () => {
     const ctx = setup();
     const rig = ctx.rigRepo.createRig("prec-rig");
-    const node = ctx.rigRepo.addNode(rig.id, "coder", { runtime: "codex", model: "o3-mini", effort: "medium", cwd: "/workspace" });
+    const node = ctx.rigRepo.addNode(rig.id, "coder", { runtime: "codex", model: "o3-mini", effort: "medium", cwd: WORKSPACE });
     const session = ctx.sessionRegistry.registerSession(node.id, "coder@prec-rig");
     ctx.sessionRegistry.updateStatus(session.id, "running");
     ctx.sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());
@@ -586,7 +589,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
   it("Claude: snapshot authored medium, then high saved on the live node: an ordinary restore launches high, says so, keeps it", async () => {
     const ctx = setup();
     const rig = ctx.rigRepo.createRig("prec-claude");
-    const node = ctx.rigRepo.addNode(rig.id, "analyst", { runtime: "claude-code", model: "opus", effort: "medium", cwd: "/workspace" });
+    const node = ctx.rigRepo.addNode(rig.id, "analyst", { runtime: "claude-code", model: "opus", effort: "medium", cwd: WORKSPACE });
     const session = ctx.sessionRegistry.registerSession(node.id, "analyst@prec-claude");
     ctx.sessionRegistry.updateStatus(session.id, "running");
     ctx.sessionRegistry.updateStartupStatus(session.id, "ready", new Date().toISOString());
@@ -624,7 +627,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
     it(`${runtime}: a seat removed and grown back (new node id, same logical id) keeps its latest choice on restore`, async () => {
       const ctx = setup();
       const rig = ctx.rigRepo.createRig(`regrow-${runtime}`);
-      const opts = { runtime, model: runtime === "codex" ? "o3-mini" : "opus", effort: "medium", cwd: "/workspace" };
+      const opts = { runtime, model: runtime === "codex" ? "o3-mini" : "opus", effort: "medium", cwd: WORKSPACE };
       const old = ctx.rigRepo.addNode(rig.id, "seat", opts);
       const first = ctx.sessionRegistry.registerSession(old.id, `seat@regrow-${runtime}`);
       ctx.sessionRegistry.updateStatus(first.id, "running");
@@ -668,7 +671,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
   it("a choice cleared after the snapshot stays cleared: restore launches the snapshot's authored effort, silently", async () => {
     const ctx = setup();
     const rig = ctx.rigRepo.createRig("prec-clear");
-    const node = ctx.rigRepo.addNode(rig.id, "coder", { runtime: "codex", model: "o3-mini", effort: "medium", cwd: "/workspace" });
+    const node = ctx.rigRepo.addNode(rig.id, "coder", { runtime: "codex", model: "o3-mini", effort: "medium", cwd: WORKSPACE });
     ctx.rigRepo.setNodeEffortChoice(node.id, "high"); // the snapshot holds the choice high
     const session = ctx.sessionRegistry.registerSession(node.id, "coder@prec-clear");
     ctx.sessionRegistry.updateStatus(session.id, "running");

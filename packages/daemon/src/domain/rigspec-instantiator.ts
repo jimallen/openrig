@@ -2817,7 +2817,7 @@ export class PodRigInstantiator {
         operatorStartup: undefined,
       });
       startup = {
-        plan: { entries: [], diagnostics: [], conflicts: [], noOps: [], runtime: "terminal", cwd: resolveLaunchCwd(member.cwd, rigRoot, node.cwd ?? undefined) },
+        plan: { entries: [], startup: { files: [], actions: [] }, diagnostics: [], conflicts: [], noOps: [], runtime: "terminal", cwd: resolveLaunchCwd(member.cwd, rigRoot, node.cwd ?? undefined) },
         resolvedStartupFiles: this.buildTerminalResolvedStartupFiles(rigSpec, rigRoot, pod, member),
         startupActions: terminalStartup.actions,
         conflictWarnings: [],

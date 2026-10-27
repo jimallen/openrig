@@ -9,6 +9,9 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { Reconciler } from "../src/domain/reconciler.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
+// OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
+const INERT_DIR = existingRigRoot("inert");
 
 const databases: Database.Database[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
@@ -66,7 +69,7 @@ async function fixture() {
     sessionRegistry.clearBinding(nodes.worker!.id);
     guard.rebindLifecycle(nodes.worker!.id);
     expect(await new NodeLauncher(deps).launchNode(rig.id, "worker", {
-      cwd: "/inert", sessionName: "worker@fixture",
+      cwd: INERT_DIR, sessionName: "worker@fixture",
     })).toMatchObject({ ok: true, binding: { tmuxPane: "%0" } });
   });
   expect(sessionRegistry.getBindingForNode(nodes.old!.id)).toEqual(oldBinding);

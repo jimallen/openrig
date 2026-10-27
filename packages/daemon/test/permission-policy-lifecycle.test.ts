@@ -36,6 +36,9 @@ import { claudePostureFlag, codexPostureArg, piTrust } from "../src/adapters/yol
 import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
+// OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
+const SEAT_DIR = existingRigRoot("seat");
 
 const CUSTOM_POLICY = `---
 policy_schema_version: 1
@@ -115,7 +118,7 @@ describe("F1 — rig-level custom provenance is RESTART-COMPLETE", () => {
     expect(outcome.ok).toBe(true);
     const rigId = (outcome as { ok: true; result: { rigId: string } }).result.rigId;
     // ORGANIC seat: claim/self-attach shape — direct addNode, NO member spec, NO node provenance
-    const organic = setup1.rigRepo.addNode(rigId, "dev.organic", { runtime: "claude-code", cwd: "/w" });
+    const organic = setup1.rigRepo.addNode(rigId, "dev.organic", { runtime: "claude-code", cwd: SEAT_DIR });
     // a resumable session for the organic seat (legacy restore path)
     const session = setup1.sessionRegistry.registerSession(organic.id, "dev-organic@lifecycle-rig");
     setup1.sessionRegistry.updateStatus(session.id, "running");
@@ -216,7 +219,7 @@ describe("F1 — rig-level custom provenance is RESTART-COMPLETE", () => {
     const outcome = await setup.podInstantiator.materializeStructured(rigLevelSpec(), DECLARING_ROOT);
     expect(outcome.ok).toBe(true);
     const rigId = (outcome as { ok: true; result: { rigId: string } }).result.rigId;
-    const organic = setup.rigRepo.addNode(rigId, "dev.organic2", { runtime: "claude-code", cwd: "/w" });
+    const organic = setup.rigRepo.addNode(rigId, "dev.organic2", { runtime: "claude-code", cwd: SEAT_DIR });
     // the same read the seat-handover successor path performs:
     const nodeProv = setup.rigRepo.getNodePolicyProvenance(organic.id);
     const rigProv = setup.rigRepo.getRigPolicyProvenance(rigId);
@@ -260,7 +263,7 @@ describe("F3 — unreadable custom content at restore uses the PERSISTED posture
     // the resolvedTarget path does NOT exist on this real filesystem = unreadable at restore.
     const rig = setup1.rigRepo.createRig("f3-rig");
     const rigId = rig.id;
-    const implNode = setup1.rigRepo.addNode(rigId, "dev.impl", { runtime: "claude-code", cwd: "/w" });
+    const implNode = setup1.rigRepo.addNode(rigId, "dev.impl", { runtime: "claude-code", cwd: SEAT_DIR });
     setup1.rigRepo.setNodePolicyProvenance(implNode.id, {
       origin: "custom",
       resolvedTarget: `${DECLARING_ROOT}/policies/operator-full.md`,
@@ -401,7 +404,7 @@ describe("GF1 — READABLE but malformed/unusable custom content uses the PERSIS
     migrate(db1, migrationsForFullTestDb);
     const setup1 = createTestApp(db1, { podInstantiatorFsOps: fsOps() });
     const rig = setup1.rigRepo.createRig(`gf1-${kind}`);
-    const node = setup1.rigRepo.addNode(rig.id, "dev.seat", { runtime: "claude-code", cwd: "/w" });
+    const node = setup1.rigRepo.addNode(rig.id, "dev.seat", { runtime: "claude-code", cwd: SEAT_DIR });
     if (kind === "node") {
       setup1.rigRepo.setNodePolicyProvenance(node.id, {
         origin: "custom", resolvedTarget: join(declRoot, "policies", "operator-full.md"),
@@ -655,7 +658,7 @@ describe("ABSENCE = locked floor at every lifecycle surface (R2 HIGH at 954d97a0
       migrate(db1, migrationsForFullTestDb);
       const setup1 = createTestApp(db1, { podInstantiatorFsOps: fsOps() });
       const rig = setup1.rigRepo.createRig("absent-rig");
-      const node = setup1.rigRepo.addNode(rig.id, "dev.bare", { runtime: "claude-code", cwd: "/w" });
+      const node = setup1.rigRepo.addNode(rig.id, "dev.bare", { runtime: "claude-code", cwd: SEAT_DIR });
       const session = setup1.sessionRegistry.registerSession(node.id, "dev-bare@absent-rig");
       setup1.sessionRegistry.updateStatus(session.id, "running");
       db1.prepare("UPDATE sessions SET resume_type = 'claude_id', resume_token = 'tok-abs' WHERE id = ?").run(session.id);
