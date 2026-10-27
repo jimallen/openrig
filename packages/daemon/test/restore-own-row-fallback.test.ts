@@ -242,6 +242,12 @@ describe("a seat's own saved startup context that restore cannot use (OF-36)", (
     expect(check.remediation).toContain("recorded spec source is not trusted");
     expect(check.remediation).toContain(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`);
     expect(check.remediation).not.toContain("Start this seat from the rig's recorded spec instead");
+    // Restore's own refusal carries the same remediation (not only the check that predicts it).
+    const refused = await h.restore.restore(s1, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
+    expect(refused.ok).toBe(false);
+    const remediations = !refused.ok ? (refused.result?.blockers ?? []).map((b) => b.remediation) : [];
+    expect(remediations.some((r) => r.includes(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`))).toBe(true);
+    expect(remediations.some((r) => r.includes("Start this seat from the rig's recorded spec instead"))).toBe(false);
   });
 
   // The seat has no row of its own (it was removed, or never launched here) and the restored snapshot's copy is broken:

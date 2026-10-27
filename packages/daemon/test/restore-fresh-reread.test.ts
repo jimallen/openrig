@@ -629,6 +629,35 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
       expect(node.error).toContain("No session was started.");
     });
 
+    // `rig launch` has no pre-restore validation, so it is refused where restore launches the seat (restoreNodeUnisolated).
+    it("rig launch of a checkpoint_only seat whose context and snapshot copy are unreadable, spec untrusted: the refusal names the trusted-copy route", async () => {
+      const seat = await launchRig();
+      db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+      malformed(seat.nodeId, "shape");
+      await down(seat.rigId);
+      trustedRoots = [];
+
+      const launched = await launchWithoutFresh(seat.rigId);
+
+      const text = JSON.stringify(launched);
+      expect(text).toContain("no snapshot of this rig holds a readable copy of its startup files");
+      expect(text).toContain(`rig spec-source set ${seat.rigId} <path-to-rig.yaml>`);
+      expect(text).not.toContain("To start it from the rig's recorded spec instead");
+    });
+
+    it("control: the same rig launch with a trusted spec still offers the start from the recorded spec", async () => {
+      const seat = await launchRig();
+      db.prepare("UPDATE sessions SET restore_policy = 'checkpoint_only' WHERE node_id = ?").run(seat.nodeId);
+      malformed(seat.nodeId, "shape");
+      await down(seat.rigId);
+
+      const launched = await launchWithoutFresh(seat.rigId);
+
+      const text = JSON.stringify(launched);
+      expect(text).toContain("To start it from the rig's recorded spec instead");
+      expect(text).not.toContain("spec-source set");
+    });
+
     it("a recorded spec whose file is gone is unavailable, not untrusted: the guidance keeps the spec route", async () => {
       const seat = await launchRig();
       corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
