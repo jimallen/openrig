@@ -1036,7 +1036,7 @@ export class TmuxAdapter {
       const values = new Map<string, string>();
       for (const line of out.split(/\r?\n/)) {
         const eq = line.indexOf("=");
-        if (eq > 0 && keys.includes(line.slice(0, eq))) values.set(line.slice(0, eq), await this.unescapeShownValue(line.slice(eq + 1)));
+        if (eq > 0 && keys.includes(line.slice(0, eq))) values.set(line.slice(0, eq), await this.unescapeShownValue(line.slice(eq + 1), sessionTarget));
       }
       return values;
     } catch {
@@ -1207,19 +1207,41 @@ export class TmuxAdapter {
   }
 
   /**
-   * tmux 3.4 prints every `$` in a `show-environment` value with a backslash before it (measured on 3.4: a value `a$b`
-   * is shown as `a\$b`, and `a\$b` as `a\\$b`); tmux 3.7c prints the value as it is. Nothing else is escaped on either
-   * (measured: backtick, `"`, `\`, `%`, `#`, `~`). Versions between were not measured, so the rule is applied to 3.4 and
-   * earlier only, and an unreadable or unrecognised version string is read as "prints the value as it is".
+   * The value a session really holds, from the text `tmux show-environment` printed for it. Some tmux builds add a
+   * backslash to a `$` when they print (measured, Ubuntu tmux 3.4-1ubuntu0.1: `a$b` is shown as `a\$b`, `$a` as `\$a`,
+   * `a\$b` as `a\\$b`, but `a$`, `a$1`, `a$(b)`, `a$$` and `$` are shown as they are, so the rule depends on the character
+   * after the `$`); tmux 3.7c prints the value as it is; upstream 3.4 and 3.5a read as printing it as it is. The build is not
+   * told by its version, and the rule is not known for every character, so the answer is MEASURED PER VALUE: each plausible
+   * original (the shown text as it is, and the shown text with the extra backslashes taken out under two rules) is put into
+   * a scratch variable of the same session through the credential file channel (never an argv), read back, and kept only if
+   * tmux prints exactly the text that was shown. The original is the one candidate that round-trips. None, or more than one,
+   * means the value cannot be known, and the read REFUSES: a guess hands a seat a wrong credential. The scratch variable
+   * is unset again either way. Only `$` is touched; nothing else was ever escaped (measured: backtick, `"`, `\`, `%`, `#`, `~`).
    */
-  private showEnvironmentEscapesDollar: Promise<boolean> | null = null;
-  private async unescapeShownValue(shown: string): Promise<string> {
+  private async unescapeShownValue(shown: string, sessionTarget: string): Promise<string> {
     if (!shown.includes("$")) return shown;
-    this.showEnvironmentEscapesDollar ??= (async () => {
-      const version = /^tmux (?:next-)?(\d+)\.(\d+)/.exec((await this.run(["tmux", "-V"], "tmux -V")).trim());
-      return version !== null && (Number(version[1]) < 3 || (Number(version[1]) === 3 && Number(version[2]) <= 4));
-    })().catch(() => { this.showEnvironmentEscapesDollar = null; return false; });
-    return (await this.showEnvironmentEscapesDollar) ? shown.replace(/\\\$/g, "$") : shown;
+    const candidates = [...new Set([
+      shown,
+      shown.replace(/\\(\$[A-Za-z_{])/g, "$1"), // a build that escapes `$` before a name or `{`
+      shown.replace(/\\\$/g, "$"), // a build that escapes every `$`
+    ])];
+    const key = `OPENRIG_TMUX_ESCAPE_PROBE_${randomUUID().replace(/-/g, "")}`;
+    const confirmed: string[] = [];
+    try {
+      for (const candidate of candidates) {
+        await this.deliverSecretEnv(sessionTarget, { [key]: candidate });
+        const show = ["tmux", "show-environment", "-t", sessionTarget, key];
+        const printed = (await this.run(show)).replace(/\r?\n$/, "");
+        if (printed === `${key}=${shown}`) confirmed.push(candidate);
+      }
+    } catch {
+      throw new Error("Cannot tell how this tmux prints '$' in the session environment.");
+    } finally {
+      const unset = ["tmux", "set-environment", "-t", sessionTarget, "-u", key];
+      await this.run(unset).catch(() => {});
+    }
+    if (confirmed.length !== 1) throw new Error("Cannot tell how this tmux prints '$' in the session environment.");
+    return confirmed[0]!;
   }
 
   /** A launch metadata read. Callers must never put credential values in terminal input. */
@@ -1231,7 +1253,7 @@ export class TmuxAdapter {
         `tmux show-environment -t ${shellQuote(target)} ${shellQuote(key)}`);
       if (output.trim() === `-${key}`) return undefined;
       if (!output.startsWith(`${key}=`)) throw new Error("Unexpected session environment response.");
-      return await this.unescapeShownValue(output.slice(key.length + 1).replace(/\r?\n$/, ""));
+      return await this.unescapeShownValue(output.slice(key.length + 1).replace(/\r?\n$/, ""), target);
     } catch (error) {
       if (error instanceof Error && error.message.includes(`unknown variable: ${key}`)) return undefined;
       throw new Error("Cannot read the session's launch environment.");
