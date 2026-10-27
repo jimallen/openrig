@@ -28,6 +28,7 @@ import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile, InstalledResource, ProjectionResult, StartupDeliveryResult,
   ReadinessResult, HarnessLaunchResult, ForkSource, RunnerReadinessTarget,
 } from "../domain/runtime-adapter.js";
+import { RUNNER_PASTE_OPEN_REASON } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan } from "../domain/projection-planner.js";
 import type { AgentActivity } from "../domain/types.js";
 import { PDA_USAGE_CLOSE_BUDGET_MS } from "./pda-usage-sink.js";
@@ -314,6 +315,8 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     if (!pdaSidecarAlive(state, nowMs)) return null;
     const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date(nowMs).toISOString(), evidence: null, runtime: PDA_RUNTIME };
     if (state.held) return { ...base, state: "needs_input", reason: state.held.code };
+    // OF-148: an unclosed paste holds the pane input (after the alive window above; a held message keeps its own answer).
+    if (state.pasteOpen === true) return { ...base, state: "needs_input", reason: RUNNER_PASTE_OPEN_REASON };
     if (!state.connected) return { ...base, state: "unknown", reason: "pda_disconnected" };
     if (state.busy) return { ...base, state: "running", reason: "run_active" };
     return { ...base, state: "idle", reason: "runner_idle" };

@@ -218,6 +218,8 @@ export class PdaRunner {
   private lastEntryId: string | undefined;
   private error: { code: PdaRunnerErrorCode; at: string } | null = null;
   private exited: { code: number | null; at: string } | null = null;
+  /** OF-148: the pane editor reports a bracketed paste open past the hint delay; written to the sidecar only while true. */
+  private pasteOpen = false;
   private finished = false;
   private finalCode = 0;
   private everAttached = false;
@@ -299,6 +301,14 @@ export class PdaRunner {
   interrupted(): void {
     this.pane.line("[pda-runner] input cleared (Ctrl-C never stops the agent)");
     this.pane.endBatch();
+  }
+
+  /** OF-148: the editor's open-paste edge, recorded in the sidecar at once so `rig send` refuses while a lost closing
+   *  marker holds the pane input (and stops refusing within one write of the paste closing). After the runner finished
+   *  the `exited` record is the last word and nothing is rewritten. */
+  setPasteOpen(open: boolean): void {
+    this.pasteOpen = open;
+    if (!this.finished) this.writeSidecar();
   }
 
   /** A one-line notice from the usage sink (codes and counts), written through the pane so it never lands mid-line (F3). */
@@ -1049,6 +1059,7 @@ export class PdaRunner {
       ...(snap.setAside > 0 ? { setAside: snap.setAside } : {}),
       ...(error ? { error } : {}),
       ...(this.exited ? { exited: this.exited } : {}),
+      ...(this.pasteOpen && !this.exited ? { pasteOpen: true } : {}),
     };
     try {
       this.deps.fs.writeAtomic(this.paths.runnerStatePath, JSON.stringify(state));
@@ -1085,11 +1096,13 @@ export function installPdaRunnerFatalHandlers(proc: FatalProcess, onFatal: (labe
 
 /** The shared editor in pda mode: a paste is content (ETX included), Ctrl-C clears the line, Enter after a
  *  paste is one message. There is no slash command and no prefix handler. */
-export function wirePdaRunnerInput(runner: Pick<PdaRunner, "submit" | "interrupted">, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
+export function wirePdaRunnerInput(runner: Pick<PdaRunner, "submit" | "interrupted"> & Partial<Pick<PdaRunner, "setPasteOpen">>, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
   return createRunnerInput(input, output, (block) => runner.submit(block), {
     label: PDA_RUNNER_LABEL,
     interruptInsidePaste: "content",
     onInterrupt: () => runner.interrupted(),
+    // OF-148: `rig send` refuses while this is true (PdaRuntimeAdapter.sendReadiness).
+    onPasteOpenChange: (open) => runner.setPasteOpen?.(open),
   });
 }
 

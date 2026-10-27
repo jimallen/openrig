@@ -26,7 +26,7 @@ import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
-import type { RunnerSendReadinessSource } from "./runtime-adapter.js";
+import { RUNNER_PASTE_OPEN_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
 import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
 import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "../lib/pane-envelope.js";
 import { getSelfHostId } from "./hosts/fanout-contract.js";
@@ -1135,9 +1135,20 @@ const RUNNER_SEAM_FAILURES: ReadonlySet<string> = new Set([
   "runner_not_foreground", "runner_foreground_unobserved", "runner_readiness_unavailable",
 ]);
 
+/** OF-148: the refusal while a runner's pane editor holds a bracketed paste whose closing marker never arrived. In that
+ *  state the editor keeps Ctrl-C and Enter as pasted text, so text sent now would be swallowed into the paste or torn.
+ *  Like every runner-sourced needs_input, no override applies (--dangerously-interact sends unbracketed input, which
+ *  the open paste would swallow as well). The remedy is the one the runner prints on its own pane. */
+function pasteOpenRefusal(sessionName: string): string {
+  return `Refused: '${sessionName}' has a paste still open in its runner (the paste's end marker never arrived, so Ctrl-C and Enter are pasted text and a message sent now would be swallowed or torn). Close it in the seat's pane: type Esc then [201~ (or paste anything), then Ctrl-C clears the line. No override applies. No text was sent.`;
+}
+
 /** The refusal for positive needs-input evidence. A runner-sourced one never offers the prompt override: a
  *  runner-hosted seat takes only bracketed input, and what holds it is the runner's, not a picker's. */
 function needsInputRefusal(sessionName: string, readiness: AgentActivity): string {
+  if (readiness.evidenceSource === "runner_sidecar" && readiness.reason === RUNNER_PASTE_OPEN_REASON) {
+    return pasteOpenRefusal(sessionName);
+  }
   if (readiness.evidenceSource === "runner_sidecar") {
     return `Refused: '${sessionName}' reports ${readiness.reason} from its runner. A runner-hosted seat never takes unbracketed input, so no override applies; resolve what the runner is holding (for a pda seat: rig seat pda-release ${sessionName} --reason "<why>"). No text was sent.`;
   }
@@ -2345,7 +2356,9 @@ export class SessionTransport {
         return {
           ok: false,
           reason: "target_needs_input",
-          error: `Target requires attention (${activity.reason}). No text was sent.`,
+          error: activity.evidenceSource === "runner_sidecar" && activity.reason === RUNNER_PASTE_OPEN_REASON
+            ? pasteOpenRefusal(input.sessionName)
+            : `Target requires attention (${activity.reason}). No text was sent.`,
           activity,
           waitedMs,
           attempts,
