@@ -95,7 +95,7 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
   const sidecarPath = () => piSeatPaths(stateRoot, SEAT).runnerStatePath;
   function sidecar(over: Record<string, unknown> | null = {}): void {
     if (over === null) { fs.rmSync(sidecarPath(), { force: true }); return; }
-    fs.writeFileSync(sidecarPath(), JSON.stringify({ ready: true, launchId: "l1", updatedAt: new Date().toISOString(), busy: false, ...over }));
+    fs.writeFileSync(sidecarPath(), JSON.stringify({ ready: true, launchId: "l1", updatedAt: new Date().toISOString(), aliveAt: new Date().toISOString(), busy: false, ...over }));
   }
 
   function setup(paneCommand: string) {

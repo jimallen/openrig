@@ -385,8 +385,12 @@ export interface PdaUsagePayload {
   facts: PdaUsageFact[];
 }
 
-const strOrNull = (v: unknown): v is string | null => v === null || typeof v === "string";
-const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+/** OF-105: the longest a text field of a usage fact may be (ids, timestamp, provider, model, api, response id, stop
+ *  reason). A real value is a few dozen characters; an unbounded one let a single fact carry a post past the daemon's
+ *  4 MiB cap, which refused the whole batch. */
+export const PDA_USAGE_TEXT_MAX = 512;
+const strOrNull = (v: unknown): v is string | null => v === null || (typeof v === "string" && v.length <= PDA_USAGE_TEXT_MAX);
+const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= PDA_USAGE_TEXT_MAX;
 const COST_BASES: ReadonlySet<string> = new Set<PdaCostBasis>(["model_priced", "declared_zero_price", "absent"]);
 const ORIGINS: ReadonlySet<string> = new Set<PdaUsageOrigin>(["own", "other", "unknown"]);
 

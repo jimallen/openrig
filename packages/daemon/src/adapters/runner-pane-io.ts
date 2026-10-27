@@ -9,7 +9,8 @@
 //   - `interruptInsidePaste`: "interrupt" (default, Pi's behaviour) treats an ETX byte anywhere as Ctrl-C,
 //     even inside a bracketed paste. "content" keeps an ETX between ESC[200~ and ESC[201~ as pasted text: a
 //     paste is content, never a key. The review measured the default splitting one paste into
-//     ["/abort", "one", "line two"].
+//     ["/abort", "one", "line two"]. In that mode a paste whose closing marker never arrives swallows Ctrl-C and
+//     Enter, so the editor says so on the pane once the paste has stayed open for `PASTE_OPEN_HINT_MS` (OF-119).
 //
 // Only node builtins and local runner helpers are imported, so a compiled runner entry stays runnable as
 // `node <dist>/adapters/<runner>.js` with no daemon dependencies.
@@ -24,6 +25,9 @@ import { formatDaemonHostForUrl } from "./daemon-url.js";
 // Canonical TTY buffers can overflow before Node sees even the paste terminator.
 // Use Node's line editor in raw mode, with only paste framing handled here.
 export const MAX_RUNNER_INPUT_BYTES = 1024 * 1024;
+/** OF-119: how long a bracketed paste may stay open before the editor tells the operator what holds Ctrl-C and Enter.
+ *  A terminal or tmux delivers a paste in one write, so an open paste after this long has lost its closing marker. */
+export const PASTE_OPEN_HINT_MS = 10_000;
 
 export interface RunnerInputOptions {
   /** The "[<label>]" prefix of the editor's own pane lines. Default "pi-runner". */
@@ -32,6 +36,8 @@ export interface RunnerInputOptions {
   onInterrupt?: () => void;
   /** "interrupt" (default): ETX is Ctrl-C everywhere. "content": ETX inside a bracketed paste is pasted text. */
   interruptInsidePaste?: "interrupt" | "content";
+  /** OF-119: the open-paste hint delay (default PASTE_OPEN_HINT_MS). Used only in "content" mode, where Ctrl-C cannot end a paste. */
+  pasteOpenHintMs?: number;
 }
 
 export function createRunnerInput(
@@ -64,6 +70,17 @@ export function createRunnerInput(
     delete (editor as any)._ttyWrite;
   }
   const decoder = new StringDecoder("utf8");
+  // OF-119: in "content" mode an unclosed paste holds Ctrl-C and Enter as text, so after a while say how to get out.
+  let pasteHint: ReturnType<typeof setTimeout> | null = null;
+  const armPasteHint = () => {
+    if (!etxInPasteIsContent) return;
+    pasteHint = setTimeout(() => {
+      pasteHint = null;
+      output.write(`\n[${label}] paste still open (its end marker has not arrived): Ctrl-C and Enter are pasted text until it closes. Paste anything, or type Esc then [201~, to close it. Ctrl-C after that clears the line${options.onInterrupt ? "" : " and aborts the current turn"}.\n`);
+    }, options.pasteOpenHintMs ?? PASTE_OPEN_HINT_MS);
+    pasteHint.unref?.();
+  };
+  const disarmPasteHint = () => { if (pasteHint) { clearTimeout(pasteHint); pasteHint = null; } };
   let pending = "";
   let paste: string | null = null;
   let pasteBytes = 0;
@@ -107,6 +124,7 @@ export function createRunnerInput(
       consume(pending.slice(0, at));
       pending = pending.slice(at + (at === interrupt ? 1 : marker.length));
       if (at === interrupt) {
+        disarmPasteHint();
         paste = null;
         discarded = false;
         clear();
@@ -119,7 +137,9 @@ export function createRunnerInput(
         paste = "";
         pasteBytes = 0;
         discarded = false;
+        armPasteHint();
       } else {
+        disarmPasteHint();
         if (!discarded) {
           const line = editor.line.slice(0, editor.cursor) + paste + editor.line.slice(editor.cursor);
           if (Buffer.byteLength(line) > MAX_RUNNER_INPUT_BYTES) { clear(); reject(); }
@@ -141,6 +161,7 @@ export function createRunnerInput(
   input.once("end", end);
   editor.on("line", submit);
   editor.once("close", () => {
+    disarmPasteHint();
     input.removeListener("data", receive);
     input.removeListener("end", end);
     input.setRawMode(wasRaw);

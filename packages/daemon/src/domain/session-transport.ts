@@ -2120,6 +2120,11 @@ export class SessionTransport {
         // fall through to the send below.
       }
       // idle (or running/unknown — now advisory-and-proceed) → proceed to send.
+      // OF-120: a Pi/OMP runner that answered idle or running may still have an attention the sender should hear about.
+      if ((readiness.state === "idle" || readiness.state === "running") && readiness.evidenceSource === "runner_sidecar") {
+        const attention = this.runnerAttentionAdvisory(sessionName, runtime);
+        if (attention) sendAdvisory = sendAdvisory ? `${sendAdvisory} ${attention}` : attention;
+      }
     }
 
     if (opts?.verify) {
@@ -2445,6 +2450,26 @@ export class SessionTransport {
     if (!paneCommand) return failClosed("runner_foreground_unobserved");
     if (isShellForeground(paneCommand)) return failClosed("runner_not_foreground", `pane foreground: ${paneCommand.replace(/^-/, "")}`);
     return { ...answer, evidenceSource: "runner_sidecar", runtime };
+  }
+
+  /** OF-120: what the sender should hear when a Pi/OMP runner answered a plain send but its seat last reported an
+   *  attention (a model or provider error, or an approval request the runner cancelled). The runner's answer is the
+   *  gate; the attention stays display evidence (the Notification hook), so this only words an advisory and never
+   *  refuses. Null for any other runtime (a pda hold is not worded here: its send gating is unchanged) and when the
+   *  latest hook is anything else, which is the case once the next turn has started. */
+  private runnerAttentionAdvisory(sessionName: string, runtime: string | null): string | null {
+    if (runtime !== "omp" && runtime !== "pi") return null;
+    let latest: AgentActivity | null | undefined;
+    try { latest = this.agentActivityStore?.getLatestForNode({ sessionName, now: this.now() }); } catch { return null; }
+    if (!latest || latest.evidenceSource !== "runtime_hook" || latest.rawEvent !== "Notification") return null;
+    if (!latestHookWaitsOnPerson(latest, runtime)) return null;
+    if (latest.rawSubtype === "runtime_error") {
+      return `the seat's runner last reported a model or runtime error (runtime_error) that no new turn has cleared; sent anyway (the runner accepts input).`;
+    }
+    if (latest.rawSubtype === "permission_prompt") {
+      return `the seat's runner cancelled an approval request (permission_prompt) that no new turn has cleared; sent anyway (the runner accepts input).`;
+    }
+    return null;
   }
 
   private async classifySendReadiness(input: {
