@@ -287,6 +287,20 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     expect(nodeHash(seat.nodeId)).not.toBe(hashBefore);
   });
 
+  it("a seat whose agent_ref is not a typed path keeps its recorded version and hash (a local: ref has no rig root to re-read from)", async () => {
+    const seat = await launchRig();
+    const hashBefore = nodeHash(seat.nodeId);
+    db.prepare("UPDATE nodes SET agent_ref = ? WHERE id = ?").run("local:agents/impl", seat.nodeId);
+    retarget("bbbbbbb");
+
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "local ref" });
+
+    expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
+    expectRoleFrom("2.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    expect(nodeHash(seat.nodeId)).toBe(hashBefore);
+  });
+
   it("a launch that fails leaves the recorded version and hash as they were", async () => {
     const seat = await launchRig();
     const hashBefore = nodeHash(seat.nodeId);

@@ -629,6 +629,17 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
       expect(node.error).toContain("No session was started.");
     });
 
+    it("a recorded spec whose file is gone is unavailable, not untrusted: the guidance keeps the spec route", async () => {
+      const seat = await launchRig();
+      corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
+      linkGone();
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "unreadable", startupFrom: "stored" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_context_malformed" });
+      expect(!result.ok && result.guidance).toBe(SPEC_ROUTE_ADVICE(seat.rigId, false));
+    });
+
     it("control: the same refusal with a trusted spec still offers the start from the recorded spec", async () => {
       const seat = await launchRig();
       corrupt(seat.nodeId, "projection_entries_json", JSON.stringify([{ category: "memory" }]));
