@@ -136,6 +136,16 @@ describe("pi-runner-protocol", () => {
     ]);
   });
 
+  it("OF-148: a dash-leading session name travels as its own argv element after a separate --name", () => {
+    // Measured against the installed Pi 1.3.0 and 1.1.0 (dist/cli/args.js): `--name` takes the NEXT argument verbatim,
+    // whatever it starts with, while `--name=-x` is not a known option and lands in unknownFlags, so the seat would
+    // run without its name. Do not "fix" this to the `--name=` form claude uses.
+    const args = buildPiChildArgs({ sessionsDir: "/s", sessionName: "-dash-name@rig", trust: "approve" });
+    expect(args.indexOf("--name")).toBeGreaterThanOrEqual(0);
+    expect(args[args.indexOf("--name") + 1]).toBe("-dash-name@rig");
+    expect(args.some((arg) => arg.startsWith("--name="))).toBe(false);
+  });
+
   it("prefers --session over --fork in child argv (mutual exclusion upstream)", () => {
     const args = buildPiChildArgs({
       sessionsDir: "/s", sessionName: SESSION, trust: "approve",
