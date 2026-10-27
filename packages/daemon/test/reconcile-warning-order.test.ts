@@ -15,8 +15,9 @@
 // higher-priority is a FINDING, not an ordering input — this pin freezes presentation, never semantics.
 import { describe, expect, it } from "vitest";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
-import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 // An agent.yaml that DECLARES + SELECTS the claude_activity_hooks runtime resource — so a claude-code
 // member triggers the managed-activity-hook delivery check (which warns when the assets are absent).
@@ -35,14 +36,14 @@ profiles:
       skills: []
       runtime_resources: [claude-activity-hooks]`;
 
-function fsOps(): AgentResolverFsOps {
-  return {
+function fsOps(): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     exists: (p) => p.includes("agents/impl"),
     readFile: (p) => {
       if (p.includes("agents/impl")) return AGENT_YAML;
       throw new Error(`not found: ${p}`);
     },
-  };
+  });
 }
 
 const RIG_YAML = `version: "0.2"

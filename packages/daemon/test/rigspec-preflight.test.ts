@@ -271,14 +271,15 @@ describe("RigSpecPreflight", () => {
 
 import { rigPreflight, type RigPreflightInput } from "../src/domain/rigspec-preflight.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
-import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RigSpec as PodRigSpec } from "../src/domain/types.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
-function mockFs(files: Record<string, string>): AgentResolverFsOps {
-  return {
+function mockFs(files: Record<string, string>): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     readFile: (p: string) => { if (p in files) return files[p]!; throw new Error(`Not found: ${p}`); },
     exists: (p: string) => p in files,
-  };
+  });
 }
 
 function validAgentYaml(name: string, opts?: { profiles?: string }): string {
@@ -357,10 +358,10 @@ profiles:
       const input: RigPreflightInput = {
         rigSpecYaml,
         rigRoot,
-        fsOps: {
+        fsOps: lexicalAgentFs({
           readFile: (path: string) => fs.readFileSync(path, "utf-8"),
           exists: (path: string) => fs.existsSync(path),
-        },
+        }),
         skillsRoot: catalog,
       };
 

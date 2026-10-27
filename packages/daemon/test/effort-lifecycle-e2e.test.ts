@@ -20,6 +20,7 @@ import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import type { ResolvedAgentSpec } from "../src/domain/agent-resolver.js";
 import type { RigSpecPodMember } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORKSPACE = existingRigRoot("workspace");
 
@@ -452,7 +453,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       eventBus: ctx.eventBus,
       nodeLauncher,
       startupOrchestrator: {} as any,
-      fsOps: mockFs(),
+      fsOps: lexicalAgentFs(mockFs()),
       adapters: { "claude-code": claudeAdapter },
       tmuxAdapter: tmux,
     });
@@ -709,7 +710,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
     ctx.rigRepo.setNodeEffortChoice(node.id, "high");
     const instantiator = new PodRigInstantiator({
       db: ctx.db, rigRepo: ctx.rigRepo, podRepo: ctx.podRepo, sessionRegistry: ctx.sessionRegistry, eventBus: ctx.eventBus,
-      nodeLauncher: { db: ctx.db } as any, startupOrchestrator: {} as any, fsOps: mockFs(), adapters: {}, tmuxAdapter: {} as any,
+      nodeLauncher: { db: ctx.db } as any, startupOrchestrator: {} as any, fsOps: lexicalAgentFs(mockFs()), adapters: {}, tmuxAdapter: {} as any,
     });
     (instantiator as any).updateNodeResolvedConfig(node.id, {
       restorePolicy: "checkpoint_only", resolvedSpecName: "w", resolvedSpecVersion: "1", resolvedSpecHash: "sha256:x", effort: "low",

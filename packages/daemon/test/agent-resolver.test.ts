@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolveAgentRef, type AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import { expectCode } from "./helpers/expect-code.js";
 
 /** Helper: create a minimal valid agent.yaml */
 function validAgentYaml(overrides?: { name?: string; version?: string; imports?: string; resources?: string }): string {
@@ -60,7 +61,7 @@ describe("AgentSpec source resolver + import resolver", () => {
     const result = resolveAgentRef("local:agents/missing", RIG_ROOT, fs);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("not_found");
+      expectCode(result, "not_found");
       expect(result.error).toContain("agent.yaml");
     }
   });
@@ -105,7 +106,7 @@ describe("AgentSpec source resolver + import resolver", () => {
     const result = resolveAgentRef("local:agents/impl", RIG_ROOT, fs);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("version_mismatch");
+      expectCode(result, "version_mismatch");
       expect(result.error).toContain("2.0.0");
       expect(result.error).toContain("1.0.0");
     }
@@ -210,7 +211,7 @@ describe("AgentSpec source resolver + import resolver", () => {
     const result = resolveAgentRef("local:agents/impl", RIG_ROOT, fs);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("import_error");
+      expectCode(result, "import_error");
       expect(result.error).toContain("nested imports");
       expect(result.error).toContain("not supported in v1");
     }
@@ -249,7 +250,7 @@ describe("AgentSpec source resolver + import resolver", () => {
     const result = resolveAgentRef("local:agents/impl", RIG_ROOT, fs);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("import_error");
+      expectCode(result, "import_error");
       expect(result.error).toContain("Duplicate import name");
       expect(result.error).toContain("lib");
     }
@@ -267,7 +268,7 @@ describe("AgentSpec source resolver + import resolver", () => {
     const result = resolveAgentRef("local:agents/impl", RIG_ROOT, fs);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("import_error");
+      expectCode(result, "import_error");
       expect(result.error).toContain("colon");
       expect(result.error).toContain("qualified ref syntax");
     }

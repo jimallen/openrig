@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
 import { RigSpecSchema as PodRigSpecSchema } from "../src/domain/rigspec-schema.js";
-import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { createFullTestDb, createTestApp as createBaseTestApp } from "./helpers/test-app.js";
 import { SystemPreflight } from "../../cli/src/system-preflight.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const RIG_ROOT = existingRigRoot("policy-discovery");
 const ORIGINAL_RIG_ROOT = existingRigRoot("original-rig");
@@ -55,19 +56,19 @@ launch_posture: full_bypass
 # Operator full
 `;
 
-function fsOps(): AgentResolverFsOps {
-  return {
+function fsOps(): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     exists: (path) => path.includes("agents/impl") || path.endsWith("policies/operator-full.md"),
     readFile: (path) => {
       if (path.includes("agents/impl")) return AGENT_YAML;
       if (path.endsWith("policies/operator-full.md")) return CUSTOM_POLICY;
       throw new Error(`Not found: ${path}`);
     },
-  };
+  });
 }
 
-function collisionFsOps(): AgentResolverFsOps {
-  return {
+function collisionFsOps(): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     // Exactly the persona folders and their agent.yaml: a substring match would also "find" agents/ and rigs/
     // folders inside the persona, which the agent_ref guard reads as a spec tree root.
     exists: (path) => /\/agents\/(impl|lib)(\/agent\.yaml)?$/.test(path),
@@ -76,7 +77,7 @@ function collisionFsOps(): AgentResolverFsOps {
       if (path.includes("agents/lib")) return COLLIDING_IMPORT_YAML;
       throw new Error(`Not found: ${path}`);
     },
-  };
+  });
 }
 
 function rigYaml(opts: { name?: string; rigPolicy?: string; memberPolicy?: string } = {}): string {
@@ -261,13 +262,13 @@ describe("Seam C permission-policy discovery", () => {
       launchHarness: async (binding) => { bindings.push(binding); return { ok: true }; },
       checkReady: async () => ({ ready: true }),
     } as RuntimeAdapter;
-    const agentOnlyFsOps: AgentResolverFsOps = {
+    const agentOnlyFsOps = lexicalAgentFs({
       exists: (path) => path.includes("agents/impl"),
       readFile: (path) => {
         if (path.includes("agents/impl")) return AGENT_YAML;
         throw new Error(`Not found: ${path}`);
       },
-    };
+    });
     const db = createFullTestDb();
     try {
       const setup = createTestApp(db, {

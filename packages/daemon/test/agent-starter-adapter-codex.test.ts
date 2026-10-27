@@ -23,6 +23,7 @@ import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -121,7 +122,7 @@ describe("Agent Starter v1 vertical — real Codex adapter delivery (M2 R2)", ()
         launchHarness: async () => ({ ok: true }),
       };
 
-      const fsOps: AgentResolverFsOps = {
+      const fsOps = lexicalAgentFs({
         readFile: (p: string) => {
           if (p === `${RIG_ROOT}/agents/impl/agent.yaml`) {
             return `name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []`;
@@ -129,7 +130,7 @@ describe("Agent Starter v1 vertical — real Codex adapter delivery (M2 R2)", ()
           throw new Error(`Not found: ${p}`);
         },
         exists: (p: string) => p === `${RIG_ROOT}/agents/impl/agent.yaml`,
-      };
+      });
 
       const inst = new PodRigInstantiator({
         db, rigRepo, podRepo, sessionRegistry, eventBus, nodeLauncher,

@@ -18,11 +18,13 @@ import { ComposeServicesAdapter } from "../src/adapters/compose-services-adapter
 import { ContinuityPolicyMaterializer } from "../src/domain/continuity-policy-materializer.js";
 import { parseWatchdogSpec } from "../src/domain/watchdog-policy-engine.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
-import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
+import { expectCode } from "./helpers/expect-code.js";
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -48,11 +50,11 @@ function mockAdapter(runtime = "claude-code"): RuntimeAdapter {
   };
 }
 
-function mockFs(files: Record<string, string>): AgentResolverFsOps {
-  return {
+function mockFs(files: Record<string, string>): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     readFile: (p: string) => { if (p in files) return files[p]!; throw new Error(`Not found: ${p}`); },
     exists: (p: string) => p in files,
-  };
+  });
 }
 
 const RIG_ROOT = existingRigRoot("my-rig");
@@ -1111,7 +1113,7 @@ profiles:
     const result = await inst.instantiate(yaml, RIG_ROOT);
     expect(result.ok).toBe(false);
     if (!result.ok && "code" in result) {
-      expect(result.code).toBe("cycle_error");
+      expectCode(result, "cycle_error");
       expect(result.message).toMatch(/cycle/i);
     }
     db.close();
@@ -1492,7 +1494,7 @@ state: 2-named
     // rig + sessions are preserved on disk so operator can act.
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("attention_required");
+      expectCode(result, "attention_required");
       expect(result.message).toMatch(/trust|attention/i);
     }
     // Rig + sessions PRESERVED — the operator can list them via rig ps.

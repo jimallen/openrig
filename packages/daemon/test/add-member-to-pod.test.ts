@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import type { ExpansionRequest } from "../src/domain/types.js";
+import { expectCode } from "./helpers/expect-code.js";
 
 // OPR.0.3.3.24 Chunk 2 — add_member converge op.
 // Focused daemon coverage for PodRigInstantiator.addMemberToPod: the happy path
@@ -127,7 +128,7 @@ describe("PodRigInstantiator.addMemberToPod", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.code).toBe("member_conflict");
+    expectCode(result, "member_conflict");
     expect(result.message).toContain("infra.server");
   });
 
@@ -138,7 +139,7 @@ describe("PodRigInstantiator.addMemberToPod", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.code).toBe("pod_not_found");
+    expectCode(result, "pod_not_found");
     // Honest: names the missing namespace and lists the available ones.
     expect(result.message).toContain("nope");
     expect(result.message).toContain("infra");
@@ -165,7 +166,7 @@ describe("PodRigInstantiator.addMemberToPod", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.code).toBe("validation_failed");
+    expectCode(result, "validation_failed");
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
@@ -217,7 +218,7 @@ describe("PodRigInstantiator.addMemberToPod", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.code).toBe("edge_unresolved");
+    expectCode(result, "edge_unresolved");
     expect(result.message).toContain("infra.ghost");
 
     // Fail-fast: no orphan node, no edge.
@@ -244,7 +245,7 @@ describe("PodRigInstantiator.addMemberToPod", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.code).toBe("validation_failed");
+    expectCode(result, "validation_failed");
     expect(result.errors.join(" ")).toContain("delegates_to");
     expect(edgeRows(rig.id)).toHaveLength(0);
   });
