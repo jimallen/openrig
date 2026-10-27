@@ -227,7 +227,11 @@ cited here by number with the code that carries them):
   auto-captures an `auto-pre-down` snapshot before teardown when the rig has
   live sessions (`packages/daemon/src/domain/rig-teardown.ts:117`, capture
   at `:128`, after refreshing resume metadata at `:119`; an already-stopped
-  rig returns at `:93–115` without one).
+  rig returns at `:93–115` without one). Before that capture, teardown ends
+  each seat's older duplicate live rows (a row with a later live row on the
+  same seat, OF-116 F7): the snapshot then records one running occupant per
+  seat instead of an ambiguity. An adopted (`claimed`) duplicate has only its
+  row ended and its tmux session left running.
 - `rig up <rig-name>`: a source with no `/` and no
   `.yaml`/`.yml`/`.rigbundle`/`.rigtopology` extension is a rig name
   (`packages/daemon/src/domain/up-command-router.ts:49–50`). The CLI refuses

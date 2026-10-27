@@ -10,6 +10,19 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ## [Unreleased]
 
+### Rig down with duplicate live sessions, and a seat with no cwd at restore (OF-116, OF-128, OF-125, fork)
+
+- `rig down` ends a seat's older duplicate live sessions before it takes its `auto-pre-down` snapshot, so the snapshot
+  records one running occupant and `rig up --existing` no longer fails that seat as an "Active-occupant ambiguity". An
+  adopted older session is still left running, with its row ended.
+- A launched older row that shares an adopted row's name no longer kills the adopted session (`rig down`, `rig remove`).
+  `rig remove` says when older sessions were already killed before a newest-session failure, and stops warning about an
+  adopted session it just killed.
+- When a seat has no cwd of its own at restore, it is started in the cwd the snapshot saved for it, and the restore plan,
+  `rig restore-check` and pre-restore validation judge that same folder. `rig restore-check` names an unusable folder only
+  for a seat restore would actually start.
+- A restore blocked by a tmux session it did not start now says so, and what to do, instead of a bare `duplicate`.
+
 ### Fresh seats re-read their rig's spec (OF-32, fork)
 
 - A seat you ask to start fresh, by `rig seat launch --fresh` or by listing it with `rig up --existing --fresh <seat>`,
