@@ -5,6 +5,9 @@ import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-life
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 
+/** Same ceiling `rig create` and `rig bundle` use for a request that launches seats. */
+export const EXPAND_TIMEOUT_MS = 120_000;
+
 interface ExpandResult {
   ok: boolean;
   status?: "ok" | "partial" | "failed";
@@ -61,7 +64,9 @@ export function expandCommand(depsOverride?: StatusDeps): Command {
       if (opts.rigRoot) body["rigRoot"] = opts.rigRoot;
 
       const client = deps.clientFactory(getDaemonUrl(status));
-      const res = await client.post<ExpandResult>(`/api/rigs/${encodeURIComponent(rigId)}/expand`, body);
+      // Expand launches every seat of the pod inside the request (several seats take well over the 5 s
+      // client default); a client that gives up first reports UNKNOWN for an expand that then succeeds.
+      const res = await client.post<ExpandResult>(`/api/rigs/${encodeURIComponent(rigId)}/expand`, body, { timeoutMs: EXPAND_TIMEOUT_MS });
 
       const data = res.data;
 

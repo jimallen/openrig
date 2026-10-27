@@ -135,6 +135,20 @@ describe("rig expand", () => {
     return prog;
   }
 
+  // OF-85: the daemon launches every seat inside the expand request; at the 5 s client default a
+  // multi-seat expand that then succeeded was reported "outcome UNKNOWN". The ceiling is literal on
+  // purpose (restated, not imported): a value under 60 s is the reported defect.
+  it("gives the expand request a long client timeout, not the 5 s default", async () => {
+    const post = vi.fn(async () => ({ status: 201, data: OK_RESPONSE }));
+    const deps: StatusDeps = { ...runningDeps(), clientFactory: () => ({ post }) as unknown as DaemonClient };
+    await captureLogs(async () => {
+      await makeCmd(deps).parseAsync(["node", "rig", "expand", "rig-123", fragmentPath]);
+    });
+    expect(post).toHaveBeenCalledTimes(1);
+    const options = (post.mock.calls[0] as unknown[])[2] as { timeoutMs?: number } | undefined;
+    expect(options?.timeoutMs).toBe(120_000);
+  });
+
   // T1: Parses arguments
   it("parses rig-id and pod-fragment-path", async () => {
     const { logs } = await captureLogs(async () => {
