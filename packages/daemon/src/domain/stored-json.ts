@@ -4,7 +4,8 @@
 //
 // Only for readers whose callers do not DECIDE on the value: a reader a decision rests on (the queue item behind the
 // prompt-blocked alert, the inbox absorb, the outbox guard binding, the workflow frontier the projector rewrites)
-// keeps throwing until it carries an explicit unreadable marker, as node-inventory.ts does for the node row (OF-45).
+// carries an explicit unreadable answer instead (OF-117, unreadable-row.ts): it refuses by name (UnreadableRowError, HTTP 422)
+// or, in a listing, serves the row flagged `unreadable`, as node-inventory.ts does for the node row (OF-45).
 // Reading a damaged column there as "absent" would turn a refusal into a silent wrong answer.
 //
 // This is for columns the daemon wrote itself. Operator-authored files and request bodies keep their own errors.

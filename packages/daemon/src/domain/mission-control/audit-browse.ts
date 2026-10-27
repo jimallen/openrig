@@ -101,21 +101,21 @@ export class MissionControlAuditBrowse {
     }
     // OPR.0.4.4.19 FR-9 — filter on the pinned audit_notes_json shape via
     // SQLite JSON1 (ships with better-sqlite3). NULL audit_notes_json rows
-    // simply don't match.
+    // simply don't match. OF-117: neither do damaged ones (json_extract throws "malformed JSON" for the whole listing).
     if (input.scopeTier) {
-      where.push("json_extract(audit_notes_json, '$.scope_tier') = ?");
+      where.push("json_valid(audit_notes_json) AND json_extract(audit_notes_json, '$.scope_tier') = ?");
       params.push(input.scopeTier);
     }
     if (input.scopeId) {
-      where.push("json_extract(audit_notes_json, '$.scope_id') = ?");
+      where.push("json_valid(audit_notes_json) AND json_extract(audit_notes_json, '$.scope_id') = ?");
       params.push(input.scopeId);
     }
     if (input.scopePath) {
-      where.push("json_extract(audit_notes_json, '$.scope_path') = ?");
+      where.push("json_valid(audit_notes_json) AND json_extract(audit_notes_json, '$.scope_path') = ?");
       params.push(input.scopePath);
     }
     if (input.approvalScope) {
-      where.push("json_extract(audit_notes_json, '$.approval_scope') = ?");
+      where.push("json_valid(audit_notes_json) AND json_extract(audit_notes_json, '$.approval_scope') = ?");
       params.push(input.approvalScope);
     }
     if (input.since) {

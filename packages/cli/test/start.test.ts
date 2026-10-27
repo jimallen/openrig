@@ -617,7 +617,8 @@ describe("rig start (OPR.0.3.4.1)", () => {
 
   // ---- NON-2XX ERROR HANDLING (guard BLOCKING 25661f72) ----
 
-  it("non-2xx /api/up (rig_not_stopped) -> honest error output, nonzero exit, not undefined success", async () => {
+  // saved_row_damaged (review N2): the daemon refuses a restore whose seat row is damaged; the exit code must say so too.
+  it.each(["rig_not_stopped", "saved_row_damaged"])("non-2xx /api/up (%s) -> honest error output, nonzero exit, not undefined success", async (refusalCode) => {
     routes["/api/rigs/summary"] = () => [{ id: "r1", name: "live-rig", nodeCount: 1, lifecycleState: "detached" }];
     routes["/api/rigs/:id"] = () => ({ sessions: [] });
     let planDone = false;
@@ -663,7 +664,7 @@ describe("rig start (OPR.0.3.4.1)", () => {
             }));
           } else {
             res.writeHead(409, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Rig r1 has live sessions", code: "rig_not_stopped" }));
+            res.end(JSON.stringify({ error: "Rig r1 is refused", code: refusalCode }));
           }
           return;
         }
@@ -676,7 +677,7 @@ describe("rig start (OPR.0.3.4.1)", () => {
     });
     const output = logs.join("\n");
     expect(output).toContain("live-rig");
-    expect(output).toContain("rig_not_stopped");
+    expect(output).toContain(refusalCode);
     expect(output).not.toContain("undefined");
     expect(exitCode).toBe(1);
 

@@ -255,6 +255,8 @@ export interface RestoreCheckDeps {
   getStartupContext: (nodeId: string) => StartupContextProbeResult;
   /** Check if a snapshot exists for a rig */
   hasSnapshot: (rigId: string) => boolean;
+  /** OF-117: how many of the rig's saved snapshots are damaged (listed, but their data is not JSON). Absent: unknown (0). */
+  countDamagedSnapshots?: (rigId: string) => number;
   /** Get the newest snapshot for exact restore planning when available */
   getLatestSnapshot?: (rigId: string) => { id: string; kind: string } | null;
   /** Exact ordinary-restore input; never captures an auto-rehydrate snapshot. */
@@ -1124,6 +1126,16 @@ export class RestoreCheckService {
       const has = this.deps.hasSnapshot(rig.rigId);
       if (has) {
         return { check: `rig.${rig.name}.snapshot`, status: "green", evidence: "Snapshot available", remediation: "" };
+      }
+      // OF-117: a rig whose only snapshots are damaged is not a first-boot rig; say so, and what to do about it.
+      const damaged = this.deps.countDamagedSnapshots?.(rig.rigId) ?? 0;
+      if (damaged > 0) {
+        return {
+          check: `rig.${rig.name}.snapshot`, status: "yellow",
+          evidence: `No readable snapshot: ${damaged} saved snapshot${damaged === 1 ? " is" : "s are"} damaged (the saved data is not JSON), so none can be restored`,
+          remediation: "Create a new snapshot with: rig snapshot <rigId> (see the damaged ones with: rig snapshot list <rigId>)",
+          remediationSafe: false,
+        };
       }
       return {
         check: `rig.${rig.name}.snapshot`, status: "yellow",

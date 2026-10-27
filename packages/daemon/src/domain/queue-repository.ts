@@ -28,6 +28,7 @@ import {
   type ParkWakeStatus,
 } from "./queue-wake-repository.js";
 import { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
+import { RowColumnReader } from "./unreadable-row.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
 import { parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
 
@@ -162,6 +163,10 @@ export interface QueueItem {
   /** Exact gateway receipt/error evidence for an undelivered ledger verdict. */
   deliveryFailureDetail?: string;
   tags: string[] | null;
+  /** OF-117: set on a row served by a listing when some of its saved JSON columns (tags, chain_of_record, human_questions,
+   *  human_answers) are not readable. Those fields read as null BECAUSE of that, not because none were recorded. Reads a
+   *  decision rests on refuse (UnreadableRowError) instead of serving the row. */
+  unreadable?: string[];
   blockedOn: string | null;
   /** S04 — the DERIVED pickup receipt (unclaimed/working/stalled-after-claim/parked/terminal).
    *  Never stored: computed at projection time from state + claimed_at + the transition log
@@ -571,8 +576,10 @@ export type CompactQueueItem = Omit<QueueItem, (typeof COMPACT_ELIDED_FIELDS)[nu
   fieldsElided: Array<(typeof COMPACT_ELIDED_FIELDS)[number]>;
 };
 
-type FindOverdueOptions = { now?: string; rig?: string; limit?: number; compact?: boolean };
-type FindUndeliveredOptions = { rig?: string; limit?: number; compact?: boolean };
+/** OF-117: `damage` "mark" serves a row whose saved JSON column is damaged flagged `unreadable` (the listing routes and the stuck
+ *  sweep, which names the row and moves on); the default "refuse" throws UnreadableRowError for the first damaged row. */
+type FindOverdueOptions = { now?: string; rig?: string; limit?: number; compact?: boolean; damage?: "refuse" | "mark" };
+type FindUndeliveredOptions = { rig?: string; limit?: number; compact?: boolean; damage?: "refuse" | "mark" };
 
 function compactRow(item: QueueItem): CompactQueueItem {
   const row: Record<string, unknown> = { ...item, fieldsElided: [...COMPACT_ELIDED_FIELDS] };
@@ -1152,7 +1159,7 @@ export class QueueRepository {
       if (correlation) {
         const peers = this.db.prepare(`SELECT outbox_id FROM outbox_entries
           WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
-          AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
+          AND json_valid(outbox_entries.tags) AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
           ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
         for (const peer of peers) if (actionable(this.outbox!.getById(peer.outbox_id)!) && this.outbox!.claimForDelivery(peer.outbox_id)) intents.push(this.outbox!.getById(peer.outbox_id)!);
       }
@@ -1289,15 +1296,23 @@ export class QueueRepository {
     return this.outbox.reconcileAbandonedSending(WAKE_INTENT_PREFIX);
   }
 
-  async drainPendingWakeIntents(): Promise<{ delivered: number; indeterminate: number; failed: number; retained: number }> {
-    const tally = { delivered: 0, indeterminate: 0, failed: 0, retained: 0 };
+  async drainPendingWakeIntents(): Promise<{ delivered: number; indeterminate: number; failed: number; retained: number; unreadable?: string[] }> {
+    const tally: { delivered: number; indeterminate: number; failed: number; retained: number; unreadable?: string[] } = { delivered: 0, indeterminate: 0, failed: 0, retained: 0 };
     if (!this.outbox || !this.transport) return tally;
     const BATCH = 200;
+    // OF-117: an intent whose saved tags are damaged is NOT executed (its correlation and supersession live there) and does
+    // not stop the intents behind it. It stays pending and is named in the tally (and the log) until the row is repaired.
+    const unreadable = new Set<string>();
     for (;;) {
       const pending = this.outbox.listPending(WAKE_INTENT_PREFIX, BATCH);
       if (pending.length === 0) break;
       let progressed = 0;
       for (const intent of pending) {
+        if (intent.unreadable) {
+          if (!unreadable.has(intent.outboxId)) console.error(`[queue] wake intent ${intent.outboxId} skipped: its saved ${intent.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
+          unreadable.add(intent.outboxId);
+          continue;
+        }
         const outcome = await this.deliverWakeIntent(intent.outboxId);
         if (outcome === "delivered") { tally.delivered++; progressed++; }
         else if (outcome === "indeterminate") { tally.indeterminate++; progressed++; }
@@ -1309,6 +1324,7 @@ export class QueueRepository {
       if (progressed === 0) break;
       if (pending.length < BATCH) break; // served short batch ⇒ drained
     }
+    if (unreadable.size > 0) tally.unreadable = [...unreadable];
     return tally;
   }
 
@@ -2229,7 +2245,7 @@ export class QueueRepository {
         pending: countByState("pending"),
         inProgress: countByState("in-progress"),
         blocked: countByState("blocked"),
-        recent: recent.map((r) => this.rowToItem(r)),
+        recent: recent.map((r) => this.rowToItem(r, true, "mark")),
       },
       asSource: { total: sourceTotalRow.n },
     };
@@ -3329,7 +3345,8 @@ export class QueueRepository {
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (opts?.tag) {
-      conditions.push("EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)");
+      // OF-117: a row whose tags are not JSON is not a match (json_each would throw "malformed JSON" for every row of the listing).
+      conditions.push("json_valid(queue_items.tags) AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)");
       params.push(opts.tag);
     }
 
@@ -3378,7 +3395,7 @@ export class QueueRepository {
       )
       .all(...params) as QueueItemRow[];
     const items = rows.map((r) => {
-      const item = this.rowToItem(r, !opts?.compact);
+      const item = this.rowToItem(r, !opts?.compact, "mark");
       const ledger = this.deliveryOutcomeFor(item.qitemId);
       return {
         ...item,
@@ -3432,7 +3449,7 @@ export class QueueRepository {
         AND r.transition_note LIKE 'slack-owner-notification-posted %'
       ORDER BY r.ts DESC, q.qitem_id DESC LIMIT ?
     `).all(limit) as Array<QueueItemRow & { delivered_at: string; delivery_receipt: string }>;
-    return rows.map((row) => ({ ...this.rowToItem(row), deliveredAt: row.delivered_at, deliveryReceipt: row.delivery_receipt }));
+    return rows.map((row) => ({ ...this.rowToItem(row, true, "mark"), deliveredAt: row.delivered_at, deliveryReceipt: row.delivery_receipt }));
   }
 
   listAttention(opts?: {
@@ -3494,7 +3511,7 @@ export class QueueRepository {
       LIMIT ?
     `;
     const rows = this.db.prepare(sql).all(...params) as QueueItemRow[];
-    return rows.map((r) => this.rowToItem(r));
+    return rows.map((r) => this.rowToItem(r, true, "mark"));
   }
 
   /** The compact listings' columns: the shared set plus the summary, which is short and is what people search for. */
@@ -3530,7 +3547,7 @@ export class QueueRepository {
       params.push(opts.limit);
     }
     const rows = this.db.prepare(sql).all(...params) as QueueItemRow[];
-    const items = rows.map((r) => this.rowToItem(r, !opts?.compact));
+    const items = rows.map((r) => this.rowToItem(r, !opts?.compact, opts?.damage ?? "refuse"));
     return opts?.compact ? items.map(compactRow) : items;
   }
 
@@ -3630,7 +3647,7 @@ export class QueueRepository {
     const rows = this.db.prepare(sql).all(...params) as QueueItemRow[];
     const out: QueueItem[] = [];
     for (const r of rows) {
-      const item = this.rowToItem(r, !opts?.compact);
+      const item = this.rowToItem(r, !opts?.compact, opts?.damage ?? "refuse");
       const ledger = this.deliveryOutcomeFor(item.qitemId);
       if (ledger?.outcome === "posted") continue; // the receipt wins, always
       if (ledger?.outcome === "transport-failed") {
@@ -3788,7 +3805,9 @@ export class QueueRepository {
     if (!row) return null;
     // The delivery episode uses row fields, not the waiting/backstop view.
     // Keep this read fresh without repeating the caller's recovery-tag scan.
-    const item = this.rowToItem(row, false);
+    // OF-117: a display derivation shared by the listings, so a damaged JSON column does not end the listing here; the row is
+    // flagged by the listing's own read ('mark').
+    const item = this.rowToItem(row, false, "mark");
     const episodeState = this.currentDeliveryEpisode(item, knownOwner);
     if (episodeState === "inactive") return null;
     const episode = episodeState;
@@ -4033,7 +4052,19 @@ export class QueueRepository {
     };
   }
 
-  private rowToItem(row: QueueItemRow, includeWaiting = true): QueueItem {
+  /**
+   * OF-117: `damage` says what a damaged JSON column (tags, chain_of_record, human_questions, human_answers) does.
+   * "refuse" (the default, for every read a decision rests on) throws UnreadableRowError naming the row and the column.
+   * "mark" (the listings: list, listAttention, listDeliveredHumanUpdates, whoami's recent) serves the row with the damaged
+   * column read as null AND `unreadable: [columns]` on it, so one damaged row never ends a listing for the rows beside it.
+   */
+  private rowToItem(row: QueueItemRow, includeWaiting = true, damage: "refuse" | "mark" = "refuse"): QueueItem {
+    const columns = new RowColumnReader("queue_items", row.qitem_id);
+    const tags = columns.strings("tags", row.tags);
+    const chainOfRecord = columns.strings("chain_of_record", row.chain_of_record);
+    const humanQuestions = columns.json<HumanQuestion[]>("human_questions", row.human_questions);
+    const humanAnswers = columns.json<HumanAnswers>("human_answers", row.human_answers);
+    if (damage === "refuse") columns.refuseIfDamaged();
     // S04 — derive the pickup receipt at the ONE shared projection point (list/show/overdue
     // all flow through here), so the park-vs-strand question is answered by the row face.
     const meaningful = lastMeaningfulTransition(this.db, row.qitem_id);
@@ -4061,12 +4092,13 @@ export class QueueRepository {
       state: row.state as QueueState,
       priority: row.priority as QueuePriority,
       tier: row.tier,
-      tags: row.tags ? (JSON.parse(row.tags) as string[]) : null,
+      tags,
+      ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
       blockedOn: row.blocked_on,
       handedOffTo: row.handed_off_to,
       handedOffFrom: row.handed_off_from,
       expiresAt: row.expires_at,
-      chainOfRecord: row.chain_of_record ? (JSON.parse(row.chain_of_record) as string[]) : null,
+      chainOfRecord,
       body: row.body ?? "",
       // OPR.0.4.1.18: summary present only when migration 044 has applied;
       // legacy/minimal fixtures supply rows where summary is undefined → null.
@@ -4077,8 +4109,8 @@ export class QueueRepository {
       humanIntent: row.human_intent ?? null,
       humanDetail: row.human_detail ?? null,
       replyTo: row.reply_to ?? null,
-      humanQuestions: row.human_questions ? (JSON.parse(row.human_questions) as HumanQuestion[]) : null,
-      humanAnswers: row.human_answers ? (JSON.parse(row.human_answers) as HumanAnswers) : null,
+      humanQuestions,
+      humanAnswers,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

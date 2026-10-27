@@ -1299,6 +1299,7 @@ export class WorkflowRuntime {
     const openItems = this.db.prepare(
       `SELECT qitem_id FROM queue_items
        WHERE state IN ('pending','in-progress','blocked')
+         AND json_valid(tags)
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'workflow-exception')
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`,
@@ -1786,8 +1787,21 @@ export class WorkflowRuntime {
   listInstancesWithDeadline(
     status?: "active" | "waiting" | "completed" | "failed" | "aborted",
   ): WorkflowInstanceWithInspection[] {
-    const rows = status ? this.instanceStore.listByStatus(status) : this.instanceStore.listAll();
+    // OF-117: one instance with a damaged saved column is served flagged (`unreadable`), not an HTTP 500 for every instance.
+    const rows = status ? this.instanceStore.listByStatus(status, "mark") : this.instanceStore.listAll("mark");
     return rows.map((row) => {
+      if (row.unreadable) {
+        return {
+          ...row,
+          // No verdict can be made without the frontier. The shape stays a verdict because the UI dereferences it; the
+          // instance's `unreadable` and `unknowns` are what say it is not "healthy" but unknown.
+          deadline: { state: "healthy" as const, evidence: null },
+          frontierPackets: [],
+          failureOccurrences: [],
+          unknowns: [`Saved ${row.unreadable.join(", ")} of instance ${row.instanceId} is not readable JSON, so its frontier, packets and deadline are unknown (not empty). Repair or remove the row.`],
+          boundaryObligations: [],
+        } as unknown as WorkflowInstanceWithInspection;
+      }
       const inspected = this.inspect(row.instanceId);
       return {
         ...this.withDeadline(row),

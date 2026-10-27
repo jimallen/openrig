@@ -1813,6 +1813,93 @@ describe("RestoreOrchestrator", () => {
     fs.rmSync(tmpDir, { recursive: true });
   });
 
+  // OF-117 (review-u06 R1): a checkpoint whose saved key-artifact list is damaged reads as an empty list WITH a flag. The
+  // resume prompt (.rigged-checkpoint.md) must say "unreadable", not omit the section the way it does for "none recorded",
+  // and the restore result must carry the warning (from the snapshot's flag and from restore's own pre-restore capture).
+  describe("OF-117: a damaged key-artifact list reaches the resume prompt", () => {
+    function seedDamaged(tmpDir: string, keyArtifacts: string | null): Snapshot {
+      const first = seedRigAndSnapshot({
+        nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code", cwd: tmpDir }],
+        resumeType: "none",
+        edges: [],
+        withCheckpoint: "worker",
+      });
+      db.prepare("UPDATE checkpoints SET key_artifacts = ?").run(keyArtifacts);
+      // A snapshot taken AFTER the damage, as `rig down` would take it: it keeps the flag.
+      return snapshotCapture.captureSnapshot(first.rigId, "manual");
+    }
+
+    it("damaged list: the file says the list is unreadable, none of the old artifacts appear, and both warnings are in the result", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
+      const snap = seedDamaged(tmpDir, "{not json");
+      expect(Object.values(snap.data.checkpoints)[0]).toMatchObject({ keyArtifacts: [], keyArtifactsUnreadable: true });
+      const result = await createOrchestrator().restore(snap.id, { freshLogicalIds: ["worker"] });
+      expect(result.ok).toBe(true);
+      const content = fs.readFileSync(path.join(tmpDir, ".rigged-checkpoint.md"), "utf-8");
+      expect(content).toContain("Was working on feature X");
+      expect(content).toContain("## Key Artifacts\nUnreadable: the saved key-artifact list was damaged");
+      expect(content).toContain("Do not assume there were none.");
+      if (result.ok) {
+        const warnings = result.result.warnings ?? [];
+        expect(warnings.filter((w) => w.includes("its saved checkpoint's key-artifact list is damaged"))).toEqual([
+          "Restore: worker: its saved checkpoint's key-artifact list is damaged, so the resume prompt says it could not be read instead of listing key artifacts.",
+        ]);
+        expect(warnings.filter((w) => w.includes("the pre-restore snapshot keeps the flag"))).toHaveLength(1);
+      }
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
+    it.each([["NULL", null], ["JSON null", "null"], ["[]", "[]"]] as const)("control: key_artifacts %s is 'none recorded': no Key Artifacts section, no warning, no 'Unreadable'", async (_name, stored) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
+      const snap = seedDamaged(tmpDir, stored);
+      const result = await createOrchestrator().restore(snap.id, { freshLogicalIds: ["worker"] });
+      expect(result.ok).toBe(true);
+      const content = fs.readFileSync(path.join(tmpDir, ".rigged-checkpoint.md"), "utf-8");
+      expect(content).not.toContain("Key Artifacts");
+      expect(content).not.toContain("Unreadable");
+      if (result.ok) expect((result.result.warnings ?? []).filter((w) => /key-artifact|key artifacts/.test(w))).toEqual([]);
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
+    it("control: a readable list prints its artifacts", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
+      const snap = seedDamaged(tmpDir, JSON.stringify(["src/feature.ts"]));
+      await createOrchestrator().restore(snap.id, { freshLogicalIds: ["worker"] });
+      const content = fs.readFileSync(path.join(tmpDir, ".rigged-checkpoint.md"), "utf-8");
+      expect(content).toContain("## Key Artifacts\n- src/feature.ts");
+      expect(content).not.toContain("Unreadable");
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+  });
+
+  // OF-117 (review-u06 N-restore): a damaged saved seat row made restore's pre-restore capture throw a plain Error, which
+  // the route's catch answered as restore_error (HTTP 500). It is refused up front, by name, before anything is captured
+  // or changed.
+  it("OF-117: a damaged saved seat row is refused as saved_row_damaged before any capture, event or session change", async () => {
+    const snap = seedRigAndSnapshot({
+      nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }, { logicalId: "other", role: "worker", runtime: "claude-code" }],
+      edges: [],
+    });
+    db.prepare("UPDATE nodes SET package_refs = ? WHERE rig_id = ? AND logical_id = 'worker'").run("{not json", snap.rigId);
+    const before = {
+      snapshotCount: snapshotRepo.listSnapshots(snap.rigId).length,
+      sessions: db.prepare("SELECT * FROM sessions ORDER BY id").all(),
+      events: db.prepare("SELECT * FROM events ORDER BY seq").all(),
+    };
+    const result = await createOrchestrator().restore(snap.id, { freshLogicalIds: ["worker", "other"] });
+    expect(result).toEqual({
+      ok: false,
+      code: "saved_row_damaged",
+      message: `Rig ${snap.rigId} was not restored: its pre-restore snapshot cannot be taken because worker's saved row is damaged (package_refs is not JSON). Nothing was changed. Repair the damaged saved row, then restore again.`,
+    });
+    expect(snapshotRepo.listSnapshots(snap.rigId)).toHaveLength(before.snapshotCount);
+    expect(db.prepare("SELECT * FROM sessions ORDER BY id").all()).toEqual(before.sessions);
+    expect(db.prepare("SELECT * FROM events ORDER BY seq").all()).toEqual(before.events);
+    // Control: the same rig with the row repaired restores.
+    db.prepare("UPDATE nodes SET package_refs = '[]' WHERE rig_id = ? AND logical_id = 'worker'").run(snap.rigId);
+    expect((await createOrchestrator().restore(snap.id, { freshLogicalIds: ["worker", "other"] })).ok).toBe(true);
+  });
+
   it("checkpoint + null cwd -> status 'failed'", async () => {
     const snap = seedRigAndSnapshot({
       nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }], // no cwd

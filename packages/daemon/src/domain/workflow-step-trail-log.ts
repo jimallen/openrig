@@ -10,6 +10,7 @@
 
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { RowColumnReader } from "./unreadable-row.js";
 import type { WorkflowExitKind, WorkflowStepTrailEntry } from "./workflow-types.js";
 
 export interface WorkflowStepTrailRecordInput {
@@ -113,6 +114,11 @@ export class WorkflowStepTrailLog {
 }
 
 function rowToEntry(row: TrailRow): WorkflowStepTrailEntry {
+  // OF-117 (review-u06 N2): closure evidence is a decision reader's input (the idempotent waiting-replay absorption compares
+  // it), so a damaged column refuses by name (UnreadableRowError), never reads as "no evidence" and never a bare SyntaxError.
+  const columns = new RowColumnReader("workflow_step_trails", String(row.trail_id));
+  const closureEvidence = columns.json<Record<string, unknown>>("closure_evidence_json", row.closure_evidence_json);
+  columns.refuseIfDamaged();
   return {
     trailId: row.trail_id,
     instanceId: row.instance_id,
@@ -120,9 +126,7 @@ function rowToEntry(row: TrailRow): WorkflowStepTrailEntry {
     stepRole: row.step_role,
     closedAt: row.closed_at,
     closureReason: row.closure_reason as WorkflowExitKind,
-    closureEvidence: row.closure_evidence_json
-      ? (JSON.parse(row.closure_evidence_json) as Record<string, unknown>)
-      : null,
+    closureEvidence,
     actorSession: row.actor_session,
     nextQitemId: row.next_qitem_id,
     priorQitemId: row.prior_qitem_id,

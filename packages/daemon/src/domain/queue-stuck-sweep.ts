@@ -29,6 +29,7 @@ import { deriveCrossHostSuccessorId, matchesRecordedHandoffTarget, type QueueIte
 import { stalledPickupFinding } from "./queue-pickup.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
+import { isUnreadableRowError } from "./unreadable-row.js";
 
 export const STUCK_SWEEP_INTERVAL_KEY = "queue.stuck_sweep_interval_seconds";
 export const DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS = 300;
@@ -368,7 +369,31 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
 
     // Half 1 — claimed-never-closed. The claimant holds the obligation; the finding
     // routes to them.
-    for (const row of deps.queueRepo.findOverdue({ now: now.toISOString() })) {
+    // OF-117: a row whose saved JSON columns are damaged is named and left out of THIS sweep (its tags, chain and questions
+    // are what the routing and the finding rest on); it does not end the sweep for the rows beside it.
+    // An unreadable row is also remembered: a row the sweep could not read is not a row that stopped being stuck, so its open
+    // finding is left open below instead of being closed as "no longer detected".
+    const unreadableIds = new Set<string>();
+    const skipUnreadable = (row: { qitemId: string; unreadable?: string[] }): boolean => {
+      if (!row.unreadable) return false;
+      unreadableIds.add(row.qitemId);
+      log(`[stuck-sweep] ${row.qitemId} skipped: its saved ${row.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
+      return true;
+    };
+    // The same for every loop below that reads a row by id (claimed, unclaimed, wait-notice, custody) and for the lookups that
+    // read a related row: a damaged row is named and skipped (null), never a failed tick for every other row.
+    const readRow = (qitemId: string, existsIfUnreadable = false) => {
+      try {
+        return deps.queueRepo.getById(qitemId);
+      } catch (err) {
+        if (!isUnreadableRowError(err)) throw err;
+        unreadableIds.add(qitemId);
+        log(`[stuck-sweep] ${qitemId} skipped: its saved ${err.columns.join(", ")} is not readable JSON (repair or remove the row)`);
+        return existsIfUnreadable ? ({ qitemId } as never) : null;
+      }
+    };
+    for (const row of deps.queueRepo.findOverdue({ now: now.toISOString(), damage: "mark" })) {
+      if (skipUnreadable(row)) continue;
       if (isFindingRow(row)) continue;
       candidates.push({
         kind: "overdue-claim",
@@ -391,7 +416,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       .prepare("SELECT qitem_id FROM queue_items WHERE state = 'in-progress' AND claimed_at IS NOT NULL")
       .all() as Array<{ qitem_id: string }>;
     for (const { qitem_id } of claimedRows) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row || isFindingRow(row)) continue;
       const stalled = stalledPickupFinding(row);
       if (!stalled) continue;
@@ -415,7 +440,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const notice = queueWaitNotice(job.spec_yaml);
       if (!notice || now.getTime() - Date.parse(notice.at) <= resolvePickupThresholdMinutes() * 60_000) continue;
       const binding = deps.db.prepare("SELECT qitem_id FROM queue_transition_wakes WHERE wake_ref = ? AND phase = 'armed' ORDER BY transition_id DESC LIMIT 1").get(job.job_id) as { qitem_id: string } | undefined;
-      const row = binding ? deps.queueRepo.getById(binding.qitem_id) : null;
+      const row = binding ? readRow(binding.qitem_id) : null;
       if (!row || row.state !== "blocked" || deps.queueRepo.getParkWakeStatus(row.qitemId)?.ref !== job.job_id) continue;
       const response = lastMeaningfulTransition(deps.db, row.qitemId);
       if (response && Date.parse(response.at) > Date.parse(notice.at)) continue;
@@ -430,7 +455,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     // so it routes to the destination's orchestrator when one is derivable. Rows with a
     // live S01 ladder are S01's territory; an exhausted ladder is the handback and lands
     // here exactly once (the dedup tag keeps it to one finding).
-    for (const row of deps.queueRepo.findUndelivered()) {
+    for (const row of deps.queueRepo.findUndelivered({ damage: "mark" })) {
+      if (skipUnreadable(row)) continue;
       if (isFindingRow(row)) continue;
       if (hasLiveLadder(deps.db, row.qitemId)) continue;
       candidates.push({
@@ -458,7 +484,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       )
       .all(cutoff) as Array<{ qitem_id: string }>;
     for (const { qitem_id } of unclaimedRows) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row || isFindingRow(row)) continue;
       const actionableAt = pendingSince(deps.db, row.qitemId) ?? row.tsCreated;
       if (actionableAt > cutoff) continue;
@@ -534,7 +560,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       )
       .all(custodyCutoff, JSON.stringify(openDanglingIds)) as Array<{ qitem_id: string }>;
     for (const { qitem_id } of custodyRows) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row || isFindingRow(row)) continue;
       // Local recorded targets were filtered in SQL; remote keys use the same
       // derivation as the cross-host close, without reading successor history.
@@ -560,7 +586,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
               successorId === deriveCrossHostSuccessorId(row.qitemId, row.handedOffTo, hostId)
             );
           }
-          return !deps.queueRepo.getById(target);
+          // A successor row that exists but cannot be read is still a local successor (named in the log, not a failed tick).
+          return readRow(target, true) === null;
         }
         return !hasSeatTargetSuccessor(deps.db, row.qitemId, target);
       });
@@ -584,7 +611,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const dedupTag = findingDedupTag(c.kind, c.row.qitemId);
       const shared = findQueueRecovery(deps.db, c.row.qitemId);
       if (shared) {
-        const existingTags = deps.queueRepo.getById(shared.qitemId)?.tags ?? [];
+        const existingTags = readRow(shared.qitemId)?.tags ?? [];
         for (const tag of existingTags) if (tag.startsWith("stuck-sweep:")) liveDedupTags.add(tag);
         if (["pending", "in-progress", "blocked"].includes(shared.state)) findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: shared.qitemId, action: "refreshed" });
         continue;
@@ -639,9 +666,15 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       } catch {
         continue;
       }
-      const dedupTag = tags.find((t) => t.startsWith("stuck-sweep:"));
+      // A finding row whose tags are valid JSON of the wrong shape cannot be read either: leave it, do not end the tick on it.
+      if (!Array.isArray(tags)) {
+        log(`[stuck-sweep] ${f.qitem_id} skipped: its saved tags is not a readable list (repair or remove the row)`);
+        continue;
+      }
+      const dedupTag = tags.find((t) => typeof t === "string" && t.startsWith("stuck-sweep:"));
       if (!dedupTag || liveDedupTags.has(dedupTag)) continue;
       const [, kind, stuckId] = dedupTag.match(/^stuck-sweep:([a-z-]+):(.+)$/) ?? [];
+      if (stuckId && unreadableIds.has(stuckId)) continue; // not detected because unreadable: the finding stays open
       await deps.queueRepo.update({
         qitemId: f.qitem_id,
         actorSession: f.source_session,

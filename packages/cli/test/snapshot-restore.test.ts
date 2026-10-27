@@ -317,6 +317,48 @@ describe("rig snapshot + restore", () => {
     expect(output).toContain("complete");
   });
 
+  // OF-117 (review-u06 N5): the daemon lists a damaged snapshot flagged `unreadable`; before this the row printed like any
+  // other and only a restore of it said otherwise (HTTP 409).
+  it("snapshot list: a damaged snapshot is marked DAMAGED, a readable one is not, and the operator is told what to do", async () => {
+    const get = vi.fn(async () => ({ status: 200, data: [
+      { id: "snap-good", kind: "manual", status: "complete", createdAt: "2026-03-24 02:00:00" },
+      { id: "snap-bad", kind: "auto-pre-down", status: "complete", createdAt: "2026-03-24 01:00:00", data: null, unreadable: "its saved data is not JSON" },
+    ] }));
+    const program = new Command();
+    program.addCommand(snapshotCommand({ ...runningDeps(port), clientFactory: () => ({ get } as unknown as DaemonClient) }));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "snapshot", "list", "rig-1"]));
+    const goodLine = logs.find((l) => l.includes("snap-good"))!;
+    const badLine = logs.find((l) => l.includes("snap-bad"))!;
+    expect(goodLine).not.toContain("DAMAGED");
+    expect(badLine).toContain("DAMAGED: its saved data is not JSON (cannot be restored)");
+    expect(logs.join("\n")).toContain("Take a fresh one with: rig snapshot rig-1");
+  });
+
+  it("snapshot list: with no damaged snapshot the output has no DAMAGED word and no advice line", async () => {
+    const program = new Command();
+    program.addCommand(snapshotCommand(runningDeps(port)));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "snapshot", "list", "rig-1"]));
+    expect(logs.join("\n")).not.toContain("DAMAGED");
+    expect(logs.join("\n")).not.toContain("Take a fresh one");
+  });
+
+  // OF-117: restore() refuses a damaged saved seat row with 409 saved_row_damaged. "Stop the rig first" is wrong advice
+  // for it: the rig is already stopped, the saved row has to be repaired.
+  it("restore: 409 saved_row_damaged prints the daemon's refusal and not the 'stop the rig first' advice", async () => {
+    const savedExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const post = vi.fn(async () => ({ status: 409, data: { code: "saved_row_damaged", error: "Rig rig-1 was not restored: its pre-restore snapshot cannot be taken because dev.impl's saved row is damaged (package_refs is not JSON). Nothing was changed. Repair the damaged saved row, then restore again." } }));
+    const program = new Command();
+    program.addCommand(restoreCommand({ ...runningDeps(port), clientFactory: () => ({ post } as unknown as DaemonClient) }));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "restore", "snap-1", "--rig", "rig-1"]));
+    const output = logs.join("\n");
+    expect(output).toContain("Restore refused: Rig rig-1 was not restored");
+    expect(output).toContain("Repair the damaged saved row");
+    expect(output).not.toContain("Stop the rig first");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = savedExitCode;
+  });
+
   // Test 4: restore prints per-node status
   it("restore: prints per-node status", async () => {
     const program = new Command();

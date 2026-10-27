@@ -9,6 +9,7 @@ import type { HealthRecord } from "../health-projection.js";
 import type { RigModeStore } from "./rig-mode-store.js";
 import { missionModeQualifier, type OperatorContextReadContext, type OperatorContextScope } from "./rig-mode-types.js";
 import { validateModeName, validateRecord } from "./rig-mode-validator.js";
+import { RowColumnReader } from "../unreadable-row.js";
 import { inferCatalogProject, rigFromSession, selectCatalogProject, ProjectReadError } from "../workspace/project-catalog.js";
 import type { SettingsStore } from "../user-settings/settings-store.js";
 
@@ -99,7 +100,10 @@ export class OperatingPostureService {
       const row = this.db.prepare("SELECT tags, destination_session FROM queue_items WHERE qitem_id = ?").get(ctx.qitemId) as { tags: string | null; destination_session: string } | undefined;
       if (!row) throw new Error("qitem not found: " + ctx.qitemId);
       destination = row.destination_session;
-      const tags: unknown = JSON.parse(row.tags ?? "[]");
+      // OF-117: damaged tags are a named refusal (UnreadableRowError), the posture reads "unknown" with that reason.
+      const tagColumns = new RowColumnReader("queue_items", ctx.qitemId);
+      const tags: unknown = tagColumns.json("tags", row.tags ?? "[]");
+      tagColumns.refuseIfDamaged();
       if (!Array.isArray(tags) || tags.some(t => typeof t !== "string")) throw new Error("invalid qitem tags");
       for (const [prefix, key] of [["project:", "projectId"], ["mission:", "missionId"], ["slice:", "workstreamId"], ["workstream:", "workstreamId"]] as const) {
         for (const tag of tags.filter((t: string) => t.startsWith(prefix))) merge(key, tag.slice(prefix.length), "queue:" + ctx.qitemId + "/" + prefix);
@@ -109,7 +113,9 @@ export class OperatingPostureService {
       if (workflows.length > 1) throw new Error("ambiguous workflow membership");
       const workflow = workflows[0];
       if (workflow) {
-        const binding = JSON.parse(workflow.lifecycle_binding_json ?? "null");
+        const bindingColumns = new RowColumnReader("workflow_instances", workflow.instance_id);
+        const binding = bindingColumns.json<{ identity?: { project?: string; mission?: string } }>("lifecycle_binding_json", workflow.lifecycle_binding_json);
+        bindingColumns.refuseIfDamaged();
         merge("projectId", binding?.identity?.project, "workflow:" + workflow.instance_id);
         merge("missionId", binding?.identity?.mission, "workflow:" + workflow.instance_id);
         merge("rigId", workflow.bound_rig, "workflow:" + workflow.instance_id);

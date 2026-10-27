@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { RowColumnReader } from "./unreadable-row.js";
 import { parse as parseYaml } from "yaml";
 import type { WorkflowSpec, WorkflowSpecRow } from "./workflow-types.js";
 import { WORKFLOW_AGENT_HARNESSES, WORKFLOW_EXIT_KINDS } from "./workflow-types.js";
@@ -829,7 +830,9 @@ export class WorkflowSpecCache {
     const rows = this.db
       .prepare(`SELECT * FROM workflow_specs${this.hasDiagnosticColumns ? ` WHERE status != '${RETAINED_STATUS}'` : ""} ORDER BY name, version`)
       .all() as SpecRow[];
-    return rows.map((row) => rowToWorkflowSpec(row));
+    // OF-117: the listing serves a spec with a damaged saved column flagged `unreadable`; the by-name and by-id reads a
+    // projection runs against refuse (UnreadableRowError), so a run never proceeds on a spec whose guards are unknown.
+    return rows.map((row) => rowToWorkflowSpec(row, undefined, "mark"));
   }
 
   /**
@@ -1019,7 +1022,8 @@ function warnLegacyRehydrationOnce(name: string, version: string): void {
   );
 }
 
-function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec): WorkflowSpecRow {
+function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec, damage: "refuse" | "mark" = "refuse"): WorkflowSpecRow {
+  const columns = new RowColumnReader("workflow_specs", row.spec_id);
   // OPR.0.4.6.WF1: prefer, in order — the freshly file-parsed spec
   // (readThrough's file-authoritative override), then the STORED full
   // spec (migration 050 spec_json — what makes loop_guards/invariants/
@@ -1029,10 +1033,13 @@ function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec): WorkflowSpe
   // readThrough).
   const storedSpec: WorkflowSpec | undefined =
     !parsedSpec && row.spec_json
-      ? (JSON.parse(row.spec_json) as WorkflowSpec)
+      ? (columns.json<WorkflowSpec>("spec_json", row.spec_json) ?? undefined)
       : undefined;
   const hydrated = parsedSpec ?? storedSpec;
-  if (!hydrated) {
+  // OF-117: a damaged spec_json falls through to the legacy column-only reconstruction below, which has NO
+  // loop_guards/invariants/closure/entry: the silent no-guards run the warning below exists to prevent. So the row is never
+  // returned unflagged (the refusal below), and the damage is not reported as the ordinary legacy degrade.
+  if (!hydrated && columns.unreadable.length === 0) {
     // The residual worst case (arch fold, mid-build contract): a
     // legacy pre-050 row whose source file may be gone, resolved at
     // projection time — the reconstruction below has NO
@@ -1052,11 +1059,14 @@ function rowToWorkflowSpec(row: SpecRow, parsedSpec?: WorkflowSpec): WorkflowSpe
         version: row.version,
         objective: row.purpose ?? undefined,
         target: row.target_rig ? { rig: row.target_rig } : undefined,
-        roles: JSON.parse(row.roles_json) as WorkflowSpec["roles"],
-        steps: JSON.parse(row.steps_json) as WorkflowSpec["steps"],
+        roles: (columns.json<WorkflowSpec["roles"]>("roles_json", row.roles_json) ?? []) as WorkflowSpec["roles"],
+        steps: (columns.json<WorkflowSpec["steps"]>("steps_json", row.steps_json) ?? []) as WorkflowSpec["steps"],
         coordination_terminal_turn_rule: row.coordination_terminal_turn_rule,
       };
+  // "refuse" (every read a projection runs against) throws UnreadableRowError; "mark" (the listing) serves the row flagged.
+  if (damage === "refuse") columns.refuseIfDamaged();
   return {
+    ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
     specId: row.spec_id,
     name: row.name,
     version: row.version,

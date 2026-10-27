@@ -38,6 +38,7 @@ import {
   missionModeQualifier,
 } from "./rig-mode-types.js";
 import { validateModeName, validateRecord } from "./rig-mode-validator.js";
+import { RowColumnReader } from "../unreadable-row.js";
 
 interface BindingRow {
   id: string;
@@ -50,10 +51,15 @@ interface BindingRow {
 }
 
 function rowToBinding(row: BindingRow): OperatorContextModeBinding {
+  // OF-117: a damaged record is a binding nobody can read, not "no binding" (callers read a missing one as `unknown_posture`,
+  // and a mode's authority rides on its record): refuse by name (UnreadableRowError, HTTP 422), never a bare SyntaxError.
+  const columns = new RowColumnReader("operator_context_mode_bindings", row.id);
+  const record = columns.required<OperatorContextModeRecord>("record_json", row.record_json);
+  columns.refuseIfDamaged();
   return {
     id: row.id,
     mode: row.mode,
-    record: JSON.parse(row.record_json) as OperatorContextModeRecord,
+    record: record as OperatorContextModeRecord,
     qualifier: row.qualifier,
     setAt: row.set_at,
     setBy: "operator",

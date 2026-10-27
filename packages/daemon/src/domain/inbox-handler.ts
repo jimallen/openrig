@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { EventBus } from "./event-bus.js";
 import { QueueRepository } from "./queue-repository.js";
+import { RowColumnReader } from "./unreadable-row.js";
 
 export const INBOX_STATES = ["pending", "absorbed", "denied"] as const;
 export type InboxState = (typeof INBOX_STATES)[number];
@@ -11,6 +12,9 @@ export interface InboxEntry {
   senderSession: string;
   body: string;
   tags: string[] | null;
+  /** OF-117: set on an entry served by a listing when its saved `tags` are not readable (read as null BECAUSE of that).
+   *  Absorbing it, which copies the tags into a queue item, refuses instead (UnreadableRowError). */
+  unreadable?: string[];
   urgency: string;
   tsDropped: string;
   state: InboxState;
@@ -267,7 +271,7 @@ export class InboxHandler {
           ORDER BY ts_dropped ASC`
       )
       .all(destinationSession) as InboxEntryRow[];
-    return rows.map((r) => this.rowToEntry(r));
+    return rows.map((r) => this.rowToEntry(r, "mark"));
   }
 
   listForDestination(destinationSession: string, limit = 100): InboxEntry[] {
@@ -276,7 +280,7 @@ export class InboxHandler {
         `SELECT * FROM inbox_entries WHERE destination_session = ? ORDER BY ts_dropped DESC, rowid DESC LIMIT ?`
       )
       .all(destinationSession, limit) as InboxEntryRow[];
-    return rows.map((r) => this.rowToEntry(r));
+    return rows.map((r) => this.rowToEntry(r, "mark"));
   }
 
   private getByIdRaw(inboxId: string): InboxEntryRow | undefined {
@@ -291,13 +295,19 @@ export class InboxHandler {
     return entry;
   }
 
-  private rowToEntry(row: InboxEntryRow): InboxEntry {
+  /** OF-117: "refuse" (default; absorb and every by-id read) throws UnreadableRowError for damaged tags; "mark" (the two
+   *  listings) serves the entry with tags null and `unreadable: ["tags"]`. */
+  private rowToEntry(row: InboxEntryRow, damage: "refuse" | "mark" = "refuse"): InboxEntry {
+    const columns = new RowColumnReader("inbox_entries", row.inbox_id);
+    const tags = columns.strings("tags", row.tags);
+    if (damage === "refuse") columns.refuseIfDamaged();
     return {
       inboxId: row.inbox_id,
       destinationSession: row.destination_session,
       senderSession: row.sender_session,
       body: row.body,
-      tags: row.tags ? (JSON.parse(row.tags) as string[]) : null,
+      tags,
+      ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
       urgency: row.urgency,
       tsDropped: row.ts_dropped,
       state: row.state as InboxState,

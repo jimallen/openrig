@@ -339,3 +339,31 @@ describe("migration 114: the events and usage_samples indexes serve the grouped 
     expect(plan).toContain("idx_usage_samples_lane_captured_at");
   });
 });
+
+// OF-117: the three event-counted sources parse event payloads with SQLite json_extract inside one grouped pass. One event
+// whose payload is not JSON (a hand edit, a truncated write) made json_extract throw "malformed JSON" and the whole pass
+// failed: no finding for ANY seat or job while the row existed. A damaged payload is not a supporting event (the event-bus
+// replay leaves it out the same way); the readable events still count, and the D5 cross-check counts both series alike.
+describe("OF-117: an event whose payload is not JSON is left out of the count, not the end of the pass", () => {
+  it.each([
+    ["D5 compaction storm", createCompactionStormSource, "agent.activity"],
+    ["D9 permission stall", createPermissionStallSource, "agent.activity"],
+    ["D12 watchdog delivery failure", createWatchdogDeliveryFailureSource, "watchdog.evaluation_fired"],
+  ] as const)("%s: the threshold is still met by the readable events beside a damaged one", (_label, create, eventType) => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) {
+      if (eventType === "agent.activity") {
+        if (create === createCompactionStormSource) f.activity({ seat: "seat-a@r", rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: 2 });
+        else f.activity({ seat: "seat-a@r", rawEvent: "Notification", rawSubtype: null, state: "needs_input", hoursAgo: 2 });
+      } else {
+        f.fired({ jobId: "job-a", deliveryStatus: "failed", hoursAgo: 2 });
+      }
+    }
+    f.event(eventType, "{not json", "2031-03-04 03:06:07");
+    // D5's cross-check counts the paired agent.session_identity events by the same json_extract: a damaged one is left out too.
+    f.event("agent.session_identity", "{not json", "2031-03-04 03:06:07");
+    const source = create(f.deps());
+    expect(() => source.read()).not.toThrow();
+    expect(source.read()).toHaveLength(1);
+  });
+});

@@ -50,7 +50,7 @@ export function snapshotCommand(depsOverride?: StatusDeps): Command {
       const client = await getClient(deps);
       if (!client) { process.exitCode = 1; return; }
 
-      const res = await client.get<Array<{ id: string; kind: string; status: string; createdAt: string }>>(`/api/rigs/${encodeURIComponent(rigId)}/snapshots`);
+      const res = await client.get<Array<{ id: string; kind: string; status: string; createdAt: string; unreadable?: string }>>(`/api/rigs/${encodeURIComponent(rigId)}/snapshots`);
       if (res.status >= 400) {
         console.error(`Failed to list snapshots: ${(res.data as { error?: string }).error ?? "unknown error"}`);
         process.exitCode = 1;
@@ -65,7 +65,12 @@ export function snapshotCommand(depsOverride?: StatusDeps): Command {
 
       console.log("ID                         Kind    Status    Created");
       for (const snap of snapshots) {
-        console.log(`${snap.id.padEnd(27)} ${snap.kind.padEnd(8)} ${snap.status.padEnd(10)} ${snap.createdAt}`);
+        // OF-117: the daemon lists a damaged snapshot flagged `unreadable`; it can never be restored, so say so on its row.
+        const damaged = snap.unreadable ? `  DAMAGED: ${snap.unreadable} (cannot be restored)` : "";
+        console.log(`${snap.id.padEnd(27)} ${snap.kind.padEnd(8)} ${snap.status.padEnd(10)} ${snap.createdAt}${damaged}`);
+      }
+      if (snapshots.some((snap) => snap.unreadable)) {
+        console.log(`A DAMAGED snapshot is kept but never used to restore. Take a fresh one with: rig snapshot ${rigId}`);
       }
     });
 

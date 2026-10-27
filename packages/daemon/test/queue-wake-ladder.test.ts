@@ -695,6 +695,157 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     expect(calls).toEqual([]);
   });
 
+  // OF-117: the shared usage-limit blocker is found by SQL json_each over every open queue row's tags. One row whose tags
+  // are not JSON (an unrelated row, anywhere in the queue) made json_each throw "malformed JSON", the park failed, and
+  // the seats fell back to wrong retry rungs. It is not a match; the seats park on ONE blocker as before.
+  it("OF-117: a queue row with damaged tags does not stop the usage-limit park, and the blocker is still shared", async () => {
+    const now = new Date();
+    const reset = new Date(now.getTime() + 15 * 60_000).toISOString();
+    const staleAfter = new Date(now.getTime() + 30 * 60_000).toISOString();
+    repo.attachWatchdogJobsRepository(new WatchdogJobsRepository(db, () => now));
+    // Created (not handed off), so no ladder pass reads the row by id: only the blocker lookup meets its tags.
+    const unrelated = await repo.create({ sourceSession: "sender@r", destinationSession: "unrelated@r", body: "unrelated", nudge: false });
+    db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run("{not json", unrelated.qitemId);
+    const batons = await Promise.all([mkBaton("dev-a@r"), mkBaton("dev-b@r")]);
+    for (const baton of batons) setNudgeResult(baton.qitemId, "failed:provider usage limit", 10);
+    const model = async () => ({
+      bindings: [],
+      signals: ["dev-a@r", "dev-b@r"].map((seatSession) => ({
+        provider: "claude" as const, seatSession, sourceClass: "provider_statusline" as const, authority: "account_cross_device" as const,
+        window: "five_hour", usedPercent: 100, resetsAt: reset, asOf: now.toISOString(), staleAfter, supportsNotification: false,
+        automationUse: "allow_switch_decision" as const,
+      })),
+    });
+    const result = await tick({ now, usageLimitJitterSeconds: 0, getProviderReadModel: model });
+    expect((result as { error?: string }).error).toBeUndefined();
+    expect(result.actions.filter((action) => action.action === "park-usage-limit")).toHaveLength(2);
+    const blockers = repo.list({ limit: 500 }).filter((row) => row.tags?.includes(USAGE_LIMIT_BLOCKER_TAG));
+    expect(blockers).toHaveLength(1);
+    expect(new Set(batons.map((row) => repo.getById(row.qitemId)?.blockedOn))).toEqual(new Set([blockers[0]!.qitemId]));
+  });
+
+  // Review F2 (OF-117): the tick used to end for EVERY seat when one baton, aggregate or recovery row had damaged tags
+  // ("TICK FAILED", zero wakes). A row the tick cannot read is named in the log and skipped; the good baton is still woken.
+  describe("OF-117: one damaged row does not stop wake delivery for the other batons", () => {
+    const NOT_JSON = "{not json";
+    async function goodBatonDue(): Promise<QueueItem> {
+      const good = await mkBaton("good-dest@r");
+      setNudgeResult(good.qitemId, "failed:tmux session not found", 10);
+      return good;
+    }
+    async function tickLogged() {
+      const lines: string[] = [];
+      const result = await tick({ log: (line: string) => lines.push(line) });
+      return { lines, result: result as { outcome: string; error?: string } };
+    }
+    const skippedLine = (id: string) => `[wake-ladder] ${id} skipped: its saved tags is not readable JSON (repair or remove the row)`;
+
+    it("baton loop: a damaged baton is skipped by name; the good baton is woken", async () => {
+      const bad = await mkBaton("bad-dest@r");
+      setNudgeResult(bad.qitemId, "failed:tmux session not found", 10);
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(NOT_JSON, bad.qitemId);
+      const good = await goodBatonDue();
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(result.outcome).not.toBe("failed");
+      expect(calls).toEqual([{ qitemId: good.qitemId, target: "good-dest@r" }]);
+      expect(lines).toContain(skippedLine(bad.qitemId));
+    });
+
+    it("aggregate retirement: an escalation aggregate whose tags are not a list is skipped by name", async () => {
+      const good = await goodBatonDue();
+      const aggregate = await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "aggregate", nudge: false, tags: ["wake-escalation"] });
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run('["wake-escalation", "recovery-for:x"', aggregate.qitemId);
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(calls).toEqual([{ qitemId: good.qitemId, target: "good-dest@r" }]);
+      expect(lines).toContain(`[wake-ladder] ${aggregate.qitemId} skipped: its saved tags is not a readable list (repair or remove the row)`);
+    });
+
+    it("aggregate retirement: a tagged member that cannot be read keeps the aggregate open instead of ending the tick", async () => {
+      const good = await goodBatonDue();
+      const member = await repo.create({ sourceSession: "sender@r", destinationSession: "dead@r", body: "member", nudge: false });
+      const aggregate = await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "aggregate", nudge: false, tags: ["wake-escalation", `recovery-for:${member.qitemId}`] });
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(NOT_JSON, member.qitemId);
+      const { lines, result } = await tickLogged();
+      expect(result.error).toBeUndefined();
+      expect(calls).toEqual([{ qitemId: good.qitemId, target: "good-dest@r" }]);
+      expect(lines).toContain(skippedLine(member.qitemId));
+      expect(repo.getById(aggregate.qitemId)!.state).toBe("pending");
+    });
+
+    // Review F2b: a recovery row that exists but cannot be read is NOT an absent recovery. An open prompt-refusal recovery owns
+    // the continuation ("do not retry the blocked original"); reading it as absent retried the original, and past the cap
+    // wrote an exhausted marker on it. The baton waits, named, until the row is repaired.
+    describe("an open prompt-refusal recovery that cannot be read holds the original: no wake, no exhausted marker", () => {
+      const ALERT = "wake-prompt-refusal"; // restated, not imported
+      async function baton() {
+        const b = await mkBaton();
+        setNudgeResult(b.qitemId, "failed:tmux session not found", 10);
+        return b;
+      }
+      async function recoveryFor(b: QueueItem) {
+        return repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "prompt recovery", nudge: false, tags: [ALERT, `recovery-for:${b.qitemId}`] });
+      }
+      const pastCap = (b: QueueItem) => {
+        for (let n = 1; n <= 3; n++) repo.transitionLog.append({ qitemId: b.qitemId, state: "pending", actorSession: "wake-ladder@system", transitionNote: `${LADDER_ATTEMPT_PREFIX} ${n}/3 outcome=failed:fixture` });
+      };
+
+      it("control: a readable recovery holds the original (zero wakes)", async () => {
+        const b = await baton();
+        await recoveryFor(b);
+        const { result } = await tickLogged();
+        expect(result.error).toBeUndefined();
+        expect(calls).toEqual([]);
+      });
+
+      it.each([
+        ["chain_of_record", "chain_of_record", NOT_JSON],
+        ["human_questions", "human_questions", NOT_JSON],
+        ["human_answers", "human_answers", NOT_JSON],
+        ["tags of the wrong shape", "tags", JSON.stringify({ a: ALERT, b: "recovery-for:X" })],
+      ])("under the retry cap, %s damaged: the original is not retried and the row is named", async (_name, column, text) => {
+        const b = await baton();
+        const recovery = await recoveryFor(b);
+        const stored = column === "tags" ? text.replace("recovery-for:X", `recovery-for:${b.qitemId}`) : text;
+        db.prepare(`UPDATE queue_items SET ${column} = ? WHERE qitem_id = ?`).run(stored, recovery.qitemId);
+        const { lines, result } = await tickLogged();
+        expect(result.error).toBeUndefined();
+        expect(calls).toEqual([]);
+        expect(markersOf(b.qitemId, LADDER_ATTEMPT_PREFIX)).toEqual([]);
+        expect(lines.some((l) => l.startsWith(`[wake-ladder] ${recovery.qitemId} skipped: its saved ${column} is not readable JSON`))).toBe(true);
+      });
+
+      it("past the retry cap, chain_of_record damaged: no exhausted marker is written on the original", async () => {
+        const b = await baton();
+        pastCap(b);
+        const recovery = await recoveryFor(b);
+        db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(NOT_JSON, recovery.qitemId);
+        await tickLogged();
+        expect(markersOf(b.qitemId, LADDER_EXHAUSTED_PREFIX)).toEqual([]);
+        expect(calls).toEqual([]);
+      });
+
+      it("control: past the cap with a readable NON-escalation recovery, the original IS marked exhausted (the marker is what the damaged case must not write)", async () => {
+        const b = await baton();
+        pastCap(b);
+        await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "other recovery", nudge: false, tags: ["some-other-recovery", `recovery-for:${b.qitemId}`] });
+        await tickLogged();
+        expect(markersOf(b.qitemId, LADDER_EXHAUSTED_PREFIX)).toHaveLength(1);
+      });
+
+      it("once the row is repaired the ladder decides again", async () => {
+        const b = await baton();
+        const recovery = await recoveryFor(b);
+        db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(NOT_JSON, recovery.qitemId);
+        await tickLogged();
+        db.prepare("UPDATE queue_items SET chain_of_record = NULL WHERE qitem_id = ?").run(recovery.qitemId);
+        await tickLogged();
+        expect(calls).toEqual([]); // the readable prompt recovery holds it, as in the control
+      });
+    });
+  });
+
   it("slice 01: a ladder tick over the real provider service with usage windows on starts no native read", async () => {
     const fake = makeFakeCodex();
     fake.setPlan({ mode: "ok", account: ACCOUNT_ANSWER, rateLimits: rateLimitsAnswer({ secondaryUsed: 100 }) });

@@ -7,6 +7,7 @@
 
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { RowColumnReader } from "./unreadable-row.js";
 import type {
   WorkflowFailureOccurrence,
   WorkflowFrontierBinding,
@@ -298,20 +299,23 @@ export class WorkflowInstanceStore {
     }
   }
 
-  listByStatus(status: WorkflowInstanceStatus): WorkflowInstance[] {
+  /** OF-117: `damage` "refuse" (default) throws UnreadableRowError for an instance whose saved JSON columns are damaged;
+   *  "mark" serves it with `unreadable: [columns]` (frontier read as empty BECAUSE of that), for listings and sweeps that
+   *  name the instance and move on to the others. */
+  listByStatus(status: WorkflowInstanceStatus, damage: "refuse" | "mark" = "refuse"): WorkflowInstance[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM workflow_instances WHERE status = ? ORDER BY created_at ASC`,
       )
       .all(status) as InstanceRow[];
-    return rows.map(rowToInstance);
+    return rows.map((row) => rowToInstance(row, damage));
   }
 
-  listAll(): WorkflowInstance[] {
+  listAll(damage: "refuse" | "mark" = "refuse"): WorkflowInstance[] {
     const rows = this.db
       .prepare(`SELECT * FROM workflow_instances ORDER BY created_at ASC`)
       .all() as InstanceRow[];
-    return rows.map(rowToInstance);
+    return rows.map((row) => rowToInstance(row, damage));
   }
 
   /**
@@ -408,7 +412,12 @@ export class WorkflowInstanceStore {
   }
 }
 
-function rowToInstance(row: InstanceRow): WorkflowInstance {
+function rowToInstance(row: InstanceRow, damage: "refuse" | "mark" = "refuse"): WorkflowInstance {
+  const columns = new RowColumnReader("workflow_instances", row.instance_id);
+  const currentFrontier = columns.json<string[]>("current_frontier_json", row.current_frontier_json);
+  const lastContinuationDecision = columns.json<Record<string, unknown>>("last_continuation_decision_json", row.last_continuation_decision_json);
+  const lifecycleBinding = columns.json<Record<string, unknown>>("lifecycle_binding_json", row.lifecycle_binding_json);
+  if (damage === "refuse") columns.refuseIfDamaged();
   return {
     instanceId: row.instance_id,
     workflowName: row.workflow_name,
@@ -416,13 +425,12 @@ function rowToInstance(row: InstanceRow): WorkflowInstance {
     createdBySession: row.created_by_session,
     createdAt: row.created_at,
     status: row.status as WorkflowInstanceStatus,
-    currentFrontier: JSON.parse(row.current_frontier_json) as string[],
+    currentFrontier: currentFrontier ?? [],
+    ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
     currentStepId: row.current_step_id,
     hopCount: row.hop_count,
     fallbackSynthesis: row.fallback_synthesis,
-    lastContinuationDecision: row.last_continuation_decision_json
-      ? (JSON.parse(row.last_continuation_decision_json) as Record<string, unknown>)
-      : null,
+    lastContinuationDecision,
     completedAt: row.completed_at,
     version: row.version ?? 0,
     resumeCount: row.resume_count ?? 0,
@@ -430,9 +438,7 @@ function rowToInstance(row: InstanceRow): WorkflowInstance {
     boundRig: row.bound_rig ?? null,
     lifecycleOperationKey: row.lifecycle_operation_key ?? null,
     compiledInputDigest: row.compiled_input_digest ?? null,
-    lifecycleBinding: row.lifecycle_binding_json
-      ? (JSON.parse(row.lifecycle_binding_json) as Record<string, unknown>)
-      : null,
+    lifecycleBinding,
   };
 }
 

@@ -177,7 +177,7 @@ export function recoverGraphOperation(db: Database.Database, key: string): { kin
     compiledInputDigest: created.lifecycleBinding?.initialInputDigest ?? created.compiledInputDigest,
     createdAt: created.createdAt, actorSession: created.createdBySession,
   } };
-  const match = db.prepare("SELECT wi.instance_id, revision.value AS receipt FROM workflow_instances wi, json_each(wi.lifecycle_binding_json, '$.revisionHistory') revision WHERE json_extract(revision.value, '$.operationKey') = ?")
+  const match = db.prepare("SELECT wi.instance_id, revision.value AS receipt FROM workflow_instances wi, json_each(CASE WHEN json_valid(wi.lifecycle_binding_json) THEN wi.lifecycle_binding_json ELSE '{}' END, '$.revisionHistory') revision WHERE json_extract(revision.value, '$.operationKey') = ?")
     .get(key) as { instance_id: string; receipt: string } | undefined;
   return match ? { kind: "revision", instance: store.getByIdOrThrow(match.instance_id), receipt: JSON.parse(match.receipt) } : null;
 }

@@ -5,6 +5,8 @@ export interface Snapshot {
   kind: string;
   status: string;
   createdAt: string;
+  /** OF-117: set (with the reason) when the saved snapshot's data is damaged; it is listed but cannot be restored. */
+  unreadable?: string;
 }
 
 async function fetchSnapshots(rigId: string): Promise<Snapshot[]> {

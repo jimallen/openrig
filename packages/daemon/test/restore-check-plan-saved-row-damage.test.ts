@@ -49,8 +49,8 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
   async function restoreError(snapshotId: string): Promise<string> {
     try {
       const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
-      // The route's catch maps a thrown capture to this code; restore() itself reports it as restore_error.
-      if (!out.ok && out.code === "restore_error") return out.message;
+      // OF-117: restore() refuses a damaged saved row up front, with its own named code (HTTP 409), not restore_error.
+      if (!out.ok && out.code === "saved_row_damaged") return out.message;
       return `restore did not refuse: ${JSON.stringify(out.ok ? { ok: true } : out)}`;
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
@@ -64,7 +64,7 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     h.db.prepare(`UPDATE nodes SET ${row.column} = ? WHERE id = ?`).run(row.text, seat.nodeId);
 
     // Ground truth: what restore does.
-    expect(await restoreError(snapshotId)).toBe(`Cannot snapshot: ${SEAT}'s saved row is damaged (${row.reason}). Repair the row, then snapshot again.`);
+    expect(await restoreError(snapshotId)).toBe(`Rig ${seat.rigId} was not restored: its pre-restore snapshot cannot be taken because ${SEAT}'s saved row is damaged (${row.reason}). Nothing was changed. Repair the damaged saved row, then restore again.`);
 
     // The check: red, naming the seat and the reason, and the whole verdict says so.
     const { result, damage } = await check();
@@ -99,7 +99,8 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     const snapshotId = await h.down(seat.rigId);
     h.db.prepare("UPDATE nodes SET session_source_json = ?, package_refs = ? WHERE id = ?").run("{not json", "{not json", seat.nodeId);
     const both = "session_source_json is not JSON; package_refs is not JSON";
-    expect(await restoreError(snapshotId)).toContain(`${SEAT}'s saved row is damaged (${both})`);
+    // The whole refusal, by name (a bare toContain also matched the old restore_error text, which carries the same words).
+    expect(await restoreError(snapshotId)).toBe(`Rig ${seat.rigId} was not restored: its pre-restore snapshot cannot be taken because ${SEAT}'s saved row is damaged (${both}). Nothing was changed. Repair the damaged saved row, then restore again.`);
     expect((await check()).damage!.evidence).toContain(`${SEAT}'s saved row is damaged (${both})`);
     expect(plan(seat.rigId, snapshotId).savedRowDamage).toEqual(["session_source_json is not JSON", "package_refs is not JSON"]);
   });
@@ -124,6 +125,39 @@ describe("restore-check and --plan say restore refuses a damaged saved row", () 
     // Two damaged seats are both named, in rig order.
     h.db.prepare("UPDATE nodes SET session_source_json = ? WHERE id = ?").run("[1]", second.id);
     expect(planWhole(seat.rigId, snapshotId).restoreRefusal!.seats.sort()).toEqual([SEAT, "dev.second"]);
+  });
+
+  // OF-117 (review-u06 N5): with only damaged snapshots the snapshot check said "No snapshot found (first-boot or adopted
+  // rig)", which tells the operator nothing is wrong and sends them to a first-boot path. It names the damage.
+  describe("the snapshot check tells a rig with only damaged snapshots from a rig with none", () => {
+    async function snapshotCheck() {
+      return (await check()).result.checks.find((c) => c.check === "rig.team.snapshot")!;
+    }
+
+    it("only damaged snapshots: yellow 'No readable snapshot', with the count and the way out", async () => {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      const snapshotId = await h.down(seat.rigId);
+      h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run("{not json", snapshotId);
+      const entry = await snapshotCheck();
+      expect(entry.status).toBe("yellow");
+      expect(entry.evidence).toBe("No readable snapshot: 1 saved snapshot is damaged (the saved data is not JSON), so none can be restored");
+      expect(entry.remediation).toContain("rig snapshot");
+      h.db.prepare("INSERT INTO snapshots (id, rig_id, kind, status, data) SELECT ?, rig_id, kind, status, ? FROM snapshots WHERE id = ?").run("snap-bad-2", "{not json", snapshotId);
+      expect((await snapshotCheck()).evidence).toContain("2 saved snapshots are damaged");
+    });
+
+    it("controls: no snapshot at all is still the first-boot wording; a readable one beside a damaged one is green", async () => {
+      h = createRestoreHarness();
+      const seat = await h.launchRig();
+      const none = await snapshotCheck();
+      expect(none.evidence).toBe("No snapshot found (first-boot or adopted rig)");
+      const snapshotId = await h.down(seat.rigId);
+      h.db.prepare("INSERT INTO snapshots (id, rig_id, kind, status, data) SELECT ?, rig_id, kind, status, ? FROM snapshots WHERE id = ?").run("snap-bad-1", "{not json", snapshotId);
+      const mixed = await snapshotCheck();
+      expect(mixed.status).toBe("green");
+      expect(mixed.evidence).toBe("Snapshot available");
+    });
   });
 
   describe("controls: a readable row is not reported", () => {

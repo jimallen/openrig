@@ -543,6 +543,8 @@ export type RestoreOutcome =
   | { ok: false; code: "rig_not_found"; message: string }
   | { ok: false; code: "rig_not_stopped"; message: string }
   | { ok: false; code: "restore_error"; message: string }
+  /** OF-117: a seat's saved row is damaged, so the pre-restore snapshot cannot be taken. Refused before any change. */
+  | { ok: false; code: "saved_row_damaged"; message: string }
   | { ok: false; code: "restore_in_progress"; message: string }
   | { ok: false; code: "service_boot_failed"; message: string }
   | { ok: false; code: "pre_restore_validation_failed"; message: string; result: RestoreResult };

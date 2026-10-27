@@ -175,6 +175,37 @@ describe("original wake continuation after prompt clearing", () => {
     expect(readWakeLadderBackstop(db, f.id)?.mechanism).toBe(variant === "still-open" ? "queue-recovery:delegated" : "queue-recovery:resolved");
   });
 
+  // OF-117 (review-u06 unpinned guards): readWakeLadderBackstop reads the recovery disposition's tags at two places (the
+  // prompt-alert test and the wake-escalation test). The disposition is found by SQL json_each, which also matches a tags
+  // column that is valid JSON of the wrong shape (an object whose VALUES are the tags), so the reader meets it. It is display
+  // only: the damaged list reads as "no tags", it never throws, and the original ladder's retry stays visible.
+  describe("a disposition whose tags are not a list of strings is read as having no tags (display only), never a throw", () => {
+    function damageAlertTags(f: Awaited<ReturnType<typeof fixture>>) {
+      const asObject = Object.fromEntries(f.alert!.tags!.map((tag, index) => [`k${index}`, tag]));
+      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(JSON.stringify(asObject), f.alert!.qitemId);
+    }
+
+    it("prompt-alert guard: control, the intact disposition says the recovery owns the continuation", async () => {
+      const f = await fixture("pending-failed");
+      expect(readWakeLadderBackstop(db, f.id)?.mechanism).toBe("queue-recovery:delegated");
+    });
+
+    it("prompt-alert guard: damaged tags do not hide the alert tag by throwing; the ladder's own retry is shown", async () => {
+      const f = await fixture("pending-failed");
+      damageAlertTags(f);
+      expect(() => readWakeLadderBackstop(db, f.id)).not.toThrow();
+      expect(readWakeLadderBackstop(db, f.id)).toMatchObject({ owner: seat, mechanism: "queue-wake-ladder:retry", intervalSeconds: 60 });
+    });
+
+    it("wake-escalation guard: with the retries spent, damaged tags read as 'not escalated' and the recovery is shown as owning the wake", async () => {
+      const f = await fixture("pending-failed");
+      for (let n = 1; n <= 3; n++) repo.transitionLog.append({ qitemId: f.id, state: "pending", actorSession: "wake-ladder@system", transitionNote: `${LADDER_ATTEMPT_PREFIX} ${n}/3 outcome=failed:fixture` });
+      damageAlertTags(f);
+      expect(() => readWakeLadderBackstop(db, f.id)).not.toThrow();
+      expect(readWakeLadderBackstop(db, f.id)).toMatchObject({ mechanism: "queue-recovery:delegated", dueAt: null });
+    });
+  });
+
   it("keeps the original retry count and last-attempt cadence after clear", async () => {
     const f = await fixture("pending-failed");
     vi.setSystemTime(at(15));

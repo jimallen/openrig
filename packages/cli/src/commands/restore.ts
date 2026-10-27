@@ -78,6 +78,9 @@ export function restoreCommand(depsOverride?: StatusDeps): Command {
         }
         if ((res.data as { code?: string }).code === "snapshot_unusable") {
           console.error(`Restore refused: ${(res.data as { error?: string }).error ?? "the selected snapshot is not restore-usable"}. Choose a different snapshot.`);
+        } else if ((res.data as { code?: string }).code === "saved_row_damaged") {
+          // OF-117: stopping the rig does not help; the saved seat row has to be repaired.
+          console.error(`Restore refused: ${(res.data as { error?: string }).error ?? "a seat's saved row is damaged"}`);
         } else {
           console.error(`Restore conflict: ${(res.data as { error?: string }).error ?? "rig may still be running"}. Stop the rig first with: rig down ${rigId}`);
         }
