@@ -12,9 +12,10 @@ import {
   validatePermissionPolicyRef,
 } from "../src/domain/permission-policy/policy-ref.js";
 import { rigPreflight } from "../src/domain/rigspec-preflight.js";
-import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const AGENT_YAML = `name: impl
 version: "1.0.0"
@@ -26,14 +27,14 @@ profiles:
       skills: []
 `;
 
-function fsOps(): AgentResolverFsOps {
-  return {
+function fsOps(): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     exists: (p) => p.includes("agents/impl"),
     readFile: (p) => {
       if (p.includes("agents/impl")) return AGENT_YAML;
       throw new Error(`not found: ${p}`);
     },
-  };
+  });
 }
 
 function rigYaml(policyLine: string): string {

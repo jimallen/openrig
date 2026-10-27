@@ -19,6 +19,7 @@ import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 import type { LegacyRigSpec as RigSpec, PersistedEvent } from "../src/domain/types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { createFullTestDb } from "./helpers/test-app.js";
+import { expectCode } from "./helpers/expect-code.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -462,7 +463,7 @@ describe("RigInstantiator", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("instantiate_error");
+      expectCode(result, "instantiate_error");
       expect(result.message).toContain("cycle");
     }
 
@@ -482,7 +483,7 @@ describe("RigInstantiator", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.code).toBe("instantiate_error");
+      expectCode(result, "instantiate_error");
       expect(result.message).toContain("all node launches failed");
     }
 

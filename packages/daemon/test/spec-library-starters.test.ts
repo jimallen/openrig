@@ -7,6 +7,7 @@ import { SpecLibraryService } from "../src/domain/spec-library-service.js";
 import { rigPreflight, type RigPreflightInput } from "../src/domain/rigspec-preflight.js";
 import { parseAgentSpec, validateAgentSpec } from "../src/domain/agent-manifest.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const SPECS_ROOT = resolve(import.meta.dirname, "../specs");
 
@@ -250,10 +251,10 @@ describe("Starter specs", () => {
   });
 
   it("all rig specs pass canonical rigPreflight with explicit cwdOverride", async () => {
-    const fsOps = {
+    const fsOps = lexicalAgentFs({
       readFile: (p: string) => readFileSync(p, "utf-8"),
       exists: (p: string) => existsSync(p),
-    };
+    });
 
     for (const file of RIG_SPECS) {
       const yaml = readFileSync(join(SPECS_ROOT, file), "utf-8");
@@ -282,10 +283,10 @@ describe("Starter specs", () => {
   });
 
   it("service-backed proof rigs pass canonical rigPreflight with explicit cwdOverride", async () => {
-    const fsOps = {
+    const fsOps = lexicalAgentFs({
       readFile: (p: string) => readFileSync(p, "utf-8"),
       exists: (p: string) => existsSync(p),
-    };
+    });
 
     for (const file of PROOF_RIG_SPECS) {
       const yaml = readFileSync(join(SPECS_ROOT, file), "utf-8");

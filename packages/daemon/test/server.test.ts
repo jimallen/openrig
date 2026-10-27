@@ -27,6 +27,7 @@ import type { ExecFn } from "../src/adapters/tmux.js";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const UI_INDEX_HTML = "<!doctype html><html><body><div id=\"root\">OpenRig UI</div></body></html>";
 
@@ -76,7 +77,7 @@ function buildFullDeps(db: ReturnType<typeof createFullTestDb>, overrides?: { sn
   const podInstantiator = new PodRigInstantiator({
     db, rigRepo, podRepo, sessionRegistry, eventBus, nodeLauncher,
     startupOrchestrator,
-    fsOps: { readFile: () => "", exists: () => false },
+    fsOps: lexicalAgentFs({ readFile: () => "", exists: () => false }),
     adapters: { "claude-code": mockAdapter, "codex": { ...mockAdapter, runtime: "codex" } },
   });
 

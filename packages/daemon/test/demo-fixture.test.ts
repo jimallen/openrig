@@ -5,6 +5,7 @@ import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { resolveLaunchCwd } from "../src/domain/cwd-resolution.js";
 import { parseAgentSpec } from "../src/domain/agent-manifest.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const DEMO_ROOT = path.resolve(__dirname, "../../../demo");
 
@@ -89,10 +90,10 @@ describe("Demo fixture validation", () => {
   it("demo rig preflight resolves all agent refs", async () => {
     const { rigPreflight } = await import("../src/domain/rigspec-preflight.js");
     const yaml = fs.readFileSync(path.join(DEMO_ROOT, "rig.yaml"), "utf-8");
-    const fsOps = {
+    const fsOps = lexicalAgentFs({
       readFile: (p: string) => fs.readFileSync(p, "utf-8"),
       exists: (p: string) => fs.existsSync(p),
-    };
+    });
     const result = await rigPreflight({ rigSpecYaml: yaml, rigRoot: DEMO_ROOT, fsOps });
     const agentErrors = result.errors.filter((e: string) => e.includes("agent_ref resolution failed"));
     expect(agentErrors).toHaveLength(0);

@@ -13,9 +13,10 @@ import { resolveNodeConfig } from "../src/domain/profile-resolver.js";
 import { selectVariant } from "../src/domain/kernel-boot.js";
 import { planProjection } from "../src/domain/projection-planner.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const specs = resolve(import.meta.dirname, "../specs");
-const fsOps = { readFile: (p: string) => readFileSync(p, "utf8"), exists: existsSync };
+const fsOps = lexicalAgentFs({ readFile: (p: string) => readFileSync(p, "utf8"), exists: existsSync });
 const choices = [
   ["starter", [["dev.build", "claude-code"], ["dev.review", "codex"]]],
   ["factory", [["orch.lead", "codex"], ["orch.advisor", "claude-code"], ["dev.build", "claude-code"], ["dev.qa", "codex"], ["dev.design", "claude-code"], ["review.r1", "claude-code"], ["review.r2", "codex"]]],

@@ -14,11 +14,12 @@ import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { PodRigInstantiator } from "../src/domain/rigspec-instantiator.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
-import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
+import type { AgentResolverFsOps, GuardedAgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RigSpec } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const RIG_ROOT = existingRigRoot("my-rig");
 const RELAY_FIX = "/fixtures/activity-relay.cjs";
@@ -56,11 +57,11 @@ function mockAdapter(runtime = "claude-code"): RuntimeAdapter {
     launchHarness: vi.fn(async () => ({ ok: true })),
   };
 }
-function mockFs(files: Record<string, string>): AgentResolverFsOps {
-  return {
+function mockFs(files: Record<string, string>): GuardedAgentResolverFsOps {
+  return lexicalAgentFs({
     readFile: (p: string) => { if (p in files) return files[p]!; throw new Error(`Not found: ${p}`); },
     exists: (p: string) => p in files,
-  };
+  });
 }
 function makeRigSpec(): RigSpec {
   return {

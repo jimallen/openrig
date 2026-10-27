@@ -8,6 +8,7 @@ import { RigSpecPreflight, rigPreflight } from "../../src/domain/rigspec-preflig
 import { rigspecImportRoutes } from "../../src/routes/rigspec.js";
 import { BootstrapOrchestrator } from "../../src/domain/bootstrap-orchestrator.js";
 import { bootstrapRoutes } from "../../src/routes/bootstrap.js";
+import { lexicalAgentFs } from "../helpers/lexical-agent-fs.js";
 
 const [root, mode, runtime] = process.argv.slice(2) as [string, string, string];
 const work = path.join(root, "working");
@@ -33,7 +34,7 @@ edges: []
 `;
 const fsOps = { exists: fs.existsSync, readFile: (p: string) => fs.readFileSync(p, "utf8") };
 // The production startup executor, through the same core used by rig up.
-const core = await rigPreflight({ rigSpecYaml: yaml, rigRoot, fsOps, exec: execPreflightCommand });
+const core = await rigPreflight({ rigSpecYaml: yaml, rigRoot, fsOps: lexicalAgentFs(fsOps), exec: execPreflightCommand });
 // The production synchronous executor, through the real route.
 const app = new Hono();
 app.use("*", async (c, next) => {

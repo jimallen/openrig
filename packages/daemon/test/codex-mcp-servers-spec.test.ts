@@ -14,6 +14,7 @@ import { normalizeMcpServers } from "../src/domain/codex-mcp-servers.js";
 import type { AgentResolverFsOps } from "../src/domain/agent-resolver.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { mcpTrustFixture } from "./helpers/mcp-trust-fixture.js";
+import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
 
 const TOOLS = ["get_definition", "get_references", "get_hover"];
 function server(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -85,7 +86,7 @@ describe("mcp_servers: rig preflight judges where the executable lives", () => {
   const dirs: string[] = [];
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
   const agentYaml = 'name: impl\nversion: "1.0.0"\nresources:\n  skills: []\nprofiles:\n  default:\n    uses:\n      skills: []\n';
-  const fsOps = (): AgentResolverFsOps => ({
+  const fsOps = () => lexicalAgentFs({
     exists: (p) => /\/agents\/impl(\/agent\.yaml)?$/.test(p),
     readFile: (p) => { if (p.includes("agents/impl")) return agentYaml; throw new Error(`Not found: ${p}`); },
   });

@@ -132,6 +132,7 @@ import { AgentActivityStore } from "../../src/domain/agent-activity-store.js";
 import { SeatAttentionReconciler } from "../../src/domain/seat-attention-reconciler.js";
 import { createApp, createAppWithWebSocket } from "../../src/server.js";
 import fs from "node:fs";
+import { lexicalAgentFs } from "./lexical-agent-fs.js";
 
 /** Seam B R6: the canonical full-fixture migration list, exported so file-backed
  *  DB-reopen tests migrate IDENTICALLY to createFullTestDb. */
@@ -366,7 +367,7 @@ export function createTestApp(
     db, rigRepo, podRepo, sessionRegistry, eventBus, nodeLauncher,
     tmuxAdapter: tmux,
     startupOrchestrator,
-    fsOps: opts?.podInstantiatorFsOps ?? { readFile: () => "", exists: () => false },
+    fsOps: lexicalAgentFs(opts?.podInstantiatorFsOps ?? { readFile: () => "", exists: () => false }),
     claudeActivityAssets: opts?.claudeActivityAssets,
     adapters,
   });
@@ -489,7 +490,7 @@ export function createTestApp(
     psProjectionService: new PsProjectionService({ db }),
     upRouter,
     teardownOrchestrator: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus }),
-    podInstantiator, podBundleSourceResolver, db, tmuxAdapter: tmux,
+    podInstantiator, podBundleSourceResolver, db, tmuxAdapter: tmux, cmuxAdapter: cmux,
     agentActivityStore,
     startupOrchestrator,
   };

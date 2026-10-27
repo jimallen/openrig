@@ -442,7 +442,14 @@ function isUiAssetRequestPath(requestPath: string): boolean {
     || relativePath === "manifest.webmanifest";
 }
 
-export function createApp(deps: AppDeps): Hono {
+/**
+ * What createApp and createAppWithWebSocket read (OF-134). The lifecycle store and boot epoch are AppDeps for
+ * index.ts (heartbeat, clean stop); the routes never read the store and read the epoch as optional
+ * (`/api/telemetry`, `deps.daemonBootEpoch ?? null`), so an app built without them is typed as it behaves.
+ */
+export type CreateAppDeps = Omit<AppDeps, "daemonLifecycleStore" | "daemonBootEpoch"> & { daemonBootEpoch?: string };
+
+export function createApp(deps: CreateAppDeps): Hono {
   // Hard runtime invariant: all domain services must share the same db handle.
   if (deps.rigRepo.db !== deps.eventBus.db) {
     throw new Error("createApp: rigRepo and eventBus must share the same db handle");
@@ -895,7 +902,7 @@ export function createApp(deps: AppDeps): Hono {
 let _lastInjectWebSocket: ((server: any) => void) | null = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createAppWithWebSocket(deps: AppDeps): { app: Hono; injectWebSocket: (server: any) => void } {
+export function createAppWithWebSocket(deps: CreateAppDeps): { app: Hono; injectWebSocket: (server: any) => void } {
   deps.enableNodeWebSocket = true;
   _lastInjectWebSocket = null;
   const app = createApp(deps);
