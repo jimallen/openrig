@@ -201,3 +201,103 @@ describe("which fresh seats replay the snapshot's startup copy", () => {
     expect(result.blockers.filter((b) => b.code === "required_startup_file_missing")).toHaveLength(0);
   });
 });
+
+// OF-57: pre-restore validation asks whether a seat consumes replay of the one function restore, the plan and `rig launch`
+// ask (restore-seat-gates.ts decideSeatLaunchOutcome), instead of keeping its own copy of the rules. Production
+// consequence of the copy: a seat restore stops at a gate (or skips) reads none of its startup files, yet a missing file
+// of such a seat refused the WHOLE rig ("required_startup_file_missing") before any other seat was restored. Each row is
+// one seat state; the expectation is restated here from the gate rules, not computed from the module under test.
+// Deployed entrypoint: startup.ts constructs RestoreOrchestrator, whose restore() calls validatePreRestore.
+describe("pre-restore validation checks the startup files only of a seat restore will start fresh (OF-57)", () => {
+  const missing = { fsOps: { exists: () => false } };
+  const row = (id: string, over: Record<string, unknown>) => ({ id, nodeId: "node-1", sessionName: "seat@test-rig", status: "exited", resumeType: null, resumeToken: null, restorePolicy: "resume_if_possible", ...over });
+  const withSessions = (sessions: unknown[], activeOccupantsByNode?: unknown) =>
+    ({ ...data(), sessions, ...(activeOccupantsByNode ? { activeOccupantsByNode } : {}) }) as unknown as SnapshotData;
+  const fileBlockers = (result: ReturnType<typeof validatePreRestore>) => result.blockers.filter((b) => b.code === "required_startup_file_missing").length;
+  const gateInputs = (over: { live?: { runtime: string | null; cwd?: string | null } | null; continuityStatus?: string | null } = {}) =>
+    () => ({ live: "live" in over && over.live ? { cwd: "/live/cwd", ...over.live } : "live" in over ? null : { runtime: "claude-code", cwd: "/live/cwd" }, continuityStatus: over.continuityStatus ?? null, rigName: "test-rig" });
+
+  // The snapshot alone decides these gates (no seatGateInputs given).
+  it.each([
+    ["no session at all: starts fresh, its files are read", withSessions([]), undefined, 1],
+    ["an earlier occupant left a token and no one was running: restore stops it for a decision", withSessions([row("s1", { resumeType: "claude_id", resumeToken: "old" })], { "node-1": { kind: "absent" } }), undefined, 0],
+    ["...but listed with --fresh it starts fresh and its files are read", withSessions([row("s1", { resumeType: "claude_id", resumeToken: "old" })], { "node-1": { kind: "absent" } }), ["seat"], 1],
+    ["an earlier occupant with a relaunch-fresh policy starts fresh", withSessions([row("s1", { resumeType: "claude_id", resumeToken: "old", restorePolicy: "relaunch_fresh" })], { "node-1": { kind: "absent" } }), undefined, 1],
+    ["a resumable seat with no token: restore stops it for a decision", withSessions([row("s1", { status: "running" })], { "node-1": { kind: "resolved", sessionId: "s1" } }), undefined, 0],
+    ["a token but no resume source: starts fresh", withSessions([row("s1", { status: "running", resumeToken: "tok" })], { "node-1": { kind: "resolved", sessionId: "s1" } }), undefined, 1],
+    ["an exact resume reads no replay file", withSessions([row("s1", { status: "running", resumeType: "claude_id", resumeToken: "tok" })], { "node-1": { kind: "resolved", sessionId: "s1" } }), undefined, 0],
+    ["an ambiguous occupant: restore stops it", withSessions([row("s1", { status: "running" }), row("s2", { status: "running" })], { "node-1": { kind: "ambiguous", candidateIds: ["s1", "s2"] } }), undefined, 0],
+  ] as const)("from the snapshot alone, %s", (_label, snapshot, freshLogicalIds, expectedFileBlockers) => {
+    const result = validatePreRestore(snapshot, { ...missing, ...(freshLogicalIds ? { freshLogicalIds: [...freshLogicalIds] } : {}) });
+    expect(fileBlockers(result)).toBe(expectedFileBlockers);
+  });
+
+  // The gates that need the live rig: given by the caller (restore reads them where restoreNodeUnisolated does).
+  it.each([
+    ["the live seat matches: starts fresh, its files are read", { live: { runtime: "claude-code" } }, undefined, 1],
+    ["the seat was removed and not grown back: restore reports it failed and reads nothing", { live: null }, undefined, 0],
+    ["the seat's runtime is no longer the one its startup was saved under: restore stops it", { live: { runtime: "codex" } }, undefined, 0],
+    ["the seat's continuity is 'restoring': restore skips it", { continuityStatus: "restoring" }, undefined, 0],
+    ["...also when it is listed with --fresh", { continuityStatus: "restoring" }, ["seat"], 0],
+    ["a degraded continuity state does not stop it", { continuityStatus: "degraded" }, undefined, 1],
+  ] as const)("with the live seat given, %s", (_label, inputs, freshLogicalIds, expectedFileBlockers) => {
+    const result = validatePreRestore(data(), { ...missing, seatGateInputs: gateInputs(inputs), ...(freshLogicalIds ? { freshLogicalIds: [...freshLogicalIds] } : {}) });
+    expect(fileBlockers(result)).toBe(expectedFileBlockers);
+  });
+
+  // Not only the blockers: the warnings about optional files and projection entries are about files the seat would be given.
+  it("a seat restore stops or skips gets no warning about its optional files or projection entries, and a seat it starts fresh does", () => {
+    const snapshot = data();
+    snapshot.nodeStartupContext!["node-1"]!.resolvedStartupFiles.push({ path: "optional.md", ownerRoot: "/optional", absolutePath: "/optional/file", required: false } as never);
+    snapshot.nodeStartupContext!["node-1"]!.projectionEntries.push({ sourcePath: "/proj/src", absolutePath: "/proj/entry" } as never);
+    const warningsFor = (inputs: Parameters<typeof gateInputs>[0]) => validatePreRestore(snapshot, { ...missing, seatGateInputs: gateInputs(inputs) }).warnings;
+    expect(warningsFor({})).toHaveLength(3); // the optional file, the projection's source root and its entry
+    expect(warningsFor({ live: null })).toEqual([]);
+    expect(warningsFor({ live: { runtime: "codex" } })).toEqual([]);
+    expect(warningsFor({ continuityStatus: "restoring" })).toEqual([]);
+  });
+
+  // F1 (review of 336cd7e6): restore delivers a checkpoint into the cwd the seat has NOW (OF-25), so that is the cwd the
+  // pre-restore check must read. Production consequence of reading the snapshot's: a regrown seat with no cwd passes the
+  // check, is launched, and then fails with "Checkpoint available but node has no cwd" with its session left running; and a
+  // regrown seat that has a cwd now is refused although the restore would deliver. The snapshot's cwd is "/project".
+  describe("a checkpoint needs the cwd the seat has now (F1)", () => {
+    const withCheckpoint = (snapshotCwd: string | undefined) => {
+      const snapshot = data();
+      snapshot.nodes[0] = { id: "node-1", logicalId: "seat", ...(snapshotCwd ? { cwd: snapshotCwd } : {}) } as never;
+      snapshot.checkpoints = { "node-1": { summary: "x", keyArtifacts: [] } } as never;
+      return snapshot;
+    };
+    const blockerCodes = (snapshot: SnapshotData, inputs?: Parameters<typeof gateInputs>[0]) =>
+      validatePreRestore(snapshot, { fsOps: { exists: () => true }, ...(inputs ? { seatGateInputs: gateInputs(inputs) } : {}) }).blockers.map((b) => b.code);
+
+    it("the snapshot's copy has a cwd and the live seat has none: refused before anything starts", () => {
+      expect(blockerCodes(withCheckpoint("/project"), { live: { runtime: "claude-code", cwd: null } })).toEqual(["checkpoint_missing_node_cwd"]);
+    });
+    it("the snapshot's copy has no cwd and the live seat has one: not refused", () => {
+      expect(blockerCodes(withCheckpoint(undefined), { live: { runtime: "claude-code", cwd: "/live/cwd" } })).toEqual([]);
+    });
+    it("both have a cwd: not refused", () => {
+      expect(blockerCodes(withCheckpoint("/project"), {})).toEqual([]);
+    });
+    it("without the live seat given, the snapshot's cwd is the answer (as before)", () => {
+      expect(blockerCodes(withCheckpoint(undefined))).toEqual(["checkpoint_missing_node_cwd"]);
+      expect(blockerCodes(withCheckpoint("/project"))).toEqual([]);
+    });
+    it.each([
+      ["removed and not grown back", { live: null }],
+      ["its runtime changed", { live: { runtime: "codex", cwd: null } }],
+      ["its continuity is 'restoring'", { continuityStatus: "restoring", live: { runtime: "claude-code", cwd: null } }],
+    ] as const)("a seat restore stops or skips needs no cwd: %s", (_label, inputs) => {
+      expect(blockerCodes(withCheckpoint(undefined), inputs)).toEqual([]);
+    });
+  });
+
+  it("a seat restore stops is not offered to the fresh-source decision, and a seat it starts fresh is", () => {
+    const asked: string[] = [];
+    validatePreRestore(data(), { ...missing, seatGateInputs: gateInputs({ live: null }), freshSeatStartup: (seat) => { asked.push(seat.logicalId); return undefined; } });
+    expect(asked).toEqual([]);
+    validatePreRestore(data(), { ...missing, seatGateInputs: gateInputs(), freshSeatStartup: (seat) => { asked.push(seat.logicalId); return undefined; } });
+    expect(asked).toEqual(["seat"]);
+  });
+});

@@ -197,6 +197,9 @@ export interface RestoreParityDeps {
   /** predictSeatStops (restore-seat-gates.ts): logical id -> why restore stops that seat before its startup files are
    *  looked at (removed seat, runtime differs from the snapshot's, resumable seat with no token, ...). */
   predictSeatStops(rigId: string, snapshotData: Snapshot["data"], listed: { freshLogicalIds?: string[]; startupFrom?: import("./seat-startup-source.js").StartupFrom }): Map<string, SeatStop>;
+  /** The live seat facts restore validates with (liveSeatGateInputs), so pre-restore validation here skips and checks the
+   *  seats restore does. Optional for older wiring: without it only the snapshot-only gates apply. */
+  seatGateInputs?(rigId: string, snapshotData: Snapshot["data"]): (node: { id: string; logicalId: string }) => import("./restore-seat-gates.js").SeatGateInputs;
 }
 
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
@@ -687,6 +690,7 @@ export class RestoreCheckService {
         fsOps: { exists: this.deps.exists },
         servicesRecord: input.servicesRecord,
         ...(parity && opts.freshLogicalIds?.length ? { freshLogicalIds: opts.freshLogicalIds } : {}),
+        ...(parity?.seatGateInputs ? { seatGateInputs: parity.seatGateInputs(rig.rigId, input.snapshot.data) } : {}),
         freshSeatStartup: (node) => {
           if (parity) {
             // The same function restore validates with (OF-36): for a seat this restore starts fresh, what it replays (its

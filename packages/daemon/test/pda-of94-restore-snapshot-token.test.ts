@@ -2,9 +2,11 @@
 // while a restore resumes the RESTORING seat from its SNAPSHOT's token. If they differ, could a holder be missed?
 //
 // Settled here by a real restore (RestoreOrchestrator -> startup orchestrator -> the real PdaRuntimeAdapter, wired as
-// startup.ts wires it, over a fake tmux that records keystrokes; the seat is a legacy (no pod) seat, so the restore
-// resumes through PdaResumeAdapter, the one door of the two where the snapshot's token is the launch target) in which the snapshot token differs from the live
-// sessions row of the restoring seat:
+// startup.ts wires it, over a fake tmux that records keystrokes) in which the snapshot token differs from the live
+// sessions row of the restoring seat. Restore launches a seat with its LIVE settings (OF-25), its pod included, so the seat
+// has to be in a pod now for the pod-aware door (the harness launch) to run, and in none for the legacy one
+// (PdaResumeAdapter). Before OF-25 the rows below that left the live pod cleared ran the pod-aware door anyway, because
+// the snapshot's pod won; each row now says which door it runs, and the legacy door has its own rows at the end:
 //   - the agent CHECKED is the snapshot token's (the launch target), never the live row's;
 //   - the restoring seat's own live row is excluded from the holders, whatever it says;
 //   - other seats are read from their live rows, which is right: a seat that is not being restored drives the agent its
@@ -31,7 +33,7 @@ describe("OF-94: a restore whose snapshot token differs from the live sessions r
   afterEach(() => h?.cleanup());
 
   /** The restoring seat: live row says `live`, the snapshot says `snap`. Typed keystrokes are recorded. */
-  async function restoringSeat(snap: string, live: string) {
+  async function restoringSeat(snap: string, live: string, opts?: { legacy?: boolean }) {
     h = createRestoreHarness();
     const seat = await h.launchRig();
     const snapshotId = await h.down(seat.rigId);
@@ -44,7 +46,7 @@ describe("OF-94: a restore whose snapshot token differs from the live sessions r
     for (const ctx of Object.values(data.nodeStartupContext ?? {}) as Array<{ runtime?: string }>) ctx.runtime = "pda";
     for (const n of data.nodes ?? []) n.runtime = "pda";
     h.db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snapshotId);
-    h.db.prepare("UPDATE nodes SET runtime = 'pda', pod_id = NULL WHERE id = ?").run(seat.nodeId);
+    h.db.prepare(`UPDATE nodes SET runtime = 'pda'${opts?.legacy ? ", pod_id = NULL" : ""} WHERE id = ?`).run(seat.nodeId);
     // The live rows (what OF-92's holder reads for every OTHER seat) say something else for this seat.
     h.db.prepare("UPDATE sessions SET resume_type = 'pda_agent', resume_token = ? WHERE node_id = ?").run(live, seat.nodeId);
     const typed: string[] = [];
@@ -133,5 +135,27 @@ describe("OF-94: a restore whose snapshot token differs from the live sessions r
     const result = await restoreOnce(snapshotId, adapter);
     expect(result.nodes.find((n) => n.nodeId === seat.nodeId)!.status).toBe("resumed");
     expect(typed).toHaveLength(1);
+  });
+
+  // The legacy door (a seat in no pod now): PdaResumeAdapter, where the snapshot's token is the launch target. It reports the
+  // refusal as an awaiting-decision seat without the holder's name (the failure message is not carried); what is pinned is the
+  // production consequence: it types nothing.
+  it("legacy door (no pod): the snapshot's agent is held by another seat, the live row names a free agent: the restore does not resume and types nothing", async () => {
+    const { seat, snapshotId, adapter, typed } = await restoringSeat(tok("research"), tok("free-live"), { legacy: true });
+    otherHolder("research");
+    const result = await restoreOnce(snapshotId, adapter);
+    const node = result.nodes.find((n) => n.nodeId === seat.nodeId)!;
+    expect(node.status).toBe("awaiting-decision");
+    expect(node.error).not.toContain(PORT); // never a token (the remedy's `<port>/agents/<agent>` is a placeholder)
+    expect(typed).toEqual([]);
+  });
+
+  it("legacy door (no pod): nobody holds the snapshot's agent: it is launched, and it is the SNAPSHOT's agent, not the live row's", async () => {
+    const { seat, snapshotId, adapter, typed } = await restoringSeat(tok("research"), tok("free-live"), { legacy: true });
+    const result = await restoreOnce(snapshotId, adapter);
+    expect(result.nodes.find((n) => n.nodeId === seat.nodeId)!.status).toBe("resumed");
+    expect(typed).toHaveLength(1);
+    expect(typed[0]).toContain("research");
+    expect(typed[0]).not.toContain("free-live");
   });
 });

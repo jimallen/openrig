@@ -42,6 +42,12 @@ import { existingRigRoot } from "./helpers/existing-rig-root.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORK_DIR = existingRigRoot("work");
 
+// Two real directories for the rows that compare a regrown seat's live cwd with the snapshot's: the launch refuses a cwd that
+// does not exist (seat_cwd_unusable), so a made-up path would stop the seat before the setting under test is read.
+const SNAPSHOT_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u14-snapshot-cwd-")));
+const LIVE_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u14-live-cwd-")));
+process.on("exit", () => { fs.rmSync(SNAPSHOT_CWD, { recursive: true, force: true }); fs.rmSync(LIVE_CWD, { recursive: true, force: true }); });
+
 function setupDb(): Database.Database {
   return createFullTestDb();
 }
@@ -2497,19 +2503,26 @@ describe("RestoreOrchestrator", () => {
   // Each row below is one write the restore makes against the seat, on a seat grown back under a NEW node id. A write
   // keyed by the snapshot's (vanished) node id either fails the foreign key to `nodes` (the whole restore ends as a
   // restore_error) or silently lands on nothing.
-  function snapshotThenRegrow(rigName: string, opts?: { podId?: string; runtime?: string; token?: string; cwd?: string; restorePolicy?: string; checkpoint?: boolean; absent?: boolean; livePodId?: string }) {
+  // `live` (OF-25): settings the grown-back seat has that the snapshot's copy of it does not. A key given there replaces the
+  // snapshot's value on the new node (`podId: null`: the live seat is in no pod; `model: null`: it has none). `model`, `codexConfigProfile` and
+  // `remoteControl` given at the top level are the SNAPSHOT's values.
+  function snapshotThenRegrow(rigName: string, opts?: { podId?: string; runtime?: string; token?: string; cwd?: string; restorePolicy?: string; checkpoint?: boolean; absent?: boolean; livePodId?: string;
+    model?: string; codexConfigProfile?: string; remoteControl?: boolean; startupContext?: boolean;
+    live?: { cwd?: string | null; podId?: string | null; model?: string | null; codexConfigProfile?: string; remoteControl?: boolean } }) {
     const runtime = opts?.runtime ?? "claude-code";
     const rig = rigRepo.createRig(rigName);
     if (opts?.podId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.podId, rig.id, "Dev");
-    const nodeOpts = { runtime, ...(opts?.podId ? { podId: opts.podId } : {}), ...(opts?.cwd ? { cwd: opts.cwd } : {}) };
+    const nodeOpts = { runtime, ...(opts?.podId ? { podId: opts.podId } : {}), ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+      ...(opts?.model ? { model: opts.model } : {}), ...(opts?.codexConfigProfile ? { codexConfigProfile: opts.codexConfigProfile } : {}) };
     const oldNode = rigRepo.addNode(rig.id, "dev.impl", nodeOpts);
+    if (opts?.remoteControl) rigRepo.setNodeRemoteControl(oldNode.id, true);
     const sessionName = `dev-impl@${rigName}`;
     const session = sessionRegistry.registerSession(oldNode.id, sessionName);
     sessionRegistry.updateStatus(session.id, "running");
-    sessionRegistry.updateResumeToken(session.id, runtime === "stub" ? "stub_id" : "claude_id", opts?.token ?? "resume-token-123");
+    sessionRegistry.updateResumeToken(session.id, runtime === "stub" ? "stub_id" : runtime === "codex" ? "codex_id" : "claude_id", opts?.token ?? "resume-token-123");
     if (opts?.restorePolicy) db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?").run(opts.restorePolicy, session.id);
     if (opts?.checkpoint) checkpointStore.createCheckpoint(oldNode.id, { summary: "Was working on feature X", keyArtifacts: ["src/feature.ts"] });
-    if (opts?.podId) {
+    if (opts?.podId || opts?.startupContext) {
       db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)")
         .run(oldNode.id, "[]", "[]", "[]", runtime);
     }
@@ -2520,7 +2533,15 @@ describe("RestoreOrchestrator", () => {
     db.prepare("DELETE FROM bindings WHERE node_id = ?").run(oldNode.id);
     db.prepare("DELETE FROM nodes WHERE id = ?").run(oldNode.id);
     if (opts?.livePodId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.livePodId, rig.id, "Moved");
-    const newNode = rigRepo.addNode(rig.id, "dev.impl", opts?.livePodId ? { ...nodeOpts, podId: opts.livePodId } : nodeOpts);
+    const { podId: snapshotPod, model: snapshotModel, cwd: snapshotCwd, ...nodeOptsNoPod } = nodeOpts as typeof nodeOpts & { podId?: string; model?: string; cwd?: string };
+    const liveModel = opts?.live && "model" in opts.live ? opts.live.model : snapshotModel;
+    const livePod = opts?.live && "podId" in opts.live ? (opts.live.podId ?? undefined) : (opts?.livePodId ?? snapshotPod);
+    const newNode = rigRepo.addNode(rig.id, "dev.impl", {
+      ...nodeOptsNoPod, ...(livePod ? { podId: livePod } : {}),
+      ...(opts?.live && "cwd" in opts.live ? (opts.live.cwd ? { cwd: opts.live.cwd } : {}) : (snapshotCwd ? { cwd: snapshotCwd } : {})), ...(liveModel ? { model: liveModel } : {}),
+      ...(opts?.live?.codexConfigProfile ? { codexConfigProfile: opts.live.codexConfigProfile } : {}),
+    });
+    if (opts?.live?.remoteControl) rigRepo.setNodeRemoteControl(newNode.id, true);
     expect(newNode.id).not.toBe(oldNode.id);
     return { rig, snap, oldNode, newNode, sessionName };
   }
@@ -2629,6 +2650,236 @@ describe("RestoreOrchestrator", () => {
       expect(sessionRegistry.getBindingForNode(newNode.id)).not.toBeNull();
     } finally {
       fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  // OF-25 (Jim, 2026-10-26, "Live settings win"). A seat removed and grown back keeps its logical id but is a new node
+  // that can have another cwd, pod, model, Codex config profile or remote_control than the snapshot's copy of it. Restore
+  // launches it with the settings it has NOW. Production consequence of the snapshot winning: the operator regrows a
+  // seat on a new model or in a new directory, runs `rig up --existing`, and the seat comes back on the old ones, silently
+  // undoing the change they just made. Each row is one attribute; the spy is the resume adapter (the call that carries the
+  // setting), and the expected value is the LIVE one, written here as a literal. (Runtime is not a row: it is gated by OF-40.)
+  // Deployed entrypoint: startup.ts constructs RestoreOrchestrator; routes/rigs.ts (restore) and `rig up --existing` call restore().
+  it.each([
+    // [attribute, snapshot's value, the live seat's value, runtime, index of the setting in the resume adapter's arguments]
+    ["cwd", { cwd: SNAPSHOT_CWD }, { cwd: LIVE_CWD }, "claude-code", 3, LIVE_CWD],
+    ["model", { model: "snapshot-model" }, { model: "live-model" }, "claude-code", 5, "live-model"],
+    ["codexConfigProfile", { codexConfigProfile: "snapshot-profile" }, { codexConfigProfile: "live-profile" }, "codex", 4, "live-profile"],
+  ] as const)("a regrown seat is resumed with its LIVE %s, not the snapshot's", async (_attribute, snapshotValue, liveValue, runtime, argIndex, expected) => {
+    const { snap } = snapshotThenRegrow(`regrown-live-${_attribute}-rig`, { runtime, ...snapshotValue, live: liveValue });
+    const claude = mockClaudeResume();
+    const codex = mockCodexResume();
+
+    const result = await createOrchestrator({ claude, codex, listProcesses: nativeLineage(runtime, "resume-token-123") }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    const spy = vi.mocked(runtime === "codex" ? codex.resume : claude.resume);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![argIndex]).toBe(expected);
+    // The other runtime's adapter is not the one that resumed it.
+    expect(vi.mocked(runtime === "codex" ? claude.resume : codex.resume)).not.toHaveBeenCalled();
+  });
+
+  // F1 (review of 336cd7e6): a checkpoint is delivered into the cwd the seat has now, so that is the cwd the pre-restore check
+  // reads. Both directions, end to end: before this, a regrown seat with a snapshot cwd and no live cwd passed the check, was
+  // launched, and failed with "Checkpoint available but node has no cwd" with its session left running.
+  describe("a regrown seat's checkpoint needs its LIVE cwd (F1)", () => {
+    it("the snapshot's copy has a cwd, the live seat has none: restore is refused before it launches anything", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-f1-"));
+      try {
+        const { snap } = snapshotThenRegrow("regrown-f1-nolive-rig", { cwd: tmpDir, restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: null } });
+        const tmux = mockTmux();
+
+        const result = await createOrchestrator({ tmux, claude: mockClaudeResume() }).restore(snap.id);
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.code).toBe("pre_restore_validation_failed");
+        expect((result as { result?: { blockers?: Array<{ code: string }> } }).result?.blockers?.map((b) => b.code)).toEqual(["checkpoint_missing_node_cwd"]);
+        expect(tmux.createSession).not.toHaveBeenCalled();
+      } finally { fs.rmSync(tmpDir, { recursive: true }); }
+    });
+
+    it("the snapshot's copy has no cwd, the live seat has one: the checkpoint is delivered into it", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-f1-"));
+      try {
+        const { snap, newNode } = snapshotThenRegrow("regrown-f1-live-rig", { restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: tmpDir } });
+
+        const result = await createOrchestrator({ claude: mockClaudeResume() }).restore(snap.id);
+
+        expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+        if (!result.ok) return;
+        expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "rebuilt" })]);
+        expect(fs.readdirSync(tmpDir).length).toBeGreaterThan(0);
+      } finally { fs.rmSync(tmpDir, { recursive: true }); }
+    });
+  });
+
+  // F5: the stop-and-ask says the directory moved when it did, because a conversation is kept per directory.
+  it.each([
+    ["the live cwd differs from the snapshot's", LIVE_CWD, true],
+    ["the live cwd is the snapshot's", SNAPSHOT_CWD, false],
+  ] as const)("a regrown seat whose resume fails says whether its directory moved: %s", async (_label, liveCwd, mentioned) => {
+    const { snap } = snapshotThenRegrow("regrown-f5-rig", { cwd: SNAPSHOT_CWD, live: { cwd: liveCwd } });
+    const claude = mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
+
+    const result = await createOrchestrator({ claude }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    const node = result.result.nodes[0]!;
+    expect(node.status).toBe("awaiting-decision");
+    expect(node.error?.includes(LIVE_CWD) && node.error.includes(SNAPSHOT_CWD)).toBe(mentioned);
+    expect(node.error?.includes("belongs to the directory it was made in")).toBe(mentioned);
+  });
+
+  it("a regrown seat whose live copy has no model is resumed with none, not the snapshot's", async () => {
+    const { snap } = snapshotThenRegrow("regrown-live-nomodel-rig", { model: "snapshot-model", live: { model: null } });
+    const claude = mockClaudeResume();
+
+    const result = await createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    expect(claude.resume).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(claude.resume).mock.calls[0]![5] ?? null).toBeNull();
+  });
+
+  it.each([
+    // [label, snapshot has remote_control, live seat has it, value of the resume adapter's remote_control argument]
+    ["declared on the live seat only", false, true, true],
+    ["declared on the snapshot's copy only", true, false, undefined],
+  ] as const)("a regrown seat's remote_control is the live seat's: %s", async (_label, snapshotRemote, liveRemote, expected) => {
+    const { snap } = snapshotThenRegrow("regrown-live-rc-rig", { remoteControl: snapshotRemote, live: { remoteControl: liveRemote } });
+    const claude = mockClaudeResume();
+
+    const result = await createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(claude.resume).toHaveBeenCalledTimes(1);
+    // attemptResume: a declared remote_control is the 13th argument (the five-slot tail); an undeclared seat keeps the shorter call.
+    expect(vi.mocked(claude.resume).mock.calls[0]![12]).toBe(expected);
+  });
+
+  // The pod is read twice: to derive the seat's session name and to choose between the harness launch (pod-aware) and
+  // the legacy resume call. The adapter that was called says which pod the restore used.
+  it("a regrown seat that is in no pod now is resumed through the legacy call, though the snapshot's copy was in a pod", async () => {
+    const { snap, newNode } = snapshotThenRegrow("regrown-live-nopod-rig", { podId: "pod-snapshot", live: { podId: null } });
+    const claude = mockClaudeResume();
+    const adapter = { runtime: "claude-code", launchHarness: vi.fn(async () => ({ ok: true as const })) } as unknown as RuntimeAdapter;
+
+    const result = await createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id, { adapters: { "claude-code": adapter } });
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "resumed" })]);
+    expect(claude.resume).toHaveBeenCalledTimes(1);
+    expect(adapter.launchHarness).not.toHaveBeenCalled();
+  });
+
+  it("a regrown seat that is in a pod now is resumed through the harness launch, though the snapshot's copy was in no pod", async () => {
+    const { snap, newNode } = snapshotThenRegrow("regrown-live-pod-rig", { livePodId: "pod-live", startupContext: true });
+    const claude = mockClaudeResume();
+    const adapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "resume-token-123", resumeType: "claude_id" })),
+    } as unknown as RuntimeAdapter;
+
+    const result = await createOrchestrator({ claude, listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id, { adapters: { "claude-code": adapter } });
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "resumed" })]);
+    expect(adapter.launchHarness).toHaveBeenCalledTimes(1);
+    expect(claude.resume).not.toHaveBeenCalled();
+  });
+
+  // OF-57, end to end: restore's pre-restore validation reads the live seat where the seat gates do, so a seat restore
+  // stops at a gate is not checked for startup files it will never read. Filed as: a missing required startup file of a
+  // seat restore would only stop (or that was removed) refused the WHOLE rig before any other seat was restored.
+  // The seat's snapshot copy names a required file that does not exist; `exists` says nothing does.
+  describe("a missing startup file of a seat restore stops does not refuse the rig (OF-57)", () => {
+    const missingFile = { runtime: "claude-code", projectionEntries: [], startupActions: [], resolvedStartupFiles: [{ path: "role.md", ownerRoot: "/gone", absolutePath: "/gone/role.md", required: true }] };
+    function twoSeats() {
+      const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "stopped", role: "worker", runtime: "claude-code" }, { logicalId: "other", role: "worker", runtime: "claude-code" }], edges: [] });
+      const stoppedId = snap.data.nodes.find((n) => n.logicalId === "stopped")!.id;
+      const withFile = updateSnapshotData(snap, (data) => { data.nodeStartupContext = { ...(data.nodeStartupContext ?? {}), [stoppedId]: missingFile }; });
+      return { snap: withFile, stoppedId };
+    }
+
+    it.each([
+      ["its runtime is no longer the one its startup was saved under", (stoppedId: string) => { db.prepare("UPDATE nodes SET runtime = 'codex' WHERE id = ?").run(stoppedId); }, "awaiting-decision", "saved startup runtime matches"],
+      ["it was removed and not grown back", (stoppedId: string) => { db.prepare("DELETE FROM nodes WHERE id = ?").run(stoppedId); }, "failed", "not found in rig"],
+    ] as const)("%s: restore is not refused, and the seat is reported stopped", async (_label, change, status, errorPart) => {
+      const { snap, stoppedId } = twoSeats();
+      change(stoppedId);
+
+      const result = await createOrchestrator().restore(snap.id, { fsOps: { exists: () => false }, freshLogicalIds: ["other"] });
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.blockers ?? []).toEqual([]);
+      expect(result.result.nodes.find((n) => n.logicalId === "stopped")).toMatchObject({ status, error: expect.stringContaining(errorPart) });
+      expect(result.result.nodes.find((n) => n.logicalId === "other")).toBeDefined();
+    });
+
+    it("its continuity state is 'restoring': restore is not refused, and the seat is skipped", async () => {
+      const { snap, stoppedId } = twoSeats();
+      db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("skip-pod", snap.rigId, "Dev");
+      db.prepare("UPDATE nodes SET pod_id = ? WHERE id = ?").run("skip-pod", stoppedId);
+      db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, ?)").run("skip-pod", stoppedId, "restoring");
+
+      const result = await createOrchestrator().restore(snap.id, { fsOps: { exists: () => false }, freshLogicalIds: ["other"] });
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      expect(result.result.nodes.find((n) => n.logicalId === "stopped")).toMatchObject({ status: "fresh" });
+      expect(result.result.warnings.some((w) => w.includes("continuity state is 'restoring', skipping"))).toBe(true);
+    });
+
+    it("control: the same missing file of a seat restore WILL start fresh still refuses the rig", async () => {
+      const { snap } = twoSeats();
+
+      const result = await createOrchestrator().restore(snap.id, { fsOps: { exists: () => false } });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("pre_restore_validation_failed");
+    });
+  });
+
+  // OF-59: the runtime label the resume path hands the permission store. An OMP token is OMP's, not Pi's. Both labels
+  // give the same answer today (launchOverride treats any label other than claude-code and codex alike), so the only
+  // observer is the label itself: the spy reads the runtime argument launchOverride was called with.
+  it.each([
+    // [adapter that owns the token, resume type, label expected]
+    ["omp", "omp_session_file", "omp"],
+    ["pi", "pi_session_file", "pi"],
+  ] as const)("a resume through the %s adapter (token type %s) asks the permission store for the runtime label '%s'", async (adapterName, resumeType, expected) => {
+    const { NativePermissionStore } = await import("../src/domain/native-permission-store.js");
+    const launchOverride = vi.spyOn(NativePermissionStore.prototype, "launchOverride");
+    try {
+      const rig = rigRepo.createRig(`resume-label-${adapterName}`);
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: adapterName, cwd: "/work" });
+      const resume = vi.fn(async () => ({ ok: true as const }));
+      // Both adapters are present and each claims only its own token type, so the label must follow the token.
+      const pi = { canResume: vi.fn((type: string | null) => type === "pi_session_file"), resume } as unknown as PiResumeAdapter;
+      const omp = { canResume: vi.fn((type: string | null) => type === "omp_session_file"), resume } as unknown as OmpResumeAdapter;
+      const orch = createOrchestrator({ pi, omp });
+
+      const outcome = await (orch as any).attemptResume(node.id, `resume-label-${adapterName}-session`, resumeType, "resume-token", "/work", null, null, "floor");
+
+      expect(outcome).toEqual({ kind: "resumed" });
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(launchOverride).toHaveBeenCalledTimes(1);
+      expect(launchOverride.mock.calls[0]![1]).toBe(expected);
+    } finally {
+      launchOverride.mockRestore();
     }
   });
 
@@ -4197,11 +4448,9 @@ describe("RestoreOrchestrator", () => {
         edges: [],
         withCheckpoint: "orchestrator",
       });
-      // Force a pre-restore validation failure: clear the node's cwd so the
-      // checkpoint blocks restore (checkpoint_missing_node_cwd).
-      const data = JSON.parse(JSON.stringify(snap.data));
-      data.nodes[0].cwd = null;
-      db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snap.id);
+      // Force a pre-restore validation failure: clear the node's cwd so the checkpoint blocks restore
+      // (checkpoint_missing_node_cwd). The cwd a checkpoint needs is the LIVE node's (OF-25), so that is the one cleared.
+      db.prepare("UPDATE nodes SET cwd = NULL WHERE id = ?").run(snap.data.nodes[0]!.id);
 
       let invoked = false;
       const outcome = await orch.restore(snap.id, {

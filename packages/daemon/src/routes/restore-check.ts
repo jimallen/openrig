@@ -6,7 +6,7 @@ import { OPENRIG_HOME } from "../openrig-compat.js";
 import { RestoreCheckService, type RestoreCheckDeps, type RestoreParityDeps, type NodeInventoryEntry, type StartupContextProbeResult } from "../domain/restore-check-service.js";
 import { listedRefusalRemedy, predictListedSeatRefusals, startupToValidateForSeat } from "../domain/fresh-seat-restore-decision.js";
 import { STARTUP_FROM_FORMS, parseStartupFrom, type SeatStartupSpecReader, type StartupFrom } from "../domain/seat-startup-source.js";
-import { predictSeatStops } from "../domain/restore-seat-gates.js";
+import { liveSeatGateInputs, predictSeatStops } from "../domain/restore-seat-gates.js";
 import { findOtherSessionOwner } from "../domain/session-owner.js";
 import { activeOccupantAmbiguityError, deriveRehydrateOccupantsByNode } from "../domain/active-occupant.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
@@ -162,6 +162,7 @@ export function restoreParityDeps(rigRepo: RigRepository, runtimeAdapters: Recor
   return {
     startupToValidate: (rigId, logicalId, listed, selectedCopy) => startupToValidateForSeat({ db: rigRepo.db, rigRepo }, { rigId, logicalId, adapters: runtimeAdapters, ...listed, selectedCopy }),
     predictSeatStops: (rigId, snapshotData, listed) => predictSeatStops({ db: rigRepo.db, rigRepo }, { rigId, data: snapshotData, ...listed }),
+    seatGateInputs: (rigId, snapshotData) => liveSeatGateInputs({ db: rigRepo.db, rigRepo }, { rigId, fallbackRigName: snapshotData.rig.name }),
     predictListedSeatRefusals: (rigId, snapshotData, listed) => predictListedSeatRefusals(
       { db: rigRepo.db, rigRepo, specReader, runtimeAdapters },
       { rigId, ...listed, snapshot: snapshotData, exists: existsSync },
