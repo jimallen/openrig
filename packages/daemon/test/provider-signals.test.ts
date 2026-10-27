@@ -22,19 +22,19 @@ describe("codexRateLimitSignals — normalization honesty", () => {
     });
     expect(sigs).toHaveLength(1);
     const s = sigs[0];
-    expect(s.provider).toBe("codex");
-    expect(s.accountRef).toBe("acct-1");
-    expect(s.sourceClass).toBe("unknown");
-    expect(s.authority).toBe("unknown");
-    expect(s.unknownReason).toBeTruthy();
+    expect(s!.provider).toBe("codex");
+    expect(s!.accountRef).toBe("acct-1");
+    expect(s!.sourceClass).toBe("unknown");
+    expect(s!.authority).toBe("unknown");
+    expect(s!.unknownReason).toBeTruthy();
     // The silent-zero trap: usedPercent must be ABSENT, never defaulted to 0.
-    expect(s.usedPercent).toBeUndefined();
-    expect(s.resetsAt).toBeUndefined();
+    expect(s!.usedPercent).toBeUndefined();
+    expect(s!.resetsAt).toBeUndefined();
     // BR-2: an unknown signal must never be automatable.
-    expect(s.automationUse).toBe("do_not_automate");
+    expect(s!.automationUse).toBe("do_not_automate");
     // App-server absent → no notification transport.
-    expect(s.supportsNotification).toBe(false);
-    expect(s.asOf).toBe(ASOF);
+    expect(s!.supportsNotification).toBe(false);
+    expect(s!.asOf).toBe(ASOF);
   });
 
   it("preserves a GENUINE zero from a real read (0 is real data, distinct from omitted-unknown)", () => {
@@ -73,13 +73,13 @@ describe("codexRateLimitSignals — normalization honesty", () => {
       asOf: ASOF,
     });
     expect(sigs).toHaveLength(1);
-    expect(sigs[0].sourceClass).toBe("unknown");
+    expect(sigs[0]!.sourceClass).toBe("unknown");
     // Still no fabricated zero.
-    expect(sigs[0].usedPercent).toBeUndefined();
-    expect(sigs[0].automationUse).toBe("do_not_automate");
+    expect(sigs[0]!.usedPercent).toBeUndefined();
+    expect(sigs[0]!.automationUse).toBe("do_not_automate");
     // The app-server IS present, so account/rateLimits/updated capability is KNOWN true —
     // unknown data must not erase known transport capability.
-    expect(sigs[0].supportsNotification).toBe(true);
+    expect(sigs[0]!.supportsNotification).toBe(true);
   });
 });
 

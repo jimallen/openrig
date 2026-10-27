@@ -57,7 +57,7 @@ function readDescription(file: string): string {
   const text = fs.readFileSync(file, "utf-8");
   const match = /^description:\s*([\s\S]*?)(?=\n[A-Za-z_-]+:|\n---)/m.exec(text);
   expect(match, `no frontmatter description: found in ${file}`).not.toBeNull();
-  return match![1].split(/\s+/).filter(Boolean).join(" ");
+  return match![1]!.split(/\s+/).filter(Boolean).join(" ");
 }
 
 describe("aa922842 mission-slice-sop description budget + symptom retrieval", () => {

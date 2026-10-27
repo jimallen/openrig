@@ -710,7 +710,7 @@ describe("OF-32 stage 3: a seat restored fresh re-reads the rig's spec source", 
     const launched = await launchWithoutFresh(seat.rigId);
 
     expect(launched.ok, JSON.stringify(launched)).toBe(true);
-    expect(launched.ok && launched.launched.map((n) => n.startupSource)).toEqual([{ kind: "snapshot", reason: "saved_context_unreadable" }]);
+    expect(launched.ok && launched.launched!.map((n) => n.startupSource)).toEqual([{ kind: "snapshot", reason: "saved_context_unreadable" }]);
     expect(releaseOf(delivered.flat())).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
     expect(storedReads(seat.nodeId)).toBe("ok");
   });

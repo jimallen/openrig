@@ -1521,9 +1521,9 @@ describe("Bundle API routes", () => {
         expectedOutcome: "success",
       });
       expect(body.total).toBe(1);
-      expect(body.records[0].outcome).toBe("success");
-      expect(body.records[0].targetRigId).toBe("01H000000000000000COMPL01");
-      expect(typeof body.records[0].daemonVersion).toBe("string");
+      expect(body.records[0]!.outcome).toBe("success");
+      expect(body.records[0]!.targetRigId).toBe("01H000000000000000COMPL01");
+      expect(typeof body.records[0]!.daemonVersion).toBe("string");
     } finally {
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
@@ -1551,8 +1551,8 @@ describe("Bundle API routes", () => {
         expectedOutcome: "partial",
       });
       expect(body.total).toBe(1);
-      expect(body.records[0].outcome).toBe("partial");
-      expect(body.records[0].targetRigId).toBe("01H000000000000000PARTI01");
+      expect(body.records[0]!.outcome).toBe("partial");
+      expect(body.records[0]!.targetRigId).toBe("01H000000000000000PARTI01");
     } finally {
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
@@ -1576,7 +1576,7 @@ describe("Bundle API routes", () => {
         expectedOutcome: "failed",
       });
       expect(body.total).toBe(1);
-      expect(body.records[0].outcome).toBe("failed");
+      expect(body.records[0]!.outcome).toBe("failed");
     } finally {
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;
@@ -1595,7 +1595,7 @@ describe("Bundle API routes", () => {
         expectedOutcome: "failed",
       });
       expect(body.total).toBe(1);
-      expect(body.records[0].outcome).toBe("failed");
+      expect(body.records[0]!.outcome).toBe("failed");
     } finally {
       if (origHome === undefined) delete process.env.OPENRIG_HOME;
       else process.env.OPENRIG_HOME = origHome;

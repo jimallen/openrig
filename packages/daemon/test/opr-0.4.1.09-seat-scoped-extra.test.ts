@@ -17,7 +17,7 @@ function makeSettingsStore(policy: ClaudeCompactionPolicy): SettingsStore {
   return { resolveClaudeCompactionPolicy: vi.fn(() => policy) } as unknown as SettingsStore;
 }
 function makeSessionTransport() {
-  const send = vi.fn(async () => ({ ok: true }));
+  const send = vi.fn(async (...args: unknown[]) => ({ ok: true }));
   return { transport: { send } as unknown as SessionTransport, send };
 }
 function policyWithExtra(messageFilePath: string): ClaudeCompactionPolicy {

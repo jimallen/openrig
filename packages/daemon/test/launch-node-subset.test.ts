@@ -162,10 +162,10 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
 
     expect(result.ok).toBe(true);
     expect(result.launched).toHaveLength(1);
-    expect(result.launched![0].logicalId).toBe("dev.driver");
+    expect(result.launched![0]!.logicalId).toBe("dev.driver");
     expect(result.held).toHaveLength(1);
-    expect(result.held![0].logicalId).toBe("dev.guard");
-    expect(result.held![0].reason).toBe("excluded_from_subset");
+    expect(result.held![0]!.logicalId).toBe("dev.guard");
+    expect(result.held![0]!.reason).toBe("excluded_from_subset");
     expect(result.nonTargetEffects).toMatchObject({ mode: "detach_and_hold", reason: "excluded_from_subset" });
   });
 
@@ -366,7 +366,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
 
     expect(result.ok).toBe(true);
     expect(result.alreadyRunning).toHaveLength(1);
-    expect(result.alreadyRunning![0].logicalId).toBe("dev.driver");
+    expect(result.alreadyRunning![0]!.logicalId).toBe("dev.driver");
     expect(result.launched).toHaveLength(0);
   });
 
@@ -408,8 +408,8 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
     expect(result.alreadyRunning).toEqual([]);
     expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver", status: "attention_required", error: expect.stringContaining("Session alive, agent not running") })]);
-    expect(result.launched![0].error).toContain(session.sessionName);
-    expect(result.launched![0].error).toContain("restart the agent");
+    expect(result.launched![0]!.error).toContain(session.sessionName);
+    expect(result.launched![0]!.error).toContain("restart the agent");
     expect(tmux.createSession).not.toHaveBeenCalled();
     expect(tmux.killSession).not.toHaveBeenCalled();
     expect(tmux.sendKeys).not.toHaveBeenCalled();
@@ -424,7 +424,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
   ])("with %s, says what stopping and launching would actually do", async (saved, fields, says) => {
     const { rigId, session, snapshotId } = seedPreservedShell();
     setSavedSession(snapshotId, fields);
-    const error = (await orchestrator.launchNodeSubset(rigId, ["dev.driver"])).launched![0].error!;
+    const error = (await orchestrator.launchNodeSubset(rigId, ["dev.driver"])).launched![0]!.error!;
     expect(error).toContain(says);
     const resumable = saved === "a resumable saved session";
     // The resume route is offered only when it can resume, and it pins the snapshot that was checked.
@@ -461,7 +461,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     const { rigId, nodeIds, session, snapshotId } = seedPreservedShell();
     setSavedSession(snapshotId, fields);
     shape?.({ snapshotId, nodeId: nodeIds[0]! });
-    const error = (await orchestrator.launchNodeSubset(rigId, ["dev.driver"])).launched![0].error!;
+    const error = (await orchestrator.launchNodeSubset(rigId, ["dev.driver"])).launched![0]!.error!;
     expect(error).toContain(says);
     expect(error.includes(`rig seat stop ${session.sessionName} --reason`)).toBe(resumable);
   });
@@ -527,7 +527,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     const { rigId } = seedPreservedShell();
     const result = await orchestrator.launchSingleNode(rigId, "dev.driver");
     expect(result.alreadyRunning).toEqual([]);
-    expect(result.launched![0].error).toContain("Session alive, agent not running");
+    expect(result.launched![0]!.error).toContain("Session alive, agent not running");
     expect(result.nonTargetEffects).toEqual({ mode: "unchanged", reason: null, affected: [] });
   });
 
@@ -611,7 +611,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
 
     expect(result.ok).toBe(true);
     expect(result.launched).toHaveLength(1);
-    expect(result.launched![0].logicalId).toBe("dev.driver");
+    expect(result.launched![0]!.logicalId).toBe("dev.driver");
     expect(result.failedTargets ?? []).toHaveLength(0);
     expect(result.warnings?.some((w) => w.includes("liveness_probe_unknown") && w.includes("dev.driver"))).toBe(true);
   });
@@ -662,7 +662,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
 
     expect(result.ok).toBe(true);
     expect(result.launched).toHaveLength(1);
-    expect(result.launched![0].logicalId).toBe("dev.driver");
+    expect(result.launched![0]!.logicalId).toBe("dev.driver");
     expect(result.unmatchedIds).toEqual(["typo.seat"]);
   });
 

@@ -61,7 +61,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
 
   it("keeps working-owner waits quiet, wakes once for change, and repairs a missed event on the next tick", async () => {
     const { blocker, waiter, job } = await waiting();
-    const original = queue.getByIdOrThrow(waiter).body;
+    const original = queue["getByIdOrThrow"](waiter).body;
     for (const seconds of [300, 600, 1200]) { advance(seconds); await scheduler.runTickNow(); await sweep(); }
     expect(sends).toEqual([]);
     expect(jobs.getByIdOrThrow(job).intervalSeconds).toBe(2400);
@@ -69,7 +69,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     await scheduler.runTickNow(); expect(sends).toHaveLength(1);
     expect(sends[0]!.message).toContain(`rig queue show ${waiter} --full`);
     expect(Buffer.byteLength(sends[0]!.message)).toBeLessThan(1024);
-    expect(queue.getByIdOrThrow(waiter).body).toBe(original);
+    expect(queue["getByIdOrThrow"](waiter).body).toBe(original);
     const change = queue.waitingView(waiter)!.lastMeaningfulChange;
     advance(1); await queue.update({ qitemId: blocker, actorSession: "watchdog@system", transitionNote: "parked-owner wake reserved: fixture" });
     await scheduler.runTickNow(); expect(sends).toHaveLength(1);
@@ -96,7 +96,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     expect(queue.listTransitions(notices[0]!.qitemId)).toHaveLength(transitions);
     // A real response, not an observer refresh, clears the diagnostic.
     advance(1); await queue.update({ qitemId: waiter, actorSession: "owner@rig", transitionNote: `Inspected ${blocker}; continuing the recorded wait` });
-    await sweep(); expect(queue.getByIdOrThrow(notices[0]!.qitemId).state).toBe("done");
+    await sweep(); expect(queue["getByIdOrThrow"](notices[0]!.qitemId).state).toBe("done");
   });
 
   it("does not treat one old progress note or delivery machinery as permanent pickup", async () => {
@@ -104,15 +104,15 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     advance(1); await queue.update({ qitemId: blocker, actorSession: "worker@rig", transitionNote: "Initial progress" });
     worker = "idle-at-prompt"; advance(181);
     await queue.update({ qitemId: blocker, actorSession: "wake-ladder@system", transitionNote: "wake-attempt: 1/3" });
-    expect(queue.getByIdOrThrow(blocker).pickup?.state).toBe("stalled-after-claim");
-    expect(queue.getByIdOrThrow(blocker).pickup?.evidence).toContain("queue age does not prove idle");
+    expect(queue["getByIdOrThrow"](blocker).pickup?.state).toBe("stalled-after-claim");
+    expect(queue["getByIdOrThrow"](blocker).pickup?.evidence).toContain("queue age does not prove idle");
   });
 
   it("onward handoff follows exact custody; a returned result coalesces arrival and resume with both receipts", async () => {
     const { blocker, waiter, job } = await waiting();
     const onward = await queue.handoff({ qitemId: blocker, fromSession: "worker@rig", toSession: "other@rig", body: "Continue producing result", nudge: true });
     await new Promise<void>(r => setImmediate(r));
-    expect(queue.getByIdOrThrow(waiter)).toMatchObject({ state: "blocked", blockedOn: onward.created.qitemId });
+    expect(queue["getByIdOrThrow"](waiter)).toMatchObject({ state: "blocked", blockedOn: onward.created.qitemId });
     expect(queue.getParkWakeStatus(waiter)!.ref).toBe(job);
     const before = sends.length;
     const returned = await queue.handoff({ qitemId: onward.created.qitemId, fromSession: "other@rig", toSession: "owner@rig", body: "The result", nudge: true });
@@ -120,11 +120,11 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     expect(sends).toHaveLength(before + 1);
     expect(sends.at(-1)!.message).toContain(returned.created.qitemId);
     expect(sends.at(-1)!.message).toContain(waiter);
-    expect(queue.getByIdOrThrow(waiter).state).toBe("pending");
-    expect(queue.getByIdOrThrow(returned.created.qitemId).state).toBe("pending");
+    expect(queue["getByIdOrThrow"](waiter).state).toBe("pending");
+    expect(queue["getByIdOrThrow"](returned.created.qitemId).state).toBe("pending");
     expect(jobs.getByIdOrThrow(job).state).toBe("terminal");
-    expect(queue.getByIdOrThrow(waiter).lastNudgeResult).toBe("verified");
-    expect(queue.getByIdOrThrow(returned.created.qitemId).lastNudgeResult).toBe("verified");
+    expect(queue["getByIdOrThrow"](waiter).lastNudgeResult).toBe("verified");
+    expect(queue["getByIdOrThrow"](returned.created.qitemId).lastNudgeResult).toBe("verified");
     await Promise.all([queue.drainPendingWakeIntents(), queue.drainPendingWakeIntents()]);
     expect(sends).toHaveLength(before + 1);
   });
@@ -181,7 +181,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     expect(obsolete.deliveryState).toBe("failed");
     expect(obsolete.tags).toContain("queue:wake-superseded");
     expect(obsolete.deliveredAt).toBeNull();
-    expect(queue.getByIdOrThrow(returned.created.qitemId).lastNudgeAttempt).toBeNull();
+    expect(queue["getByIdOrThrow"](returned.created.qitemId).lastNudgeAttempt).toBeNull();
   });
 
   it("consumes S01 attention revisions through the canonical reader, including a missed proof event", async () => {

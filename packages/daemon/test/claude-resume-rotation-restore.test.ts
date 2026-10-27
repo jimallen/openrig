@@ -152,7 +152,7 @@ describe("managed Claude full down/up", () => {
       const transport = new SessionTransport({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, listProcesses, sleep: async () => {} });
       const sent = await transport.send(name, "isolated QA restore message");
       const resumed = timing.startsWith("resume");
-      expect(up.result.nodes[0].status).toBe(resumed ? "resumed" : "attention_required");
+      expect(up.result.nodes[0]!.status).toBe(resumed ? "resumed" : "attention_required");
       expect(row()).toMatchObject({ resume_token: rotated, resume_provenance: "hook",
         resume_rotated_from: resumed ? token : null });
       expect(identity?.verdict).toBe(resumed ? "verified" : "mismatch");

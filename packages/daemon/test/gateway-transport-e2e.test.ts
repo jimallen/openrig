@@ -124,8 +124,8 @@ describe("A4a gateway transport e2e (real unix socket)", () => {
     const r = conn.dispatcher.dispatch("post_message", "mike#slack-1", { text: "hi" });
     expect(r.ok).toBe(true);
     await waitFor(() => stub.received.length === 1);
-    expect(stub.received[0].decisionId).toBe("d1");
-    expect(stub.received[0].op).toBe("post_message");
+    expect(stub.received[0]!.decisionId).toBe("d1");
+    expect(stub.received[0]!.op).toBe("post_message");
     await waitFor(() => buf.pending().length === 0); // ack drained it
     conn.close();
     await closeStub(stub);

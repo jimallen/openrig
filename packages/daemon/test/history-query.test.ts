@@ -74,7 +74,7 @@ describe("HistoryQuery", () => {
       expect(result.excerpts.length).toBeGreaterThan(0);
       expect(exec).toHaveBeenCalled();
       const call = (exec as ReturnType<typeof vi.fn>).mock.calls[0];
-      expect(call[0]).toBe("rg");
+      expect(call![0]).toBe("rg");
     });
 
     it("falls back to grep when rg exits with code >= 2 (not found)", async () => {

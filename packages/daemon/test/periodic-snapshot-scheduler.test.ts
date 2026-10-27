@@ -152,7 +152,7 @@ describe("PeriodicSnapshotScheduler", () => {
 
   it("FR-4: tick refreshes live tokens before capturing the periodic snapshot", async () => {
     const rigId = seedRunningRig("r-fr4");
-    const refresh = vi.fn(async () => {});
+    const refresh = vi.fn(async (...args: unknown[]) => {});
     const fr4 = new PeriodicSnapshotScheduler({
       db, snapshotCapture, snapshotRepo, sessionRegistry,
       resumeMetadataRefresher: { refresh } as unknown as Refresher,

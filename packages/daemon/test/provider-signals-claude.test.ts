@@ -19,16 +19,16 @@ describe("claudeStatuslineSignals — Claude lane honesty", () => {
       asOf: ASOF,
     });
     expect(sigs).toHaveLength(1);
-    expect(sigs[0].provider).toBe("claude");
-    expect(sigs[0].seatSession).toBe("dev-impl@rig");
-    expect(sigs[0].accountRef).toBeUndefined();
-    expect(sigs[0].sourceClass).toBe("unknown");
-    expect(sigs[0].authority).toBe("unknown");
-    expect(sigs[0].unknownReason).toBeTruthy();
-    expect(sigs[0].usedPercent).toBeUndefined();
-    expect(sigs[0].automationUse).toBe("do_not_automate");
-    expect(sigs[0].supportsNotification).toBe(false);
-    expect(sigs[0].asOf).toBe(ASOF);
+    expect(sigs[0]!.provider).toBe("claude");
+    expect(sigs[0]!.seatSession).toBe("dev-impl@rig");
+    expect(sigs[0]!.accountRef).toBeUndefined();
+    expect(sigs[0]!.sourceClass).toBe("unknown");
+    expect(sigs[0]!.authority).toBe("unknown");
+    expect(sigs[0]!.unknownReason).toBeTruthy();
+    expect(sigs[0]!.usedPercent).toBeUndefined();
+    expect(sigs[0]!.automationUse).toBe("do_not_automate");
+    expect(sigs[0]!.supportsNotification).toBe(false);
+    expect(sigs[0]!.asOf).toBe(ASOF);
   });
 
   it("a Pro/Max statusline reading yields provider_statusline rows for five_hour + weekly (seven-day)", () => {
@@ -65,8 +65,8 @@ describe("claudeStatuslineSignals — Claude lane honesty", () => {
       asOf: ASOF,
     });
     expect(sigs).toHaveLength(1);
-    expect(sigs[0].sourceClass).toBe("unknown");
-    expect(sigs[0].usedPercent).toBeUndefined();
-    expect(sigs[0].automationUse).toBe("do_not_automate");
+    expect(sigs[0]!.sourceClass).toBe("unknown");
+    expect(sigs[0]!.usedPercent).toBeUndefined();
+    expect(sigs[0]!.automationUse).toBe("do_not_automate");
   });
 });

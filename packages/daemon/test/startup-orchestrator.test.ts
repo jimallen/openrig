@@ -682,7 +682,7 @@ describe("StartupOrchestrator", () => {
     const adapter = mockAdapter({
       deliverStartup,
     });
-    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
     const tmuxOverride = mockTmux({ sendText });
     const orch = createOrchestrator({
       tmux: tmuxOverride,
@@ -881,7 +881,7 @@ describe("StartupOrchestrator", () => {
 
   it("issues a selected startup challenge (oriented=missing, challenge in prompt)", async () => {
     const seed = seedSession();
-    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
     const orch = createOrchestrator({ tmux: mockTmux({ sendText }) });
 
     await orch.startNode(makeInput(seed, {
@@ -1146,7 +1146,7 @@ describe("StartupOrchestrator", () => {
     // Only "always.md" should be delivered, not "fresh.md"
     const deliverCalls = (adapter.deliverStartup as ReturnType<typeof vi.fn>).mock.calls;
     expect(deliverCalls).toHaveLength(1);
-    const deliveredFiles = deliverCalls[0][0] as ResolvedStartupFile[];
+    const deliveredFiles = deliverCalls[0]![0] as ResolvedStartupFile[];
     expect(deliveredFiles).toHaveLength(1);
     expect(deliveredFiles[0]!.path).toBe("always.md");
   });

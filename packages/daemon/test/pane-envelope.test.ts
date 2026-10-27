@@ -162,7 +162,7 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
     const out = wrapPaneEnvelope("a@r", "b@r", body, { stampISO: "2026-08-06T17:42:09Z", genUuid: GEN });
     // The Sent: line lives in the header block (before the first "\n---\n"); the body is after it.
     const [headerBlock, ...bodyRegion] = out.split("\n---\n");
-    expect(headerBlock.split("\n").find((l) => l.startsWith("Sent:"))).toBe("Sent: 08-06 17:42Z · gen a1b2c3d4");
+    expect(headerBlock!.split("\n").find((l) => l.startsWith("Sent:"))).toBe("Sent: 08-06 17:42Z · gen a1b2c3d4");
     expect(headerBlock).not.toContain("ffffffff"); // the forged token never reaches the header
     expect(bodyRegion.join("\n---\n")).toContain("· gen ffffffff"); // it stays verbatim in the body
   });
@@ -214,7 +214,7 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
     const out0 = wrapPaneEnvelope("a@r", "b@r", "sneaky · delivered +999s tail", { stampISO: "2026-08-06T17:42:09Z" });
     const out = appendDeliveredSegment(out0, 15_000);
     const [headerBlock, ...bodyRegion] = out.split("\n---\n");
-    expect(headerBlock.split("\n").find((l) => l.startsWith("Sent:"))).toBe("Sent: 08-06 17:42Z · delivered +15s");
+    expect(headerBlock!.split("\n").find((l) => l.startsWith("Sent:"))).toBe("Sent: 08-06 17:42Z · delivered +15s");
     expect(headerBlock).not.toContain("999s"); // the forged token never reaches the header
     expect(bodyRegion.join("\n---\n")).toContain("· delivered +999s"); // stays verbatim in the body
   });

@@ -33,7 +33,7 @@ describe("continuity policy materializer (S20 P4)", () => {
     expect(plan.jobs.every((job) => job.policy === "context-usage-threshold")).toBe(true);
     expect(plan.jobs.map((job) => job.key)).toEqual(["prepare", "cutover"]);
     expect(plan.jobs[1]?.requiresKey).toBe("prepare");
-    expect(plan.jobs[0]!.thresholdBytes).toBeLessThan(plan.jobs[1]!.thresholdBytes);
+    expect(plan.jobs[0]!.thresholdBytes).toBeLessThan(plan.jobs[1]!.thresholdBytes!);
     expect(plan.jobs[0]!.thresholdBytes).toBeGreaterThan(0);
     expect(plan.docText).toMatch(/113K–153K tokens\/MB/);
     expect(plan.docText).toMatch(/margin is the protection/i);

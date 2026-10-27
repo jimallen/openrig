@@ -172,7 +172,7 @@ describe("managed Claude full down/up", () => {
       const sent = await transport.send(name, "isolated QA restore message");
       const resumed = timing.startsWith("resume");
       const kept = scenario === "legacy-keep";
-      expect(up.result.nodes[0].status).toBe(resumed && !delayed ? "resumed" : "attention_required");
+      expect(up.result.nodes[0]!.status).toBe(resumed && !delayed ? "resumed" : "attention_required");
       expect(row()).toMatchObject(kept
         ? { resume_token: token, resume_rotated_from: null }
         : { resume_token: rotated, resume_provenance: "hook", resume_rotated_from: resumed ? token : null });

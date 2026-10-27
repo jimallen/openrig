@@ -50,7 +50,7 @@ describe("51-06 D2 — non-park queue update metadata reject", () => {
 
   async function expectRejectZeroMutation(input: Record<string, unknown>, invalidFields: string[]) {
     const id = await mkItem();
-    const beforeState = repo.getByIdOrThrow(id).state;
+    const beforeState = repo["getByIdOrThrow"](id).state;
     const beforeTxns = txnCount(id);
     const beforeEvents = eventCount();
     let err: unknown;
@@ -60,7 +60,7 @@ describe("51-06 D2 — non-park queue update metadata reject", () => {
     expect((err as QueueRepositoryError).code).toBe(REJECT_CODE);
     expect((err as QueueRepositoryError).meta?.invalidFields).toEqual(invalidFields);
     // zero mutation: no UPDATE (state), no log (transition), no event
-    expect(repo.getByIdOrThrow(id).state).toBe(beforeState);
+    expect(repo["getByIdOrThrow"](id).state).toBe(beforeState);
     expect(txnCount(id)).toBe(beforeTxns);
     expect(eventCount()).toBe(beforeEvents);
   }
@@ -85,7 +85,7 @@ describe("51-06 D2 — non-park queue update metadata reject", () => {
     try { repo.update({ qitemId: id, actorSession: "dev-x@rig", state: "done", closureReason: "no-follow-on", summary: "S" }); }
     catch (e) { err = e; }
     expect((err as QueueRepositoryError).code).toBe(REJECT_CODE);
-    expect(repo.getByIdOrThrow(id).state).toBe("in-progress"); // unchanged by the rejected close
+    expect(repo["getByIdOrThrow"](id).state).toBe("in-progress"); // unchanged by the rejected close
   });
 
   it("metadata-free non-park update is UNCHANGED (null=absent, no reject)", async () => {

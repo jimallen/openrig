@@ -87,7 +87,7 @@ describe("Pi occupant-bound activity (#29)", () => {
     const f = fixture();
     for (const [type, state] of [["agent_start", "running"], ["agent_end", "idle"]]) {
       f.core.handlePiLine(JSON.stringify({ type }));
-      expect((await f.flush())[0].status).toBe(200);
+      expect((await f.flush())[0]!.status).toBe(200);
       expect(f.read()).toMatchObject({ state, generation: GENERATION, generationProvenance: "resolved", stale: false });
     }
   });

@@ -73,7 +73,7 @@ describe("PL-019 loadCurrentQitemsForSessions read-side join", () => {
 
     const result = loadCurrentQitemsForSessions(db, ["alpha@r"]);
     expect(result.get("alpha@r")).toHaveLength(1);
-    expect(result.get("alpha@r")?.[0].qitemId).toBe("q-inprog");
+    expect(result.get("alpha@r")?.[0]!.qitemId).toBe("q-inprog");
   });
 
   it("groups qitems by destination_session", () => {
@@ -114,7 +114,7 @@ describe("PL-019 loadCurrentQitemsForSessions read-side join", () => {
   it("preserves short bodies verbatim", () => {
     insertQitem(db, { qitemId: "q-short", source: "s@r", destination: "alpha@r", state: "in-progress", body: "tiny" });
     const result = loadCurrentQitemsForSessions(db, ["alpha@r"]);
-    expect(result.get("alpha@r")?.[0].bodyExcerpt).toBe("tiny");
+    expect(result.get("alpha@r")?.[0]!.bodyExcerpt).toBe("tiny");
   });
 
   it("orders rows by ts_updated DESC (most-recently-touched first)", () => {

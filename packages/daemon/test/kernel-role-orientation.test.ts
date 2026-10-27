@@ -19,7 +19,7 @@ function configFor(id: string, sharedRole = false) {
   const [podId, memberId] = id.split(".");
   const pod = rig.pods.find(p => p.id === podId)!;
   const member = pod.members.find(m => m.id === memberId)!;
-  const source = path.join(kernel, "agents", podId, memberId);
+  const source = path.join(kernel, "agents", podId!, memberId!);
   const fsOps = { exists: fs.existsSync, readFile(p: string) {
     const text = readFile(p);
     if (!sharedRole || p !== path.join(source, "agent.yaml")) return text;
@@ -85,8 +85,8 @@ describe("kernel per-seat role orientation", () => {
       const m = memory();
       for (const id of order) await project(id, true, m);
       const text = m.files.get(path.join(cwd, "AGENTS.md"))!;
-      expect(text).toContain(readFile(path.join(configFor(order[1]).source, "guidance/role.md")));
-      expect(text).not.toContain(readFile(path.join(configFor(order[0]).source, "guidance/role.md")));
+      expect(text).toContain(readFile(path.join(configFor(order[1]!).source, "guidance/role.md")));
+      expect(text).not.toContain(readFile(path.join(configFor(order[0]!).source, "guidance/role.md")));
     }
   });
   it.each(["OpenRig", "RIGGED", "user-only"])("preserves %s files byte-for-byte in both adapters, with no cleanup", async marker => {

@@ -159,8 +159,8 @@ describe("D1 — delivery writes each script to ITS OWN seat cwd; unmapped seats
 
     deliverStubScripts(staged, { "dev-alpha": join(scriptsDir, "a.json") }, scriptsDir);
 
-    const alphaScript = join(staged.seatCwds["dev-alpha"], ".openrig", "stub", "script.json");
-    const betaScript = join(staged.seatCwds["dev-beta"], ".openrig", "stub", "script.json");
+    const alphaScript = join(staged.seatCwds["dev-alpha"]!, ".openrig", "stub", "script.json");
+    const betaScript = join(staged.seatCwds["dev-beta"]!, ".openrig", "stub", "script.json");
     expect(existsSync(alphaScript)).toBe(true);
     expect(JSON.parse(readFileSync(alphaScript, "utf-8")).steps[0].text).toBe("[alpha]");
     // the unmapped seat has NO script file — 51-01's built-in default applies

@@ -47,8 +47,8 @@ describe("topology-manifest — valid shapes", () => {
     if (res.ok) {
       expect(res.manifest.concurrency).toBe(2);
       expect(res.manifest.rigs.map((r) => r.source)).toEqual(["./orch.yaml", "./workers/rig.yaml", "specs/watch.yaml"]);
-      expect(res.manifest.rigs[1].host).toBe("vps-b");
-      expect(res.manifest.rigs[0].host).toBeUndefined();
+      expect(res.manifest.rigs[1]!.host).toBe("vps-b");
+      expect(res.manifest.rigs[0]!.host).toBeUndefined();
     }
   });
 

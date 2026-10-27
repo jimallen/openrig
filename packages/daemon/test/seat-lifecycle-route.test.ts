@@ -39,7 +39,7 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
     // pinned against the REAL adapter in the service suite, not here).
     if (!t.probeSession) {
       t.probeSession = vi.fn(async (name: string) =>
-        (await t.hasSession(name)) ? { state: "present" } : { state: "absent" });
+        (await t.hasSession!(name)) ? { state: "present" } : { state: "absent" });
     }
     return t;
   }
@@ -95,19 +95,19 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
 
   it("stop 200 on a live seat; 409 session_not_live on a dead one; 502 on probe failure", async () => {
     const { sessionName } = seedSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().killSession.mockResolvedValue({ ok: true });
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().killSession!.mockResolvedValue({ ok: true });
     const ok = await post("stop", sessionName, { reason: "wave boundary" });
     expect(ok.status).toBe(200);
     expect(tmux().killSession).toHaveBeenCalledWith(sessionName);
 
     const b = seedSeat("dev.other");
-    tmux().hasSession.mockResolvedValue(false);
+    tmux().hasSession!.mockResolvedValue(false);
     const dead = await post("stop", b.sessionName, { reason: "x" });
     expect(dead.status).toBe(409);
     expect((await dead.json() as { code: string }).code).toBe("session_not_live");
 
-    tmux().hasSession.mockRejectedValue(new Error("socket gone"));
+    tmux().hasSession!.mockRejectedValue(new Error("socket gone"));
     const probe = await post("stop", b.sessionName, { reason: "x" });
     expect(probe.status).toBe(502);
     expect((await probe.json() as { code: string }).code).toBe("tmux_probe_failed");
@@ -117,8 +117,8 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
     const stopped = seedSeat("dev.qa");
     const crashed = seedSeat("dev.impl");
     seedSeat("dev.lead");
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().killSession.mockResolvedValue({ ok: true });
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().killSession!.mockResolvedValue({ ok: true });
     expect((await post("stop", stopped.sessionName, { reason: "on-demand review" })).status).toBe(200);
 
     async function expectSurfaces(lifecycleState: string, runningCount: number) {
@@ -142,12 +142,12 @@ describe("POST /api/seat/{set-model,stop,clean}/:seatRef", () => {
 
   it("clean 409 session_live on a live seat; 200 on a dead one; 409 nothing_to_clean when repeated", async () => {
     const { sessionName } = seedSeat();
-    tmux().hasSession.mockResolvedValue(true);
+    tmux().hasSession!.mockResolvedValue(true);
     const live = await post("clean", sessionName, { reason: "x" });
     expect(live.status).toBe(409);
     expect((await live.json() as { code: string }).code).toBe("session_live");
 
-    tmux().hasSession.mockResolvedValue(false);
+    tmux().hasSession!.mockResolvedValue(false);
     const ok = await post("clean", sessionName, { reason: "clean exit observed" });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ ok: true, actions: { sessionsExited: [sessionName], bindingCleared: true } });

@@ -2490,7 +2490,7 @@ describe("SessionTransport", () => {
 
   it("(h) send() flags a delayed delivery on the Sent: line when the compose→write gap exceeds 10s", async () => {
     seedCanonicalRig();
-    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    const sendTextSpy = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
     const tmux = mockTmux({ sendText: sendTextSpy });
     // write-moment clock is 30s after the compose stamp (opts.stampISO)
     const transport = createTransport(tmux, { now: () => new Date("2026-08-06T17:42:39Z") });
@@ -2501,7 +2501,7 @@ describe("SessionTransport", () => {
 
   it("(h) send() adds no delivered segment for a sub-threshold (3s) gap", async () => {
     seedCanonicalRig();
-    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    const sendTextSpy = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
     const tmux = mockTmux({ sendText: sendTextSpy });
     const transport = createTransport(tmux, { now: () => new Date("2026-08-06T17:42:12Z") });
     await transport.send("dev-impl@my-rig", H_ENVELOPE, { stampISO: "2026-08-06T17:42:09Z" });

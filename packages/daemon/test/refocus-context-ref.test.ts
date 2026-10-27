@@ -674,7 +674,7 @@ exit 1
         ["member@rig@x", "rigs/rig@x/seats/member"],
         ["human@some-rig", "rigs/some-rig/seats/human"],
       ]) {
-        mkdirSync(join(f.topology, seat), { recursive: true });
+        mkdirSync(join(f.topology, seat!), { recursive: true });
         const result = topologyTrace(f, { OPENRIG_SESSION_NAME: session });
         expect(result.status, session).toBe(0);
         expect(result.stdout, session).toContain(`start: ${realpathSync(f.topology)}/${seat}\n`);

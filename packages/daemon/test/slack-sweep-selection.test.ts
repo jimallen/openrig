@@ -163,7 +163,7 @@ describe("Slack sweep selection", () => {
     );
     notify("gate");
     const seen = new SeenStore(join(home, "seen"));
-    const dispatch = vi.fn(() => ({ ok: true as const, decisionId: "d" }));
+    const dispatch = vi.fn((...args: unknown[]) => ({ ok: true as const, decisionId: "d" }));
     expect((await new SlackOutboundDriver({ home, queue: ports(), seen, filter: {}, dispatch }).sweepOnce()).dispatched).toEqual(["gate"]);
     const payload = dispatch.mock.calls[0]?.[2] as import("../src/domain/gateway/slack/outbound-driver.js").OutboundPostPayload;
     expect(payload).toMatchObject({ state: "blocked", tags: ["workflow", "gate", "workflow:mission"], summary: "summary gate" });

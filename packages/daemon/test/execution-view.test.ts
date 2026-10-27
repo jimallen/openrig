@@ -329,7 +329,7 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
     );
     const doc = await show();
     expect((doc.q1_lanes as Record<string, unknown>[]).map((lane) => lane.qitem_id)).toContain("qitem-lane-31");
-    expect(((doc.sources as Record<string, Record<string, unknown>>).wave_map).row).toBe("qitem-wave-map");
+    expect(((doc.sources as Record<string, Record<string, unknown>>).wave_map)!.row).toBe("qitem-wave-map");
   });
 
   it("defaults an active legacy id-form mission tag to its canonical mission directory", async () => {
@@ -439,8 +439,8 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
     expect(q3.find((s) => s.slice_id === "OPR.9.9.31")?.build_wave).toBe("WA");
     expect(doc.q1_lanes).toBeInstanceOf(Array);
     const arrangement = (doc.sources as Record<string, Record<string, unknown>>).arrangement;
-    expect(arrangement.value).toBe("INDETERMINATE");
-    expect(String(arrangement.basis)).toMatch(/mission\.yaml[\s\S]*fallback/i);
+    expect(arrangement!.value).toBe("INDETERMINATE");
+    expect(String(arrangement!.basis)).toMatch(/mission\.yaml[\s\S]*fallback/i);
   });
 
   it("missing optional YAML falls back silently to the legacy arrangement", async () => {
@@ -480,7 +480,7 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
     expect(String(adopted.basis)).toContain("dev run");
     const reviewed = s31.reviewed as Record<string, unknown>;
     expect(reviewed.value).toBe(true);
-    expect((reviewed.legs as Record<string, unknown>[])[0].verdict).toBe("CLEAR");
+    expect((reviewed.legs as Record<string, unknown>[])[0]!.verdict).toBe("CLEAR");
     // "done" as a single boolean is pinned ABSENT from the schema.
     for (const entry of q4) {
       expect(Object.keys(entry)).not.toContain("done");
@@ -807,7 +807,7 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
     const sources = doc.sources as Record<string, Record<string, unknown>>;
     for (const key of ["queue_db", "slice_frontmatter", "wave_map", "git", "build_info", "review_artifacts", "disk"]) {
       expect(sources, `source ${key}`).toHaveProperty(key);
-      expect(sources[key].asof, `asof on ${key}`).toBeTruthy();
+      expect(sources[key]!.asof, `asof on ${key}`).toBeTruthy();
     }
     for (const lane of doc.q1_lanes as Record<string, unknown>[]) {
       expect((lane.source as Record<string, unknown>).qitem_id).toBeTruthy();
@@ -864,8 +864,8 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
       fs.writeFileSync(missionYamlPath, originalYaml + `\n  source:\n    integration_ref: "${badRef}"\n`);
       const invalidDoc = await show();
       const sources = invalidDoc.sources as Record<string, Record<string, unknown>>;
-      expect(sources.arrangement.value).toBe("INDETERMINATE");
-      expect(String(sources.arrangement.basis)).toMatch(/arrangement\.source\.integration_ref must be a valid Git ref name/);
+      expect(sources.arrangement!.value).toBe("INDETERMINATE");
+      expect(String(sources.arrangement!.basis)).toMatch(/arrangement\.source\.integration_ref must be a valid Git ref name/);
       const invalidSlice = (invalidDoc.q4_ladder as Record<string, unknown>[]).find(s => s.slice_id === "OPR.9.9.31")!;
       expect((invalidSlice.folded as Record<string, unknown>).value).toBe("INDETERMINATE");
       expect(String((invalidSlice.folded as Record<string, unknown>).basis)).toContain(badRef);
@@ -895,8 +895,8 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
     fs.writeFileSync(missionYamlPath, invalidWavesYaml);
     const unrelatedDoc = await show();
     const unrelatedSources = unrelatedDoc.sources as Record<string, Record<string, unknown>>;
-    expect(unrelatedSources.arrangement.value).toBe("INDETERMINATE");
-    expect(String(unrelatedSources.arrangement.basis)).toContain("arrangement.waves is not a list");
+    expect(unrelatedSources.arrangement!.value).toBe("INDETERMINATE");
+    expect(String(unrelatedSources.arrangement!.basis)).toContain("arrangement.waves is not a list");
     const unrelatedSlice = (unrelatedDoc.q4_ladder as Record<string, unknown>[]).find(s => s.slice_id === "OPR.9.9.31")!;
     expect((unrelatedSlice.folded as Record<string, unknown>).value).toBe("INDETERMINATE");
     expect(String((unrelatedSlice.folded as Record<string, unknown>).basis)).toContain("integration");
@@ -920,7 +920,7 @@ describe("execution view — S27 (OPR.0.5.6.27)", () => {
     fs.writeFileSync(missionYamlPath, invalidCompositionYaml);
     const compDoc = await show();
     const compSources = compDoc.sources as Record<string, Record<string, unknown>>;
-    expect(compSources.arrangement.value).toBe("INDETERMINATE");
+    expect(compSources.arrangement!.value).toBe("INDETERMINATE");
     const compSlice = (compDoc.q4_ladder as Record<string, unknown>[]).find(s => s.slice_id === "OPR.9.9.31")!;
     expect((compSlice.folded as Record<string, unknown>).value).toBe("INDETERMINATE");
     expect(String((compSlice.folded as Record<string, unknown>).basis)).toContain("integration");

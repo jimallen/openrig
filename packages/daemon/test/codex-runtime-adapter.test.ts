@@ -1366,9 +1366,9 @@ describe("Codex runtime adapter", () => {
     const content = store["/home/tester/.codex/config.toml"];
     expect(content).toContain('[projects."/tmp/workspace"]');
     expect(content).toContain('trust_level = "trusted"');
-    expect(content.match(/\[mcp_servers\.exa\]/g)?.length ?? 0).toBe(1);
-    expect(content.match(/\[mcp_servers\.context7\]/g)?.length ?? 0).toBe(1);
-    expect(content.match(/BEGIN OPENRIG MANAGED CODEX CONFIG FRAGMENT: codex-default-config/g)?.length ?? 0).toBe(1);
+    expect(content!.match(/\[mcp_servers\.exa\]/g)?.length ?? 0).toBe(1);
+    expect(content!.match(/\[mcp_servers\.context7\]/g)?.length ?? 0).toBe(1);
+    expect(content!.match(/BEGIN OPENRIG MANAGED CODEX CONFIG FRAGMENT: codex-default-config/g)?.length ?? 0).toBe(1);
   });
 
   // --- OPR.0.5.8.12: user-owned Codex tables survive projection ---

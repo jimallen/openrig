@@ -50,8 +50,8 @@ describe("slack status: durable inbound dead-letter backlog", () => {
     writeBacklog(3);
     const wire = build();
     try {
-      expect((wire.status() as WireStatus).deadLetterBacklog).toBe(3);
-      expect((wire.status() as WireStatus).deadLetterBacklogState).toBe("ok");
+      expect((wire.status!() as WireStatus).deadLetterBacklog).toBe(3);
+      expect((wire.status!() as WireStatus).deadLetterBacklogState).toBe("ok");
     } finally { wire.stop(); }
   });
 
@@ -61,7 +61,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
     writeActionBacklog(3);
     const wire = build();
     try {
-      expect((wire.status() as WireStatus).deadLetterBacklog).toBe(5);
+      expect((wire.status!() as WireStatus).deadLetterBacklog).toBe(5);
     } finally { wire.stop(); }
   });
 
@@ -69,8 +69,8 @@ describe("slack status: durable inbound dead-letter backlog", () => {
     configure(true);
     const wire = build();
     try {
-      expect((wire.status() as WireStatus).deadLetterBacklog).toBe(0);
-      expect((wire.status() as WireStatus).deadLetterBacklogState).toBe("ok");
+      expect((wire.status!() as WireStatus).deadLetterBacklog).toBe(0);
+      expect((wire.status!() as WireStatus).deadLetterBacklogState).toBe("ok");
     } finally { wire.stop(); }
   });
 
@@ -79,7 +79,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
     mkdirSync(join(home, "state", "slack-inbound-deadletter.jsonl"), { recursive: true }); // a directory reads as an error
     const wire = build();
     try {
-      const status = wire.status() as WireStatus;
+      const status = wire.status!() as WireStatus;
       // A number next to an unknown state would still read as "nothing stuck" to any
       // consumer that only looks at the count, so the count is null, not 0.
       expect(status.deadLetterBacklog).toBeNull();
@@ -94,7 +94,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
     writeBacklog(2);
     const wire = build();
     try {
-      const status = wire.status() as WireStatus;
+      const status = wire.status!() as WireStatus;
       expect(Object.hasOwn(status, "deadLetterBacklog")).toBe(false);
       expect(Object.hasOwn(status, "deadLetterBacklogState")).toBe(false);
       expect(Object.hasOwn(status, "deadLetterBacklogReason")).toBe(false);

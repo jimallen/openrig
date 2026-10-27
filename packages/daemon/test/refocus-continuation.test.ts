@@ -81,7 +81,7 @@ describe("refocus continuation", () => {
     f.run("PostCompact");
     for (let i = 0; i < 3; i++) f.run("UserPromptSubmit", "continue", false);
     expect(f.calls()).toHaveLength(2);
-    expect(f.calls()[0].match(/--id (\S+)/)?.[1]).not.toBe(f.calls()[1].match(/--id (\S+)/)?.[1]);
+    expect(f.calls()[0]!.match(/--id (\S+)/)?.[1]).not.toBe(f.calls()[1]!.match(/--id (\S+)/)?.[1]);
   });
 
   it("retries an unconfirmed stream write under the same id and isolates occupants", () => {
@@ -90,7 +90,7 @@ describe("refocus continuation", () => {
     for (let i = 0; i < 3; i++) f.run("UserPromptSubmit", "continue", false, { STREAM_EXIT: "1" });
     f.run("UserPromptSubmit", "continue", false);
     expect(f.calls()).toHaveLength(2);
-    expect(f.calls()[0].match(/--id (\S+)/)?.[1]).toBe(f.calls()[1].match(/--id (\S+)/)?.[1]);
+    expect(f.calls()[0]!.match(/--id (\S+)/)?.[1]).toBe(f.calls()[1]!.match(/--id (\S+)/)?.[1]);
     f.run("PostCompact", "continue", true, {}, "other-occupant");
     f.run("UserPromptSubmit", "continue", false, {}, "other-occupant");
     expect(f.calls()).toHaveLength(2);

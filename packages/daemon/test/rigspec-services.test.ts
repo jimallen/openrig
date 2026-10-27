@@ -74,14 +74,14 @@ describe("RigSpec services contract", () => {
     const normalized = RigSpecSchema.normalize(structuredClone(VALID_RIG_WITH_SERVICES) as Record<string, unknown>);
 
     expect(normalized.services).toBeDefined();
-    expect(normalized.services.kind).toBe("compose");
-    expect(normalized.services.composeFile).toBe("./compose.yaml");
-    expect(normalized.services.projectName).toBe("services-rig");
-    expect(normalized.services.downPolicy).toBe("down");
-    expect(normalized.services.waitFor).toHaveLength(3);
-    expect(normalized.services.waitFor[2].tcp).toBe("127.0.0.1:5432");
-    expect(normalized.services.surfaces.urls[0].name).toBe("app");
-    expect(normalized.services.checkpoints[0].id).toBe("vault");
+    expect(normalized.services!.kind).toBe("compose");
+    expect(normalized.services!.composeFile).toBe("./compose.yaml");
+    expect(normalized.services!.projectName).toBe("services-rig");
+    expect(normalized.services!.downPolicy).toBe("down");
+    expect(normalized.services!.waitFor).toHaveLength(3);
+    expect(normalized.services!.waitFor![2]!.tcp).toBe("127.0.0.1:5432");
+    expect(normalized.services!.surfaces!.urls![0]!.name).toBe("app");
+    expect(normalized.services!.checkpoints![0]!.id).toBe("vault");
   });
 
   it("defaults project_name deterministically from the rig name when omitted", () => {
@@ -93,7 +93,7 @@ describe("RigSpec services contract", () => {
     expect(validated.valid).toBe(true);
 
     const normalized = RigSpecSchema.normalize(rig) as RigSpec;
-    expect(normalized.services.projectName).toBe("demo-rig-v1");
+    expect(normalized.services!.projectName).toBe("demo-rig-v1");
   });
 
   it("rejects invalid explicit project_name values", () => {

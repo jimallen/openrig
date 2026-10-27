@@ -58,8 +58,8 @@ describe("CodexResumeAdapter", () => {
 
   describe("resume", () => {
     it("codex_id: sendText then sendKeys Enter", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
-      const sendKeys = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
+      const sendKeys = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
       const adapter = new CodexResumeAdapter(tmux);
 
@@ -74,7 +74,7 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("0.5.2-07: a SPEC-pinned model threads -m onto the legacy codex resume command", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
       const adapter = new CodexResumeAdapter(tmux);
@@ -85,7 +85,7 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("#75: reasoning effort threads -c model_reasoning_effort onto the legacy codex resume command", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
       const adapter = new CodexResumeAdapter(tmux);
@@ -96,7 +96,7 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("codex_last: sendText posture-preserving codex -s workspace-write resume --last", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
       const adapter = new CodexResumeAdapter(tmux);
@@ -137,7 +137,7 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("shell-sensitive token is quoted in command", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }));
 
@@ -147,7 +147,7 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("profile-bearing resume uses -p flag after preflight passes", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const exec = vi.fn(async () => "[my-profile]\n");
       const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }), { exec });

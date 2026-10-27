@@ -68,7 +68,7 @@ describe('bounded truthful-attention specimen projection',()=>{
     f.sendVerify.mockResolvedValue({ok:true, verified:true});
     expect((await f.post()).status).toBe(200);
     expect(f.inventory()).toMatchObject({restoreOutcome:'operator_recovered',continuityOutcome:null,lifecycleState:'running'});
-    expect(f.events()[0].payload.evidence).toMatchObject({source:'clear_attention_evidence',runtimeCwdVerified:false});
+    expect(f.events()[0]!.payload.evidence).toMatchObject({source:'clear_attention_evidence',runtimeCwdVerified:false});
   });
   it.each(['full','identity'] as const)('%s class is not bypassed by reason',async kind=>{
     const f=fixture(kind),before=f.inventory(),result=await f.post('operator reports this seat is working');

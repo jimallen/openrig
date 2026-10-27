@@ -347,7 +347,7 @@ describe("public world pack", () => {
       ...authoredManifestClaims(packDir, "public"),
       ...authoredManifestClaims(join(STATIC_ROOT, "world-example"), "example"),
     ];
-    const verifierManifestClaimIds = verifier.match(/expected_manifest_claim_ids='([\s\S]*?)'/)?.[1]
+    const verifierManifestClaimIds = verifier.match(/expected_manifest_claim_ids='([\s\S]*?)'/)?.[1]!
       .split("\n")
       .filter(Boolean);
 
