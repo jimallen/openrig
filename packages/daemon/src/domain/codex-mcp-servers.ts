@@ -408,12 +408,28 @@ export function mcpArgFilePins(
   place?: { seatCwd: string | null; io?: PathJudgeIo },
 ): { ok: true; pins: McpArgFilePin[] } | { ok: false; error: string } {
   const pins: McpArgFilePin[] = [];
-  const regularFile = (value: string): { realPath: string; sha256: string } | "unreadable" | null => {
+  const io = place?.io ?? DEFAULT_PATH_JUDGE_IO;
+  // A hard link elsewhere could change a pinned file's bytes after the pin, unless nobody but root can write
+  // either name: root-owned, not group/other-writable, in a chain of root-owned, not group/other-writable
+  // directories (a system binary such as /usr/bin/<tool> with many links stays allowed).
+  const rootControlled = (real: string): boolean => {
+    try {
+      const sealed = (st: Stats) => st.uid === 0 && (st.mode & 0o022) === 0;
+      if (!sealed(io.stat(real))) return false;
+      for (let dir = nodePath.dirname(real); ; dir = nodePath.dirname(dir)) {
+        if (!sealed(io.stat(dir))) return false;
+        if (nodePath.dirname(dir) === dir) return true;
+      }
+    } catch { return false; }
+  };
+  const regularFile = (value: string): { realPath: string; sha256: string } | "unreadable" | { linked: number } | null => {
     if (!nodePath.isAbsolute(value)) return null;
     let real: string;
     try {
       real = realpathSync(value);
-      if (!statSync(real).isFile()) return null;
+      const st = statSync(real);
+      if (!st.isFile()) return null;
+      if (st.nlink > 1 && !rootControlled(real)) return { linked: st.nlink };
     } catch { return null; }
     try { return { realPath: real, sha256: createHash("sha256").update(readFileSync(real)).digest("hex") }; } catch { return "unreadable"; }
   };
@@ -426,6 +442,7 @@ export function mcpArgFilePins(
     const mustBeFile = afterFlag || short !== null || (eq !== null && MCP_CONFIG_FLAGS.includes(eq[1]!));
     const hit = regularFile(value);
     if (hit === "unreadable") return { ok: false, error: `the file argument ${value} cannot be read to pin its checksum` };
+    if (hit && "linked" in hit) return { ok: false, error: `the file argument ${value} has ${hit.linked} hard links; a link elsewhere could change it after it is pinned` };
     if (!hit) {
       if (mustBeFile) return { ok: false, error: `the config file argument ${value} is not an absolute path to an existing regular file, so it cannot be pinned` };
       continue;

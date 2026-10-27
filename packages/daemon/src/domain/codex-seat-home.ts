@@ -50,6 +50,62 @@ export interface CodexSeatHome {
   path: string;
   linked: string[];
   copiedProfiles: string[];
+  /** Profile fragments NOT used because they carry an OpenRig seat identity variable (OF-43): a shared source
+   *  is not copied; a seat-home copy is moved aside as `<name>.refused-openrig-identity`. */
+  refusedProfiles: string[];
+}
+
+/** The per-seat identity variables the launcher injects (node-launcher.ts). A profile that sets one of these
+ *  would give the seat another seat's identity (or the activity-hook token) the moment its posture loads it. */
+export const CODEX_PROFILE_FOREIGN_IDENTITY_VARS: readonly string[] = [
+  "OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION", "OPENRIG_ACTIVITY_HOOK_TOKEN",
+  // The legacy aliases the cli, hooks and daemon read when the OPENRIG_ name is empty (a profile can drop the
+  // OPENRIG_ names with shell_environment_policy and set only these). Census: a search for RIGGED_<name> over
+  // packages (non-test) finds a read for each of these five and for no other identity variable.
+  "RIGGED_NODE_ID", "RIGGED_SESSION_NAME", "RIGGED_RUNTIME", "RIGGED_OCCUPANT_GENERATION", "RIGGED_ACTIVITY_HOOK_TOKEN",
+];
+
+/** The identity variable names a profile's text sets, as keys anywhere in the document or as `NAME=value`
+ *  strings; unparseable TOML falls back to a word match (fail closed). Names only, never values. */
+export function codexProfileIdentityVars(text: string): string[] {
+  const names = CODEX_PROFILE_FOREIGN_IDENTITY_VARS;
+  const found = new Set<string>();
+  try {
+    const walk = (node: unknown): void => {
+      if (typeof node === "string") {
+        // NAME=value anywhere in the string: after `export `, `&&`, `;` or a space, not only at the start.
+        for (const n of names) if (new RegExp(`(?:^|[^A-Za-z0-9_])${n}=`).test(node)) found.add(n);
+      } else if (Array.isArray(node)) {
+        node.forEach(walk);
+      } else if (node && typeof node === "object") {
+        for (const [k, v] of Object.entries(node)) {
+          if (names.includes(k)) found.add(k);
+          walk(v);
+        }
+      }
+    };
+    walk(parseToml(text));
+  } catch {
+    for (const n of names) if (new RegExp(`\\b${n}\\b`).test(text)) found.add(n);
+  }
+  return [...found].sort();
+}
+
+/** Move a refused seat copy to `<dest>.refused-openrig-identity-<ms>-<n>` without ever replacing a file: the
+ *  name is claimed with a hard link (EEXIST on a taken name), then the original name is removed. */
+async function moveAsideUnique(dest: string): Promise<string> {
+  const stamp = Date.now();
+  for (let n = 0; ; n++) {
+    const target = `${dest}.refused-openrig-identity-${stamp}-${n}`;
+    try {
+      await fs.link(dest, target);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw err;
+    }
+    await fs.unlink(dest);
+    return target;
+  }
 }
 
 /**
@@ -382,6 +438,8 @@ export async function ensureCodexSeatHome(
   // Profile fragments are COPIED (see module doc): per-seat canonical path,
   // per-seat identity edits stay seat-local.
   const copiedProfiles: string[] = [];
+  const refusedProfiles: string[] = [];
+  const log = opts?.log ?? ((message: string) => console.log(message));
   let entries: string[] = [];
   try {
     entries = await fs.readdir(shared);
@@ -395,13 +453,34 @@ export async function ensureCodexSeatHome(
     const stat = await fs.lstat(source).catch(() => null);
     if (!stat?.isFile()) continue;
     const dest = path.join(home, entry);
+    let existing = true;
     try {
       await fs.lstat(dest);
     } catch {
-      await fs.copyFile(source, dest);
-      copiedProfiles.push(entry);
+      existing = false;
     }
+    if (existing) {
+      // Copy-once stays, but a copy that carries a seat identity is moved aside on every launch (OF-43); a
+      // clean shared source is then copied fresh below.
+      const stat = await fs.lstat(dest).catch(() => null);
+      if (!stat?.isFile()) continue;
+      const text = await fs.readFile(dest, "utf8").catch(() => null);
+      const vars = text === null ? [] : codexProfileIdentityVars(text);
+      if (vars.length === 0) continue;
+      await moveAsideUnique(dest);
+      refusedProfiles.push(entry);
+      log(`codex seat home ${home}: moved profile ${entry} aside; it sets ${vars.join(", ")}, which would give the seat another identity`);
+    }
+    const sourceText = await fs.readFile(source, "utf8").catch(() => null);
+    const vars = sourceText === null ? [] : codexProfileIdentityVars(sourceText);
+    if (vars.length > 0) {
+      if (!refusedProfiles.includes(entry)) refusedProfiles.push(entry);
+      log(`codex seat home ${home}: did not copy profile ${entry}; it sets ${vars.join(", ")}, which would give the seat another identity`);
+      continue;
+    }
+    await fs.copyFile(source, dest);
+    copiedProfiles.push(entry);
   }
 
-  return { path: home, linked, copiedProfiles };
+  return { path: home, linked, copiedProfiles, refusedProfiles };
 }
