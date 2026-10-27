@@ -26,14 +26,15 @@
 //
 // Exit codes: 0 stopped (SIGTERM, SIGHUP, input closed); 2 bad arguments; 3 the agent does not exist (OpenRig
 // never creates one); 4 the token file is not usable; 5 the outbox log could not be written (it is poisoned: a
-// restart reopens and repairs it, and the runner does not retry on top of a possibly torn log); 70 internal.
+// restart reopens and repairs it, and the runner does not retry on top of a possibly torn log); 6 another runner of this
+// seat is alive and holds runner.lock (OF-110: it writes no sidecar, which is the live one's); 70 internal.
 
 import fs from "node:fs";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_LABEL, PDA_RUNNER_READY_MARKER, PDA_RUNTIME,
-  isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaSeatPaths, sanitizeForPane,
+  isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaRunnerLockLive, pdaSeatPaths, processPidAlive, sanitizeForPane,
   type PdaHeldCode, type PdaRunnerArgs, type PdaRunnerLock, type PdaRunnerErrorCode, type PdaRunnerState, type PdaSeatPaths,
 } from "./pda-runner-protocol.js";
 import {
@@ -1155,8 +1156,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // OF-98: the seat's runner.lock covers everything below, the usage sink's bounded close included, so a launch
   // that follows a stop can wait for it. It is released when the PROCESS exits (not when main() returns: a request
   // still in flight can write seat files after that), so only a SIGKILL leaves it behind, with a dead pid.
-  const release = acquireRunnerLock(paths.runnerLockPath, args.launchId);
-  process.once("exit", release);
+  // OF-110: the lock is taken EXCLUSIVELY, here, not only by the daemon's launch path. A runner started by hand in a pane
+  // (or by any path that bypasses PdaRuntimeAdapter.launchHarness and its wait) while another runner of this seat is
+  // still alive would otherwise share the outbox and the sidecar with it, and drive the agent twice.
+  const taken = acquireRunnerLock(paths.runnerLockPath, args.launchId, { sidecarPath: paths.runnerStatePath });
+  if (!taken.ok) {
+    // No sidecar is written: it is the LIVE runner's, and an `exited` record here would tell the daemon it had stopped.
+    console.error(`${PDA_RUNNER_ERROR_MARKER} pda_runner_locked: another pda-runner (pid ${taken.heldBy.pid}) already holds this seat (runner.lock in its state directory); stop it first. Nothing was started.`);
+    process.exitCode = 6;
+    return;
+  }
+  process.once("exit", taken.release);
 
   // A hangup (tmux kill-session closes the pty, then sends SIGHUP) makes the next pane write fail with EIO or EPIPE.
   // The pane being gone is not a reason to skip the close: swallow it and finish the shutdown (F1).
@@ -1171,17 +1181,49 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   await runLocked(args, paths);
 }
 
-/** Write `runner.lock` for this process. Best effort: a seat dir that cannot be written has bigger problems and the
- *  launch then simply does not wait. The returned release removes the file only while it is still this pid's. */
-export function acquireRunnerLock(lockPath: string, launchId: string): () => void {
+/** Take `runner.lock` for this process, EXCLUSIVELY (OF-110): refused, with the holder, while the lock names another process
+ *  that is still there (the one rule, `pdaRunnerLockLive`). A lock that is absent, unparseable, ours, or left by a dead or
+ *  reused pid is replaced. The file appears whole or not at all (written aside, then hard-linked into place, which fails
+ *  when the name exists), so a second runner never reads a half-written lock as "no lock".
+ *  Otherwise best effort: a seat dir that cannot be written has bigger problems, and the launch then simply does not wait.
+ *  The returned release removes the file only while it is still this pid's.
+ *  Not closed: two runners that both find the SAME stale lock in the same instant (each removes it, one then sees the
+ *  other's fresh lock, or both write, last link wins). The daemon serialises its own launches per seat, so this needs two
+ *  hand-started runners in one millisecond. */
+export function acquireRunnerLock(
+  lockPath: string, launchId: string, opts: { sidecarPath: string; nowMs?: () => number; pidAlive?: (pid: number) => boolean },
+): { ok: true; release: () => void } | { ok: false; heldBy: PdaRunnerLock } {
   const lock: PdaRunnerLock = { pid: process.pid, launchId, at: new Date().toISOString() };
-  try { nodeRunnerFs.writeAtomic(lockPath, JSON.stringify(lock)); } catch { /* best effort */ }
-  return () => {
+  const release = (): void => {
     try {
       const held = parsePdaRunnerLock(fs.readFileSync(lockPath, "utf8"));
       if (held?.pid === process.pid) fs.unlinkSync(lockPath);
     } catch { /* already gone */ }
   };
+  const aside = `${lockPath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(aside, JSON.stringify(lock), { mode: 0o600 });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { fs.linkSync(aside, lockPath); return { ok: true, release }; } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") return { ok: true, release }; // cannot lock here: do not block the seat
+      }
+      let raw: string;
+      try { raw = fs.readFileSync(lockPath, "utf8"); } catch { continue; } // vanished since the link: take it
+      const held = parsePdaRunnerLock(raw);
+      if (held && held.pid !== process.pid) {
+        const sidecarText = nodeRunnerFs.readText(opts.sidecarPath);
+        const sidecar = sidecarText === null ? null : parsePdaRunnerState(sidecarText);
+        if (pdaRunnerLockLive(held, sidecar, (opts.nowMs ?? Date.now)(), opts.pidAlive ?? processPidAlive)) return { ok: false, heldBy: held };
+      }
+      // Stale, garbage or ours: remove it only if it is still what was judged, then take it.
+      try { if (fs.readFileSync(lockPath, "utf8") === raw) fs.unlinkSync(lockPath); } catch { /* gone already */ }
+    }
+    return { ok: true, release };
+  } catch {
+    return { ok: true, release }; // best effort
+  } finally {
+    try { fs.unlinkSync(aside); } catch { /* not there */ }
+  }
 }
 
 async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void> {

@@ -704,6 +704,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     usageFactsEnabled: pdaUsageFactsEnabled,
     reserveBinding: (binding, nodeId) => rigRepo.reservePdaLaunch(binding, nodeId),
   });
+  // OF-109: which agent a seat's live runner is attached to is the runner's word (its sidecar), not the database's.
+  rigRepo.setPdaRunnerProbe((sessionName) => pdaAdapter.runnerAttachedTo(sessionName));
   const pdaResume = new PdaResumeAdapter(pdaAdapter);
   // Services infrastructure (RigEnv) — created early so restore/bootstrap can use it
   const { ComposeServicesAdapter } = await import("./adapters/compose-services-adapter.js");

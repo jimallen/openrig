@@ -149,7 +149,8 @@ describe("OF-96: two seats given tokens for one free agent cannot both launch", 
     expect(await launchWithToken(p, a, X_TOKEN)).toMatchObject({ ok: true });
     // The launch returned; the caller has not recorded A's token yet.
     const gap = await launchWithToken(p, b, X_TOKEN);
-    expect(gap).toMatchObject({ ok: false, error: expect.stringContaining("its launch is under way") });
+    expect(gap).toMatchObject({ ok: false, error: expect.stringContaining("it was just launched and its resume token is not recorded yet") }); // OF-96 review F2: a returned launch is not "under way"
+    expect((gap as { error: string }).error).not.toContain("under way");
     sessions.updateResumeToken(a.sessionId, "pda_agent", X_TOKEN, "scrape"); // the caller records it
     const after = await launchWithToken(p, b, X_TOKEN);
     expect(after).toMatchObject({ ok: false, error: expect.stringContaining("that seat's resume token names it") });
@@ -299,9 +300,9 @@ describe("OF-96: the claim registry itself", () => {
     const older = registry.claim(X, "node-1");
     const newer = registry.claim(X, "node-1");
     older.failed(); // the older launch fails after the newer one took over
-    expect(registry.claimants(X)).toEqual([{ nodeId: "node-1", launched: false }]);
+    expect(registry.claimants(X)).toEqual([{ nodeId: "node-1", launched: false, phase: "in_flight" }]);
     older.launched(); // and a late success of the older launch must not mark the newer one launched
-    expect(registry.claimants(X)).toEqual([{ nodeId: "node-1", launched: false }]);
+    expect(registry.claimants(X)).toEqual([{ nodeId: "node-1", launched: false, phase: "in_flight" }]);
     newer.launched();
     now += PDA_RESERVATION_LEASE_MS;
     expect(registry.claimants(X)).toEqual([]);
@@ -313,7 +314,7 @@ describe("OF-96: the claim registry itself", () => {
     registry.claim(X, "node-2");
     registry.claim({ agent: "other", baseUrl: PORT }, "node-1");
     registry.settle(X, "node-1");
-    expect(registry.claimants(X)).toEqual([{ nodeId: "node-2", launched: false }]);
-    expect(registry.claimants({ agent: "other", baseUrl: PORT })).toEqual([{ nodeId: "node-1", launched: false }]);
+    expect(registry.claimants(X)).toEqual([{ nodeId: "node-2", launched: false, phase: "in_flight" }]);
+    expect(registry.claimants({ agent: "other", baseUrl: PORT })).toEqual([{ nodeId: "node-1", launched: false, phase: "in_flight" }]);
   });
 });

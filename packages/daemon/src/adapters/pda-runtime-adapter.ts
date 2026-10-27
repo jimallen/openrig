@@ -32,20 +32,32 @@ import type { ProjectionPlan } from "../domain/projection-planner.js";
 import type { AgentActivity } from "../domain/types.js";
 import { PDA_USAGE_CLOSE_BUDGET_MS } from "./pda-usage-sink.js";
 import { isShellForeground } from "../domain/shell-classifier.js";
+import type { PdaLaunchReservation } from "../domain/pda-launch-reservations.js";
 import {
   PDA_RESUME_TYPE, PDA_RUNTIME, PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_READY_MARKER,
-  buildPdaRunnerArgv, formatPdaResumeToken, parsePdaResumeToken, parsePdaRunnerLock, parsePdaRunnerState, pdaSeatPaths,
-  type PdaBinding, type PdaRunnerState,
+  PDA_SIDECAR_ALIVE_WINDOW_MS, buildPdaRunnerArgv, formatPdaResumeToken, parsePdaResumeToken, parsePdaRunnerLock,
+  parsePdaRunnerState, pdaRunnerLockLive, pdaSeatPaths, pdaSidecarAlive, processPidAlive,
+  type PdaBinding, type PdaRunnerLock, type PdaRunnerState,
 } from "./pda-runner-protocol.js";
 
-/** A sidecar whose `aliveAt` is older than this is no runner answer (the runner rewrites it every 60 s). */
-export const PDA_SIDECAR_ALIVE_WINDOW_MS = 180_000;
+// The alive rule and its window live in the protocol (the runner applies them to its own lock too); re-exported here
+// because the adapter's readers and tests have always imported them from this module.
+export { PDA_SIDECAR_ALIVE_WINDOW_MS, pdaSidecarAlive };
 /** How long a launch waits for the runner to attach (design: "The launch wait is 30 s"). */
 export const PDA_LAUNCH_WAIT_MS = 30_000;
 
 /** How long a launch waits for the PREVIOUS runner of the same seat to finish closing (OF-98): the usage sink's
  *  5 s close budget plus 2 s for the spill's fsyncs and the process teardown. */
 export const PDA_OLD_RUNNER_WAIT_MS = PDA_USAGE_CLOSE_BUDGET_MS + 2000;
+
+/** What one launch learned about its runner, for the claim's release rule (OF-112). */
+interface LaunchProgress {
+  /** A runner is, or may be, in the seat's pane: this launch typed the runner command (even if the send then threw), or it
+   *  found the previous launch's runner still alive. From here a failed launch can leave a runner driving the agent. */
+  runnerInPane: boolean;
+  /** The runner is known to have stopped driving the target agent (it exited itself, or it runs another binding). */
+  runnerStopped: boolean;
+}
 
 export interface PdaAdapterFsOps {
   readFile(path: string): string;
@@ -68,8 +80,9 @@ export interface PdaRuntimeAdapterDeps {
   /** Why this binding may not be launched for this seat (another seat holds it; review L2b action 3), and, when it
    *  may, the claim on the agent (OF-96): check AND claim in one synchronous step (RigRepository.reservePdaLaunch), so
    *  two launches that both found the agent free cannot both pass. The claim is held while the launch runs; `failed()`
-   *  frees it, `launched()` hands it to the seat's recorded token. */
-  reserveBinding?: (binding: PdaBinding, nodeId: string) => { ok: true; reservation: { launched(): void; failed(): void } } | { ok: false; conflicts: string[] };
+   *  frees it, `launched()` hands it to the seat's recorded token, and `heldWhileRunnerLives(gone)` keeps it after a
+   *  failed launch whose runner may still be retrying, until `gone()` says the runner is (OF-112). */
+  reserveBinding?: (binding: PdaBinding, nodeId: string) => { ok: true; reservation: PdaLaunchReservation } | { ok: false; conflicts: string[] };
   newLaunchId?: () => string;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
@@ -81,10 +94,6 @@ export interface PdaRuntimeAdapterDeps {
   oldRunnerWaitMs?: number;
 }
 
-const processPidAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === "EPERM"; }
-};
-
 /** What the runner's exit code means for a launch (pda-runner.ts header). */
 const EXIT_TEXT: Record<number, string> = {
   2: "the runner refused its arguments",
@@ -93,14 +102,6 @@ const EXIT_TEXT: Record<number, string> = {
   5: "the seat's message log could not be opened (fix or move it while the seat is down)",
   70: "the runner stopped on an internal error",
 };
-
-/** The ONE alive rule both readers apply (review N2, N3): a sidecar is the runner's word only while its aliveAt is
- *  within the window on either side of now. The runner rewrites it at least every 60 s; one older than the window was
- *  left by a runner that died (SIGKILL writes no `exited`), and one from the future is a clock jump or a forged file. */
-export function pdaSidecarAlive(state: PdaRunnerState, nowMs: number): boolean {
-  const alive = Date.parse(state.aliveAt);
-  return Number.isFinite(alive) && Math.abs(nowMs - alive) <= PDA_SIDECAR_ALIVE_WINDOW_MS;
-}
 
 /** Sidecar codes that need a person, as checkReady reports them (ATTENTION_REQUIRED_READINESS_CODES holds each). */
 function sidecarAttentionCode(state: PdaRunnerState): "pda_agent_missing" | "pda_token_format" | "pda_unauthorized" | "pda_message_held" | null {
@@ -171,18 +172,57 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
       return { ok: false, error: `pda launch refused before anything was typed: ${taken.conflicts.join("; ")}` };
     }
     const reservation = taken?.reservation;
+    // OF-96 review F3: NOTHING may sit between the reservation above and this `try`. An in-flight claim has no lease, so
+    // a statement here that threw (or an early return) would leak the claim until the daemon restarts. New checks belong
+    // before the reservation, or inside launchOnto, where the `finally` covers them.
+    const progress: LaunchProgress = { runnerInPane: false, runnerStopped: false };
     let launchedOk = false;
     try {
-      const result = await this.launchOnto(sessionName, target);
+      const result = await this.launchOnto(sessionName, target, progress);
       launchedOk = result.ok;
       return result;
     } finally {
-      // A throw is a failure too: the claim must never outlive a launch that did not start the runner.
-      if (launchedOk) reservation?.launched(); else reservation?.failed();
+      // The claim never outlives a launch that did not start a runner (a throw is a failure too). But once the runner
+      // was typed, a failed launch is not the runner's end: a timeout and the attention outcomes say "the runner keeps
+      // retrying in the pane" (OF-112, Jim: hold the claim until the pane is confirmed gone), so the claim stays until
+      // the seat's runner.lock names no live process. A runner that stopped itself is gone: nothing to wait for.
+      if (launchedOk) reservation?.launched();
+      else if (progress.runnerInPane && !progress.runnerStopped) reservation?.heldWhileRunnerLives(() => !this.runnerStillThere(sessionName));
+      else reservation?.failed();
     }
   }
 
-  private async launchOnto(sessionName: string, target: PdaBinding): Promise<HarnessLaunchResult> {
+  /** Is the seat's runner process still there? True while `runner.lock` names a live process (the one rule, see
+   *  pdaRunnerLockLive). Fail closed: a lock that cannot be read counts as a runner still there, since the claim this
+   *  guards is the only thing between a second seat and the agent. Absent or unparseable lock = gone (the runner writes
+   *  it first thing; after the launch wait, no lock means no runner was ever started). */
+  private runnerStillThere(sessionName: string): boolean {
+    try { return this.liveRunnerLock(sessionName) !== null; } catch { return true; }
+  }
+
+  /** The seat's `runner.lock` when its runner is still there, else null. Throws when the files cannot be read. */
+  private liveRunnerLock(sessionName: string): PdaRunnerLock | null {
+    const lockPath = pdaSeatPaths(this.deps.stateRoot, sessionName).runnerLockPath;
+    if (!this.deps.fsOps.exists(lockPath)) return null;
+    const lock = parsePdaRunnerLock(this.deps.fsOps.readFile(lockPath));
+    if (!lock) return null;
+    return pdaRunnerLockLive(lock, this.readState(sessionName), this.now().getTime(), this.deps.pidAlive ?? processPidAlive) ? lock : null;
+  }
+
+  /** OF-109: the pda agent the seat's LIVE runner is attached to, from the runner's own sidecar (the truth), or null when
+   *  there is no live runner, it has begun to exit, or its sidecar is not that of the locked launch (nothing is known yet).
+   *  The database can name another agent (an operator may set a resume token after the runner launched elsewhere), so the
+   *  holder checks ask this too. Never throws. */
+  runnerAttachedTo(sessionName: string): PdaBinding | null {
+    try {
+      const lock = this.liveRunnerLock(sessionName);
+      const state = lock ? this.readState(sessionName) : null;
+      if (!lock || !state || state.launchId !== lock.launchId || state.exited) return null;
+      return { agent: state.agent, baseUrl: state.baseUrl };
+    } catch { return null; }
+  }
+
+  private async launchOnto(sessionName: string, target: PdaBinding, progress: LaunchProgress): Promise<HarnessLaunchResult> {
     const tokenFile = this.deps.tokenFile();
     const token = this.deps.fsOps.lstat(tokenFile);
     if (!token || !token.isFile) {
@@ -195,6 +235,9 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     // OF-98: never type while the seat's previous runner can still write the spill or the outbox.
     const previous = await this.awaitPreviousRunner(sessionName);
     if (previous) {
+      // A runner of this seat IS in the pane (the previous launch's, which may have held the same claim): this refusal
+      // must not release what that launch kept (OF-112).
+      progress.runnerInPane = true;
       return { ok: false, error: `pda launch: the seat's previous runner (pid ${previous.pid}, runner.lock in the seat's state directory) is still running after ${(this.deps.oldRunnerWaitMs ?? PDA_OLD_RUNNER_WAIT_MS) / 1000} s; nothing was typed, so its pending usage facts and messages are safe. Try again in a moment` };
     }
 
@@ -205,10 +248,15 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
     });
     // Flags are fixed literals; every value is quoted. The argv holds no secret (the token file is a path).
     const command = ["node", shellQuote(this.deps.runnerEntryPath), ...argv.map((arg) => /^--[a-z-]+$/.test(arg) ? arg : shellQuote(arg))].join(" ");
+    // From here a runner may exist (even when the send throws half way): the claim's release rule is the runner's lock.
+    progress.runnerInPane = true;
     const sent = await this.deps.tmux.sendShellCommand(sessionName, command, undefined, { stageIfLong: true, execInScript: true });
-    if (!sent.ok) return { ok: false, error: `Failed to send the pda-runner command: ${sent.message}` };
+    if (!sent.ok) {
+      progress.runnerInPane = false; // the send said it typed nothing
+      return { ok: false, error: `Failed to send the pda-runner command: ${sent.message}` };
+    }
 
-    const waited = await this.waitForLaunch(sessionName, launchId, target);
+    const waited = await this.waitForLaunch(sessionName, launchId, target, progress);
     if (!waited.ok) return waited.failure;
     return { ok: true, resumeToken: formatPdaResumeToken(target), resumeType: PDA_RESUME_TYPE };
   }
@@ -286,25 +334,14 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
    *  Stale = its pid is dead (a SIGKILL skips the release), or its sidecar for that launch has not ticked inside
    *  the alive window (a reused pid). Never throws. */
   private async awaitPreviousRunner(sessionName: string): Promise<{ pid: number } | null> {
-    const lockPath = pdaSeatPaths(this.deps.stateRoot, sessionName).runnerLockPath;
     const pollMs = Math.max(this.deps.pollMs ?? 250, 1);
     const attempts = Math.floor((this.deps.oldRunnerWaitMs ?? PDA_OLD_RUNNER_WAIT_MS) / pollMs) + 1;
-    const pidAlive = this.deps.pidAlive ?? processPidAlive;
     let live: { pid: number } | null = null;
     for (let attempt = 0; attempt < attempts; attempt++) {
       live = null;
       try {
-        if (!this.deps.fsOps.exists(lockPath)) return null;
-        const lock = parsePdaRunnerLock(this.deps.fsOps.readFile(lockPath));
-        if (!lock || !pidAlive(lock.pid)) return null;
-        // A reused pid: the lock's own sidecar stopped ticking, or (no sidecar of that launch ever written) the lock itself is
-        // older than the alive window.
-        const side = this.readState(sessionName);
-        const nowMs = this.now().getTime();
-        const quiet = side && side.launchId === lock.launchId
-          ? !pdaSidecarAlive(side, nowMs)
-          : nowMs - Date.parse(lock.at) > PDA_SIDECAR_ALIVE_WINDOW_MS;
-        if (quiet) return null;
+        const lock = this.liveRunnerLock(sessionName);
+        if (!lock) return null;
         live = { pid: lock.pid };
       } catch { return null; }
       if (attempt < attempts - 1) await this.sleep(pollMs);
@@ -313,7 +350,7 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
   }
 
   /** Poll THIS launch's sidecar (stale ones from an earlier runner are ignored by launch id). */
-  private async waitForLaunch(sessionName: string, launchId: string, target: PdaBinding): Promise<{ ok: true } | { ok: false; failure: HarnessLaunchResult }> {
+  private async waitForLaunch(sessionName: string, launchId: string, target: PdaBinding, progress: LaunchProgress): Promise<{ ok: true } | { ok: false; failure: HarnessLaunchResult }> {
     const pollMs = this.deps.pollMs ?? 250;
     const attempts = Math.max(1, Math.floor((this.deps.launchWaitMs ?? PDA_LAUNCH_WAIT_MS) / Math.max(pollMs, 1)) + 1);
     let last: PdaRunnerState | null = null;
@@ -322,9 +359,11 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
       if (state?.launchId === launchId) {
         last = state;
         if (state.agent !== target.agent || state.baseUrl !== target.baseUrl) {
+          progress.runnerStopped = true; // it is not on the agent this claim is for (its own agent is held by runnerAttachedTo)
           return { ok: false, failure: { ok: false, error: "pda launch: the runner reports another binding than the one launched" } };
         }
         if (state.exited) {
+          progress.runnerStopped = true; // it stopped itself: it no longer drives the agent, whatever its close still writes
           const code = state.exited.code ?? -1;
           return { ok: false, failure: {
             ok: false, recovery: "attention_required",
