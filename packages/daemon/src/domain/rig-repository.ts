@@ -922,6 +922,14 @@ export class RigRepository {
     return rows.map((r) => this.rowToRig(r));
   }
 
+  /** OF-135: the rig whose id is exactly `id`, archived or not, or null. Ids are unique, so a command that takes a rig id or
+   *  a name tries this first (the precedence of the CLI's rig-handle.ts). */
+  findRigById(id: string): { rig: Rig; archived: boolean } | null {
+    const row = this.db.prepare("SELECT * FROM rigs WHERE id = ?").get(id) as (RigRow & { archived_at?: string | null }) | undefined;
+    if (!row) return null;
+    return { rig: this.rowToRig(row), archived: this.hasRigColumn("archived_at") && row.archived_at != null };
+  }
+
   /** #174: seat-ref resolution sees only unarchived rigs, as default reads do since migration 042. */
   findUnarchivedRigsByName(name: string): Rig[] {
     const archived = this.hasRigColumn("archived_at") ? " AND archived_at IS NULL" : "";

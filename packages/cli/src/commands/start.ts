@@ -17,6 +17,7 @@ import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
+import { rigAdviceHandle } from "../rig-handle.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 const KERNEL_WAIT_MS = 60_000;
@@ -422,10 +423,12 @@ Examples:
       for (const candidate of selectedCandidates) {
         const rigName = candidate.rigName;
         const rigId = candidate.rigId;
+        let unarchivedRigs: Array<{ id: string; name: string }> = []; // OF-135: for the advice handle; empty gives the id
 
         // Check if the rig is already running (idempotent rerun: reconcile, don't relaunch).
         try {
           const freshSummary = await client.get<RigSummary[]>("/api/rigs/summary");
+          unarchivedRigs = (freshSummary.data ?? []).map((r) => ({ id: r.id, name: r.name }));
           const current = (freshSummary.data ?? []).find((r) => r.id === rigId);
           if ((current?.restoreLifecycleState ?? current?.lifecycleState) === "running") {
             if (!opts.json) console.log(`  ${rigName}: already running (skipping)`);
@@ -493,7 +496,8 @@ Examples:
                 if (yes) accepted.push(n.logicalId);
               }
               if (accepted.length > 0) {
-                const outcomes = await launchAcceptedFreshSeats(client, accepted, rigName, "operator accepted fresh start at rig start", LONG_RUNNING_UP_TIMEOUT_MS);
+                // OF-135 (review-x2 F1): the same rig handle the printed advice uses (its id when the name is shared).
+                const outcomes = await launchAcceptedFreshSeats(client, accepted, rigAdviceHandle(rigId, rigName, unarchivedRigs), "operator accepted fresh start at rig start", LONG_RUNNING_UP_TIMEOUT_MS);
                 for (const o of outcomes) {
                   if (o.ok) {
                     if (!opts.json) console.log(`    ${o.logicalId}: fresh-primed`);
@@ -508,7 +512,7 @@ Examples:
             } else {
               // Headless: report honestly, no auto-substitute.
               for (const n of awaiting) {
-                if (!opts.json) console.error(`    ${n.logicalId}: awaiting-decision -- to start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, rigName)}`);
+                if (!opts.json) console.error(`    ${n.logicalId}: awaiting-decision -- to start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, rigAdviceHandle(rigId, rigName, unarchivedRigs))}`);
               }
             }
           }

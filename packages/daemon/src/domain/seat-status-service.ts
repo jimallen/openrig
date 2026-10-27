@@ -1,4 +1,5 @@
 import type { RigRepository } from "./rig-repository.js";
+import { rigAdviceHandle, seatRefRigs } from "./rig-ref.js";
 import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js";
 import { parseSessionName } from "./session-name.js";
 import type { NodeInventoryEntry, SeatIdentityVerdict } from "./types.js";
@@ -11,6 +12,9 @@ export interface SeatStatus {
   seat_ref: string;
   rig_id: string;
   rig_name: string;
+  /** OF-135: the rig as advice names it in `rig up <rig> --existing` and `<seat>@<rig>`: its name while that reaches it
+   *  alone, else its id (rigAdviceHandle). */
+  rig_handle: string;
   logical_id: string;
   pod_id: string | null;
   pod_namespace: string | null;
@@ -91,13 +95,17 @@ export class SeatStatusService {
     const parsed = parseSessionName(ref);
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
-      const rigName = parsed.rig;
-      const rigs = this.rigRepo.findUnarchivedRigsByName(rigName);
-      return rigs.flatMap((rig) => this.entriesForRig(rig.id).filter((entry) =>
-        entry.canonicalSessionName === ref
-        || deriveCanonicalFromEntry(entry) === ref
-        || entry.logicalId === localRef
-      ).map((entry) => ({ entry })));
+      // OF-135: the rig part is a rig id first, then a name (as `rig down` resolves a rig, cli/src/rig-handle.ts). Session
+      // names carry the rig's NAME, so an id ref is matched as `<member>@<that rig's name>` (for a name ref, the ref itself).
+      const rigs = seatRefRigs(this.rigRepo, parsed.rig);
+      return rigs.flatMap((rig) => {
+        const asNamed = `${localRef}@${rig.name}`;
+        return this.entriesForRig(rig.id).filter((entry) =>
+          entry.canonicalSessionName === asNamed
+          || deriveCanonicalFromEntry(entry) === asNamed
+          || entry.logicalId === localRef
+        ).map((entry) => ({ entry }));
+      });
     }
 
     return this.rigRepo.listRigs().flatMap((rig) =>
@@ -116,6 +124,7 @@ export class SeatStatusService {
       seat_ref: seatRef,
       rig_id: entry.rigId,
       rig_name: entry.rigName,
+      rig_handle: rigAdviceHandle(this.rigRepo, entry.rigId, entry.rigName),
       logical_id: entry.logicalId,
       pod_id: entry.podId,
       pod_namespace: entry.podNamespace ?? null,

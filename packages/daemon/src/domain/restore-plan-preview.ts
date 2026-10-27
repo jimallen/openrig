@@ -236,6 +236,8 @@ export function buildRestorePlanPreview(
   refusals: ReadonlyMap<string, string> = new Map(),
   /** Each live seat's `continuity_state.status` by node id (see `readPreviewContinuity`). */
   continuity: Readonly<Record<string, string>> = {},
+  /** OF-135: how the plan's advice names the rig (`rigAdviceHandle`: its name while that reaches it alone, else its id). */
+  adviceRig: string = rig.rig.name,
 ): RestorePlanPreview {
   // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own
   // when previewing a snapshot; for the live no-snapshot case, the SAME
@@ -255,7 +257,7 @@ export function buildRestorePlanPreview(
     const { logicalId, snapshotNodeId, live, freshRequested, occupant: resolution } = input;
     // ONE decision, the function restore calls (restore-seat-gates.ts): the plan only words it.
     const outcome = decideSeatLaunchOutcome({
-      data, snapshotNodeId, logicalId, live, freshRequested, rigName: rig.rig.name, continuityStatus: input.continuityStatus,
+      data, snapshotNodeId, logicalId, live, freshRequested, rigName: adviceRig, continuityStatus: input.continuityStatus,
       ...(snapshot ? {} : { occupant: resolution as unknown as ActiveSnapshotSessionResolution }),
     });
     let intendedAction: RestorePlanPreviewNode["intendedAction"];

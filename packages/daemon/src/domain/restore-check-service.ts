@@ -7,6 +7,7 @@ import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import { validatePreRestore } from "./restore-preconditions.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
+import { rigAdviceHandle } from "./rig-ref.js";
 import type { SeatStop } from "./restore-seat-gates.js";
 import { restoreRefusesRig, type RunningSessionClassification } from "./restore-running-sessions.js";
 import type { SessionLiveness } from "./session-liveness.js";
@@ -759,7 +760,7 @@ export class RestoreCheckService {
               ? `Add ${logicalId} back to the rig, or restore a snapshot taken after it was removed; restore does not recreate removed nodes`
               : stop.gate === "runtime_mismatch"
                 ? `Restore a snapshot whose saved startup runtime matches ${logicalId}'s current runtime`
-                : `Decide for ${logicalId} what restore must not guess: ${freshSeatLaunchCommand(logicalId, rig.name, opts.startupFrom?.startsWith("snapshot:") ? undefined : opts.startupFrom)}, or restore the original session manually`,
+                : `Decide for ${logicalId} what restore must not guess: ${freshSeatLaunchCommand(logicalId, this.rigHandle(rig.rigId, rig.name), opts.startupFrom?.startsWith("snapshot:") ? undefined : opts.startupFrom)}, or restore the original session manually`,
           });
         }
       }
@@ -1178,10 +1179,10 @@ export class RestoreCheckService {
     const check = `seat.${session}.readiness`;
     // OF-47: restore (rig up --existing) is offered as a way back only when restore's own rule lets it run.
     // OF-53: the two ways back are named as commands. `rig seat launch --fresh` starts a new conversation; restore resumes it.
-    const relaunch = freshSeatLaunchCommand(node.logicalId, rigName);
+    const relaunch = freshSeatLaunchCommand(node.logicalId, this.rigHandle(node.rigId, rigName));
     const restoreOrRelaunch = restoreRefused
       ? `Relaunch the seat with ${relaunch} (restore refuses this rig, rig_not_stopped, while a session row the DB shows running is live or unreadable; see the rig's recovery entry)`
-      : `Restore the seat with rig up --existing ${shellQuote(rigName)} (resumes its conversation), or relaunch only this seat with ${relaunch} (starts a new conversation)`;
+      : `Restore the seat with rig up --existing ${shellQuote(this.rigHandle(node.rigId, rigName))} (resumes its conversation), or relaunch only this seat with ${relaunch} (starts a new conversation)`;
 
     if (!node.canonicalSessionName) {
       return {
@@ -1267,7 +1268,7 @@ export class RestoreCheckService {
       check: `seat.${session}.resume-path`, status: "yellow",
       evidence: "No attach command available",
       // Whether restore resumes, starts fresh or stops for a decision is per seat; the plan says which.
-      remediation: `No live session to attach. Preview what restore would do for this seat with: rig up ${shellQuote(rigName)} --existing --plan`,
+      remediation: `No live session to attach. Preview what restore would do for this seat with: rig up ${shellQuote(this.rigHandle(node.rigId, rigName))} --existing --plan`,
       remediationSafe: true,
     };
   }
@@ -1822,8 +1823,8 @@ export class RestoreCheckService {
           parts.push(`Seats live in tmux that the DB does not show running: ${input.liveUnrecordedSeats.join(", ")}. The DB is out of step with tmux; restore does not check these seats and could start a second session over a live one. Inspect with rig ps --nodes and reconcile before restoring.`);
         }
         if (input.deadSeatIds.length > 0) {
-          const rig = shellQuote(input.rigName);
-          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}.${this.freshStartupNote(input.rigId, "seat", input.rigName)} To keep the conversations instead: rig down ${this.rigDownHandle(input.rigId, input.rigName)}, then rig up ${rig} --existing (this restarts every seat).`);
+          const rig = shellQuote(this.rigHandle(input.rigId, input.rigName));
+          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, this.rigHandle(input.rigId, input.rigName))).join("; ")}.${this.freshStartupNote(input.rigId, "seat", input.rigName)} To keep the conversations instead: rig down ${this.rigDownHandle(input.rigId, input.rigName)}, then rig up ${rig} --existing (this restarts every seat).`);
         }
         blocked.push({
           scope: "rig",
@@ -1860,7 +1861,7 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. ${downEnds}${held ? `${held}. ` : ""}${ownName.length > 0 ? `Check it first if you are unsure it is not needed (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}). ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(input.rigName)} --existing. A seat that has two running rows (a newer one that is dead as well as the live older one) is restored by rig up --existing from its newer row alone after rig down, which ends the older row before it takes its snapshot; if that newer row has no resume token restore stops the seat for a decision, and rig seat launch <seat> --fresh brings it back. Ending the older row any other way (a hand-run tmux kill) leaves both rows running in the DB, and restore then fails the seat with "Active-occupant ambiguity".`,
+          reason: `Restore would refuse this rig (rig_not_stopped, 409): the DB shows ${names.length === 1 ? "this session" : "these sessions"} running and tmux has ${names.length === 1 ? "it" : "them"} live: ${names.join(", ")}; no seat's newest session row shows it (an older running row sits behind a newer one). rig up --existing is refused while it is live. ${downEnds}${held ? `${held}. ` : ""}${ownName.length > 0 ? `Check it first if you are unsure it is not needed (rig capture -- ${ownName.map((n) => shellQuote(n)).join(" ")}). ` : ""}Probing stops at the first live row, so rerun rig restore-check afterwards: once no running row is live it predicts what else would stop restore (a seat that cannot be told apart from its older row, a missing resume token) before it advises rig up ${shellQuote(this.rigHandle(input.rigId, input.rigName))} --existing. A seat that has two running rows (a newer one that is dead as well as the live older one) is restored by rig up --existing from its newer row alone after rig down, which ends the older row before it takes its snapshot; if that newer row has no resume token restore stops the seat for a decision, and rig seat launch <seat> --fresh brings it back. Ending the older row any other way (a hand-run tmux kill) leaves both rows running in the DB, and restore then fails the seat with "Active-occupant ambiguity".`,
         });
         continue;
       }
@@ -1889,7 +1890,7 @@ export class RestoreCheckService {
           rigId: input.rigId,
           rigName: input.rigName,
           action: "restore_from_latest_snapshot",
-          command: `rig up --existing ${shellQuote(input.rigName)}`,
+          command: `rig up --existing ${shellQuote(this.rigHandle(input.rigId, input.rigName))}`,
           reason: `Rig has a latest snapshot and one or more seats are not running/ready.${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
           safe: false,
           blocking: true,
@@ -1902,7 +1903,7 @@ export class RestoreCheckService {
         rigId: input.rigId,
         rigName: input.rigName,
         action: "restore_from_latest_snapshot",
-        command: `rig up --existing ${shellQuote(input.rigName)}`,
+        command: `rig up --existing ${shellQuote(this.rigHandle(input.rigId, input.rigName))}`,
         reason: `Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
         safe: false,
         blocking: true,
@@ -1989,12 +1990,21 @@ export class RestoreCheckService {
   /** What to type after `rig down`: the rig's name while exactly one rig carries it, its id when two or more do (rig names
    *  are not unique; `rig down <name>` halts as ambiguous) or when the rig list cannot be read (an id is always exact). */
   private rigDownHandle(rigId: string, rigName: string): string {
-    try {
-      const sameName = this.deps.listRigs().filter((r) => r.name === rigName).length;
-      return shellQuote(sameName === 1 ? rigName : rigId);
-    } catch {
-      return shellQuote(rigId);
-    }
+    return shellQuote(this.rigHandle(rigId, rigName));
+  }
+
+  /** OF-135: the rig as advice names it in `rig down`, `rig up <rig> --existing` and `<seat>@<rig>`: its name while that name
+   *  reaches it and only it, else its id (rigAdviceHandle). The rigs are the unarchived ones `listRigs` gives; unreadable
+   *  gives the id. Not quoted. */
+  private rigHandle(rigId: string, rigName: string): string {
+    return rigAdviceHandle({
+      findRigById: (id) => {
+        const rig = this.deps.listRigs().find((r) => r.rigId === id);
+        return rig ? { rig: { id: rig.rigId, name: rig.name, createdAt: "", updatedAt: "" }, archived: false } : null;
+      },
+      findUnarchivedRigsByName: (name) => this.deps.listRigs().filter((r) => r.name === name)
+        .map((r) => ({ id: r.rigId, name: r.name, createdAt: "", updatedAt: "" })),
+    }, rigId, rigName);
   }
 
   /** OF-32: where a seat started fresh takes its startup files from, for this rig. `rig seat launch --fresh` (and a
@@ -2016,7 +2026,7 @@ export class RestoreCheckService {
     }
     return advice === "seat"
       ? ` A seat started fresh re-reads this rig's spec (${source}) as it is now; add --startup-from stored to give it the startup files saved at its last successful launch instead.`
-      : ` Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; to start a seat on this rig's spec (${source}) as it is now instead, list it: rig up ${shellQuote(rigName)} --existing --fresh <seat>.`;
+      : ` Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; to start a seat on this rig's spec (${source}) as it is now instead, list it: rig up ${shellQuote(this.rigHandle(rigId, rigName))} --existing --fresh <seat>.`;
   }
 
   private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {

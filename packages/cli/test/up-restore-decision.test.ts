@@ -276,6 +276,20 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(logs).toContain(`  ${line}`);
   });
 
+  // OF-135: a daemon that names the rig's advice handle (its id when another rig shares the name) is followed; one that
+  // does not (older daemons, the row below) leaves the canonical name.
+  it("headless hint names the rig by the daemon's rigHandle when it sends one", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigHandle: "01RIGID", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "Original session unresumable: no resume token was captured for this seat." }],
+      warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    expect(printedSeatLaunchCommands(logs.join("\n"))).toEqual([`rig seat launch 'operator.human@01RIGID' --fresh --reason "<why>"`]);
+  });
+
   it("headless hint names the rig by the daemon's canonical name, not by whatever the operator typed after `rig up`", async () => {
     respond = () => ({
       status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",
@@ -360,6 +374,18 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/operator.human%40kernel"]);
   });
 
+  // OF-135 (review-x2 F1): with a shared name the daemon names the rig by id, and the accepted seat is launched there.
+  it("TTY ASK accepted launches the seat on the rig the daemon's rigHandle names", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigHandle: "01RIGID", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "no resume token was captured for this seat" }], warnings: [],
+    });
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "01RIGID", "--existing"]);
+    });
+    expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/operator.human%4001RIGID"]);
+  });
+
   // Each accepted seat is independent: a bad answer for one must not hide the others' results or stop them being tried.
   it("several accepted seats: one unreadable answer in the middle does not stop the rest or hide earlier results", async () => {
     respond = () => ({
@@ -403,6 +429,17 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(seatPosts).toHaveLength(2);
     expect(logs.join("\n")).toContain("a.one: fresh start failed (HTTP 409)");
     expect(logs.join("\n")).toContain("b.two: fresh-primed");
+  });
+
+  it("TTY ASK declined names each seat's rig by the daemon's rigHandle when it sends one (OF-135)", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigHandle: "01RIGID", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "no token" }], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => false)).parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    expect(printedSeatLaunchCommands(logs.join("\n"))).toEqual([`rig seat launch 'operator.human@01RIGID' --fresh --reason "<why>"`]);
   });
 
   it("TTY ASK declined names each seat's rig by the daemon's canonical name, not by what was typed after `rig up`", async () => {

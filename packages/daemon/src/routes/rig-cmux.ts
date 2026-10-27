@@ -9,6 +9,7 @@ import type { RigRepository } from "../domain/rig-repository.js";
 import type { CmuxAdapter } from "../adapters/cmux.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { CmuxLayoutService } from "../domain/cmux-layout-service.js";
+import { rigAdviceHandle } from "../domain/rig-ref.js";
 
 export const rigCmuxRoutes = new Hono();
 
@@ -191,8 +192,7 @@ rigCmuxRoutes.post("/launch", async (c) => {
     const rigName = (rigWithRelations.rig as unknown as { name: string }).name;
     // OF-53: `rig up <name>` alone can resolve to a library spec of that name; `--existing` is the restore door. Rig names are
     // not unique, so a shared name is given by id (the handle resolver takes either).
-    const sharesName = rigRepo.findUnarchivedRigsByName(rigName).length > 1;
-    const rigRef = sharesName ? rigId : rigName;
+    const rigRef = rigAdviceHandle(rigRepo, rigId, rigName);
     return c.json(
       {
         ok: false,

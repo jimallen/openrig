@@ -46,6 +46,8 @@ function makeRigRepoStub(rigs: Record<string, FakeRigOpts>): RigRepository {
       };
     },
     findUnarchivedRigsByName: (name: string) => Object.values(rigs).filter((r) => r.name === name),
+    // OF-135: the advice handle also asks whether a rig has this name as its id (an id wins).
+    findRigById: (id: string) => rigs[id] ? { rig: { id: rigs[id]!.id, name: rigs[id]!.name }, archived: false } : null,
   } as unknown as RigRepository;
 }
 

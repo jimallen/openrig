@@ -14,6 +14,7 @@ import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibilit
 import { deriveCanonicalSessionName, deriveSessionName } from "./session-name.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
 import type { NodeStartupSnapshot, SnapshotData } from "./types.js";
+import { rigAdviceHandleIn } from "./rig-ref.js";
 
 /** A fresh seat's chosen startup policy in the shape restore replays (the snapshot's startup-context shape). */
 export function asReplayContext(context: FreshStartupContext): NodeStartupSnapshot {
@@ -75,7 +76,7 @@ export function startupToValidateForSeat(
         logicalId: input.logicalId,
         target: "node_startup_context",
         message: `${noUsableCopyMessage(input.logicalId, pick.why)} Restore would start this seat fresh, so it starts nothing.`,
-        remediation: noUsableCopyRemedy({ scope: "restore", rigName: rig.rig.name, logicalId: input.logicalId, specRecorded: !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow, ...(specSourceUntrusted(deps.specReader, input.rigId) ? { specUntrusted: { rigId: input.rigId } } : {}) }),
+        remediation: noUsableCopyRemedy({ scope: "restore", rigName: rigAdviceHandleIn(deps.db, input.rigId, rig.rig.name), logicalId: input.logicalId, specRecorded: !!deps.rigRepo.getRigSpecSource(input.rigId), ownRow: pick.ownRow, ...(specSourceUntrusted(deps.specReader, input.rigId) ? { specUntrusted: { rigId: input.rigId } } : {}) }),
       },
     };
   }
@@ -190,7 +191,7 @@ export function listedRefusalRemedy(
   const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
   const rig = deps.rigRepo.getRig(input.rigId);
   const live = rig?.nodes.find((node) => node.logicalId === input.logicalId);
-  const rigName = rig?.rig.name ?? input.rigId;
+  const rigName = rig ? rigAdviceHandleIn(deps.db, input.rigId, rig.rig.name) : input.rigId;
   const routes: string[] = [];
   const best = live ? newestUsableSnapshotCopy(deps.db, input.rigId, input.logicalId, live.runtime ?? null) : null;
   if (best && input.startupFrom !== `snapshot:${best.snapshotId}`
@@ -251,7 +252,7 @@ export async function predictListedSeatRefusals(
       ? deriveCanonicalSessionName(parts[0]!, parts.slice(1).join("."), rig.rig.name)
       : deriveSessionName(rig.rig.name, logicalId);
     const decision = await decideListedFreshSeat(deps, {
-      rigId: input.rigId, nodeId: live.id, logicalId, rigName: rig.rig.name, runtime, cwd: live.cwd ?? ".",
+      rigId: input.rigId, nodeId: live.id, logicalId, rigName: rigAdviceHandleIn(deps.db, input.rigId, rig.rig.name), runtime, cwd: live.cwd ?? ".",
       sessionName, startupFrom: input.startupFrom, snapshotCopy, exists: input.exists,
     });
     if (decision.refusal) refusals.set(logicalId, decision.refusal);

@@ -263,6 +263,21 @@ describe("rig seat status", () => {
     expect(logs.join("\n")).toContain("Reason: tmux session missing; resume with rig up --existing seat-rig (refused while any seat is live), or start only this seat fresh with rig seat launch 'dev.impl@seat-rig' --fresh --reason \"<why>\"");
   });
 
+  // OF-135: the daemon names the rig as advice should (its id when another rig shares the name); an older daemon sends no
+  // rig_handle and the name is used, as before (row above).
+  it("names the rig by the daemon's rig_handle in the missing-session advice", async () => {
+    const deps = makeDeps({
+      status: 200,
+      data: { ...STATUS, rig_handle: "01RIGIDFORSEATRIG000000000", session_status: "detached", session_reason: "session_missing" },
+    }, []);
+
+    const { logs } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
+    });
+
+    expect(logs.join("\n")).toContain("Reason: tmux session missing; resume with rig up --existing 01RIGIDFORSEATRIG000000000 (refused while any seat is live), or start only this seat fresh with rig seat launch 'dev.impl@01RIGIDFORSEATRIG000000000'");
+  });
+
   it("returns a nonzero status for an unknown seat", async () => {
     const deps = makeDeps({
       status: 404,

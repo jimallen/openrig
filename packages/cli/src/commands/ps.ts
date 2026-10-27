@@ -12,6 +12,7 @@ import { runCrossHostCommand, type RunCrossHostCommandOpts } from "../cross-host
 import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-helpers.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import type { AggregatedPayload, PerHostStatus } from "../lib/hosts/fanout-contract.js";
+import { rigAdviceHandle } from "../rig-handle.js";
 
 interface PsEntry {
   rigId: string;
@@ -610,9 +611,10 @@ function hasCurrentUsageLimit(node: NodeEntry): boolean {
     && activity.stale === false && !activity.fallback;
 }
 
-function missingSessionGuidance(node: NodeEntry): string | null {
+function missingSessionGuidance(node: NodeEntry, rigs: readonly PsEntry[]): string | null {
   return node.identityVerdict?.reason === "session_missing"
-    ? missingSessionAdvice(node.logicalId, node.rigName)
+    // OF-135: the rig by name while that reaches it alone, else by id, over the unarchived rigs ps listed.
+    ? missingSessionAdvice(node.logicalId, rigAdviceHandle(node.rigId, node.rigName, rigs.filter((r) => !r.isArchived && r.archivedAt == null).map((r) => ({ id: r.rigId, name: r.name }))))
     : null;
 }
 
@@ -1235,7 +1237,7 @@ async function handleNodes(
     console.log(padCompactNodeRow("RIG", "SESSION", "LIFECYCLE", "ACTIVITY", "WORK", "REASON"));
     for (const n of humanList as NodeEntry[]) {
       const attn = needsAttention(n);
-      const reason = missingSessionGuidance(n) ?? (attn || hasCurrentUsageLimit(n)
+      const reason = missingSessionGuidance(n, rigRes.data ?? []) ?? (attn || hasCurrentUsageLimit(n)
         ? (n.latestError ? truncate(n.latestError, 40) : n.agentActivity?.reason ?? "—")
         : "—");
       console.log(padCompactNodeRow(
@@ -1271,7 +1273,7 @@ async function handleNodes(
         formatActivity(n),
         formatContextUsage(n.contextUsage),
         n.restoreOutcome,
-        missingSessionGuidance(n) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—"),
+        missingSessionGuidance(n, rigRes.data ?? []) ?? (n.latestError ? truncate(n.latestError, 30) : n.heldReason ? `held: ${truncate(n.heldReason, 25)}` : "—"),
       ));
     }
   }

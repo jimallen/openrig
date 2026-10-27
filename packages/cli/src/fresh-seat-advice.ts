@@ -14,8 +14,9 @@ export function parseStartupFromArg(value: string): StartupFromArg | null {
 
 export const STARTUP_FROM_HELP = "spec, stored or snapshot:<snapshot-id>";
 
-export function freshSeatLaunchCommand(logicalId: string, rigName: string, startupFrom?: StartupFromArg): string {
-  const seat = `'${`${logicalId}@${rigName}`.replace(/'/g, `'"'"'`)}'`;
+/** `rig` is the rig as advice names it: its name, or its id when the name is shared (rig-handle.ts rigAdviceHandle, OF-135). */
+export function freshSeatLaunchCommand(logicalId: string, rig: string, startupFrom?: StartupFromArg): string {
+  const seat = `'${`${logicalId}@${rig}`.replace(/'/g, `'"'"'`)}'`;
   // OF-32: under `rig up --existing --startup-from stored`, the seats it could not start are told the same escape.
   return `rig seat launch ${seat} --fresh${startupFrom && startupFrom !== "spec" ? ` --startup-from ${startupFrom}` : ""} --reason "<why>"`;
 }
@@ -23,7 +24,7 @@ export function freshSeatLaunchCommand(logicalId: string, rigName: string, start
 /** OF-53: the per-seat hint for a seat whose tmux session is missing. Both ways back are real commands: restore
  *  resumes the conversation (and is refused while any seat of the rig is live); `rig seat launch --fresh` starts this
  *  seat alone on a new conversation. */
-export function missingSessionAdvice(logicalId: string, rigName: string): string {
-  const rig = /^[A-Za-z0-9._@:-]+$/.test(rigName) ? rigName : `'${rigName.replace(/'/g, `'"'"'`)}'`;
-  return `tmux session missing; resume with rig up --existing ${rig} (refused while any seat is live), or start only this seat fresh with ${freshSeatLaunchCommand(logicalId, rigName)}`;
+export function missingSessionAdvice(logicalId: string, rigHandle: string): string {
+  const rig = /^[A-Za-z0-9._@:-]+$/.test(rigHandle) ? rigHandle : `'${rigHandle.replace(/'/g, `'"'"'`)}'`;
+  return `tmux session missing; resume with rig up --existing ${rig} (refused while any seat is live), or start only this seat fresh with ${freshSeatLaunchCommand(logicalId, rigHandle)}`;
 }

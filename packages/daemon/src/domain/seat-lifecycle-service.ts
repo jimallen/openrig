@@ -3,6 +3,7 @@ import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./co
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
+import { rigAdviceHandle, seatRefRigs } from "./rig-ref.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter, SessionProbe } from "../adapters/tmux.js";
@@ -989,11 +990,11 @@ export class SeatLifecycleService {
         rigId: seat.rigId, nodeId: node.id, logicalId: seat.logicalId, runtime: node.runtime ?? null, cwd: node.cwd ?? ".",
         sessionName: canonicalSessionName, startupFrom,
         storedEscapeGuidance: storedEscape === "command"
-          ? `start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`
+          ? `start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, rigAdviceHandle(this.rigRepo, seat.rigId, seat.rigName), "stored")}.`
           : "run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.",
         refusalGuidance: storedEscape === "command"
           // OF-38: a surface that cannot pass `startupFrom` (the TUI's explicit-fresh action) is told the CLI command.
-          ? `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`
+          ? `Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: ${freshSeatLaunchCommand(seat.logicalId, rigAdviceHandle(this.rigRepo, seat.rigId, seat.rigName), "stored")}.`
           : "Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.",
       },
     );
@@ -1306,7 +1307,7 @@ export class SeatLifecycleService {
       return {
         ok: false, code: "launch_failed",
         message: `${skills.message} No session was started.${stoppedOccupant ? " This launch had already stopped the seat's previous session, so the seat is not running now." : ""}`,
-        guidance: `To start it on the startup files saved at its last successful launch, which leaves its skills as they are, run: ${freshSeatLaunchCommand(seat.logicalId, seat.rigName, "stored")}.`,
+        guidance: `To start it on the startup files saved at its last successful launch, which leaves its skills as they are, run: ${freshSeatLaunchCommand(seat.logicalId, rigAdviceHandle(this.rigRepo, seat.rigId, seat.rigName), "stored")}.`,
       };
     }
 
@@ -1847,12 +1848,15 @@ export class SeatLifecycleService {
     const parsed = parseSessionName(ref);
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
-      const rigs = this.rigRepo.findUnarchivedRigsByName(parsed.rig);
-      return rigs.flatMap((rig) => getNodeInventory(this.db, rig.id).filter((entry) =>
-        entry.canonicalSessionName === ref
-        || deriveCanonicalFromEntry(entry) === ref
-        || entry.logicalId === localRef,
-      ));
+      // OF-135: a rig id first, then a name; an id ref is matched as `<member>@<that rig's name>` (see seatRefRigs).
+      return seatRefRigs(this.rigRepo, parsed.rig).flatMap((rig) => {
+        const asNamed = `${localRef}@${rig.name}`;
+        return getNodeInventory(this.db, rig.id).filter((entry) =>
+          entry.canonicalSessionName === asNamed
+          || deriveCanonicalFromEntry(entry) === asNamed
+          || entry.logicalId === localRef,
+        );
+      });
     }
     return this.rigRepo.listRigs().flatMap((rig) =>
       getNodeInventory(this.db, rig.id).filter((entry) =>

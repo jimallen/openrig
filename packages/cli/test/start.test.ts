@@ -295,6 +295,18 @@ describe("rig start (OPR.0.3.4.1)", () => {
     expect(posted.body).toMatchObject({ fresh: true });
   });
 
+  // OF-135 (review-x2 F1): another rig shares the name (running, so not a candidate): the accepted seat and the printed
+  // advice both name the restored rig by its id, so the launch cannot reach the other rig's seat.
+  it("an accepted fresh start on a rig whose name another rig shares launches by the rig's id", async () => {
+    setupCandidateRig("tokenless-rig", { hasToken: false });
+    const summary = routes["/api/rigs/summary"]!;
+    routes["/api/rigs/summary"] = (req, body) => [...(summary(req, body) as unknown[]), { id: "rig-2", name: "tokenless-rig", nodeCount: 1, lifecycleState: "running" }];
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "start", "--last"]);
+    });
+    expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/dev.impl%40rig-1"]);
+  });
+
   // The accepted seat's rig has a live sibling (dev.qa resumed), where a second whole-rig restore is refused with 409.
   it("an accepted fresh start launches that seat on its own, with the sibling live", async () => {
     setupCandidateRig("tokenless-rig", { hasToken: false });
