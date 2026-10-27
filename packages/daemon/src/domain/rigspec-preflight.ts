@@ -186,6 +186,9 @@ export interface PreflightSpecContext {
   /** Seat directories the launch itself creates before any seat starts (a project rig's workspace folders). A plan
    *  runs before that step, so these alone may be missing at preflight time. */
   cwdsCreatedByLaunch?: readonly string[];
+  /** False when the seat's folder is its recorded one (a fresh re-read), not the spec's: the refusal then does not
+   *  offer changing the spec's cwd. Absent = first launch, where the spec decides. */
+  specDecidesSeatCwd?: boolean;
   /** The Codex MCP trust rule's file-system reads; production never passes it. */
   mcpTrustIo?: import("./codex-mcp-servers.js").PathJudgeIo;
   rigRoot: string;
@@ -251,7 +254,7 @@ export function permissionPolicyDiscoveryWarnings(
 /** A seat's cwd must be an existing directory, except one the launch is about to create (see cwdsCreatedByLaunch). */
 function seatCwdPresenceError(resolvedCwd: string, ctx: PreflightSpecContext): string | null {
   const willBeCreated = (ctx.cwdsCreatedByLaunch ?? []).some((dir) => nodePath.resolve(dir) === nodePath.resolve(resolvedCwd));
-  return willBeCreated ? null : getSeatCwdPresenceError(resolvedCwd);
+  return willBeCreated ? null : getSeatCwdPresenceError(resolvedCwd, undefined, ctx.specDecidesSeatCwd !== false);
 }
 
 /**

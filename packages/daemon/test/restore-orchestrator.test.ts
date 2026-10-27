@@ -38,6 +38,9 @@ import { buildRestorePlanPreview } from "../src/domain/restore-plan-preview.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, observeOmpApprovalMode, type AppliedLaunchObservation } from "../src/domain/permission-drift.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
+// OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
+const WORK_DIR = existingRigRoot("work");
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -557,7 +560,7 @@ describe("RestoreOrchestrator", () => {
 
     for (const [index, testCase] of cases.entries()) {
       const rig = rigRepo.createRig(`resume-invalidation-${index}`);
-      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: testCase.runtime, cwd: "/work" });
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: testCase.runtime, cwd: WORK_DIR });
       const sessionName = `r${String(index + 1).padStart(2, "0")}-resume`;
       sessionRegistry.registerSession(node.id, sessionName);
       const generation = sessionRegistry.currentOccupantTenure(node.id)!.generationUuid;
@@ -610,7 +613,7 @@ describe("RestoreOrchestrator", () => {
     });
 
     const rig = rigRepo.createRig("effort-forward-test");
-    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: "/work" });
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", cwd: WORK_DIR });
 
     // Claude forwards effort
     await (orch as any).attemptResume(
@@ -672,8 +675,8 @@ describe("RestoreOrchestrator", () => {
       codex: { canResume: vi.fn(() => true), resume: codexResume } as unknown as CodexResumeAdapter,
     });
     const rig = rigRepo.createRig("mcp-restore-test");
-    const on = rigRepo.addNode(rig.id, "verify.ops", { runtime: "codex", cwd: "/work" });
-    const off = rigRepo.addNode(rig.id, "verify.qa", { runtime: "codex", cwd: "/work" });
+    const on = rigRepo.addNode(rig.id, "verify.ops", { runtime: "codex", cwd: WORK_DIR });
+    const off = rigRepo.addNode(rig.id, "verify.qa", { runtime: "codex", cwd: WORK_DIR });
     const declaration = { command: "/opt/mcpls", args: ["--x"], enabled_tools: ["get_hover"] };
     db.prepare("UPDATE nodes SET codex_mcp_servers = ? WHERE id = ?")
       .run(JSON.stringify({ lsp: { declaration, specDir: "/spec", declaredIn: "/spec/rig.yaml", switchedOnAt: "t", commandPath: "/opt/mcpls", commandSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", argFiles: [] } }), on.id);
@@ -2129,7 +2132,7 @@ describe("RestoreOrchestrator", () => {
       const token = "00000000-0000-4000-8000-000000000086";
       const rig = rigRepo.createRig("headerless");
       db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-headerless", rig.id, "Dev");
-      const node = rigRepo.addNode(rig.id, "dev.owner", { runtime: "claude-code", podId: "pod-headerless", cwd: "/fixture" });
+      const node = rigRepo.addNode(rig.id, "dev.owner", { runtime: "claude-code", podId: "pod-headerless", cwd: WORK_DIR });
       rigRepo.setRigPermissionPolicy(rig.id, "builtin:yolo");
       rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", resolvedTarget: null, declaringDir: null, launchPosture: "full_bypass" });
       const old = sessionRegistry.registerSession(node.id, "dev-owner@headerless");

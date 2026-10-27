@@ -23,6 +23,9 @@ import type { NativeProcessLister, NativeProcessRow } from "../src/domain/native
 
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { CLAUDE_BYPASS_CONSENT } from "./fixtures/claude-bypass-consent.js";
+import { existingRigRoot } from "./helpers/existing-rig-root.js";
+// OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
+const SEAT_DIR = existingRigRoot("project");
 
 function startupEntry(category: "skill" | "guidance", id: string) {
   return {
@@ -282,7 +285,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     const rig = rigRepo.createRig("fresh-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", {
       runtime,
-      cwd: "/project",
+      cwd: SEAT_DIR,
       model: opts?.model ?? "claude-current",
       ...(opts?.remoteControl ? { remoteControl: true } : {}),
       ...(opts?.pda ? { pda: opts.pda } : {}),
@@ -314,7 +317,7 @@ describe("SeatLifecycleService.launchFresh", () => {
 
   it.each([false, true])("previews fresh launch without changing target, siblings or startup state (live=%s)", async live => {
     const seat = seedSeat({ clean: !live });
-    const sibling = rigRepo.addNode(seat.rig.id, "dev.qa", { runtime: "claude-code", cwd: "/sibling" });
+    const sibling = rigRepo.addNode(seat.rig.id, "dev.qa", { runtime: "claude-code", cwd: SEAT_DIR });
     const siblingSession = sessionRegistry.registerSession(sibling.id, "dev-qa@fresh-rig");
     sessionRegistry.updateBinding(sibling.id, { tmuxSession: siblingSession.sessionName, tmuxPane: "%qa" });
     alive.add(siblingSession.sessionName);
@@ -514,7 +517,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(killed).toEqual([]);
 
     const adoptedRig = rigRepo.createRig("adopted-rig");
-    const adoptedNode = rigRepo.addNode(adoptedRig.id, "dev.adopted", { runtime: "claude-code", cwd: "/project" });
+    const adoptedNode = rigRepo.addNode(adoptedRig.id, "dev.adopted", { runtime: "claude-code", cwd: SEAT_DIR });
     const adoptedName = "dev-adopted@adopted-rig";
     const adopted = sessionRegistry.registerClaimedSession(adoptedNode.id, adoptedName);
     sessionRegistry.updateStatus(adopted.id, "running");
@@ -538,7 +541,7 @@ describe("SeatLifecycleService.launchFresh", () => {
     alive.add(seat.sessionName);
     livePanes.set(seat.sessionName, "%old");
     alive.add(historical.sessionName);
-    const otherNode = rigRepo.addNode(rigRepo.createRig("other-rig").id, "dev.other", { runtime: "claude-code", cwd: "/project" });
+    const otherNode = rigRepo.addNode(rigRepo.createRig("other-rig").id, "dev.other", { runtime: "claude-code", cwd: SEAT_DIR });
     sessionRegistry.updateStatus(sessionRegistry.registerSession(otherNode.id, historical.sessionName).id, "running");
 
     const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "history gate" });
@@ -626,7 +629,7 @@ describe("SeatLifecycleService.launchFresh", () => {
   it.each(["probe failure", "collision"])("keeps a refused replacement degraded after stopping its occupant: %s", async (mode) => {
     const seat = seedSeat();
     sessionRegistry.updateStartupStatus(seat.session!.id, "ready");
-    const sibling = rigRepo.addNode(seat.rig.id, "dev.qa", { runtime: "claude-code", cwd: "/sibling" });
+    const sibling = rigRepo.addNode(seat.rig.id, "dev.qa", { runtime: "claude-code", cwd: SEAT_DIR });
     const siblingSession = sessionRegistry.registerSession(sibling.id, "dev-qa@fresh-rig");
     sessionRegistry.updateStatus(siblingSession.id, "running");
     sessionRegistry.updateStartupStatus(siblingSession.id, "ready");
@@ -815,7 +818,7 @@ describe("SeatLifecycleService.launchFresh", () => {
   it("stops exactly the managed pod-aware occupant, launches fresh, and preserves sibling/work state", async () => {
     const seat = seedSeat();
     const retiringGeneration = sessionRegistry.currentOccupantTenure(seat.node.id)!.generationUuid;
-    const sibling = rigRepo.addNode(seat.rig.id, "dev.qa", { runtime: "claude-code", cwd: "/project" });
+    const sibling = rigRepo.addNode(seat.rig.id, "dev.qa", { runtime: "claude-code", cwd: SEAT_DIR });
     const siblingName = "dev-qa@fresh-rig";
     const siblingSession = sessionRegistry.registerSession(sibling.id, siblingName);
     sessionRegistry.updateStatus(siblingSession.id, "running");

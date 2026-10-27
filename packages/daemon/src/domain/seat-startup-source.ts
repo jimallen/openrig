@@ -56,7 +56,8 @@ export type SeatStartupRead =
       plan: ProjectionPlan;
       resolvedStartupFiles: ResolvedStartupFile[];
       startupActions: StartupAction[];
-      resolvedSpec: { name: string; version: string; hash: string };
+      /** Absent for a terminal seat: it has no agent spec. */
+      resolvedSpec?: { name: string; version: string; hash: string };
       warnings: string[];
       /** OF-32 N6: the re-read's S04 skill loadout, already checked (nothing written); null when nothing reconciles. */
       skills: SeatSkillProjection | null;
@@ -230,7 +231,7 @@ export async function resolveFreshSeatStartup(
         runtime: read.plan.runtime,
         hash: createHash("sha256").update(JSON.stringify([row.projectionEntriesJson, row.resolvedFilesJson, row.startupActionsJson, read.plan.runtime])).digest("hex"),
         source: { kind: "spec", specSource: read.specSource, specPath: read.specPath },
-        resolvedSpec: read.resolvedSpec,
+        ...(read.resolvedSpec ? { resolvedSpec: read.resolvedSpec } : {}),
         sourceWarnings: [...read.warnings],
         ...(read.skills ? { skills: read.skills } : {}),
       };

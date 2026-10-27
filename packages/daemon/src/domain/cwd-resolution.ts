@@ -80,18 +80,19 @@ export function getOpenRigInstallCwdError(
 export function getSeatCwdPresenceError(
   resolvedCwd: string,
   stat: (path: string) => { isDirectory(): boolean } = statSync,
+  /** True for a first launch (`rig up`), where the spec's cwd decides the folder, so editing the spec's cwd is a fix.
+   *  False for a launch that judges a seat's recorded folder, which no command changes (OF-81: a flag, not text surgery). */
+  specDecidesCwd = true,
 ): string | null {
   const fault = getSeatCwdFault(resolvedCwd, stat);
   if (!fault) return null;
   return fault.kind === "missing"
-    ? `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory${SEAT_CWD_CHANGE_HINT} (preflight does not create it)`
+    ? `cwd '${resolvedCwd}' does not exist; a seat launched there would silently start in $HOME. Create the directory${specDecidesCwd ? CHANGE_SPEC_CWD_HINT : ""} (preflight does not create it)`
     : `cwd '${resolvedCwd}' ${fault.what}`;
 }
 
-/** The part of the missing-folder refusal that offers editing the spec's cwd. True for a first launch (`rig up`),
- *  where the spec's cwd decides the folder; NOT for a fresh launch, which judges the seat's recorded folder that no
- *  command changes, so the fresh-launch refusal removes it (rigspec-instantiator.ts). */
-export const SEAT_CWD_CHANGE_HINT = " or change the seat's cwd";
+/** The part of the missing-folder refusal that offers editing the spec's cwd; see getSeatCwdPresenceError `specDecidesCwd`. */
+const CHANGE_SPEC_CWD_HINT = " or change the seat's cwd";
 
 /** What is wrong with a seat's resolved cwd, as a kind a caller can branch on. `what` completes "cwd '<path>' ...".
  *  `missing` means nothing is at the path, so creating the folder fixes it. A path that cannot be created where it
@@ -124,4 +125,11 @@ export function getSeatCwdFault(
 /** What the person does about a fault in a seat's recorded folder: create it only when it is absent, otherwise fix what is wrong. */
 export function seatCwdFixAdvice(path: string, fault: SeatCwdFault): string {
   return fault.kind === "missing" ? `Create the folder ${path}` : `Fix ${path}: it ${fault.what}`;
+}
+
+/** The refusal for a launch whose seat folder is unusable (OF-69), in one wording for the launcher, the fresh-launch
+ *  check, the restore plan and restore-check. Says what is wrong and what fixes it; nothing is created. */
+export function seatCwdUnusableMessage(label: string, cwd: string, fault: SeatCwdFault): string {
+  const what = fault.kind === "missing" ? "does not exist, and a seat launched there would silently start in $HOME" : fault.what;
+  return `${label} was not started: its cwd '${cwd}' ${what}. ${seatCwdFixAdvice(cwd, fault)}, then launch it again.`;
 }

@@ -123,6 +123,7 @@ export interface SeatRefusal {
     | "launch_unavailable"
     | "fresh_start_unsupported"
     | "launch_failed"
+    | "seat_cwd_unusable"
     | "startup_failed"
     | "attention_required"
     | "runtime_identity_unverified"
@@ -249,6 +250,7 @@ interface LatestSessionRow {
 
 /** OF-32: where a fresh launch took its startup policy from (defined with the source decision, seat-startup-source.ts). */
 import type { FreshStartupSource } from "./seat-startup-source.js";
+import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd-resolution.js";
 export type { FreshStartupSource };
 
 type ParsedStartupContext = FreshStartupContext;
@@ -953,6 +955,18 @@ export class SeatLifecycleService {
    * Reads only: callers receive no reservation or launch guarantee. Execution repeats
    * this resolution under its lifecycle lock rather than trusting an earlier plan.
    */
+  /** OF-69: the refusal for a seat whose recorded folder cannot be a launch directory; null when it can, or when none is recorded. */
+  private seatCwdRefusal(logicalId: string, cwd: string | null | undefined) {
+    const fault = cwd ? getSeatCwdFault(cwd) : null;
+    if (!cwd || !fault) return null;
+    return {
+      ok: false as const,
+      code: "seat_cwd_unusable" as const,
+      message: seatCwdUnusableMessage(logicalId, cwd, fault),
+      guidance: `${seatCwdFixAdvice(cwd, fault)}; nothing was stopped or changed.`,
+    };
+  }
+
   private async resolveFreshLaunch(resolved: ResolvedSeat, seatRef: string, startupFrom: StartupFrom = "spec", storedEscape: StoredEscape = "flag") {
     const seat = this.describe(resolved);
     const rig = this.rigRepo.getRig(seat.rigId);
@@ -1110,6 +1124,8 @@ export class SeatLifecycleService {
         blockers.push({ code: error.code, message: error.message, guidance: error.guidance });
       } else blockers.push({ code: error.code, message: `Fresh launch would be refused: ${error.code}.` });
     };
+    const cwdRefusal = this.seatCwdRefusal(seat.logicalId, node.cwd);
+    if (cwdRefusal) blockers.push({ code: cwdRefusal.code, message: cwdRefusal.message, guidance: cwdRefusal.guidance });
     const history = await this.validateFreshHistory(node.id, canonicalSessionName, input.seatRef);
     if (history) record(history);
     const probe = await this.probeLiveness(canonicalSessionName, "preview does not repair tmux");
@@ -1178,6 +1194,10 @@ export class SeatLifecycleService {
     const prepared = await this.resolveFreshLaunch(resolved, input.seatRef, input.startupFrom, input.storedEscape);
     if ("code" in prepared) return prepared;
     const { seat, node, adapter, startup, canonicalSessionName, nodeLauncher, startupOrchestrator } = prepared;
+    // OF-69: the seat's folder is judged BEFORE anything is stopped. The launcher refuses an unusable folder too, but by
+    // then the live occupant would already be gone, and the refusal would be for a launch that could never have happened.
+    const cwdRefusal = this.seatCwdRefusal(seat.logicalId, node.cwd);
+    if (cwdRefusal) return cwdRefusal;
     const withSourceWarnings = (warnings?: string[]) => {
       const all = [...startup.sourceWarnings, ...(warnings ?? [])];
       return all.length > 0 ? all : warnings;
@@ -1301,7 +1321,8 @@ export class SeatLifecycleService {
       occupantKind: "fresh",
     });
     if (!launch.ok) {
-      return { ok: false, code: "launch_failed", message: launch.message };
+      // The launcher's own refusal about the folder keeps its code (it was checked before the stop, so this is the backstop).
+      return { ok: false, code: launch.code === "seat_cwd_unusable" ? "seat_cwd_unusable" : "launch_failed", message: launch.message };
     }
     const observedGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
     const generation = observedGeneration && observedGeneration !== retiringGeneration

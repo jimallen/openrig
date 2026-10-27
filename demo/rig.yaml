@@ -70,12 +70,12 @@ pods:
         agent_ref: "builtin:terminal"
         profile: "none"
         runtime: terminal
-        cwd: packages/ui
+        cwd: .
         startup:
           files: []
           actions:
             - type: send_text
-              value: "npm run dev -- --host 127.0.0.1"
+              value: 'cd "$(git rev-parse --show-toplevel)/packages/ui" && npm run dev -- --host 127.0.0.1'
               phase: after_ready
               idempotent: true
               applies_on: [fresh_start]
