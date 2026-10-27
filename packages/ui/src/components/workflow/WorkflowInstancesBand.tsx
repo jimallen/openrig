@@ -68,7 +68,7 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
         to="/workflow/instance/$instanceId"
         params={{ instanceId: instance.instanceId }}
         data-testid={`workflow-instance-row-${instance.instanceId}`}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-variant/50"
+        className="flex w-full flex-wrap items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-variant/50"
       >
         <span className={cn("font-mono text-[11px]", chip.cls)} aria-hidden>
           {chip.glyph}
@@ -88,7 +88,7 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
           <span
             data-testid={`workflow-instance-damaged-${instance.instanceId}`}
             title={damagedExplanation(damaged)}
-            className="truncate max-w-64 font-mono text-[10px] text-red-700"
+            className="basis-full pl-5 font-mono text-[10px] text-red-700"
           >
             {damaged.join(", ")} unreadable · do not act on it
           </span>

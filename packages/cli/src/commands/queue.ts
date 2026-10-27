@@ -1323,6 +1323,11 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/whoami?${params.toString()}`);
         printResult(opts.json ?? false, res.data, res.status);
+        // OF-136: the recent active items are a listing; a damaged one is served flagged.
+        if (res.status < 400) {
+          const recent = (res.data as { asDestination?: { recent?: unknown } } | null)?.asDestination?.recent;
+          warnDamagedRows("queue item", damagedRowsIn(recent));
+        }
       });
     });
 

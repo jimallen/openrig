@@ -91,6 +91,14 @@ describe("OF-136 queue / inbox / outbox lists name a damaged row", () => {
     expect(stderr()).toContain("qitem-bad-1111");
   });
 
+  it("queue whoami names a damaged row among the caller's recent active items", async () => {
+    const body = { session: "me@r", asDestination: { pending: 2, inProgress: 0, blocked: 0, recent: [GOOD_Q, BAD_Q] }, asSource: { total: 0 } };
+    await run(["queue", "whoami", "--session", "me@r", "--json"], { "GET /api/queue/whoami*": { status: 200, data: body } });
+    expect(stdout()).toBe(JSON.stringify(body));
+    expect(stderr()).toContain("qitem-bad-1111: tags, chain_of_record");
+    expect(stderr()).not.toContain("qitem-good");
+  });
+
   it("a list with no damaged row prints nothing extra (negative control)", async () => {
     await run(["queue", "list", "--json"], { "GET /api/queue/list*": { status: 200, data: [GOOD_Q] } });
     expect(stderr()).toBe("");

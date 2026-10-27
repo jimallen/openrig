@@ -101,6 +101,15 @@ describe("OF-136 workflow instance rows", () => {
     expect(text).not.toContain("at build");
   });
 
+  it("when the daemon serves a flagged instance's deadline as 'unknown' the row still says DAMAGED, with its columns", async () => {
+    const flagged = { ...DAMAGED, deadline: { state: "unknown" as const, evidence: null } };
+    const view = inRouter(<ul><WorkflowInstanceRow instance={flagged} /></ul>);
+    const row = await waitFor(() => view.getByTestId(`workflow-instance-row-${DAMAGED.instanceId}`));
+    expect(row.textContent).toContain("DAMAGED");
+    expect(row.textContent).not.toContain("UNKNOWN");
+    expect(row.textContent).toContain("current_frontier_json unreadable");
+  });
+
   it("a readable instance renders as before (control: no damaged marker, its step shown)", async () => {
     const view = inRouter(<ul><WorkflowInstanceRow instance={instance({ currentStepId: "build" })} /></ul>);
     const row = await waitFor(() => view.getByTestId("workflow-instance-row-01WFINSTANCEAAAAAAAAAAAAAA"));

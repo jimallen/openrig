@@ -32,7 +32,7 @@ export interface WorkflowStepDeadlineEvidence {
 }
 
 export interface WorkflowDeadlineVerdict {
-  state: "healthy" | "overdue-claimed" | "overdue-unclaimed";
+  state: "healthy" | "overdue-claimed" | "overdue-unclaimed" | "unknown"; // "unknown": a flagged (unreadable) instance, once the daemon serves it so
   evidence: WorkflowStepDeadlineEvidence | null;
 }
 
