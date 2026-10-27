@@ -1,6 +1,6 @@
 import type { SnapshotData, RestoreValidationBlocker, RigServicesRecord, NodeStartupSnapshot } from "./types.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
-import { resolveActiveSnapshotSession } from "./active-occupant.js";
+import { decideSeatLaunchOutcome } from "./restore-seat-gates.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 
 /** OF-32/OF-36: what a seat this restore starts fresh replays, when that is not simply the snapshot's copy
@@ -29,6 +29,11 @@ export function validatePreRestore(
      *  older snapshot copy, checked here exactly as the snapshot's copy was. `undefined` (or the option omitted): the
      *  snapshot's copy, as before OF-32 stage 3. */
     freshSeatStartup?: (node: { id: string; logicalId: string }) => FreshSeatStartupOverride;
+    /** OF-57: what the seat gates (restore-seat-gates.ts) read that is not in the snapshot: the live seat found by
+     *  logical id (null: removed), its continuity status and the rig's name. Absent: the gates that can be decided
+     *  from the snapshot alone (occupant ambiguity, an earlier occupant's token, a resumable seat with no token) are
+     *  applied, and the live ones (removed seat, runtime mismatch, `restoring`) are not. */
+    seatGateInputs?: (node: { id: string; logicalId: string }) => { live: { runtime: string | null } | null; continuityStatus: string | null; rigName: string };
   },
 ): { blockers: RestoreValidationBlocker[]; warnings: string[] } {
   const blockers: RestoreValidationBlocker[] = [];
@@ -119,29 +124,21 @@ export function validatePreRestore(
 
     const snapshotCtx = data.nodeStartupContext?.[node.id] ?? null;
 
-    // OPR.0.5.7.1 D6a — validate replay files IFF the node will CONSUME
-    // replay (desk static ruling on e42420990): none => fresh path,
-    // validate; ambiguity => the node stops loudly and consumes nothing,
-    // skip; explicit fresh or a non-resume policy => deliberate fresh,
-    // validate; resume_if_possible with no token => stop-and-ask, consumes
-    // nothing, skip; usable type + token => exact resume, skip; a token
-    // WITHOUT a usable resume type follows the current fresh path,
-    // validate.
-    const resolution = resolveActiveSnapshotSession(data, node.id);
-    const freshListed = opts.freshLogicalIds?.includes(node.logicalId) ?? false;
-    let consumesReplay: boolean;
-    if (resolution.kind === "ambiguous") {
-      consumesReplay = false;
-    } else if (resolution.kind === "none") {
-      consumesReplay = true;
-    } else {
-      const sess = resolution.session;
-      const policy = sess.restorePolicy ?? "resume_if_possible";
-      if (freshListed || policy !== "resume_if_possible") consumesReplay = true;
-      else if (!sess.resumeToken) consumesReplay = false;
-      else if (!!sess.resumeType && sess.resumeType !== "none") consumesReplay = false;
-      else consumesReplay = true;
-    }
+    // OF-57: whether the seat will CONSUME replay is what restore does with it, asked of the one function restore, the
+    // plan and `rig launch` ask (restore-seat-gates.ts decideSeatLaunchOutcome), not a second copy of its rules.
+    // A seat restore stops at a gate (removed, ambiguous occupant, runtime mismatch, an earlier occupant's token, a
+    // resumable seat with no token) or skips (`restoring` continuity) starts nothing and reads none of its startup
+    // files, so none are checked: a missing file of such a seat must not refuse the rig. A seat that resumes consumes
+    // nothing (its projection entries are still checked, as before). Only a seat started fresh replays its files.
+    const outcome = sessions
+      ? decideSeatLaunchOutcome({
+        data, snapshotNodeId: node.id, logicalId: node.logicalId,
+        freshRequested: opts.freshLogicalIds?.includes(node.logicalId) ?? false,
+        ...(opts.seatGateInputs?.(node) ?? { live: { runtime: snapshotCtx?.runtime ?? null }, continuityStatus: null, rigName: data.rig?.name ?? "" }),
+      })
+      : null;
+    if (outcome && (outcome.kind === "stop" || outcome.kind === "skip_restoring")) continue;
+    const consumesReplay = !outcome || outcome.kind === "fresh";
     const override = consumesReplay ? opts.freshSeatStartup?.(node) : undefined;
     if (override === "resolved_at_launch") continue;
     if (override && "refuse" in override) {

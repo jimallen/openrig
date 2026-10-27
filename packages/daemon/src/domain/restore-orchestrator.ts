@@ -350,6 +350,14 @@ export class RestoreOrchestrator {
         fsOps: opts?.fsOps,
         servicesRecord: this.rigRepo.getServicesRecord(rigId),
         freshLogicalIds: opts?.freshLogicalIds,
+        // OF-57: the live facts the seat gates read, found where restoreNodeUnisolated finds them (by logical id), so a
+        // seat restore will stop or skip is not checked for startup files restore will never read.
+        seatGateInputs: (node) => {
+          const liveRig = this.rigRepo.getRig(rigId);
+          const live = liveRig?.nodes.find((current) => current.logicalId === node.logicalId) ?? null;
+          const continuityRow = live?.podId ? readContinuityRow(this.db, live.podId, live.id) : undefined;
+          return { live, continuityStatus: continuityRow?.status ?? null, rigName: liveRig?.rig.name ?? snapshot.data.rig.name };
+        },
         // OF-32: a seat started fresh replays the snapshot's copy of its startup files only when nothing newer exists;
         // otherwise its source is decided and checked per seat before its launch (restoreNodeUnisolated), and the
         // snapshot's copy (which may name a release since deleted) cannot block the restore.
@@ -1014,7 +1022,7 @@ export class RestoreOrchestrator {
     // snapshot's own records (its sessions, checkpoints and startup context). `nodeId` is the LIVE seat's id, found by
     // logical id in this rig, and it keys every write to the database: a seat that was removed and grown back keeps its
     // logical id but has a new node id, and a write keyed by the old one violates the foreign key to `nodes`.
-    const node = entry.node;
+    let node = entry.node;
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
     // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier
     // occupant's token, `restoring` continuity, resumable seat with no token) are decided by restore-seat-gates.ts,
@@ -1038,6 +1046,11 @@ export class RestoreOrchestrator {
     }
     // A removed seat stopped above, so a live node is what proceeds.
     if (!liveNode) throw new Error(`restore gate let ${node.logicalId} through with no live node`);
+    // OF-25 (Jim, 2026-10-26, "Live settings win"): the seat is launched with the settings it has NOW, not the
+    // snapshot's copy. They differ for a seat removed and grown back (or edited) since the snapshot. Everything below,
+    // and postLaunchRestore through `entry`, reads these.
+    entry = { ...entry, node: withLiveSeatSettings(entry.node, liveNode) };
+    node = entry.node;
     const nodeId = liveNode.id;
     progress.nodeId = nodeId;
 
@@ -1993,7 +2006,11 @@ export class RestoreOrchestrator {
         // pda L2a: a pda token is labelled pda, never the Pi fallback. Equivalent today (proved in the L2a battery, M37):
         // launchOverride compares the label only with "claude-code"/"codex" and with a stored selection's runtime, which
         // read() admits only as codex or claude-code, so "pda" and "pi" give the same override or the same refusal.
-        : this.pdaResume?.canResume(resumeType, resumeToken) ? "pda" : "pi";
+        : this.pdaResume?.canResume(resumeType, resumeToken) ? "pda"
+        // OF-59: an OMP token is labelled omp, not the Pi fallback (it is resumed by ompResume below). Equivalent to "pi"
+        // today for the same reason as pda: launchOverride answers the same for any label that is neither claude-code
+        // nor codex. The label is named truthfully so the next rule that reads it does not mistake an OMP seat for Pi.
+        : this.ompResume?.canResume(resumeType, resumeToken) ? "omp" : "pi";
       const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime);
       kernelAuthority = override.kernelAuthority === true;
       teamPermissionDefault = override.teamPermissionDefault === true;
@@ -2322,4 +2339,18 @@ interface SeatRestoreProgress {
 
 interface PlanEntry {
   node: NodeWithBinding;
+}
+
+/** OF-25: the snapshot's node with the launch settings Jim ruled the LIVE seat decides (cwd, pod, model, Codex config
+ *  profile, remote control). The snapshot's id and everything else stay: `id` keys the snapshot's own records. */
+function withLiveSeatSettings(snapshotNode: NodeWithBinding, live: NodeWithBinding): NodeWithBinding {
+  const { remoteControl: _snapshotRemoteControl, ...rest } = snapshotNode;
+  return {
+    ...rest,
+    cwd: live.cwd,
+    podId: live.podId,
+    model: live.model,
+    codexConfigProfile: live.codexConfigProfile,
+    ...(live.remoteControl ? { remoteControl: true } : {}),
+  };
 }
