@@ -30,34 +30,41 @@ describe("restore, restore-check and --plan agree on a seat whose folder is gone
       .nodes.find((n) => n.logicalId === SEAT)!;
   }
 
-  it("a deleted folder: restore reports the seat failed with the launcher's code; the check is red and the plan does not forecast a start", async () => {
+  const wording = () => `its cwd '${h.workdir}' does not exist, and a seat launched there would silently start in $HOME. Create the folder ${h.workdir}, then launch it again.`;
+  async function goneFolder() {
     h = createRestoreHarness();
     const seat = await h.launchRig();
     const snapshotId = await h.down(seat.rigId);
     fs.rmSync(h.workdir, { recursive: true });
-    const wording = `its cwd '${h.workdir}' does not exist, and a seat launched there would silently start in $HOME. Create the folder ${h.workdir}, then launch it again.`;
+    return { seat, snapshotId };
+  }
 
-    // Ground truth: what restore does. Nothing is started, and the failure keeps the launcher's code.
+  it("a deleted folder: restore reports the seat failed with the launcher's code and starts nothing", async () => {
+    const { snapshotId } = await goneFolder();
     const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
     expect(out.ok).toBe(true);
     const node = out.ok ? out.result.nodes.find((n) => n.logicalId === SEAT) : undefined;
     expect(node).toMatchObject({ status: "failed", errorCode: "seat_cwd_unusable" });
-    expect(node?.error).toBe(`${SEAT} was not started: ${wording}`);
+    expect(node?.error).toBe(`${SEAT} was not started: ${wording()}`);
+  });
 
-    // The check: red, naming the folder and the fix, classed as a restore input (no `rig up --existing` is advised for it).
+  it("a deleted folder: restore-check is red, names the folder and the fix, and advises no rig up --existing", async () => {
+    await goneFolder();
     const { result, cwd } = await check();
     expect(cwd, "a cwd check is emitted").toBeDefined();
     expect(cwd!.status).toBe("red");
-    expect(cwd!.evidence).toBe(`${SEAT} was not started: ${wording}`);
+    expect(cwd!.evidence).toBe(`${SEAT} was not started: ${wording()}`);
     expect(cwd!.remediation).toContain(`Create the folder ${h.workdir}`);
     expect(result.verdict).toBe("not_restorable");
     expect(JSON.stringify(result.recovery.actions)).not.toContain("rig up --existing");
+  });
 
-    // The plan, from the snapshot and from live rows: the seat is not forecast to start.
+  it("a deleted folder: the plan, from the snapshot and from live rows, does not forecast a start", async () => {
+    const { seat, snapshotId } = await goneFolder();
     for (const from of [snapshotId, null]) {
       const forecast = plan(seat.rigId, from);
       expect({ from: from ? "snapshot" : "live", action: forecast.intendedAction, status: forecast.restoreStatus }).toEqual({ from: from ? "snapshot" : "live", action: "awaiting-decision", status: "failed" });
-      expect(forecast.reason).toBe(`${SEAT} was not started: ${wording}`);
+      expect(forecast.reason).toBe(`${SEAT} was not started: ${wording()}`);
     }
   });
 
