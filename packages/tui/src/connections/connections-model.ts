@@ -1,6 +1,7 @@
 import { DEFAULT_TIME_ZONE, displayTime } from "../time.js";
 import { fieldLine, listItem, sectionRule, wrapDetailLines, type ContentLine } from "../detail.js";
 import type { FleetSnapshot } from "../types.js";
+import { damagedPhrase } from "../damaged.js";
 
 /** Selected, value-safe daemon projection; raw config and connector errors never enter the TUI. */
 export interface ConnectionsRead {
@@ -113,7 +114,7 @@ export function connectionsLines(snap: FleetSnapshot, width: number, timeZone = 
       { text: `    ${human.excluded === true ? "excluded by outbound policy" : human.excluded === null ? "route eligibility unknown" : `route uses instance Slack · ${c.state}`} · class ${human.deliveryClass}, availability ${human.availability}` });
     for (const b of human.bindings) lines.push({ text: `    ${b.role}: ${b.kind} ${b.ref ?? "unreported"} · handle ${b.handle ?? "absent (outbound only)"}` });
     for (const r of requests.filter((r) => r.destinationSession === human.address && ["pending", "in-progress", "blocked"].includes(r.state)).slice(0, 3)) {
-      lines.push({ text: `    Open request in loaded window: ${r.qitemId} · from ${r.sourceSession ?? "source unreported"} · ${r.state}` },
+      lines.push({ text: `    Open request in loaded window: ${r.qitemId} · from ${r.sourceSession ?? "source unreported"} · ${r.state}${damagedPhrase(r) ? ` · ${damagedPhrase(r)}` : ""}` },
         { text: `      Inspect: rig queue show ${r.qitemId} --full` });
     }
     lines.push({ text: `    Inspect binding/readiness (contacts Slack): rig gateway human show ${human.entityId} --json` });

@@ -27,6 +27,8 @@ export interface CompactStatusRow {
   rawSourceRef?: string | null;
   qitemSummary?: string | null;
   qitemBody?: string | null;
+  /** OF-146: saved columns the daemon could not read on this qitem; present only on a damaged row. */
+  unreadable?: string[];
 }
 
 export interface MissionControlViewResult {

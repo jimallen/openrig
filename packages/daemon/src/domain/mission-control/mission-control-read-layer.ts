@@ -73,6 +73,9 @@ export interface CompactStatusRow {
   /** Human-readable qitem context for phone decisions. */
   qitemSummary?: string | null;
   qitemBody?: string | null;
+  /** OF-146: the saved columns the daemon could not read on the qitem behind this row (OF-117). Present only on a damaged
+   *  row, where the blank tags/questions are unknown, not empty. A surface shows the row as damaged and offers no action. */
+  unreadable?: string[];
 }
 
 export interface MissionControlReadResult {
@@ -296,6 +299,7 @@ function qitemToRow(
     rawSourceRef: q.sourceSession,
     qitemSummary: summarizeBody(q.body),
     qitemBody: q.body,
+    ...(q.unreadable && q.unreadable.length > 0 ? { unreadable: [...q.unreadable] } : {}),
   };
 }
 
