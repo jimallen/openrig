@@ -221,6 +221,7 @@ describe("restore-check and restore agree about a seat's own saved startup row (
   it("a seat restore skips ('restoring' continuity) is not checked for the startup files restore will not read", async () => {
     h = createRestoreHarness();
     const seat = await h.launchRig({ record: true });
+    policyFresh(seat.nodeId); // the seat starts fresh (so it would replay its startup files) unless a gate skips it
     const snapshotId = await h.down(seat.rigId);
     const podId = (h.db.prepare("SELECT pod_id AS p FROM nodes WHERE id = ?").get(seat.nodeId) as { p: string }).p;
     h.db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, 'restoring')").run(podId, seat.nodeId);
@@ -255,6 +256,7 @@ describe("restore-check and restore agree about a seat's own saved startup row (
   it("the --fresh remedy offers leaving out a seat that was removed since the snapshot, whatever its snapshot copy names", async () => {
     h = createRestoreHarness();
     const seat = await h.launchRig({ record: true });
+    policyFresh(seat.nodeId); // the seat starts fresh, so its startup files would be read if it were launched
     const snapshotId = await h.down(seat.rigId);
     removeStartupFile();
     const snapshot = h.snapshotRepo.getSnapshot(snapshotId)!.data;
