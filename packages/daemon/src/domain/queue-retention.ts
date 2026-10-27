@@ -246,16 +246,22 @@ export function pruneWatchdogHistory(
 
   const result = db
     .prepare(
+      // "Rows strictly newer in the same job" is rank() - 1 over the job, newest first: ties share
+      // a rank, so a tie at the keep boundary is kept, exactly as the strict `>` count kept it.
+      // One ordered pass over the index per batch. The correlated count this replaces recounted
+      // every newer row for each candidate, and with a long retention-off backlog the planner
+      // scans oldest-first, so the first sweep after it took quadratic time (22 s for 50,000 rows).
+      // The RSI D15 source (rsi/retention-growth-source.ts) counts with the same predicate.
       `DELETE FROM watchdog_history
         WHERE history_id IN (
-          SELECT wh.history_id
-            FROM watchdog_history wh
-           WHERE wh.evaluated_at < ?
-             AND (
-               SELECT COUNT(*) FROM watchdog_history w2
-                WHERE w2.job_id = wh.job_id
-                  AND w2.evaluated_at > wh.evaluated_at
-             ) >= ?
+          SELECT history_id
+            FROM (
+              SELECT history_id, evaluated_at,
+                     rank() OVER (PARTITION BY job_id ORDER BY evaluated_at DESC) - 1 AS newer
+                FROM watchdog_history
+            )
+           WHERE evaluated_at < ?
+             AND newer >= ?
            LIMIT ?
         )`,
     )
