@@ -1186,12 +1186,20 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
  *  reused pid is replaced. The file appears whole or not at all (written aside, then hard-linked into place, which fails
  *  when the name exists), so a second runner never reads a half-written lock as "no lock".
  *  Otherwise best effort: a seat dir that cannot be written has bigger problems, and the launch then simply does not wait.
+ *  A hard link that fails for any reason but "the name exists" (a filesystem without hard links: some FUSE, overlay or network
+ *  mounts) falls back to the old atomic replace, so the lock is still PRESENT for the launch wait and the claim's release.
+ *  THAT FALLBACK LOSES EXCLUSIVITY (it overwrites whatever is there), and says so on the pane.
  *  The returned release removes the file only while it is still this pid's.
  *  Not closed: two runners that both find the SAME stale lock in the same instant (each removes it, one then sees the
  *  other's fresh lock, or both write, last link wins). The daemon serialises its own launches per seat, so this needs two
  *  hand-started runners in one millisecond. */
 export function acquireRunnerLock(
-  lockPath: string, launchId: string, opts: { sidecarPath: string; nowMs?: () => number; pidAlive?: (pid: number) => boolean },
+  lockPath: string, launchId: string,
+  opts: {
+    sidecarPath: string; nowMs?: () => number; pidAlive?: (pid: number) => boolean;
+    /** Test seams: the hard link, and a hook between judging a lock stale and removing it (a racer's moment). */
+    linkFile?: (from: string, to: string) => void; afterJudgedStale?: () => void;
+  },
 ): { ok: true; release: () => void } | { ok: false; heldBy: PdaRunnerLock } {
   const lock: PdaRunnerLock = { pid: process.pid, launchId, at: new Date().toISOString() };
   const release = (): void => {
@@ -1204,8 +1212,14 @@ export function acquireRunnerLock(
   try {
     fs.writeFileSync(aside, JSON.stringify(lock), { mode: 0o600 });
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { fs.linkSync(aside, lockPath); return { ok: true, release }; } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") return { ok: true, release }; // cannot lock here: do not block the seat
+      try { (opts.linkFile ?? fs.linkSync)(aside, lockPath); return { ok: true, release }; } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") {
+          // No hard links here: write the lock the way it was written before OF-110, NOT exclusive, but present.
+          console.error(`[pda-runner] NOTE runner.lock: a hard link failed (${code ?? "unknown"}); the lock is written without exclusivity, so a second runner of this seat will not be refused`);
+          try { nodeRunnerFs.writeAtomic(lockPath, JSON.stringify(lock)); } catch { /* cannot lock here: do not block the seat */ }
+          return { ok: true, release };
+        }
       }
       let raw: string;
       try { raw = fs.readFileSync(lockPath, "utf8"); } catch { continue; } // vanished since the link: take it
@@ -1216,6 +1230,7 @@ export function acquireRunnerLock(
         if (pdaRunnerLockLive(held, sidecar, (opts.nowMs ?? Date.now)(), opts.pidAlive ?? processPidAlive)) return { ok: false, heldBy: held };
       }
       // Stale, garbage or ours: remove it only if it is still what was judged, then take it.
+      opts.afterJudgedStale?.();
       try { if (fs.readFileSync(lockPath, "utf8") === raw) fs.unlinkSync(lockPath); } catch { /* gone already */ }
     }
     return { ok: true, release };

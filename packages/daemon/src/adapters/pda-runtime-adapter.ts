@@ -100,6 +100,7 @@ const EXIT_TEXT: Record<number, string> = {
   3: "pda has no such agent (OpenRig never creates one). Create it in pda, or re-instantiate the seat on another agent; the runner has exited and nothing retries by itself, so once the agent exists, then run: rig up <rig> --existing",
   4: "pda's token file is not usable (check $OPENRIG_PDA_TOKEN_FILE or ~/.pi-durable/token: a regular file, yours, mode 0600)",
   5: "the seat's message log could not be opened (fix or move it while the seat is down)",
+  6: "another runner already holds this seat (its runner.lock names a live process); stop that one first",
   70: "the runner stopped on an internal error",
 };
 
@@ -212,14 +213,15 @@ export class PdaRuntimeAdapter implements RuntimeAdapter {
   /** OF-109: the pda agent the seat's LIVE runner is attached to, from the runner's own sidecar (the truth), or null when
    *  there is no live runner, it has begun to exit, or its sidecar is not that of the locked launch (nothing is known yet).
    *  The database can name another agent (an operator may set a resume token after the runner launched elsewhere), so the
-   *  holder checks ask this too. Never throws. */
-  runnerAttachedTo(sessionName: string): PdaBinding | null {
+   *  holder checks ask this too. Never throws. A lock that exists but cannot be read answers "unknown" (fail closed, as the
+   *  claim's probe does): the seat may be driving any agent. */
+  runnerAttachedTo(sessionName: string): PdaBinding | "unknown" | null {
     try {
       const lock = this.liveRunnerLock(sessionName);
       const state = lock ? this.readState(sessionName) : null;
       if (!lock || !state || state.launchId !== lock.launchId || state.exited) return null;
       return { agent: state.agent, baseUrl: state.baseUrl };
-    } catch { return null; }
+    } catch { return "unknown"; }
   }
 
   private async launchOnto(sessionName: string, target: PdaBinding, progress: LaunchProgress): Promise<HarnessLaunchResult> {

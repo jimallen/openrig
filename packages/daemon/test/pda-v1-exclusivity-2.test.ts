@@ -20,7 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { makeRig, type Rig } from "./helpers/pda-runner-rig.js";
@@ -83,7 +83,7 @@ const sidecarOf = (over: Partial<PdaRunnerState> & { launchId: string; agent: st
   ready: false, updatedAt: NOW.toISOString(), aliveAt: NOW.toISOString(), baseUrl: PORT, connected: false, busy: false, outboxPending: 0, ...over,
 });
 
-type RunnerMode = "retrying" | "unauthorized" | "exits" | "silent" | "stale-sidecar" | "throws-after-lock" | "other-agent";
+type RunnerMode = "retrying" | "unauthorized" | "exits" | "silent" | "stale-sidecar" | "throws-after-lock" | "other-agent" | "exits-6";
 
 /** The adapter as startup.ts wires it, over a fake tmux whose typed command "starts" a runner of the given kind: it
  *  writes the lock and sidecar the real runner writes. `alive` holds the pids the host reports as live processes. */
@@ -105,6 +105,7 @@ function pda(mode: RunnerMode, opts?: { readLockThrows?: boolean; oldRunnerWaitM
         alive.add(RUNNER_PID);
         const state = mode === "other-agent" ? sidecarOf({ launchId, agent: "someone-else" })
           : mode === "unauthorized" ? sidecarOf({ launchId, agent, error: { code: "pda_unauthorized", at: NOW.toISOString() } })
+          : mode === "exits-6" ? sidecarOf({ launchId, agent, exited: { code: 6, at: NOW.toISOString() } })
           : mode === "exits" ? sidecarOf({ launchId, agent, exited: { code: 3, at: NOW.toISOString() } })
             : mode === "stale-sidecar" ? sidecarOf({ launchId, agent, aliveAt: new Date(NOW.getTime() - 10 * PDA_SIDECAR_ALIVE_WINDOW_MS).toISOString() })
               : sidecarOf({ launchId, agent, error: { code: "pda_unreachable", at: NOW.toISOString() } });
@@ -191,6 +192,13 @@ describe("OF-112: a failed launch whose runner may still be retrying keeps its c
     expect(await launch(p, a, X_TOKEN)).toMatchObject({ ok: false, error: expect.stringContaining("another binding than the one launched") });
     expect(alive.has(RUNNER_PID), "positive control: its runner is alive").toBe(true);
     expect(repo.findPdaLaunchConflicts(X, b.nodeId)).toEqual([]);
+  });
+
+  it("F4: a runner that exited with code 6 (another runner holds the seat) is said in words, not 'see the pane'", async () => {
+    const a = seat("rig-a", "dev.a", "dev-a@rig-a", { agent: "own-a", baseUrl: PORT });
+    const result = await launch(pda("exits-6"), a, X_TOKEN);
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("the runner stopped (code 6): another runner already holds this seat") });
+    expect((result as { error: string }).error).not.toContain("see the pane");
   });
 
   it("nothing typed (no token file) claims nothing: control, the agent is free at once", async () => {
@@ -303,6 +311,11 @@ describe("pdaRunnerLockLive: the one rule for a runner that is still there", () 
     expect(live(sidecarAt(new Date(NOW.getTime() - PDA_SIDECAR_ALIVE_WINDOW_MS)))).toBe(true); // the boundary is inclusive
     expect(live(sidecarAt(new Date(NOW.getTime() - 10 * PDA_SIDECAR_ALIVE_WINDOW_MS), "OTHER"))).toBe(true); // lock itself is fresh
   });
+  it("F2: a lock whose time cannot be read is not judged old: a live pid with no sidecar stays a runner (fail closed)", () => {
+    const garbage = { pid: 7, launchId: "L", at: "not a date" };
+    expect(pdaRunnerLockLive(garbage, null, NOW.getTime() + 1000 * PDA_SIDECAR_ALIVE_WINDOW_MS, () => true)).toBe(true);
+    expect(pdaRunnerLockLive(garbage, null, NOW.getTime(), () => false)).toBe(false); // positive control: a dead pid still ends it
+  });
   it("no sidecar of the lock's launch: the lock's own age decides", () => {
     expect(live(null, NOW.getTime() + PDA_SIDECAR_ALIVE_WINDOW_MS)).toBe(true);
     expect(live(null, NOW.getTime() + PDA_SIDECAR_ALIVE_WINDOW_MS + 1)).toBe(false);
@@ -348,6 +361,56 @@ describe("OF-110: the runner takes runner.lock exclusively", () => {
     fs.rmSync(f.sidecarPath);
     held(f.lockPath, { at: new Date(NOW.getTime() - PDA_SIDECAR_ALIVE_WINDOW_MS - 1).toISOString() });
     expect(take(true).ok).toBe(true); expect(mine()).toBe(true); // no sidecar of that launch, and the lock is older than the window
+  });
+
+  it("F2: a lock with an unreadable time held by a live pid refuses the take", () => {
+    const f = files();
+    const before = held(f.lockPath, { at: "not a date" });
+    const taken = acquireRunnerLock(f.lockPath, "mine", { ...f, nowMs: () => NOW.getTime() + 1000 * PDA_SIDECAR_ALIVE_WINDOW_MS, pidAlive: () => true });
+    expect(taken).toMatchObject({ ok: false, heldBy: { pid: 4242 } });
+    expect(fs.readFileSync(f.lockPath, "utf8")).toBe(before);
+  });
+
+  it("F2: the stale lock is removed only if it is still the lock that was judged (a racer's fresh lock in between survives)", () => {
+    const f = files();
+    held(f.lockPath); // pid 4242: judged stale below (dead)
+    const racer = JSON.stringify({ pid: 5555, launchId: "racer", at: NOW.toISOString() });
+    const taken = acquireRunnerLock(f.lockPath, "mine", {
+      ...f, nowMs: () => NOW.getTime(), pidAlive: (pid) => pid === 5555,
+      afterJudgedStale: () => { fs.writeFileSync(f.lockPath, racer); }, // another runner takes the lock between our judgement and our unlink
+    });
+    expect(taken).toMatchObject({ ok: false, heldBy: { pid: 5555, launchId: "racer" } });
+    expect(fs.readFileSync(f.lockPath, "utf8")).toBe(racer);
+  });
+
+  it("F3: a hard link that fails for a reason other than 'exists' (no hard links here) still leaves the lock PRESENT, says so, and is not exclusive", () => {
+    const f = files();
+    const note = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const noLinks = () => { throw Object.assign(new Error("not supported"), { code: "EPERM" }); };
+      const taken = acquireRunnerLock(f.lockPath, "mine", { ...f, linkFile: noLinks });
+      expect(taken.ok).toBe(true);
+      expect(parsePdaRunnerLock(fs.readFileSync(f.lockPath, "utf8"))).toMatchObject({ pid: process.pid, launchId: "mine" });
+      expect(note).toHaveBeenCalledWith(expect.stringContaining("without exclusivity"));
+      expect(String(note.mock.calls[0]![0])).toContain("EPERM");
+      // The documented loss: with no hard links a live foreign lock is overwritten, not refused.
+      held(f.lockPath);
+      expect(acquireRunnerLock(f.lockPath, "second", { ...f, linkFile: noLinks, nowMs: () => NOW.getTime(), pidAlive: () => true }).ok).toBe(true);
+      expect(parsePdaRunnerLock(fs.readFileSync(f.lockPath, "utf8"))?.launchId).toBe("second");
+      expect(fs.readdirSync(path.dirname(f.lockPath)).filter((name) => name.includes(".tmp"))).toEqual([]);
+    } finally { note.mockRestore(); }
+  });
+
+  it("F3: an error that DOES say 'exists' is judged as a held lock, not mistaken for a missing capability", () => {
+    const f = files();
+    held(f.lockPath);
+    const note = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const exists = () => { throw Object.assign(new Error("exists"), { code: "EEXIST" }); };
+      const taken = acquireRunnerLock(f.lockPath, "mine", { ...f, linkFile: exists, nowMs: () => NOW.getTime(), pidAlive: () => true });
+      expect(taken).toMatchObject({ ok: false, heldBy: { pid: 4242 } });
+      expect(note).not.toHaveBeenCalled();
+    } finally { note.mockRestore(); }
   });
 
   it("a free lock is taken whole, with a release that removes only this pid's lock", () => {
@@ -459,6 +522,26 @@ describe("OF-109: the runner's own word about its agent, and the archived rig's 
     expect(repo.findPdaDrivers(X)).toHaveLength(1);
     alive.delete(RUNNER_PID);
     expect(repo.findPdaDrivers(X)).toEqual([]);
+  });
+
+  it("F1: a runner.lock that exists but cannot be read holds the agent for its seat (fail closed, as the claim's probe does), for ANY agent", () => {
+    const a = seat("rig-a", "dev.a", "dev-a@rig-a", { agent: "own-a", baseUrl: PORT });
+    const b = seat("rig-b", "dev.b", "dev-b@rig-b", { agent: "own-b", baseUrl: PORT });
+    const readable = pda("silent", { runnerProbe: true });
+    const paths = pdaSeatPaths(stateRoot, a.sessionName);
+    fs.mkdirSync(paths.seatRoot, { recursive: true });
+    fs.writeFileSync(paths.runnerLockPath, JSON.stringify({ pid: RUNNER_PID, launchId: "L", at: NOW.toISOString() }));
+    alive.add(RUNNER_PID);
+    expect(readable.adapter.runnerAttachedTo(a.sessionName), "positive control: readable, no sidecar of that launch = nothing known").toBeNull();
+    expect(repo.findPdaLaunchConflicts(X, b.nodeId)).toEqual([]);
+    const unreadable = pda("silent", { runnerProbe: true, readLockThrows: true });
+    expect(unreadable.adapter.runnerAttachedTo(a.sessionName)).toBe("unknown");
+    const refusal = repo.findPdaLaunchConflicts(X, b.nodeId).join(" ");
+    expect(refusal).toContain('seat "dev.a"');
+    expect(refusal).toContain("runner whose lock cannot be read");
+    expect(refusal).not.toContain("/agents/");
+    expect(repo.findPdaLaunchConflicts(Y, b.nodeId)).toHaveLength(1); // it may drive any agent
+    expect(repo.findPdaDrivers(X, { excludeNodeId: a.nodeId })).toEqual([]); // but never blocks the seat itself
   });
 
   it("a seat in an archived rig, or the asking seat itself, or a rig being replaced, is not held by its runner", async () => {

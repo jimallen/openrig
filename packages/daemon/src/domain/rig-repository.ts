@@ -219,6 +219,9 @@ export interface PdaBindingHolder {
 /** The ONE refusal text for "this pda agent is already taken", used by instantiation, unarchive and the rollback of a
  *  replacement, so the three never drift. Names the holding seat and rig; carries no token. */
 export function describePdaHolder(binding: PdaBinding, holder: PdaBindingHolder): string {
+  if (holder.unreadable !== undefined && holder.viaRunner) {
+    return `seat "${holder.logicalId}" in rig "${holder.rigName}" has a pda runner whose lock cannot be read (${holder.unreadable}), so it may already drive pda agent "${binding.agent}" at ${binding.baseUrl}; fix the permissions of that seat's pda state directory or stop that runner, then retry`;
+  }
   if (holder.unreadable !== undefined) {
     return `seat "${holder.logicalId}" in rig "${holder.rigName}" has an unreadable pda binding (${holder.unreadable}), so it may already drive pda agent "${binding.agent}" at ${binding.baseUrl}; repair its pda_binding or archive that rig, then retry`;
   }
@@ -650,8 +653,8 @@ export class RigRepository {
 
   /** OF-109: how the repository asks "which pda agent is this seat's live runner attached to?" (the runner's own sidecar;
    *  the adapter answers, the repository stays database-only). Set once at startup; absent in tests that do not need it. */
-  private pdaRunnerProbe: ((sessionName: string) => PdaBinding | null) | null = null;
-  setPdaRunnerProbe(probe: ((sessionName: string) => PdaBinding | null) | null): void {
+  private pdaRunnerProbe: ((sessionName: string) => PdaBinding | "unknown" | null) | null = null;
+  setPdaRunnerProbe(probe: ((sessionName: string) => PdaBinding | "unknown" | null) | null): void {
     this.pdaRunnerProbe = probe;
   }
 
@@ -671,9 +674,9 @@ export class RigRepository {
     for (const row of rows) {
       if (row.node_id === opts?.excludeNodeId || excludedRigs.has(row.rig_id)) continue;
       const attached = probe(row.tmux_session);
-      if (attached && attached.agent === binding.agent && attached.baseUrl === binding.baseUrl) {
-        holders.push({ nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id, viaRunner: true });
-      }
+      const base = { nodeId: row.node_id, rigId: row.rig_id, rigName: row.rig_name, logicalId: row.logical_id, viaRunner: true as const };
+      if (attached === "unknown") holders.push({ ...base, unreadable: "its runner.lock exists but cannot be read" }); // fail closed: it may drive any agent
+      else if (attached && attached.agent === binding.agent && attached.baseUrl === binding.baseUrl) holders.push(base);
     }
     return holders;
   }
