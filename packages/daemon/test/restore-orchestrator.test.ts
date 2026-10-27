@@ -5525,7 +5525,8 @@ describe("RestoreOrchestrator", () => {
       const { snapId, nodeId } = seedSeat({ logicalId: "worker-a", boundName: null });
       const older = sessionRegistry.registerSession(nodeId, "older@r99");
       sessionRegistry.markIntentionallyStopped(older.id);
-      db.prepare("UPDATE sessions SET created_at = '2001-01-01 00:00:00' WHERE id = ?").run(older.id);
+      // "Older" means registered earlier: the newest row is the one with the highest id.
+      db.prepare("UPDATE sessions SET id = '00000000000000000000000000', created_at = '2001-01-01 00:00:00' WHERE id = ?").run(older.id);
       expect((db.prepare("SELECT count(*) AS n FROM sessions WHERE node_id = ? AND intentionally_stopped = 1").get(nodeId) as { n: number }).n).toBe(1);
       const orch = createOrchestrator({ tmux: mockTmux() });
 

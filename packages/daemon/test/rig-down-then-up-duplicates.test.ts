@@ -98,6 +98,7 @@ describe("rig up --existing after rig down, for a seat with more than one live r
     expect(node.error).not.toContain("release it with: rig unclaim");
     expect(node.error).toContain("rig unclaim does not free the name");
     expect(node.error).toContain("end it yourself, or rename it");
+    expect(node.error).toContain("keeps running the conversation this restore will resume");
     expect(node.error).not.toBe("duplicate");
     expect(await h.tmux.hasSession(seat.sessionName), "restore did not touch the person's session").toBe(true);
   });
