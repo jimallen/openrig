@@ -573,6 +573,24 @@ function resolveCurrentSession(explicit: string | undefined, optionName: string)
   return undefined;
 }
 
+/**
+ * The seat identity for a command whose `--<option>` is deprecated and IGNORED (the daemon derives
+ * the actor from the X-OpenRig-Session header the client stamps from the seat env). Passing the
+ * option cannot help, so the refusal names what does: run from a seat / set OPENRIG_SESSION_NAME.
+ */
+function requireSeatSession(deprecatedOptionName: string): string | undefined {
+  const session = readOpenRigEnv("OPENRIG_SESSION_NAME", "RIGGED_SESSION_NAME");
+  if (session) return session;
+
+  console.error(
+    `OPENRIG_SESSION_NAME is not set, so there is no seat identity to act as. ` +
+    `Run this from inside a seat, or set OPENRIG_SESSION_NAME=<member@rig> ` +
+    `(--${deprecatedOptionName} is deprecated and ignored; the identity comes from the seat environment).`,
+  );
+  process.exitCode = 1;
+  return undefined;
+}
+
 function extractRigName(sessionName: string): string | undefined {
   // OPR.0.4.6.MH1 FR-8: the shared parse contract (greedy first-@ rig).
   return sessionRigOf(sessionName);
@@ -899,7 +917,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .action(async (qitemId: string, opts: { destination?: string; json?: boolean; full?: boolean }) => {
       // P21 I3 reconcile: the claimant is DERIVED from the seat env — --destination deprecated + ignored,
       // no body claim. Verify the env (the header source) or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
-      if (!resolveCurrentSession(undefined, "destination")) return;
+      if (!requireSeatSession("destination")) return;
       const deps = getDeps();
       await withClient(deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/claim`, {});
@@ -917,7 +935,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .action(async (qitemId: string, opts: { destination?: string; reason: string; json?: boolean; full?: boolean }) => {
       // P21 I3 reconcile: the releaser is DERIVED from the seat env — --destination deprecated + ignored,
       // no body claim. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
-      if (!resolveCurrentSession(undefined, "destination")) return;
+      if (!requireSeatSession("destination")) return;
       const deps = getDeps();
       await withClient(deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/unclaim`, {
@@ -961,7 +979,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // P21 I3 reconcile: the actor is DERIVED from the seat env (X-OpenRig-Session, stamped by
       // DaemonClient) — --actor is deprecated + ignored, no body actorSession. Verify the env (the
       // header source) or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal). Matches `resolve`.
-      if (!resolveCurrentSession(undefined, "actor")) return;
+      if (!requireSeatSession("actor")) return;
       const deps = getDeps();
       await withClient(deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/update`, {
@@ -1024,7 +1042,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
     }) => {
       // P21 I3 reconcile: actor DERIVED from the seat env (X-OpenRig-Session) — --actor deprecated +
       // ignored, no body actorSession. Verify the env, else the daemon returns 400 actor_required (no seat identity to record). Matches `resolve`.
-      if (!resolveCurrentSession(undefined, "actor")) return;
+      if (!requireSeatSession("actor")) return;
       const deps = getDeps();
       await withClient(deps, async (client) => {
         const res = await client.post<unknown>(`/api/queue/${encodeURIComponent(qitemId)}/update`, {
@@ -1064,7 +1082,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
       // P21: the resolver is DERIVED from the seat env (X-OpenRig-Session, stamped by DaemonClient) —
       // --actor is deprecated + ignored. The pre-check verifies the env (the header source); else the
       // daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
-      if (!resolveCurrentSession(undefined, "actor")) return;
+      if (!requireSeatSession("actor")) return;
       const deps = getDeps();
       const bearer = opts.bearer ?? process.env.OPENRIG_AUTH_BEARER_TOKEN;
       await withClient(deps, async (client) => {
@@ -1122,7 +1140,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
     }) => {
       // P21 I3 reconcile: the handing-off seat is DERIVED from the seat env (X-OpenRig-Session) —
       // --from deprecated + ignored, no body fromSession. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
-      if (!resolveCurrentSession(undefined, "from")) return;
+      if (!requireSeatSession("from")) return;
       // slice-08 OPR.0.4.7.8 — body-input parity. Resolve through the shipped
       // resolveQueueBody ONLY when a body source is supplied; neither preserves
       // today's source-body default (POST body undefined). Both/invalid reject
@@ -1221,7 +1239,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
     }) => {
       // P21 I3 reconcile: the handing-off seat is DERIVED from the seat env (X-OpenRig-Session) —
       // --from deprecated + ignored, no body fromSession. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
-      if (!resolveCurrentSession(undefined, "from")) return;
+      if (!requireSeatSession("from")) return;
       // slice-08 OPR.0.4.7.8 — body-input parity (same contract as handoff):
       // resolve only when a body source is supplied; neither keeps the
       // source-body default; both/invalid reject before daemon contact.
@@ -1661,7 +1679,7 @@ Examples:
       }
       // P21 I3 reconcile: the sender is DERIVED from the seat env (X-OpenRig-Session) — --sender
       // deprecated + ignored, no body senderSession. Verify the env or the daemon returns 400 actor_required (no seat identity to record; P18 retired the 401 refusal).
-      if (!resolveCurrentSession(undefined, "sender")) return;
+      if (!requireSeatSession("sender")) return;
       const deps = getDeps();
       const tags = opts.tags ? opts.tags.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
       await withClient(deps, async (client) => {

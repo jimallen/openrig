@@ -141,6 +141,32 @@ describe("rig queue CLI", () => {
     }
   });
 
+  // OF-84: --actor/--from/--sender/--destination are deprecated and IGNORED on these verbs, so the
+  // refusal must not tell a person to pass the option; it must name what works (the seat env).
+  const SEAT_ONLY_VERBS: Array<{ argv: string[]; option: string }> = [
+    { argv: ["claim", "q-1"], option: "destination" },
+    { argv: ["unclaim", "q-1"], option: "destination" },
+    { argv: ["update", "q-1"], option: "actor" },
+    { argv: ["block", "q-1", "--on", "x"], option: "actor" },
+    { argv: ["resolve", "q-1", "--decision", "go"], option: "actor" },
+    { argv: ["handoff", "q-1", "--to", "bob@rig"], option: "from" },
+    { argv: ["handoff-and-complete", "q-1", "--to", "bob@rig"], option: "from" },
+    { argv: ["outbox-record", "--destination", "bob@rig", "--body", "b"], option: "sender" },
+  ];
+  it.each(SEAT_ONLY_VERBS)("$argv.0 outside a seat names the seat env, not the ignored --$option", async ({ argv, option }) => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "");
+    vi.stubEnv("RIGGED_SESSION_NAME", "");
+    const { deps, calls } = makeDeps();
+    const program = createProgram({ queueDeps: deps });
+    await program.parseAsync(["node", "rig", "queue", ...argv, "--json"]);
+    const message = errors.join("\n");
+    expect(process.exitCode).toBe(1);
+    expect(calls).toEqual([]);
+    expect(message).toContain("OPENRIG_SESSION_NAME=<member@rig>");
+    expect(message).toContain(`--${option} is deprecated and ignored`);
+    expect(message).not.toContain("is required");
+  });
+
   it("create accepts an explicit source outside a managed seat as a body claim", async () => {
     vi.stubEnv("OPENRIG_SESSION_NAME", "");
     vi.stubEnv("RIGGED_SESSION_NAME", "");
