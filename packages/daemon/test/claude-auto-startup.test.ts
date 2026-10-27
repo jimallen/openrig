@@ -67,7 +67,7 @@ describe("auto-mode startup content requires the launched Claude identity", () =
       ...(resumes ? { resumeToken: token, resumeType: "claude_id", allowFreshFallback: true } : {}),
     });
     // Launch authorization is distinct from permission to paste/submit startup content.
-    expect(calls.filter(c => c.kind === "launch")).toEqual([{ kind: "launch", text: `claude --permission-mode auto ${resumes ? "--resume" : "--session-id"} ${token} --name ${name}` }]);
+    expect(calls.filter(c => c.kind === "launch")).toEqual([{ kind: "launch", text: `claude --permission-mode auto ${resumes ? "--resume" : "--session-id"} ${token} --name=${name}` }]);
     if (mode === "resume-missing") expect(result.startupStatus).toBe("attention_required");
     expect({ ok: result.ok, content: calls.filter(c => c.kind === "content"), submit: calls.filter(c => c.kind === "submit") }).toEqual({
       ok: good, content: good ? [{ kind: "content", text: payload }] : [], submit: good ? [{ kind: "submit", keys: ["Enter"] }] : [],

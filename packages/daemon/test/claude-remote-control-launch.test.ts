@@ -55,26 +55,26 @@ describe("launchHarness: remote_control reaches every claude launch of the seat"
   it("FRESH launch emits --remote-control <session name>, before --session-id", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc(), { name: SEAT });
-    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --session-id sess-1 --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --session-id sess-1 --name=${SEAT}`);
   });
 
   it("RESUME launch emits --remote-control <session name>, before --resume", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc(), { name: SEAT, resumeToken: "tok-1" });
-    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'tok-1' --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'tok-1' --name=${SEAT}`);
   });
 
   it("FORK launch emits --remote-control <session name>, before --resume ... --fork-session", async () => {
     const tmux = mockTmux();
     const adapter = adapterWith(tmux);
     await adapter.launchHarness(rc(), { name: SEAT, forkSource: { kind: "native_id", value: "parent-1" } });
-    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'parent-1' --fork-session --session-id sess-1 --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`${RENDERER} claude ${FLOOR} '--remote-control=${SEAT}' --resume 'parent-1' --fork-session --session-id sess-1 --name=${SEAT}`);
   });
 
   it("sits after --model and --effort, so the optional value never precedes or swallows another flag", async () => {
     const tmux = mockTmux();
     await adapterWith(tmux).launchHarness(rc({ model: "opus", effort: "high" }), { name: SEAT, resumeToken: "tok-1" });
-    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --model 'opus' --effort 'high' '--remote-control=${SEAT}' --resume 'tok-1' --name ${SEAT}`);
+    expect(sent(tmux)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --model 'opus' --effort 'high' '--remote-control=${SEAT}' --resume 'tok-1' --name=${SEAT}`);
   });
 
   it("the name is the seat's session name (the same one --name carries), quoted so it is one argument", async () => {
@@ -112,7 +112,7 @@ describe("launchHarness: remote_control reaches every claude launch of the seat"
       expect(sent(tmuxFlag)).not.toContain("remote-control");
     }
     const resumeBytes = mockTmux(); await adapterWith(resumeBytes).launchHarness(binding(extra as Partial<NodeBinding>), { name: SEAT, resumeToken: "tok-1" });
-    expect(sent(resumeBytes)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --resume 'tok-1' --name ${SEAT}`);
+    expect(sent(resumeBytes)).toBe(`OPENRIG_RESUME_LAUNCH='tok-1' ${RENDERER} claude ${FLOOR} --resume 'tok-1' --name=${SEAT}`);
   });
 
   it("the ONLY delta from declaring it is the additive ` '--remote-control=<name>'`", async () => {
@@ -170,6 +170,6 @@ describe("operator-facing native resume command is NOT a daemon launch and never
   // throwaway `claude --resume` in a probe tmux session. A probe that carried --remote-control would
   // register a second remote session for the same seat.
   it("claude command text is unchanged", () => {
-    expect(buildNativeResumeCommand("claude-code", "tok-1", SEAT)).toBe(`claude --resume 'tok-1' --name '${SEAT}'`);
+    expect(buildNativeResumeCommand("claude-code", "tok-1", SEAT)).toBe(`claude --resume 'tok-1' --name='${SEAT}'`);
   });
 });

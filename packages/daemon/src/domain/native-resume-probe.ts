@@ -37,7 +37,7 @@ export function buildNativeResumeCommand(
 ): string | null {
   if (!resumeToken) return null;
   if (runtime === "claude-code") {
-    const nameSuffix = sessionName ? ` --name ${shellQuote(sessionName)}` : "";
+    const nameSuffix = sessionName ? ` --name=${shellQuote(sessionName)}` : "";
     return `claude --resume ${shellQuote(resumeToken)}${nameSuffix}`;
   }
   if (runtime === "codex") {

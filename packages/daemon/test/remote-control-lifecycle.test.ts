@@ -89,7 +89,7 @@ describe("restore re-applies --remote-control (pod-aware down/up, real teardown 
     const up = await restore.restore(down.snapshotId!, { adapters: { "claude-code": adapter } });
     if (!up.ok) throw new Error(up.message);
     expect(up.result.nodes[0]).toMatchObject({ status: "resumed" });
-    expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto${flag} --resume ${token} --name ${name}`, expect.any(Function));
+    expect(tmux.sendShellCommand).toHaveBeenCalledExactlyOnceWith(name, `claude --permission-mode auto${flag} --resume ${token} --name=${name}`, expect.any(Function));
   });
 });
 

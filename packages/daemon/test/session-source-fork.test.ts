@@ -286,7 +286,7 @@ describe("ClaudeCodeAdapter.launchHarness fork branch", () => {
     const sendText = tmux.sendText as ReturnType<typeof vi.fn>;
     expect(sendText).toHaveBeenCalledWith(
       "r01-impl",
-      "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --resume 'PARENT-TOKEN-ABC' --fork-session --session-id 33333333-3333-4333-8333-333333333333 --name dev-impl@test-rig",
+      "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --resume 'PARENT-TOKEN-ABC' --fork-session --session-id 33333333-3333-4333-8333-333333333333 --name=dev-impl@test-rig",
     );
     if (result.ok) {
       // The returned token MUST be the fork's own new id, NOT the parent.

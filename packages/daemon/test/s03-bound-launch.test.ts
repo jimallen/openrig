@@ -307,8 +307,16 @@ describe("S03 bound launch across existing paths", () => {
     }) as any);
     expect(await adapter.launchHarness(f.binding, opts)).toMatchObject({ ok: true, resumeToken: "fork-id" });
     expect(reads).toEqual([]);
-    expect(f.calls[0]).toContain("'--resume' 'original-parent' '--fork-session' '--session-id' 'fork-id'"); expect(f.calls[0]).toContain("'--name' 'original'");
+    expect(f.calls[0]).toContain("'--resume' 'original-parent' '--fork-session' '--session-id' 'fork-id'"); expect(f.calls[0]).toContain("'--name=original'");
     expect(f.calls[0]).not.toContain("other-history"); expect(f.calls[0]).not.toContain("other-model");
+  });
+  // OF-132: the managed argv carries a dash-leading name as ONE `--name=<name>` argument, in all three launch shapes.
+  it.each([{}, { resumeToken: "tok-1" }, { forkSource: { kind: "native_id" as const, value: "parent-1" } }])("a name that starts with - is one --name= argument (%j)", async extra => {
+    const f = fixture();
+    vi.mocked(execFile).mockImplementation(((_f: string, _a: string[], _o: unknown, done: (e: null, out: string) => void) => { done(null, help); }) as never);
+    expect(await f.adapter.launchHarness(f.binding, { name: "-x", ...extra })).toMatchObject({ ok: true });
+    expect(f.calls[0]).toContain("'--name=-x'");
+    expect(f.calls[0]).not.toMatch(/'--name' |'-x'/);
   });
   it.each(["pane", "generation"])("refuses a missing %s before help or input", async missing => {
     const f = fixture(); f.db.exec(missing === "pane" ? "UPDATE bindings SET tmux_pane=NULL" : "DELETE FROM occupant_tenures");

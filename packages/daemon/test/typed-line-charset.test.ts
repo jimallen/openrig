@@ -268,19 +268,19 @@ describe("the claude launch line quotes the seat name (OF-108)", () => {
   const HOSTILE_NAME = "x; touch /tmp/owned";
 
   it("fresh launch: a name that is more than one word is one quoted word after --name", async () => {
-    expect(await sentOf(HOSTILE_NAME)).toMatch(/ --session-id sess-1 --name 'x; touch \/tmp\/owned'$/);
+    expect(await sentOf(HOSTILE_NAME)).toMatch(/ --session-id sess-1 --name='x; touch \/tmp\/owned'$/);
   });
   it("resume launch: the same", async () => {
-    expect(await sentOf(HOSTILE_NAME, { resumeToken: "tok-1" })).toMatch(/ --resume 'tok-1' --name 'x; touch \/tmp\/owned'$/);
+    expect(await sentOf(HOSTILE_NAME, { resumeToken: "tok-1" })).toMatch(/ --resume 'tok-1' --name='x; touch \/tmp\/owned'$/);
   });
   it("fork launch: the same", async () => {
-    expect(await sentOf(HOSTILE_NAME, { forkSource: { kind: "native_id", value: "parent-1" } })).toMatch(/ --fork-session --session-id sess-1 --name 'x; touch \/tmp\/owned'$/);
+    expect(await sentOf(HOSTILE_NAME, { forkSource: { kind: "native_id", value: "parent-1" } })).toMatch(/ --fork-session --session-id sess-1 --name='x; touch \/tmp\/owned'$/);
   });
   it("control: a canonical name stays bare, as the neighbouring launch pins expect", async () => {
-    expect(await sentOf(SEAT)).toMatch(/ --session-id sess-1 --name exec-cos@eztrack$/);
+    expect(await sentOf(SEAT)).toMatch(/ --session-id sess-1 --name=exec-cos@eztrack$/);
   });
   it("a name that starts with = is quoted (zsh would rewrite =ls to /bin/ls)", async () => {
-    expect(await sentOf("=ls")).toMatch(/ --name '=ls'$/);
+    expect(await sentOf("=ls")).toMatch(/ --name='=ls'$/);
   });
 });
 
