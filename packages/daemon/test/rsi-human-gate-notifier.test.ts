@@ -266,7 +266,7 @@ describe("rate limits", () => {
       else expect(result.status).toBe("capped");
       h.now.ms += MIN_BANNER_GAP_MS;
     }
-    expect(h.calls).toHaveLength(2 * MAX_BANNERS_PER_DAY); // each attempt tries terminal-notifier, then osascript
+    expect(h.calls).toHaveLength(MAX_BANNERS_PER_DAY);
   });
 
   it("counts the cap from banner rows, so item-row churn cannot undercount it", async () => {
@@ -327,7 +327,7 @@ describe("rate limits", () => {
       expect(result.status).toBe(i < MAX_BANNERS_PER_DAY ? "failed" : "capped");
       h.now.ms += MIN_BANNER_GAP_MS;
     }
-    expect(h.calls).toHaveLength(MAX_BANNERS_PER_DAY);
+    expect(h.calls).toHaveLength(2 * MAX_BANNERS_PER_DAY); // each attempt tries terminal-notifier, then osascript
   });
 
   it("remembers a failed attempt across a restart: no immediate retry from a fresh process", async () => {
