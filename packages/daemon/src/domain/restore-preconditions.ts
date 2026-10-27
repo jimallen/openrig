@@ -119,10 +119,10 @@ export function validatePreRestore(
     const startsNothing = outcome.kind === "stop" || outcome.kind === "skip_restoring";
 
     const checkpoint = checkpoints[node.id] ?? null;
-    // OF-25: restore delivers a checkpoint into the cwd the seat has NOW (the live node's), so that is the cwd to check when
-    // the caller gave the live seat; the snapshot's is the answer only when it did not. A seat restore stops or skips
+    // OF-25: restore delivers a checkpoint into the cwd the seat has NOW (the live node's). OF-128 L7: a seat with no live cwd
+    // falls back to the snapshot's, exactly as restore does, so that is the cwd checked. A seat restore stops or skips
     // delivers nothing, so it needs no cwd.
-    const checkpointCwd = gateInputs ? gateInputs.live?.cwd ?? null : node.cwd;
+    const checkpointCwd = gateInputs?.live?.cwd ?? node.cwd;
     if (checkpoint && !checkpointCwd && !startsNothing) {
       add({
         code: "checkpoint_missing_node_cwd",

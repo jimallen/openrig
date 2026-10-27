@@ -2685,20 +2685,35 @@ describe("RestoreOrchestrator", () => {
   // reads. Both directions, end to end: before this, a regrown seat with a snapshot cwd and no live cwd passed the check, was
   // launched, and failed with "Checkpoint available but node has no cwd" with its session left running.
   describe("a regrown seat's checkpoint needs its LIVE cwd (F1)", () => {
-    it("the snapshot's copy has a cwd, the live seat has none: restore is refused before it launches anything", async () => {
+    // OF-128 L7 (Jim, 2026-10-27) reversed this row: a seat with no live cwd falls back to the snapshot's, where it is started
+    // and where its checkpoint is delivered. Before: restore was refused (checkpoint_missing_node_cwd) although it had a folder.
+    it("L7: the snapshot's copy has a cwd, the live seat has none: the seat is started and its checkpoint delivered in the snapshot's cwd", async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-f1-"));
       try {
-        const { snap } = snapshotThenRegrow("regrown-f1-nolive-rig", { cwd: tmpDir, restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: null } });
+        const { snap, newNode } = snapshotThenRegrow("regrown-f1-nolive-rig", { cwd: tmpDir, restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: null } });
         const tmux = mockTmux();
 
         const result = await createOrchestrator({ tmux, claude: mockClaudeResume() }).restore(snap.id);
 
-        expect(result.ok).toBe(false);
-        if (result.ok) return;
-        expect(result.code).toBe("pre_restore_validation_failed");
-        expect((result as { result?: { blockers?: Array<{ code: string }> } }).result?.blockers?.map((b) => b.code)).toEqual(["checkpoint_missing_node_cwd"]);
-        expect(tmux.createSession).not.toHaveBeenCalled();
+        expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+        if (!result.ok) return;
+        expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "rebuilt" })]);
+        expect(tmux.createSession).toHaveBeenCalledWith(expect.any(String), tmpDir, expect.anything());
+        expect(fs.readdirSync(tmpDir).length, "the checkpoint was delivered into the snapshot's cwd").toBeGreaterThan(0);
       } finally { fs.rmSync(tmpDir, { recursive: true }); }
+    });
+
+    it("L7: neither the live seat nor the snapshot's copy has a cwd: restore is refused before it launches anything", async () => {
+      const { snap } = snapshotThenRegrow("regrown-f1-nocwd-rig", { restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: null } });
+      const tmux = mockTmux();
+
+      const result = await createOrchestrator({ tmux, claude: mockClaudeResume() }).restore(snap.id);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("pre_restore_validation_failed");
+      expect((result as { result?: { blockers?: Array<{ code: string }> } }).result?.blockers?.map((b) => b.code)).toEqual(["checkpoint_missing_node_cwd"]);
+      expect(tmux.createSession).not.toHaveBeenCalled();
     });
 
     it("the snapshot's copy has no cwd, the live seat has one: the checkpoint is delivered into it", async () => {
@@ -2760,6 +2775,81 @@ describe("RestoreOrchestrator", () => {
     expect(claude.resume).toHaveBeenCalledTimes(1);
     // attemptResume: a declared remote_control is the 13th argument (the five-slot tail); an undeclared seat keeps the shorter call.
     expect(vi.mocked(claude.resume).mock.calls[0]![12]).toBe(expected);
+  });
+
+  // OF-128 F4 + L7 (review-u14 F4; Jim, 2026-10-27, "when a seat has no live cwd at restore it falls back to the snapshot's").
+  // The rows above read the cwd only at the legacy resume call. One overlay feeds every reader, so a future split of the paths
+  // would let one of them go back to the snapshot's copy unnoticed. Production consequence: a seat started in the wrong
+  // directory (tmux launch), its harness bound to another (pod-aware start), or its checkpoint written beside the old
+  // project (delivery), while the resume call alone says the live one. The seat is a regrown one whose live copy has the cwd
+  // below; "no live cwd" is the L7 case, where the snapshot's cwd is the one every reader must take.
+  describe("every reader of a regrown seat's cwd takes the live one, and the snapshot's when the live seat has none (OF-128 F4, L7)", () => {
+    const CASES = [
+      ["the live seat has its own cwd", () => LIVE_CWD, () => LIVE_CWD],
+      ["the live seat has no cwd (L7)", () => null, () => SNAPSHOT_CWD],
+    ] as const;
+
+    it.each(CASES)("tmux launch cwd: %s", async (_label, liveCwd, expected) => {
+      const { snap } = snapshotThenRegrow("regrown-f4-tmux-rig", { cwd: SNAPSHOT_CWD, live: { cwd: liveCwd() } });
+      const tmux = mockTmux();
+
+      const result = await createOrchestrator({ tmux, claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      expect(tmux.createSession).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(tmux.createSession).mock.calls[0]![1]).toBe(expected());
+    });
+
+    it.each(CASES)("pod-aware harness binding: %s", async (_label, liveCwd, expected) => {
+      const { snap } = snapshotThenRegrow("regrown-f4-harness-rig", { cwd: SNAPSHOT_CWD, livePodId: "pod-live", startupContext: true, live: { cwd: liveCwd() } });
+      const adapter = {
+        runtime: "claude-code",
+        listInstalled: vi.fn(async () => []),
+        project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+        deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+        checkReady: vi.fn(async () => ({ ready: true })),
+        launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "resume-token-123", resumeType: "claude_id" })),
+      } as unknown as RuntimeAdapter;
+
+      const result = await createOrchestrator({ claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "resume-token-123") }).restore(snap.id, { adapters: { "claude-code": adapter } });
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      expect(adapter.launchHarness).toHaveBeenCalledTimes(1);
+      expect((vi.mocked(adapter.launchHarness).mock.calls[0]![0] as { cwd?: string }).cwd).toBe(expected());
+    });
+
+    it.each(CASES)("checkpoint delivery: %s", async (_label, liveCwd) => {
+      // Fresh directories for this row: the delivery writes a file, and the shared ones outlive the row.
+      const snapshotDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of128-snap-")));
+      const liveDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "of128-live-")));
+      try {
+        const { snap } = snapshotThenRegrow("regrown-f4-checkpoint-rig", { cwd: snapshotDir, restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: liveCwd() === null ? null : liveDir } });
+
+        const result = await createOrchestrator({ claude: mockClaudeResume() }).restore(snap.id);
+
+        expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+        const wanted = liveCwd() === null ? snapshotDir : liveDir;
+        const other = liveCwd() === null ? liveDir : snapshotDir;
+        expect(fs.readdirSync(wanted).length, `the checkpoint file landed in ${wanted}`).toBeGreaterThan(0);
+        expect(fs.readdirSync(other), `nothing was written to ${other}`).toEqual([]);
+      } finally {
+        fs.rmSync(snapshotDir, { recursive: true, force: true });
+        fs.rmSync(liveDir, { recursive: true, force: true });
+      }
+    });
+
+    it("L7: the 'directory moved' note is not added when the live seat has no cwd (it started where the snapshot was)", async () => {
+      const { snap } = snapshotThenRegrow("regrown-l7-note-rig", { cwd: SNAPSHOT_CWD, live: { cwd: null } });
+      const claude = mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
+
+      const result = await createOrchestrator({ claude }).restore(snap.id);
+
+      expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+      if (!result.ok) return;
+      const node = result.result.nodes[0]!;
+      expect(node.status).toBe("awaiting-decision");
+      expect(node.error?.includes("belongs to the directory it was made in")).toBe(false);
+    });
   });
 
   // The pod is read twice: to derive the seat's session name and to choose between the harness launch (pod-aware) and
@@ -4444,13 +4534,13 @@ describe("RestoreOrchestrator", () => {
     it("onAttemptStarted is NOT invoked when pre-restore validation fails (no restore.started emit)", async () => {
       const orch = createOrchestrator();
       const snap = seedRigAndSnapshot({
-        nodes: [{ logicalId: "orchestrator", role: "orchestrator", runtime: "claude-code", cwd: "/tmp" }],
+        nodes: [{ logicalId: "orchestrator", role: "orchestrator", runtime: "claude-code" }],
         edges: [],
         withCheckpoint: "orchestrator",
       });
-      // Force a pre-restore validation failure: clear the node's cwd so the checkpoint blocks restore
-      // (checkpoint_missing_node_cwd). The cwd a checkpoint needs is the LIVE node's (OF-25), so that is the one cleared.
-      db.prepare("UPDATE nodes SET cwd = NULL WHERE id = ?").run(snap.data.nodes[0]!.id);
+      // Force a pre-restore validation failure: a seat with a checkpoint and NO cwd anywhere (the live node's, with the
+      // snapshot's as its fallback, OF-128 L7) has nowhere to receive it (checkpoint_missing_node_cwd).
+      expect(snap.data.nodes[0]!.cwd ?? null).toBeNull();
 
       let invoked = false;
       const outcome = await orch.restore(snap.id, {

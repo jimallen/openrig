@@ -61,7 +61,7 @@ describe("restore-check and restore agree about a seat's own saved startup row (
   // spec source, whose own row was damaged AFTER the snapshot: restore warns that it replays the snapshot's copy and the check
   // reports green, not yellow. The verdict (not red) still agrees. When the check learns to warn, these rows flip to yellow and
   // this list is deleted.
-  const checkGreenWhereRestoreWarns = (name: string) => name.includes("; listed; no spec source; damaged after");
+  const checkGreenWhereRestoreWarns = (name: string) => name.includes("; listed; no spec source; damaged after") || name.endsWith("[listed, no spec source]");
 
   // OF-39: what the own row's runtime column holds.
   const RUNTIMES: Array<[string, string]> = [["codex", "codex"], ["empty", ""], ["unknown runtime", "no-such-runtime"]];
@@ -176,9 +176,14 @@ describe("restore-check and restore agree about a seat's own saved startup row (
       const S1 = await t.down(); const S2 = t.capture(); t.goneFile(S2); t.dropRow(); return { S1, S2, S3: t.capture() };
     }, "ok", null],
   ];
-  it.each(TWO_SNAPSHOT_ROWS)("two snapshots: %s", async (label, setup, expected, supplier) => {
+  // OF-128 F3 (review-u14): the same rows with the seat LISTED with --fresh, in a rig that records no spec source, so its
+  // startup comes from the seat's own row and, when that is missing or damaged, from a snapshot's copy. The unlisted rows
+  // above cannot tell the listed path's copy lookup (fresh-seat-restore-decision.ts, predictListedSeatRefusals/
+  // decideListedFreshSeat) from a lookup that reads the seat's own row instead of the snapshot: a mutant that did survived.
+  const TWO_SNAPSHOT_MODES = [{ listed: false, record: true, tag: "" }, { listed: true, record: false, tag: " [listed, no spec source]" }] as const;
+  it.each(TWO_SNAPSHOT_MODES.flatMap((mode) => TWO_SNAPSHOT_ROWS.map(([label, setup, expected, supplier]) => [`${label}${mode.tag}`, setup, expected, supplier, mode] as const)))("two snapshots: %s", async (label, setup, expected, supplier, mode) => {
     h = createRestoreHarness();
-    const seat = await h.launchRig({ record: true });
+    const seat = await h.launchRig({ record: mode.record });
     policyFresh(seat.nodeId);
     const original = h.db.prepare("SELECT startup_actions_json AS v FROM node_startup_context WHERE node_id = ?").get(seat.nodeId) as { v: string };
     const ids = await setup({
@@ -193,17 +198,23 @@ describe("restore-check and restore agree about a seat's own saved startup row (
     // Both the check and an unnamed restore read S1 (the auto-pre-down snapshot), not the newest.
     expect(chosenSnapshotId(seat.rigId), "the snapshot both read").toBe(ids.S1);
 
-    const check = await runCheck(false);
-    const restore = await runRestore(ids.S1!, false);
+    const check = await runCheck(mode.listed);
+    const restore = await runRestore(ids.S1!, mode.listed);
 
-    expect(restore.outcome, `${label}: ${restore.error}`).toBe(expected);
+    // A seat listed with --fresh that cannot be given a usable copy is refused on its own ("Fresh start refused": the seat
+    // fails, the other seats are restored); an unlisted one makes pre-restore validation refuse the whole restore.
+    const wanted = mode.listed && expected === "restore-ended" ? "failed" : expected;
+    expect(restore.outcome, `${label}: ${restore.error}`).toBe(wanted);
     expectAgreement(label, check, restore);
     // Which snapshot supplied the replayed copy: restore names it in its warning, and the check must name the same one and no
     // other (the evidence starts with the snapshot checked, S1, which is not necessarily the one replayed).
     const body = check.evidence.replace(/^Snapshot \w+: /, "");
     if (supplier) {
       expect(restore.warnings.join(" ")).toContain(ids[supplier]!);
-      expect(body).toContain(ids[supplier]!);
+      // Known divergence (OF-52, see checkGreenWhereRestoreWarns): for a listed seat the check does not warn of the replayed
+      // copy where restore does, so a listed row that comes up has no snapshot to name in the check's evidence. A listed row that
+      // is refused names it through restore's own error.
+      if (!(mode.listed && restore.outcome === "ok")) expect(body).toContain(ids[supplier]!);
     } else {
       expect(restore.warned, "no snapshot copy is substituted").toBe(false);
     }

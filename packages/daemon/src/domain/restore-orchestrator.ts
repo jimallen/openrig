@@ -2353,7 +2353,9 @@ function withLiveSeatSettings(snapshotNode: NodeWithBinding, live: NodeWithBindi
   const { remoteControl: _snapshotRemoteControl, ...rest } = snapshotNode;
   return {
     ...rest,
-    cwd: live.cwd,
+    // OF-128 L7 (Jim, 2026-10-27): a seat with no live cwd falls back to the snapshot's, so it is not started in tmux's
+    // default directory ($HOME) and a checkpoint still has a place to land. Every other setting is the live one, as is.
+    cwd: live.cwd ?? snapshotNode.cwd,
     podId: live.podId,
     model: live.model,
     codexConfigProfile: live.codexConfigProfile,

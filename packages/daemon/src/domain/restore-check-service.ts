@@ -202,6 +202,14 @@ export interface RestoreParityDeps {
   seatGateInputs?(rigId: string, snapshotData: Snapshot["data"]): (node: { id: string; logicalId: string }) => import("./restore-seat-gates.js").SeatGateInputs;
 }
 
+/** What the checked snapshot says about which seats restore starts and where (OF-125, OF-128 L7). */
+interface LaunchRule {
+  /** Seats restore stops at a gate (removed, ambiguous, runtime mismatch, no token): it starts nothing for them. */
+  stoppedSeats: Set<string>;
+  /** The cwd the snapshot saved for each seat: a seat with no live cwd is started there. */
+  snapshotCwd: Map<string, string | null>;
+}
+
 // --- Deps (framework-free per ADR-0001; reads from existing projections per ADR-0002) ---
 
 export interface NodeInventoryEntry {
@@ -223,6 +231,8 @@ export interface NodeInventoryEntry {
   tmuxAttachCommand: string | null;
   latestError: string | null;
   cwd?: string | null;
+  /** The seat's binding (`tmux` when bound), null when it has none: restore starts only a seat with no binding. */
+  attachmentType?: string | null;
 }
 
 /**
@@ -430,6 +440,7 @@ export class RestoreCheckService {
     const rigRollupInputs: RigRollupInput[] = [];
     const recoveryRigInputs: RecoveryRigInput[] = [];
     const restoreInputsByRig = new Map<string, { snapshot: { id: string; kind: string } | null; error?: string }>();
+    const launchRuleByRig = new Map<string, LaunchRule>();
     const restoreRefusedByRig = new Map<string, boolean>();
     const restoreRunningRowsByRig = new Map<string, RecoveryRigInput["restoreRunningRows"]>();
     const restoreRunningRowNamesByRig = new Map<string, string[]>();
@@ -515,6 +526,7 @@ export class RestoreCheckService {
         rigChecks.push(preconditions.check);
         preconditionError = preconditions.error;
         restoreInputsByRig.set(rig.rigId, { snapshot: preconditions.snapshot, error: preconditions.error });
+        if (preconditions.launchRule) launchRuleByRig.set(rig.rigId, preconditions.launchRule);
         // OF-62: restore refuses the whole rig at its pre-restore snapshot while a seat's saved row is damaged, however
         // clean the snapshot it would restore from is. Judged where the preconditions are (same gate), so a routine poll of
         // an all-ready rig does not ask.
@@ -558,13 +570,19 @@ export class RestoreCheckService {
 
         // OF-69: a seat that is not running is started by restore through the launcher, which refuses a folder that is
         // gone (tmux would start it in $HOME). Say so here, where the plan and the launch must agree.
-        const cwdFault = readinessCheck.status !== "green" && node.cwd ? getSeatCwdFault(node.cwd) : null;
-        if (node.cwd && cwdFault) {
+        // OF-125: the plan's rule (restore-plan-preview.ts): only a seat restore would START is judged. A seat that is bound
+        // (running, even if tmux is briefly unreadable) is not started, and neither is one restore stops at a gate. OF-128 L7:
+        // a seat with no live cwd is started in the snapshot's, so that folder is the one judged.
+        const launch = launchRuleByRig.get(rig.rigId);
+        const restoreStartsSeat = !node.attachmentType && !launch?.stoppedSeats.has(node.logicalId);
+        const seatCwd = node.cwd ?? launch?.snapshotCwd.get(node.logicalId) ?? null;
+        const cwdFault = readinessCheck.status !== "green" && restoreStartsSeat && seatCwd ? getSeatCwdFault(seatCwd) : null;
+        if (seatCwd && cwdFault) {
           const cwdCheck: CheckEntry = {
             check: `seat.${node.canonicalSessionName ?? node.logicalId}.cwd`,
             status: "red",
-            evidence: seatCwdUnusableMessage(node.logicalId, node.cwd, cwdFault),
-            remediation: `${seatCwdFixAdvice(node.cwd, cwdFault)}, then rerun rig restore-check`,
+            evidence: seatCwdUnusableMessage(node.logicalId, seatCwd, cwdFault),
+            remediation: `${seatCwdFixAdvice(seatCwd, cwdFault)}, then rerun rig restore-check`,
             remediationSafe: false,
           };
           checks.push(cwdCheck);
@@ -655,6 +673,7 @@ export class RestoreCheckService {
     check: CheckEntry;
     snapshot: { id: string; kind: string } | null;
     error?: string;
+    launchRule?: LaunchRule;
   } {
     const check = `rig.${rig.name}.restore-preconditions`;
     try {
@@ -706,6 +725,11 @@ export class RestoreCheckService {
         },
       });
       const { blockers, warnings } = validation;
+      // OF-125 / OF-128 L7: what the per-seat cwd check needs from this snapshot (see LaunchRule).
+      const launchRule: LaunchRule = {
+        stoppedSeats: new Set<string>(),
+        snapshotCwd: new Map((input.snapshot.data.nodes ?? []).map((saved) => [saved.logicalId, saved.cwd ?? null] as const)),
+      };
       // OF-40: the gates restore runs before it looks at a seat's startup files, asked of the function restore calls.
       // Restore reaches them only when it runs at all (it refuses a rig with a live seat, rig_not_stopped, before any
       // seat) and only when pre-restore validation passed (a validation blocker already makes this red, and a snapshot
@@ -719,6 +743,7 @@ export class RestoreCheckService {
       }
       if (parity && restoreRuns === "would_run" && blockers.length === 0) {
         for (const [logicalId, stop] of parity.predictSeatStops(rig.rigId, input.snapshot.data, listed)) {
+          launchRule.stoppedSeats.add(logicalId);
           blockers.push({
             code: stop.gate === "node_removed" ? "seat_removed" : "seat_stopped_before_launch",
             severity: "critical",
@@ -737,6 +762,7 @@ export class RestoreCheckService {
         // The prediction could not be asked. Never green: say so.
         return {
           snapshot: { id: input.snapshot.id, kind: input.snapshot.kind },
+          launchRule,
           check: {
             check, status: blockers.length > 0 ? "red" : "yellow",
             evidence: `Snapshot ${input.snapshot.id}: could not predict which listed seats restore would refuse: ${listedRefusals.message}${blockers.length > 0 ? `; ${blockers.map((blocker) => `${blocker.code}: ${blocker.message}`).join("; ")}` : ""}`,
@@ -758,6 +784,7 @@ export class RestoreCheckService {
       }
       return {
         snapshot: { id: input.snapshot.id, kind: input.snapshot.kind },
+        launchRule,
         check: {
           check,
           status: blockers.length > 0 ? "red" : warnings.length > 0 || gatesNotPredicted ? "yellow" : "green",

@@ -6,7 +6,7 @@ import type { SnapshotData, RigServicesRecord, NodeStartupSnapshot } from "../sr
 function data(): SnapshotData {
   return {
     rig: { id: "rig-1", name: "test-rig", createdAt: "", updatedAt: "" },
-    nodes: [{ id: "node-1", logicalId: "seat", cwd: "/project" }],
+    nodes: [{ id: "node-1", logicalId: "seat", cwd: "/" }],
     sessions: [], edges: [], checkpoints: {},
     nodeStartupContext: { "node-1": {
       runtime: "claude-code", projectionEntries: [], startupActions: [],
@@ -271,8 +271,13 @@ describe("pre-restore validation checks the startup files only of a seat restore
     const blockerCodes = (snapshot: SnapshotData, inputs?: Parameters<typeof gateInputs>[0]) =>
       validatePreRestore(snapshot, { fsOps: { exists: () => true }, ...(inputs ? { seatGateInputs: gateInputs(inputs) } : {}) }).blockers.map((b) => b.code);
 
-    it("the snapshot's copy has a cwd and the live seat has none: refused before anything starts", () => {
-      expect(blockerCodes(withCheckpoint("/project"), { live: { runtime: "claude-code", cwd: null } })).toEqual(["checkpoint_missing_node_cwd"]);
+    // OF-128 L7 (Jim, 2026-10-27) reversed F1's first direction: a seat with no live cwd FALLS BACK to the snapshot's, which is
+    // where restore starts it and delivers the checkpoint, so the check does not refuse it.
+    it("L7: the snapshot's copy has a cwd and the live seat has none: not refused, the checkpoint goes to the snapshot's cwd", () => {
+      expect(blockerCodes(withCheckpoint("/project"), { live: { runtime: "claude-code", cwd: null } })).toEqual([]);
+    });
+    it("L7: neither the live seat nor the snapshot's copy has a cwd: refused before anything starts", () => {
+      expect(blockerCodes(withCheckpoint(undefined), { live: { runtime: "claude-code", cwd: null } })).toEqual(["checkpoint_missing_node_cwd"]);
     });
     it("the snapshot's copy has no cwd and the live seat has one: not refused", () => {
       expect(blockerCodes(withCheckpoint(undefined), { live: { runtime: "claude-code", cwd: "/live/cwd" } })).toEqual([]);
