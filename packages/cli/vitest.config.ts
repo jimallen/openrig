@@ -17,6 +17,7 @@ export default defineConfig({
     // D12 base-health: scrub the seat's live-daemon connection env before every
     // test module so the whole-suite fold gate is hermetic (see
     // test/hermetic-env.setup.ts); production env behavior is untouched.
+    globalSetup: ["../../test/hermetic-env.global.ts"],
     setupFiles: ["./test/hermetic-env.setup.ts"],
   },
 });

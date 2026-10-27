@@ -581,7 +581,15 @@ describe("registration", () => {
     const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite") });
     open.push(daemon.db);
 
-    const names = (daemon.deps.healthProjection!.list().coverage ?? []).map((c) => c.source);
+    let names: string[];
+    try {
+      names = (daemon.deps.healthProjection!.list().coverage ?? []).map((c) => c.source);
+    } finally {
+      // OF-82: createDaemon starts monitors that keep the worker alive; stop them as startup.test.ts does.
+      daemon.eventLoopMonitor.stop();
+      daemon.contextMonitor.stop();
+      daemon.deps.seatActivityService?.stop();
+    }
 
     expect(names).toEqual(expect.arrayContaining(["rsi-startup-failure-class", "rsi-bootstrap-failure-class", "rsi-orphaned-parked-owner-job"]));
   });

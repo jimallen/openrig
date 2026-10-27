@@ -8,6 +8,9 @@ import {describe,it,expect} from 'vitest';
 import {TmuxAdapter,type TmuxFileOps} from '../src/adapters/tmux.js';
 const run=promisify(execFile);
 const q=(v:string)=>"'"+v.replaceAll("'","'\"'\"'")+"'";
+// A marker file counts as written only once it has content. PROMPT_COMMAND's `echo "$?" > status` and the rc's
+// `printf ... > before` truncate before they write, so waiting on existsSync alone can read "" (Number("") === 0).
+const filled=(p:string)=>{try{return fs.readFileSync(p,'utf8')!=='';}catch{return false;}};
 async function until(f:()=>boolean){for(let i=0;i<240;i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw Error('private pane did not produce receipt');}
 let hasTmux=false;
 try{execFileSync('tmux',['-V'],{stdio:'ignore'});hasTmux=true;}catch{/* optional dependency */}
@@ -24,21 +27,21 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
  const transport=new TmuxAdapter(async cmd=>{if(!cmd.startsWith('tmux '))throw Error('unexpected fixture command');return(await run('/bin/sh',['-c',cmd.replace(/^tmux /,`tmux -S ${q(socket)} -f /dev/null `)],{env,timeout:8000})).stdout;},ops);
  let shellPid=0;let failed=false;let failure:unknown;
  try {
-  await tm(['new-session','-d','-s','pane','/bin/bash --noprofile --rcfile '+q(rc)+' -i']);await until(()=>fs.existsSync(status)&&fs.existsSync(before));fs.unlinkSync(status);
+  await tm(['new-session','-d','-s','pane','/bin/bash --noprofile --rcfile '+q(rc)+' -i']);await until(()=>filled(status)&&filled(before));fs.unlinkSync(status);
   const rcInitial=fs.readFileSync(before,'utf8');fs.unlinkSync(before);shellPid=Number(rcInitial.split('|')[0]);
   // Capture the real comparison after Bash has finished rc processing. The
   // ordinary-input control allows only Bash's version-dependent stdin flag
   // transition here. The post-launch comparison below is exact, including flags.
-  expect(await transport.sendText('pane',`${snapshot} > ${q(before)}`)).toEqual({ok:true});expect(await transport.sendKeys('pane',['Enter'])).toEqual({ok:true});await until(()=>fs.existsSync(before)&&fs.existsSync(status));
+  expect(await transport.sendText('pane',`${snapshot} > ${q(before)}`)).toEqual({ok:true});expect(await transport.sendKeys('pane',['Enter'])).toEqual({ok:true});await until(()=>filled(before)&&filled(status));
   const initial=fs.readFileSync(before,'utf8');const rcFields=rcInitial.split('|');const steadyFields=initial.split('|');
-  expect(steadyFields.filter((_,i)=>i!==4)).toEqual(rcFields.filter((_,i)=>i!==4));expect(steadyFields[4]).toContain('i');expect(new Set(steadyFields[4].replace('s',''))).toEqual(new Set(rcFields[4].replace('s','')));
+  expect(steadyFields.filter((_,i)=>i!==4)).toEqual(rcFields.filter((_,i)=>i!==4));expect(steadyFields[4]!).toContain('i');expect(new Set(steadyFields[4]!.replace('s',''))).toEqual(new Set(rcFields[4]!.replace('s','')));
   console.log('CLAUDE_STARTUP_CONTROL='+JSON.stringify({kind,rcOptions:rcFields[4],steadyOptions:steadyFields[4],onlyPossibleStdinFlagDifferenceBeforeStagedLaunch:true}));
   // Older Bash versions flush interactive history even when only a subshell
   // exits. Measure the ordinary command before attributing a flush to staging.
   fs.unlinkSync(status);
   const initialHistory=fs.readFileSync(history,'utf8');
   const ordinary=`( ${kind==='exit'?'exit 7':kind==='errexit'?'set -e; false':':'} )`;
-  expect(await transport.sendText('pane',ordinary)).toEqual({ok:true});expect(await transport.sendKeys('pane',['Enter'])).toEqual({ok:true});await until(()=>fs.existsSync(status));
+  expect(await transport.sendText('pane',ordinary)).toEqual({ok:true});expect(await transport.sendKeys('pane',['Enter'])).toEqual({ok:true});await until(()=>filled(status));
   expect(Number(fs.readFileSync(status,'utf8').trim())).toBe(kind==='exit'?7:kind==='errexit'?1:0);
   const ordinaryHistory=fs.readFileSync(history,'utf8');
   expect(ordinaryHistory.startsWith(initialHistory)).toBe(true);
@@ -47,16 +50,16 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
   console.log('CLAUDE_HISTORY_CONTROL='+JSON.stringify({kind,ordinaryFlush,priorHistoryPreserved:true}));
   fs.unlinkSync(status);writes.length=0;
   const body='#'+ 'x'.repeat(4096)+String.fromCharCode(10)+`export FIXTURE_MUTATION=child OPENRIG_HOME=child-home; cd /; `+(kind==='exit'?'exit 7':kind==='errexit'?`set -e; false; printf unexpected > ${q(unreachable)}`:':');
-  expect(await transport.sendShellCommand('pane',body,undefined,{sourceInPane:true})).toEqual({ok:true});await until(()=>fs.existsSync(status));
+  expect(await transport.sendShellCommand('pane',body,undefined,{sourceInPane:true})).toEqual({ok:true});await until(()=>filled(status));
   const exit=Number(fs.readFileSync(status,'utf8').trim());expect(exit).toBe(kind==='exit'?7:kind==='errexit'?1:0);expect(fs.existsSync(unreachable)).toBe(false);
-  expect(writes).toHaveLength(3);const [cmdFile,script,payload]=writes;expect(cmdFile.path).toBe(script.path+'.cmd');expect(Buffer.byteLength(cmdFile.content)).toBeGreaterThan(4096);expect(cmdFile.mode).toBe(0o600);expect(fs.existsSync(cmdFile.path)).toBe(false);expect(script.mode).toBe(0o600);expect(payload.mode).toBe(0o600);expect(script.uid).toBe(process.getuid!());expect(payload.uid).toBe(process.getuid!());
+  expect(writes).toHaveLength(3);const [cmdFile,script,payload]=writes as [typeof writes[number],typeof writes[number],typeof writes[number]];expect(cmdFile.path).toBe(script.path+'.cmd');expect(Buffer.byteLength(cmdFile.content)).toBeGreaterThan(4096);expect(cmdFile.mode).toBe(0o600);expect(fs.existsSync(cmdFile.path)).toBe(false);expect(script.mode).toBe(0o600);expect(payload.mode).toBe(0o600);expect(script.uid).toBe(process.getuid!());expect(payload.uid).toBe(process.getuid!());
   expect(payload.content).toBe(`. ${script.path}`);expect(Buffer.byteLength(payload.content)).toBeLessThan(512);expect(fs.existsSync(script.path)).toBe(false);expect(fs.existsSync(payload.path)).toBe(false);
   const stagedHistory=fs.readFileSync(history,'utf8');
   if(ordinaryFlush){expect(stagedHistory.startsWith(ordinaryHistory)).toBe(true);expect(stagedHistory).toContain(payload.content);}
   else expect(stagedHistory).toBe(ordinaryHistory);
   expect(stagedHistory).not.toContain('FIXTURE_MUTATION=child');expect(stagedHistory).not.toContain('child-home');
   const probe=`${snapshot} > ${q(after)}; history -w`;
-  expect(await transport.sendText('pane',probe)).toEqual({ok:true});expect(await transport.sendKeys('pane',['Enter'])).toEqual({ok:true});await until(()=>fs.existsSync(after));await until(()=>fs.readFileSync(history,'utf8').includes('history -w'));
+  expect(await transport.sendText('pane',probe)).toEqual({ok:true});expect(await transport.sendKeys('pane',['Enter'])).toEqual({ok:true});await until(()=>filled(after));await until(()=>fs.readFileSync(history,'utf8').includes('history -w'));
   expect(fs.readFileSync(after,'utf8')).toBe(initial);
   const h=fs.readFileSync(history,'utf8');expect(h).toContain('prior-history-sentinel');expect(h).toContain(payload.content);expect(h).not.toContain('FIXTURE_MUTATION=child');expect(h).not.toContain('child-home');
   console.log('CLAUDE_ISOLATION='+JSON.stringify({kind,exit,sameShellPid:true,environmentUnchanged:true,cwdUnchanged:true,optionsUnchanged:true,historyPathUnchanged:true,ordinaryHistoryFlush:ordinaryFlush,priorHistoryPreserved:true,scriptBodyNotInParentHistory:true,scriptBytes:Buffer.byteLength(script.content),typedBytes:Buffer.byteLength(payload.content),scriptMode:script.mode,scriptUid:script.uid,consumedFilesRemoved:true}));

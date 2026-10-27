@@ -142,7 +142,7 @@ describe("D4 archived-rig-live-session source", () => {
     const source = f.source();
     source.read();
     expect(source.coverage()[0]).toMatchObject({ partial: false, total: 2, evaluated: 2 });
-    expect(source.coverage()[0]!.note).toBe("1 session created_at later than the daemon clock was clamped to the evaluation time");
+    expect(source.coverage()[0]).toMatchObject({ note: "1 session created_at later than the daemon clock was clamped to the evaluation time" });
   });
 
   it("OF-70: a session stamped exactly at the evaluation time is not clamped and adds no note", () => {

@@ -55,7 +55,7 @@ describe("OF-88 runner: the sidecar carries the runner's turn state", () => {
     const activity: Record<string, unknown>[] = [];
     const io: RunnerIo = {
       sendRpc: () => undefined, mirrorLine: () => undefined, mirrorAppend: () => undefined,
-      postActivity: (p) => activity.push(p), writeSidecar: (st) => sidecars.push(st), now: () => "2026-10-27T10:00:00Z",
+      postActivity: (p) => { activity.push(p); }, writeSidecar: (st) => sidecars.push(st), now: () => "2026-10-27T10:00:00Z",
     };
     const c = new RunnerCore(io, { sessionName: SEAT, launchId: "l1" }, { runtime: "omp" });
     c.start();
@@ -190,7 +190,7 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
     const activity: Record<string, unknown>[] = [];
     const core = new RunnerCore({
       sendRpc: () => undefined, mirrorLine: () => undefined, mirrorAppend: () => undefined,
-      postActivity: (p) => activity.push(p), writeSidecar: (st) => fs.writeFileSync(sidecarPath(), JSON.stringify(st)), now: () => new Date().toISOString(),
+      postActivity: (p) => { activity.push(p); }, writeSidecar: (st) => fs.writeFileSync(sidecarPath(), JSON.stringify(st)), now: () => new Date().toISOString(),
     } as RunnerIo, { sessionName: SEAT, launchId: "l1" }, { runtime: "omp" });
     core.start();
     core.handlePiLine(JSON.stringify({ type: "response", id: "pi-runner-get-state", data: { sessionFile: SESSION_FILE, sessionId: "s" } }));

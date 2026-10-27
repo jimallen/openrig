@@ -291,7 +291,7 @@ describe("RestoreOrchestrator", () => {
       });
       const node = snap.data.nodes[0]!;
       return updateSnapshotData(snap, (data) => {
-        data.sessions = data.sessions.map((session) => ({
+        data.sessions = data.sessions.map((session: any) => ({
           ...session, status: "exited", ...(opts.restorePolicy ? { restorePolicy: opts.restorePolicy } : {}),
         }));
         data.activeOccupantsByNode = { [node.id]: { kind: "absent" } };
@@ -922,7 +922,7 @@ describe("RestoreOrchestrator", () => {
 
     if (result.ok) {
       // Verify the pre_restore snapshot captured original running state
-      const preSnap = snapshotRepo.getSnapshot(result.result.preRestoreSnapshotId);
+      const preSnap = snapshotRepo.getSnapshot(result.result.preRestoreSnapshotId!);
       expect(preSnap).toBeDefined();
       const preSnapSessions = preSnap!.data.sessions ?? [];
       const workerSession = preSnapSessions.find((s: { sessionName: string }) => s.sessionName === "worker@snap-order-rig");
@@ -1271,7 +1271,7 @@ describe("RestoreOrchestrator", () => {
 
     if (result.ok) {
       // Pre-restore snapshot should contain original binding + session state
-      const preSnap = snapshotRepo.getSnapshot(result.result.preRestoreSnapshotId);
+      const preSnap = snapshotRepo.getSnapshot(result.result.preRestoreSnapshotId!);
       expect(preSnap).not.toBeNull();
       expect(preSnap!.kind).toBe("pre_restore");
 
@@ -1417,7 +1417,7 @@ describe("RestoreOrchestrator", () => {
     const orch = createOrchestrator({ tmux, listProcesses });
     const result = mode !== "subset" ? await orch.restore(snap.id) : await orch.launchSingleNode(snap.rigId, "worker", { snapshotId: snap.id });
     expect(result.ok).toBe(true);
-    const nodes = "result" in result ? result.result?.nodes : result.launched;
+    const nodes = "result" in result ? result.result?.nodes : (result as any).launched;
     if (mode === "conflicting-hook") {
       expect(nodes?.[0]?.status).toBe("attention_required");
       expect(db.prepare("SELECT verdict FROM seat_identity_verdicts WHERE node_id = ?").get(nodes![0]!.nodeId)).toEqual({ verdict: "mismatch" });
@@ -1768,7 +1768,7 @@ describe("RestoreOrchestrator", () => {
       nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
       edges: [],
       resumeType: "none",
-      resumeToken: null,
+      resumeToken: null as never,
     });
     const claude = mockClaudeResume();
     const codex = mockCodexResume();
@@ -1816,8 +1816,8 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe("pre_restore_validation_failed");
-      expect(result.result.rigResult).toBe("not_attempted");
-      expect(result.result.blockers?.[0]).toMatchObject({
+      expect((result as any).result.rigResult).toBe("not_attempted");
+      expect((result as any).result.blockers?.[0]).toMatchObject({
         code: "checkpoint_missing_node_cwd",
         logicalId: "worker",
       });
@@ -1940,7 +1940,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const preSnap = snapshotRepo.getSnapshot(result.result.preRestoreSnapshotId);
+      const preSnap = snapshotRepo.getSnapshot(result.result.preRestoreSnapshotId!);
       expect(preSnap).not.toBeNull();
       expect(preSnap!.kind).toBe("pre_restore");
     }
@@ -2868,7 +2868,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result).toMatchObject({ ok: false, code: "pre_restore_validation_failed" });
     if (result.ok) return;
-    expect(result.result!.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
+    expect((result as any).result.intendedRoster).toEqual([{ nodeId: newNode.id, logicalId: "dev.impl" }]);
   });
 
   it("a restore whose services fail to boot records the regrown seat in its roster by the live node id", async () => {
@@ -3595,7 +3595,7 @@ describe("RestoreOrchestrator", () => {
     sessionRegistry.updateStatus(session.id, "exited");
     db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
 
-    const tmux = mockTmux({
+    const tmux = (mockTmux as (...args: unknown[]) => TmuxAdapter)({
       sendText: vi.fn(async () => ({ ok: true as const })),
       sendKeys: vi.fn(async () => ({ ok: true as const })),
     });
@@ -3753,7 +3753,7 @@ describe("RestoreOrchestrator", () => {
       restorePolicy: "resume_if_possible",
     });
 
-    const claudeResume = mockClaudeResume({ ok: false as const, error: "Session not found" });
+    const claudeResume = mockClaudeResume({ ok: false as const, error: "Session not found" } as never);
     const orchestrator = createOrchestrator({ claude: claudeResume });
     const result = await orchestrator.restore(snapshot.id);
 
@@ -3833,7 +3833,7 @@ describe("RestoreOrchestrator", () => {
       restorePolicy: "resume_if_possible",
     });
 
-    const claudeResume = mockClaudeResume({ ok: false as const, error: "All expired" });
+    const claudeResume = mockClaudeResume({ ok: false as const, error: "All expired" } as never);
     const orchestrator = createOrchestrator({ claude: claudeResume });
     const result = await orchestrator.restore(snapshot.id);
 
@@ -3899,16 +3899,16 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("pre_restore_validation_failed");
-    expect(result.result.rigResult).toBe("not_attempted");
-    expect(result.result.preRestoreSnapshotId).toBeNull();
-    expect(result.result.nodes).toEqual([]);
-    expect(result.result.blockers?.[0]).toMatchObject({
+    expect((result as any).result.rigResult).toBe("not_attempted");
+    expect((result as any).result.preRestoreSnapshotId).toBeNull();
+    expect((result as any).result.nodes).toEqual([]);
+    expect((result as any).result.blockers?.[0]).toMatchObject({
       code: "required_startup_file_missing",
       severity: "critical",
       logicalId: "agent-a",
       path: missingPath,
     });
-    expect(result.result.blockers?.[0]?.remediation).toContain("Restore the missing startup file");
+    expect((result as any).result.blockers?.[0]?.remediation).toContain("Restore the missing startup file");
   });
 
   // OPR.0.3.4.5 (behavior 09): projection-validity != session continuity.
@@ -4030,8 +4030,8 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("pre_restore_validation_failed");
-    expect(result.result.rigResult).toBe("not_attempted");
-    expect(result.result.blockers?.[0]?.code).toBe("required_startup_file_missing");
+    expect((result as any).result.rigResult).toBe("not_attempted");
+    expect((result as any).result.blockers?.[0]?.code).toBe("required_startup_file_missing");
   });
 
   it("D1/D4: checkpoint with missing node cwd blocks before checkpoint write", async () => {
@@ -4046,7 +4046,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("pre_restore_validation_failed");
-    expect(result.result.blockers?.[0]).toMatchObject({
+    expect((result as any).result.blockers?.[0]).toMatchObject({
       code: "checkpoint_missing_node_cwd",
       severity: "critical",
       logicalId: "agent-a",
@@ -4154,7 +4154,7 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.result.rigResult).toBe("not_attempted");
+    expect((result as any).result.rigResult).toBe("not_attempted");
     expect(createSession).not.toHaveBeenCalled();
     expect(claude.resume).not.toHaveBeenCalled();
     expect(snapshotRepo.listSnapshots(rig.id, { kind: "pre_restore" })).toHaveLength(0);
@@ -5092,7 +5092,7 @@ describe("RestoreOrchestrator", () => {
       const result = await orch.restore(snapId);
       expect(result.ok).toBe(true);
       expect(createdSessionNames(tmux)).toContain("r99-worker-a"); // derived fallback
-      expect(result.result.warnings.some((w) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
+      expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
     });
 
     it("binding row with empty tmux_session: falls back to the derived name, observably", async () => {
@@ -5103,7 +5103,7 @@ describe("RestoreOrchestrator", () => {
       const result = await orch.restore(snapId);
       expect(result.ok).toBe(true);
       expect(createdSessionNames(tmux)).toContain("r99-worker-a");
-      expect(result.result.warnings.some((w) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
+      expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
     });
 
     it("invalid pinned name: falls back to the derived name with an observable invalid-pin warning", async () => {
@@ -5114,7 +5114,7 @@ describe("RestoreOrchestrator", () => {
       const result = await orch.restore(snapId);
       expect(result.ok).toBe(true);
       expect(createdSessionNames(tmux)).toContain("r99-worker-a");
-      expect(result.result.warnings.some((w) => w.includes("FR-5") && w.includes("is invalid"))).toBe(true);
+      expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("is invalid"))).toBe(true);
     });
 
     it("subset launch surfaces the FR-5 fallback warning (not discarded) — API result + restore.subset_completed event", async () => {
@@ -5161,7 +5161,7 @@ describe("RestoreOrchestrator", () => {
      *  copy, so a fixture that changes what was saved changes both. */
     const saveBoth = (snap: ReturnType<typeof seedPodAware>["snap"], patch: (context: { projectionEntries: unknown[]; resolvedStartupFiles: unknown[] }) => void) => {
       const fixed = updateSnapshotData(snap, (data) => { for (const context of Object.values(data.nodeStartupContext)) patch(context as never); });
-      for (const [nodeId, context] of Object.entries(fixed.data.nodeStartupContext)) {
+      for (const [nodeId, context] of Object.entries(fixed.data.nodeStartupContext as Record<string, unknown>)) {
         db.prepare("UPDATE node_startup_context SET projection_entries_json = ?, resolved_files_json = ? WHERE node_id = ?")
           .run(JSON.stringify((context as { projectionEntries: unknown[] }).projectionEntries), JSON.stringify((context as { resolvedStartupFiles: unknown[] }).resolvedStartupFiles), nodeId);
       }
@@ -5198,7 +5198,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<{ path: string; absolutePath: string; ownerRoot: string; required: boolean; appliesOn: string[]; deliveryHint: string }>);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as Array<{ path: string; absolutePath: string; ownerRoot: string; required: boolean; appliesOn: string[]; deliveryHint: string }>);
       const culture = delivered.filter((f) => f.path === "CULTURE-default.md");
       expect(culture.map((f) => f.absolutePath).sort()).toEqual([`${RUNNING_ASSETS}/guidance/CULTURE-default.md`, "/user-rig/CULTURE-default.md"].sort());
       expect(delivered.find((f) => f.path === "openrig-start.md")).toMatchObject({
@@ -5214,7 +5214,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: () => true }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<{ absolutePath: string }>);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as Array<{ absolutePath: string }>);
       expect(delivered.some((f) => f.absolutePath.startsWith("/old-openrig"))).toBe(false);
       expect(delivered.some((f) => f.absolutePath === `${RUNNING_ASSETS}/guidance/CULTURE-default.md`)).toBe(true);
     });
@@ -5249,7 +5249,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const projected = adapter.project.mock.calls.flatMap((c) => ((c[0] as { entries: Array<{ effectiveId: string; absolutePath: string }> }).entries));
+      const projected = adapter.project.mock.calls.flatMap((c) => (((c as unknown as unknown[])[0] as { entries: Array<{ effectiveId: string; absolutePath: string }> }).entries));
       expect(projected.find((e) => e.effectiveId === "shared:claude-default-mcp")?.absolutePath).toBe(`${RUNNING_SPECS}/agents/shared/runtime/claude-mcp.fragment.json`);
       expect(projected.find((e) => e.effectiveId === "shared:openrig-core")?.absolutePath).toBe("/home/u/.openrig/plugins/openrig-core");
       if (result.ok) {
@@ -5271,7 +5271,7 @@ describe("RestoreOrchestrator", () => {
         adapters: { "claude-code": adapter }, fsOps: { exists: notOld }, freshLogicalIds: ["dev.impl"],
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => (c[0] as Array<{ absolutePath: string }>).map((f) => f.absolutePath));
+      const delivered = deliverStartup.mock.calls.flatMap((c) => ((c as unknown as unknown[])[0] as Array<{ absolutePath: string }>).map((f) => f.absolutePath));
       expect(delivered.sort()).toEqual([`${RUNNING_SPECS}/rigs/launch/kernel/culture/CULTURE.md`, "/user-rig/CULTURE-default.md"].sort());
     });
 
@@ -5290,7 +5290,7 @@ describe("RestoreOrchestrator", () => {
         fsOps: { exists: (p) => p.startsWith(RUNNING_SPECS) ? fs.existsSync(p) : notOld(p) },
       });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<typeof culture>);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as Array<typeof culture>);
       expect(delivered).toEqual([{
         ...culture, absolutePath: `${RUNNING_SPECS}/rigs/launch/first-project/CULTURE.md`,
         ownerRoot: `${RUNNING_SPECS}/rigs/launch/first-project`,
@@ -5303,7 +5303,7 @@ describe("RestoreOrchestrator", () => {
       const orch = createOrchestrator({ listProcesses: nativeLineage("claude-code", "resume-token-261") });
       const result = await orch.restore(snap.id, { adapters: { "claude-code": adapter }, fsOps: { exists: notOld } });
       expect(result.ok).toBe(true);
-      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as unknown[]);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => (c as unknown as unknown[])[0] as unknown[]);
       expect(delivered).toEqual([]);
     });
   });

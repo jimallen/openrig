@@ -299,7 +299,7 @@ describe("createDaemon startup composition", () => {
 
     const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
 
-    const canonical = await deps.queueRepo.create({
+    const canonical = await deps.queueRepo!.create({
       sourceSession: "dev-qa@implementation-pair",
       destinationSession: "human-operator@kernel",
       body: "human gate smoke",
@@ -308,7 +308,7 @@ describe("createDaemon startup composition", () => {
       evidenceRef: "proof/test-evidence.md",
       nudge: false,
     });
-    const generic = await deps.queueRepo.create({
+    const generic = await deps.queueRepo!.create({
       sourceSession: "dev-qa@implementation-pair",
       destinationSession: "human@host",
       body: "human host smoke",
@@ -321,7 +321,7 @@ describe("createDaemon startup composition", () => {
     expect(canonical.destinationSession).toBe("human-operator@kernel");
     expect(generic.destinationSession).toBe("human@host");
     await expect(
-      deps.queueRepo.create({
+      deps.queueRepo!.create({
         sourceSession: "dev-qa@implementation-pair",
         destinationSession: "driver@phantom-rig",
         body: "must still reject phantom rigs",
@@ -340,15 +340,15 @@ describe("createDaemon startup composition", () => {
     const { app, db, deps } = daemon;
     try {
       const source = deps.rigRepo.createRig("membership-source");
-      deps.rigRepo.addNode(source.id, "sender.ba", { runtime: null });
+      deps.rigRepo.addNode(source.id, "sender.ba", { runtime: null as never });
       const target = deps.rigRepo.createRig("membership-target");
-      deps.rigRepo.addNode(target.id, "product.ba", { runtime: null });
-      const stopped = deps.rigRepo.addNode(target.id, "product.stopped", { runtime: null });
+      deps.rigRepo.addNode(target.id, "product.ba", { runtime: null as never });
+      const stopped = deps.rigRepo.addNode(target.id, "product.stopped", { runtime: null as never });
       const session = deps.sessionRegistry.registerSession(stopped.id, "product-stopped@membership-target");
       deps.sessionRegistry.updateStatus(session.id, "exited");
-      deps.rigRepo.addNode(target.id, "product.member.dot", { runtime: null });
-      deps.rigRepo.addNode(target.id, "flat", { runtime: null });
-      const adopted = deps.rigRepo.addNode(target.id, "product.adopted", { runtime: null });
+      deps.rigRepo.addNode(target.id, "product.member.dot", { runtime: null as never });
+      deps.rigRepo.addNode(target.id, "flat", { runtime: null as never });
+      const adopted = deps.rigRepo.addNode(target.id, "product.adopted", { runtime: null as never });
       deps.sessionRegistry.registerSession(adopted.id, "adopted-alias@membership-target");
       const sender = "sender-ba@membership-source";
       const post = (url: string, body: Record<string, unknown>) => app.request(url, {
@@ -368,19 +368,19 @@ describe("createDaemon startup composition", () => {
         const before = counts();
         const response = await create(destination);
         expect(response.status).toBe(400);
-        expect((await response.json()).error).toBe("unknown_destination_rig");
+        expect(((await response.json()) as any).error).toBe("unknown_destination_rig");
         expect(counts()).toEqual(before);
       }
       for (const destination of ["product-ba@membership-target", "product-stopped@membership-target",
         "product-member.dot@membership-target", "flat@membership-target", "adopted-alias@membership-target"]) {
         const response = await create(destination);
         expect(response.status, destination).toBe(201);
-        expect((await response.json()).advisories, destination).toBeUndefined();
+        expect(((await response.json()) as any).advisories, destination).toBeUndefined();
       }
       const membershipReads = vi.spyOn(db, "prepare");
       for (const destination of ["product-ba@membership-target", "product-stopped@membership-target",
         "product-member.dot@membership-target", "flat@membership-target", "adopted-alias@membership-target"]) {
-        expect(deps.queueRepo.destinationAdvisory(destination)).toBeNull();
+        expect(deps.queueRepo!.destinationAdvisory(destination)).toBeNull();
       }
       const membershipSql = membershipReads.mock.calls.map(([query]) => query).join("\n");
       membershipReads.mockRestore();
@@ -390,32 +390,32 @@ describe("createDaemon startup composition", () => {
         .run("advisory-unrelated-snapshot", target.id, "manual", "complete", JSON.stringify({ sessions: { unexpected: true } }));
       const withSnapshot = await create("product-ba@membership-target");
       expect(withSnapshot.status).toBe(201);
-      expect((await withSnapshot.json()).advisories).toBeUndefined();
+      expect(((await withSnapshot.json()) as any).advisories).toBeUndefined();
       const dotted = "product.ba@membership-target";
       expect(resolveGuardTarget(db, dotted)).toBeNull();
       expect(resolveGuardTarget(db, "product-ba@membership-target")).not.toBeNull();
       const dottedResponse = await create(dotted);
       expect(dottedResponse.status).toBe(201);
-      const dottedResult = await dottedResponse.json();
+      const dottedResult: any = await dottedResponse.json();
       expect(dottedResult.destinationSession).toBe(dotted);
       expect(dottedResult.advisories[0].availableDestinations).toContain("product-ba@membership-target");
       expect(dottedResult.advisories[0].message).toContain("matches no session address");
-      expect(deps.queueRepo.getById(dottedResult.qitemId)?.destinationSession).toBe(dotted);
-      const dottedAlias = deps.rigRepo.addNode(target.id, "pod.adopted-dot", { runtime: null });
+      expect(deps.queueRepo!.getById(dottedResult.qitemId)?.destinationSession).toBe(dotted);
+      const dottedAlias = deps.rigRepo.addNode(target.id, "pod.adopted-dot", { runtime: null as never });
       deps.sessionRegistry.registerSession(dottedAlias.id, "adopted.dot@membership-target");
       const aliasResponse = await create("adopted.dot@membership-target");
       expect(aliasResponse.status).toBe(201);
-      expect((await aliasResponse.json()).advisories).toBeUndefined();
+      expect(((await aliasResponse.json()) as any).advisories).toBeUndefined();
       const typo = "prodcut-ba@membership-target";
       const response = await create(typo);
       expect(response.status).toBe(201);
-      const accepted = await response.json();
+      const accepted: any = await response.json();
       expect(accepted.destinationSession).toBe(typo);
       expect(accepted.advisories[0]).toMatchObject({ code: "unmatched_destination_seat", destinationSession: typo });
       expect(accepted.advisories[0].availableDestinations).toContain("product-ba@membership-target");
       expect(accepted.advisories[0].message).toContain("does not guarantee pickup or delivery");
-      expect(deps.queueRepo.getById(accepted.qitemId)?.destinationSession).toBe(typo);
-      const transactional = db.transaction(() => deps.queueRepo.createWithinTransaction({
+      expect(deps.queueRepo!.getById(accepted.qitemId)?.destinationSession).toBe(typo);
+      const transactional = db.transaction(() => deps.queueRepo!.createWithinTransaction({
         sourceSession: sender, destinationSession: typo,
         body: "transaction membership fixture", nudge: false,
       }))();
@@ -428,10 +428,10 @@ describe("createDaemon startup composition", () => {
         const row = () => db.prepare("SELECT * FROM queue_items WHERE qitem_id = ?").get(qitemId);
         const accepted = await post(`/api/queue/${qitemId}/${verb}`, { toSession: typo });
         expect(accepted.status).toBe(201);
-        const result = await accepted.json();
+        const result: any = await accepted.json();
         expect(result.created.destinationSession).toBe(typo);
         expect(result.advisories[0].code).toBe("unmatched_destination_seat");
-        expect(deps.queueRepo.getById(result.created.qitemId)?.destinationSession).toBe(typo);
+        expect(deps.queueRepo!.getById(result.created.qitemId)?.destinationSession).toBe(typo);
         expect((row() as { state: string }).state).toBe(verb === "handoff" ? "handed-off" : "done");
       }
     } finally {
@@ -529,13 +529,13 @@ describe("createDaemon startup composition", () => {
       // identity fix (a shared home freezes the first launcher's env into
       // the shared app-server).
       const seatHome = path.join(
-        result.deps.sessionEnv["OPENRIG_HOME"] ?? "<no-openrig-home>",
+        result.deps.sessionEnv!["OPENRIG_HOME"] ?? "<no-openrig-home>",
         "codex-seats",
         "r00-gap7-default-worker",
       );
       expect(command).toContain(`-e 'CODEX_HOME=${seatHome}'`);
       // PATH carries the worktree-placement shim first (daemon-projected OPENRIG_HOME root)
-      expect(command).toContain(`-e 'PATH=${result.deps.sessionEnv["OPENRIG_HOME"]}/rig-bin:/proof/openrig/bin:/usr/bin:/bin'`);
+      expect(command).toContain(`-e 'PATH=${result.deps.sessionEnv!["OPENRIG_HOME"]}/rig-bin:/proof/openrig/bin:/usr/bin:/bin'`);
       // The provider key reaches the seat through the credential file, never the command line.
       expect(command).not.toContain("gap7-openai-key");
       expect(credentials()).toContain("OPENAI_API_KEY 'gap7-openai-key'");
@@ -820,7 +820,7 @@ describe("createDaemon startup composition", () => {
 
     const res = await app.request("/api/adapters/cmux/status");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body: any = await res.json();
     expect(body.available).toBe(false);
 
     db.close();
