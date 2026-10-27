@@ -413,3 +413,23 @@ it("#613 additional: disabled real checkpoint source never opens malformed files
   expect(new HealthProjectionService(source, () => t.policy.read()).list().records).toEqual([]);
   expect(read).not.toHaveBeenCalled();
 });
+
+// OF-117: the passive source reads the lineage members' tags and the workflow receipts' closure evidence straight from the
+// saved rows. A damaged column is a NAMED refusal (UnreadableRowError: table, row, column) that the projection reports as the
+// source being unavailable with that reason; it does not guess: a member whose tags cannot be read cannot be told from health
+// traffic, and a receipt whose evidence cannot be read is not "no evidence". Before: the same coverage entry, but its reason
+// was the engine's bare "Unexpected token ... is not valid JSON", which names neither the row nor the column.
+it("OF-117: a lineage member with damaged tags and a workflow receipt with damaged closure evidence make the source unavailable, naming the row and column", async () => {
+  const t = await setup();
+  const unavailable = () => { t.projection.list(); return t.projection.coverage().filter((entry) => entry.status === "unavailable").map((entry) => entry.reason); };
+  expect(unavailable(), "control: readable rows project").toEqual([]);
+  t.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = 'root'").run("{not json");
+  expect(unavailable()).toEqual(["Saved queue_items row root is damaged: tags is not readable JSON. Repair or remove the row."]);
+  t.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = 'root'").run(JSON.stringify(["mission:mission", "slice:slice-1"]));
+  expect(unavailable(), "repaired").toEqual([]);
+  t.db.pragma("foreign_keys = OFF");
+  t.db.prepare("INSERT INTO workflow_step_trails(trail_id,instance_id,step_id,step_role,closed_at,closure_reason,closure_evidence_json,actor_session,prior_qitem_id) VALUES('trail-1','wf','s','r','2026-09-05T12:00:10.000Z','done',?,'owner@rig','root')").run("{not json");
+  expect(unavailable()).toEqual(["Saved workflow_step_trails row trail-1 is damaged: closure_evidence_json is not readable JSON. Repair or remove the row."]);
+  t.db.prepare("UPDATE workflow_step_trails SET closure_evidence_json = ? WHERE trail_id = 'trail-1'").run(JSON.stringify({ ok: true }));
+  expect(unavailable(), "readable evidence").toEqual([]);
+});

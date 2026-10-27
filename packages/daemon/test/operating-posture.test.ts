@@ -110,6 +110,28 @@ it("refuses missing, conflicting, ambiguous, unreadable and corrupt sources inst
   expect(t.service.resolve({ rigId: "demo" })).toMatchObject({ posture: "unknown", source: "unknown" });
 });
 
+// OF-117: the posture reads the linked qitem's tags and the workflow's lifecycle binding from saved rows. A damaged column is a
+// NAMED refusal (UnreadableRowError: table, row, column) and the posture reads "unknown" with that reason, never the default
+// and never a bare SyntaxError. A damaged mode binding record is the same, by the binding's id.
+it("OF-117: a damaged qitem tags column, workflow lifecycle binding or mode record makes the posture unknown and names the row and column", async () => {
+  const t = await setup();
+  t.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = 'alpha'").run("{not json");
+  expect(t.service.resolve({ qitemId: "alpha" })).toMatchObject({ posture: "unknown", source: "unknown", reason: expect.stringContaining("Saved queue_items row alpha is damaged: tags is not readable JSON") });
+  // Control: the sibling qitem with readable tags still resolves.
+  expect(t.service.resolve({ qitemId: "beta" }).posture).not.toBe("unknown");
+  t.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = 'alpha'").run(JSON.stringify(["project:alpha", "mission:release", "slice:work-1"]));
+  t.db.prepare("INSERT INTO workflow_instances(instance_id,workflow_name,workflow_version,created_by_session,created_at,bound_rig,lifecycle_binding_json) VALUES('workflow','fixture','1','owner@demo','2026-09-09',?,?)")
+    .run("demo", "{not json");
+  t.db.prepare("INSERT INTO workflow_frontier_bindings(instance_id,packet_id,step_id,created_at) VALUES('workflow','alpha','interactive-plan','2026-09-09')").run();
+  expect(t.service.resolve({ qitemId: "alpha" })).toMatchObject({ posture: "unknown", source: "unknown", reason: expect.stringContaining("Saved workflow_instances row workflow is damaged: lifecycle_binding_json is not readable JSON") });
+  expect((await t.put("delegated", "rig", "demo")).status).toBe(200);
+  t.db.prepare("UPDATE operator_context_mode_bindings SET record_json = '{'").run();
+  expect(() => t.modes.getBinding("rig", t.rig.id)).toThrow(expect.objectContaining({ table: "operator_context_mode_bindings", columns: ["record_json"] }));
+  expect(() => t.modes.listBindings()).toThrow(expect.objectContaining({ table: "operator_context_mode_bindings" }));
+  t.db.prepare("UPDATE operator_context_mode_bindings SET record_json = ''").run();
+  expect(() => t.modes.listBindings(), "an empty record is damage, not 'no record'").toThrow(expect.objectContaining({ columns: ["record_json"] }));
+});
+
 it("preserves legacy binding bytes through migration and never infers delegation from an ergonomic mode", async () => {
   const db = createDb(); cleanup.push(() => db.close()); migrate(db, ALL_MIGRATIONS.slice(0, -1));
   const store = new RigModeStore(db); store.setBinding("global_host", null, "focus", record("focus", "global_host"));

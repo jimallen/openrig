@@ -180,7 +180,8 @@ export function watchdogRoutes(): Hono {
     const jobId = c.req.param("job_id");
     const job = getJobsRepo(c).getById(jobId);
     if (!job) return c.json({ error: "job_not_found", jobId }, 404);
-    const recentHistory = getHistoryLog(c).listForJob(jobId, 20);
+    // OF-117: one entry with damaged notes is served flagged `unreadable`, not an HTTP 500 for the job's whole history.
+    const recentHistory = getHistoryLog(c).listForJob(jobId, 20, "mark");
     return c.json({ job, recentHistory });
   });
 

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { RowColumnReader } from "./unreadable-row.js";
 
 /**
  * The EXECUTABLE wake-intent namespace. A durable wake intent is written by the
@@ -72,6 +73,9 @@ export interface OutboxEntry {
   deliveredAt: string | null;
   auditPointer: string | null;
   guardBinding?: { nodeId: string; session: string; occupant: string | null; pane: string | null } | null;
+  /** OF-117: set on an entry served by a listing when its saved `tags` / `guard_binding` are not readable (they read as null
+   *  BECAUSE of that). A read a decision rests on refuses instead (UnreadableRowError). */
+  unreadable?: string[];
   retiredAt?: string | null;
   retiredBy?: string | null;
   retirementReason?: string | null;
@@ -233,8 +237,9 @@ export class OutboxHandler {
     // Provisional bounded defaults. Historical/retired rows and already committed
     // overflow are deliberately not evicted to make these active quotas fit.
     const usage = this.db.prepare(`SELECT count(*) AS count, coalesce(sum(length(CAST(body AS BLOB))),0) AS bytes
-      FROM outbox_entries WHERE delivery_state='retained' AND json_extract(guard_binding,'$.nodeId')=?`)
+      FROM outbox_entries WHERE delivery_state='retained' AND json_valid(guard_binding) AND json_extract(guard_binding,'$.nodeId')=?`)
       .get(nodeId) as { count: number; bytes: number };
+    // OF-117: a retained row whose binding is not JSON names no node, so no node's quota counts it (heldForNode names it).
     const size = Buffer.byteLength(body, "utf8");
     if (size > 1024 * 1024 || usage.count >= 100 || usage.bytes + size > 8 * 1024 * 1024) {
       throw new OutboxHandlerError("retained_quota_full", "Held-message quota is full. Retire a specific held message to release active quota; no input was written.");
@@ -255,12 +260,17 @@ export class OutboxHandler {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000 || !Number.isInteger(offset) || offset < 0) {
       throw new OutboxHandlerError("invalid_pagination", "Use limit 1–1000 and a nonnegative offset.");
     }
+    // OF-117: json_extract throws "malformed JSON" on a damaged binding, which ended this listing (HTTP 500) for every node's
+    // held messages. A damaged binding names no node, so the row is not one of this node's; it is named in `unreadableHeld`
+    // (rig-wide) so it is neither hidden nor a 500.
     const total = (this.db.prepare(`SELECT count(*) AS n FROM outbox_entries
-      WHERE delivery_state='retained' AND json_extract(guard_binding,'$.nodeId')=?`).get(nodeId) as { n: number }).n;
+      WHERE delivery_state='retained' AND json_valid(guard_binding) AND json_extract(guard_binding,'$.nodeId')=?`).get(nodeId) as { n: number }).n;
     const rows = this.db.prepare(`SELECT * FROM outbox_entries
-      WHERE delivery_state='retained' AND json_extract(guard_binding,'$.nodeId')=? ORDER BY ts_dispatched,outbox_id LIMIT ? OFFSET ?`)
+      WHERE delivery_state='retained' AND json_valid(guard_binding) AND json_extract(guard_binding,'$.nodeId')=? ORDER BY ts_dispatched,outbox_id LIMIT ? OFFSET ?`)
       .all(nodeId, limit, offset) as OutboxEntryRow[];
-    return { items: rows.map(r => this.rowToEntry(r)), total, limit, offset, truncated: offset + rows.length < total };
+    const unreadableHeld = (this.db.prepare(`SELECT outbox_id FROM outbox_entries
+      WHERE delivery_state='retained' AND guard_binding IS NOT NULL AND NOT json_valid(guard_binding) ORDER BY ts_dispatched,outbox_id`).all() as Array<{ outbox_id: string }>).map((r) => r.outbox_id);
+    return { items: rows.map(r => this.rowToEntry(r, "mark")), total, limit, offset, truncated: offset + rows.length < total, unreadableHeld };
   }
 
   markDelivered(outboxId: string): OutboxEntry {
@@ -369,7 +379,7 @@ export class OutboxHandler {
         `SELECT * FROM outbox_entries WHERE sender_session = ? ORDER BY ts_dispatched DESC, rowid DESC LIMIT ?`
       )
       .all(senderSession, limit) as OutboxEntryRow[];
-    return rows.map((r) => this.rowToEntry(r));
+    return rows.map((r) => this.rowToEntry(r, "mark"));
   }
 
   /**
@@ -393,7 +403,8 @@ export class OutboxHandler {
           ORDER BY ts_dispatched ASC, rowid ASC LIMIT ?`
       )
       .all(idPrefix.length, idPrefix, limit) as OutboxEntryRow[];
-    return rows.map((r) => this.rowToEntry(r));
+    // OF-117: marked, not refused: one damaged intent must not end the drain for the intents behind it (the drain skips it).
+    return rows.map((r) => this.rowToEntry(r, "mark"));
   }
 
   /**
@@ -427,24 +438,31 @@ export class OutboxHandler {
     return entry;
   }
 
-  private rowToEntry(row: OutboxEntryRow): OutboxEntry {
+  /** OF-117: "refuse" (default; every read a delivery or guard decision rests on) throws UnreadableRowError for a damaged
+   *  tags / guard_binding column; "mark" (listings) serves the entry with the column null and `unreadable` naming it. */
+  private rowToEntry(row: OutboxEntryRow, damage: "refuse" | "mark" = "refuse"): OutboxEntry {
+    const columns = new RowColumnReader("outbox_entries", row.outbox_id);
+    const tags = columns.strings("tags", row.tags);
+    const guardBinding = row.guard_binding !== undefined ? columns.json<NonNullable<OutboxEntry["guardBinding"]>>("guard_binding", row.guard_binding) : null;
+    if (damage === "refuse") columns.refuseIfDamaged();
     return {
       outboxId: row.outbox_id,
       senderSession: row.sender_session,
       destinationSession: row.destination_session,
       body: row.body,
-      tags: row.tags ? (JSON.parse(row.tags) as string[]) : null,
+      tags,
       urgency: row.urgency,
       tsDispatched: row.ts_dispatched,
       deliveryState: parseDeliveryState(row.delivery_state),
       deliveredAt: row.delivered_at,
       auditPointer: row.audit_pointer,
       ...(row.guard_binding !== undefined ? {
-        guardBinding: row.guard_binding ? JSON.parse(row.guard_binding) : null,
+        guardBinding,
         retiredAt: row.retired_at ?? null,
         retiredBy: row.retired_by ?? null,
         retirementReason: row.retirement_reason ?? null,
       } : {}),
+      ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
     };
   }
 }

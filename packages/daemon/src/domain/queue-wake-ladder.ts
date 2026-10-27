@@ -566,6 +566,7 @@ async function ensureUsageLimitBlocker(
   const existing = deps.db.prepare(
     `SELECT qitem_id FROM queue_items
       WHERE state IN ('pending', 'in-progress', 'blocked')
+        AND json_valid(queue_items.tags)
         AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
         AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
       LIMIT 1`,

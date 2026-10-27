@@ -999,7 +999,7 @@ export function queueRoutes(): Hono {
     const limitRaw = q.limit !== undefined ? Number.parseInt(q.limit, 10) : undefined;
     const limit = limitRaw !== undefined && Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
     const compact = q.compact === "1" || q.compact === "true";
-    const items = getRepo(c).findOverdue({ rig, limit, compact });
+    const items = getRepo(c).findOverdue({ rig, limit, compact, damage: "mark" });
     return c.json(items);
   });
 
@@ -1013,7 +1013,7 @@ export function queueRoutes(): Hono {
     const limitRaw = q.limit !== undefined ? Number.parseInt(q.limit, 10) : undefined;
     const limit = limitRaw !== undefined && Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
     const compact = q.compact === "1" || q.compact === "true";
-    const items = getRepo(c).findUndelivered({ rig, limit, compact });
+    const items = getRepo(c).findUndelivered({ rig, limit, compact, damage: "mark" });
     // 0.5.1-54 classifier fold (PM ruling): LABEL each strand transient vs permanent-topology so the
     // count is actionable — permanent-topology (destination unresolvable on this daemon) routes to the
     // addressing family, not retry; transient is the only class a future DR-2 (held n=1) would touch.

@@ -29,6 +29,7 @@ import { deriveCrossHostSuccessorId, matchesRecordedHandoffTarget, type QueueIte
 import { stalledPickupFinding } from "./queue-pickup.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
+import { isUnreadableRowError } from "./unreadable-row.js";
 
 export const STUCK_SWEEP_INTERVAL_KEY = "queue.stuck_sweep_interval_seconds";
 export const DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS = 300;
@@ -368,7 +369,26 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
 
     // Half 1 — claimed-never-closed. The claimant holds the obligation; the finding
     // routes to them.
-    for (const row of deps.queueRepo.findOverdue({ now: now.toISOString() })) {
+    // OF-117: a row whose saved JSON columns are damaged is named and left out of THIS sweep (its tags, chain and questions
+    // are what the routing and the finding rest on); it does not end the sweep for the rows beside it.
+    const skipUnreadable = (row: { qitemId: string; unreadable?: string[] }): boolean => {
+      if (!row.unreadable) return false;
+      log(`[stuck-sweep] ${row.qitemId} skipped: its saved ${row.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
+      return true;
+    };
+    // The same for the two loops below that walk every claimed / every unclaimed row by id: a damaged row is named and skipped
+    // (null), not a failed tick. The wait-notice and custody lookups keep the by-id refusal (a loud, named tick failure).
+    const readRow = (qitemId: string) => {
+      try {
+        return deps.queueRepo.getById(qitemId);
+      } catch (err) {
+        if (!isUnreadableRowError(err)) throw err;
+        log(`[stuck-sweep] ${qitemId} skipped: its saved ${err.columns.join(", ")} is not readable JSON (repair or remove the row)`);
+        return null;
+      }
+    };
+    for (const row of deps.queueRepo.findOverdue({ now: now.toISOString(), damage: "mark" })) {
+      if (skipUnreadable(row)) continue;
       if (isFindingRow(row)) continue;
       candidates.push({
         kind: "overdue-claim",
@@ -391,7 +411,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       .prepare("SELECT qitem_id FROM queue_items WHERE state = 'in-progress' AND claimed_at IS NOT NULL")
       .all() as Array<{ qitem_id: string }>;
     for (const { qitem_id } of claimedRows) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row || isFindingRow(row)) continue;
       const stalled = stalledPickupFinding(row);
       if (!stalled) continue;
@@ -430,7 +450,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     // so it routes to the destination's orchestrator when one is derivable. Rows with a
     // live S01 ladder are S01's territory; an exhausted ladder is the handback and lands
     // here exactly once (the dedup tag keeps it to one finding).
-    for (const row of deps.queueRepo.findUndelivered()) {
+    for (const row of deps.queueRepo.findUndelivered({ damage: "mark" })) {
+      if (skipUnreadable(row)) continue;
       if (isFindingRow(row)) continue;
       if (hasLiveLadder(deps.db, row.qitemId)) continue;
       candidates.push({
@@ -458,7 +479,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       )
       .all(cutoff) as Array<{ qitem_id: string }>;
     for (const { qitem_id } of unclaimedRows) {
-      const row = deps.queueRepo.getById(qitem_id);
+      const row = readRow(qitem_id);
       if (!row || isFindingRow(row)) continue;
       const actionableAt = pendingSince(deps.db, row.qitemId) ?? row.tsCreated;
       if (actionableAt > cutoff) continue;

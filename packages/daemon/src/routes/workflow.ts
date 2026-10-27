@@ -288,6 +288,8 @@ export function workflowRoutes(): Hono {
       sourcePath: row.sourcePath,
       cachedAt: row.cachedAt,
       isBuiltIn: builtinDirAbs ? isUnderDir(row.sourcePath, builtinDirAbs) : false,
+      // OF-117: a cached spec with a damaged saved column is listed, flagged (never an HTTP 500 for the whole list).
+      ...(row.unreadable ? { unreadable: row.unreadable } : {}),
     }));
     return c.json({ specs: payload });
   });

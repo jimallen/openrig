@@ -40,6 +40,10 @@ export interface WorkflowBootSweepResult {
   /** OPR.0.4.6.WF5 FR-2 class (b): stuck exception items created this
    *  sweep (deduped re-detections not counted). */
   exceptionItemsCreated: number;
+  /** OF-117: in-flight instances left out of this sweep because their saved JSON columns are damaged, with the columns.
+   *  Present only when there were any. They are NOT swept (no keepalive, nudge or deadline decision on an unreadable
+   *  frontier); the rest of the instances are. */
+  unreadableInstances?: Array<{ instanceId: string; columns: string[] }>;
 }
 
 export interface WorkflowBootSweepDeps {
@@ -64,16 +68,20 @@ export async function runWorkflowBootSweep(
   const now = (deps.now ?? (() => new Date()))();
   const exceptionsClosed = deps.reconcileStuckExceptions?.() ?? 0;
   if (exceptionsClosed) log(`workflow boot sweep: ${exceptionsClosed} resolved overdue exception item(s) closed`);
-  const instances = [
-    ...deps.instanceStore.listByStatus("active"),
-    ...deps.instanceStore.listByStatus("waiting"),
+  const inFlight = [
+    ...deps.instanceStore.listByStatus("active", "mark"),
+    ...deps.instanceStore.listByStatus("waiting", "mark"),
   ];
+  const unreadableInstances = inFlight.filter((instance) => instance.unreadable).map((instance) => ({ instanceId: instance.instanceId, columns: instance.unreadable! }));
+  for (const skipped of unreadableInstances) log(`workflow boot sweep: instance ${skipped.instanceId} skipped: its saved ${skipped.columns.join(", ")} is not readable JSON (repair or remove the row)`);
+  const instances = inFlight.filter((instance) => !instance.unreadable);
   const result: WorkflowBootSweepResult = {
     instancesSwept: instances.length,
     keepalivesArmed: 0,
     lostNudgesReissued: 0,
     stuckSurfaced: 0,
     exceptionItemsCreated: 0,
+    ...(unreadableInstances.length > 0 ? { unreadableInstances } : {}),
   };
   if (instances.length === 0) {
     log("workflow boot sweep: 0 in-flight instances (no-op)");

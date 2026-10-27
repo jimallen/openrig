@@ -184,7 +184,7 @@ export class StreamStore {
       params.push(opts.hintDestination);
     }
     if (opts?.hintTag) {
-      conditions.push("EXISTS (SELECT 1 FROM json_each(stream_items.hint_tags) WHERE json_each.value = ?)");
+      conditions.push("json_valid(stream_items.hint_tags) AND EXISTS (SELECT 1 FROM json_each(stream_items.hint_tags) WHERE json_each.value = ?)");
       params.push(opts.hintTag);
     }
     if (opts?.since) {

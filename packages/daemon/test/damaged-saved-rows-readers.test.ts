@@ -36,6 +36,7 @@ import { readFreshOccupantRelations } from "../src/domain/fresh-occupant-relatio
 import { hasPendingFreshStartup, readFreshStartupPending } from "../src/domain/startup-orchestrator.js";
 import { captureSkippingUnreadable } from "../src/domain/snapshot-capture.js";
 import { makeWorkflowKeepalivePolicy } from "../src/domain/policies/workflow-keepalive.js";
+import { UnreadableRowError } from "../src/domain/unreadable-row.js";
 
 const NOT_JSON = "{not json";
 
@@ -111,6 +112,15 @@ describe("OF-51 snapshots: one damaged snapshot is never a 500 for the rig's oth
     const { rig } = seedRigWithSnapshots();
     db.prepare("UPDATE nodes SET package_refs = ? WHERE rig_id = ?").run(NOT_JSON, rig.id);
     const res = await setup.app.request(`/api/rigs/${rig.id}/up`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const body = await res.json() as { code?: string; error?: string };
+    expect({ status: res.status, code: body.code }, JSON.stringify(body)).toEqual({ status: 409, code: "saved_row_damaged" });
+    expect(body.error).toContain("dev.impl's saved row is damaged (package_refs is not JSON)");
+  });
+
+  it("POST /api/up with an existing rig's name (rig up <name>) on a rig with a damaged seat row is the same 409 saved_row_damaged", async () => {
+    const { rig } = seedRigWithSnapshots();
+    db.prepare("UPDATE nodes SET package_refs = ? WHERE rig_id = ?").run(NOT_JSON, rig.id);
+    const res = await setup.app.request("/api/up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef: "r" }) });
     const body = await res.json() as { code?: string; error?: string };
     expect({ status: res.status, code: body.code }, JSON.stringify(body)).toEqual({ status: 409, code: "saved_row_damaged" });
     expect(body.error).toContain("dev.impl's saved row is damaged (package_refs is not JSON)");
@@ -287,7 +297,7 @@ describe("OF-51 stores read for display or audit: a damaged JSON column reads as
       const bad = trail.record({ instanceId: inst.instanceId, stepId: "s", stepRole: "r", closureReason: "done", closedAt: "2026-05-04T03:01:00.000Z", actorSession: "a@r", priorQitemId: "q", closureEvidence: { ok: true } } as never);
       expect(trail.listForInstance(inst.instanceId)[0]!.closureEvidence, "control: readable").toEqual({ ok: true });
       db.prepare("UPDATE workflow_step_trails SET closure_evidence_json = ? WHERE trail_id = ?").run(NOT_JSON, bad.trailId);
-      expect(() => trail.listForInstance(inst.instanceId)).toThrow(SyntaxError);
+      expect(() => trail.listForInstance(inst.instanceId)).toThrow(UnreadableRowError);
     });
 
     it("keepalive policy: a damaged frontier skips with workflow_frontier_unreadable (the job stays active), not a throw and not terminal", async () => {

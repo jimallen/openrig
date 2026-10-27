@@ -695,6 +695,35 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     expect(calls).toEqual([]);
   });
 
+  // OF-117: the shared usage-limit blocker is found by SQL json_each over every open queue row's tags. One row whose tags
+  // are not JSON (an unrelated row, anywhere in the queue) made json_each throw "malformed JSON", the park failed, and
+  // the seats fell back to wrong retry rungs. It is not a match; the seats park on ONE blocker as before.
+  it("OF-117: a queue row with damaged tags does not stop the usage-limit park, and the blocker is still shared", async () => {
+    const now = new Date();
+    const reset = new Date(now.getTime() + 15 * 60_000).toISOString();
+    const staleAfter = new Date(now.getTime() + 30 * 60_000).toISOString();
+    repo.attachWatchdogJobsRepository(new WatchdogJobsRepository(db, () => now));
+    // Created (not handed off), so no ladder pass reads the row by id: only the blocker lookup meets its tags.
+    const unrelated = await repo.create({ sourceSession: "sender@r", destinationSession: "unrelated@r", body: "unrelated", nudge: false });
+    db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run("{not json", unrelated.qitemId);
+    const batons = await Promise.all([mkBaton("dev-a@r"), mkBaton("dev-b@r")]);
+    for (const baton of batons) setNudgeResult(baton.qitemId, "failed:provider usage limit", 10);
+    const model = async () => ({
+      bindings: [],
+      signals: ["dev-a@r", "dev-b@r"].map((seatSession) => ({
+        provider: "claude" as const, seatSession, sourceClass: "provider_statusline" as const, authority: "account_cross_device" as const,
+        window: "five_hour", usedPercent: 100, resetsAt: reset, asOf: now.toISOString(), staleAfter, supportsNotification: false,
+        automationUse: "allow_switch_decision" as const,
+      })),
+    });
+    const result = await tick({ now, usageLimitJitterSeconds: 0, getProviderReadModel: model });
+    expect((result as { error?: string }).error).toBeUndefined();
+    expect(result.actions.filter((action) => action.action === "park-usage-limit")).toHaveLength(2);
+    const blockers = repo.list({ limit: 500 }).filter((row) => row.tags?.includes(USAGE_LIMIT_BLOCKER_TAG));
+    expect(blockers).toHaveLength(1);
+    expect(new Set(batons.map((row) => repo.getById(row.qitemId)?.blockedOn))).toEqual(new Set([blockers[0]!.qitemId]));
+  });
+
   it("slice 01: a ladder tick over the real provider service with usage windows on starts no native read", async () => {
     const fake = makeFakeCodex();
     fake.setPlan({ mode: "ok", account: ACCOUNT_ANSWER, rateLimits: rateLimitsAnswer({ secondaryUsed: 100 }) });

@@ -85,7 +85,7 @@ class EventThresholdSource extends RsiFindingSource {
         CASE WHEN ${c.hitSql} THEN 1 ELSE 0 END AS hit, count(*) AS n,
         min(seq) AS first_seq, max(seq) AS last_seq, min(created_at) AS first_seen, max(created_at) AS last_seen,
         max(json_extract(payload, '$.rigId')) AS rig_id, max(json_extract(payload, '$.nodeId')) AS node_id
-      FROM events WHERE type = ? AND created_at >= ? AND (${c.universeSql}) GROUP BY k, cls, hit`).all(c.eventType, since) as GroupRow[];
+      FROM events WHERE type = ? AND created_at >= ? AND json_valid(payload) AND (${c.universeSql}) GROUP BY k, cls, hit`).all(c.eventType, since) as GroupRow[];
 
     const subjects = new Map<string, Subject>();
     const classes = new Map<string, number>();
@@ -161,7 +161,7 @@ export function createCompactionStormSource(deps: RsiFindingSourceDeps): RsiFind
     // provenance 'rpc' and never emit a SessionStart, so only the hook series is comparable. A disagreement means
     // the counted series is wrong.
     crossCheck: (db, since, sessionStarts) => {
-      const identities = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND json_extract(payload, '$.provenance') = 'hook' AND created_at >= ?").get(since) as { n: number }).n;
+      const identities = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND json_valid(payload) AND json_extract(payload, '$.provenance') = 'hook' AND created_at >= ?").get(since) as { n: number }).n;
       if (identities !== sessionStarts) {
         throw new Error(`${RSI_COMPACTION_STORM}: ${sessionStarts} SessionStart activity events disagree with ${identities} hook agent.session_identity events in the same window`);
       }

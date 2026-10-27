@@ -256,6 +256,10 @@ export interface WorkflowInstance {
   lifecycleOperationKey: string | null;
   compiledInputDigest: string | null;
   lifecycleBinding: Record<string, unknown> | null;
+  /** OF-117: set only on an instance a listing or sweep read in "mark" mode when some of its saved JSON columns
+   *  (current_frontier_json, last_continuation_decision_json, lifecycle_binding_json) are not readable. Those fields read as
+   *  empty BECAUSE of that, never because the instance has none: do not decide on such an instance. */
+  unreadable?: string[];
 }
 
 export interface WorkflowFrontierBinding {
@@ -308,4 +312,7 @@ export interface WorkflowSpecRow {
   sourcePath: string;
   sourceHash: string;
   cachedAt: string;
+  /** OF-117: set only on a row the spec LISTING read in "mark" mode when a saved JSON column (spec_json, roles_json,
+   *  steps_json) is not readable. `spec` is then incomplete (the guards a stored spec carries are unknown, not absent). */
+  unreadable?: string[];
 }

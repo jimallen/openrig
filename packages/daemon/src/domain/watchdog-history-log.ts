@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
+import { RowColumnReader } from "./unreadable-row.js";
 
 /**
  * Watchdog history log (PL-004 Phase C; append-only audit writer).
@@ -37,6 +38,10 @@ export interface WatchdogHistoryEntry {
   deliveryStatus: string | null;
   deliveryMessage: string | null;
   evaluationNotes: Record<string, unknown> | null;
+  /** OF-117: set only on an entry read in "mark" mode (the status route) when its saved `evaluation_notes` are not readable
+   *  JSON; `evaluationNotes` is then null BECAUSE of that. The parked-owner policy reconciles from the notes, so its reads
+   *  refuse (UnreadableRowError) instead. */
+  unreadable?: string[];
 }
 
 interface HistoryRow {
@@ -93,24 +98,24 @@ export class WatchdogHistoryLog {
     };
   }
 
-  listForJob(jobId: string, limit = 50): WatchdogHistoryEntry[] {
+  listForJob(jobId: string, limit = 50, damage: "refuse" | "mark" = "refuse"): WatchdogHistoryEntry[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM watchdog_history WHERE job_id = ?
          ORDER BY evaluated_at DESC, history_id DESC LIMIT ?`,
       )
       .all(jobId, limit) as HistoryRow[];
-    return rows.map(rowToEntry);
+    return rows.map((row) => rowToEntry(row, damage));
   }
 
-  listAll(limit = 100): WatchdogHistoryEntry[] {
+  listAll(limit = 100, damage: "refuse" | "mark" = "refuse"): WatchdogHistoryEntry[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM watchdog_history
          ORDER BY evaluated_at DESC, history_id DESC LIMIT ?`,
       )
       .all(limit) as HistoryRow[];
-    return rows.map(rowToEntry);
+    return rows.map((row) => rowToEntry(row, damage));
   }
 
   countForJob(jobId: string): number {
@@ -121,7 +126,10 @@ export class WatchdogHistoryLog {
   }
 }
 
-function rowToEntry(row: HistoryRow): WatchdogHistoryEntry {
+function rowToEntry(row: HistoryRow, damage: "refuse" | "mark"): WatchdogHistoryEntry {
+  const columns = new RowColumnReader("watchdog_history", row.history_id);
+  const evaluationNotes = columns.json<Record<string, unknown>>("evaluation_notes", row.evaluation_notes);
+  if (damage === "refuse") columns.refuseIfDamaged();
   return {
     historyId: row.history_id,
     jobId: row.job_id,
@@ -131,6 +139,7 @@ function rowToEntry(row: HistoryRow): WatchdogHistoryEntry {
     deliveryTargetSession: row.delivery_target_session,
     deliveryStatus: row.delivery_status,
     deliveryMessage: row.delivery_message,
-    evaluationNotes: row.evaluation_notes ? JSON.parse(row.evaluation_notes) : null,
+    evaluationNotes,
+    ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
   };
 }
