@@ -174,7 +174,7 @@ describe("OPR.0.5.6.23 member (b) — fork-ingress memberFragment forwards every
     db.prepare("UPDATE sessions SET resume_token = 'tok-native-1', resume_type = 'claude_id' WHERE id = ?")
       .run(sessionId);
 
-    const addMember = vi.fn(async () => ({
+    const addMember = vi.fn(async (...args: unknown[]) => ({
       ok: true as const,
       result: { podId: "p1", podNamespace: "dev", node: { logicalId: "dev.forked", nodeId: "n2", status: "launched" as const, sessionName: "forked@dst" } },
     }));

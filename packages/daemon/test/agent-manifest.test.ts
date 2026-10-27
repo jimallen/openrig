@@ -588,7 +588,7 @@ profiles:
     expect(result.valid).toBe(true);
     expect((result.advisories ?? []).join(" ")).toMatch(/harness_native.*deprecated.*default-compaction/);
     const spec = normalizeAgentSpec(raw);
-    expect(spec.defaults.lifecycle.compactionStrategy).toBe("default-compaction");
+    expect(spec.defaults!.lifecycle!.compactionStrategy).toBe("default-compaction");
   });
 
   it("pod_continuity: deprecated alias — validates WITH advisory, normalizes to handover (RED at base: no advisory, old spelling normalized)", () => {
@@ -597,7 +597,7 @@ profiles:
     expect(result.valid).toBe(true);
     expect((result.advisories ?? []).join(" ")).toMatch(/pod_continuity.*deprecated.*handover/);
     const spec = normalizeAgentSpec(raw);
-    expect(spec.defaults.lifecycle.compactionStrategy).toBe("handover");
+    expect(spec.defaults!.lifecycle!.compactionStrategy).toBe("handover");
   });
 
   it("custom_prompt rejection is byte-identical to the shipped teaching error (regression floor — green at base)", () => {
@@ -622,7 +622,7 @@ profiles:
   default: {}
 `);
     const spec = normalizeAgentSpec(raw);
-    expect(spec.defaults.lifecycle.compactionStrategy).toBe("default-compaction");
+    expect(spec.defaults!.lifecycle!.compactionStrategy).toBe("default-compaction");
   });
 });
 

@@ -31,10 +31,10 @@ describe("waiting face names the next action the existing ladder can actually ta
     const id = (await queue.handoff({ qitemId: source.qitemId, fromSession: "owner@rig", toSession: target, body: "Continue exact work", nudge: true })).created.qitemId;
     // Backstop assertions describe a completed wake attempt, not the earlier persistence receipt.
     await new Promise<void>(resolve => setImmediate(resolve));
-    expect(queue.getByIdOrThrow(id).lastNudgeResult).not.toBeNull();
+    expect(queue["getByIdOrThrow"](id).lastNudgeResult).not.toBeNull();
     return id;
   }
-  const view = (id: string) => queue.getByIdOrThrow(id).waiting!;
+  const view = (id: string) => queue["getByIdOrThrow"](id).waiting!;
   const tick = () => runWakeLadderTick({ db, queueRepo: queue, now: new Date(), resolveOrchestrator: () => null, log: () => {} });
 
   it("separates failed retry and verified unclaimed grace, and advances only after the actual attempt", async () => {
@@ -157,7 +157,7 @@ describe("waiting face names the next action the existing ladder can actually ta
     queue.attachOutbox(new OutboxHandler(db));
     const id = await handoff();
     // The handoff nudge was refused by the typing guard: retained:typing_guard.
-    expect(queue.getByIdOrThrow(id).lastNudgeResult).toBe("retained:typing_guard");
+    expect(queue["getByIdOrThrow"](id).lastNudgeResult).toBe("retained:typing_guard");
     // A safe refusal still protects the prompt, but the baton keeps a retry path
     // (each retry is another guard probe; when the prompt clears it verifies).
     expect(view(id).nextBackstop).toMatchObject({
@@ -184,7 +184,7 @@ describe("waiting face names the next action the existing ladder can actually ta
     await queue.claim({ qitemId: id, destinationSession: "worker@rig" });
     queue.recordNudgeAttempt(id, "retained:typing_guard");
     queue.update({ qitemId: id, actorSession: "worker@rig", transitionNote: "parked-owner wake delivery failed: retained:typing_guard" });
-    const row = queue.getByIdOrThrow(id);
+    const row = queue["getByIdOrThrow"](id);
     expect(row.state).toBe("in-progress");
     expect(row.claimedAt).not.toBeNull();
     expect(queueRecoveryOwnsWake(db, row)).toBe(false);

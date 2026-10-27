@@ -215,7 +215,7 @@ describe("POST /api/crash-cart/restore-fleet — the async conductor batch verb"
     const body = await pollUntilDone(app, id);
     // 1 fully_restored + 1 not_attempted = mixed, and it is exactly f(counts) of what GET returned
     const c = body.rollup.counts;
-    const total = c.fully_restored + c.partially_restored + c.failed + c.not_attempted;
+    const total = c.fully_restored! + c.partially_restored! + c.failed! + c.not_attempted!;
     const expected =
       total === 0 || c.not_attempted === total
         ? "none_attempted"

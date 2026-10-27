@@ -105,26 +105,26 @@ describe("GET /api/rigs/:rigId/nodes/:logicalId/preview (PL-018)", () => {
     await app.request("/api/rigs/r-1/nodes/driver/preview?lines=50");
     await app.request("/api/rigs/r-1/nodes/driver/preview?lines=200");
     expect(transport.calls.length).toBe(2);
-    expect(transport.calls[0].lines).toBe(50);
-    expect(transport.calls[1].lines).toBe(200);
+    expect(transport.calls[0]!.lines).toBe(50);
+    expect(transport.calls[1]!.lines).toBe(200);
   });
 
   it("clamps lines to a sensible upper bound (1000)", async () => {
     const app = buildApp({ rigRepo, sessionTransport: transport });
     await app.request("/api/rigs/r-1/nodes/driver/preview?lines=99999");
-    expect(transport.calls[0].lines).toBe(1000);
+    expect(transport.calls[0]!.lines).toBe(1000);
   });
 
   it("defaults lines to 50 when missing or non-numeric", async () => {
     const app = buildApp({ rigRepo, sessionTransport: transport });
     await app.request("/api/rigs/r-1/nodes/driver/preview");
-    expect(transport.calls[0].lines).toBe(50);
+    expect(transport.calls[0]!.lines).toBe(50);
     transport.calls.length = 0;
 
     // Use a fresh limiter so the second request isn't served from cache
     const app2 = buildApp({ rigRepo, sessionTransport: transport });
     await app2.request("/api/rigs/r-1/nodes/driver/preview?lines=banana");
-    expect(transport.calls[0].lines).toBe(50);
+    expect(transport.calls[0]!.lines).toBe(50);
   });
 
   it("503 when SessionTransport unavailable", async () => {
@@ -177,7 +177,7 @@ describe("GET /api/sessions/:sessionName/preview (PL-018 alias)", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { content: string; sessionName: string; lines: number };
     expect(body.sessionName).toBe("velocity-driver@openrig-velocity");
-    expect(transport.calls[0].sessionName).toBe("velocity-driver@openrig-velocity");
+    expect(transport.calls[0]!.sessionName).toBe("velocity-driver@openrig-velocity");
   });
 
   it("503 when SessionTransport unavailable on alias too", async () => {

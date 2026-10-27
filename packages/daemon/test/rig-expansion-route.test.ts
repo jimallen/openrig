@@ -124,7 +124,7 @@ describe("POST /api/rigs/:rigId/expand", () => {
   it("returns 207 for expansion with launch failure", async () => {
     const rig = seedRig();
     const tmux = setup.tmuxAdapter as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    tmux.createSession.mockResolvedValueOnce({ ok: false, code: "unknown", message: "tmux not available" });
+    tmux.createSession!.mockResolvedValueOnce({ ok: false, code: "unknown", message: "tmux not available" });
 
     const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
       method: "POST",

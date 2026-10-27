@@ -60,12 +60,12 @@ describe("readCrashCartDiscovery — FOUND ON THIS HOST", () => {
     const { foundOnHost } = readCrashCartDiscovery(db);
     expect(foundOnHost).toHaveLength(1);
     const rig = foundOnHost[0];
-    expect(rig.rigId).toBe("r1");
-    expect(rig.rigName).toBe("alpha");
-    expect(rig.seatCount).toBe(2);
-    expect(rig.runningCount).toBe(1);
-    expect(rig.resumableCount).toBe(1);
-    expect(rig.lastActiveAt).toBe("2026-08-06T07:00:00Z");
+    expect(rig!.rigId).toBe("r1");
+    expect(rig!.rigName).toBe("alpha");
+    expect(rig!.seatCount).toBe(2);
+    expect(rig!.runningCount).toBe(1);
+    expect(rig!.resumableCount).toBe(1);
+    expect(rig!.lastActiveAt).toBe("2026-08-06T07:00:00Z");
   });
 
   it("uses only the LATEST session per node (max ULID id) for status/resumable", () => {
@@ -75,8 +75,8 @@ describe("readCrashCartDiscovery — FOUND ON THIS HOST", () => {
     seedSession({ id: "01A", nodeId: "n1", name: "w@a", status: "running", probe: "resumable", resumeToken: "t" });
     seedSession({ id: "01Z", nodeId: "n1", name: "w@a", status: "stopped", probe: "not_resumable" });
     const { foundOnHost } = readCrashCartDiscovery(db);
-    expect(foundOnHost[0].runningCount).toBe(0);
-    expect(foundOnHost[0].resumableCount).toBe(0);
+    expect(foundOnHost[0]!.runningCount).toBe(0);
+    expect(foundOnHost[0]!.resumableCount).toBe(0);
   });
 
   it("excludes archived rigs", () => {

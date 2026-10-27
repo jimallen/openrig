@@ -29,7 +29,7 @@ describe("Claude kernel inspection permissions", () => {
     "git -C /project status --porcelain", "rig up demo --cwd /project --target /rigs/demo --plan",
     "'/opt/my tools/rig' up demo --plan", "env OPENRIG_PORT=7434 /opt/tools/rig ps --json",
   ])("allows a routine inspection command: %s", command => {
-    const settings = JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]);
+    const settings = JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]!);
     const hook = settings.hooks.PreToolUse[0].hooks[0];
     const result = spawnSync("/bin/sh", ["-c", hook.command], {
       input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, permission_mode: "acceptEdits" }), encoding: "utf8",
@@ -53,7 +53,7 @@ describe("Claude kernel inspection permissions", () => {
 
   it("keeps native kernel allowances when the optional hook is absent", () => {
     vi.mocked(existsSync).mockReturnValueOnce(false);
-    expect(JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]))
+    expect(JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]!))
       .toEqual({ permissions: { allow: KERNEL_CLAUDE_ALLOW } });
   });
 });
@@ -123,13 +123,13 @@ describe("Claude team command permissions", () => {
   it("falls back to native lifecycle asks when the launch asset is absent", () => {
     vi.mocked(existsSync).mockReturnValueOnce(false);
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true });
-    expect(JSON.parse(args[1])).toEqual({ permissions: { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK } });
+    expect(JSON.parse(args[1]!)).toEqual({ permissions: { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK } });
     expect(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })).toEqual([]);
   });
 
   it("executes the launch-provided hook via stdin without changing its input or settings", () => {
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true });
-    const settings = JSON.parse(args[1]);
+    const settings = JSON.parse(args[1]!);
     expect(settings.permissions).toEqual({ allow: TEAM_CLAUDE_ALLOW });
     const hook = settings.hooks.PreToolUse[0].hooks[0];
     expect(hook).toMatchObject({ type: "command", timeout: 5 });

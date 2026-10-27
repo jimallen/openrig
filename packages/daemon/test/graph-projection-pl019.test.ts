@@ -75,7 +75,7 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
     ];
     const result = projectRigToGraph(input, overlay);
     expect(result.nodes).toHaveLength(1);
-    expect(result.nodes[0].data.agentActivity).toEqual(RUNNING_ACTIVITY);
+    expect(result.nodes[0]!.data.agentActivity).toEqual(RUNNING_ACTIVITY);
   });
 
   it("projects context token totals onto RFNodeData when overlay carries them", () => {
@@ -95,8 +95,8 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
       },
     ];
     const result = projectRigToGraph(input, overlay);
-    expect(result.nodes[0].data.contextTotalInputTokens).toBe(120_000);
-    expect(result.nodes[0].data.contextTotalOutputTokens).toBe(14_000);
+    expect(result.nodes[0]!.data.contextTotalInputTokens).toBe(120_000);
+    expect(result.nodes[0]!.data.contextTotalOutputTokens).toBe(14_000);
   });
 
   it("defaults agentActivity to null when overlay omits it", () => {
@@ -109,7 +109,7 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
       { logicalId: "alpha", startupStatus: "ready", canonicalSessionName: "r01-alpha", restoreOutcome: "n-a" },
     ];
     const result = projectRigToGraph(input, overlay);
-    expect(result.nodes[0].data.agentActivity).toBeNull();
+    expect(result.nodes[0]!.data.agentActivity).toBeNull();
   });
 
   it("projects currentQitems onto running nodes when overlay carries them", () => {
@@ -132,10 +132,10 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
       },
     ];
     const result = projectRigToGraph(input, overlay);
-    const data = result.nodes[0].data;
+    const data = result.nodes[0]!.data;
     expect(data.currentQitems).toHaveLength(2);
-    expect(data.currentQitems?.[0].qitemId).toBe("qitem-20260504001234-aaaa1111");
-    expect(data.currentQitems?.[0].tier).toBe("mode2");
+    expect(data.currentQitems?.[0]!.qitemId).toBe("qitem-20260504001234-aaaa1111");
+    expect(data.currentQitems?.[0]!.tier).toBe("mode2");
   });
 
   it("projects slice 15 terminal/work primitives onto running nodes when overlay carries them", () => {
@@ -159,7 +159,7 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
       },
     ];
     const result = projectRigToGraph(input, overlay);
-    const data = result.nodes[0].data;
+    const data = result.nodes[0]!.data;
     expect(data.terminalActive).toBe(true);
     expect(data.hasAssignedWork).toBe(true);
     expect(data.assignedWorkCount).toBe(4);
@@ -178,7 +178,7 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
       { logicalId: "alpha", startupStatus: "ready", canonicalSessionName: "r01-alpha", restoreOutcome: "n-a" },
     ];
     const result = projectRigToGraph(input, overlay);
-    expect(result.nodes[0].data.currentQitems).toEqual([]);
+    expect(result.nodes[0]!.data.currentQitems).toEqual([]);
   });
 
   it("pod group nodes carry null/empty defaults (no inventory mapping)", () => {
@@ -199,7 +199,7 @@ describe("PL-019 projectRigToGraph: agentActivity + currentQitems", () => {
       ),
       // Attach pod by mutating the synthesized node:
     };
-    input.nodes[0].podId = pod.id;
+    input.nodes[0]!.podId = pod.id;
     input.pods = [pod];
     const result = projectRigToGraph(input);
     const podNode = result.nodes.find((n) => n.id.startsWith("pod-"));

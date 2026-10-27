@@ -95,7 +95,7 @@ describe("one preserved running graph and recoverable revision decision", () => 
     await runtime.project({ instanceId: run.instanceId, currentPacketId: run.currentFrontier[0]!, actorSession: "owner@rig", exit: "handoff" });
     const next = runtime.inspect(run.instanceId);
     expect(next.frontier.map(f => f.stepId)).toEqual(["inspect"]);
-    expect(queue.getByIdOrThrow(next.frontier[0]!.packetId).body).toContain("Inspect new condition");
+    expect(queue["getByIdOrThrow"](next.frontier[0]!.packetId).body).toContain("Inspect new condition");
     expect(runtime.trailLog.listForInstance(run.instanceId).filter(t => t.stepId === "plan")).toHaveLength(1);
   });
 

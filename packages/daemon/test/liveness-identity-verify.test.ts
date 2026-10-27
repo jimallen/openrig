@@ -72,19 +72,19 @@ describe("getNodeInventory identity gating", () => {
       const identities = new SeatIdentityStore(db);
       for (const kind of ["mismatch", "pane_missing"] as const) {
         identities.upsert(verdict(kind));
-        expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("attention_required");
+        expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("attention_required");
         expect(getNodeDetail(db, "rig-1", "dev.impl")?.startupStatus).toBe("attention_required");
         expect(db.prepare("SELECT startup_status FROM sessions WHERE id = 'sess1'").get())
           .toEqual({ startup_status: "ready" });
       }
       identities.upsert(verdict("verified"));
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("ready");
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("ready");
       // Process identity alone cannot erase a real startup/context-delivery failure.
       db.prepare("UPDATE sessions SET startup_status = 'failed' WHERE id = 'sess1'").run();
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("failed");
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("failed");
       db.prepare("UPDATE sessions SET status = 'stopped' WHERE id = 'sess1'").run();
       identities.upsert(verdict("pane_missing"));
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("failed");
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("failed");
     } finally {
       db.close();
     }
@@ -94,10 +94,10 @@ describe("getNodeInventory identity gating", () => {
     const db = createFullTestDb();
     seedRunningSeat(db);
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.lifecycleState).toBe("running");
-    expect(n.occupantLifecycle).toBe("active");
-    expect(n.identityVerdict).toBeNull();
-    expect(n.startupStatus).toBe("ready");
+    expect(n!.lifecycleState).toBe("running");
+    expect(n!.occupantLifecycle).toBe("active");
+    expect(n!.identityVerdict).toBeNull();
+    expect(n!.startupStatus).toBe("ready");
     db.close();
   });
 
@@ -106,10 +106,10 @@ describe("getNodeInventory identity gating", () => {
     seedRunningSeat(db);
     new SeatIdentityStore(db).upsert(verdict("verified"));
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.lifecycleState).toBe("running");
-    expect(n.occupantLifecycle).toBe("active");
-    expect(n.identityVerdict?.verdict).toBe("verified");
-    expect(n.startupStatus).toBe("ready");
+    expect(n!.lifecycleState).toBe("running");
+    expect(n!.occupantLifecycle).toBe("active");
+    expect(n!.identityVerdict?.verdict).toBe("verified");
+    expect(n!.startupStatus).toBe("ready");
     db.close();
   });
 
@@ -118,11 +118,11 @@ describe("getNodeInventory identity gating", () => {
     seedRunningSeat(db);
     new SeatIdentityStore(db).upsert(verdict("mismatch", "process_identity_mismatch"));
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.lifecycleState).toBe("attention_required");
-    expect(n.occupantLifecycle).toBe("unknown");
-    expect(n.sessionStatus).toBe("running"); // raw session row unchanged
-    expect(n.identityVerdict?.reason).toBe("process_identity_mismatch");
-    expect(n.identityVerdict?.evidence.registeredPane).toBe("%1");
+    expect(n!.lifecycleState).toBe("attention_required");
+    expect(n!.occupantLifecycle).toBe("unknown");
+    expect(n!.sessionStatus).toBe("running"); // raw session row unchanged
+    expect(n!.identityVerdict?.reason).toBe("process_identity_mismatch");
+    expect(n!.identityVerdict?.evidence.registeredPane).toBe("%1");
     db.close();
   });
 
@@ -133,22 +133,22 @@ describe("getNodeInventory identity gating", () => {
     const stored = db.prepare("SELECT * FROM sessions WHERE id = 'sess1'").get();
     new SeatIdentityStore(db).upsert(verdict("pane_missing", "session_missing"));
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.lifecycleState).toBe("detached");
-    expect(n.sessionStatus).toBe("detached");
-    expect(n.storedSessionStatus).toBe("running");
-    expect(n.startupStatus).toBe("ready");
-    expect(n.storedStartupStatus).toBe("ready");
+    expect(n!.lifecycleState).toBe("detached");
+    expect(n!.sessionStatus).toBe("detached");
+    expect(n!.storedSessionStatus).toBe("running");
+    expect(n!.startupStatus).toBe("ready");
+    expect(n!.storedStartupStatus).toBe("ready");
     expect(getNodeDetail(db, "rig-1", "dev.impl")).toMatchObject({
       sessionStatus: "detached", storedSessionStatus: "running",
       lifecycleState: "detached", occupantLifecycle: "unknown",
-      identityVerdict: n.identityVerdict,
+      identityVerdict: n!.identityVerdict,
     });
     expect(getNodeInventoryForAllRigs(db).get("rig-1")).toEqual([n]);
     expect(getNodeInventoryForRigs(db, new Set(["rig-1"])).get("rig-1")).toEqual([n]);
     expect(db.prepare("SELECT * FROM sessions WHERE id = 'sess1'").get()).toEqual(stored);
     expect(db.prepare("SELECT occupant_lifecycle FROM nodes WHERE id = 'n1'").get()).toEqual({ occupant_lifecycle: "active" });
-    expect(n.occupantLifecycle).toBe("unknown");
-    expect(n.identityVerdict?.reason).toBe("session_missing");
+    expect(n!.occupantLifecycle).toBe("unknown");
+    expect(n!.identityVerdict?.reason).toBe("session_missing");
     db.close();
   });
 
@@ -161,10 +161,10 @@ describe("getNodeInventory identity gating", () => {
       evidence: { registeredPane: null, observedPid: null, observedCommand: null, matchedLayer: null },
     });
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.identityVerdict?.verdict).toBe("binding_absent");
-    expect(n.identityVerdict?.reason).toBe("binding_pane_missing");
-    expect(n.lifecycleState).toBe("running");
-    expect(n.occupantLifecycle).toBe("active");
+    expect(n!.identityVerdict?.verdict).toBe("binding_absent");
+    expect(n!.identityVerdict?.reason).toBe("binding_pane_missing");
+    expect(n!.lifecycleState).toBe("running");
+    expect(n!.occupantLifecycle).toBe("active");
     db.close();
   });
 
@@ -178,10 +178,10 @@ describe("getNodeInventory identity gating", () => {
       evidence: { registeredPane: null, observedPid: null, observedCommand: null, matchedLayer: null },
     });
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.identityVerdict?.verdict).toBe("pane_missing");
-    expect(n.lifecycleState).toBe("detached");
-    expect(n.sessionStatus).toBe("detached");
-    expect(n.occupantLifecycle).toBe("unknown");
+    expect(n!.identityVerdict?.verdict).toBe("pane_missing");
+    expect(n!.lifecycleState).toBe("detached");
+    expect(n!.sessionStatus).toBe("detached");
+    expect(n!.occupantLifecycle).toBe("unknown");
     db.close();
   });
 
@@ -195,7 +195,7 @@ describe("getNodeInventory identity gating", () => {
     ).run("q1", "2026-07-02T12:00:00Z", "2026-07-02T12:00:00Z", "op@rig", "dev-impl@rig", "pending", "work");
     new SeatIdentityStore(db).upsert(verdict("mismatch", "process_identity_mismatch"));
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.lifecycleState).toBe("attention_required");
+    expect(n!.lifecycleState).toBe("attention_required");
     db.close();
   });
 
@@ -209,9 +209,9 @@ describe("getNodeInventory identity gating", () => {
       seedRunningSeat(db);
       new SeatIdentityStore(db).upsert(verdict(kind, reason));
       const [entry] = getNodeInventory(db, "rig-1");
-      expect(entry.sessionStatus).toBe("running");
-      expect(entry.storedSessionStatus).toBe("running");
-      if (kind === "tmux_unavailable") expect(entry.lifecycleState).toBe("running");
+      expect(entry!.sessionStatus).toBe("running");
+      expect(entry!.storedSessionStatus).toBe("running");
+      if (kind === "tmux_unavailable") expect(entry!.lifecycleState).toBe("running");
     } finally { db.close(); }
   });
 
@@ -274,10 +274,10 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
       db.prepare("UPDATE nodes SET handover_at = '2026-07-02T12:00:00.200Z' WHERE id = 'n1'").run();
       if (timing === "finishes after cutover") store.upsert(old);
       for (const node of [getNodeInventory(db, "rig-1")[0], getNodeDetail(db, "rig-1", "dev.impl")!]) {
-        expect(node.identityVerdict).toBeNull();
-        expect(node.startupStatus).toBe("ready");
-        expect(node.lifecycleState).toBe("running");
-        expect(node.occupantLifecycle).toBe("active");
+        expect(node!.identityVerdict).toBeNull();
+        expect(node!.startupStatus).toBe("ready");
+        expect(node!.lifecycleState).toBe("running");
+        expect(node!.occupantLifecycle).toBe("active");
       }
       const overlay = getNodeInventory(db, "rig-1");
       const graph = projectRigToGraph({
@@ -286,13 +286,13 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
         sessions: [{ id: "sess2", nodeId: "n1", sessionName: "dev-impl@rig", status: "running", startupStatus: "ready" } as never],
         pods: [], edges: [],
       }, overlay);
-      expect(graph.nodes[0].data.startupStatus).toBe("ready");
+      expect(graph.nodes[0]!.data.startupStatus).toBe("ready");
       // A later observation of THIS occupant still down-ranks it.
       store.upsert({ ...old, observedAt: "2026-07-02T12:00:00.300Z" });
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("attention_required");
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("attention_required");
       db.prepare("UPDATE sessions SET startup_status = 'failed' WHERE id = 'sess2'").run();
       store.upsert({ ...verdict("verified"), observedAt: "2026-07-02T12:00:00.400Z" });
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("failed");
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("failed");
     } finally { db.close(); }
   });
 
@@ -302,8 +302,8 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
       seedRunningSeat(db);
       db.prepare("UPDATE sessions SET created_at = '2026-07-02 12:00:01' WHERE id = 'sess1'").run();
       new SeatIdentityStore(db).upsert(verdict("pane_missing", "session_missing"));
-      expect(getNodeInventory(db, "rig-1")[0].identityVerdict).toBeNull();
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("ready");
+      expect(getNodeInventory(db, "rig-1")[0]!.identityVerdict).toBeNull();
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("ready");
     } finally { db.close(); }
   });
 
@@ -314,9 +314,9 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
       db.prepare("UPDATE nodes SET handover_at = ? WHERE id = 'n1'").run(verdict("mismatch").observedAt);
       const store = new SeatIdentityStore(db);
       store.upsert(verdict("mismatch"));
-      expect(getNodeInventory(db, "rig-1")[0].identityVerdict).toBeNull();
+      expect(getNodeInventory(db, "rig-1")[0]!.identityVerdict).toBeNull();
       store.upsert({ ...verdict("pane_missing", "session_missing"), observedAt: "2026-07-02T12:00:00.001Z" });
-      expect(getNodeInventory(db, "rig-1")[0].sessionStatus).toBe("detached");
+      expect(getNodeInventory(db, "rig-1")[0]!.sessionStatus).toBe("detached");
     } finally { db.close(); }
   });
 
@@ -329,10 +329,10 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
       const store = new SeatIdentityStore(db);
       for (const offset of [-1, 0]) {
         store.upsert({ ...verdict("mismatch"), observedAt: new Date(createdAt + offset).toISOString() });
-        expect(getNodeInventory(db, "rig-1")[0].identityVerdict).toBeNull();
+        expect(getNodeInventory(db, "rig-1")[0]!.identityVerdict).toBeNull();
       }
       store.upsert({ ...verdict("mismatch"), observedAt: new Date(createdAt + 1).toISOString() });
-      expect(getNodeInventory(db, "rig-1")[0].startupStatus).toBe("attention_required");
+      expect(getNodeInventory(db, "rig-1")[0]!.startupStatus).toBe("attention_required");
     } finally { db.close(); }
   });
 
@@ -362,8 +362,8 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
     const [n] = getNodeInventory(db, "rig-1");
     // Fail-open + the stale `verified` is NOT surfaced (it would be a false
     // "verified" badge on a pane it was never computed against).
-    expect(n.identityVerdict).toBeNull();
-    expect(n.lifecycleState).toBe("running");
+    expect(n!.identityVerdict).toBeNull();
+    expect(n!.lifecycleState).toBe("running");
     db.close();
   });
 
@@ -372,10 +372,10 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
     seedRunningSeat(db);
     new SeatIdentityStore(db).upsert(staleVerdict("mismatch", "process_identity_mismatch"));
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.identityVerdict).toBeNull();
-    expect(n.lifecycleState).toBe("running"); // stale verdict does not apply
-    expect(n.startupStatus).toBe("ready");
-    expect(n.occupantLifecycle).toBe("active");
+    expect(n!.identityVerdict).toBeNull();
+    expect(n!.lifecycleState).toBe("running"); // stale verdict does not apply
+    expect(n!.startupStatus).toBe("ready");
+    expect(n!.occupantLifecycle).toBe("active");
     db.close();
   });
 
@@ -387,9 +387,9 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
       evidence: { registeredPane: "%OLD", observedPid: 9, observedCommand: "zsh", matchedLayer: 1 }, // ...but pane does not
     });
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.identityVerdict).toBeNull();
-    expect(n.lifecycleState).toBe("running");
-    expect(n.startupStatus).toBe("ready");
+    expect(n!.identityVerdict).toBeNull();
+    expect(n!.lifecycleState).toBe("running");
+    expect(n!.startupStatus).toBe("ready");
     db.close();
   });
 
@@ -398,8 +398,8 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
     seedRunningSeat(db);
     new SeatIdentityStore(db).upsert(verdict("mismatch", "process_identity_mismatch")); // session dev-impl@rig + pane %1 both match
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.identityVerdict?.verdict).toBe("mismatch");
-    expect(n.lifecycleState).toBe("attention_required");
+    expect(n!.identityVerdict?.verdict).toBe("mismatch");
+    expect(n!.lifecycleState).toBe("attention_required");
     db.close();
   });
 
@@ -408,8 +408,8 @@ describe("getNodeInventory verdict applicability gate (rev1-r2 B1 — no stale f
     seedRunningSeat(db);
     new SeatIdentityStore(db).upsert(verdict("pane_missing", "session_missing"));
     const [n] = getNodeInventory(db, "rig-1");
-    expect(n.identityVerdict?.reason).toBe("session_missing");
-    expect(n.lifecycleState).toBe("detached");
+    expect(n!.identityVerdict?.reason).toBe("session_missing");
+    expect(n!.lifecycleState).toBe("detached");
     db.close();
   });
 });

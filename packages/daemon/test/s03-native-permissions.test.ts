@@ -191,7 +191,7 @@ describe("S03 future native permission selections (offline; no native effect cla
 // The adapters run their real command builders; injected transport refuses before any input.
 const fsOps = { readFile: () => { throw new Error("absent fixture"); }, writeFile: () => { throw new Error("unexpected write"); }, exists: () => false, mkdirp: () => {}, copyFile: () => {} };
 function refusedTransport() {
-  const send = vi.fn(async () => ({ ok: false as const, message: "offline transport" }));
+  const send = vi.fn(async (...args: unknown[]) => ({ ok: false as const, message: "offline transport" }));
   return { tmux: { sendShellCommand: send, sendText: send } as unknown as TmuxAdapter, send };
 }
 describe("S03 selected arguments and unchanged defaults", () => {

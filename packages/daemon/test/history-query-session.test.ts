@@ -32,7 +32,7 @@ describe("HistoryQuery.searchSession — per-session JSONL by token (L2)", () =>
 
     // exec stands in for rg/grep — assert it is invoked against the LOCATED file,
     // and that its output is parsed into excerpts.
-    const execSpy = vi.fn(async () => ({
+    const execSpy = vi.fn(async (...args: unknown[]) => ({
       stdout: '{"type":"assistant","text":"the SECRET_MARKER lives here"}\n',
       exitCode: 0,
     }));

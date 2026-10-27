@@ -29,7 +29,7 @@ function fixture(runtime: string, name = "workshop") {
   return { db, rigRepo, rig, node, store, registry, session, binding };
 }
 function transport() {
-  const send = vi.fn(async () => ({ ok: false as const, message: "inert boundary" }));
+  const send = vi.fn(async (...args: unknown[]) => ({ ok: false as const, message: "inert boundary" }));
   const tmux = { sendShellCommand: send, sendText: send } as unknown as TmuxAdapter;
   const fsOps = { readFile: () => { throw new Error("missing"); }, exists: () => false,
     writeFile: vi.fn(() => { throw new Error("unexpected permission file write"); }), mkdirp: vi.fn(), copyFile: vi.fn() };
@@ -40,7 +40,7 @@ function assertDefault(cmd: string, runtime: string) {
   if (runtime === "claude-code") {
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true, launchPosture: "floor" });
     expect(cmd, "team settings must reach the native command").toContain(args.map(arg => ` ${shellQuote(arg)}`).join(""));
-    const settings = JSON.parse(args[1]);
+    const settings = JSON.parse(args[1]!);
     expect(Object.keys(settings)).toEqual(["permissions", "hooks"]);
     expect(settings.permissions.allow).toContain("Bash(rig:*)");
     expect(settings.permissions.allow).toContain("Bash(npm test:*)");

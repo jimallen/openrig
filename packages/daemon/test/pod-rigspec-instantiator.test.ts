@@ -272,7 +272,7 @@ describe("PodRigInstantiator", () => {
       execFileSync("git", ["-C", catalog, "add", "."]);
       execFileSync("git", ["-C", catalog, "commit", "-qm", "fixture"]);
 
-      const skillReconciler = vi.fn(() => ({
+      const skillReconciler = vi.fn((...args: unknown[]) => ({
         ok: true,
         applied: false,
         freshLaunchRequired: false,
@@ -314,7 +314,7 @@ profiles:
 
       expect(result.ok, JSON.stringify(result)).toBe(true);
       expect(skillReconciler).toHaveBeenCalledOnce();
-      expect(skillReconciler.mock.calls[0]?.[0].loadout.entries.map((entry: { id: string }) => entry.id)).toContain("topology-skill");
+      expect(skillReconciler.mock.calls[0]?.[0]!.loadout.entries.map((entry: { id: string }) => entry.id)).toContain("topology-skill");
     } finally {
       db?.close();
       fs.rmSync(root, { recursive: true, force: true });

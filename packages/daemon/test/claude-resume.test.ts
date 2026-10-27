@@ -63,8 +63,8 @@ describe("ClaudeResumeAdapter", () => {
 
   describe("resume", () => {
     it("sends sendText then sendKeys Enter", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
-      const sendKeys = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
+      const sendKeys = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
       const adapter = new ClaudeResumeAdapter(tmux);
 
@@ -82,7 +82,7 @@ describe("ClaudeResumeAdapter", () => {
     });
 
     it("0.5.2-07: a SPEC-pinned model emits --model on the legacy resume command", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText });
       const adapter = new ClaudeResumeAdapter(tmux);
 
@@ -94,7 +94,7 @@ describe("ClaudeResumeAdapter", () => {
     });
 
     it("#75: a SPEC-pinned effort emits --effort on the legacy resume command", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText });
       const adapter = new ClaudeResumeAdapter(tmux);
 
@@ -134,7 +134,7 @@ describe("ClaudeResumeAdapter", () => {
     });
 
     it("shell-sensitive token is quoted in command", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const adapter = new ClaudeResumeAdapter(mockTmux({ sendText, sendKeys }));
 
@@ -255,8 +255,8 @@ describe("ClaudeResumeAdapter", () => {
     // selection keystrokes and returns attention_required. This is
     // safety-critical: auto-keying the menu is governance BLOCKING.
     it("OPR.0.3.4.5 guard (05): resume-selection menu -> attention_required, ZERO selection keystrokes sent", async () => {
-      const sendText = vi.fn(async () => ({ ok: true as const }));
-      const sendKeys = vi.fn(async () => ({ ok: true as const }));
+      const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
+      const sendKeys = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const getPaneCommand = vi.fn(async () => "claude");
       const capturePaneContent = vi.fn(async () => [
         "Choose a conversation to resume:",

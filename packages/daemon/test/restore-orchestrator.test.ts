@@ -3939,10 +3939,7 @@ describe("RestoreOrchestrator", () => {
     sessionRegistry.updateStatus(session.id, "exited");
     db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
 
-    const tmux = (mockTmux as (...args: unknown[]) => TmuxAdapter)({
-      sendText: vi.fn(async () => ({ ok: true as const })),
-      sendKeys: vi.fn(async () => ({ ok: true as const })),
-    });
+    const tmux = mockTmux();
     const mockAdapter = {
       runtime: "builtin:terminal",
       listInstalled: vi.fn(async () => []),

@@ -486,7 +486,7 @@ describe("workflow route (WF3 FR-4 — close+recreate+rebind)", () => {
     const reviewPacket = frontier()[0]!;
     // review projected WAITING -> blocked on the NON-HUMAN "external-gate", metadata retained
     await runtime.project({ instanceId, currentPacketId: reviewPacket, exit: "waiting", actorSession: "handler@rig" });
-    const waited = queueRepo.getByIdOrThrow(reviewPacket);
+    const waited = queueRepo["getByIdOrThrow"](reviewPacket);
     expect(waited.state).toBe("blocked");
     expect(waited.blockedOn).toBe("external-gate");
     expect(waited.summary).toBe("needs handler sign-off");
@@ -511,14 +511,14 @@ describe("workflow route (WF3 FR-4 — close+recreate+rebind)", () => {
     expect(after.currentStepId).toBe(before.currentStepId);
     expect(after.status).toBe("waiting");
     // successor: owner=handler2@rig, still blocked on the EXACT non-human blocker, metadata RETAINED
-    const successor = queueRepo.getByIdOrThrow(body.newPacketId);
+    const successor = queueRepo["getByIdOrThrow"](body.newPacketId);
     expect(successor.destinationSession).toBe("handler2@rig");
     expect(successor.state).toBe("blocked");
     expect(successor.blockedOn).toBe("external-gate");
     expect(successor.summary).toBe("needs handler sign-off");
     expect(successor.evidenceRef).toBe("proof/review.md");
     // the OLD blocked packet is closed HONESTLY: handed-off with the EXACT closure target (no orphan)
-    const old = queueRepo.getByIdOrThrow(reviewPacket);
+    const old = queueRepo["getByIdOrThrow"](reviewPacket);
     expect(old.state).toBe("handed-off");
     expect(old.closureReason).toBe("handed_off_to");
     expect(old.closureTarget).toBe("handler2@rig");

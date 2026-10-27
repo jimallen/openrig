@@ -191,7 +191,7 @@ describe("D5 p3 (integration) — an INHERITED tmux server is replaced, proven w
     const pkgRoot = resolve(HERE, "..");
 
     const sentinelDir = mkdtempSync(join(tmpdir(), "sent-"));
-    const sentinelDefaultDir = join(sentinelDir, `tmux-${process.getuid()}`);
+    const sentinelDefaultDir = join(sentinelDir, `tmux-${process.getuid!()}`);
     mkdirSync(sentinelDefaultDir, { recursive: true, mode: 0o700 });
     const sentinelSocketPath = join(sentinelDefaultDir, "default");
     dirs.push(sentinelDir);

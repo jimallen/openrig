@@ -97,8 +97,8 @@ function shipSetNotOnDisk(m: Membership, layout: Layout, repoRoot: string): stri
     }
     for (const edge of sl.edges) {
       const ec = layout.edges[edge];
-      const edgeRoot = join(repoRoot, ec.path);
-      const category = ec.layout === "flat" ? null : sl.category ?? null;
+      const edgeRoot = join(repoRoot, ec!.path);
+      const category = ec!.layout === "flat" ? null : sl.category ?? null;
       const dir = category ? join(edgeRoot, category, skill) : join(edgeRoot, skill);
       if (!existsSync(join(dir, "SKILL.md"))) missing.push(`${skill}@${edge}`);
     }
@@ -119,7 +119,7 @@ describe("P6(A) skill refs→membership→ship-categories→disk chain (0.4.8 st
 
   it("LEG 3 — every oracle ship-set skill exists on disk in each declared edge", () => {
     const missing = shipSetNotOnDisk(MEMBERSHIP, LAYOUT, REPO_ROOT).filter(
-      (v) => !EXTERNAL_CANON_PENDING.has(v.split("@")[0]),
+      (v) => !EXTERNAL_CANON_PENDING.has(v.split("@")[0]!),
     );
     expect(missing, `ship-set skills with no on-disk SKILL.md: ${missing.join(", ")}`).toEqual([]);
   });

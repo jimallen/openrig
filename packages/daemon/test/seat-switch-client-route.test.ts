@@ -41,8 +41,8 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("200: retargets the single attached client to <session>:0", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listClients.mockResolvedValue([{ name: "/dev/ttys003", session: "wrong-view" }]);
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listClients!.mockResolvedValue([{ name: "/dev/ttys003", session: "wrong-view" }]);
 
     const res = await post("dev-impl@seat-rig");
     expect(res.status).toBe(200);
@@ -68,8 +68,8 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("409 no_client when nothing is attached (honest error, no switch)", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listClients.mockResolvedValue([]);
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listClients!.mockResolvedValue([]);
 
     const res = await post("dev-impl@seat-rig");
     expect(res.status).toBe(409);
@@ -80,8 +80,8 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("409 ambiguous_client when multiple attached and no --client", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listClients.mockResolvedValue([
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listClients!.mockResolvedValue([
       { name: "/dev/ttys003", session: "a" },
       { name: "/dev/ttys007", session: "b" },
     ]);
@@ -96,8 +96,8 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("409 session_not_found points to routing repair when the canonical session is dead", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(false);
-    tmux().listClients.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
+    tmux().hasSession!.mockResolvedValue(false);
+    tmux().listClients!.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
 
     const res = await post("dev-impl@seat-rig");
     expect(res.status).toBe(409);
@@ -109,9 +109,9 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("404 window_not_found for an explicit --to-window that does not exist", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listWindows.mockResolvedValue([{ index: 0, name: "main", panes: 1, active: true }]);
-    tmux().listClients.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listWindows!.mockResolvedValue([{ index: 0, name: "main", panes: 1, active: true }]);
+    tmux().listClients!.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
 
     const res = await post("dev-impl@seat-rig", { toWindow: 5 });
     expect(res.status).toBe(404);
@@ -122,8 +122,8 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("502 tmux_probe_failed when listClients THROWS (honest error, not an unstructured 500)", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listClients.mockRejectedValue(new Error("error connecting to /private/tmp/tmux-501/default (Permission denied)"));
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listClients!.mockRejectedValue(new Error("error connecting to /private/tmp/tmux-501/default (Permission denied)"));
 
     const res = await post("dev-impl@seat-rig");
     expect(res.status).toBe(502);
@@ -134,9 +134,9 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("502 tmux_probe_failed when listWindows THROWS on an explicit --to-window", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listWindows.mockRejectedValue(new Error("EACCES: permission denied"));
-    tmux().listClients.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listWindows!.mockRejectedValue(new Error("EACCES: permission denied"));
+    tmux().listClients!.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
 
     const res = await post("dev-impl@seat-rig", { toWindow: 1 });
     expect(res.status).toBe(502);
@@ -147,9 +147,9 @@ describe("POST /api/seat/switch-client/:seatRef", () => {
 
   it("502 switch_failed when the tmux switch itself fails", async () => {
     seedLiveSeat();
-    tmux().hasSession.mockResolvedValue(true);
-    tmux().listClients.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
-    tmux().switchClient.mockResolvedValue({ ok: false, code: "session_not_found", message: "gone" });
+    tmux().hasSession!.mockResolvedValue(true);
+    tmux().listClients!.mockResolvedValue([{ name: "/dev/ttys003", session: "a" }]);
+    tmux().switchClient!.mockResolvedValue({ ok: false, code: "session_not_found", message: "gone" });
 
     const res = await post("dev-impl@seat-rig");
     expect(res.status).toBe(502);

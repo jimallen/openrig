@@ -168,7 +168,7 @@ describe("a recorded Claude resume rotation after the qualifying process", () =>
     const up = await restore.restore(down.snapshotId!, { adapters: { "claude-code": adapter } });
     expect(up.ok).toBe(true);
     if (!up.ok) throw new Error(up.message);
-    expect(up.result.nodes[0].status).toBe("attention_required");
+    expect(up.result.nodes[0]!.status).toBe("attention_required");
     if (hookTiming === "late-hook") {
       // The first post was lost and the claim removed: a later post counts as first.
       hooked = after === "replaced-before-hook";

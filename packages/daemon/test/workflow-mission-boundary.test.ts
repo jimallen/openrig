@@ -96,14 +96,14 @@ describe("authored mission boundary with event-first wait", () => {
     const run = await runtime.instantiateLifecycle(instantiateInput());
     expect(run.instance.lifecycleBinding).toMatchObject({ identity: compiled.identity });
     expect(run.instance.compiledInputDigest).toBe(compiled.compiledInputDigest);
-    const body = queue.getByIdOrThrow(run.entryQitemId).body;
+    const body = queue["getByIdOrThrow"](run.entryQitemId).body;
     for (const ref of [join(root, "authority.md"), join(mission, "SPEC.md"), join(mission, "PROGRESS.md")]) expect(body).toContain(ref);
     expect(body).toContain(`--instance ${run.instance.instanceId} --current-packet ${run.entryQitemId}`);
     expect(body).toContain("shortcut, not the whole story");
     await runtime.project({ instanceId: run.instance.instanceId, currentPacketId: run.entryQitemId,
       actorSession: "orch@rig", exit: "waiting", blockedOn: "external:receipt",
       closureEvidence: { receipt: { outcome: "published", verdict: "CLEAR" } } });
-    expect(queue.getByIdOrThrow(run.entryQitemId).state).toBe("blocked");
+    expect(queue["getByIdOrThrow"](run.entryQitemId).state).toBe("blocked");
     stopEvents(); wire();
     const replay = await runtime.instantiateLifecycle(instantiateInput());
     expect(replay.instance.instanceId).toBe(run.instance.instanceId);
@@ -174,7 +174,7 @@ describe("authored mission boundary with event-first wait", () => {
     expect(delivered).toHaveLength(2);
     expect(timer(run.entryQitemId).jobId).toBe(jobId);
     await queue.update({ qitemId: blocker.qitemId, actorSession: "worker@rig", state: "done", closureReason: "no-follow-on" });
-    expect(queue.getByIdOrThrow(run.entryQitemId).state).toBe("pending");
+    expect(queue["getByIdOrThrow"](run.entryQitemId).state).toBe("pending");
     expect(jobs.getByIdOrThrow(jobId).state).toBe("terminal");
     stepTime(7200); await scheduler.runTickNow();
     expect(delivered).toHaveLength(2);

@@ -166,7 +166,7 @@ describe("RigExpansionService", () => {
     const rig = seedRig();
     // Mock: first createSession fails, second succeeds
     const tmux = setup.tmuxAdapter as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    tmux.createSession.mockResolvedValueOnce({ ok: false, code: "unknown", message: "tmux not available" });
+    tmux.createSession!.mockResolvedValueOnce({ ok: false, code: "unknown", message: "tmux not available" });
 
     const twoPod: ExpansionRequest["pod"] = {
       id: "infra",
@@ -215,7 +215,7 @@ describe("RigExpansionService", () => {
   it("returns failed status when all node launches fail", async () => {
     const rig = seedRig();
     const tmux = setup.tmuxAdapter as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    tmux.createSession.mockResolvedValue({ ok: false, code: "unknown", message: "tmux unavailable" });
+    tmux.createSession!.mockResolvedValue({ ok: false, code: "unknown", message: "tmux unavailable" });
 
     const result = await service.expand({ rigId: rig.id, pod: terminalPodFragment() });
 

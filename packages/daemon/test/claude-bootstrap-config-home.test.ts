@@ -97,7 +97,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     expect(await f.adapter.launchHarness(binding, { name: "seat", ...(mode === "resume" ? { resumeToken: "fixture-original" } : {}) })).toMatchObject({ ok: true });
     const observed = f.launches[0];
     expect(observed.env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
-    expect(observed.statePath).toBe(path.join(f.env.HOME, ".claude.json"));
+    expect(observed.statePath).toBe(path.join(f.env.HOME!, ".claude.json"));
     expect(observed.state).toMatchObject({ ...sentinel, hasCompletedOnboarding: true, projects: { ...sentinel.projects, [f.cwd]: { hasTrustDialogAccepted: true } } });
     // Deliberately replaces #565's "writes exactly one file / selected home untouched": the bootstrap
     // cannot see the classic child's environment, so the daemon's selected home is provisioned too,
@@ -108,7 +108,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
   });
   it.each(["{broken", "[]", "null", '{"projects":[]}', "invalid project"])("classic bootstrap preserves unmergeable state (%s)", async value => {
     const f = fixture("alternate", false, true);
-    const file = path.join(f.env.HOME, ".claude.json");
+    const file = path.join(f.env.HOME!, ".claude.json");
     const before = value === "invalid project" ? JSON.stringify({ projects: { [f.cwd]: [] } }) : value;
     fs.writeFileSync(file, before);
     await f.adapter.deliverStartup([], { ...f.binding, permissionMode: undefined });
@@ -145,7 +145,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
   it("classic bootstrap without cwd preserves known-home onboarding", () => {
     const f = fixture("alternate", false, true);
     f.adapter.ensureManagedBootstrap({ ...f.binding, cwd: undefined, permissionMode: undefined });
-    expect(JSON.parse(fs.readFileSync(path.join(f.env.HOME, ".claude.json"), "utf8")))
+    expect(JSON.parse(fs.readFileSync(path.join(f.env.HOME!, ".claude.json"), "utf8")))
       .toMatchObject({ ...sentinel, hasCompletedOnboarding: true });
   });
   it.each(["projects", "project entry"])("preserves an unmergeable %s field", async field => {
@@ -235,7 +235,7 @@ describe.skipIf(process.platform === "win32")("classic bootstrap when the daemon
   });
   it("provisions both homes, preserving every other field in each", async () => {
     const f = fixture("alternate", false, true);
-    const homeFile = path.join(f.env.HOME, ".claude.json");
+    const homeFile = path.join(f.env.HOME!, ".claude.json");
     const homeBefore = JSON.parse(fs.readFileSync(homeFile, "utf8"));
     const selectedBefore = JSON.parse(fs.readFileSync(f.statePath, "utf8"));
     await f.adapter.deliverStartup([], classicLaunch(f, { HOME: f.env.HOME }));
@@ -252,14 +252,14 @@ describe.skipIf(process.platform === "win32")("classic bootstrap when the daemon
     cleanup.push(() => warn.mockRestore());
     expect(await f.adapter.deliverStartup([], classicLaunch(f, { HOME: f.env.HOME }))).toEqual({ delivered: 0, failed: [] });
     expect(fs.readFileSync(f.statePath, "utf8")).toBe(text);
-    const homeFile = path.join(f.env.HOME, ".claude.json");
+    const homeFile = path.join(f.env.HOME!, ".claude.json");
     expect(f.writes).toEqual([homeFile]);
     expect(JSON.parse(fs.readFileSync(homeFile, "utf8"))).toMatchObject({ ...sentinel, hasCompletedOnboarding: true });
     expect(warn.mock.calls.flat().join(" ")).toContain(f.statePath);
   });
   it("unmergeable state in both homes is preserved, and the warning names both", async () => {
     const f = fixture("alternate", false, true);
-    const homeFile = path.join(f.env.HOME, ".claude.json");
+    const homeFile = path.join(f.env.HOME!, ".claude.json");
     fs.writeFileSync(homeFile, "[]"); fs.writeFileSync(f.statePath, "{broken");
     const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     cleanup.push(() => warn.mockRestore());
@@ -274,7 +274,7 @@ describe.skipIf(process.platform === "win32")("classic bootstrap when the daemon
   it.each(["unset", "empty"] as const)("a daemon with %s CLAUDE_CONFIG_DIR provisions only HOME/.claude.json", async selection => {
     const f = fixture(selection, false, false);
     await f.adapter.deliverStartup([], classicLaunch(f, { HOME: f.env.HOME }));
-    expect(f.writes).toEqual([path.join(f.env.HOME, ".claude.json")]);
+    expect(f.writes).toEqual([path.join(f.env.HOME!, ".claude.json")]);
   });
 });
 
@@ -285,7 +285,7 @@ describe.skipIf(process.platform === "win32")("an already-provisioned state file
     hasCompletedOnboarding: true, projects: { ...sentinel.projects, [cwd]: { hasTrustDialogAccepted: true, kept: 1 } } });
   it.each(["managed", "classic"])("%s: both flags present means no write, byte-identical", async route => {
     const f = fixture("alternate", false, true);
-    const files = route === "managed" ? [f.statePath] : [path.join(f.env.HOME, ".claude.json"), f.statePath];
+    const files = route === "managed" ? [f.statePath] : [path.join(f.env.HOME!, ".claude.json"), f.statePath];
     for (const file of files) fs.writeFileSync(file, provisioned(f.cwd, { location: file }));
     const before = files.map(file => fs.readFileSync(file, "utf8"));
     const binding = route === "managed" ? f.binding : classicLaunch(f, { HOME: f.env.HOME });

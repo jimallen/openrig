@@ -74,6 +74,6 @@ describe("readCodexAuthMetadata — daemon-local, secret-safe", () => {
     );
     const meta = readCodexAuthMetadata({ CODEX_HOME: dir } as NodeJS.ProcessEnv);
     expect(meta.seats).toHaveLength(1);
-    expect(meta.seats[0].seat).toBe("seat-1");
+    expect(meta.seats[0]!.seat).toBe("seat-1");
   });
 });

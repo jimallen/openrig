@@ -55,7 +55,7 @@ describe("workflow authored waiting re-presentation", () => {
       createdBySession: "ops@rig",
     });
     const entryCommand = commandFor(created.instance.instanceId, created.entryQitemId, "worker@rig");
-    const entryBody = queueRepo.getByIdOrThrow(created.entryQitemId).body;
+    const entryBody = queueRepo["getByIdOrThrow"](created.entryQitemId).body;
     expect(entryBody).toContain(`Continuation: ${entryCommand}`);
     expect(entryBody).toContain("shortcut, not the whole story");
 
@@ -115,7 +115,7 @@ describe("workflow authored waiting re-presentation", () => {
       actorSession: "worker@rig",
     });
     const nextCommand = commandFor(created.instance.instanceId, handoff.nextQitemId!, "next@rig");
-    const nextBody = queueRepo.getByIdOrThrow(handoff.nextQitemId!).body;
+    const nextBody = queueRepo["getByIdOrThrow"](handoff.nextQitemId!).body;
     expect(nextBody).toContain(`Continuation: ${nextCommand}`);
     expect(nextBody).toContain("shortcut, not the whole story");
 
@@ -126,7 +126,7 @@ describe("workflow authored waiting re-presentation", () => {
       actorSession: "next@rig",
       blockedOn: "external:ordinary-wait",
     });
-    expect(queueRepo.getByIdOrThrow(handoff.nextQitemId!).state).toBe("blocked");
+    expect(queueRepo["getByIdOrThrow"](handoff.nextQitemId!).state).toBe("blocked");
     expect(queueRepo.getParkWakeStatus(handoff.nextQitemId!)).toBeNull();
   });
 
@@ -142,7 +142,7 @@ describe("workflow authored waiting re-presentation", () => {
       actorSession: "ops@rig",
       reason: "owner changed",
     });
-    const routedBody = queueRepo.getByIdOrThrow(routed.newPacketId).body;
+    const routedBody = queueRepo["getByIdOrThrow"](routed.newPacketId).body;
     expect(routedBody).toContain(
       `Continuation: ${commandFor(created.instance.instanceId, routed.newPacketId, "worker-2@rig")}`,
     );
@@ -160,7 +160,7 @@ describe("workflow authored waiting re-presentation", () => {
       actorSession: "ops@rig",
       decision: "retry the authored step",
     });
-    const resumedBody = queueRepo.getByIdOrThrow(resumed.newPacketId).body;
+    const resumedBody = queueRepo["getByIdOrThrow"](resumed.newPacketId).body;
     expect(resumedBody).toContain(
       `Continuation: ${commandFor(created.instance.instanceId, resumed.newPacketId, resumed.ownerSession)}`,
     );

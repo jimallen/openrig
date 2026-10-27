@@ -34,8 +34,8 @@ describe("scenario run-record ledger", () => {
     appendRunRecord(p, rec("clean-lifecycle", "PASS"));
     const rows = readRunRecords(p);
     expect(rows).toHaveLength(1);
-    expect(rows[0].scenario).toBe("clean-lifecycle");
-    expect(rows[0].verdict).toBe("PASS");
+    expect(rows[0]!.scenario).toBe("clean-lifecycle");
+    expect(rows[0]!.verdict).toBe("PASS");
   });
 
   it("is append-only: multiple rows preserved in order, earlier bytes untouched", () => {
@@ -48,9 +48,9 @@ describe("scenario run-record ledger", () => {
     expect(afterSecond.startsWith(afterFirst)).toBe(true);
     const rows = readRunRecords(p);
     expect(rows.map((r) => r.scenario)).toEqual(["a", "b"]);
-    expect(rows[1].verdict).toBe("FAIL");
-    expect(rows[1].failedStep).toBe(2);
-    expect(rows[1].diff).toContain("observed");
+    expect(rows[1]!.verdict).toBe("FAIL");
+    expect(rows[1]!.failedStep).toBe(2);
+    expect(rows[1]!.diff).toContain("observed");
   });
 
   it("each line is standalone valid JSON (JSONL)", () => {

@@ -68,7 +68,7 @@ describe("NtfyNotificationAdapter (PL-005 Phase B)", () => {
     expect(calls[0]!.Title).not.toContain("\n");
     expect(calls[0]!.Title).not.toContain("\r");
     await adapter.send({ title: "a".repeat(500), body: "x" });
-    expect(calls[1]!.Title.length).toBeLessThanOrEqual(250);
+    expect(calls[1]!.Title!.length).toBeLessThanOrEqual(250);
   });
 });
 

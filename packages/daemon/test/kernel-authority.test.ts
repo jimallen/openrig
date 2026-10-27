@@ -34,7 +34,7 @@ function fixture(runtime: string, name = "kernel") {
   return { db, rigRepo, rig, node, store, registry, session, binding };
 }
 function transport() {
-  const send = vi.fn(async () => ({ ok: false as const, message: "inert transport: no native execution" }));
+  const send = vi.fn(async (...args: unknown[]) => ({ ok: false as const, message: "inert transport: no native execution" }));
   const tmux = { sendShellCommand: send, sendText: send } as unknown as TmuxAdapter;
   const fsOps = { readFile: () => { throw new Error("missing"); }, exists: () => false,
     writeFile: vi.fn(() => { throw new Error("unexpected permission write"); }), mkdirp: vi.fn(), copyFile: vi.fn() };
@@ -48,7 +48,7 @@ function assertGrant(command: string, runtime: string) {
     expect(command).not.toContain("skipDangerousModePermissionPrompt");
     const args = operationalLaunchArgs("claude-code", { kernelAuthority: true });
     expect(command).toContain(args.map(arg => ` ${shellQuote(arg)}`).join(""));
-    const settings = JSON.parse(args[1]);
+    const settings = JSON.parse(args[1]!);
     expect(Object.keys(settings)).toEqual(["permissions", "hooks"]);
     expect(Object.keys(settings.permissions)).toEqual(["allow"]); // no reset of user ask/deny
     expect(settings.permissions.allow).toEqual(expect.arrayContaining([

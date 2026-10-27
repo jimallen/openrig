@@ -46,7 +46,7 @@ describe("Expansion → Snapshot/Restore/Export compatibility", () => {
 
     // Snapshot should include the expanded pod
     const snapshotData = snapshot!.data;
-    expect(snapshotData.pods.some((p) => p.namespace === "infra")).toBe(true);
+    expect(snapshotData.pods!.some((p) => p.namespace === "infra")).toBe(true);
     expect(snapshotData.nodes.some((n) => n.logicalId === "infra.server")).toBe(true);
   });
 
@@ -132,7 +132,7 @@ describe("Expansion → Snapshot/Restore/Export compatibility", () => {
     await service.expand({ rigId: rig.id, pod: terminalPod() });
 
     const snapshot = setup.snapshotCapture.captureSnapshot(rig.id, "shape-test");
-    const pod = snapshot!.data.pods.find((p) => p.namespace === "infra");
+    const pod = snapshot!.data.pods!.find((p) => p.namespace === "infra");
 
     // Should have standard Pod fields — no special "expanded" flag
     expect(pod).toBeDefined();

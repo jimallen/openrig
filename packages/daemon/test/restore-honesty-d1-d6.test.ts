@@ -78,7 +78,7 @@ function spyRuntimeAdapter() {
   return {
     runtime: "claude-code",
     listInstalled: vi.fn(async () => []),
-    project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+    project: vi.fn(async (...args: unknown[]) => ({ projected: [], skipped: [], failed: [] })),
     deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
     checkReady: vi.fn(async () => ({ ready: true })),
     launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: "t", resumeType: "claude_id" })),

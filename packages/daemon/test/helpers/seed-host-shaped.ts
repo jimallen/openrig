@@ -153,7 +153,7 @@ export function seedHostShaped(db: Database.Database): HostShape {
     // nodes + one latest session each, with a deterministic mixed lifecycle
     const mkNodes = (rigIds: string[], perRig: number[]) => {
       rigIds.forEach((rid, ri) => {
-        for (let k = 0; k < perRig[ri]; k++) {
+        for (let k = 0; k < perRig[ri]!; k++) {
           const nid = `node-${rid}-${k}`;
           insNode.run(nid, rid, `n${k}`, "claude", BASE_TS);
           nodeByRig.get(rid)!.push(nid);
@@ -179,13 +179,13 @@ export function seedHostShaped(db: Database.Database): HostShape {
       for (let c = 0; c < count; c++) {
         if (nodeScoped) {
           const nid = allNodeIds[ni % allNodeIds.length]; ni++;
-          const rid = nid.startsWith("node-") ? nid.slice(5).replace(/-\d+$/, "") : allRigIds[0];
-          insEvent.run(rid, nid, type, payloadFor(type, nid, rid, sessionNameByNode.get(nid) ?? ""), BASE_TS);
+          const rid = nid!.startsWith("node-") ? nid!.slice(5).replace(/-\d+$/, "") : allRigIds[0];
+          insEvent.run(rid, nid, type, payloadFor(type, nid!, rid!, sessionNameByNode.get(nid!) ?? ""), BASE_TS);
         } else {
           const rid = allRigIds[ri % allRigIds.length]; ri++;
           // restore.* are rig-scoped but reference a node in payload for the outcome fold
-          const anchorNode = nodeByRig.get(rid)?.[0] ?? allNodeIds[0];
-          insEvent.run(rid, null, type, payloadFor(type, anchorNode, rid, ""), BASE_TS);
+          const anchorNode = nodeByRig.get(rid!)?.[0] ?? allNodeIds[0];
+          insEvent.run(rid, null, type, payloadFor(type, anchorNode!, rid!, ""), BASE_TS);
         }
       }
     }

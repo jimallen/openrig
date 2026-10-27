@@ -161,7 +161,7 @@ describe("project-owned boundary profile", () => {
         const packet = runtime.inspect(instanceId).frontier[0]!;
         expect(packet.stepId).toBe(id);
         if (id === "release-boundary") {
-          const body = queue.getByIdOrThrow(packet.packetId).body;
+          const body = queue["getByIdOrThrow"](packet.packetId).body;
           for (const area of ["seat renewal and re-prime", "memory distillation", "destination queue sweep",
             "substrate teardown or retention", "board freeze and clean-box baseline", "capability-delta absorption and expiry", "packaged-product discoverability"]) {
             expect(body).toContain(area);

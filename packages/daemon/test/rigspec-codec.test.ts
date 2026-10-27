@@ -41,13 +41,13 @@ describe("RigSpec codec (pod-aware)", () => {
     const spec = structuredClone(VALID_RIG);
     const startup = { files: [{ path: "role.md", orientation: "role" as const, deliveryHint: "send_text" as const, required: true, appliesOn: ["fresh_start" as const] }], actions: [] };
     spec.startup = startup;
-    spec.pods[0].startup = startup;
-    spec.pods[0].members[0].startup = startup;
+    spec.pods[0]!.startup = startup;
+    spec.pods[0]!.members[0]!.startup = startup;
     const parsed = RigSpecCodec.parse(RigSpecCodec.serialize(spec)) as Record<string, unknown>;
     expect(RigSpecSchema.validate(parsed).valid).toBe(true);
     const result = RigSpecSchema.normalize(parsed);
-    for (const block of [result.startup, result.pods[0].startup, result.pods[0].members[0].startup]) {
-      expect(block?.files[0].orientation).toBe("role");
+    for (const block of [result.startup, result.pods[0]!.startup, result.pods[0]!.members[0]!.startup]) {
+      expect(block?.files[0]!.orientation).toBe("role");
     }
   });
 

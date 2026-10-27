@@ -80,7 +80,7 @@ describe("loadCrashCartDiscovery — fail-closed FIRST, always clean up", () => 
     const { discovery, dbPath } = await loadCrashCartDiscovery(deps);
     expect(dbPath.path).toBe("/scratch/.openrig/openrig.sqlite");
     expect(discovery.foundOnHost).toHaveLength(1);
-    expect(discovery.foundOnHost[0].rigId).toBe("r1");
+    expect(discovery.foundOnHost[0]!.rigId).toBe("r1");
     expect(discovery.header.stopReason).toBeNull();
     expect(deps.makeScratchDir).toHaveBeenCalledTimes(1);
     expect(deps.removeScratchDir).toHaveBeenCalledWith("/scratch/tmp/cc-xyz");
