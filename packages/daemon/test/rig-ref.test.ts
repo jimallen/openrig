@@ -7,6 +7,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { dbRigLookup, rigAdviceHandle, rigAdviceHandleIn, seatRefRigs } from "../src/domain/rig-ref.js";
 import { liveSeatGateInputs } from "../src/domain/restore-seat-gates.js";
+import { bundleInstallContext } from "../src/domain/bundle-install-context.js";
 
 describe("rig refs and the rig advice names (OF-135)", () => {
   let db: Database.Database;
@@ -58,6 +59,14 @@ describe("rig refs and the rig advice names (OF-135)", () => {
     rigRepo.archiveRig(real.id);
     expect(seatRefRigs(rigRepo, real.id)).toEqual([]); // archived: no seat, and not the rig named like the id
     expect(lookalike.name).toBe(real.id);
+  });
+
+  it("bundle-install advice: rig up names the team by its handle, rig ps --rig keeps the name it matches (review-x2 F2)", () => {
+    const other = rigRepo.createRig("someone-else");
+    const team = rigRepo.createRig(other.id); // the team's name is another rig's id, so `rig up` must use the team's id
+    const [useIt] = bundleInstallContext(db, other.id, { name: other.id, version: null, source: "/b.rigbundle" }).resolutions;
+    expect(useIt).toContain(`rig ps --rig '${other.id}' --nodes`);
+    expect(useIt).toContain(`rig up --existing '${team.id}'`);
   });
 
   it("the seat gates' advice names a rig that shares its name by id (restore and restore-check both use these inputs)", () => {

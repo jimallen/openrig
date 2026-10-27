@@ -729,7 +729,9 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
               if (yes) accepted.push(n.logicalId);
             }
             if (accepted.length > 0) {
-              const rigNameForRef = String(res.data["rigName"] ?? source);
+              // OF-135 (review-x2 F1): the seat is launched by the rig the daemon names for advice (its id when the name
+              // is shared), never by a name that could reach another rig's seat.
+              const rigNameForRef = String(res.data["rigHandle"] ?? res.data["rigName"] ?? source);
               const outcomes = await launchAcceptedFreshSeats(client, accepted, rigNameForRef, "operator accepted fresh start at rig up", LONG_RUNNING_UP_TIMEOUT_MS, adviceStartupFrom);
               for (const o of outcomes) {
                 if (o.ok) console.log(`  ${o.logicalId}: fresh-primed`);

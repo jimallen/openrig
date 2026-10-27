@@ -374,6 +374,18 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/operator.human%40kernel"]);
   });
 
+  // OF-135 (review-x2 F1): with a shared name the daemon names the rig by id, and the accepted seat is launched there.
+  it("TTY ASK accepted launches the seat on the rig the daemon's rigHandle names", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigHandle: "01RIGID", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "no resume token was captured for this seat" }], warnings: [],
+    });
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "up", "01RIGID", "--existing"]);
+    });
+    expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/operator.human%4001RIGID"]);
+  });
+
   // Each accepted seat is independent: a bad answer for one must not hide the others' results or stop them being tried.
   it("several accepted seats: one unreadable answer in the middle does not stop the rest or hide earlier results", async () => {
     respond = () => ({

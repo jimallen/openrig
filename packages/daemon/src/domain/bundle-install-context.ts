@@ -29,12 +29,15 @@ export function bundleInstallContext(
         .get(rig.id) as { source_ref: string } | undefined)?.source_ref ?? null;
       return { rigId: rig.id, name: rig.name, state: running(rig.id) > 0 ? "running" as const : "stopped" as const, source, version: null };
     });
-  // OF-135: the one existing team is named so that `rig up`/`rig down` reach it alone (its id when the name is shared).
+  // OF-135: `rig up`/`rig down` name the one existing team so they reach it alone (its id when the name is shared).
+  // `rig ps --rig` matches names only, and with a shared name it lists every rig carrying it, so it keeps the name
+  // (review-x2 F2).
   const name = shellQuote(existing.length === 1 ? rigAdviceHandle(rigs, existing[0]!.rigId, rigName) : rigName);
+  const psName = shellQuote(rigName);
   return {
     offered, existing,
     resolutions: existing.length === 0 ? [] : [
-      `Use the existing team: rig ps --rig ${name} --nodes${existing.every(rig => rig.state === "stopped") ? `; resume it with rig up --existing ${name}` : "; send work to its existing seats"}.`,
+      `Use the existing team: rig ps --rig ${psName} --nodes${existing.every(rig => rig.state === "stopped") ? `; resume it with rig up --existing ${name}` : "; send work to its existing seats"}.`,
       `${existing.some(rig => rig.state === "running") ? `Stop it with rig down ${name}, then retry` : "Retry"} this install to replace the stopped team. The earlier generation is archived; the result gives its rig unarchive command.`,
       "Cancel this install and keep the existing team. --target selects a directory; it does not rename a team.",
     ],

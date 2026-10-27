@@ -496,7 +496,8 @@ Examples:
                 if (yes) accepted.push(n.logicalId);
               }
               if (accepted.length > 0) {
-                const outcomes = await launchAcceptedFreshSeats(client, accepted, rigName, "operator accepted fresh start at rig start", LONG_RUNNING_UP_TIMEOUT_MS);
+                // OF-135 (review-x2 F1): the same rig handle the printed advice uses (its id when the name is shared).
+                const outcomes = await launchAcceptedFreshSeats(client, accepted, rigAdviceHandle(rigId, rigName, unarchivedRigs), "operator accepted fresh start at rig start", LONG_RUNNING_UP_TIMEOUT_MS);
                 for (const o of outcomes) {
                   if (o.ok) {
                     if (!opts.json) console.log(`    ${o.logicalId}: fresh-primed`);
