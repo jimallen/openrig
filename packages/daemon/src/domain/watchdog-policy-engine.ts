@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { EventBus } from "./event-bus.js";
-import type { Policy, PolicyEvaluation, PolicyJob } from "./policies/types.js";
+import type { AfterHistoryRecorded, Policy, PolicyEvaluation, PolicyJob } from "./policies/types.js";
 import { artifactPoolReadyPolicy } from "./policies/artifact-pool-ready.js";
 import { edgeArtifactRequiredPolicy } from "./policies/edge-artifact-required.js";
 import { periodicReminderPolicy } from "./policies/periodic-reminder.js";
@@ -121,6 +121,8 @@ interface WatchdogPolicyEngineDeps {
    *  every HELD row armed to this job; delivery outcome is preserved. */
   resolveQueueWait?: (input: { jobId: string }) => PolicyEvaluation | null | undefined;
   onWakeAttempt?: (attempt: { jobId: string; deliveryStatus: string }) => void;
+  /** Where the engine names a failure it survives (default console.warn). Writes no history row, event or receipt. */
+  log?: (line: string) => void;
 }
 
 const PHASE_C_BUILTIN_POLICIES: ReadonlyArray<Policy> = [
@@ -211,6 +213,7 @@ export class WatchdogPolicyEngine {
   private readonly resolvePreDeliveryTerminalReason?: (input: { jobId: string }) => string | null;
   private readonly resolveQueueWait?: WatchdogPolicyEngineDeps["resolveQueueWait"];
   private readonly onWakeAttempt?: (attempt: { jobId: string; deliveryStatus: string }) => void;
+  private readonly log: (line: string) => void;
 
   constructor(deps: WatchdogPolicyEngineDeps) {
     this.jobsRepo = deps.jobsRepo;
@@ -220,6 +223,7 @@ export class WatchdogPolicyEngine {
     this.resolveTargetGeneration = deps.resolveTargetGeneration;
     this.resolvePreDeliveryTerminalReason = deps.resolvePreDeliveryTerminalReason;
     this.onWakeAttempt = deps.onWakeAttempt;
+    this.log = deps.log ?? ((line) => console.warn(line));
     this.resolveQueueWait = deps.resolveQueueWait;
     this.parseSpec = deps.parseSpec ?? parseWatchdogSpec;
     this.now = deps.now ?? (() => new Date());
@@ -364,6 +368,7 @@ export class WatchdogPolicyEngine {
         skipReason: outcome.reason,
         evaluationNotes: outcome.notes ?? null,
       });
+      runAfterRecorded(outcome.afterRecorded, history, job, this.log);
       this.eventBus.emit({
         type: "watchdog.evaluation_skipped",
         jobId: job.jobId,
@@ -546,6 +551,7 @@ export class WatchdogPolicyEngine {
           ? { ...(outcome.notes ?? {}), deliveryReason: delivery.error }
           : delivery.status === "retained" ? { ...(outcome.notes ?? {}), outboxIds: delivery.outboxIds ?? [], retainedNotDelivered: true } : outcome.notes ?? null,
     });
+    runAfterRecorded(outcome.afterRecorded, history, job, this.log);
     if (!isContextUsageThreshold) {
       this.jobsRepo.recordEvaluation(job.jobId, evaluatedAt, true);
     }
@@ -573,6 +579,21 @@ export class WatchdogPolicyEngine {
       delivery,
       meaningful: true,
     };
+  }
+}
+
+/** Run a policy's post-insert hook (see AfterHistoryRecorded). A throw must not undo or abort the evaluation: the row is written
+ *  and, for a send, the receipt below must still be banked or the next hour would wake the steward again. */
+function runAfterRecorded(hook: AfterHistoryRecorded | undefined, row: WatchdogHistoryEntry, job: WatchdogJob, log: (line: string) => void): void {
+  if (!hook) return;
+  try {
+    hook({ evaluatedAt: row.evaluatedAt });
+  } catch (error) {
+    // Best-effort bookkeeping; the policy sees the state it did not write on its next evaluation. Named, so a hook that keeps
+    // failing is visible: a log line only, nothing a wake or the budget counts. A throwing logger must not abort the evaluation.
+    try {
+      log(`[watchdog] afterRecorded hook failed (policy ${job.policy}, job ${job.jobId}): ${error instanceof Error ? error.message : String(error)}`);
+    } catch { /* nothing left to report to */ }
   }
 }
 

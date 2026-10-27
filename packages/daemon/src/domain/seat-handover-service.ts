@@ -9,7 +9,7 @@ import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { SeatStatusService, type SeatStatus, type SeatStatusResult } from "./seat-status-service.js";
-import { SeatHandoverPlanner, parseHandoverSource, SEAT_HANDOVER_SOURCE_CAPABILITIES, type SeatHandoverPlan, type SeatHandoverSource } from "./seat-handover-planner.js";
+import { SeatHandoverPlanner, parseHandoverSource, SEAT_HANDOVER_SOURCE_CAPABILITIES, type SeatHandoverPlan, type SeatHandoverSource, type SeatHandoverSourceMode } from "./seat-handover-planner.js";
 import { discoverResumeToken } from "./agent-images/resume-token-discovery.js";
 import { resolveRebuildArtifacts } from "./session-source-rebuild-resolver.js";
 import { existsSync } from "node:fs";
@@ -23,6 +23,7 @@ import type { PersistedEvent } from "./types.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { findOtherSessionOwner } from "./session-owner.js";
+import { getSeatCwdFault, handoverCwdRefusalMessage, HANDOVER_CWD_REFUSAL_GUIDANCE, type SeatCwdFault } from "./cwd-resolution.js";
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
  *  resolved from the predecessor's provider transcript (claude transcript_path / codex rollout_path).
@@ -211,6 +212,7 @@ export class SeatHandoverService {
   private db: Database.Database;
   private statusService: SeatStatusService;
   private planner: SeatHandoverPlanner;
+  private seatCwdFault: (cwd: string) => SeatCwdFault | null;
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
   private discoveryRepo: DiscoveryRepository;
@@ -253,6 +255,7 @@ export class SeatHandoverService {
     this.runtimeAdapters = deps.runtimeAdapters ?? {};
     this.statusService = new SeatStatusService({ rigRepo: deps.rigRepo });
     this.planner = new SeatHandoverPlanner({ rigRepo: deps.rigRepo });
+    this.seatCwdFault = deps.seatCwdFault ?? ((cwd) => getSeatCwdFault(cwd));
     this.successorLauncher = deps.successorLauncher ?? new SuccessorSessionLauncher(deps.tmuxAdapter, deps.discoveryRepo, {
       sessionEnv: deps.sessionEnv,
       runtimeSessionEnv: deps.runtimeSessionEnv,
@@ -287,7 +290,8 @@ export class SeatHandoverService {
     if (input.dryRun) {
       const planResult = this.planner.plan({ ...input, dryRun: true });
       if (planResult.ok) {
-        return { ok: true, plan: planResult.plan };
+        // OF-131: the plan must not promise a successor the real handover refuses for the seat's folder.
+        return this.foreseeSeatCwdRefusal(input.seatRef, planResult.plan.source.mode) ?? { ok: true, plan: planResult.plan };
       }
       switch (planResult.code) {
         case "mutation_disabled":
@@ -492,7 +496,7 @@ export class SeatHandoverService {
         // retiree wholly untouched; a failure after the in-place respawn leaves the seat re-wakeable from
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
         guidance: launch.code === "seat_cwd_unusable"
-          ? "The seat's folder is unusable; the seat was not touched. Fix the folder named above and retry the handover."
+          ? HANDOVER_CWD_REFUSAL_GUIDANCE
           : "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
       };
     }
@@ -943,6 +947,29 @@ export class SeatHandoverService {
       code: "handover_unsupported_runtime",
       message: `Seat "${seatRef}" runs ${runtime}, and a ${runtime} seat has no handover: ${runtime} owns the conversation, and OpenRig never starts, forks or adopts another one into the seat.`,
       guidance: "Keep the seat as it is; to drive another agent, re-instantiate the seat with that binding.",
+    };
+  }
+
+  /**
+   * OF-131: the real handover refuses a seat whose recorded folder is unusable (`seat_cwd_unusable`, OF-124) before it touches
+   * the retiree, because every source except `discovered` (the operator already made that successor) launches a successor
+   * into that folder. The dry-run judges the same folder with the same check and wording and touches nothing. A seat with
+   * no recorded folder has none to judge. A custom `successorLauncher` carries its own check; this one uses `seatCwdFault`.
+   */
+  private foreseeSeatCwdRefusal(seatRef: string, sourceMode: SeatHandoverSourceMode): SeatHandoverResult | null {
+    if (sourceMode === "discovered") return null;
+    const status = this.statusService.getStatus(seatRef);
+    if (!status.ok) return null; // the plan just resolved this seat, so this is not expected; the plan stands as before
+    const node = this.lookupNode(status.status);
+    if (!node.cwd) return null;
+    const fault = this.seatCwdFault(node.cwd);
+    if (!fault) return null;
+    const departing = this.lookupLatestSession(node.id)?.session_name ?? seatRef;
+    return {
+      ok: false,
+      code: "seat_cwd_unusable",
+      message: handoverCwdRefusalMessage(departing, node.cwd, fault),
+      guidance: HANDOVER_CWD_REFUSAL_GUIDANCE,
     };
   }
 

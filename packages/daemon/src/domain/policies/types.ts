@@ -36,6 +36,15 @@ export interface PolicyJob {
   requiredReceiptDeferred: boolean;
 }
 
+/**
+ * Bookkeeping a policy wants done only once the engine has WRITTEN the history row for this outcome (OF-131). It runs right
+ * after the row is inserted, with that row's `evaluatedAt`. It does not run when the engine writes no row (a quiet skip, the
+ * active-wake throttle, a refused generation) or throws before the insert, so state that depends on "the row exists" can live
+ * here. It is best-effort: a throw is swallowed (the row stands and the evaluation goes on), so it must be safe to
+ * run again on the next evaluation, which will see the state it did not write.
+ */
+export type AfterHistoryRecorded = (row: { evaluatedAt: string }) => void;
+
 export type PolicyEvaluation =
   | {
       action: "send";
@@ -54,8 +63,9 @@ export type PolicyEvaluation =
        * that do not set this are unaffected.
        */
       conditionReceipt?: string;
+      afterRecorded?: AfterHistoryRecorded;
     }
-  | { action: "skip"; reason: string; notes?: Record<string, unknown> }
+  | { action: "skip"; reason: string; notes?: Record<string, unknown>; afterRecorded?: AfterHistoryRecorded }
   | { action: "terminal"; reason: string; notes?: Record<string, unknown> };
 
 export interface Policy {

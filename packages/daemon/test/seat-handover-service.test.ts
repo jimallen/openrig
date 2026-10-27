@@ -19,6 +19,7 @@ import { observeCodexSandbox } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
+import type { SeatCwdFault } from "../src/domain/cwd-resolution.js";
 
 describe("SeatHandoverService", () => {
   let db: Database.Database;
@@ -100,7 +101,7 @@ describe("SeatHandoverService", () => {
     return { runtime: "codex", launchHarness, checkReady } as unknown as RuntimeAdapter;
   }
 
-  function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => { kind: "missing" } | null = () => null): SeatHandoverService {
+  function newService(adapter: TmuxAdapter = tmux(), occupantInvalidator: OccupantInvalidator = { invalidateRetiringOccupant }, seatCwdFault: () => SeatCwdFault | null = () => null): SeatHandoverService {
     return new SeatHandoverService({
       db,
       rigRepo,
@@ -935,6 +936,54 @@ describe("SeatHandoverService", () => {
     expect(launchHarness).not.toHaveBeenCalled();
     expect(sessionRegistry.getBindingForNode(node.id)?.tmuxSession).toBe("dev-impl@seat-rig");
     expect(durableRows()).toBe(before);
+  });
+
+  // OF-131 (review-v6 N3): `rig seat handover --dry-run` printed a plan for a seat whose real handover is refused for its folder.
+  describe("the dry-run foresees the seat_cwd_unusable refusal the real handover gives", () => {
+    const plan = (svc: SeatHandoverService, source: string | undefined) =>
+      svc.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source, dryRun: true });
+
+    it.each([undefined, "fresh", "rebuild", "fork:abc123"])("source %s: refused with the real handover's code, wording and guidance, and nothing is touched", async (source) => {
+      seedSeat();
+      const gone = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }));
+      const before = durableRows();
+
+      const dry = await plan(gone, source);
+
+      expect(dry).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect((dry as { message: string }).message).toContain("its cwd '/project' does not exist");
+      expect((dry as { message: string }).message).toContain("Create the folder /project");
+      expect(durableRows()).toBe(before);
+      if (source !== "fork:abc123") { // the real handover refuses an unresolvable fork id for its token before it judges the folder
+        const real = await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: source ?? "fresh" });
+        expect(real).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+        expect((real as { message: string }).message).toContain((dry as { message: string }).message); // the real one adds only its step prefix
+        expect((dry as { guidance: string }).guidance).toBe((real as { guidance: string }).guidance);
+      }
+    });
+
+    it("a seat whose folder is usable still gets its plan (control), and a discovered successor is not judged by the seat's folder", async () => {
+      seedSeat();
+      const discovered = seedDiscovery();
+      const gone = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }));
+      expect(await plan(newService(), "fresh")).toMatchObject({ ok: true });
+      expect(await plan(gone, `discovered:${discovered.id}`)).toMatchObject({ ok: true });
+    });
+
+    it("a seat with no recorded folder has none to judge: its plan stands", async () => {
+      seedSeat();
+      db.prepare("UPDATE nodes SET cwd = NULL WHERE logical_id = 'dev.impl'").run();
+      const gone = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }));
+      expect(await plan(gone, "fresh")).toMatchObject({ ok: true });
+    });
+
+    it("names a folder that is not a directory by what is wrong with it, not as missing", async () => {
+      seedSeat();
+      const svc = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "not_directory", what: "is not a directory" }));
+      const dry = await plan(svc, "fresh");
+      expect(dry).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect((dry as { message: string }).message).toContain("Fix /project: it is not a directory");
+    });
   });
 
   it("maps a listPanes THROW resolving the departing pane to a loud successor_create_failed (no rejection, seat untouched)", async () => {

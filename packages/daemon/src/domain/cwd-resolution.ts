@@ -133,6 +133,15 @@ export function seatCwdUnusableMessage(label: string, cwd: string, fault: SeatCw
   return `${label} was not started: its cwd '${cwd}' ${seatCwdFaultReason(fault)}. ${seatCwdFixAdvice(cwd, fault)}, then launch it again.`;
 }
 
+/** The refusal for a handover whose seat folder is unusable (OF-124), in one wording for the successor launcher (the real
+ *  handover) and the dry-run plan (OF-131), so the preview can never say something other than what the handover says. */
+export function handoverCwdRefusalMessage(departingSession: string, cwd: string, fault: SeatCwdFault): string {
+  return `${departingSession} was not handed over: its cwd '${cwd}' ${seatCwdFaultReason(fault)}. ${seatCwdFixAdvice(cwd, fault)}, then retry the handover. Nothing was stopped.`;
+}
+
+/** The caller guidance that goes with a handover's seat_cwd_unusable refusal (real or dry-run). */
+export const HANDOVER_CWD_REFUSAL_GUIDANCE = "The seat's folder is unusable; the seat was not touched. Fix the folder named above and retry the handover.";
+
 /** What is wrong with the folder, completing "cwd '<path>' ...", for every refusal that judges a seat folder. */
 export function seatCwdFaultReason(fault: SeatCwdFault): string {
   return fault.kind === "missing" ? "does not exist, and a seat launched there would silently start in $HOME" : fault.what;

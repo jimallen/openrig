@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,9 +84,10 @@ function harness(script: Script = () => "ok") {
   const projection = new HealthProjectionService([source, sourceB]);
   const jobsRepo = new WatchdogJobsRepository(db, now);
   const historyLog = new WatchdogHistoryLog(db);
+  const logs: string[] = [];
   const sends: Array<{ targetSession: string; message: string; occurrenceId: string; status: string }> = [];
   const engine = new WatchdogPolicyEngine({
-    jobsRepo, historyLog, eventBus: new EventBus(db), now,
+    jobsRepo, historyLog, eventBus: new EventBus(db), now, log: (line) => { logs.push(line); },
     deliver: async (req, src) => {
       const status = script(src);
       sends.push({ targetSession: req.targetSession, message: req.message, occurrenceId: src.occurrenceId!, status });
@@ -96,7 +97,14 @@ function harness(script: Script = () => "ok") {
   });
   // Read `wake` structurally (not through `armed`) so this harness also runs against the
   // pre-F2 return shape when the new rows are measured red at the previous tip.
-  const { wake } = ensureRsiStewardJobs(jobsRepo, STEWARD) as unknown as { wake: { jobId: string } };
+  let { wake } = ensureRsiStewardJobs(jobsRepo, STEWARD) as unknown as { wake: { jobId: string } };
+  /** Unset the steward and set it again: the wake job is retired and a NEW job (new id, empty history, no receipt) takes its place. */
+  const rearm = () => {
+    ensureRsiStewardJobs(jobsRepo, "");
+    const again = ensureRsiStewardJobs(jobsRepo, STEWARD);
+    if (!again.armed) throw new Error("steward did not re-arm");
+    wake = again.wake;
+  };
   const scan = async () => {
     const result = await engine.evaluate(jobsRepo.getByIdOrThrow(wake.jobId));
     clock = new Date(clock.getTime() + HOUR);
@@ -110,7 +118,7 @@ function harness(script: Script = () => "ok") {
     .all(wake.jobId) as Array<{ outcome: string; skip_reason: string | null }>;
   const state = (fingerprint: string) => db.prepare("SELECT state, activated_at FROM rsi_finding_state WHERE fingerprint = ?")
     .get(fingerprint) as { state: string; activated_at: string } | undefined;
-  return { db, jobsRepo, projection, source, sourceB, sends, scan, receipt, history, historyNotes, state, setClock: (ms: number) => { clock = new Date(ms); } };
+  return { db, jobsRepo, historyLog, logs, rearm, jobId: () => wake.jobId, projection, source, sourceB, sends, scan, receipt, history, historyNotes, state, setClock: (ms: number) => { clock = new Date(ms); } };
 }
 
 describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
@@ -444,6 +452,186 @@ describe("OF-72: RSI blindness is recorded, reported, and does not outlive its c
     it("no detector id can collide with the reserved episode prefix (its real fingerprints would be filtered out of the active set)", () => {
       expect(RSI_DETECTORS.length).toBeGreaterThan(10);          // positive control: the population checked
       expect(RSI_DETECTORS.filter((id) => `${id}/`.startsWith("rsi.source-blind") || "rsi.source-blind/".startsWith(`${id}/`))).toEqual([]);
+    });
+
+    // OF-131 (review-v9 N1): an episode lives in rsi_finding_state, which has no job id, while the loud row is in a wake job's
+    // history. A wake job re-armed as a NEW job (steward unset, then set) never showed an episode that was already open.
+    describe("a re-armed wake job names an episode an earlier job opened (OF-131)", () => {
+      const namedBy = (h: ReturnType<typeof harness>, jobId: string) => (h.db.prepare("SELECT evaluation_notes FROM watchdog_history WHERE job_id = ?")
+        .all(jobId) as Array<{ evaluation_notes: string | null }>)
+        .filter((r) => r.evaluation_notes !== null && (JSON.parse(r.evaluation_notes).newlyBlind ?? [])
+          .some((p: { source: string; reason: string }) => p.source === "rsi-telemetry" && p.reason === "unavailable"));
+
+      it("the new job's first blind hour is loud and names the open episode; its later hours are quiet; the episode keeps its start", async () => {
+        const h = harness();
+        const first = h.jobId();
+        h.source.mode = "throw";
+        await h.scan();                                          // job 1 opens the episode
+        const started = h.state("rsi.source-blind/rsi-telemetry/unavailable")!.activated_at;
+        expect(namedBy(h, first)).toHaveLength(1);
+
+        h.rearm();
+        expect(h.jobId()).not.toBe(first);                       // positive control: a different job
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+        expect(namedBy(h, h.jobId())).toHaveLength(1);           // the new job's own history names it
+        for (let hour = 0; hour < 3; hour++) expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+        expect(namedBy(h, h.jobId())).toHaveLength(1);
+        expect(namedBy(h, first)).toHaveLength(1);               // the retired job's history is untouched
+        expect(h.state("rsi.source-blind/rsi-telemetry/unavailable")).toEqual({ state: "active", activated_at: started });
+      });
+
+      it("adds no wake: a re-armed job's blind hour with nothing new sends nothing and spends no budget", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.rearm();
+        await h.scan(); await h.scan();
+        expect(h.sends).toHaveLength(0);
+        expect(h.history().filter((r) => r.outcome === "sent")).toHaveLength(0);
+      });
+
+      it("an episode opened by the previous revision (stamped a few ms after its row) is still recognised as named", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        const key = "rsi.source-blind/rsi-telemetry/unavailable";
+        const rowAt = (h.db.prepare("SELECT evaluated_at AS at FROM watchdog_history WHERE job_id = ?").get(h.jobId()) as { at: string }).at;
+        h.db.prepare("UPDATE rsi_finding_state SET activated_at = ? WHERE fingerprint = ?").run(new Date(Date.parse(rowAt) + 7).toISOString(), key);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+        expect(h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND)).toHaveLength(1);
+      });
+
+      it("a history row naming an EARLIER episode of the same pair does not count: a reopened episode is loud again", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.source.mode = "ok";
+        await h.scan();                                          // read in full: the episode closes
+        h.source.mode = "throw";
+        expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+        h.rearm();
+        expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+        expect(namedBy(h, h.jobId())).toHaveLength(1);
+      });
+
+      // The next two rows stand in an episode that ANOTHER job opened by writing its state row directly: a retired job never resumes,
+      // so the job's own history cannot otherwise hold a row for a different or earlier episode while one is open.
+      it("a row of this job that names a DIFFERENT reason of the same source does not count", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();                                          // this job names rsi-telemetry/unavailable
+        h.db.prepare("UPDATE rsi_finding_state SET state = 'quiet'").run();
+        const startedLater = new Date(T0 + 30_000).toISOString();
+        h.db.prepare("INSERT INTO rsi_finding_state (fingerprint, source, state, activated_at, last_seen_at) VALUES ('rsi.source-blind/rsi-telemetry/partial', 'rsi-telemetry', 'active', ?, ?)").run(startedLater, startedLater);
+        h.source.mode = "partial";
+        expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+      });
+
+      it("a row of this job that names the same reason of ANOTHER source does not count", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();                                          // rsi-telemetry/unavailable: named by this job and still open
+        const startedLater = new Date(T0 + 30_000).toISOString();
+        h.db.prepare("INSERT INTO rsi_finding_state (fingerprint, source, state, activated_at, last_seen_at) VALUES ('rsi.source-blind/rsi-second/unavailable', 'rsi-second', 'active', ?, ?)").run(startedLater, startedLater);
+        h.sourceB.mode = "throw";
+        expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+      });
+
+      it("a row older than the open episode does not name it (an episode another job opened after this job's earlier episode closed)", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();                                          // this job names episode 1 at T0
+        h.db.prepare("UPDATE rsi_finding_state SET activated_at = ?, last_seen_at = ?").run(new Date(T0 + 2 * HOUR).toISOString(), new Date(T0 + 2 * HOUR).toISOString());
+        expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+      });
+
+      it("unreadable history notes count as not named: one more loud row, never a crash", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.db.prepare("UPDATE watchdog_history SET evaluation_notes = 'not json {' WHERE job_id = ?").run(h.jobId());
+        expect((await h.scan()).outcome).toMatchObject({ reason: RSI_SOURCE_BLIND });
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      });
+    });
+
+    // OF-131 (review-v9 B1 remainder): the episode used to commit in the scan, before the engine inserted its history row.
+    describe("an episode is recorded only once its history row is written (OF-131)", () => {
+      const episodes = (h: ReturnType<typeof harness>) => h.db.prepare("SELECT fingerprint FROM rsi_finding_state WHERE fingerprint LIKE 'rsi.source-blind/%'").all();
+
+      it("a history insert that throws leaves no episode, so the next hour writes the loud row instead of losing it", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        vi.spyOn(h.historyLog, "record").mockImplementationOnce(() => { throw new Error("history insert failed"); });
+        await expect(h.scan()).rejects.toThrow("history insert failed");
+        expect(episodes(h)).toEqual([]);                         // the lost-row hour opened nothing
+        expect(h.history()).toHaveLength(0);
+
+        h.setClock(T0 + HOUR);
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+        expect(h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND)).toHaveLength(1);
+        expect(episodes(h)).toHaveLength(1);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      });
+
+      it("a delivery that throws in the hour an episode opens leaves no episode either", async () => {
+        const h = harness(() => { throw new Error("transport down"); });
+        h.source.mode = "throw";
+        h.sourceB.rigs = ["r2"];                                 // rsi-second reports a new finding, so the hour is a send
+        await expect(h.scan()).rejects.toThrow("transport down");
+        expect(episodes(h)).toEqual([]);
+        expect(h.history()).toHaveLength(0);
+      });
+
+      it("a hook that fails after the row is written does not undo the wake or its receipt; the next hour is loud once more", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        h.sourceB.rigs = ["r2"];
+        h.db.exec("CREATE TRIGGER w5_refuse_episode BEFORE INSERT ON rsi_finding_state WHEN NEW.fingerprint LIKE 'rsi.source-blind/%' BEGIN SELECT RAISE(ABORT, 'episode write refused'); END");
+        const first = await h.scan();
+        expect(first.outcome.action).toBe("send");
+        expect(h.sends).toHaveLength(1);
+        expect(h.receipt()).not.toBeNull();                      // the engine still banked the receipt: no second wake next hour
+        expect(h.history().map((r) => r.outcome)).toEqual(["sent"]);
+        expect(episodes(h)).toEqual([]);
+
+        h.db.exec("DROP TRIGGER w5_refuse_episode");
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+        expect(h.sends).toHaveLength(1);                         // still only the original wake
+        expect(episodes(h)).toHaveLength(1);
+      });
+
+      it("a hook that fails is named in the log (policy, job id, error) and writes nothing a wake or the budget counts; a healthy hook logs nothing", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        h.sourceB.rigs = ["r2"];
+        const events = () => (h.db.prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n;
+        await h.scan();                                          // healthy hook: positive control, nothing logged
+        expect(h.logs).toEqual([]);
+        h.db.prepare("UPDATE rsi_finding_state SET state = 'quiet' WHERE fingerprint LIKE 'rsi.source-blind/%'").run(); // the episode only, not r2's finding
+        h.db.exec("CREATE TRIGGER w5_refuse_episode BEFORE INSERT ON rsi_finding_state WHEN NEW.fingerprint LIKE 'rsi.source-blind/%' BEGIN SELECT RAISE(ABORT, 'episode write refused'); END");
+        const rowsBefore = h.history().length;
+        const eventsBefore = events();
+        await h.scan();                                          // the blind skip row is written, the hook fails
+        expect(h.logs).toHaveLength(1);
+        expect(h.logs[0]).toContain("afterRecorded hook failed");
+        expect(h.logs[0]).toContain(`policy ${HEALTH_FINDING_WAKE_POLICY}`);
+        expect(h.logs[0]).toContain(`job ${h.jobId()}`);
+        expect(h.logs[0]).toContain("episode write refused");
+        expect(h.history()).toHaveLength(rowsBefore + 1);        // only the engine's own loud row; the log adds none
+        expect(events()).toBe(eventsBefore + 1);                 // and only its own evaluation_skipped event
+        expect(h.sends).toHaveLength(1);                         // no wake
+      });
+
+      it("the scan alone opens nothing (an evaluation that writes no row, such as a throttled send, leaves no episode); recordEpisodes opens it", () => {
+        const h = harness();
+        h.source.mode = "throw";
+        const scan = scanFindingState(h.db, h.projection, [h.source, h.sourceB], new Date(T0));
+        expect(scan.newlyBlind).toEqual([{ source: "rsi-telemetry", reason: "unavailable" }]);
+        expect(episodes(h)).toEqual([]);                         // the scan alone opens nothing
+        scan.recordEpisodes(new Date(T0).toISOString());
+        expect(episodes(h)).toHaveLength(1);
+      });
     });
 
     it("the daily report names the rows that open an episode in an hour with a new finding", () => {
