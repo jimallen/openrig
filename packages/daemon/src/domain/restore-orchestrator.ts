@@ -1244,6 +1244,7 @@ export class RestoreOrchestrator {
         logicalId: node.logicalId,
         status: "failed",
         error: launchResult.message,
+        ...(launchResult.code === "seat_cwd_unusable" ? { errorCode: launchResult.code } : {}),
       };
     }
 

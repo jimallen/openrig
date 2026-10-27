@@ -10,6 +10,7 @@ import { freshSeatLaunchCommand } from "./active-occupant.js";
 import type { SeatStop } from "./restore-seat-gates.js";
 import { restoreRefusesRig, type RunningSessionClassification } from "./restore-running-sessions.js";
 import type { SessionLiveness } from "./session-liveness.js";
+import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd-resolution.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
 
@@ -550,6 +551,21 @@ export class RestoreCheckService {
           deferredAssessmentChecks.push(startupContextCheck.check);
         } else {
           checks.push(startupContextCheck.check);
+        }
+
+        // OF-69: a seat that is not running is started by restore through the launcher, which refuses a folder that is
+        // gone (tmux would start it in $HOME). Say so here, where the plan and the launch must agree.
+        const cwdFault = readinessCheck.status !== "green" && node.cwd ? getSeatCwdFault(node.cwd) : null;
+        if (node.cwd && cwdFault) {
+          const cwdCheck: CheckEntry = {
+            check: `seat.${node.canonicalSessionName ?? node.logicalId}.cwd`,
+            status: "red",
+            evidence: seatCwdUnusableMessage(node.logicalId, node.cwd, cwdFault),
+            remediation: `${seatCwdFixAdvice(node.cwd, cwdFault)}, then rerun rig restore-check`,
+            remediationSafe: false,
+          };
+          checks.push(cwdCheck);
+          rigChecks.push(cwdCheck);
         }
 
         // AC-4 / FR-3: default compact does NOT assemble the rest of the
@@ -1892,6 +1908,11 @@ export class RestoreCheckService {
     }
 
     if (check.check.startsWith("seat.") && check.check.endsWith(".startup-context")) {
+      return "restore_input";
+    }
+
+    // OF-69: restore would start the seat through the launcher, which refuses a missing folder; no `rig up --existing` fixes that.
+    if (check.check.startsWith("seat.") && check.check.endsWith(".cwd")) {
       return "restore_input";
     }
 

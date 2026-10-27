@@ -221,6 +221,20 @@ describe("Session routes", () => {
     expect(res.status).toBe(409);
   });
 
+  // OF-69: the person can fix a missing seat folder (create it), so the refusal is a 4xx that keeps its code, not a 500.
+  it("POST .../launch on a seat whose folder is gone -> 409 seat_cwd_unusable, nothing launched", async () => {
+    const { app, rigRepo, sessionRegistry } = createTestApp(db);
+    const rig = rigRepo.createRig("r01");
+    const gone = "/nonexistent-u12-seat-folder/impl";
+    rigRepo.addNode(rig.id, "dev1-impl", { cwd: gone });
+
+    const res = await app.request(`/api/rigs/${rig.id}/nodes/dev1-impl/launch`, { method: "POST" });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+    expect(sessionRegistry.getSessionsForRig(rig.id)).toHaveLength(0);
+  });
+
   it("POST .../launch nonexistent node -> 404", async () => {
     const { app, rigRepo } = createTestApp(db);
     const rig = rigRepo.createRig("r01");

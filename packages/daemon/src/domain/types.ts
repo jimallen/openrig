@@ -522,6 +522,8 @@ export interface RestoreNodeResult {
   // outside the five-term split.)
   status: "resumed" | "rebuilt" | "fresh" | "fresh-primed" | "awaiting-decision" | "failed" | "attention_required" | "operator_recovered";
   error?: string;
+  /** The launcher's refusal code when the launch itself was refused (OF-69: `seat_cwd_unusable`), so a caller can branch on it. */
+  errorCode?: string;
   /** OF-32 stage 3: where a seat this restore started fresh (not an exact resume) took its startup files from, set
    *  once the seat was launched. Absent for a resumed seat, and when no adapter was available (nothing was given). */
   startupSource?: RestoreStartupSource;

@@ -19,6 +19,7 @@ import type { StartupFrom } from "./seat-startup-source.js";
 import { decideSeatLaunchOutcome, readContinuityRow } from "./restore-seat-gates.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
+import { getSeatCwdFault, seatCwdUnusableMessage } from "./cwd-resolution.js";
 
 /** OPR.0.4.3.20 FR-6 — a present token whose last verification is older than this
  *  is surfaced as `stale` (age-based staleness — the "stale while running" signal
@@ -247,6 +248,8 @@ export function buildRestorePlanPreview(
   const forecast = (input: {
     logicalId: string; snapshotNodeId: string; live: { runtime: string | null } | null; continuityStatus: string | null;
     freshRequested: boolean; occupant: ActiveOccupantResolution<PreviewSessionRow>;
+    /** The folder restore would hand to tmux for this seat (its recorded cwd); null/absent when none is recorded. */
+    cwd?: string | null;
   }): RestorePlanPreviewNode => {
     const { logicalId, snapshotNodeId, live, freshRequested, occupant: resolution } = input;
     // ONE decision, the function restore calls (restore-seat-gates.ts): the plan only words it.
@@ -271,6 +274,14 @@ export function buildRestorePlanPreview(
       reason = "listed in --fresh — apply would deliberately skip the resume (operation B)";
     } else {
       intendedAction = outcome.kind === "resume" ? "resume-original" : "fresh-primed";
+    }
+    // OF-69: a seat restore would launch, whose folder the launcher would refuse. Restore reports it failed and starts
+    // nothing for it, so the plan says so rather than forecasting a start.
+    const cwdFault = input.cwd && outcome.kind !== "stop" && outcome.kind !== "skip_restoring" ? getSeatCwdFault(input.cwd) : null;
+    if (input.cwd && cwdFault) {
+      intendedAction = "awaiting-decision";
+      reason = seatCwdUnusableMessage(logicalId, input.cwd, cwdFault);
+      restoreStatus = "failed";
     }
     // OPR.0.4.3.20 FR-6 — per-seat token state (read-only), derived from the
     // RESOLVED occupant only — never from a historical row.
@@ -307,6 +318,8 @@ export function buildRestorePlanPreview(
       logicalId: node.logicalId, snapshotNodeId: savedNodeId, live: { runtime: node.runtime ?? null },
       continuityStatus: continuity[node.id] ?? null,
       freshRequested: freshLogicalIds?.includes(node.logicalId) ?? false, occupant: resolveOccupant(savedNodeId, node.id),
+      // A seat that is running is not launched by restore, so only a seat with no binding is judged.
+      cwd: node.binding ? null : node.cwd,
     });
     // OF-62: restore captures a pre-restore snapshot of the LIVE rig first, and that capture refuses on a damaged saved
     // row (snapshot-capture.ts, the same predicate). Nothing is started, so the plan must not say "fresh-primed".

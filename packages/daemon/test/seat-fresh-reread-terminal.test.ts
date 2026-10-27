@@ -158,15 +158,38 @@ describe("OF-71 a builtin:terminal seat starts fresh from its re-read spec", () 
   });
 
   // OF-69: the stored route, the one the operator was sent to for OF-71, no longer skips the folder check.
-  it("OF-69: --startup-from stored with a deleted seat folder is refused, and nothing starts in $HOME", async () => {
+  // The launcher is the backstop when the folder goes between the early check and the launch: its code must survive.
+  it("OF-69: the launcher's seat_cwd_unusable refusal keeps its code through the fresh launch (not launch_failed)", async () => {
     const seat = await launchKernel();
-    fs.rmSync(workdir, { recursive: true });
-    const created = vi.mocked(tmux.createSession).mock.calls.length;
+    vi.spyOn(NodeLauncher.prototype, "launchNode").mockResolvedValueOnce({ ok: false, code: "seat_cwd_unusable", message: "fixture: folder went away" });
 
     const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "kernel restore", startupFrom: "stored" });
 
-    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable", message: "fixture: folder went away" });
+  });
+
+  it("OF-69: --startup-from stored with a deleted seat folder is refused BEFORE the live occupant is stopped, and the plan says so", async () => {
+    const seat = await launchKernel();
+    fs.rmSync(workdir, { recursive: true });
+    const created = vi.mocked(tmux.createSession).mock.calls.length;
+    const killed = vi.mocked(tmux.killSession).mock.calls.length;
+    const sessionRows = () => db.prepare("SELECT id, status FROM sessions ORDER BY id").all();
+    const rowsBefore = sessionRows();
+
+    // The preview must not promise a launch the execution refuses (review F1: it said launchable:true, wouldStop:true).
+    const plan = await service.planFresh({ seatRef: seat.sessionName, fresh: true, stop: true, startupFrom: "stored" });
+    expect(plan).toMatchObject({ ok: true, launchable: false, wouldStop: false });
+    expect(plan.ok && plan.blockers.map((b) => b.code)).toContain("seat_cwd_unusable");
+
+    const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "kernel restore", startupFrom: "stored" });
+
+    // The seat is the way it was: still alive, nothing killed, no session row touched, nothing started.
+    expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
     expect(!result.ok && result.message).toContain(`its cwd '${workdir}' does not exist`);
+    expect(!result.ok && "guidance" in result && result.guidance).toContain(`Create the folder ${workdir}`);
+    expect(alive.has(seat.sessionName)).toBe(true);
+    expect(vi.mocked(tmux.killSession).mock.calls.length).toBe(killed);
     expect(vi.mocked(tmux.createSession).mock.calls.length).toBe(created);
+    expect(sessionRows()).toEqual(rowsBefore);
   });
 });

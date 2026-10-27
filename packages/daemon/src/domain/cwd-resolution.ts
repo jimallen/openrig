@@ -126,3 +126,10 @@ export function getSeatCwdFault(
 export function seatCwdFixAdvice(path: string, fault: SeatCwdFault): string {
   return fault.kind === "missing" ? `Create the folder ${path}` : `Fix ${path}: it ${fault.what}`;
 }
+
+/** The refusal for a launch whose seat folder is unusable (OF-69), in one wording for the launcher, the fresh-launch
+ *  check, the restore plan and restore-check. Says what is wrong and what fixes it; nothing is created. */
+export function seatCwdUnusableMessage(label: string, cwd: string, fault: SeatCwdFault): string {
+  const what = fault.kind === "missing" ? "does not exist, and a seat launched there would silently start in $HOME" : fault.what;
+  return `${label} was not started: its cwd '${cwd}' ${what}. ${seatCwdFixAdvice(cwd, fault)}, then launch it again.`;
+}

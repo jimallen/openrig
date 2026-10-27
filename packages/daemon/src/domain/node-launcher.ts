@@ -18,7 +18,7 @@ import { ensureGitWorktreeShim, withWorktreeShimPath } from "./git-worktree-shim
 import * as os from "node:os";
 import * as path from "node:path";
 import type { OccupantKind } from "./session-registry.js";
-import { getSeatCwdFault, seatCwdFixAdvice } from "./cwd-resolution.js";
+import { getSeatCwdFault, seatCwdUnusableMessage } from "./cwd-resolution.js";
 
 import type { Session, Binding } from "./types.js";
 
@@ -140,17 +140,19 @@ export class NodeLauncher {
       };
     }
 
-    // OF-69: the ONE place every launch (first start, restore, relaunch, `up --existing`, `--startup-from stored`, the TUI)
-    // passes before tmux. tmux does not refuse a missing `-c` directory: it starts the session in $HOME, so the seat
-    // would run in the wrong place with no error. Nothing is created or changed here. A seat with no cwd at all has no
-    // folder to judge and keeps tmux's default.
+    // OF-69: the backstop for every launch that goes through launchNode (first start, restore, relaunch, `up --existing`,
+    // `--startup-from stored`, the TUI). tmux does not refuse a missing `-c` directory: it starts the session in $HOME, so
+    // the seat would run in the wrong place with no error. Nothing is created or changed here. A seat with no cwd at all
+    // has no folder to judge and keeps tmux's default. Callers that stop something first (fresh launch) run the same
+    // check earlier, before the stop. Two respawn paths do not come through here: restart-in-place
+    // (seat-restart-in-place.ts, respawnPane) and handover (successor-session-launcher.ts); see the OF-69 follow-up.
     const seatCwd = opts?.cwd ?? node.cwd ?? undefined;
     const cwdFault = seatCwd ? getSeatCwdFault(seatCwd) : null;
     if (seatCwd && cwdFault) {
       return {
         ok: false,
         code: "seat_cwd_unusable",
-        message: `${logicalId} was not started: its cwd '${seatCwd}' ${cwdFault.kind === "missing" ? "does not exist, and a seat launched there would silently start in $HOME" : cwdFault.what}. ${seatCwdFixAdvice(seatCwd, cwdFault)}, then launch it again.`,
+        message: seatCwdUnusableMessage(logicalId, seatCwd, cwdFault),
       };
     }
 
