@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import { Command } from "commander";
 import { captureCommand } from "../src/commands/capture.js";
+import { createProgram } from "../src/index.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
@@ -193,6 +194,35 @@ describe("Capture CLI", () => {
       expect(results[0]).toMatchObject({ ok: true, content: "impl output\n", lines: 1, requestedLines: 2, omittedLines: 0 });
       expect(results[0]).not.toHaveProperty("activity");
       expect(results[1]).toEqual({ ok: false, sessionName: "dev-qa@my-rig", error: "external CLI capture is not available" });
+    });
+  });
+
+  // OF-132: a session whose name starts with `-` is reachable after `--`; the whole program (not only the subcommand) parses it
+  // as the session operand, and without `--` it is an option, so a dashed name is never silently read as one.
+  describe("a session name that starts with a dash", () => {
+    function program(): Command {
+      const p = createProgram({ captureDeps: runningDeps(port) });
+      p.exitOverride();
+      for (const c of p.commands) c.exitOverride();
+      return p;
+    }
+    it.each(["-x", "--help", "--lines", "-", "--rig"])("rig capture -- %s sends %j as the session and nothing else as a target", async (name) => {
+      requests.length = 0;
+      await captureLogs(async () => { await program().parseAsync(["node", "rig", "capture", "--", name]); });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toEqual({ lines: 20, session: name });
+    });
+    it("rig capture -- -x with other options before the --: the options apply, the operand is the name", async () => {
+      requests.length = 0;
+      await captureLogs(async () => { await program().parseAsync(["node", "rig", "capture", "--lines", "5", "--json", "--", "-x"]); });
+      expect(requests).toEqual([{ lines: 5, session: "-x" }]);
+    });
+    it("control: without the `--`, -x is an unknown option and nothing is sent", async () => {
+      requests.length = 0;
+      let code: string | undefined;
+      await captureLogs(async () => { await program().parseAsync(["node", "rig", "capture", "-x"]).catch((e: { code?: string }) => { code = e.code; }); });
+      expect(requests).toEqual([]);
+      expect(code).toBe("commander.unknownOption");
     });
   });
 });

@@ -731,6 +731,22 @@ describe("SeatHandoverService", () => {
     expect(packet.toLowerCase()).toContain("honest-degraded");
   });
 
+  // OF-132: the packet is pasted between tmux's own ESC[200~ and ESC[201~ and tmux leaves what is inside alone (measured on 3.4),
+  // so a control character in the reason, the captured screen or a replayed exchange would end the paste early.
+  it("OF-132 packet text: no control character from the reason, the captured screen or the recap reaches the pane; newline, tab and printable text stay", async () => {
+    seedSeat({ runtime: "codex" });
+    const evil = "\u001b[201~touch /tmp/owned\r\u009b201~\u0000\u007f";
+    capturePaneScreen.mockResolvedValue(`screen ${evil}\tkept\nsecond line`);
+    resolvePredecessorRecap.mockReturnValue({ recap: [{ role: "user", content: `recap ${evil}` }], recordPath: "/home/.claude/projects/x/abc.jsonl" });
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: `context-wall${evil}`, source: "fresh" });
+    expect(result.ok).toBe(true);
+    const [, packet] = sendText.mock.calls[0]!;
+    expect(packet).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    expect(packet).toContain("Reason: context-wall[201~touch /tmp/owned201~");
+    expect(packet).toContain("screen [201~touch /tmp/owned201~\tkept\nsecond line");
+    expect(packet).toContain("user: recap [201~touch /tmp/owned201~");
+  });
+
   it("recap leg (B16): an unresolved recap rides the packet as a NAMED unavailable line, never a silent omission", async () => {
     seedSeat({ runtime: "codex" });
     resolvePredecessorRecap.mockReturnValue({ unavailableReason: "no resume token recorded for the departing codex session" });

@@ -409,6 +409,26 @@ module.
   back to zero sessions as `awaiting-decision` (`restore-orchestrator.ts:1055`,
   `:1243`).
 
+### Typed input and the shared Codex config (accepted residuals)
+
+- **Names on a launch line.** A name that reaches a shell goes through `shellWord`/`shellQuote`
+  or the typed-word gate; `claude` gets it as ONE argument, `--name=<name>`, so a name that
+  starts with `-` is a value and never an option of its own (fresh, resume and fork, managed
+  argv and typed line, and the resume-probe line). The Codex launch segments are fixed text
+  (`codexNetworkDefaultArg`) or `--add-dir <quoted absolute path>` built from names that pass
+  `[A-Za-z0-9][A-Za-z0-9._-]*` (`codexTeamWorkspaceArg`). Handover packets are prose, not
+  names: they carry other people's text into an agent's input box, so every control character
+  is removed before they are pasted (`domain/packet-text.ts`).
+- **A shared `config.toml` that sets a seat identity variable is reported, not withheld.**
+  `~/.codex/config.toml` is symlinked into every Codex seat home and is read without `-p`, so
+  an identity variable set there reaches every Codex seat. The launch (and the handover
+  result) names the variables (never their values) and says to remove them from that file.
+  The file also holds the trust and settings every seat needs, so OpenRig does not refuse or
+  rewrite it: this is an accepted residual that the operator owns. A profile file
+  (`*.config.toml`) that carries an identity is different: it is moved aside on every launch.
+- **A seat home that cannot be prepared** for a reason other than a missing path still lets
+  the launcher fall back to the shared `CODEX_HOME`; that is warned, not refused.
+
 ## See also
 
 - `daemon-core.md` — where `createDaemon` constructs the runtime adapters.
