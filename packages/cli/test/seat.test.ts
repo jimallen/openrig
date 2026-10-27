@@ -260,7 +260,7 @@ describe("rig seat status", () => {
       await makeCommand(deps).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
     });
 
-    expect(logs.join("\n")).toContain("Reason: tmux session missing; restore or relaunch the seat");
+    expect(logs.join("\n")).toContain("Reason: tmux session missing; resume with rig up --existing seat-rig (refused while any seat is live), or start only this seat fresh with rig seat launch 'dev.impl@seat-rig' --fresh --reason \"<why>\"");
   });
 
   it("returns a nonzero status for an unknown seat", async () => {

@@ -1,4 +1,4 @@
-import { parseStartupFromArg, STARTUP_FROM_HELP } from "../fresh-seat-advice.js";
+import { missingSessionAdvice, parseStartupFromArg, STARTUP_FROM_HELP } from "../fresh-seat-advice.js";
 import { Command } from "commander";
 import nodePath from "node:path";
 import { DaemonClient, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
@@ -152,8 +152,8 @@ function display(value: string | null | undefined, empty = "none"): string {
   return value ?? empty;
 }
 
-function sessionReason(reason: string | null | undefined): string | null {
-  return reason === "session_missing" ? "tmux session missing; restore or relaunch the seat" : null;
+function sessionReason(status: SeatStatusResponse): string | null {
+  return status.session_reason === "session_missing" ? missingSessionAdvice(status.logical_id, status.rig_name) : null;
 }
 
 function printHuman(status: SeatStatusResponse): void {
@@ -167,7 +167,7 @@ function printHuman(status: SeatStatusResponse): void {
     console.log("Automatic input pauses while on, including writing lifecycle. Disabling does not replay held messages.");
   }
   console.log(`Session: ${display(status.session_status, "unknown")}`);
-  const reason = sessionReason(status.session_reason);
+  const reason = sessionReason(status);
   if (reason) console.log(`Reason: ${reason}`);
   if (status.permissions) {
     const p = status.permissions;

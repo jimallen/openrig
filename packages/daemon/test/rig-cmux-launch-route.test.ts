@@ -45,6 +45,7 @@ function makeRigRepoStub(rigs: Record<string, FakeRigOpts>): RigRepository {
         edges: [],
       };
     },
+    findUnarchivedRigsByName: (name: string) => Object.values(rigs).filter((r) => r.name === name),
   } as unknown as RigRepository;
 }
 
@@ -232,6 +233,21 @@ describe("POST /api/rigs/:rigId/cmux/launch", () => {
     expect(res.status).toBe(412);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("rig_not_running");
+  });
+
+  // OF-53 / OF-76: the 412 names the real restore command, and the rig by id when two active rigs share its name.
+  it.each([
+    ["a unique name", { "rig-1": "my-rig" }, "run: rig up my-rig --existing"],
+    ["a name two active rigs share", { "rig-1": "my-rig", "rig-2": "my-rig" }, "run: rig up rig-1 --existing"],
+  ] as const)("412 advice for %s", async (_label, names, expected) => {
+    const rigs: Record<string, FakeRigOpts> = {};
+    for (const [id, name] of Object.entries(names)) rigs[id] = { id, name, nodes: [{ logicalId: "a", podId: "p1", canonicalSessionName: null }] };
+    const app = buildApp({ rigs, adapter: makeMockAdapter({ available: true }), readinessTimeoutMs: 100, readinessPollMs: 10 });
+    const res = await app.request("/api/rigs/rig-1/cmux/launch", { method: "POST" });
+    expect(res.status).toBe(412);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain(expected);
+    expect(body.message).not.toContain("rig up my-rig\n");
   });
 
   it("happy path: 3 running agents → 1 workspace named after rig", async () => {

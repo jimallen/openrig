@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { missingSessionAdvice } from "../fresh-seat-advice.js";
 import stringWidth from "string-width";
 import { resolveEffectiveHost } from "../host-selection.js";
 import { sessionRigOf } from "../session-name.js";
@@ -611,7 +612,7 @@ function hasCurrentUsageLimit(node: NodeEntry): boolean {
 
 function missingSessionGuidance(node: NodeEntry): string | null {
   return node.identityVerdict?.reason === "session_missing"
-    ? "tmux session missing; restore or relaunch the seat"
+    ? missingSessionAdvice(node.logicalId, node.rigName)
     : null;
 }
 

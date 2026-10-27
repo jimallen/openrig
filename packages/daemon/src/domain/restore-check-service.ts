@@ -522,7 +522,7 @@ export class RestoreCheckService {
       }
 
       for (const node of nodes) {
-        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused");
+        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused", rig.name);
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
@@ -1111,20 +1111,22 @@ export class RestoreCheckService {
     };
   }
 
-  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false): CheckEntry {
+  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false, rigName = ""): CheckEntry {
     const session = node.canonicalSessionName ?? node.logicalId;
     const check = `seat.${session}.readiness`;
     // OF-47: restore (rig up --existing) is offered as a way back only when restore's own rule lets it run.
+    // OF-53: the two ways back are named as commands. `rig seat launch --fresh` starts a new conversation; restore resumes it.
+    const relaunch = freshSeatLaunchCommand(node.logicalId, rigName);
     const restoreOrRelaunch = restoreRefused
-      ? "Relaunch the seat (restore refuses this rig, rig_not_stopped, while a session row the DB shows running is live or unreadable; see the rig's recovery entry)"
-      : "Restore or relaunch the seat";
+      ? `Relaunch the seat with ${relaunch} (restore refuses this rig, rig_not_stopped, while a session row the DB shows running is live or unreadable; see the rig's recovery entry)`
+      : `Restore the seat with rig up --existing ${shellQuote(rigName)} (resumes its conversation), or relaunch only this seat with ${relaunch} (starts a new conversation)`;
 
     if (!node.canonicalSessionName) {
       return {
         check,
         status: "red",
         evidence: "Missing canonical session identity",
-        remediation: "Restore or relaunch the seat so it has a canonical session identity",
+        remediation: `${restoreOrRelaunch}, so it has a canonical session identity`,
         remediationSafe: false,
       };
     }
@@ -1138,7 +1140,7 @@ export class RestoreCheckService {
         evidence: `Seat identity needs verification: verdict=${node.identityVerdict.verdict} reason=${node.identityVerdict.reason ?? "unknown"}; stored startupStatus=ready`,
         remediation: node.identityVerdict.verdict === "mismatch"
           ? "Verify the current pane identity, then use rig seat clear-attention for this seat and rerun rig restore-check"
-          : "If the seat's tmux session or pane is gone, restore or relaunch the seat; if it now runs in another pane of its session, rig seat clear-attention for this seat rebinds and verifies it. Then rerun rig restore-check.",
+          : `If the seat's tmux session or pane is gone, ${restoreOrRelaunch.charAt(0).toLowerCase()}${restoreOrRelaunch.slice(1)}; if it now runs in another pane of its session, rig seat clear-attention for this seat rebinds and verifies it. Then rerun rig restore-check.`,
         remediationSafe: false,
       };
     }
@@ -1759,7 +1761,7 @@ export class RestoreCheckService {
         }
         if (input.deadSeatIds.length > 0) {
           const rig = shellQuote(input.rigName);
-          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}.${this.freshStartupNote(input.rigId, "seat", input.rigName)} To keep the conversations instead: rig down ${rig}, then rig up ${rig} --existing (this restarts every seat).`);
+          parts.push(`To bring a down seat back WITHOUT its old conversation (it starts a new one), per seat: ${input.deadSeatIds.map((id) => freshSeatLaunchCommand(id, input.rigName)).join("; ")}.${this.freshStartupNote(input.rigId, "seat", input.rigName)} To keep the conversations instead: rig down ${this.rigDownHandle(input.rigId, input.rigName)}, then rig up ${rig} --existing (this restarts every seat).`);
         }
         blocked.push({
           scope: "rig",
@@ -1780,16 +1782,17 @@ export class RestoreCheckService {
         const names = input.restoreRunningRowNames;
         const owners = input.restoreRunningRowOwners;
         const ownerRigIds = input.restoreRunningRowOwnerRigIds;
+        const downHandle = this.rigDownHandle(input.rigId, input.rigName);
         const ownName = names.filter((name) => owners[name] === undefined);
         const heldName = names.filter((name) => owners[name] !== undefined);
         // A holder in ANOTHER rig keeps its session when this rig goes down. For a holder in THIS rig (decided by rig id: rig names
         // are not unique) teardown may kill nothing: each row's owner lookup finds the other seat, so the shared session can survive.
         // The advice promises only what the rows end. An owner whose rig is unknown is read as possibly this rig.
         const held = heldName.map((name) => (ownerRigIds[name] === undefined || ownerRigIds[name] === input.rigId)
-          ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${shellQuote(input.rigName)} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer wanted`
-          : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${shellQuote(input.rigName)} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
+          ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${downHandle} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer wanted`
+          : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${downHandle} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
         const downEnds = ownName.length > 0
-          ? `rig down ${shellQuote(input.rigName)} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. An adopted session is the exception: rig down ends its row but leaves the tmux session running, and rig seat stop refuses it; release it with rig unclaim. `
+          ? `rig down ${downHandle} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. An adopted session is the exception: rig down ends its row but leaves the tmux session running, and rig seat stop refuses it; release it with rig unclaim. `
           : "";
         blocked.push({
           scope: "rig",
@@ -1914,6 +1917,17 @@ export class RestoreCheckService {
       return `${actions.length} ${pluralize(actions.length, "rig")} can be recovered by known OpenRig command; ${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${unknown.length} unknown.`;
     }
     return `${blocked.length} ${pluralize(blocked.length, "rig")} blocked; ${actions.length} actionable; ${unknown.length} unknown.`;
+  }
+
+  /** What to type after `rig down`: the rig's name while exactly one rig carries it, its id when two or more do (rig names
+   *  are not unique; `rig down <name>` halts as ambiguous) or when the rig list cannot be read (an id is always exact). */
+  private rigDownHandle(rigId: string, rigName: string): string {
+    try {
+      const sameName = this.deps.listRigs().filter((r) => r.name === rigName).length;
+      return shellQuote(sameName === 1 ? rigName : rigId);
+    } catch {
+      return shellQuote(rigId);
+    }
   }
 
   /** OF-32: where a seat started fresh takes its startup files from, for this rig. `rig seat launch --fresh` (and a

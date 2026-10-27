@@ -152,7 +152,9 @@ describe("RestoreCheckService", () => {
         expect(check.remediation).toContain("rig seat clear-attention");
         expect(check.remediation).not.toMatch(/relaunch/i);
       } else {
-        expect(check.remediation).toContain("Restore or relaunch");
+        expect(check.remediation).toContain("Restore the seat with rig up --existing test-rig (resumes its conversation)");
+        expect(check.remediation).toContain(`rig seat launch 'dev.impl@test-rig' --fresh --reason "<why>"`);
+        expect(check.remediation).not.toContain("restore or relaunch");
       }
     } finally { db.close(); }
   });
@@ -172,7 +174,9 @@ describe("RestoreCheckService", () => {
     expect(check.status).toBe("red");
     expect(check.remediationSafe).toBe(false);
     expect(check.evidence).toContain("verdict=pane_missing reason=session_missing");
-    expect(check.remediation).toContain("restore or relaunch");
+    expect(check.remediation).toContain("restore the seat with rig up --existing test-rig (resumes its conversation)");
+    expect(check.remediation).toContain(`rig seat launch 'dev.impl@test-rig' --fresh --reason "<why>"`);
+    expect(check.remediation).not.toContain("restore or relaunch");
     expect(check.remediation).toContain("another pane of its session");
     expect(check.remediation).toContain("rig seat clear-attention");
     expect(check.remediation).toContain("rerun rig restore-check");
