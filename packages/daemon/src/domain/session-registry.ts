@@ -697,6 +697,52 @@ export class SessionRegistry {
     }));
   }
 
+  /** OF-116 F7 — the live (running / idle / unknown) rows that have a LATER live row on the same node: a seat's older
+   *  duplicate occupants. Unlike `getOlderLiveSessions`, a seat's only live row is never in this set, even when it is not
+   *  the node's newest row (a newer row exited), so ending these leaves exactly one live occupant per seat. "Later" is
+   *  the order `getLatestLiveSessions` uses (created_at, then id). */
+  getSupersededLiveSessions(rigId: string): LatestLiveSession[] {
+    const rows = this.db.prepare(`
+      SELECT n.id as node_id, s.id as session_id, s.session_name, s.status, n.runtime, n.cwd, s.resume_type, s.resume_token, s.origin
+      FROM nodes n
+      JOIN sessions s ON s.node_id = n.id
+      WHERE n.rig_id = ?
+        AND s.status IN ('running', 'idle', 'unknown')
+        AND EXISTS (
+          SELECT 1 FROM sessions later
+          WHERE later.node_id = n.id AND later.status IN ('running', 'idle', 'unknown')
+            AND (later.created_at > s.created_at OR (later.created_at = s.created_at AND later.id > s.id))
+        )
+      ORDER BY s.created_at, s.id
+    `).all(rigId) as Array<{ node_id: string; session_id: string; session_name: string; status: string; runtime: string | null; cwd: string | null; resume_type: string | null; resume_token: string | null; origin: string | null }>;
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      sessionId: r.session_id,
+      sessionName: r.session_name,
+      status: r.status,
+      runtime: r.runtime,
+      resumeType: r.resume_type,
+      resumeToken: r.resume_token,
+      cwd: r.cwd,
+      origin: r.origin === "claimed" ? "claimed" : "launched",
+    }));
+  }
+
+  /** OF-116 N3 — per node of the rig, the tmux names of its live adopted (`claimed`) rows, whichever row is newest. */
+  getClaimedLiveSessionNames(rigId: string): Map<string, Set<string>> {
+    const rows = this.db.prepare(`
+      SELECT s.node_id, s.session_name FROM sessions s JOIN nodes n ON n.id = s.node_id
+      WHERE n.rig_id = ? AND s.origin = 'claimed' AND s.status IN ('running', 'idle', 'unknown')
+    `).all(rigId) as Array<{ node_id: string; session_name: string }>;
+    const byNode = new Map<string, Set<string>>();
+    for (const row of rows) {
+      let names = byNode.get(row.node_id);
+      if (!names) byNode.set(row.node_id, names = new Set());
+      names.add(row.session_name);
+    }
+    return byNode;
+  }
+
   getBindingForNode(nodeId: string): Binding | null {
     const row = this.db
       .prepare("SELECT * FROM bindings WHERE node_id = ?")

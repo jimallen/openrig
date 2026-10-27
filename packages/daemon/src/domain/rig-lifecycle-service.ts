@@ -450,16 +450,20 @@ export class RigLifecycleService {
         return {
           ok: false,
           code: "kill_failed",
-          error: `Failed to kill session '${node.latest_session_name}': ${kill.message}`,
+          // OF-116 R2: older sessions are killed first, so say when the failure leaves them already gone.
+          error: `Failed to kill session '${node.latest_session_name}': ${kill.message}${olderDetached.length > 0 ? ` (older sessions ${olderDetached.map((n) => `'${n}'`).join(", ")} were already killed; retry to finish removing the node)` : ""}`,
           fallbackDestination,
           reroutedQitemIds: activeQitemIds,
         };
       }
       sessionsKilled += !kill || kill.ok ? 1 : 0;
     }
+    // OF-116 R3: an adopted older row that carries the newest row's name is not "left running" when that newest session
+    // was just killed (it is the same tmux session).
     const adoptedOlderNames = (this.db.prepare(
       "SELECT DISTINCT session_name FROM sessions WHERE node_id = ? AND id <> ? AND origin = 'claimed' AND status IN ('running', 'idle', 'unknown')",
-    ).all(node.node_id, node.latest_session_id ?? "") as Array<{ session_name: string }>).map((r) => r.session_name);
+    ).all(node.node_id, node.latest_session_id ?? "") as Array<{ session_name: string }>).map((r) => r.session_name)
+      .filter((name) => keepSession || name !== node.latest_session_name);
 
     const persisted: Array<{ type: "session.detached" | "node.removed"; seq: number; createdAt: string }> = [];
     const persistedOlder: Array<{ name: string; seq: number; createdAt: string }> = [];
@@ -782,9 +786,12 @@ export class RigLifecycleService {
     const rows = this.db.prepare(
       "SELECT session_name, origin FROM sessions WHERE node_id = ? AND id <> ? AND status IN ('running', 'idle', 'unknown') ORDER BY created_at, id",
     ).all(node.node_id, node.latest_session_id) as Array<{ session_name: string; origin: string | null }>;
+    // OF-116 N3: a launched row that carries the name of one of the node's adopted rows is not a second session: the name
+    // is the person's, so it is not killed through the launched row either.
+    const adoptedNames = new Set(rows.filter((row) => row.origin === "claimed").map((row) => row.session_name));
     const names: string[] = [];
     for (const row of rows) {
-      if (row.origin === "claimed" || row.session_name === node.latest_session_name || names.includes(row.session_name)) continue;
+      if (row.origin === "claimed" || adoptedNames.has(row.session_name) || row.session_name === node.latest_session_name || names.includes(row.session_name)) continue;
       if (findOtherSessionOwner(this.db, row.session_name, node.node_id, { countReleased: true, ignoreArchived: true, excludeNodeIds }) !== null) continue;
       names.push(row.session_name);
     }

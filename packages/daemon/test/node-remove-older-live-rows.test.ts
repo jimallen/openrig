@@ -195,6 +195,92 @@ describe("node removal ends every live row of the node (OF-66)", () => {
     expect(killed()).not.toContain(NEW);
   });
 
+
+  // OF-116 R2: older sessions are killed first, so a failure of the NEWEST kill happens after they are already gone.
+  it("R2: a failed kill of the newest session says the older ones were already killed, and a retry finishes", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl", { newerStatus: "running" });
+    killSession.mockImplementation(async (name: string) => name === NEW ? { ok: false as const, code: "kill_failed", message: "boom" } : { ok: true as const });
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(result).toMatchObject({ ok: false, code: "kill_failed" });
+    expect(!result.ok && result.error).toContain(`Failed to kill session '${NEW}': boom`);
+    expect(!result.ok && result.error).toContain(`older sessions '${OLD}' were already killed`);
+    expect(rigRepo.getRig(rig.id)!.nodes).toHaveLength(1);
+    killSession.mockImplementation(async (name: string) => name === OLD ? { ok: false as const, code: "session_not_found", message: "gone" } : { ok: true as const });
+    expect(await lifecycle.removeNode(rig.id, "dev.impl")).toMatchObject({ ok: true });
+  });
+
+  it("R2 control: a newest-session failure with no older session killed carries no such note", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl", { olderOrigin: "claimed", newerStatus: "running" });
+    killSession.mockImplementation(async () => ({ ok: false as const, code: "kill_failed", message: "boom" }));
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(!result.ok && result.error).toBe(`Failed to kill session '${NEW}': boom`);
+  });
+
+  // OF-116 R3: an adopted older row that carries the newest row's name is the SAME tmux session the newest kill just ended.
+  it("R3: an adopted older row sharing the newest row's name is not reported as left running when that kill ended it", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl", { olderOrigin: "claimed", olderName: NEW, newerStatus: "running" });
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(result).toMatchObject({ ok: true, sessionsKilled: 1 });
+    expect(killed()).toEqual([NEW]);
+    expect(result.ok && result.warnings).toBeUndefined();
+  });
+
+  it("R3 control: when the newest session is KEPT (a released holder), the same adopted row is still reported as left running", async () => {
+    const rig = rigRepo.createRig("team");
+    seat(rig, "dev.impl", { olderOrigin: "claimed", olderName: NEW, newerStatus: "running" });
+    const other = rigRepo.createRig("other");
+    const released = sessionRegistry.registerSession(rigRepo.addNode(other.id, "human").id, NEW);
+    db.prepare("UPDATE sessions SET status = 'detached', origin = 'claimed' WHERE id = ?").run(released.id);
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(killed()).toEqual([]);
+    expect(result.ok && result.warnings?.join(" ")).toContain(`Older session '${NEW}' was adopted`);
+  });
+
+  // OF-116 N3: a launched older row whose name is an adopted row's of the SAME node. findOtherSessionOwner skips the node's own
+  // rows, so only the node's own rows can say the name is the person's.
+  it("N3: a launched older row sharing an adopted row's name does not kill the adopted session", async () => {
+    const rig = rigRepo.createRig("team");
+    const { nodeId } = seat(rig, "dev.impl", { olderOrigin: "claimed" });
+    const launchedTwin = sessionRegistry.registerSession(nodeId, OLD);
+    sessionRegistry.updateStatus(launchedTwin.id, "running");
+    db.prepare("UPDATE sessions SET created_at = '2020-06-01 00:00:00', origin = 'launched' WHERE id = ?").run(launchedTwin.id);
+
+    const result = await lifecycle.removeNode(rig.id, "dev.impl");
+
+    expect(killed()).not.toContain(OLD);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.warnings?.join(" ")).toContain(`Older session '${OLD}' was adopted`);
+  });
+
+  // OF-116 V9 (review-u07 R4): the shrink pre-check counts the work addressed to each member's NEWEST session only when this
+  // shrink would kill it. A name a released session holds is kept, so work addressed to it is the holder's, not a blocker.
+  it("shrink: work addressed to a newest session a released (detached claimed) session holds does not block the shrink", async () => {
+    const rig = rigRepo.createRig("team");
+    db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES ('pod-1', ?, 'dev', 'Dev')").run(rig.id);
+    const member = seat(rig, "dev.impl", { newerStatus: "running", olderOrigin: "claimed" });
+    db.prepare("UPDATE nodes SET pod_id = 'pod-1' WHERE id = ?").run(member.nodeId);
+    const other = rigRepo.createRig("other");
+    const released = sessionRegistry.registerSession(rigRepo.addNode(other.id, "human").id, NEW);
+    db.prepare("UPDATE sessions SET status = 'detached', origin = 'claimed' WHERE id = ?").run(released.id);
+    const work = await queueRepo.create({ sourceSession: "orch@team", destinationSession: NEW, body: "the holder's work" });
+
+    const shrunk = await lifecycle.shrinkPod(rig.id, "dev");
+
+    expect(shrunk, JSON.stringify(shrunk)).toMatchObject({ ok: true });
+    expect(killed()).toEqual([]);
+    expect(queueRepo.getById(work.qitemId)).toMatchObject({ destinationSession: NEW, state: "pending" });
+  });
   it("queue work addressed to the older session blocks the removal without a fallback, and nothing is killed", async () => {
     const rig = rigRepo.createRig("team");
     seat(rig, "dev.impl");

@@ -58,6 +58,22 @@ interface LatestNodeSession {
   origin?: "claimed" | "launched";
 }
 
+/** The state one teardown carries from the pre-snapshot duplicate pass into the kill loop. */
+interface TeardownRun {
+  rigId: string;
+  archived: boolean;
+  result: TeardownResult;
+  killFailures: number;
+  /** A tmux name is killed at most once per teardown. Rows sharing a name (a seat's older row often carries the
+   *  newest row's name) follow the first row's outcome instead of killing, or reporting a failure, a second time. */
+  handledNames: Map<string, "ended" | "failed">;
+  /** Duplicate rows ended before the snapshot with no kill of their own (their name is a kept row's): put back if that kill fails. */
+  rowsEndedEarly: Array<{ sessionId: string; sessionName: string; status: string }>;
+  /** Per node, the tmux names of its live adopted (`claimed`) rows. */
+  claimedNames: ReadonlyMap<string, ReadonlySet<string>>;
+  currentLiveGuidanceTargets: () => Set<string>;
+}
+
 /**
  * Graceful rig shutdown. Kills tmux sessions, clears bindings, marks
  * sessions exited. Optionally snapshots before teardown, optionally
@@ -124,6 +140,40 @@ export class RigTeardownOrchestrator {
       return result;
     }
 
+    // 3b. OF-116 F7 (Jim, 2026-10-27): a seat's older duplicate live rows end BEFORE the auto-pre-down snapshot, so the
+    // snapshot records ONE running occupant for the seat instead of an active-occupant ambiguity that `rig up --existing`
+    // then fails the seat on. Only a row with a LATER live row on the same seat is a duplicate: an older row that is the
+    // seat's only live occupant is still recorded as the occupant.
+    const c: TeardownRun = {
+      rigId, archived: archived.archived_at !== null, result, killFailures: 0,
+      handledNames: new Map(), rowsEndedEarly: [],
+      claimedNames: this.deps.sessionRegistry.getClaimedLiveSessionNames(rigId),
+      currentLiveGuidanceTargets,
+    };
+    const supersededDuplicates = this.deps.sessionRegistry.getSupersededLiveSessions(rigId);
+    if (supersededDuplicates.length > 0) {
+      const duplicateIds = new Set(supersededDuplicates.map(session => session.sessionId));
+      const keptNames = new Map<string, Set<string>>();
+      for (const kept of [...liveSessions, ...olderLiveSessions]) {
+        if (duplicateIds.has(kept.sessionId)) continue;
+        let names = keptNames.get(kept.nodeId);
+        if (!names) keptNames.set(kept.nodeId, names = new Set());
+        names.add(kept.sessionName);
+      }
+      for (const duplicate of supersededDuplicates) {
+        if (duplicate.origin !== "claimed" && keptNames.get(duplicate.nodeId)?.has(duplicate.sessionName)) {
+          // The seat's kept row carries this very tmux name, so there is no second session to kill: end the ROW only (the
+          // kept row's kill, below, ends the session). A failed kill puts the row back.
+          this.deps.sessionRegistry.markIntentionallyStopped(duplicate.sessionId);
+          c.rowsEndedEarly.push({ sessionId: duplicate.sessionId, sessionName: duplicate.sessionName, status: duplicate.status });
+          continue;
+        }
+        await this.endSession(duplicate, true, c);
+      }
+    }
+    // What is still live and older once the duplicates are ended: the rows the kill loop below acts on.
+    const olderRemaining = supersededDuplicates.length > 0 ? this.deps.sessionRegistry.getOlderLiveSessions(rigId) : olderLiveSessions;
+
     // 4. Auto-snapshot before teardown (always, best-effort)
     try {
       if (this.deps.resumeMetadataRefresher) {
@@ -151,79 +201,16 @@ export class RigTeardownOrchestrator {
     }
 
     // 5. Kill each live session
-    let killFailures = 0;
-    const olderIds = new Set(olderLiveSessions.map(session => session.sessionId));
-    // A tmux name is killed at most once per teardown. Rows sharing a name (a seat's older row often carries the
-    // newest row's name) follow the first row's outcome instead of killing, or reporting a failure, a second time.
-    const handledNames = new Map<string, "ended" | "failed">();
-    for (const session of [...liveSessions, ...olderLiveSessions]) {
-      const older = olderIds.has(session.sessionId);
-      const handled = handledNames.get(session.sessionName);
-      if (handled === "failed") {
-        // The first row's kill (or probe) failed and already said so: the session is still live, so this row stays
-        // live too, and the rig is not fully down (delete stays blocked).
-        killFailures++;
-        continue;
-      }
-      if (older && session.origin === "claimed" && handled === undefined) {
-        // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it), but the seat has moved past this
-        // row. End the ROW only, with no stop intent (nothing of ours stopped it), and leave its tmux session running.
-        // `detached` (what `rig unclaim` writes), not `exited`, so the row still holds the name against another seat's kill.
-        this.deps.sessionRegistry.updateStatus(session.sessionId, "detached");
-        (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim`);
-        continue;
-      }
-      // An archived rig may retain a stale row for a name now owned by a live rig.
-      // That name cannot identify the archived rig's tmux session for a kill.
-      // An OLDER row's name is only a historical label: any other live owner of that name
-      // (OF-54) means the tmux session is not this seat's to kill, whatever the rig's state.
-      const ownedByAnotherRig = (older || archived.archived_at !== null) && findOtherSessionOwner(
-        this.db, session.sessionName, session.nodeId, { countReleased: true, ignoreArchived: true },
-      ) !== null;
-      let absent = ownedByAnotherRig || handled === "ended";
-      if (!absent && this.deps.tmuxAdapter.probeSession) {
-        try {
-          const probe = await this.deps.tmuxAdapter.probeSession(session.sessionName);
-          absent = probe.state === "absent";
-          if (probe.state !== "present" && !absent) {
-            result.errors.push(`Could not confirm session '${session.sessionName}' is absent: ${probe.state === "transport_unavailable" ? probe.cause : probe.state}`);
-            killFailures++;
-            handledNames.set(session.sessionName, "failed");
-            continue;
-          }
-        } catch (err) {
-          result.errors.push(`Could not check session '${session.sessionName}': ${(err as Error).message}`);
-          killFailures++;
-          handledNames.set(session.sessionName, "failed");
-          continue;
-        }
-      }
-      const killResult = absent ? { ok: false, code: "session_not_found" } :
-        await this.deps.tmuxAdapter.killSession(session.sessionName);
-
-      const missingSession = (killResult as { code?: string; message?: string }).code === "session_not_found" &&
-        !/no server running/i.test((killResult as { message?: string }).message ?? "");
-      if (killResult.ok || missingSession) {
-        // Stop capture only when termination is confirmed. A failed kill leaves
-        // the session running. An archived namesake leaves the live owner's
-        // rotation intact even when its stale row is removed.
-        if (!ownedByAnotherRig) {
-          stopTranscriptRotation(session.sessionName);
-          handledNames.set(session.sessionName, "ended");
-        }
-        // Success or already gone — update DB atomically
-        // An older row never owns the node's binding: the newest row's kill outcome decides that.
-        if (older) this.deps.sessionRegistry.markIntentionallyStopped(session.sessionId);
-        else this.atomicNodeCleanup(session);
-        this.cleanupManagedGuidanceFileForNode(rigId, session.runtime, session.cwd, currentLiveGuidanceTargets());
-        if (killResult.ok) result.sessionsKilled++;
-      } else {
-        // Real kill failure — don't update this node
-        result.errors.push(`Kill failed for session '${session.sessionName}': ${(killResult as { message?: string }).message ?? "unknown"}`);
-        killFailures++;
-        handledNames.set(session.sessionName, "failed");
-      }
+    const olderIds = new Set(olderRemaining.map(session => session.sessionId));
+    for (const session of [...liveSessions, ...olderRemaining]) {
+      await this.endSession(session, olderIds.has(session.sessionId), c);
     }
+    // A name whose kill failed is still live, so a duplicate row that was ended early only to keep the snapshot readable
+    // goes back to running: the failure leaves every row of that name live (OF-68 F8).
+    for (const early of c.rowsEndedEarly) {
+      if (c.handledNames.get(early.sessionName) === "failed") this.deps.sessionRegistry.updateStatus(early.sessionId, early.status);
+    }
+    const killFailures = c.killFailures;
     // Stop live sessions before probing historical rows; bookkeeping must not fail down.
     await this.recordAlreadyStoppedIntent(rigId).catch(() => {});
     this.cleanupManagedGuidanceFiles(rigId, currentLiveGuidanceTargets());
@@ -261,6 +248,84 @@ export class RigTeardownOrchestrator {
     }
 
     return result;
+  }
+
+  /**
+   * Ends one live session row of a rig being taken down: kills its tmux session (or leaves it alone when it is not this
+   * seat's to kill) and records the outcome on the row. `older`: the row is not its seat's latest, so it never owns the
+   * seat's binding. A tmux name is killed at most once per teardown (`c.handledNames`).
+   */
+  private async endSession(session: LatestNodeSession, older: boolean, c: TeardownRun): Promise<void> {
+    const { result, handledNames } = c;
+    const handled = handledNames.get(session.sessionName);
+    if (handled === "failed") {
+      // The first row's kill (or probe) failed and already said so: the session is still live, so this row stays
+      // live too, and the rig is not fully down (delete stays blocked).
+      c.killFailures++;
+      return;
+    }
+    if (older && session.origin === "claimed" && handled === undefined) {
+      // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it), but the seat has moved past this
+      // row. End the ROW only, with no stop intent (nothing of ours stopped it), and leave its tmux session running.
+      // `detached` (what `rig unclaim` writes), not `exited`, so the row still holds the name against another seat's kill.
+      this.deps.sessionRegistry.updateStatus(session.sessionId, "detached");
+      (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim`);
+      return;
+    }
+    // An archived rig may retain a stale row for a name now owned by a live rig.
+    // That name cannot identify the archived rig's tmux session for a kill.
+    // An OLDER row's name is only a historical label: any other live owner of that name
+    // (OF-54) means the tmux session is not this seat's to kill, whatever the rig's state.
+    const ownedByAnotherRig = (older || c.archived) && findOtherSessionOwner(
+      this.db, session.sessionName, session.nodeId, { countReleased: true, ignoreArchived: true },
+    ) !== null;
+    // OF-116 N3: an older launched row that carries the name of an adopted session of the SAME seat is not a second
+    // session: the name is the person's. The row ends; the session is left running.
+    const adoptedNameOfThisSeat = older && session.origin !== "claimed" && (c.claimedNames.get(session.nodeId)?.has(session.sessionName) ?? false);
+    const notOursToKill = ownedByAnotherRig || adoptedNameOfThisSeat;
+    let absent = notOursToKill || handled === "ended";
+    if (!absent && this.deps.tmuxAdapter.probeSession) {
+      try {
+        const probe = await this.deps.tmuxAdapter.probeSession(session.sessionName);
+        absent = probe.state === "absent";
+        if (probe.state !== "present" && !absent) {
+          result.errors.push(`Could not confirm session '${session.sessionName}' is absent: ${probe.state === "transport_unavailable" ? probe.cause : probe.state}`);
+          c.killFailures++;
+          handledNames.set(session.sessionName, "failed");
+          return;
+        }
+      } catch (err) {
+        result.errors.push(`Could not check session '${session.sessionName}': ${(err as Error).message}`);
+        c.killFailures++;
+        handledNames.set(session.sessionName, "failed");
+        return;
+      }
+    }
+    const killResult = absent ? { ok: false, code: "session_not_found" } :
+      await this.deps.tmuxAdapter.killSession(session.sessionName);
+
+    const missingSession = (killResult as { code?: string; message?: string }).code === "session_not_found" &&
+      !/no server running/i.test((killResult as { message?: string }).message ?? "");
+    if (killResult.ok || missingSession) {
+      // Stop capture only when termination is confirmed. A failed kill leaves
+      // the session running. An archived namesake leaves the live owner's
+      // rotation intact even when its stale row is removed.
+      if (!notOursToKill) {
+        stopTranscriptRotation(session.sessionName);
+        handledNames.set(session.sessionName, "ended");
+      }
+      // Success or already gone — update DB atomically
+      // An older row never owns the node's binding: the newest row's kill outcome decides that.
+      if (older) this.deps.sessionRegistry.markIntentionallyStopped(session.sessionId);
+      else this.atomicNodeCleanup(session);
+      this.cleanupManagedGuidanceFileForNode(c.rigId, session.runtime, session.cwd, c.currentLiveGuidanceTargets());
+      if (killResult.ok) result.sessionsKilled++;
+    } else {
+      // Real kill failure — don't update this node
+      result.errors.push(`Kill failed for session '${session.sessionName}': ${(killResult as { message?: string }).message ?? "unknown"}`);
+      c.killFailures++;
+      handledNames.set(session.sessionName, "failed");
+    }
   }
 
   /** Atomically record the supported stop and clear its binding. */

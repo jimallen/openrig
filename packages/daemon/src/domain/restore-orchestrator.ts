@@ -1251,8 +1251,12 @@ export class RestoreOrchestrator {
         nodeId,
         logicalId: node.logicalId,
         status: "failed",
-        error: launchResult.message,
-        ...(launchResult.code === "seat_cwd_unusable" ? { errorCode: launchResult.code } : {}),
+        // OF-116 R1: a tmux session of the seat's own name is still running that this restore did not start, most often an
+        // adopted session `rig down` left running (it is not OpenRig's to kill). The raw tmux word says none of that.
+        error: launchResult.code === "duplicate_session"
+          ? `${node.logicalId} was not started: a tmux session named '${launchOpts?.sessionName ?? expectedSessionName ?? "(derived)"}' is already running and OpenRig does not kill a session it did not start (${launchResult.message}). If it is a session you adopted into this seat, release it with: rig unclaim, or end it yourself, then run rig up --existing again. (rig seat launch --fresh would meet the same session and refuse.)`
+          : launchResult.message,
+        ...(launchResult.code === "seat_cwd_unusable" || launchResult.code === "duplicate_session" ? { errorCode: launchResult.code } : {}),
       };
     }
 

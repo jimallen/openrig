@@ -142,6 +142,20 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       namesake(s.sessionName, true);
     }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true,
       adviceHas: (s) => [`rig down team ends ${s.sessionName} (and stops the rest of the rig)`], adviceLacks: () => ["is held by", "tmux kill-session"] },
+    // N7 (OF-116 V7): the holder is a RELEASED session (`rig unclaim` marks an adopted session detached and clears its binding
+    // while its tmux session lives on as the person's own). Teardown will not kill that name (countReleased), so the advice
+    // must name the holder and give no kill command, exactly as for a running namesake (N1).
+    { name: "N7 older running row's live name is held by another rig's RELEASED (detached claimed) session: advice names the holder, no kill command", pre: (s) => {
+      dropToken(s.nodeId);
+      const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
+      h.sessionRegistry.updateStatus(newer.id, "exited");
+      const other = h.rigRepo.createRig("other");
+      const node = h.rigRepo.addNode(other.id, "dev.other", { runtime: "claude-code", cwd: "/" });
+      const released = h.sessionRegistry.registerSession(node.id, s.sessionName);
+      h.db.prepare("UPDATE sessions SET status = 'detached', origin = 'claimed' WHERE id = ?").run(released.id);
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true,
+      adviceHas: (s) => [`${s.sessionName} is held by dev.other@other, another rig's seat: do not kill it from here, it would end that seat; rig down team ends only this rig's older running row for it, without touching that session, which is what lets restore run. Probing stops`],
+      adviceLacks: (s) => ["tmux kill-session", "end it yourself", `rig down team ends ${s.sessionName}`, "(and stops the rest of the rig), as does rig seat stop"] },
     // T6 (OF-47): two rows running on one seat, the older one live, the newest dead. The seat's newest row reads dead
     // (so a per-seat reading advises a restore), but restore probes every running row and refuses on the live one.
     { name: "T6 two running rows on one seat, older LIVE, newest dead: restore refuses, recovery advises no restore command", pre: (s) => {
@@ -259,17 +273,18 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       tmuxSays({});
       const out: any = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
       expect(out.ok ? "ran" : out.code, JSON.stringify(out.ok ? "" : out.message)).not.toBe("rig_not_stopped");
-      // OF-68 F7: what rig up --existing really does after the real down, from the snapshot the real teardown took (routes/up.ts
-      // selection). It does NOT bring a T6 seat back: that snapshot records the seat's two running rows, so restore fails the seat
-      // as an active-occupant ambiguity (Q3's seat stops at its own no-token gate). The advice says so (first row above); the
-      // oracle here is the measured outcome, not `not rig_not_stopped` alone.
+      // OF-116 F7: what rig up --existing really does after the real down, from the snapshot the real teardown took (routes/up.ts
+      // selection). rig down now ends a seat's older duplicate live row BEFORE it takes that snapshot, so a T6 seat's snapshot
+      // records ONE running occupant (its newer row) and restore no longer fails the seat as an active-occupant ambiguity: both
+      // shapes reach the seat's own no-token gate, which asks for a decision (rig seat launch --fresh).
       const rig = h.rigRepo.getRig(seat.rigId)!;
       const downSnap = h.snapshotRepo.getSnapshot(down.snapshotId!)!;
       const from = snapshotMatchesCurrentOccupants(h.db, rig, downSnap) ? down.snapshotId! : (h.snapshotCapture.captureSnapshot(seat.rigId, "auto-rehydrate") as { id: string }).id;
       const up: any = await h.restore.restore(from, { adapters: { "claude-code": h.adapter }, fsOps: { exists } } as never);
       const upNode = up.result.nodes.find((n: { logicalId: string }) => n.logicalId === SEAT);
-      expect(upNode.status, JSON.stringify(upNode)).toBe(row.name.startsWith("T6 ") ? "failed" : "awaiting-decision");
-      if (row.name.startsWith("T6 ")) expect(upNode.error).toContain("Active-occupant ambiguity: 2 candidate session rows");
+      expect(upNode.status, JSON.stringify(upNode)).toBe("awaiting-decision");
+      expect(upNode.error, "the seat is no longer an active-occupant ambiguity").not.toContain("Active-occupant ambiguity");
+      expect(upNode.error).toContain("Original session unresumable");
     });
   });
 
