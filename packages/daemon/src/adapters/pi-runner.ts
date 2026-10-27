@@ -53,6 +53,8 @@ export interface MirrorAndActivity {
   streaming?: boolean;
   /** A typed terminal failure; the core coalesces its exhausted-retry notice. */
   errorNotice?: string;
+  /** Pi only: the event type (possibly "") that fell through to the default branch. */
+  unhandledType?: string;
 }
 
 // Pi reports missing credentials through RPC errors and terminal model failures.
@@ -136,6 +138,24 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
     }
     case "queue_update":
       return { mirrorLines: [] };
+    // Pi 1.3.0 RPC events the pane deliberately does not show (types: pi-coding-agent AgentSessionEvent). They are
+    // named so "known and quiet" differs from "never looked at" (the default branch of a Pi runner logs an
+    // unhandled-event marker, once per type). The run's idle signal is agent_end (the seat's Stop), so agent_settled
+    // adds nothing; entry_appended announces a NON-message entry (a custom entry, a context edit; Pi saves user,
+    // assistant and tool-result messages at message_end without any event) and is not a cursor source (see
+    // RunnerCore.handleEvent); tool_execution_update is a partial tool result, and the one-line tool summaries come
+    // from tool_execution_start/_end; extension_ui_request is notify/setStatus/... traffic the pane cannot answer.
+    case "agent_settled":
+    case "entry_appended":
+    case "extension_ui_request":
+    case "tool_execution_update":
+    case "session_info_changed":
+    case "thinking_level_changed":
+    case "summarization_retry_scheduled":
+    case "summarization_retry_attempt_start":
+    case "summarization_retry_finished":
+    case "bash_execution_update":
+      return { mirrorLines: [] };
     case "compaction_start":
       return { mirrorLines: [`[${runtime}] compacting context…`], activity: { hookEvent: "active", subtype: "compaction" } };
     case "compaction_end":
@@ -159,9 +179,13 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
       return { mirrorLines: [`${PI_RUNNER_ERROR_MARKER} extension: ${message}`] };
     }
     default:
-      return { mirrorLines: [] };
+      // OMP's event surface is not enumerated here, so only Pi reports a type it has no case for.
+      return runtime === "pi" ? { mirrorLines: [], unhandledType: type } : { mirrorLines: [] };
   }
 }
+
+/** The most distinct unhandled event types one runner reports: a stream cannot flood the pane. */
+const MAX_UNHANDLED_EVENT_MARKERS = 16;
 
 // ── The runner core (injected effects; owns protocol state) ─────────────────
 
@@ -319,6 +343,7 @@ export class RunnerCore {
    *  the daemon stores each (session, entry) once regardless. */
   private readonly postedUsageEntryIds = new Set<string>();
   private readonly loggedUnsafeCountEntryIds = new Set<string>();
+  private readonly unhandledEventTypes = new Set<string>();
 
   constructor(
     private io: RunnerIo,
@@ -587,6 +612,15 @@ export class RunnerCore {
     this.attentionIsLatest = false;
   }
 
+  /** An event type no case handles: one pane line per type (never its payload), at most MAX_UNHANDLED_EVENT_MARKERS
+   *  types. The type is shown only if it looks like an event name, so a hostile stream cannot put text in the pane. */
+  private noteUnhandledEvent(type: string): void {
+    const shown = /^[A-Za-z0-9_.:-]{1,64}$/.test(type) ? type : "<unnamed>";
+    if (this.unhandledEventTypes.has(shown) || this.unhandledEventTypes.size >= MAX_UNHANDLED_EVENT_MARKERS) return;
+    this.unhandledEventTypes.add(shown);
+    this.io.mirrorLine(`[pi-runner] unhandled event type=${shown}`);
+  }
+
   private handleEvent(event: Record<string, unknown>): void {
     if (this.runtime === "omp" && event.type === "extension_ui_request") {
       const method = event.method;
@@ -605,8 +639,16 @@ export class RunnerCore {
     if (event.type === "agent_start" || (event.type === "message_start" && message?.role === "assistant")) {
       this.assistantErrorShown = false;
     }
-    // Durable cursor: any event carrying a session-entry id advances it.
-    const entryId = typeof event.entryId === "string" ? event.entryId : (typeof event.id === "string" ? event.id : undefined);
+    // Durable cursor. For Pi it comes ONLY from a get_entries result (the catch-up and the refresh after each
+    // agent_end): the cursor must mean "every entry up to here went through a get_entries batch", because a restored
+    // runner's catch-up reads from it to report usage. No Pi 1.3.0 stdout event carries a top-level entry id (its
+    // `entry_appended` nests one, but running the cursor ahead of the last batch would make a restart skip those
+    // entries' usage), while `extension_ui_request` and `bash_execution_update` carry a top-level `id` that is a
+    // random UUID / a command id, which a restore rejects ("Entry not found"). OMP keeps the generic path (any event
+    // carrying `entryId` or `id`): its event shapes were not available to check, so its behaviour is unchanged.
+    const entryId = this.runtime !== "omp" ? undefined
+      : typeof event.entryId === "string" ? event.entryId
+      : (typeof event.id === "string" ? event.id : undefined);
     if (entryId) {
       this.lastEntryId = entryId;
       this.writeSidecar({});
@@ -620,6 +662,7 @@ export class RunnerCore {
       if (event.type === "turn_start") this.assistantErrorShown = false;
     }
     const mapped = mapPiEvent(event, this.runtime);
+    if (mapped.unhandledType !== undefined) this.noteUnhandledEvent(mapped.unhandledType);
     if (mapped.streaming !== undefined) this.streaming = mapped.streaming;
     // OMP writes its JSONL lazily; re-announce identity after each turn until
     // the daemon confirms the token. Pi's get_state identity is final.
