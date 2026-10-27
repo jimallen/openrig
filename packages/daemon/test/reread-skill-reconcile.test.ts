@@ -396,8 +396,9 @@ describe("OF-32 N6: a seat that re-reads its spec reconciles the re-read release
 
   // Review nit N-a: the folder changes between the pre-stop check and the apply (an operator edits a managed skill).
   // The launch has already stopped the old occupant, so the refusal says so and names the stored escape.
-  it("an apply that fails after the stop says the seat is down and names the stored escape", async () => {
-    await launchRig();
+  it.each([["a unique name", false], ["a name another rig shares (OF-150: by id)", true]] as const)("an apply that fails after the stop says the seat is down and names the stored escape: %s", async (_label, shared) => {
+    const { rigId } = await launchRig();
+    if (shared) rigRepo.createRig("team");
     const workLoadout = resolveSkillLoadout({ catalogRoot: catalog, systemSkills: [], projectRoot: workdir, projectSkills: ["work-skill"] });
     if (!workLoadout.ok) throw new Error("work loadout");
     expect(reconcileSkillLoadout({ loadout: workLoadout.loadout, runtime: "claude-code", cwd: workdir, apply: true }).ok).toBe(true);
@@ -420,7 +421,7 @@ describe("OF-32 N6: a seat that re-reads its spec reconciles the re-read release
     expect(!result.ok && result.message).toContain("work-skill");
     expect(!result.ok && result.message).toContain("No session was started.");
     expect(!result.ok && result.message).toContain("This launch had already stopped the seat's previous session, so the seat is not running now.");
-    expect(!result.ok && "guidance" in result && result.guidance).toContain(`rig seat launch 'dev.impl@team' --fresh --startup-from stored --reason "<why>"`);
+    expect(!result.ok && "guidance" in result && result.guidance).toContain(`rig seat launch 'dev.impl@${shared ? rigId : "team"}' --fresh --startup-from stored --reason "<why>"`);
     expect(onDisk()).toEqual(["alpha:alpha A", "gamma:gamma A", "work-skill:operator edit"]);
   });
 

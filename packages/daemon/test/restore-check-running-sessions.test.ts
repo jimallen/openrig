@@ -94,7 +94,19 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       dropToken(s.nodeId);
       const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
       h.sessionRegistry.updateStatus(newer.id, "exited");
-    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", reasonHas: "rig_not_stopped", reasonLacks: "restore-input blockers", noRestoreCommand: true, seatRemediationOffersRestore: false, adviceHas: liveAdvice, adviceLacks: liveAdviceLacks },
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", reasonHas: "rig_not_stopped", reasonLacks: "restore-input blockers", noRestoreCommand: true, seatRemediationOffersRestore: false, adviceHas: liveAdvice,
+      // OF-144: this older row was launched, so no adopted-session sentence is added.
+      adviceLacks: () => [...liveAdviceLacks(), "adopted", "rig unclaim"] },
+    // OF-144: the same shape with the older live row ADOPTED. The route tells the check which refusing rows were adopted, and the
+    // advice releases this one by its own session id (rig unclaim needs one; releasing an older row leaves the occupant alone).
+    { name: "Q3a older running row LIVE and ADOPTED under a newer exited row: the advice names rig unclaim <its id>", pre: (s) => {
+      dropToken(s.nodeId);
+      h.db.prepare("UPDATE sessions SET origin = 'claimed' WHERE node_id = ? AND session_name = ?").run(s.nodeId, s.sessionName);
+      const newer = h.sessionRegistry.registerSession(s.nodeId, "dev-impl-newer@team");
+      h.sessionRegistry.updateStatus(newer.id, "exited");
+    }, tmux: (s) => tmuxSays({ [s.sessionName]: "present" }), restore: "refused", predictsGate: false, recovery: "blocked", noRestoreCommand: true,
+      adviceHas: (s) => [...liveAdvice(s), `${s.sessionName} was adopted (not launched by OpenRig): rig down ends its row but leaves its tmux session running, and rig seat stop refuses it; release it with rig unclaim ${(h.db.prepare("SELECT id FROM sessions WHERE node_id = ? AND session_name = ?").get(s.nodeId, s.sessionName) as { id: string }).id}. `],
+      adviceLacks: () => [...liveAdviceLacks(), "rig unclaim <session-id>", "release it with rig unclaim. "] },
     // N1 (OF-47 safety): the tmux probe is global by NAME. Another rig's live seat holds the very name this rig's older running
     // row carries; killing the session would end that other seat. The advice names the owner and gives no kill command.
     { name: "N1 older running row's live name is held by another rig's seat: advice names the owner, no kill command", pre: (s) => {
@@ -291,9 +303,10 @@ describe("restore-check and restore agree on whether the rig would run, over eve
   // OF-47: the two ends of the classification dependency. Same seat as Q10 (token present, tmux dead), where restore runs
   // and recovery is actionable; only what the check is told about restore's running-row rule changes.
   describe("recovery when restore's running-row rule is not answerable", () => {
-    async function recoveryWith(classify: unknown) {
+    async function recoveryWith(classify: unknown, before?: () => void) {
       h = createRestoreHarness();
       const seat = await h.launchRig();
+      before?.();
       h.snapshotCapture.captureSnapshot(seat.rigId, "auto-pre-down");
       await h.tmux.killSession(seat.sessionName);
       tmuxSays({});
@@ -308,6 +321,43 @@ describe("restore-check and restore agree on whether the rig would run, over eve
       const reasons = JSON.stringify(result.recovery.unknown.map((r) => r.reason));
       expect(reasons).toContain("could not be answered");
       expect(reasons).not.toContain("could not be read for");
+    });
+    // OF-144: the adopted-session sentence follows what the classification says about the refusing row. The row is the seat's
+    // own (its session killed above, so only the classification calls it live).
+    const liveRow = (adopted: "unsaid" | "this row" | "none") => async () => {
+      const row = h.db.prepare("SELECT id, session_name FROM sessions").get() as { id: string; session_name: string };
+      return { live: [row.id], stale: [], unknown: [], sessionNames: { [row.id]: row.session_name },
+        ...(adopted === "unsaid" ? {} : { adoptedSessionIds: adopted === "this row" ? [row.id] : [] }) };
+    };
+    const rowId = () => (h.db.prepare("SELECT id FROM sessions").get() as { id: string }).id;
+    it("T9 the classification does not say which rows were adopted: the advice keeps the general sentence, with a placeholder, not a bare command", async () => {
+      const result = await recoveryWith(liveRow("unsaid"));
+      const reasons = JSON.stringify(result.recovery.blocked.map((r) => r.reason));
+      expect(reasons).toContain("An adopted session is the exception: rig down ends its row but leaves the tmux session running, and rig seat stop refuses it; release it with rig unclaim <session-id>. ");
+    });
+    it("T10 it says the row was adopted: the advice names that row's id", async () => {
+      const result = await recoveryWith(liveRow("this row"));
+      const reasons = JSON.stringify(result.recovery.blocked.map((r) => r.reason));
+      expect(reasons).toContain(`dev-impl@team was adopted (not launched by OpenRig): rig down ends its row but leaves its tmux session running, and rig seat stop refuses it; release it with rig unclaim ${rowId()}. `);
+      expect(reasons).not.toContain("<session-id>");
+    });
+    it("T11 control: it says no row was adopted: no adopted-session sentence", async () => {
+      const result = await recoveryWith(liveRow("none"));
+      const reasons = JSON.stringify(result.recovery.blocked.map((r) => r.reason));
+      expect(reasons, "the population: the running-row advice is there").toContain("rig down team ends dev-impl@team");
+      expect(reasons).not.toContain("adopted");
+      expect(reasons).not.toContain("rig unclaim");
+    });
+    // OF-152: an archived rig whose id is this rig's name. An id wins (archived included), so `rig up --existing team` would reach
+    // the archived rig and be refused (rig_archived); the advice gives this rig's id. The real route wiring is under test.
+    it("T12 an archived rig's id equals this rig's name: the advised restore names this rig by its id", async () => {
+      const result = await recoveryWith(undefined, () => {
+        const old = h.rigRepo.createRig("old");
+        h.rigRepo.archiveRig(old.id);
+        h.db.prepare("UPDATE rigs SET id = 'team' WHERE id = ?").run(old.id);
+      });
+      const rigId = (h.db.prepare("SELECT id FROM rigs WHERE name = 'team'").get() as { id: string }).id;
+      expect(result.recovery.actions.map((a) => a.command)).toEqual([`rig up --existing ${rigId}`]);
     });
     it("T8 control: the rule was never asked (no classification wired): the seats' own liveness is all there is, recovery stays actionable", async () => {
       const result = await recoveryWith(undefined);

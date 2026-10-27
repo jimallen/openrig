@@ -187,6 +187,15 @@ describe("Lifecycle CLI commands", () => {
         return;
       }
 
+      if (req.method === "POST" && req.url === "/api/sessions/session-shared/unclaim") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          ok: true, rigId: "rig-1", nodeId: "node-1", logicalId: "external.helper", sessionId: "session-shared", sessionName: "manual-helper",
+          warnings: ["Session 'manual-helper' is also held by a live row of this seat, so its discovery record was left claimed for that row; release that row to free it."],
+        }));
+        return;
+      }
+
       if (req.method === "POST" && req.url === "/api/sessions/missing/unclaim") {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "Claimed session 'missing' not found." }));
@@ -233,6 +242,21 @@ describe("Lifecycle CLI commands", () => {
     expect(exitCode).toBeUndefined();
     expect(logs.join("\n")).toContain("Released claimed session manual-helper");
     expect(logs.join("\n")).toContain("external.helper");
+  });
+
+  // OF-144 review F1: what unclaim left as it was is shown, not dropped.
+  it("unclaim prints the daemon's warnings", async () => {
+    const program = new Command();
+    program.exitOverride();
+    program.addCommand(unclaimCommand(runningDeps()));
+
+    const { logs, exitCode } = await captureLogs(async () => {
+      await program.parseAsync(["node", "rig", "unclaim", "session-shared"]);
+    });
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.join("\n")).toContain("Released claimed session manual-helper");
+    expect(logs.join("\n")).toContain("  warning: Session 'manual-helper' is also held by a live row of this seat, so its discovery record was left claimed for that row; release that row to free it.");
   });
 
   it("remove prints removed node details", async () => {

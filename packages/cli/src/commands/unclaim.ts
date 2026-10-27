@@ -43,6 +43,8 @@ Notes:
       }
 
       console.log(`Released claimed session ${res.data["sessionName"]} from ${res.data["logicalId"]} in rig ${res.data["rigId"]}`);
+      const warnings = res.data["warnings"];
+      if (Array.isArray(warnings)) for (const w of warnings) if (typeof w === "string") console.error(`  warning: ${w}`);
     });
 
   return cmd;

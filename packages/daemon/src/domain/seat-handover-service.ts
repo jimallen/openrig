@@ -291,7 +291,10 @@ export class SeatHandoverService {
     if (input.dryRun) {
       const planResult = this.planner.plan({ ...input, dryRun: true });
       if (planResult.ok) {
-        // OF-131: the plan must not promise a successor the real handover refuses for the seat's folder.
+        // OF-142: nor one it refuses for the departing occupant or the fork source (checked first, as the real handover
+        // does), and OF-131: nor one it refuses for the seat's folder.
+        const occupant = this.departingOccupant(input.seatRef, planResult.plan.source);
+        if (!occupant.ok) return occupant.refusal;
         return this.foreseeSeatCwdRefusal(input.seatRef, planResult.plan.source.mode) ?? { ok: true, plan: planResult.plan };
       }
       switch (planResult.code) {
@@ -344,70 +347,15 @@ export class SeatHandoverService {
       };
     }
 
-    const statusResult = this.statusService.getStatus(input.seatRef);
-    if (!statusResult.ok) {
-      return statusResult;
-    }
-    if (!statusResult.status.current_occupant) {
-      return {
-        ok: false,
-        code: "current_occupant_required",
-        message: `Seat "${input.seatRef}" has no current occupant to hand over from.`,
-        guidance: "Start or claim the current seat occupant first, then retry handover.",
-      };
-    }
-
-    const node = this.lookupNode(statusResult.status);
+    const occupant = this.departingOccupant(input.seatRef, parsed.source);
+    if (!occupant.ok) return occupant.refusal;
+    const { status: statusResult, node, latestSession, forkSource } = occupant;
     const guard = this.tmuxAdapter.deliveryGuard;
     if (guard && !guard.ownsLifecycle(node.id)) {
       return guard.lifecycle([node.id], () => this.handover(input));
     }
-    const latestSession = this.lookupLatestSession(node.id);
-    if (!latestSession) {
-      return {
-        ok: false,
-        code: "current_occupant_required",
-        message: `Seat "${input.seatRef}" has no session row to supersede.`,
-        guidance: "Inspect the seat with: rig seat status <seat>",
-      };
-    }
 
     const operator = input.operator?.trim() || null;
-
-    // OPR.0.5.5.5 fork: resolve the native conversation id BEFORE any mutation
-    // (the respawn), so a missing/undiscoverable token is an honest pre-mutation
-    // refusal — never a blank successor silently reported as a fork, and never a
-    // mid-swap abort for a condition knowable up front.
-    let forkSource: { kind: "native_id"; value: string; pendingIdAllowed: true } | null = null;
-    if (parsed.source.mode === "fork") {
-      const forkRef = parsed.source.ref ?? latestSession.session_name;
-      const discovery = discoverResumeToken(this.db, forkRef);
-      if (!discovery.ok) {
-        return {
-          ok: false,
-          code: discovery.failure.code === "session_not_found" ? "fork_source_not_found" : "resume_token_unavailable",
-          message: discovery.failure.message,
-          guidance: "Fork needs a resolvable native conversation id. Inspect the source session with: rig ps --nodes",
-        };
-      }
-      if (!discovery.result.nativeId) {
-        return {
-          ok: false,
-          code: "resume_token_unavailable",
-          message: `No native resume id is discoverable for fork source "${forkRef}" — the conversation may not have produced output yet. No successor was created and the seat is untouched.`,
-          guidance: "Retry after the source session has a native conversation id, or use --source fresh.",
-        };
-      }
-      if (node.runtime && discovery.result.runtime && node.runtime !== discovery.result.runtime) {
-        return {
-          ok: false,
-          code: "runtime_mismatch",
-          message: `Seat expects runtime "${node.runtime}", but fork source "${forkRef}" is "${discovery.result.runtime}".`,
-          guidance: "Fork from a source session that runs the seat's runtime.",
-        };
-      }
-      forkSource = { kind: "native_id", value: discovery.result.nativeId, pendingIdAllowed: true };
-    }
 
     // Already-created successor: route straight through the discovered->commit
     // path with nothing to unwind (byte-identical to the shipped behavior).
@@ -952,6 +900,67 @@ export class SeatHandoverService {
   }
 
   /**
+   * What the handover hands over from, read before anything is changed: the seat's current occupant, its latest session
+   * row and, for a fork, the native conversation id. Each missing piece is the refusal the handover gives. The real
+   * handover and the dry-run both ask here (OF-142), so a plan is never printed for a handover these refuse.
+   * OPR.0.5.5.5 fork: the native id is resolved BEFORE any mutation (the respawn), so a missing/undiscoverable token is an
+   * honest pre-mutation refusal — never a blank successor silently reported as a fork, and never a mid-swap abort for a
+   * condition knowable up front.
+   */
+  private departingOccupant(seatRef: string, source: SeatHandoverSource):
+    | { ok: true; status: Extract<SeatStatusResult, { ok: true }>; node: NodeRow; latestSession: SessionRow; forkSource: { kind: "native_id"; value: string; pendingIdAllowed: true } | null }
+    | { ok: false; refusal: SeatHandoverResult } {
+    const statusResult = this.statusService.getStatus(seatRef);
+    if (!statusResult.ok) return { ok: false, refusal: statusResult };
+    if (!statusResult.status.current_occupant) {
+      return { ok: false, refusal: {
+        ok: false,
+        code: "current_occupant_required",
+        message: `Seat "${seatRef}" has no current occupant to hand over from.`,
+        guidance: "Start or claim the current seat occupant first, then retry handover.",
+      } };
+    }
+    const node = this.lookupNode(statusResult.status);
+    const latestSession = this.lookupLatestSession(node.id);
+    if (!latestSession) { // defensive: current_occupant is the latest row's name (node-inventory), so a row exists
+      return { ok: false, refusal: {
+        ok: false,
+        code: "current_occupant_required",
+        message: `Seat "${seatRef}" has no session row to supersede.`,
+        guidance: "Inspect the seat with: rig seat status <seat>",
+      } };
+    }
+    if (source.mode !== "fork") return { ok: true, status: statusResult, node, latestSession, forkSource: null };
+    const forkRef = source.ref ?? latestSession.session_name;
+    const discovery = discoverResumeToken(this.db, forkRef);
+    if (!discovery.ok) {
+      return { ok: false, refusal: {
+        ok: false,
+        code: discovery.failure.code === "session_not_found" ? "fork_source_not_found" : "resume_token_unavailable",
+        message: discovery.failure.message,
+        guidance: "Fork needs a resolvable native conversation id. Inspect the source session with: rig ps --nodes",
+      } };
+    }
+    if (!discovery.result.nativeId) {
+      return { ok: false, refusal: {
+        ok: false,
+        code: "resume_token_unavailable",
+        message: `No native resume id is discoverable for fork source "${forkRef}" — the conversation may not have produced output yet. No successor was created and the seat is untouched.`,
+        guidance: "Retry after the source session has a native conversation id, or use --source fresh.",
+      } };
+    }
+    if (node.runtime && discovery.result.runtime && node.runtime !== discovery.result.runtime) {
+      return { ok: false, refusal: {
+        ok: false,
+        code: "runtime_mismatch",
+        message: `Seat expects runtime "${node.runtime}", but fork source "${forkRef}" is "${discovery.result.runtime}".`,
+        guidance: "Fork from a source session that runs the seat's runtime.",
+      } };
+    }
+    return { ok: true, status: statusResult, node, latestSession, forkSource: { kind: "native_id", value: discovery.result.nativeId, pendingIdAllowed: true } };
+  }
+
+  /**
    * OF-131: the real handover refuses a seat whose recorded folder is unusable (`seat_cwd_unusable`, OF-124) before it touches
    * the retiree, because every source except `discovered` (the operator already made that successor) launches a successor
    * into that folder. The dry-run judges the same folder with the same check and wording and touches nothing. A seat with
@@ -980,6 +989,8 @@ export class SeatHandoverService {
     ).get(status.rig_id, status.logical_id) as NodeRow;
   }
 
+  /** The seat's latest session row, by id: the same definition node-inventory uses for the `current_occupant` this hands over
+   *  from (OF-144 review F2: kept, so the departing row is always the occupant's). */
   private lookupLatestSession(nodeId: string): SessionRow | null {
     return this.db.prepare(
       "SELECT id, session_name, status FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1"

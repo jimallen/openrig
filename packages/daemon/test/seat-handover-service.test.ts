@@ -410,10 +410,12 @@ describe("SeatHandoverService", () => {
     ["default source", undefined],
     ["fresh source", "fresh"],
     ["rebuild source", "rebuild"],
-    ["fork source", "fork:abc123"],
+    ["fork source", "fork:dev-impl@seat-rig"],
     ["discovered source", "discovered:some-id"],
   ])("keeps dry-run mutation-free across %s (AC-1)", async (_label, source) => {
-    seedSeat();
+    const { sessionId } = seedSeat();
+    // OF-142: a fork plan is foreseen only when the fork has a native id to carry, as the real handover requires.
+    sessionRegistry.updateResumeToken(sessionId!, "codex_id", "native-abc", "scrape");
     const before = durableRows();
 
     const result = await service.handover({
@@ -832,10 +834,11 @@ describe("SeatHandoverService", () => {
   });
 
   it("B3: still returns a dry-run PLAN for fork/rebuild (planning is not blocked)", async () => {
-    seedSeat({ runtime: "codex" });
+    const { sessionId } = seedSeat({ runtime: "codex" });
+    sessionRegistry.updateResumeToken(sessionId!, "codex_id", "native-abc", "scrape"); // OF-142: a fork the real handover would run
     const before = durableRows();
 
-    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fork:abc", dryRun: true });
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fork:dev-impl@seat-rig", dryRun: true });
 
     expect(result.ok).toBe(true);
     expect(result.ok && "plan" in result && result.plan.willMutate).toBe(false);
@@ -954,13 +957,65 @@ describe("SeatHandoverService", () => {
     expect(durableRows()).toBe(before);
   });
 
+  // OF-142 (w5 engineer): `rig seat handover --dry-run` printed a plan for a seat whose real handover refuses it before the folder
+  // check: no current occupant to hand over from, or a fork source with no native conversation id to carry.
+  describe("the dry-run foresees the refusals the real handover gives for the departing occupant and the fork source", () => {
+    const forkFromOtherRuntime = (): string => {
+      const other = rigRepo.createRig("other-rig");
+      const node = rigRepo.addNode(other.id, "dev.impl", { runtime: "claude-code", cwd: "/project" });
+      const session = sessionRegistry.registerSession(node.id, "dev-impl@other-rig");
+      sessionRegistry.updateResumeToken(session.id, "claude_session_id", "claude-native", "scrape");
+      return "fork:dev-impl@other-rig";
+    };
+    it.each([
+      ["a seat with no current occupant", "current_occupant_required", (): string => { seedSeat({ withSession: false }); return "fresh"; }],
+      ["a fork of a session that does not exist", "fork_source_not_found", (): string => { seedSeat(); return "fork:nobody@seat-rig"; }],
+      ["a fork of a session with no native id", "resume_token_unavailable", (): string => { seedSeat(); return "fork:dev-impl@seat-rig"; }],
+      ["a fork of another runtime's session", "runtime_mismatch", (): string => { seedSeat(); return forkFromOtherRuntime(); }],
+    ] as const)("%s: the dry-run gives the real handover's refusal and touches nothing", async (_label, code, seed) => {
+      const source = seed();
+      const before = durableRows();
+
+      const dry = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source, dryRun: true });
+
+      expect(dry).toMatchObject({ ok: false, code });
+      expect(durableRows()).toBe(before);
+      const real = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source });
+      expect(real).toEqual(dry);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(launchHarness).not.toHaveBeenCalled();
+    });
+  });
+
+  // OF-142 review F3: the no-occupant refusal by its message (the other current_occupant_required refusal, "no session row
+  // to supersede", is unreachable here: current_occupant is the latest session row's name, node-inventory.ts), and the
+  // occupant/fork refusals come before the folder's, in the dry-run as in the real handover.
+  describe("the dry-run's occupant refusals: which one, and their order against the folder's", () => {
+    it("no current occupant: the 'no current occupant' refusal", async () => {
+      seedSeat({ withSession: false });
+      const dry = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", dryRun: true });
+      expect(dry).toEqual({ ok: false, code: "current_occupant_required", message: `Seat "dev-impl@seat-rig" has no current occupant to hand over from.`, guidance: "Start or claim the current seat occupant first, then retry handover." });
+    });
+    it.each([
+      ["no current occupant", "current_occupant_required", "fresh", () => { seedSeat({ withSession: false }); }],
+      ["a fork of a session that does not exist", "fork_source_not_found", "fork:nobody@seat-rig", () => { seedSeat(); }],
+    ] as const)("%s AND an unusable folder: the occupant/fork refusal wins, dry-run and real alike", async (_label, code, source, seed) => {
+      seed();
+      const gone = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }));
+      const dry = await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source, dryRun: true });
+      expect(dry).toMatchObject({ ok: false, code });
+      expect(await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source })).toEqual(dry);
+    });
+  });
+
   // OF-131 (review-v6 N3): `rig seat handover --dry-run` printed a plan for a seat whose real handover is refused for its folder.
   describe("the dry-run foresees the seat_cwd_unusable refusal the real handover gives", () => {
     const plan = (svc: SeatHandoverService, source: string | undefined) =>
       svc.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source, dryRun: true });
 
-    it.each([undefined, "fresh", "rebuild", "fork:abc123"])("source %s: refused with the real handover's code, wording and guidance, and nothing is touched", async (source) => {
-      seedSeat();
+    it.each([undefined, "fresh", "rebuild", "fork:dev-impl@seat-rig"])("source %s: refused with the real handover's code, wording and guidance, and nothing is touched", async (source) => {
+      const { sessionId } = seedSeat();
+      sessionRegistry.updateResumeToken(sessionId!, "codex_id", "native-abc", "scrape"); // a fork the real handover gets as far as the folder with
       const gone = newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }));
       const before = durableRows();
 
@@ -970,12 +1025,10 @@ describe("SeatHandoverService", () => {
       expect((dry as { message: string }).message).toContain("its cwd '/project' does not exist");
       expect((dry as { message: string }).message).toContain("Create the folder /project");
       expect(durableRows()).toBe(before);
-      if (source !== "fork:abc123") { // the real handover refuses an unresolvable fork id for its token before it judges the folder
-        const real = await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: source ?? "fresh" });
-        expect(real).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
-        expect((real as { message: string }).message).toContain((dry as { message: string }).message); // the real one adds only its step prefix
-        expect((dry as { guidance: string }).guidance).toBe((real as { guidance: string }).guidance);
-      }
+      const real = await gone.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: source ?? "fresh" });
+      expect(real).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
+      expect((real as { message: string }).message).toContain((dry as { message: string }).message); // the real one adds only its step prefix
+      expect((dry as { guidance: string }).guidance).toBe((real as { guidance: string }).guidance);
     });
 
     it("a seat whose folder is usable still gets its plan (control), and a discovered successor is not judged by the seat's folder", async () => {

@@ -71,8 +71,9 @@ describe("rig start (OPR.0.3.4.1)", () => {
           res.end(JSON.stringify(data));
           return;
         }
-        if (method === "GET" && url === "/api/rigs/summary") {
-          const handler = routes["/api/rigs/summary"];
+        if (method === "GET" && (url === "/api/rigs/summary" || url === "/api/rigs/summary?includeArchived=true")) {
+          // OF-152: the archive-aware listing (what advice weighs) may add archived rigs; it is the plain one otherwise.
+          const handler = (url.endsWith("?includeArchived=true") ? routes["/api/rigs/summary?includeArchived=true"] : undefined) ?? routes["/api/rigs/summary"];
           const data = handler ? handler(req, body) : [];
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(data));
@@ -301,6 +302,19 @@ describe("rig start (OPR.0.3.4.1)", () => {
     setupCandidateRig("tokenless-rig", { hasToken: false });
     const summary = routes["/api/rigs/summary"]!;
     routes["/api/rigs/summary"] = (req, body) => [...(summary(req, body) as unknown[]), { id: "rig-2", name: "tokenless-rig", nodeCount: 1, lifecycleState: "running" }];
+    await captureLogs(async () => {
+      await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "start", "--last"]);
+    });
+    expect(seatPosts.map((p) => p.path)).toEqual(["/api/seat/launch/dev.impl%40rig-1"]);
+  });
+
+  // OF-152: an ARCHIVED rig whose id is this rig's name. Ids are matched across archived rigs too, so the seat ref
+  // dev.impl@tokenless-rig would name the archived rig; the launch goes by this rig's id. Only the archive-aware listing has it.
+  it("an accepted fresh start on a rig named like an archived rig's id launches by the rig's id", async () => {
+    setupCandidateRig("tokenless-rig", { hasToken: false });
+    const summary = routes["/api/rigs/summary"]!;
+    routes["/api/rigs/summary?includeArchived=true"] = (req, body) => [...(summary(req, body) as unknown[]),
+      { id: "tokenless-rig", name: "elsewhere", nodeCount: 0, lifecycleState: "stopped", archivedAt: "2026-10-27T00:00:00Z" }];
     await captureLogs(async () => {
       await makeCmd(vi.fn(async () => true)).parseAsync(["node", "rig", "start", "--last"]);
     });
@@ -660,7 +674,7 @@ describe("rig start (OPR.0.3.4.1)", () => {
         const method = req.method ?? "GET";
         if (method === "GET" && url === "/healthz") { res.writeHead(200).end(JSON.stringify({ ok: true })); return; }
         if (method === "GET" && url === "/api/kernel/status") { res.writeHead(200).end(JSON.stringify({ kernel_state: "ready" })); return; }
-        if (method === "GET" && url === "/api/rigs/summary") { res.writeHead(200).end(JSON.stringify(routes["/api/rigs/summary"]!(req, body))); return; }
+        if (method === "GET" && (url === "/api/rigs/summary" || url === "/api/rigs/summary?includeArchived=true")) { res.writeHead(200).end(JSON.stringify(routes["/api/rigs/summary"]!(req, body))); return; }
         if (method === "GET" && url.match(/^\/api\/rigs\/[^/]+$/)) { res.writeHead(200).end(JSON.stringify({ sessions: [] })); return; }
         const rigUpMatch2 = method === "POST" && url.match(/^\/api\/rigs\/([^/]+)\/up$/);
         if (rigUpMatch2) {
@@ -704,7 +718,7 @@ describe("rig start (OPR.0.3.4.1)", () => {
         const method = req.method ?? "GET";
         if (method === "GET" && url === "/healthz") { res.writeHead(200).end(JSON.stringify({ ok: true })); return; }
         if (method === "GET" && url === "/api/kernel/status") { const h = routes["/api/kernel/status"]; res.writeHead(200).end(JSON.stringify(h ? h(req, body) : { kernel_state: "ready" })); return; }
-        if (method === "GET" && url === "/api/rigs/summary") { const h = routes["/api/rigs/summary"]; res.writeHead(200).end(JSON.stringify(h ? h(req, body) : [])); return; }
+        if (method === "GET" && (url === "/api/rigs/summary" || url === "/api/rigs/summary?includeArchived=true")) { const h = routes["/api/rigs/summary"]; res.writeHead(200).end(JSON.stringify(h ? h(req, body) : [])); return; }
         if (method === "GET" && url.match(/^\/api\/rigs\/[^/]+$/)) { const h = routes["/api/rigs/:id"]; res.writeHead(200).end(JSON.stringify(h ? h(req, body) : { sessions: [] })); return; }
         if (method === "POST" && url === "/api/up") { upBodies.push(body); const h = routes["/api/up"]; const d = h ? h(req, body) : {}; res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(d)); return; }
         const rigUpRestore = method === "POST" && url.match(/^\/api\/rigs\/([^/]+)\/up$/);

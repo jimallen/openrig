@@ -7,7 +7,7 @@ import { shellQuote as quoteShellArgument } from "../adapters/shell-quote.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import { validatePreRestore } from "./restore-preconditions.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
-import { rigAdviceHandle } from "./rig-ref.js";
+import { rigAdviceHandle, type RigRefLookup } from "./rig-ref.js";
 import type { SeatStop } from "./restore-seat-gates.js";
 import { restoreRefusesRig, type RunningSessionClassification } from "./restore-running-sessions.js";
 import type { SessionLiveness } from "./session-liveness.js";
@@ -250,6 +250,9 @@ export interface RestoreCheckDeps {
   probeSeatLiveness?: (sessionName: string) => Promise<SeatLiveness>;
   /** Get all rigs as summaries */
   listRigs: () => Array<{ rigId: string; name: string; hasServices?: boolean }>;
+  /** OF-152: the rig lookup advice names rigs by (ids across every rig, archived included; names among unarchived ones).
+   *  Absent: advice reads `listRigs`, which knows no archived rig. */
+  rigRefs?: RigRefLookup;
   /** Get node inventory for a rig (ADR-0002: NodeInventory projection) */
   getNodeInventory: (rigId: string) => NodeInventoryEntry[];
   /** Get persisted startup context for a node */
@@ -330,6 +333,9 @@ interface RecoveryRigInput {
   restoreRunningRowOwners: Record<string, string>;
   /** Of those owners, the owner's rig id (rig names are not unique). A missing id is read as "may be this rig". */
   restoreRunningRowOwnerRigIds: Record<string, string>;
+  /** OF-144: of those names, the ones whose row was adopted (origin=claimed): tmux name -> that row's session id, the exact
+   *  `rig unclaim` argument. `null`: the classification did not say which rows were adopted. */
+  restoreRunningRowAdopted: Record<string, string> | null;
 }
 
 interface HostInfraCheckResult {
@@ -342,7 +348,7 @@ type ListedRefusals = Map<string, Map<string, string> | Error>;
 /** Per rig: what restore's refusal rule says about running rows (an Error: it could not be asked). Absent: not asked. */
 type RunningClassifications = Map<string, NamedRunningClassification | Error>;
 /** OF-47: restore's classification (session ids) plus the tmux names of the rows it refuses on, for advice that names them. */
-type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string>; sessionOwnerRigIds?: Record<string, string> };
+type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string>; sessionOwnerRigIds?: Record<string, string>; adoptedSessionIds?: string[] };
 /** Would the next restore run at all? `refused`: a running row is live or unreadable (rig_not_stopped). */
 type RestoreRuns = "would_run" | "refused" | "unknown";
 
@@ -450,6 +456,7 @@ export class RestoreCheckService {
     const restoreRunningRowNamesByRig = new Map<string, string[]>();
     const restoreRunningRowOwnersByRig = new Map<string, Record<string, string>>();
     const restoreRunningRowOwnerRigIdsByRig = new Map<string, Record<string, string>>();
+    const restoreRunningRowAdoptedByRig = new Map<string, Record<string, string> | null>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -524,6 +531,7 @@ export class RestoreCheckService {
       restoreRunningRowNamesByRig.set(rig.rigId, refusingRowNames(running.get(rig.rigId)));
       restoreRunningRowOwnersByRig.set(rig.rigId, refusingRowOwners(running.get(rig.rigId)));
       restoreRunningRowOwnerRigIdsByRig.set(rig.rigId, refusingRowOwnerRigIds(running.get(rig.rigId)));
+      restoreRunningRowAdoptedByRig.set(rig.rigId, refusingRowAdopted(running.get(rig.rigId)));
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
@@ -645,6 +653,7 @@ export class RestoreCheckService {
         restoreRunningRowNames: restoreRunningRowNamesByRig.get(rollup.rigId) ?? [],
         restoreRunningRowOwners: restoreRunningRowOwnersByRig.get(rollup.rigId) ?? {},
         restoreRunningRowOwnerRigIds: restoreRunningRowOwnerRigIdsByRig.get(rollup.rigId) ?? {},
+        restoreRunningRowAdopted: restoreRunningRowAdoptedByRig.get(rollup.rigId) ?? null,
       });
     }
 
@@ -1854,8 +1863,15 @@ export class RestoreCheckService {
         const held = heldName.map((name) => (ownerRigIds[name] === undefined || ownerRigIds[name] === input.rigId)
           ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${downHandle} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer wanted`
           : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${downHandle} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
+        // OF-144: an adopted row is released by its own session id (rig unclaim needs one; a name can match several rows). These
+        // rows are older ones (a live newest row is advised above), and releasing an older row leaves the seat's occupant alone.
+        const adopted = input.restoreRunningRowAdopted;
+        const adoptedOwn = adopted === null ? [] : ownName.filter((name) => adopted[name] !== undefined);
+        const adoptedNote = adopted === null
+          ? "An adopted session is the exception: rig down ends its row but leaves the tmux session running, and rig seat stop refuses it; release it with rig unclaim <session-id>. "
+          : adoptedOwn.map((name) => `${name} was adopted (not launched by OpenRig): rig down ends its row but leaves its tmux session running, and rig seat stop refuses it; release it with rig unclaim ${adopted[name]}. `).join("");
         const downEnds = ownName.length > 0
-          ? `rig down ${downHandle} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. An adopted session is the exception: rig down ends its row but leaves the tmux session running, and rig seat stop refuses it; release it with rig unclaim. `
+          ? `rig down ${downHandle} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. ${adoptedNote}`
           : "";
         blocked.push({
           scope: "rig",
@@ -1994,9 +2010,11 @@ export class RestoreCheckService {
   }
 
   /** OF-135: the rig as advice names it in `rig down`, `rig up <rig> --existing` and `<seat>@<rig>`: its name while that name
-   *  reaches it and only it, else its id (rigAdviceHandle). The rigs are the unarchived ones `listRigs` gives; unreadable
-   *  gives the id. Not quoted. */
+   *  reaches it and only it, else its id (rigAdviceHandle). OF-152: over every rig's id, archived ones included (an id wins,
+   *  so a name that is an archived rig's id reaches that rig), when the lookup is wired; else over the unarchived rigs
+   *  `listRigs` gives. Unreadable gives the id. Not quoted. */
   private rigHandle(rigId: string, rigName: string): string {
+    if (this.deps.rigRefs) return rigAdviceHandle(this.deps.rigRefs, rigId, rigName);
     return rigAdviceHandle({
       findRigById: (id) => {
         const rig = this.deps.listRigs().find((r) => r.rigId === id);
@@ -2180,6 +2198,17 @@ function refusingRowOwnerRigIds(classification: NamedRunningClassification | Err
     const name = classification.sessionNames?.[id];
     const rigId = classification.sessionOwnerRigIds?.[id];
     return name !== undefined && rigId !== undefined ? [[name, rigId]] : [];
+  }));
+}
+
+/** OF-144: of the refusing rows, the adopted ones (tmux name -> session id); null when the classification does not say. */
+function refusingRowAdopted(classification: NamedRunningClassification | Error | undefined): Record<string, string> | null {
+  if (!classification || classification instanceof Error || classification.adoptedSessionIds === undefined) return null;
+  const adoptedIds = new Set(classification.adoptedSessionIds);
+  const ids = classification.live.length > 0 ? classification.live : classification.unknown;
+  return Object.fromEntries(ids.flatMap((id) => {
+    const name = classification.sessionNames?.[id];
+    return name !== undefined && adoptedIds.has(id) ? [[name, id]] : [];
   }));
 }
 

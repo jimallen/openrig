@@ -388,12 +388,22 @@ describe("SeatLifecycleService", () => {
     expect(sessionRegistry.getBindingForNode(a.node.id)).not.toBeNull();
   });
 
+  it("OF-144: clean refuses an adopted row and names it for rig unclaim by its id", async () => {
+    const claimed = seatFixture("s5-rig", "dev.adopted", { origin: "claimed" });
+    tmux.setAlive(claimed.sessionName, false);
+    const result = await service.cleanSeat({ seatRef: claimed.sessionName, reason: "x" });
+    expect(result).toMatchObject({ ok: false, code: "claimed_session", guidance: `Release the adopted session with: rig unclaim ${claimed.session.id}` });
+    expect(eventsOfType(db, "session.cleaned")).toHaveLength(0);
+  });
+
   it("P4: stop refuses a claimed (adopted) session, an indeterminate probe, and a no-session node", async () => {
     const claimed = seatFixture("s5-rig", "dev.adopted", { origin: "claimed" });
     const claimedResult = await service.stopSeat({ seatRef: claimed.sessionName, reason: "x" });
     expect(claimedResult.ok).toBe(false);
     if (claimedResult.ok) throw new Error("expected refusal");
     expect(claimedResult.code).toBe("claimed_session");
+    // OF-144: the advice names the exact command: rig unclaim takes a session ref, and the id is the one that cannot be ambiguous.
+    expect(claimedResult.guidance).toBe(`Release the adopted session with: rig unclaim ${claimed.session.id}`);
 
     const probed = seatFixture("s5-rig", "dev.flaky");
     tmux.failProbeFor(probed.sessionName);
@@ -826,6 +836,8 @@ describe("SeatLifecycleService", () => {
       const result = await service.stopSeat({ seatRef: "dev.impl", reason: "x" });
 
       expect(result).toMatchObject({ ok: false, code: "claimed_session" });
+      // OF-144: the older adopted row, by its own id (releasing it leaves the seat's newer occupant alone).
+      expect((result as { guidance: string }).guidance).toBe(`Release the adopted session with: rig unclaim ${older!.session.id}`);
       expect(tmux.killed).toEqual([]);
       expect(row(older.session.id)).toMatchObject({ status: "running" });
       expect(row(newerSession.id)).toMatchObject({ status: "running" });

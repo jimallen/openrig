@@ -97,7 +97,11 @@ describe("node removal ends every live row of the node (OF-66)", () => {
     const result = await lifecycle.removeNode(rig.id, "dev.impl");
 
     expect(result.ok && result.warnings?.join(" ")).toContain(`Older session '${OLD}' was adopted`);
-    expect(result.ok && result.warnings?.join(" ")).toContain("rig unclaim");
+    expect(result.ok && result.warnings?.join(" ")).toContain("its tmux session was left running");
+    // OF-144: removing the node removed its session rows too (ON DELETE CASCADE), so there is nothing left for rig unclaim to
+    // release, and the warning does not send the person to it.
+    expect(result.ok && result.warnings?.join(" ")).not.toContain("rig unclaim");
+    expect(await lifecycle.unclaimSession(OLD)).toMatchObject({ ok: false, code: "session_not_found" });
   });
 
   it("control: no warning when no older session was adopted", async () => {

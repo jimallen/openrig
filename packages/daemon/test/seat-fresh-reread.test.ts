@@ -372,6 +372,19 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
     expect(!cli.ok && "guidance" in cli && cli.guidance).toBe("Restore or fix the spec at that path, or run again with --startup-from stored to replay the startup files saved at the seat's last successful launch.");
   });
 
+  // OF-150: the command names the rig by its id when another unarchived rig shares its name (`dev.impl@team` would be
+  // ambiguous), as every rig advice does (OF-135).
+  it("OF-150: the TUI's refusal names the rig by id when another rig shares its name", async () => {
+    const seat = await launchRig();
+    rigRepo.createRig("team");
+    retarget("bbbbbbb");
+    fs.writeFileSync(path.join(releaseB, "rig.yaml"), "pods: [unclosed");
+
+    const tui = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: false, reason: "tui", storedEscape: "command" });
+
+    expect(!tui.ok && "guidance" in tui && tui.guidance).toBe(`Restore or fix the spec at that path, or start only this seat with the startup files saved at its last successful launch: rig seat launch 'dev.impl@${seat.rigId}' --fresh --startup-from stored --reason "<why>".`);
+  });
+
   it("control: an agent folder linked to a sibling inside the spec tree is accepted (and recorded as typed, OF-99)", async () => {
     const seat = await launchRig();
     retarget("bbbbbbb");
@@ -530,6 +543,18 @@ describe("OF-32 fresh launch re-reads the rig's spec source", () => {
 
       expect(result).toMatchObject({ ok: false, code: "startup_source_untrusted" });
       expect(!result.ok && result.guidance).toContain(`rig seat launch 'dev.impl@team' --fresh --startup-from stored --reason "<why>"`);
+    });
+
+    it("OF-150: the command surface names the rig by id when another rig shares its name", async () => {
+      const seat = await launchRig();
+      rigRepo.createRig("team");
+      trustedRoots = [];
+
+      const result = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "untrusted", storedEscape: "command" });
+
+      expect(result).toMatchObject({ ok: false, code: "startup_source_untrusted" });
+      expect(!result.ok && result.guidance).toContain(`rig seat launch 'dev.impl@${seat.rigId}' --fresh --startup-from stored --reason "<why>"`);
+      expect(!result.ok && result.guidance).not.toContain("dev.impl@team");
     });
 
     it("OF-107: a source that stays unavailable (not untrusted) keeps the restore-or-fix advice", async () => {
