@@ -94,13 +94,26 @@ function modelErrorNotice(event: Record<string, unknown>, runtime: RunnerRuntime
   return {};
 }
 
+/** A tool call made inside another tool call (a sub-agent's, say) names its parent. The pda runner hides these, and
+ *  so does the Pi runner: the parent's line and activity already stand for the work. */
+function isNestedToolCall(event: Record<string, unknown>): boolean {
+  return event.parentToolCallId !== undefined && event.parentToolCallId !== null;
+}
+
+/** The extension UI requests that wait on an answer. Every other method is fire-and-forget traffic. */
+function isExtensionDialog(method: unknown): boolean {
+  return method === "select" || method === "confirm" || method === "input" || method === "editor";
+}
+
 export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntime = "pi"): MirrorAndActivity {
   const type = typeof event.type === "string" ? event.type : "";
   switch (type) {
     case "agent_start":
       return { mirrorLines: [], activity: { hookEvent: "active", subtype: "agent_start" }, streaming: true };
     case "agent_end":
-      return runtime === "omp" && event.isTerminal === false
+      // OMP marks a non-final agent_end with isTerminal:false; Pi (agent-session.d.ts) with willRetry:true, and the
+      // retry's own agent_start/agent_end follow. Neither is the end of the run, so neither is a Stop.
+      return (runtime === "omp" && event.isTerminal === false) || (runtime === "pi" && event.willRetry === true)
         ? { mirrorLines: [], streaming: true }
         : { mirrorLines: [""], activity: { hookEvent: "Stop", subtype: "agent_end" }, streaming: false };
     case "turn_end":
@@ -128,10 +141,12 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
       // silently guessed here.)
       return { mirrorLines: [""], ...modelErrorNotice(event, runtime) };
     case "tool_execution_start": {
+      if (runtime === "pi" && isNestedToolCall(event)) return { mirrorLines: [] };
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
       return { mirrorLines: [`  ⚙ ${tool} …`], activity: { hookEvent: "PreToolUse", subtype: tool } };
     }
     case "tool_execution_end": {
+      if (runtime === "pi" && isNestedToolCall(event)) return { mirrorLines: [] };
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
       const failed = event.isError === true || event.error != null;
       return { mirrorLines: [`  ⚙ ${tool} ${failed ? "FAILED" : "done"}`] };
@@ -144,7 +159,8 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
     // adds nothing; entry_appended announces a NON-message entry (a custom entry, a context edit; Pi saves user,
     // assistant and tool-result messages at message_end without any event) and is not a cursor source (see
     // RunnerCore.handleEvent); tool_execution_update is a partial tool result, and the one-line tool summaries come
-    // from tool_execution_start/_end; extension_ui_request is notify/setStatus/... traffic the pane cannot answer.
+    // from tool_execution_start/_end; extension_ui_request reaches here only as notify/setStatus/... traffic the pane has nothing to show for
+    // (the dialog methods select/confirm/input/editor are cancelled and surfaced by RunnerCore.handleEvent).
     case "agent_settled":
     case "entry_appended":
     case "extension_ui_request":
@@ -635,15 +651,15 @@ export class RunnerCore {
   }
 
   private handleEvent(event: Record<string, unknown>): void {
-    if (this.runtime === "omp" && event.type === "extension_ui_request") {
-      const method = event.method;
+    if (event.type === "extension_ui_request" && (this.runtime === "omp" || isExtensionDialog(event.method))) {
       // RPC does not mount an interactive UI. Reply at once; otherwise the
       // child can wait forever for approval that cannot be given in the pane.
+      // OMP cancels every request that has an id; Pi only needs its dialogs answered (the rest is fire-and-forget).
       if (typeof event.id === "string") {
         this.io.sendRpc({ type: "extension_ui_response", id: event.id, cancelled: true });
       }
-      if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
-        this.io.mirrorLine("[omp-runner] Approval/input requested; cancelled because the managed RPC pane cannot answer it. Operator action required: review the denied action and re-send a safe instruction, or change the seat permission policy explicitly.");
+      if (isExtensionDialog(event.method)) {
+        this.io.mirrorLine(`[${this.runtime}-runner] Approval/input requested; cancelled because the managed RPC pane cannot answer it. Operator action required: review the denied action and re-send a safe instruction, or change the seat permission policy explicitly.`);
         this.raiseAttention("permission_prompt");
       }
       return;
@@ -667,14 +683,22 @@ export class RunnerCore {
       this.writeSidecar({});
     }
 
+    // A cancelled dialog's attention (either runtime) ends with the next run.
+    if (event.type === "agent_start") this.clearAttention();
     if (this.runtime === "omp") {
-      if (event.type === "agent_start") this.clearAttention();
       // A successful automatic retry supersedes the failed attempt.
       if (event.type === "auto_retry_start" && this.attention === "runtime_error") this.clearAttention();
       // Some paths omit agent_start; turn_start still opens a new turn.
       if (event.type === "turn_start") this.assistantErrorShown = false;
     }
-    const mapped = mapPiEvent(event, this.runtime);
+    let mapped = mapPiEvent(event, this.runtime);
+    // A willRetry agent_end holds the seat busy for a retry that may never come: /abort during the backoff ends with
+    // auto_retry_end{success:false} and agent_settled, and no further agent_start/agent_end. Pi emits agent_settled
+    // once, when the whole run (retries included) is over, so a Pi seat still busy at that point has ended its run.
+    // After a normal final agent_end the seat is already idle, so this adds nothing there.
+    if (this.runtime === "pi" && event.type === "agent_settled" && this.streaming) {
+      mapped = { mirrorLines: [""], activity: { hookEvent: "Stop", subtype: "agent_end" }, streaming: false };
+    }
     if (mapped.unhandledType !== undefined) this.noteUnhandledEvent(mapped.unhandledType);
     if (mapped.streaming !== undefined && mapped.streaming !== this.streaming) {
       this.streaming = mapped.streaming;
