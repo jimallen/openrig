@@ -589,7 +589,10 @@ describe("Pi 1.3.0 RPC stdout transcript through RunnerCore (one tool turn, one 
 
   it("OMP keeps its generic path: an event carrying entryId or id still advances the cursor", () => {
     const r = run([{ type: "agent_start", entryId: "omp-entry-1" }, { type: "turn_start", id: "omp-entry-2" }], "omp");
-    expect(r.sidecars.map(s => s.lastEntryId)).toEqual(["omp-entry-1", "omp-entry-2"]);
+    // The cursor's progression, not the raw write list: the runner also writes the sidecar for other reasons (a
+    // streaming flip), which repeats the current cursor.
+    const progression = r.sidecars.map(s => s.lastEntryId).filter((id, i, all) => id !== undefined && id !== all[i - 1]);
+    expect(progression).toEqual(["omp-entry-1", "omp-entry-2"]);
   });
 
   it("the transcript triggers no unhandled-event marker, and each named quiet event is known by name", () => {
