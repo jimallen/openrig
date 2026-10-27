@@ -69,7 +69,7 @@ describe("fix 2 — host attribution on node records", () => {
 });
 
 describe("fix 3 — resume_type derives from the runtime on the identity hook", () => {
-  async function postIdentity(app: { request: (p: string, init?: RequestInit) => Promise<Response> }, body: Record<string, unknown>) {
+  async function postIdentity(app: { request: (p: string, init?: RequestInit) => Response | Promise<Response> }, body: Record<string, unknown>) {
     return app.request("/api/activity/hooks", {
       method: "POST",
       headers: { "content-type": "application/json", "x-openrig-activity-token": "tok" },

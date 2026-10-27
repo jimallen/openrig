@@ -1,6 +1,9 @@
+import { pruneWatchdogHistory } from "../src/domain/queue-retention.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { OPENRIG_HOME } from "../src/openrig-compat.js";
+import { knownFixesPath } from "../src/domain/rsi/registry.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -74,7 +77,7 @@ class ScriptedSource implements HealthObservationSource {
 
 type Script = (source: WatchdogDeliverySource) => DeliveryOutcome["status"];
 
-function harness(script: Script = () => "ok") {
+function harness(script: Script = () => "ok", options: { retentionDays?: () => number } = {}) {
   const db = createDb();
   migrate(db, ALL_MIGRATIONS);
   let clock = new Date(T0);
@@ -93,7 +96,7 @@ function harness(script: Script = () => "ok") {
       sends.push({ targetSession: req.targetSession, message: req.message, occurrenceId: src.occurrenceId!, status });
       return { status };
     },
-    additionalPolicies: [makeHealthFindingWakePolicy({ db, projection, sources: [source, sourceB], now })],
+    additionalPolicies: [makeHealthFindingWakePolicy({ db, projection, sources: [source, sourceB], now, watchdogRetentionDays: options.retentionDays })],
   });
   // Read `wake` structurally (not through `armed`) so this harness also runs against the
   // pre-F2 return shape when the new rows are measured red at the previous tip.
@@ -555,6 +558,58 @@ describe("OF-72: RSI blindness is recorded, reported, and does not outlive its c
       });
     });
 
+    // OF-145 (review-w5 N2): "named" is read from watchdog_history, which the retention sweep trims (rows older than the window
+    // beyond the newest K per job). A blind episode that outlives the window must not be named again once its row is gone.
+    describe("an episode that outlives history retention is not named again (OF-145)", () => {
+      const DAY = 24 * HOUR;
+      /** The REAL retention sweep, as the daemon runs it, keeping no rows beyond the window so the naming row is the one deleted. */
+      const sweep = (h: ReturnType<typeof harness>, atMs: number, days = 14) =>
+        pruneWatchdogHistory(h.db, { nowIso: new Date(atMs).toISOString(), watchdogRetentionDays: days, watchdogKeepPerJob: 0 });
+      const loud = (h: ReturnType<typeof harness>) => h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND).length;
+
+      it("after the sweep deleted the row that named a 20-day episode, the next blind hour is the quiet ongoing row", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();                                          // T0: this job names the episode
+        expect(loud(h)).toBe(1);
+        h.setClock(T0 + 20 * DAY);
+        expect(sweep(h, T0 + 20 * DAY).deletedRows).toBe(1);     // positive control: the naming row really is gone
+        expect(h.history()).toHaveLength(0);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+        expect(h.history().filter((r) => r.skip_reason === RSI_SOURCE_BLIND)).toHaveLength(0);
+      });
+
+      it("a wake job re-armed after the episode began still names it, however old the episode", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.setClock(T0 + 20 * DAY);
+        sweep(h, T0 + 20 * DAY);
+        h.rearm();                                               // a NEW job, registered 20 days into the episode
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+        expect(loud(h)).toBe(1);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      });
+
+      it("an episode younger than the window whose row is missing is still named again (the missing row cannot be the sweep's)", async () => {
+        const h = harness();
+        h.source.mode = "throw";
+        await h.scan();
+        h.db.prepare("DELETE FROM watchdog_history WHERE job_id = ?").run(h.jobId());
+        h.setClock(T0 + 13 * DAY);                               // inside the 14-day window
+        expect((await h.scan()).outcome).toMatchObject({ action: "skip", reason: RSI_SOURCE_BLIND });
+      });
+
+      it("the window is the configured one, not the default: with a 3-day window a 5-day episode whose row is gone stays quiet", async () => {
+        const h = harness(() => "ok", { retentionDays: () => 3 });
+        h.source.mode = "throw";
+        await h.scan();
+        h.setClock(T0 + 5 * DAY);
+        expect(sweep(h, T0 + 5 * DAY, 3).deletedRows).toBe(1);
+        expect((await h.scan()).outcome).toMatchObject({ reason: "rsi_source_blind_ongoing" });
+      });
+    });
+
     // OF-131 (review-v9 B1 remainder): the episode used to commit in the scan, before the engine inserted its history row.
     describe("an episode is recorded only once its history row is written (OF-131)", () => {
       const episodes = (h: ReturnType<typeof harness>) => h.db.prepare("SELECT fingerprint FROM rsi_finding_state WHERE fingerprint LIKE 'rsi.source-blind/%'").all();
@@ -855,6 +910,47 @@ describe("RSI B1 boot registration (rsi.steward_session)", () => {
       const outcome = await policy!.evaluate({ jobId: wakeJob.jobId, target: { session: STEWARD } } as never);
       expect(outcome).toMatchObject({ action: "send", target: { session: STEWARD } });
       expect(outcome.action === "send" ? outcome.message : "").toContain(fp("rig-dead"));
+    });
+
+    // OF-145 wiring: startup.ts hands the wake policy the sweep's own retention.watchdog_days. Without that line the policy
+    // judges "older than retention" by the 14-day default, and an episode between the configured window and 14 days whose
+    // naming row the sweep deleted is named a second time.
+    it("the wake judges an episode against the configured retention.watchdog_days, not the default (startup wiring)", async () => {
+      const savedDays = process.env.OPENRIG_RETENTION_WATCHDOG_DAYS;
+      const cleanup: string[] = [];
+      process.env.OPENRIG_RSI_STEWARD_SESSION = STEWARD;
+      process.env.OPENRIG_RETENTION_WATCHDOG_DAYS = "3";
+      try {
+        const dir = mkdtempSync(join(tmpdir(), "rsi-b1-window-"));
+        dirs.push(dir);
+        const daemon = await createDaemon({ dbPath: join(dir, "openrig.sqlite") });
+        dbs.push(daemon.db);
+        const wakeJob = rsiJobs(daemon.db).find((j) => j.policy === HEALTH_FINDING_WAKE_POLICY)!;
+        const policy = daemon.deps.watchdogPolicyEngine!.resolvePolicy(HEALTH_FINDING_WAKE_POLICY)!;
+        // Three real sources read blind when their known-fixes anchor file is not a regular file (a directory here), in the
+        // hermetic fixture home only: never a real home.
+        expect(OPENRIG_HOME.startsWith(tmpdir()), `OPENRIG_HOME ${OPENRIG_HOME} is not a fixture home`).toBe(true);
+        const anchors = knownFixesPath(OPENRIG_HOME);
+        mkdirSync(anchors, { recursive: true });
+        cleanup.push(anchors);
+        const job = { jobId: wakeJob.jobId, target: { session: STEWARD } } as never;
+        const newlyBlind = (outcome: { notes?: Record<string, unknown> }) => (outcome.notes?.newlyBlind ?? []) as Array<{ source: string; reason: string }>;
+        const blind = newlyBlind(await policy.evaluate(job));
+        expect(blind.length, "positive control: some source reads blind at wall clock, and this job names it").toBeGreaterThan(0);
+        // The episode began 5 days ago, after this job was registered 6 days ago, and its naming row is gone (the sweep, 3-day window).
+        const day = 24 * HOUR;
+        daemon.db.prepare("UPDATE watchdog_jobs SET registered_at = ? WHERE job_id = ?").run(new Date(Date.now() - 6 * day).toISOString(), wakeJob.jobId);
+        const open = daemon.db.prepare("INSERT INTO rsi_finding_state (fingerprint, source, state, activated_at, last_seen_at) VALUES (?, ?, 'active', ?, ?)");
+        for (const pair of blind) open.run(`rsi.source-blind/${pair.source}/${pair.reason}`, pair.source, new Date(Date.now() - 5 * day).toISOString(), new Date(Date.now() - 5 * day).toISOString());
+        expect(daemon.db.prepare("SELECT COUNT(*) AS n FROM watchdog_history WHERE job_id = ?").get(wakeJob.jobId)).toEqual({ n: 0 });
+        // 5 days is inside the default 14-day window and outside the configured 3-day one: only the configured window reads it as named.
+        expect(newlyBlind(await policy.evaluate(job))).toEqual([]);
+      } finally {
+        for (const path of cleanup) rmSync(path, { recursive: true, force: true });
+        if (savedDays === undefined) delete process.env.OPENRIG_RETENTION_WATCHDOG_DAYS;
+        else process.env.OPENRIG_RETENTION_WATCHDOG_DAYS = savedDays;
+        delete process.env.OPENRIG_RSI_STEWARD_SESSION;
+      }
     });
 
     it("ONE RSI source array with retention OFF too: every RSI detector id still maps to a wake source the projection serves", async () => {

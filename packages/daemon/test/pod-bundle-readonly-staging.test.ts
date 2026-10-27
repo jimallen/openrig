@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
+import { checkVendoredFile } from "../src/domain/vendored-file-guard.js";
 import { PodBundleAssembler, type PodAssemblerFsOps } from "../src/domain/pod-bundle-assembler.js";
 
 // Root bypasses POSIX write checks; Windows does not implement these mode bits.
@@ -39,7 +41,10 @@ edges: []
       const child = path.join(dir, entry.name);
       return entry.isDirectory() ? listFiles(child).map(file => path.join(entry.name, file)) : [entry.name];
     });
+    // The production reads (routes/bundles.ts podAssemblerFsOps): the guarded persona and vendored-file readers.
     const fsOps: PodAssemblerFsOps = {
+      ...guardedAgentRefFsOps,
+      readVendoredFile: (requested, resolved) => checkVendoredFile(requested, resolved),
       readFile: file => fs.readFileSync(file, "utf8"),
       readFileBuffer: file => fs.readFileSync(file),
       fileMode: file => fs.statSync(file).mode & 0o777,

@@ -30,9 +30,7 @@ describe("S10 gateway subsystem activation (RED at tip: no boot-time subsystem c
   it("createDaemon exposes an ACTIVE gateway subsystem on AppDeps (daemon boot activates it in-process)", async () => {
     const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
     try {
-      const subsystem = (deps as Record<string, unknown>).gatewaySubsystem as
-        | { status: () => { state: string } }
-        | undefined;
+      const subsystem = deps.gatewaySubsystem;
       expect(subsystem, "AppDeps.gatewaySubsystem must be constructed by createDaemon (the boot-time caller)").toBeDefined();
       expect(subsystem!.status().state, "the subsystem must report ACTIVE after boot").toBe("active");
     } finally {
@@ -53,18 +51,7 @@ describe("S10 gateway subsystem activation (RED at tip: no boot-time subsystem c
   }, 30000);
 
   it("an induced activation failure reports HONESTLY (state=failed with the cause) — never a silent dead gateway, never a boot crash", async () => {
-    // Dynamic import so this leg fails by name at tip (module absent), independently of legs 1-2.
-    const mod = (await import("../src/domain/gateway/gateway-subsystem.js")) as {
-      GatewaySubsystem: new (deps: {
-        home: string;
-        wire: () => { stop: () => void };
-        log?: (m: string) => void;
-      }) => {
-        start: () => void;
-        status: () => { state: string; reason?: string };
-        stop: () => void;
-      };
-    };
+    const mod = await import("../src/domain/gateway/gateway-subsystem.js");
     const home = mkdtempSync(join(tmpdir(), "s10-gw-"));
     try {
       const failing = new mod.GatewaySubsystem({
