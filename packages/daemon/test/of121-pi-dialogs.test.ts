@@ -100,6 +100,45 @@ describe("OF-121 Pi agent_end willRetry", () => {
     expect(r.sidecars.at(-1)!.busy).toBe(false);
   });
 
+  it("/abort during the retry backoff ends the run: agent_settled posts the one Stop and clears busy", () => {
+    // Pi: agent_end{willRetry:true}, then the backoff is cancelled -> auto_retry_end{success:false}, agent_settled{aborted:true};
+    // no further agent_start or agent_end (agent-session.js _finishCancelledRetry, _emitAgentSettled).
+    const r = pi();
+    r.feed({ type: "agent_start" }, { type: "agent_end", messages: [], willRetry: true },
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000 });
+    expect(r.sidecars.at(-1)!.busy).toBe(true);
+    r.feed({ type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" }, { type: "agent_settled", aborted: true });
+    expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);
+    expect(hooks(r.activity).at(-1)).toEqual(["Stop", "agent_end"]);
+    expect(r.sidecars.at(-1)!.busy).toBe(false);
+  });
+
+  it("a successful retry still gives exactly one Stop, and the trailing agent_settled adds none", () => {
+    const r = pi();
+    r.feed({ type: "agent_start" }, { type: "agent_end", messages: [], willRetry: true },
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000 }, { type: "agent_start" },
+      { type: "auto_retry_end", success: true, attempt: 1 }, { type: "agent_end", messages: [], willRetry: false },
+      { type: "agent_settled", aborted: false });
+    expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);
+    expect(r.sidecars.at(-1)!.busy).toBe(false);
+  });
+
+  it("retries exhausted: the final agent_end stops once; auto_retry_end{success:false} and agent_settled add no second Stop", () => {
+    const r = pi();
+    r.feed({ type: "agent_start" }, { type: "agent_end", messages: [], willRetry: false },
+      { type: "auto_retry_end", success: false, attempt: 3, finalError: "overloaded" }, { type: "agent_settled", aborted: false });
+    expect(r.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(1);
+  });
+
+  it("an agent_settled on an idle seat posts nothing; OMP is untouched", () => {
+    const r = pi();
+    r.feed({ type: "agent_settled", aborted: false });
+    expect(r.activity).toEqual([]);
+    const o = pi("omp");
+    o.feed({ type: "agent_start" }, { type: "agent_settled", aborted: true });
+    expect(o.activity.filter(a => a.hookEvent === "Stop")).toHaveLength(0);
+  });
+
   it("an agent_end without willRetry (older Pi) stops", () => {
     const r = pi();
     r.feed({ type: "agent_start" }, { type: "agent_end", messages: [] });

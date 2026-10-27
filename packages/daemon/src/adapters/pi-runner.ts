@@ -678,7 +678,14 @@ export class RunnerCore {
       // Some paths omit agent_start; turn_start still opens a new turn.
       if (event.type === "turn_start") this.assistantErrorShown = false;
     }
-    const mapped = mapPiEvent(event, this.runtime);
+    let mapped = mapPiEvent(event, this.runtime);
+    // A willRetry agent_end holds the seat busy for a retry that may never come: /abort during the backoff ends with
+    // auto_retry_end{success:false} and agent_settled, and no further agent_start/agent_end. Pi emits agent_settled
+    // once, when the whole run (retries included) is over, so a Pi seat still busy at that point has ended its run.
+    // After a normal final agent_end the seat is already idle, so this adds nothing there.
+    if (this.runtime === "pi" && event.type === "agent_settled" && this.streaming) {
+      mapped = { mirrorLines: [""], activity: { hookEvent: "Stop", subtype: "agent_end" }, streaming: false };
+    }
     if (mapped.unhandledType !== undefined) this.noteUnhandledEvent(mapped.unhandledType);
     if (mapped.streaming !== undefined && mapped.streaming !== this.streaming) {
       this.streaming = mapped.streaming;
