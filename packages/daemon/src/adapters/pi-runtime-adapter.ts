@@ -28,7 +28,7 @@ import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
-  PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER, piSidecarAlive,
+  PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER, piSidecarAlive, PI_SIDECAR_ALIVE_WINDOW_MS,
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
 
@@ -356,6 +356,13 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       return { ready: false, reason: `${this.runtime}-runner exited (code ${state.exited.code ?? "unknown"})`, code: "runner_exited" };
     }
     if (state?.ready) {
+      // OF-129: the same alive window as sendReadiness (and pda's checkReady). A ready sidecar whose alive tick stopped was
+      // left by a runner that hung or was killed without an `exited` record; the pane can show another process, and the
+      // READY line is still in scrollback, so neither makes the seat ready. A sidecar with no `aliveAt` is an older runner
+      // and is believed as before (piSidecarAlive).
+      if (!piSidecarAlive(state, this.now().getTime())) {
+        return { ready: false, reason: `${this.runtime}-runner sidecar has had no alive tick for over ${PI_SIDECAR_ALIVE_WINDOW_MS / 1000} s (the runner is gone or hung)`, code: "runner_stale" };
+      }
       if (atShell) {
         return { ready: false, reason: `${this.runtime}-runner sidecar says ready but the pane is back at a shell (runner process gone)`, code: "runner_exited" };
       }
