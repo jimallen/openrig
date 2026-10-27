@@ -54,6 +54,7 @@ import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
 import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
+import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 import { classifySessionLiveness } from "./session-liveness.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 
@@ -338,6 +339,21 @@ export class RestoreOrchestrator {
       return { ok: false, code: "rig_not_stopped", message: `Rig ${rigId} was not restored: tmux did not answer a session-liveness probe within the deadline (or the probe errored), so liveness is unknown and some seats may still be live. Nothing was changed. Retry, or check tmux first (for example 'tmux ls'); if tmux shows seats still running, stop the rig with 'rig down' before restoring.` };
     }
 
+    // OF-117: a damaged saved seat row is refused here, BEFORE any mutation and before the pre-restore capture, which
+    // would refuse on the same predicate (snapshot-capture.ts). A named 409 (`saved_row_damaged`), where the capture's
+    // plain Error used to surface as `restore_error` (HTTP 500). The words match restore-check and `rig up --plan`.
+    const damagedSeats = rig.nodes.flatMap((node) => {
+      const damage = savedRowDamage(node);
+      return damage.length > 0 ? [savedRowDamageMessage(node.logicalId, damage)] : [];
+    });
+    if (damagedSeats.length > 0) {
+      return {
+        ok: false,
+        code: "saved_row_damaged",
+        message: `Rig ${rigId} was not restored: its pre-restore snapshot cannot be taken because ${damagedSeats.join("; ")}. Nothing was changed. Repair the damaged saved row, then restore again.`,
+      };
+    }
+
     // Per-rig concurrency lock
     if (this.activeRestores.has(rigId)) {
       return { ok: false, code: "restore_in_progress", message: `Restore already in progress for rig ${rigId}` };
@@ -401,6 +417,11 @@ export class RestoreOrchestrator {
         onUnreadableStartupContext: (nodeId, message) => {
           const logicalId = rig.nodes.find((n) => n.id === nodeId)?.logicalId ?? nodeId;
           captureWarnings.push(`Restore: ${logicalId}: the pre-restore snapshot holds no copy of its saved startup context, which is not JSON (${message}).`);
+        },
+        // OF-117: the newest checkpoint's damaged key-artifact list is kept as a flag in the pre-restore snapshot and said so here.
+        onUnreadableCheckpoint: (nodeId, message) => {
+          const logicalId = rig.nodes.find((n) => n.id === nodeId)?.logicalId ?? nodeId;
+          captureWarnings.push(`Restore: ${logicalId}: the pre-restore snapshot keeps the flag, not an empty list, for its newest checkpoint's key artifacts: ${message}.`);
         },
       });
 
@@ -1562,6 +1583,9 @@ export class RestoreOrchestrator {
         return { nodeId: node.id, logicalId: node.logicalId, status: "failed", error: "Checkpoint available but node has no cwd" };
       }
       const written = this.writeCheckpointFile(node.cwd, checkpoint);
+      if (written && checkpoint.keyArtifactsUnreadable) {
+        warnings?.push(`Restore: ${node.logicalId}: its saved checkpoint's key-artifact list is damaged, so the resume prompt says it could not be read instead of listing key artifacts.`);
+      }
       if (written) {
         baseStatus = "rebuilt";
       } else {
@@ -2310,6 +2334,9 @@ export class RestoreOrchestrator {
         checkpoint.blockedOn ? `## Blocked On\n${checkpoint.blockedOn}\n` : "",
         checkpoint.keyArtifacts.length > 0
           ? `## Key Artifacts\n${checkpoint.keyArtifacts.map((a) => `- ${a}`).join("\n")}\n`
+          // OF-117: an unreadable saved list is not "none recorded"; the seat's prompt says it could not be read.
+          : checkpoint.keyArtifactsUnreadable
+          ? "## Key Artifacts\nUnreadable: the saved key-artifact list was damaged, so none can be listed here. Do not assume there were none.\n"
           : "",
       ]
         .filter(Boolean)

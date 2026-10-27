@@ -199,7 +199,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
         warnings: [...captureWarnings, ...(result.result.warnings ?? [])],
       }, 409);
     }
-    return c.json({ error: result.message, code: result.code, ...(captureWarnings.length > 0 ? { warnings: captureWarnings } : {}) }, result.code === "rig_not_stopped" ? 409 : 400);
+    return c.json({ error: result.message, code: result.code, ...(captureWarnings.length > 0 ? { warnings: captureWarnings } : {}) }, result.code === "rig_not_stopped" || result.code === "saved_row_damaged" ? 409 : 400);
   }
 
   // Compute attach command from first running node (same logic as /api/rigs/:id/up)

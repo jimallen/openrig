@@ -516,6 +516,45 @@ describe("#1196 round 1: every exit after started records a result; stale starts
     expect(w.calls).toEqual([]);
   });
 
+  // OF-117 (review-u06 unpinned guards): the restart record is the daemon's own event row. A damaged payload (not JSON, or
+  // JSON that is not an object) used to throw out of these three readers; each now says it cannot read the record. Each
+  // row damages ONE reader's input and nothing else, so each guard can fail on its own.
+  describe("a damaged restart record is named, never a throw", () => {
+    const NOT_JSON = "{not json";
+    function record(w: ReturnType<typeof world>, type: string, payload: string, createdAt: string) {
+      w.db.prepare("INSERT INTO events (rig_id, node_id, type, payload, created_at) VALUES (?, ?, ?, ?, ?)").run("r", w.node.id, type, payload, createdAt);
+    }
+
+    it.each([["not JSON", NOT_JSON], ["JSON but not an object", "[1]"]])("--plan with a damaged finished record (%s): ok, and it reports no lastRestart", async (_name, payload) => {
+      const w = world();
+      record(w, "seat.restart_in_place_finished", payload, "2026-10-12 20:00:00");
+      const plan = await w.service.restartInPlace({ seatRef: SEAT, plan: true });
+      expect(plan).toMatchObject({ ok: true });
+      expect(plan).not.toHaveProperty("lastRestart");
+    });
+
+    it("--plan with a good finished record shows lastRestart (control: the row above is damage, not absence)", async () => {
+      const w = world();
+      record(w, "seat.restart_in_place_finished", JSON.stringify({ outcome: "restarted_account_unverified", finishedAt: "2026-10-12T20:00:00Z" }), "2026-10-12 20:00:00");
+      expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: true, lastRestart: { outcome: "restarted_account_unverified", finishedAt: "2026-10-12T20:00:00Z" } });
+    });
+
+    it("a stale started record (before this daemon) with a damaged payload is still reported stale, naming no old pid or pane", async () => {
+      const w = world({ daemonStartedAt: new Date("2026-10-12T21:00:00Z") });
+      record(w, "seat.restart_in_place_started", NOT_JSON, "2026-10-12 20:59:59");
+      expect(await w.service.restartInPlace({ seatRef: SEAT, plan: true })).toMatchObject({ ok: true, staleRestart: { startedAt: "2026-10-12T20:59:59.000Z", oldPid: null, pane: null } });
+    });
+
+    it("verify with a damaged finished record says there is nothing to verify (restart_not_completed), not a throw", async () => {
+      const w = world();
+      record(w, "seat.restart_in_place_finished", NOT_JSON, "2026-10-12 20:00:00");
+      expect(await w.service.verifyRestartInPlace({ seatRef: SEAT })).toMatchObject({
+        ok: false, code: "restart_not_completed",
+        message: "The latest in-place restart's saved record is damaged (not JSON), so there is nothing to verify.",
+      });
+    });
+  });
+
   it("--plan shows the last recorded result", async () => {
     const w = world();
     await w.service.restartInPlace({ seatRef: SEAT, reason: "x" });

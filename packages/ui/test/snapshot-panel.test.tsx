@@ -32,7 +32,7 @@ afterEach(() => {
   cleanup();
 });
 
-function mockSnapshotList(snaps: Array<{ id: string; kind: string; status: string; createdAt: string }>) {
+function mockSnapshotList(snaps: Array<{ id: string; kind: string; status: string; createdAt: string; unreadable?: string }>) {
   return { ok: true, json: async () => snaps };
 }
 
@@ -138,6 +138,28 @@ describe("SnapshotPanel", () => {
       expect(screen.getByTestId("confirm-restore-snap-1")).toBeDefined();
       expect(screen.getByTestId("cancel-restore-snap-1")).toBeDefined();
     });
+  });
+
+  // OF-117 (review-u06 N5): the daemon flags a damaged snapshot `unreadable`; the panel used to draw it like any other row
+  // with a RESTORE button that could only answer 409.
+  it("a damaged snapshot says DAMAGED and offers no RESTORE; a readable one beside it still does", async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/snapshots")) {
+        return Promise.resolve(mockSnapshotList([
+          { id: "snap-good", kind: "manual", status: "complete", createdAt: "2026-03-24 02:00:00" },
+          { id: "snap-bad", kind: "auto-pre-down", status: "complete", createdAt: "2026-03-24 01:00:00", unreadable: "its saved data is not JSON" },
+        ]));
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    render(<QueryWrapper><SnapshotPanel rigId="r1" /></QueryWrapper>);
+    await waitFor(() => expect(screen.getByTestId("snap-damaged-snap-bad")).toBeDefined());
+    expect(screen.getByTestId("snap-damaged-snap-bad").textContent).toContain("DAMAGED: its saved data is not JSON");
+    expect(screen.getByTestId("snap-damaged-snap-bad").textContent).toContain("cannot be restored");
+    expect(screen.queryByTestId("restore-btn-snap-bad")).toBeNull();
+    expect(screen.getByTestId("restore-btn-snap-good")).toBeDefined();
+    expect(screen.queryByTestId("snap-damaged-snap-good")).toBeNull();
   });
 
   // Test 4: Confirm triggers restore + per-node result

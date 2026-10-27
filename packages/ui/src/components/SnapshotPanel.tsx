@@ -156,14 +156,21 @@ export function SnapshotPanel({ rigId }: SnapshotPanelProps) {
                   <div className="font-mono text-[9px] text-on-surface-variant mt-0.5">
                     {snap.kind} &middot; {formatAge(snap.createdAt)}
                   </div>
+                  {snap.unreadable && (
+                    <div data-testid={`snap-damaged-${snap.id}`} className="font-mono text-[9px] text-error mt-0.5">
+                      DAMAGED: {snap.unreadable}. It cannot be restored.
+                    </div>
+                  )}
                 </div>
-                <button
-                  className="font-mono text-[9px] font-bold border-b border-on-surface hover:bg-inverse-surface hover:text-background transition-all px-1"
-                  data-testid={`restore-btn-${snap.id}`}
-                  onClick={() => setConfirmRestore(snap.id)}
-                >
-                  RESTORE
-                </button>
+                {snap.unreadable ? null : (
+                  <button
+                    className="font-mono text-[9px] font-bold border-b border-on-surface hover:bg-inverse-surface hover:text-background transition-all px-1"
+                    data-testid={`restore-btn-${snap.id}`}
+                    onClick={() => setConfirmRestore(snap.id)}
+                  >
+                    RESTORE
+                  </button>
+                )}
               </div>
             </div>
           ))}

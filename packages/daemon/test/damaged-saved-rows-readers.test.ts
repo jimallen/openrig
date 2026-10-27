@@ -94,6 +94,28 @@ describe("OF-51 snapshots: one damaged snapshot is never a 500 for the rig's oth
     expect(await res.json()).toMatchObject({ code: "snapshot_unusable" });
   });
 
+  // OF-117: a damaged SEAT row (not a damaged snapshot) refuses the restore at the pre-restore capture. It used to come out of
+  // the route as restore_error, HTTP 500; it is a named 409.
+  it("POST /api/rigs/:id/restore/:snapshotId on a rig with a damaged seat row is 409 saved_row_damaged, not a 500", async () => {
+    const { rig, first } = seedRigWithSnapshots();
+    db.prepare("UPDATE nodes SET package_refs = ? WHERE rig_id = ?").run(NOT_JSON, rig.id);
+    const res = await setup.app.request(`/api/rigs/${rig.id}/restore/${first.id}`, { method: "POST" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      code: "saved_row_damaged",
+      error: `Rig ${rig.id} was not restored: its pre-restore snapshot cannot be taken because dev.impl's saved row is damaged (package_refs is not JSON). Nothing was changed. Repair the damaged saved row, then restore again.`,
+    });
+  });
+
+  it("POST /api/rigs/:id/up (rig start / rig up --existing by id) on a rig with a damaged seat row is the same 409 saved_row_damaged, not a 400", async () => {
+    const { rig } = seedRigWithSnapshots();
+    db.prepare("UPDATE nodes SET package_refs = ? WHERE rig_id = ?").run(NOT_JSON, rig.id);
+    const res = await setup.app.request(`/api/rigs/${rig.id}/up`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const body = await res.json() as { code?: string; error?: string };
+    expect({ status: res.status, code: body.code }, JSON.stringify(body)).toEqual({ status: 409, code: "saved_row_damaged" });
+    expect(body.error).toContain("dev.impl's saved row is damaged (package_refs is not JSON)");
+  });
+
   it("the restore orchestrator answers snapshot_unusable for the damaged snapshot instead of throwing", async () => {
     const { damaged } = seedRigWithSnapshots();
     const out = await setup.restoreOrchestrator.restore(damaged.id, { adapters: {}, fsOps: { exists: () => true } } as never);

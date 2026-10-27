@@ -245,6 +245,7 @@ export function createRestoreCheckService(
     hasSnapshot: (rigId: string) => {
       return snapshotRepo.listSnapshots(rigId).some((snapshot) => !isUnreadableSnapshot(snapshot));
     },
+    countDamagedSnapshots: (rigId: string) => snapshotRepo.listSnapshots(rigId).filter((snapshot) => isUnreadableSnapshot(snapshot)).length,
     getLatestSnapshot: (rigId: string) => {
       const snapshot = snapshotRepo.getLatestSnapshot(rigId);
       return snapshot ? { id: snapshot.id, kind: snapshot.kind } : null;
