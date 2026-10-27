@@ -18,6 +18,7 @@ import { serializeStartupContext } from "./startup-orchestrator.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import type { SkillLoadout, SkillRuntime } from "./skill-catalog.js";
 import { newestUsableSnapshotCopy, startupContextUnusable, type UsableSnapshotCopy } from "./own-startup-replay.js";
+import { rigAdviceHandleIn } from "./rig-ref.js";
 
 /** What the operator asked a fresh launch to start from. `snapshot:<id>` (OF-36 Q2, Jim 2026-10-20): that snapshot's
  *  copy of the seat's startup context, held to the same rule as the seat's own row before anything is stopped. */
@@ -283,7 +284,8 @@ export async function resolveFreshSeatStartup(
             notJson: startup.unparseable === true,
             // A spec is read on this refusal only when the operator asked for the stored files; and it must be recorded.
             specRoute: storedReason === "requested" && !!deps.rigRepo.getRigSpecSource(input.rigId) && !specSourceUntrusted(deps.specReader, input.rigId),
-            rigName: (deps.db.prepare("SELECT name FROM rigs WHERE id = ?").get(input.rigId) as { name: string } | undefined)?.name ?? input.rigId,
+            rigName: ((name) => name === undefined ? input.rigId : rigAdviceHandleIn(deps.db, input.rigId, name))(
+              (deps.db.prepare("SELECT name FROM rigs WHERE id = ?").get(input.rigId) as { name: string } | undefined)?.name),
             snapshotRoute: newestUsableSnapshotCopy(deps.db, input.rigId, input.logicalId, input.runtime),
           }) }
         : startup.refusal;

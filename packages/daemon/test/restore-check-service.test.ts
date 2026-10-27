@@ -1253,6 +1253,32 @@ describe("RestoreCheckService", () => {
     });
   });
 
+  // OF-135: `rig up --existing` now takes a rig id, so advice names a rig whose name another unarchived rig shares by id
+  // (or whose name is another rig's id, which would win); a unique name is still given as the name (row above).
+  it.each([
+    ["shares its name with another rig", [{ rigId: "rig-1", name: "test-rig" }, { rigId: "rig-2", name: "test-rig" }]],
+    ["is named like another rig's id", [{ rigId: "rig-1", name: "test-rig" }, { rigId: "test-rig", name: "other" }]],
+  ])("a rig that %s is restored by its id in the advised command", (_label, rigs) => {
+    const service = new RestoreCheckService(mockDeps({
+      listRigs: () => rigs,
+      getNodeInventory: (rigId: string) => rigId !== "rig-1" ? [] : [claudeNode({
+        canonicalSessionName: "dev-impl@test-rig",
+        sessionStatus: "stopped",
+        startupStatus: "failed",
+        tmuxAttachCommand: null,
+        latestError: "seat crashed",
+      })],
+      getLatestSnapshot: (rigId: string) => rigId === "rig-1" ? ({ id: "snap-123", kind: "auto-pre-down" }) : null,
+    }));
+
+    const result = service.check({ noHooks: true });
+
+    expect(result.recovery.actions).toEqual(expect.arrayContaining([expect.objectContaining({
+      rigId: "rig-1", action: "restore_from_latest_snapshot", command: "rig up --existing rig-1",
+    })]));
+    expect(JSON.stringify(result)).not.toContain("rig up --existing test-rig");
+  });
+
   it("missing canonical session identity with latest snapshot is blocked, not actionable", () => {
     const service = new RestoreCheckService(mockDeps({
       getNodeInventory: () => [claudeNode({

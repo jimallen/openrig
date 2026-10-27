@@ -22,6 +22,8 @@ interface SeatStatusResponse {
   seat_ref: string;
   rig_id: string;
   rig_name: string;
+  /** OF-135: the rig as advice names it (its name, or its id when the name is shared); absent from older daemons. */
+  rig_handle?: string;
   logical_id: string;
   pod_id: string | null;
   pod_namespace: string | null;
@@ -154,7 +156,7 @@ function display(value: string | null | undefined, empty = "none"): string {
 }
 
 function sessionReason(status: SeatStatusResponse): string | null {
-  return status.session_reason === "session_missing" ? missingSessionAdvice(status.logical_id, status.rig_name) : null;
+  return status.session_reason === "session_missing" ? missingSessionAdvice(status.logical_id, status.rig_handle ?? status.rig_name) : null;
 }
 
 function printHuman(status: SeatStatusResponse): void {

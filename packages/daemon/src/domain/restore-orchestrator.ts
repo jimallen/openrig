@@ -95,6 +95,7 @@ const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 // usability, and lifecycle projection. Imported and re-exported here so the
 // existing export surface and the execution call sites below are unchanged.
 import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLaunchCommand } from "./active-occupant.js";
+import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -1004,7 +1005,8 @@ export class RestoreOrchestrator {
    *  whose runtime has no fresh start (pda) is never told to run a `--fresh` command that would then be refused; it gets
    *  the same remedy the shared seat gates give (record the binding's token, then resume). */
   private freshStartAdvice(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom, lead = "To start only this seat fresh, run: "): string {
-    const rigName = this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name;
+    // OF-135: advice names the rig by its name while that reaches it alone, else by its id.
+    const rigName = rigAdviceHandleIn(this.db, rigId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name);
     const runtime = this.rigRepo.getRig(rigId)?.nodes.find((n) => n.logicalId === logicalId)?.runtime ?? null;
     if (runtime && RUNTIMES_WITHOUT_FRESH_START.has(runtime)) return noFreshStartRemedy(runtime, logicalId, rigName);
     return `${lead}${this.freshStartCommand(rigId, data, logicalId, startupFrom)}`;
@@ -1012,7 +1014,7 @@ export class RestoreOrchestrator {
 
   /** The fresh-start command a stop-for-decision message names for this seat (see `freshSeatLaunchCommand`). */
   private freshStartCommand(rigId: string, data: SnapshotData, logicalId: string, startupFrom?: StartupFrom): string {
-    return freshSeatLaunchCommand(logicalId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, this.adviceStartupFrom(rigId, logicalId, startupFrom));
+    return freshSeatLaunchCommand(logicalId, rigAdviceHandleIn(this.db, rigId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name), this.adviceStartupFrom(rigId, logicalId, startupFrom));
   }
 
   /** Re-check G1 (5ffd9b97): the restore's `--startup-from` as advice for THIS seat. `snapshot:<id>` was named for the
@@ -1049,7 +1051,7 @@ export class RestoreOrchestrator {
     const freshRequested = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
     const gate = decideSeatPreLaunchGate({
       data, snapshotNodeId: node.id, logicalId: node.logicalId, live: liveNode ?? null, freshRequested,
-      rigName: this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name, startupFrom: this.adviceStartupFrom(rigId, node.logicalId, opts?.startupFrom),
+      rigName: rigAdviceHandleIn(this.db, rigId, this.rigRepo.getRig(rigId)?.rig.name ?? data.rig.name), startupFrom: this.adviceStartupFrom(rigId, node.logicalId, opts?.startupFrom),
       continuityStatus: continuityRow?.status ?? null,
     });
     if (continuityRow?.status === "degraded" && (gate.kind === "proceed" || (gate.kind === "stop" && gate.gate === "no_token"))) {
@@ -1178,7 +1180,7 @@ export class RestoreOrchestrator {
         // Re-check G3: the pre-validation warning said this seat replays that copy; it does not.
         const said = carried.warning ? warnings?.indexOf(carried.warning) ?? -1 : -1;
         if (said >= 0) warnings!.splice(said, 1);
-        const rigName = rig?.rig.name ?? data.rig.name;
+        const rigName = rigAdviceHandleIn(this.db, rigId, rig?.rig.name ?? data.rig.name);
         const now = newestUsableSnapshotCopy(this.db, rigId, node.logicalId, seatRuntime);
         const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
         const next = now
@@ -1191,7 +1193,7 @@ export class RestoreOrchestrator {
         : seatStartupForRestore(this.db, { rigId, nodeId, logicalId: node.logicalId, runtime: seatRuntime }, data.nodeStartupContext?.[node.id] ?? null);
       if (pick.kind === "none_usable") {
         this.restoreNodeState(nodeId, priorState);
-        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rig?.rig.name ?? data.rig.name, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: pick.ownRow, ...(specSourceUntrusted(this.seatStartupSource, rigId) ? { specUntrusted: { rigId } } : {}) });
+        const remedy = noUsableCopyRemedy({ scope: "seat", rigName: rigAdviceHandleIn(this.db, rigId, rig?.rig.name ?? data.rig.name), logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: pick.ownRow, ...(specSourceUntrusted(this.seatStartupSource, rigId) ? { specUntrusted: { rigId } } : {}) });
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${noUsableCopyMessage(node.logicalId, pick.why)} ${remedy} No session was started.` };
       }
       savedSetup = pick.context;

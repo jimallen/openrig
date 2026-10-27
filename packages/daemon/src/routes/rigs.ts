@@ -42,6 +42,7 @@ import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import type { SelfAttachService } from "../domain/self-attach-service.js";
+import { rigAdviceHandleIn } from "../domain/rig-ref.js";
 
 export const rigsRoutes = new Hono();
 
@@ -297,7 +298,7 @@ rigsRoutes.get("/:id/status", async (c) => {
   const snapshotRepo = c.get("snapshotRepo" as never) as SnapshotRepository;
   const snapshot = snapshotRepo.findLatestRestoreUsable(rig.rig.id) ?? null;
   // Read-only per-seat forecast (mutated:false) — the restore-plan signal.
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig));
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name));
 
   // ps-lifecycle — per-node lifecycleState (never from pane text).
   const nodes: SeatLifecycleInput[] = getNodeInventory(repo.db, rig.rig.id).map((e) => ({
@@ -353,7 +354,7 @@ rigsRoutes.post("/:id/launch-plan", async (c) => {
   const snapshotRepo = c.get("snapshotRepo" as never) as SnapshotRepository;
   const snapshot = snapshotRepo.findLatestRestoreUsable(rig.rig.id) ?? null;
   return c.json(
-    buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig)),
+    buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name)),
     200,
   );
 });
@@ -734,7 +735,7 @@ rigsRoutes.post("/:id/up", async (c) => {
   // OPR.0.3.4.4 — read-only plan gate BEFORE the auto-rehydrate capture
   // (the capture is itself a mutation) and before restoreOrch.restore().
   if (plan) {
-    return c.json(buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig)), 200);
+    return c.json(buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name)), 200);
   }
 
   if (!snapshot) {

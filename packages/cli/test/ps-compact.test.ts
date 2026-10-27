@@ -607,6 +607,23 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
     }
   });
 
+  // OF-135: `rig up --existing` and seat refs take a rig id, so when another unarchived rig shares the name the advice
+  // names the rig by id (an archived namesake does not count).
+  it.each([
+    ["another rig shares the name", { isArchived: false }, "rig-a"],
+    ["control: the namesake is archived", { isArchived: true, archivedAt: "2026-10-27T00:00:00Z" }, "openrig-build"],
+  ] as const)("the missing-session advice when %s", async (_label, extra, handle) => {
+    PS_DATA.push({ rigId: "rig-d", name: "openrig-build", rigName: "openrig-build", nodeCount: 0, runningCount: 0, status: "stopped", lifecycleState: "stopped", uptime: "", latestSnapshot: null, ...extra });
+    try {
+      const { logs } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--session", "ops-missing@openrig-build"]);
+      });
+      expect(logs.join("\n")).toContain(`tmux session missing; resume with rig up --existing ${handle} (refused while any seat is live), or start only this seat fresh with rig seat launch 'ops.missing@${handle}'`);
+    } finally {
+      PS_DATA.pop();
+    }
+  });
+
   it("--full human table uses full-detail columns", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--full"]);

@@ -22,6 +22,7 @@ import { remoteUpLeaf } from "../domain/topology/remote-up-leaf.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
 import { tmuxAttachCommand } from "../adapters/tmux-server.js";
+import { rigAdviceHandleIn } from "../domain/rig-ref.js";
 
 export const upRoutes = new Hono();
 
@@ -152,7 +153,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
       refusalPredictionError = err instanceof Error ? err.message : String(err);
     }
     return c.json({
-      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig)),
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig), rigAdviceHandleIn(snapshotRepo.db, rig.rig.id, rig.rig.name)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),
     }, 200);
   }

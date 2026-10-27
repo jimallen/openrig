@@ -66,6 +66,18 @@ describe("a seat ref names its rig by id (OF-135)", () => {
     expect(await resolved("dev.impl@gone")).toEqual({ status: "seat_not_found", lifecycle: "seat_not_found" });
   });
 
+  it("seat status names the rig as advice should: its name while unique, its id when another rig shares the name", () => {
+    const solo = rigWithSeat("solo", "pi");
+    const twin = rigWithSeat("twin", "pi");
+    rigWithSeat("twin", "terminal");
+    const soloStatus = status.getStatus("dev.impl@solo");
+    const twinStatus = status.getStatus(`dev.impl@${twin.id}`);
+    expect(soloStatus.ok && soloStatus.status.rig_handle).toBe("solo");
+    expect(twinStatus.ok && twinStatus.status.rig_handle).toBe(twin.id);
+    expect(twinStatus.ok && twinStatus.status.rig_name).toBe("twin"); // the name itself is unchanged
+    expect(solo.id).not.toBe(twin.id);
+  });
+
   it("control: a unique name ref resolves as before, and an unknown rig is not found", async () => {
     const rig = rigWithSeat("solo", "pi");
     expect(await resolved("dev.impl@solo")).toEqual({ status: rig.id, lifecycle: "pi" });

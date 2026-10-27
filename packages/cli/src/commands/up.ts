@@ -363,7 +363,11 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             console.error(`'${source}' is ambiguous — it matches both an existing rig restore target and a library spec.`);
             console.error(`  To launch the library spec: rig up ${entry.sourcePath}`);
             console.error(`  The rig-name match refers to a stopped rig / snapshot-backed restore path.`);
-            console.error(`  To recover the existing rig instead of importing a starter: rig up ${rigMatches[0]!.name} --existing`);
+            // OF-135: rigs that share the name are reached by id.
+            const recover = rigMatches.length === 1
+              ? `rig up ${rigMatches[0]!.name} --existing`
+              : `rig up <rig-id> --existing, with one of: ${rigMatches.map((r) => r.id).join(", ")}`;
+            console.error(`  To recover the existing rig instead of importing a starter: ${recover}`);
             process.exitCode = 1;
             return;
           }
@@ -735,12 +739,12 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             } else {
               console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);
               for (const n of awaiting) {
-                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
+                console.log(`    ${freshSeatLaunchCommand(n.logicalId, isRigName ? source : String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
               }
             }
           } else {
             for (const n of awaiting) {
-              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, isRigName ? source : String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
             }
           }
         }

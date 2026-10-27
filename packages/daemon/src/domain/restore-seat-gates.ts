@@ -15,6 +15,7 @@ import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { readSnapshotStartupCopy, startupFromSnapshotId, type StartupFrom } from "./seat-startup-source.js";
 import type { SnapshotData } from "./types.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
+import { rigAdviceHandleIn } from "./rig-ref.js";
 
 /** pda L2a (design T29b): what a stop-for-decision tells the operator to do about a seat whose runtime has no fresh
  *  start, instead of a `--fresh` command that would then be refused. Its resume token is its binding (no secret), so
@@ -165,7 +166,7 @@ export function liveSeatGateInputs(
     return {
       live: live ? { runtime: live.runtime ?? null, cwd: live.cwd ?? null } : null,
       continuityStatus: continuityRow?.status ?? null,
-      rigName: rig?.rig.name ?? input.fallbackRigName,
+      rigName: rig ? rigAdviceHandleIn(deps.db, input.rigId, rig.rig.name) : input.fallbackRigName,
     };
   };
 }
@@ -187,7 +188,7 @@ export function predictSeatStops(
     const decision = decideSeatPreLaunchGate({
       data: input.data, snapshotNodeId: node.id, logicalId: node.logicalId, live: live ? { runtime: live.runtime ?? null } : null,
       freshRequested: input.freshLogicalIds?.includes(node.logicalId) ?? false,
-      rigName: rig?.rig.name ?? input.data.rig.name,
+      rigName: rig ? rigAdviceHandleIn(deps.db, input.rigId, rig.rig.name) : input.data.rig.name,
       // OF-36 G1: snapshot:<id> is named in this seat's advice only when that snapshot's copy is usable for it.
       startupFrom: (() => {
         const id = startupFromSnapshotId(input.startupFrom);

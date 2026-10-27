@@ -5,6 +5,7 @@ import { shellQuote } from "../adapters/shell-quote.js";
 import fs from "node:fs";
 import path from "node:path";
 import { parsePodBundleManifest } from "./bundle-types.js";
+import { rigAdviceHandle } from "./rig-ref.js";
 
 export interface BundleInstallContext {
   offered: { name: string; version: string | null; source: string };
@@ -28,7 +29,8 @@ export function bundleInstallContext(
         .get(rig.id) as { source_ref: string } | undefined)?.source_ref ?? null;
       return { rigId: rig.id, name: rig.name, state: running(rig.id) > 0 ? "running" as const : "stopped" as const, source, version: null };
     });
-  const name = shellQuote(rigName);
+  // OF-135: the one existing team is named so that `rig up`/`rig down` reach it alone (its id when the name is shared).
+  const name = shellQuote(existing.length === 1 ? rigAdviceHandle(rigs, existing[0]!.rigId, rigName) : rigName);
   return {
     offered, existing,
     resolutions: existing.length === 0 ? [] : [

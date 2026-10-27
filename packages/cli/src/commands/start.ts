@@ -17,6 +17,7 @@ import type { StatusDeps } from "./status.js";
 import { freshSeatLaunchCommand } from "../fresh-seat-advice.js";
 import { launchAcceptedFreshSeats, printFreshSeatNotes } from "../fresh-seat-accept.js";
 import { describeRestoreStartupSource, type RestoreStartupSourceReport } from "../restore-startup-source.js";
+import { rigAdviceHandle } from "../rig-handle.js";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 const KERNEL_WAIT_MS = 60_000;
@@ -422,10 +423,12 @@ Examples:
       for (const candidate of selectedCandidates) {
         const rigName = candidate.rigName;
         const rigId = candidate.rigId;
+        let unarchivedRigs: Array<{ id: string; name: string }> = []; // OF-135: for the advice handle; empty gives the id
 
         // Check if the rig is already running (idempotent rerun: reconcile, don't relaunch).
         try {
           const freshSummary = await client.get<RigSummary[]>("/api/rigs/summary");
+          unarchivedRigs = (freshSummary.data ?? []).map((r) => ({ id: r.id, name: r.name }));
           const current = (freshSummary.data ?? []).find((r) => r.id === rigId);
           if ((current?.restoreLifecycleState ?? current?.lifecycleState) === "running") {
             if (!opts.json) console.log(`  ${rigName}: already running (skipping)`);
@@ -508,7 +511,7 @@ Examples:
             } else {
               // Headless: report honestly, no auto-substitute.
               for (const n of awaiting) {
-                if (!opts.json) console.error(`    ${n.logicalId}: awaiting-decision -- to start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, rigName)}`);
+                if (!opts.json) console.error(`    ${n.logicalId}: awaiting-decision -- to start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, rigAdviceHandle(rigId, rigName, unarchivedRigs))}`);
               }
             }
           }

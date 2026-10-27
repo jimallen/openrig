@@ -28,6 +28,7 @@ import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { seatLifecycleService } from "./seat.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
+import { rigAdviceHandleIn } from "../domain/rig-ref.js";
 
 export const startupRoutes = new Hono();
 startupRoutes.use("*", async (c, next) => {
@@ -130,7 +131,7 @@ startupRoutes.get("/:rigId", async (c) => {
   const rig = repo(c).getRig(c.req.param("rigId"));
   if (!rig) return c.json({ ok: false, message: "Rig is no longer available." }, 404);
   const snapshot = currentSnapshot(c, rig);
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig));
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name));
   const auth = await defaultProbeRuntimes();
   const history = sessions(c).getSessionsForRig(rig.rig.id);
   const seats = [];
@@ -206,7 +207,7 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
       if (!eligibility.ok) return c.json({ ok: false, code: "startup_source_unavailable", message: eligibility.blockers.join("; ") }, 409);
       snapshot = captureRehydrate(c, rig.rig.id);
     }
-    const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(repo(c).db, selectedRig)).nodes[0]!;
+    const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(repo(c).db, selectedRig), rigAdviceHandleIn(repo(c).db, selectedRig.rig.id, selectedRig.rig.name)).nodes[0]!;
     if (history.length > 0 && forecast.intendedAction !== "resume-original") return c.json({ ok: false, code: "resume_unavailable", freshAllowed: forecast.freshRequired,
       message: forecast.reason ?? "The prior conversation cannot be resumed under this seat's configured policy. A fresh conversation needs a separate decision." }, 409);
     const result = await dep<RestoreOrchestrator>(c, "restoreOrchestrator").launchSingleNode(rig.rig.id, node.logicalId, {

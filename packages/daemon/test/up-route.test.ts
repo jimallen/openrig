@@ -163,7 +163,12 @@ describe("Up API route", () => {
     it("restores the one rig an id names when two rigs share its name, and reports the rig's name", async () => {
       stoppedRig("shared-name");
       const second = stoppedRig("shared-name");
-      expect((await up("shared-name")).status).toBe(409); // the name stays ambiguous
+      const ambiguous = await up("shared-name"); // the name stays ambiguous, and says how to name one rig
+      expect(ambiguous.status).toBe(409);
+      const refusal = await ambiguous.json();
+      expect(refusal.code).toBe("ambiguous_name");
+      expect(refusal.error).toContain("rig up <rig-id> --existing");
+      expect(refusal.error).not.toContain("rig restore --rig");
       const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
 
       const res = await up(second.id);

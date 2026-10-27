@@ -79,6 +79,7 @@ export interface BootstrapResult {
 }
 
 import type { PodRigInstantiator } from "./rigspec-instantiator.js";
+import { rigAdviceHandle } from "./rig-ref.js";
 
 interface BootstrapOrchestratorDeps {
   db: Database.Database;
@@ -744,7 +745,7 @@ export class BootstrapOrchestrator {
           warnings.push(`A stopped rig named "${projectRig.rigName}" exists for this project; the launch will ask whether to resume it or start fresh.`);
         } else if (opts.onExisting !== "fresh") {
           const msg = `This project already has a stopped rig named "${projectRig.rigName}". `
-            + `Resume it with: rig up ${projectRig.rigName} --existing. `
+            + `Resume it with: rig up ${existing.length === 1 ? rigAdviceHandle(repo, existing[0]!.id, projectRig.rigName) : projectRig.rigName} --existing. `
             + `Or start fresh (archives it): add --on-existing fresh.`;
           stages.push({ stage: "resolve_spec", status: "failed", detail: { code: "project_rig_exists", rigName: projectRig.rigName, rigIds: existing.map((rig) => rig.id), error: msg } });
           this.deps.bootstrapRepo.updateRunStatus(run.id, "failed");

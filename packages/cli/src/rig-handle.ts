@@ -25,6 +25,18 @@ export type HandleResolution =
   | { kind: "passthrough"; handle: string };
 
 /**
+ * OF-135: how advice names a rig in `rig up <rig> --existing`, `rig down <rig>` and `<seat>@<rig>`: its name while that name
+ * reaches it and only it, else its id. The same rule as the daemon's rigAdviceHandle (domain/rig-ref.ts), over the
+ * unarchived rigs the caller has listed: the name reaches the rig when no listed rig has the name as its id (an id wins,
+ * see resolveRigHandle) and this rig is the one listed rig with that name.
+ */
+export function rigAdviceHandle(rigId: string, rigName: string, unarchivedRigs: ReadonlyArray<{ id: string; name: string }>): string {
+  if (unarchivedRigs.some((r) => r.id === rigName)) return rigId;
+  const named = unarchivedRigs.filter((r) => r.name === rigName);
+  return named.length === 1 && named[0]!.id === rigId ? rigName : rigId;
+}
+
+/**
  * Resolve a rig handle (rig name OR id) to a concrete rig id, mirroring the
  * `/api/rigs/summary` path `rig up` uses. Resolution is a PRE-STEP: each
  * command's existing request + guards downstream are unchanged; this only maps

@@ -1,3 +1,4 @@
+import type Database from "better-sqlite3";
 import type { Rig } from "./types.js";
 
 /**
@@ -32,4 +33,28 @@ export function rigAdviceHandle(rigs: RigRefLookup, rigId: string, rigName: stri
   } catch {
     return rigId;
   }
+}
+
+/** The same lookup read straight from the `rigs` table, for advice built where only the database is at hand. A database
+ *  without `archived_at` (before migration 042) has no archived rigs. */
+export function dbRigLookup(db: Database.Database): RigRefLookup {
+  const archivedColumn = () => db.prepare("SELECT 1 FROM pragma_table_info('rigs') WHERE name = 'archived_at'").get() !== undefined;
+  const toRig = (row: { id: string; name: string; created_at: string; updated_at: string }): Rig =>
+    ({ id: row.id, name: row.name, createdAt: row.created_at, updatedAt: row.updated_at });
+  return {
+    findRigById: (id) => {
+      const archived = archivedColumn();
+      const row = db.prepare(`SELECT id, name, created_at, updated_at${archived ? ", archived_at" : ""} FROM rigs WHERE id = ?`).get(id) as
+        { id: string; name: string; created_at: string; updated_at: string; archived_at?: string | null } | undefined;
+      return row ? { rig: toRig(row), archived: archived && row.archived_at != null } : null;
+    },
+    findUnarchivedRigsByName: (name) => (db.prepare(
+      `SELECT id, name, created_at, updated_at FROM rigs WHERE name = ?${archivedColumn() ? " AND archived_at IS NULL" : ""} ORDER BY created_at`,
+    ).all(name) as Array<{ id: string; name: string; created_at: string; updated_at: string }>).map(toRig),
+  };
+}
+
+/** rigAdviceHandle over the database. */
+export function rigAdviceHandleIn(db: Database.Database, rigId: string, rigName: string): string {
+  return rigAdviceHandle(dbRigLookup(db), rigId, rigName);
 }
