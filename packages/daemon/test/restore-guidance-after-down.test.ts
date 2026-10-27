@@ -226,6 +226,33 @@ describe("a seat's guidance across rig down then rig up --existing (exact resume
     expect(result.rigResult).toBe("fully_restored");
   });
 
+  // OF-138 (eztrack, 2026-10-27): `rig up --existing` printed "Restore guidance: <seat>: put back missing blocks ..." for every
+  // seat although each seat's file carried all its blocks. The blocks were put back by that very restore; saying "missing"
+  // told the person to repair something already repaired. A warning is only for what is STILL missing after the repair.
+  it("OF-138: blocks put back by the restore are not warned about, and the file holds every one of them", async () => {
+    const { rigId, guidanceFile } = launchedSeat({ freshOnlyFile: true });
+    const { result, fileAtHarnessStart } = await downThenUpExisting(rigId, guidanceFile);
+    for (const block of ["lead-role", "SOP.md", "onboarding.md"]) expect(fileAtHarnessStart).toContain(MANAGED_BLOCK_END(block));
+    expect(fs.readFileSync(guidanceFile, "utf-8")).toContain(MANAGED_BLOCK_END("onboarding.md"));
+    expect(result.warnings.filter((w) => /guidance|put back|missing/i.test(w))).toEqual([]);
+    expect(result.rigResult).toBe("fully_restored");
+  });
+
+  // OF-138: every seat of the same restore also printed "FR-5: no durably-bound session name ... derived session name". The
+  // supported stop clears the binding (atomicNodeCleanup), so after a plain down there is never one to pin to; the derived
+  // name is the normal outcome. The warning stays for a seat whose binding is gone without a stop (restore-orchestrator.test.ts).
+  it.each([false, true])("OF-138: after a plain rig down the FR-5 derived-name fallback is not warned about (pod-aware: %s)", async (podAware) => {
+    const { rigId, guidanceFile } = launchedSeat({ podAware });
+    const nodeId = rigRepo.getRig(rigId)!.nodes[0]!.id;
+    sessionRegistry.updateBinding(nodeId, { tmuxSession: podAware ? "orch-lead@poc" : "r01-lead" }); // a launched seat is bound
+    expect(sessionRegistry.getBindingForNode(nodeId)?.tmuxSession).toBeTruthy();
+    const { result } = await downThenUpExisting(rigId, guidanceFile, {
+      podAware,
+      betweenDownAndUp: () => expect(sessionRegistry.getBindingForNode(nodeId), "rig down cleared the binding").toBeNull(),
+    });
+    expect(result.warnings.filter((w) => w.includes("FR-5"))).toEqual([]);
+  });
+
   it("the pod-aware launch path also has the blocks back before launchHarness starts the resumed session", async () => {
     const { rigId, guidanceFile } = launchedSeat({ podAware: true });
     const { result, adapter, claudeResume, fileAtHarnessStart } = await downThenUpExisting(rigId, guidanceFile, { podAware: true });

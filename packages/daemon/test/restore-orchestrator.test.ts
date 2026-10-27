@@ -5521,6 +5521,20 @@ describe("RestoreOrchestrator", () => {
       expect((result as any).result.warnings.some((w: string) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
     });
 
+    it("OF-138: only the seat's NEWEST row decides: an older stopped row does not hide a lost binding behind a row that was not stopped", async () => {
+      const { snapId, nodeId } = seedSeat({ logicalId: "worker-a", boundName: null });
+      const older = sessionRegistry.registerSession(nodeId, "older@r99");
+      sessionRegistry.markIntentionallyStopped(older.id);
+      // "Older" means registered earlier: the newest row is the one with the highest id.
+      db.prepare("UPDATE sessions SET id = '00000000000000000000000000', created_at = '2001-01-01 00:00:00' WHERE id = ?").run(older.id);
+      expect((db.prepare("SELECT count(*) AS n FROM sessions WHERE node_id = ? AND intentionally_stopped = 1").get(nodeId) as { n: number }).n).toBe(1);
+      const orch = createOrchestrator({ tmux: mockTmux() });
+
+      const result = await orch.restore(snapId);
+      if (!result.ok) throw new Error(`restore did not run: ${JSON.stringify(result)}`);
+      expect(result.result.warnings.some((w) => w.includes("FR-5") && w.includes("no durably-bound"))).toBe(true);
+    });
+
     it("binding row with empty tmux_session: falls back to the derived name, observably", async () => {
       const { snapId } = seedSeat({ logicalId: "worker-a", bindEmpty: true });
       const tmux = mockTmux();

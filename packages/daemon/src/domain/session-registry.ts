@@ -395,6 +395,22 @@ export class SessionRegistry {
     ).run(sessionId);
   }
 
+  /** Did a supported stop (`rig down`, `rig seat stop`) end the seat's NEWEST session row? A stop clears the seat's binding,
+   *  so this tells "no binding because the seat was stopped" from "no binding because the data is old or damaged".
+   *  "Newest" is by `id` alone, as node-inventory.ts picks a seat's latest session: ids are monotonic, so registration order
+   *  survives a clock rollback or equal timestamps that `created_at` would misorder.
+   *  An unreadable answer is `false`: the caller then keeps warning. */
+  latestSessionWasIntentionallyStopped(nodeId: string): boolean {
+    try {
+      const row = this.db.prepare(
+        "SELECT intentionally_stopped AS stopped FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1",
+      ).get(nodeId) as { stopped: number } | undefined;
+      return row?.stopped === 1;
+    } catch {
+      return false;
+    }
+  }
+
   updateStartupStatus(sessionId: string, status: "pending" | "ready" | "attention_required" | "failed", completedAt?: string): void {
     if (completedAt) {
       this.db
