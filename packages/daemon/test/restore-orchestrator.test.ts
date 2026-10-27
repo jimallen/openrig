@@ -42,6 +42,12 @@ import { existingRigRoot } from "./helpers/existing-rig-root.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORK_DIR = existingRigRoot("work");
 
+// Two real directories for the rows that compare a regrown seat's live cwd with the snapshot's: the launch refuses a cwd that
+// does not exist (seat_cwd_unusable), so a made-up path would stop the seat before the setting under test is read.
+const SNAPSHOT_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u14-snapshot-cwd-")));
+const LIVE_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u14-live-cwd-")));
+process.on("exit", () => { fs.rmSync(SNAPSHOT_CWD, { recursive: true, force: true }); fs.rmSync(LIVE_CWD, { recursive: true, force: true }); });
+
 function setupDb(): Database.Database {
   return createFullTestDb();
 }
@@ -2656,7 +2662,7 @@ describe("RestoreOrchestrator", () => {
   // Deployed entrypoint: startup.ts constructs RestoreOrchestrator; routes/rigs.ts (restore) and `rig up --existing` call restore().
   it.each([
     // [attribute, snapshot's value, the live seat's value, runtime, index of the setting in the resume adapter's arguments]
-    ["cwd", { cwd: "/snapshot/cwd" }, { cwd: "/live/cwd" }, "claude-code", 3, "/live/cwd"],
+    ["cwd", { cwd: SNAPSHOT_CWD }, { cwd: LIVE_CWD }, "claude-code", 3, LIVE_CWD],
     ["model", { model: "snapshot-model" }, { model: "live-model" }, "claude-code", 5, "live-model"],
     ["codexConfigProfile", { codexConfigProfile: "snapshot-profile" }, { codexConfigProfile: "live-profile" }, "codex", 4, "live-profile"],
   ] as const)("a regrown seat is resumed with its LIVE %s, not the snapshot's", async (_attribute, snapshotValue, liveValue, runtime, argIndex, expected) => {
@@ -2690,7 +2696,7 @@ describe("RestoreOrchestrator", () => {
         expect(result.ok).toBe(false);
         if (result.ok) return;
         expect(result.code).toBe("pre_restore_validation_failed");
-        expect(result.result?.blockers?.map((b) => b.code)).toEqual(["checkpoint_missing_node_cwd"]);
+        expect((result as { result?: { blockers?: Array<{ code: string }> } }).result?.blockers?.map((b) => b.code)).toEqual(["checkpoint_missing_node_cwd"]);
         expect(tmux.createSession).not.toHaveBeenCalled();
       } finally { fs.rmSync(tmpDir, { recursive: true }); }
     });
@@ -2712,10 +2718,10 @@ describe("RestoreOrchestrator", () => {
 
   // F5: the stop-and-ask says the directory moved when it did, because a conversation is kept per directory.
   it.each([
-    ["the live cwd differs from the snapshot's", "/live/elsewhere", true],
-    ["the live cwd is the snapshot's", "/snapshot/cwd", false],
+    ["the live cwd differs from the snapshot's", LIVE_CWD, true],
+    ["the live cwd is the snapshot's", SNAPSHOT_CWD, false],
   ] as const)("a regrown seat whose resume fails says whether its directory moved: %s", async (_label, liveCwd, mentioned) => {
-    const { snap } = snapshotThenRegrow("regrown-f5-rig", { cwd: "/snapshot/cwd", live: { cwd: liveCwd } });
+    const { snap } = snapshotThenRegrow("regrown-f5-rig", { cwd: SNAPSHOT_CWD, live: { cwd: liveCwd } });
     const claude = mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
 
     const result = await createOrchestrator({ claude }).restore(snap.id);
@@ -2724,7 +2730,7 @@ describe("RestoreOrchestrator", () => {
     if (!result.ok) return;
     const node = result.result.nodes[0]!;
     expect(node.status).toBe("awaiting-decision");
-    expect(node.error?.includes("/live/elsewhere") && node.error.includes("/snapshot/cwd")).toBe(mentioned);
+    expect(node.error?.includes(LIVE_CWD) && node.error.includes(SNAPSHOT_CWD)).toBe(mentioned);
     expect(node.error?.includes("belongs to the directory it was made in")).toBe(mentioned);
   });
 
