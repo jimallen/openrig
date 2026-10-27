@@ -172,6 +172,154 @@ describe("copied profiles never carry a seat identity (OF-43)", () => {
     const asides = (await fs.readdir(first.path)).filter((f) => f.startsWith("rig-yolo.config.toml.refused-openrig-identity"));
     expect(asides).toHaveLength(2);
   });
+  describe("a concurrent launch of the same seat (OF-115)", () => {
+    // Two launches of one seat on a dirty profile both see it, and both move it aside. The loser finds the copy gone
+    // (ENOENT). That used to throw out of ensureCodexSeatHome, and the launcher then fell back to the SHARED
+    // CODEX_HOME: the foreign-identity hazard OF-43 exists to close. The race is made deterministic by removing the
+    // copy at the exact step the other launch would have.
+    const seatCopy = async () => {
+      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      await fs.writeFile(path.join(first.path, "rig-yolo.config.toml"), DIRTY);
+      return first.path;
+    };
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it("the copy is gone when the move-aside claims its new name: the launch carries on and copies the clean source", async () => {
+      const home = await seatCopy();
+      const realLink = fs.link.bind(fs);
+      vi.spyOn(fs, "link").mockImplementationOnce(async (existingPath, newPath) => {
+        await fs.unlink(existingPath);
+        return realLink(existingPath, newPath);
+      });
+      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
+      expect(await fs.readFile(path.join(home, "rig-yolo.config.toml"), "utf8")).not.toContain("OPENRIG_");
+    });
+
+    it("the copy is gone when the move-aside removes the original name: the launch carries on", async () => {
+      const home = await seatCopy();
+      const realUnlink = fs.unlink.bind(fs);
+      const copy = path.join(home, "rig-yolo.config.toml");
+      vi.spyOn(fs, "unlink").mockImplementationOnce(async (target) => {
+        await realUnlink(target);
+        return realUnlink(target); // the other launch's removal came first: this one is ENOENT
+      });
+      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
+      expect(await fs.readFile(copy, "utf8")).not.toContain("OPENRIG_");
+      // the other launch's aside copy is intact
+      expect((await fs.readdir(home)).filter((f) => f.includes(".refused-openrig-identity-"))).toHaveLength(1);
+    });
+
+    it("an error that is not 'already gone' still fails the launch loudly (the launcher reports it)", async () => {
+      await seatCopy();
+      vi.spyOn(fs, "link").mockRejectedValueOnce(Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }));
+      await expect(ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} })).rejects.toThrow(/EACCES/);
+    });
+
+    it("four launches at once on a dirty profile all finish and leave a clean profile", async () => {
+      const home = await seatCopy();
+      const results = await Promise.all([1, 2, 3, 4].map(() => ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} })));
+      expect(results).toHaveLength(4);
+      expect(await fs.readFile(path.join(home, "rig-yolo.config.toml"), "utf8")).not.toContain("OPENRIG_");
+      const asides = (await fs.readdir(home)).filter((f) => f.includes(".refused-openrig-identity-"));
+      // The seat's edit is kept at least once. A launch that loses the race can move the clean copy another launch
+      // just wrote (harmless, and why an aside may hold the clean text), but never a dirty copy out of existence.
+      const bodies = await Promise.all(asides.map((f) => fs.readFile(path.join(home, f), "utf8")));
+      expect(bodies).toContain(DIRTY);
+      for (const body of bodies) expect([DIRTY, 'approval_policy = "never"\n']).toContain(body);
+    });
+  });
+
+  describe("a seat profile that is a symlink (OF-115)", () => {
+    it("a link to a file that carries an identity is moved aside as the link; the file it pointed at is not touched", async () => {
+      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const elsewhere = path.join(tmp, "operator-profile.toml");
+      await fs.writeFile(elsewhere, DIRTY);
+      const copy = path.join(first.path, "rig-yolo.config.toml");
+      await fs.rm(copy);
+      await fs.symlink(elsewhere, copy);
+      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(again.refusedProfiles).toEqual(["rig-yolo.config.toml"]);
+      // the seat now has a regular, clean file under the profile's name
+      expect((await fs.lstat(copy)).isFile()).toBe(true);
+      expect(await fs.readFile(copy, "utf8")).not.toContain("OPENRIG_");
+      // the link itself was kept, under the aside name, still pointing at the operator's file
+      const asides = (await fs.readdir(first.path)).filter((f) => f.includes(".refused-openrig-identity-"));
+      expect(asides).toHaveLength(1);
+      const aside = path.join(first.path, asides[0]!);
+      expect((await fs.lstat(aside)).isSymbolicLink()).toBe(true);
+      expect(await fs.readlink(aside)).toBe(elsewhere);
+      expect(await fs.readFile(elsewhere, "utf8")).toBe(DIRTY);
+    });
+
+    it("control: a link to a clean file is left as it is", async () => {
+      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const elsewhere = path.join(tmp, "operator-clean.toml");
+      await fs.writeFile(elsewhere, 'approval_policy = "never"\n');
+      const copy = path.join(first.path, "rig-yolo.config.toml");
+      await fs.rm(copy);
+      await fs.symlink(elsewhere, copy);
+      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(again.refusedProfiles).toEqual([]);
+      expect((await fs.lstat(copy)).isSymbolicLink()).toBe(true);
+    });
+
+    it("control: a dangling link is left as it is (nothing to read, nothing to move)", async () => {
+      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      const copy = path.join(first.path, "rig-yolo.config.toml");
+      await fs.rm(copy);
+      await fs.symlink(path.join(tmp, "nowhere.toml"), copy);
+      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(again.refusedProfiles).toEqual([]);
+      expect((await fs.lstat(copy)).isSymbolicLink()).toBe(true);
+    });
+  });
+
+  describe("what is withheld is told to the operator (OF-115)", () => {
+    it("a withheld shared profile is in `warnings`, by name and variable, never by value", async () => {
+      await fs.writeFile(path.join(shared, "rig-yolo.config.toml"), DIRTY);
+      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(home.warnings).toHaveLength(1);
+      expect(home.warnings[0]).toContain("rig-yolo.config.toml");
+      expect(home.warnings[0]).toContain("OPENRIG_SESSION_NAME");
+      expect(home.warnings[0]).not.toContain("verify-ops");
+    });
+
+    it("a moved-aside seat copy is in `warnings`", async () => {
+      const first = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      await fs.writeFile(path.join(first.path, "rig-yolo.config.toml"), DIRTY);
+      const again = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(again.warnings).toHaveLength(1);
+      expect(again.warnings[0]).toContain("moved profile rig-yolo.config.toml aside");
+    });
+
+    it("control: a clean launch has no warnings", async () => {
+      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(home.warnings).toEqual([]);
+    });
+
+    it("a shared config.toml that sets an identity variable is reported (every seat reads it), not withheld", async () => {
+      await fs.writeFile(path.join(shared, "config.toml"), '[shell_environment_policy.set]\nOPENRIG_NODE_ID = "n-other"\nRIGGED_SESSION_NAME = "s-other"\n');
+      const logs: string[] = [];
+      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: (m) => logs.push(m) });
+      expect(home.warnings).toHaveLength(1);
+      expect(home.warnings[0]).toContain("config.toml");
+      expect(home.warnings[0]).toContain("OPENRIG_NODE_ID, RIGGED_SESSION_NAME");
+      expect(home.warnings[0]).not.toContain("n-other");
+      expect(home.warnings[0]).not.toContain("s-other");
+      expect(logs.join("\n")).toContain("OPENRIG_NODE_ID");
+      // still linked: it carries the trust and settings every seat needs
+      expect((await fs.lstat(path.join(home.path, "config.toml"))).isSymbolicLink()).toBe(true);
+    });
+
+    it("control: a shared config.toml with no identity variable adds no warning", async () => {
+      await fs.writeFile(path.join(shared, "config.toml"), '[projects."/x"]\ntrust_level = "trusted"\n# OPENRIG_SESSION_NAME is injected\n');
+      const home = await ensureCodexSeatHome("a-b@r", { openrigHome, sharedCodexHome: shared, log: () => {} });
+      expect(home.warnings).toEqual([]);
+    });
+  });
+
   // The cli, hooks and daemon fall back to these when the OPENRIG_ name is empty, and a profile's
   // shell_environment_policy can empty it (OF-43 trial copy: a session name set, the node id stripped).
   it.each([

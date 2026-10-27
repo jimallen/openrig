@@ -52,8 +52,13 @@ export function validateSessionName(name: string): boolean {
  * the set (a space, `;`, a quote, a newline) is refused rather than recorded.
  */
 export function validateClaimedSessionName(name: string): boolean {
-  return typeof name === "string" && ALLOWED_CHARS_PATTERN.test(name);
+  return typeof name === "string" && name.length <= MAX_CLAIMED_SESSION_NAME_LENGTH && ALLOWED_CHARS_PATTERN.test(name);
 }
+
+/** OF-108: a claimed name is at most this long. The longest name on a live host is 38 characters; the bound keeps a
+ *  typed line built from the name (the resume probe types it twice-quoted beside a token) inside a pane's input limit
+ *  and keeps the registry's refusal message short. */
+export const MAX_CLAIMED_SESSION_NAME_LENGTH = 200;
 
 /**
  * Validate characters in a session name component.

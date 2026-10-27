@@ -59,10 +59,10 @@ describe("SuccessorSessionLauncher", () => {
     return { runtime, launchHarness, checkReady } as unknown as RuntimeAdapter;
   }
 
-  function launcher(tmuxOptionDefaults?: TmuxOptionDefaultsApplier): SuccessorSessionLauncher {
+  function launcher(tmuxOptionDefaults?: TmuxOptionDefaultsApplier, sharedCodexHome = "/daemon-codex"): SuccessorSessionLauncher {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
     return new SuccessorSessionLauncher(tmux, discoveryRepo, {
-      sessionEnv: { OPENRIG_HOME: seatHomes, HOME: "/daemon-home", CODEX_HOME: "/daemon-codex" },
+      sessionEnv: { OPENRIG_HOME: seatHomes, HOME: "/daemon-home", CODEX_HOME: sharedCodexHome },
       newId: () => "01ABCDEFG",
       runtimeAdapters: { codex: fakeAdapter("codex") },
       readinessTimeoutMs: 50,
@@ -86,6 +86,48 @@ describe("SuccessorSessionLauncher", () => {
     expect(launchHarness).toHaveBeenCalledTimes(1);
     const binding = launchHarness.mock.calls[0]![0] as { model?: string };
     expect(binding.model).toBe("gpt-5.4-cheap");
+  });
+
+  // OF-115: a profile withheld for carrying a seat identity, and a per-seat home that could not be made, are told in the
+  // handover result, as a fresh launch tells them. (Before, the first was a console line and the second was silent.)
+  it("tells the handover result which codex profile was withheld, by name and variable, never by value", async () => {
+    const shared = fs.mkdtempSync(path.join(os.tmpdir(), "ssl-shared-codex-"));
+    try {
+      fs.writeFileSync(path.join(shared, "of115.config.toml"), '[shell_environment_policy.set]\nOPENRIG_SESSION_NAME = "other-seat-value@rig"\n');
+      const res = await launcher(undefined, shared).createSuccessor({
+        node: { id: "node-1", runtime: "codex", cwd: "/w" },
+        departingSessionName: "dev-impl@rig",
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) throw new Error("expected ok");
+      const told = (res.warnings ?? []).filter((w) => w.includes("of115.config.toml"));
+      expect(told).toHaveLength(1);
+      expect(told[0]).toContain("OPENRIG_SESSION_NAME");
+      expect(told[0]).not.toContain("other-seat-value");
+    } finally {
+      fs.rmSync(shared, { recursive: true, force: true });
+    }
+  });
+
+  it("tells the handover result when the per-seat codex home could not be made, and still hands over", async () => {
+    fs.writeFileSync(path.join(seatHomes, "codex-seats"), "not a directory");
+    const res = await launcher().createSuccessor({
+      node: { id: "node-1", runtime: "codex", cwd: "/w" },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect((res.warnings ?? []).filter((w) => w.includes("codex per-seat CODEX_HOME seeding failed"))).toHaveLength(1);
+  });
+
+  it("a healthy codex handover carries no seat-home warning", async () => {
+    const res = await launcher().createSuccessor({
+      node: { id: "node-1", runtime: "codex", cwd: "/w" },
+      departingSessionName: "dev-impl@rig",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.warnings).toBeUndefined();
   });
 
   it("the successor carries the resolved kernel operational default", async () => {

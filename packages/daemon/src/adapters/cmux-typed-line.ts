@@ -1,12 +1,14 @@
 // OF-67 — lines the daemon types into a cmux terminal surface.
 //
 // A cmux surface is an interactive shell, so a typed line meets the same line-editor widgets a tmux pane does
-// (autopair rewrites quotes and brackets), and a line that carries a newline or `;` runs as more than one command.
-// A line is typed as it stands only when it is one line of widget-safe characters (isTypedLineWidgetSafe); any other
-// line is written to a private script the shell removes as it starts, and only `/bin/sh <script>` is typed.
+// (autopair rewrites quotes and brackets). A line is typed as it stands only when it is one line (no LF or CR) of
+// no more than MAX_TYPED_BYTES that holds none of ()[]{}"'` (isTypedLineWidgetSafe); any other line is written to a private script
+// the shell removes as it starts, and only `/bin/sh <script>` is typed.
 //
-// Staging controls how the line reaches the shell. It does not make a name inside the line inert: callers quote every
-// name they interpolate (shellWord), because a script runs its text just as a typed line does.
+// Staging is the control for widgets, line breaks and length, nothing else. A line with a `;`, `&`, `|`, `$`, `<`,
+// `>` or `\` is typed raw when it is otherwise widget-safe, and a staged script runs all of its text just as a
+// typed line does. What keeps a name inert is the caller: every name is interpolated
+// through shellWord (or the view composer's shellQuote), so a name is one word whatever it holds.
 
 import { defaultTmuxFileOps, isTypedLineWidgetSafe, type TmuxFileOps } from "./tmux.js";
 import { shellWord } from "./tmux-server.js";

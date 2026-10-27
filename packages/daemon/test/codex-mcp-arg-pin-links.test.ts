@@ -64,6 +64,30 @@ describe("pinned MCP argument files must have exactly one link (OF-55)", () => {
     expect(r.ok).toBe(false);
     expect(!r.ok && r.error).toContain("2 hard links");
   });
+  // OF-115: the two rows above that change uid or mode change it for the file AND every directory above it, so a rule that
+  // judged only the directories would pass them. These change the FILE alone (its directories stay root-owned and sealed).
+  it("refuses a multi-link file that is not root-owned even when every directory above it is root-owned and sealed", () => {
+    const f = file(2);
+    const base = asRoot();
+    const io: PathJudgeIo = { ...base, stat: (p) => { const st = base.stat(p); return p === f ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: 501 }) : st; } };
+    const r = mcpArgFilePins(["--config", f], { seatCwd: null, io });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain("2 hard links");
+  });
+  it("refuses a root-owned multi-link file that group or other can write even when every directory above it is sealed", () => {
+    const f = file(2);
+    const base = asRoot();
+    const io: PathJudgeIo = { ...base, stat: (p) => { const st = base.stat(p); return p === f ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { mode: (st.mode & ~0o7777) | 0o666 }) : st; } };
+    const r = mcpArgFilePins(["--config", f], { seatCwd: null, io });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain("2 hard links");
+  });
+  it("control: the same file, left root-owned and sealed, is allowed (the rows above fail because of the file alone)", () => {
+    const f = file(2);
+    const base = asRoot();
+    const io: PathJudgeIo = { ...base, stat: (p) => base.stat(p) };
+    expect(mcpArgFilePins(["--config", f], { seatCwd: null, io }).ok).toBe(true);
+  });
   it("a link made AFTER the pin is caught by the launch re-check", () => {
     const f = file();
     const first = mcpArgFilePins(["--config", f]);

@@ -675,6 +675,41 @@ describe("NodeLauncher", () => {
       expect(result.warnings?.some((w) => w.includes(SHIM_MARKER))).toBe(false);
     });
 
+    // OF-115: a profile withheld for carrying a seat identity, and a shared config.toml that sets one, used to be
+    // logged on the daemon console only. The launch result now says it, with names and never values.
+    it("a profile withheld for carrying a seat identity is reported in the launch result, never its value", async () => {
+      const shared = process.env["CODEX_HOME_DEFAULT"]!;
+      const profile = path.join(shared, "of115.config.toml");
+      await fs.writeFile(profile, 'approval_policy = "never"\n[shell_environment_policy.set]\nOPENRIG_SESSION_NAME = "other-seat-value@rig"\n');
+      try {
+        const result = await launchWith("codex", await homeWithBlockedDirs({}));
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("expected ok");
+        const told = (result.warnings ?? []).filter((w) => w.includes("of115.config.toml"));
+        expect(told).toHaveLength(1);
+        expect(told[0]).toContain("OPENRIG_SESSION_NAME");
+        expect(told[0]).not.toContain("other-seat-value");
+      } finally {
+        await fs.rm(profile, { force: true });
+      }
+    });
+
+    it("a shared config.toml that sets a seat identity is reported in the launch result", async () => {
+      const config = path.join(process.env["CODEX_HOME_DEFAULT"]!, "config.toml");
+      await fs.writeFile(config, '[shell_environment_policy.set]\nOPENRIG_NODE_ID = "other-node-value"\n');
+      try {
+        const result = await launchWith("codex", await homeWithBlockedDirs({}));
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("expected ok");
+        const told = (result.warnings ?? []).filter((w) => w.includes("config.toml"));
+        expect(told).toHaveLength(1);
+        expect(told[0]).toContain("OPENRIG_NODE_ID");
+        expect(told[0]).not.toContain("other-node-value");
+      } finally {
+        await fs.rm(config, { force: true });
+      }
+    });
+
     it("a healthy launch carries neither warning", async () => {
       const result = await launchWith("codex", await homeWithBlockedDirs({}));
       expect(result.ok).toBe(true);

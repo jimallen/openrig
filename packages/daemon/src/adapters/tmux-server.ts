@@ -52,8 +52,15 @@ export function daemonTmuxServerArgs(): readonly string[] {
   return daemonServerArgs;
 }
 
+/**
+ * A shell word for a typed or scripted line: the value as it stands when it is plain, otherwise single-quoted.
+ * A value that starts with `=` is always quoted: zsh rewrites an unquoted `=name` to the path of `name` (EQUALS
+ * expansion), so the word that reaches the command would not be the value. A value that starts with `-` is left
+ * as it is, because quoting does not change how a command parses it: where a name follows a command that reads
+ * options, the caller puts `--` before it (see NodeCmuxService's helper console).
+ */
 export function shellWord(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : "'" + value.replace(/'/g, "'\"'\"'") + "'";
+  return /^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$/.test(value) ? value : "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
 
 /** `tmux attach -t <session>`, with the daemon's server flags when it isn't on the default server. */

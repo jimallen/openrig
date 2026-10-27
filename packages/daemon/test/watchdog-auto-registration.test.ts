@@ -175,6 +175,20 @@ describe("W2c watchdog auto-registration — production composition", () => {
     }
   }, 30_000);
 
+  // OF-114: a claimed session can no longer be registered with a name outside the session-name character set (OF-75),
+  // so the exclusion row above reaches the "no @" exclusion only. This row keeps the character branch pinned on its own:
+  // each name parses as canonical (member@rig), so only the character check can exclude it.
+  it("a name with a character outside the session-name set is excluded though it parses as canonical", async () => {
+    const { WatchdogAutoRegistration } = await import("../src/domain/watchdog-auto-registration.js");
+    const { parseSessionName } = await import("../src/domain/session-name.js");
+    const unit = new WatchdogAutoRegistration({} as never);
+    expect(unit.isEligibleSessionName("dev-qa@exclusion-rig")).toBe(true); // control: the same shape with plain characters
+    for (const name of ["bad:seat@exclusion-rig", "bad seat@exclusion-rig", "bad;seat@exclusion-rig", "dev-qa@exclusion rig"]) {
+      expect(parseSessionName(name).kind, name).toBe("canonical");
+      expect(unit.isEligibleSessionName(name), name).toBe(false);
+    }
+  });
+
   it("coverage refuses a formerly valid row after its persisted state mutates outside the closed set", async () => {
     const { db, deps, eventLoopMonitor } = await createDaemon({
       dbPath: ":memory:",

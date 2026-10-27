@@ -111,15 +111,18 @@ export class NodeCmuxService {
     // newline, `;` or `$(...)` is text here, never a command. The last line is a usage hint: it is printed,
     // not left half-typed for the person to finish, because a staged script cannot leave a line unexecuted.
     const quotedName = shellWord(sessionName);
+    // A name that starts with `-` (legal) is read by `rig` as an option, and quoting it would not change that. `--`
+    // ends option parsing, and every option after it would be an argument, so the options go before it.
+    const dashed = sessionName.startsWith("-");
     const helperText = [
       `printf '%s\\n' ${[
         `# Helper console for ${sessionName}`,
         `# This node is externally attached — no direct terminal session available.`,
         `# Useful commands:`,
       ].map(shellWord).join(" ")}`,
-      `rig capture ${quotedName}`,
-      `rig transcript ${quotedName} --tail 100`,
-      `printf '%s\\n' ${shellWord(`rig send ${quotedName} "..." --verify`)}`,
+      dashed ? `rig capture -- ${quotedName}` : `rig capture ${quotedName}`,
+      dashed ? `rig transcript --tail 100 -- ${quotedName}` : `rig transcript ${quotedName} --tail 100`,
+      `printf '%s\\n' ${shellWord(dashed ? `rig send --verify -- ${quotedName} "..."` : `rig send ${quotedName} "..." --verify`)}`,
     ].join("\n");
     const helper = await stageCmuxLine(helperText, this.fileOps);
     if (!helper.ok) return { ok: false, error: helper.message, code: "stage_failed" };
