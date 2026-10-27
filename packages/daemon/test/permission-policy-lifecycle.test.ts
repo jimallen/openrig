@@ -36,7 +36,6 @@ import { claudePostureFlag, codexPostureArg, piTrust } from "../src/adapters/yol
 import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
-import { existingRigRoot } from "./helpers/existing-rig-root.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const SEAT_DIR = existingRigRoot("seat");
 
