@@ -791,6 +791,10 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
 
       const recovery = disposition;
       const recoveryRow = recovery ? readRow(recovery.qitemId) : null;
+      // OF-117 (review F2b): a recovery that exists but cannot be read is NOT an absent recovery. Its tags (the prompt-alert
+      // tag, the escalation tag) decide whether the original may be retried or exhausted, so the ladder acts on neither: the
+      // row is named (readRow logged it) and this baton waits for the row to be repaired.
+      if (recovery && !recoveryRow) continue;
       // The open prompt recovery owns continuation before the retry cap too.
       // Do not retry the blocked original, duplicate its aggregate, or exhaust
       // the original (which would retire that aggregate).

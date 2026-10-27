@@ -298,6 +298,61 @@ describe("queue items: one damaged saved column names its row; the rows beside i
         expect(result.findings).toContainEqual(expect.objectContaining({ qitemId: stuck.qitemId, findingQitemId: recovery.qitemId, action: "refreshed" }));
       });
 
+      // Same class as review F2b: a row the sweep could not read is not a row that stopped being stuck.
+      it("an open finding about a row that has become unreadable stays open (it is not closed as 'no longer detected')", async () => {
+        const stuck = await overdue();
+        const first = await sweep();
+        const findingId = (first.result.findings.find((f) => f.qitemId === stuck.qitemId))!.findingQitemId;
+        expect(db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(findingId)).toEqual({ state: "pending" });
+        damage(stuck.qitemId, "tags", NOT_JSON);
+        const second = await sweep();
+        expect(second.lines).toContain(skipped(stuck.qitemId));
+        expect(second.result.findings.filter((f) => f.action === "closed")).toEqual([]);
+        expect(db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(findingId)).toEqual({ state: "pending" });
+        // Control: once repaired and no longer overdue, the same finding IS closed (the close path still works).
+        damage(stuck.qitemId, "tags", null);
+        db.prepare("UPDATE queue_items SET state = 'done', closure_reason = 'no-follow-on' WHERE qitem_id = ?").run(stuck.qitemId);
+        const third = await sweep();
+        expect(third.result.findings).toContainEqual(expect.objectContaining({ qitemId: stuck.qitemId, action: "closed" }));
+      });
+
+      it("the same for an undelivered-wake finding (the undelivered listing is the only reader of that row)", async () => {
+        const stuck = await item("undelivered");
+        repo.recordNudgeAttempt(stuck.qitemId, "failed:fixture");
+        const first = await sweep();
+        const found = first.result.findings.find((f) => f.qitemId === stuck.qitemId);
+        expect(found?.kind).toBe("undelivered-wake");
+        damage(stuck.qitemId, "tags", NOT_JSON);
+        const second = await sweep();
+        expect(second.lines).toContain(skipped(stuck.qitemId));
+        expect(second.result.findings.filter((f) => f.action === "closed")).toEqual([]);
+        expect(db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(found!.findingQitemId)).toEqual({ state: "pending" });
+      });
+
+      it("the same for an unclaimed-obligation finding (the by-id unclaimed loop is the only reader of that row)", async () => {
+        const stuck = await item("unclaimed");
+        db.prepare("UPDATE queue_items SET ts_created = '2000-01-01T00:00:00.000Z' WHERE qitem_id = ?").run(stuck.qitemId);
+        const first = await sweep();
+        const found = first.result.findings.find((f) => f.qitemId === stuck.qitemId);
+        expect(found?.kind).toBe("unclaimed-obligation");
+        damage(stuck.qitemId, "tags", NOT_JSON);
+        const second = await sweep();
+        expect(second.lines).toContain(skipped(stuck.qitemId));
+        expect(second.result.findings.filter((f) => f.action === "closed")).toEqual([]);
+        expect(db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(found!.findingQitemId)).toEqual({ state: "pending" });
+      });
+
+      it("a finding row whose tags are valid JSON of the wrong shape is skipped by name; it does not end the tick", async () => {
+        const good = await overdue();
+        const odd = await item("odd finding");
+        damage(odd.qitemId, "tags", JSON.stringify({ kind: "stuck-sweep-finding", dedup: "stuck-sweep:overdue-claim:qitem-x" }));
+        const { lines, result } = await sweep();
+        expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
+        expect(lines).toContain(`[stuck-sweep] ${odd.qitemId} skipped: its saved tags is not a readable list (repair or remove the row)`);
+        expect(JSON.stringify(result)).toContain(good.qitemId);
+        expect(db.prepare("SELECT state FROM queue_items WHERE qitem_id = ?").get(odd.qitemId)).toEqual({ state: "pending" });
+      });
+
       it("wait-notice loop: a blocked row bound to an overdue wait timer with damaged tags", async () => {
         const good = await overdue();
         const bad = await item("blocked");

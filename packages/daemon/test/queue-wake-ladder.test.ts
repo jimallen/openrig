@@ -774,16 +774,75 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
       expect(repo.getById(aggregate.qitemId)!.state).toBe("pending");
     });
 
-    it("recovery lookup: an open recovery row of a baton whose tags are the wrong shape is skipped by name; the baton is still retried", async () => {
-      const baton = await mkBaton();
-      setNudgeResult(baton.qitemId, "failed:tmux session not found", 10);
-      const recovery = await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "recovery", nudge: false });
-      // Valid JSON, wrong shape: the SQL link scan still finds the row, the reader cannot read it.
-      db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(JSON.stringify({ link: `recovery-for:${baton.qitemId}` }), recovery.qitemId);
-      const { lines, result } = await tickLogged();
-      expect(result.error).toBeUndefined();
-      expect(calls).toEqual([{ qitemId: baton.qitemId, target: "worker@r" }]);
-      expect(lines).toContain(skippedLine(recovery.qitemId));
+    // Review F2b: a recovery row that exists but cannot be read is NOT an absent recovery. An open prompt-refusal recovery owns
+    // the continuation ("do not retry the blocked original"); reading it as absent retried the original, and past the cap
+    // wrote an exhausted marker on it. The baton waits, named, until the row is repaired.
+    describe("an open prompt-refusal recovery that cannot be read holds the original: no wake, no exhausted marker", () => {
+      const ALERT = "wake-prompt-refusal"; // restated, not imported
+      async function baton() {
+        const b = await mkBaton();
+        setNudgeResult(b.qitemId, "failed:tmux session not found", 10);
+        return b;
+      }
+      async function recoveryFor(b: QueueItem) {
+        return repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "prompt recovery", nudge: false, tags: [ALERT, `recovery-for:${b.qitemId}`] });
+      }
+      const pastCap = (b: QueueItem) => {
+        for (let n = 1; n <= 3; n++) repo.transitionLog.append({ qitemId: b.qitemId, state: "pending", actorSession: "wake-ladder@system", transitionNote: `${LADDER_ATTEMPT_PREFIX} ${n}/3 outcome=failed:fixture` });
+      };
+
+      it("control: a readable recovery holds the original (zero wakes)", async () => {
+        const b = await baton();
+        await recoveryFor(b);
+        const { result } = await tickLogged();
+        expect(result.error).toBeUndefined();
+        expect(calls).toEqual([]);
+      });
+
+      it.each([
+        ["chain_of_record", "chain_of_record", NOT_JSON],
+        ["human_questions", "human_questions", NOT_JSON],
+        ["human_answers", "human_answers", NOT_JSON],
+        ["tags of the wrong shape", "tags", JSON.stringify({ a: ALERT, b: "recovery-for:X" })],
+      ])("under the retry cap, %s damaged: the original is not retried and the row is named", async (_name, column, text) => {
+        const b = await baton();
+        const recovery = await recoveryFor(b);
+        const stored = column === "tags" ? text.replace("recovery-for:X", `recovery-for:${b.qitemId}`) : text;
+        db.prepare(`UPDATE queue_items SET ${column} = ? WHERE qitem_id = ?`).run(stored, recovery.qitemId);
+        const { lines, result } = await tickLogged();
+        expect(result.error).toBeUndefined();
+        expect(calls).toEqual([]);
+        expect(markersOf(b.qitemId, LADDER_ATTEMPT_PREFIX)).toEqual([]);
+        expect(lines.some((l) => l.startsWith(`[wake-ladder] ${recovery.qitemId} skipped: its saved ${column} is not readable JSON`))).toBe(true);
+      });
+
+      it("past the retry cap, chain_of_record damaged: no exhausted marker is written on the original", async () => {
+        const b = await baton();
+        pastCap(b);
+        const recovery = await recoveryFor(b);
+        db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(NOT_JSON, recovery.qitemId);
+        await tickLogged();
+        expect(markersOf(b.qitemId, LADDER_EXHAUSTED_PREFIX)).toEqual([]);
+        expect(calls).toEqual([]);
+      });
+
+      it("control: past the cap with a readable NON-escalation recovery, the original IS marked exhausted (the marker is what the damaged case must not write)", async () => {
+        const b = await baton();
+        pastCap(b);
+        await repo.create({ sourceSession: "sender@r", destinationSession: "orch@r", body: "other recovery", nudge: false, tags: ["some-other-recovery", `recovery-for:${b.qitemId}`] });
+        await tickLogged();
+        expect(markersOf(b.qitemId, LADDER_EXHAUSTED_PREFIX)).toHaveLength(1);
+      });
+
+      it("once the row is repaired the ladder decides again", async () => {
+        const b = await baton();
+        const recovery = await recoveryFor(b);
+        db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(NOT_JSON, recovery.qitemId);
+        await tickLogged();
+        db.prepare("UPDATE queue_items SET chain_of_record = NULL WHERE qitem_id = ?").run(recovery.qitemId);
+        await tickLogged();
+        expect(calls).toEqual([]); // the readable prompt recovery holds it, as in the control
+      });
     });
   });
 

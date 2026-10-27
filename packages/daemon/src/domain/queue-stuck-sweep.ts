@@ -371,8 +371,12 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     // routes to them.
     // OF-117: a row whose saved JSON columns are damaged is named and left out of THIS sweep (its tags, chain and questions
     // are what the routing and the finding rest on); it does not end the sweep for the rows beside it.
+    // An unreadable row is also remembered: a row the sweep could not read is not a row that stopped being stuck, so its open
+    // finding is left open below instead of being closed as "no longer detected".
+    const unreadableIds = new Set<string>();
     const skipUnreadable = (row: { qitemId: string; unreadable?: string[] }): boolean => {
       if (!row.unreadable) return false;
+      unreadableIds.add(row.qitemId);
       log(`[stuck-sweep] ${row.qitemId} skipped: its saved ${row.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
       return true;
     };
@@ -383,6 +387,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         return deps.queueRepo.getById(qitemId);
       } catch (err) {
         if (!isUnreadableRowError(err)) throw err;
+        unreadableIds.add(qitemId);
         log(`[stuck-sweep] ${qitemId} skipped: its saved ${err.columns.join(", ")} is not readable JSON (repair or remove the row)`);
         return existsIfUnreadable ? ({ qitemId } as never) : null;
       }
@@ -661,9 +666,15 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       } catch {
         continue;
       }
-      const dedupTag = tags.find((t) => t.startsWith("stuck-sweep:"));
+      // A finding row whose tags are valid JSON of the wrong shape cannot be read either: leave it, do not end the tick on it.
+      if (!Array.isArray(tags)) {
+        log(`[stuck-sweep] ${f.qitem_id} skipped: its saved tags is not a readable list (repair or remove the row)`);
+        continue;
+      }
+      const dedupTag = tags.find((t) => typeof t === "string" && t.startsWith("stuck-sweep:"));
       if (!dedupTag || liveDedupTags.has(dedupTag)) continue;
       const [, kind, stuckId] = dedupTag.match(/^stuck-sweep:([a-z-]+):(.+)$/) ?? [];
+      if (stuckId && unreadableIds.has(stuckId)) continue; // not detected because unreadable: the finding stays open
       await deps.queueRepo.update({
         qitemId: f.qitem_id,
         actorSession: f.source_session,
