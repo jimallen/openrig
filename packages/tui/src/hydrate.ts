@@ -1,3 +1,4 @@
+import { damagedColumns } from "./damaged.js";
 import { composeHumanUpdates, type DeliveredHumanUpdates } from "./attention/attention-model.js";
 import { readTerminals } from "./terminals/terminal-model.js";
 import { fileTargetForPath } from "./reading.js";
@@ -182,6 +183,7 @@ interface QueueItemRead {
   handedOffTo: string | null;
   tier: string | null;
   tags: string[] | null;
+  unreadable?: unknown;
   summary: string | null;
   body?: string;
   claimedAt: string | null;
@@ -198,6 +200,7 @@ function toQueueRead(item: QueueItemRead): QueueRead {
     handedOffTo: item.handedOffTo,
     tier: item.tier,
     tags: item.tags,
+    ...(damagedColumns(item).length > 0 ? { unreadable: item.unreadable } : {}),
     summary: item.summary,
     body: item.body ?? "",
     claimedAt: item.claimedAt,

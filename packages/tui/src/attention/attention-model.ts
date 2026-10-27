@@ -1,11 +1,12 @@
 import type { AttentionRead, AttentionItem } from "@openrig/daemon/attention";
 import type { FleetSnapshot, ViewState } from "../types.js";
+import { damagedColumns, damagedPhrase } from "../damaged.js";
 import { listItem, wrapDetailLines, type ContentLine } from "../detail.js";
 
 /** The bounded, confirmed-delivery projection served by S02; no client classification. */
 export interface DeliveredHumanUpdates {
   items: Array<{ qitemId: string; summary: string | null; body: string; humanDetail: string | null;
-    destinationSession: string; sourceSession: string; tags: string[] | null; evidenceRef: string | null;
+    destinationSession: string; sourceSession: string; tags: string[] | null; unreadable?: unknown; evidenceRef: string | null;
     deliveredAt: string; deliveryReceipt: string }>;
   limit: number;
   truncated: boolean;
@@ -21,14 +22,15 @@ export function composeHumanUpdates(attention: AttentionRead | null, updates: De
     detail: updates ? `Latest ${updates.limit} confirmed delivered updates; retained receipt window${updates.truncated ? ", more omitted" : ""}.` : "Delivered updates have not answered." });
   for (const q of updates?.items ?? []) {
     const projects = [...new Set((q.tags ?? []).filter(t => t.startsWith("project:")).map(t => t.slice(8)))];
-    const item: AttentionItem = { id: `human-update:${q.qitemId}`, kind: "update", summary: q.summary || q.body.trim().split(/\r?\n/).find(Boolean) || "Delivered update",
+    const damaged = damagedColumns(q);
+    const item: AttentionItem = { id: `human-update:${q.qitemId}`, kind: "update", summary: `${damaged.length > 0 ? `[${damagedPhrase(q)}] ` : ""}${q.summary || q.body.trim().split(/\r?\n/).find(Boolean) || "Delivered update"}`,
       recipient: q.destinationSession, urgency: "update", unblocks: null, at: q.deliveredAt,
-      scope: projects.length === 1 ? `project ${projects[0]} (queue tag)` : "instance · project unknown", project: null,
+      scope: projects.length === 1 ? `project ${projects[0]} (queue tag)` : damaged.length > 0 ? `project unknown (saved ${damaged.join(", ")} unreadable)` : "instance · project unknown", project: null,
       source: `/api/queue/${encodeURIComponent(q.qitemId)}` };
     read.items.push(item);
     if (wanted === item.id) {
       read.detailError = null;
-      read.detail = { item, lines: [q.body, ...(q.humanDetail ? ["Supplemental detail:", q.humanDetail] : []),
+      read.detail = { item, lines: [...(damaged.length > 0 ? [`${damagedPhrase(q)}. What is blank here is unknown, not empty; repair or remove the row.`] : []), q.body, ...(q.humanDetail ? ["Supplemental detail:", q.humanDetail] : []),
         `From: ${q.sourceSession}`, `Delivered: ${q.deliveredAt}`, `Delivery receipt: ${q.deliveryReceipt}`, `Queue: ${q.qitemId}`, `Evidence: ${q.evidenceRef ?? "none recorded"}`],
         files: q.evidenceRef?.startsWith("/") ? [{ label: "Update evidence", path: q.evidenceRef }] : [] };
     }

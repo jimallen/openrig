@@ -5,6 +5,7 @@ import { isHumanSeatSessionRef } from "@openrig/daemon/attention";
 // a STATIC demo fixture reproducing the approved mock's EXACT rows; increments
 // 2-3 build it from SHIPPED daemon reads (no new surface).
 import type { Token } from "../theme.js";
+import { damagedPhrase } from "../damaged.js";
 import type { Action, FleetSnapshot, QueueRead, SeatActivitySummary } from "../types.js";
 import { findAgentBySession } from "../state.js";
 
@@ -165,6 +166,17 @@ function bodyHead(body: string): string {
  * SUBJECT leads in bold, the detail plain after. */
 const NEEDS_SUBJECT_SEP = " — ";
 
+/** OF-146: a queue row whose saved columns the daemon could not read (OF-117) carries `unreadable`; its blank tags are
+ * unknown, not empty. Exception rows end with the marker (they have the width); lane rows lead with it (their cells are
+ * cut at the right, so a trailing marker would be the first thing lost). Both are "" for a readable row. */
+function damageSuffix(q: QueueRead): string {
+  const phrase = damagedPhrase(q);
+  return phrase ? ` · ${phrase}` : "";
+}
+function damagePrefix(q: QueueRead): string {
+  return damagedPhrase(q) ? "DAMAGED " : "";
+}
+
 /** ▲ NEEDS YOU rows — the attention read IS the human-facing set (daemon-filtered);
  * subject from summary, fallback body head; age from claimedAt (fallback tsUpdated).
  *
@@ -186,7 +198,7 @@ function needsRows(attention: QueueRead[], nowMs: number): PulseException[] {
       token: "error" as Token,
       subject: sep > 0 ? full.slice(0, sep) : full,
       claim: sep > 0 ? full.slice(sep) : "",
-      meta: age ? ` · ${age}` : "",
+      meta: `${age ? ` · ${age}` : ""}${damageSuffix(q)}`,
     };
   });
 }
@@ -206,7 +218,7 @@ function blockedRows(blocked: QueueRead[], nowMs: number): PulseException[] {
     .map((q) => {
       const age = ageLabel(q.claimedAt ?? q.tsUpdated, nowMs);
       const reason = q.summary ?? bodyHead(q.body);
-      const meta = [reason, age].filter(Boolean).join(" · ");
+      const meta = [reason, age, damagedPhrase(q)].filter(Boolean).join(" · ");
       const blocker = q.blockerSession ?? q.blockedOn ?? "—";
       return {
         glyph: "⧗",
@@ -254,7 +266,7 @@ function parkedRows(
       glyph: "◌",
       token: "warn",
       subject: q.destinationSession,
-      claim: ` · qitem ${qitemShort(q.qitemId)} in-progress ${idleText}, no handoff`,
+      claim: ` · qitem ${qitemShort(q.qitemId)} in-progress ${idleText}, no handoff${damageSuffix(q)}`,
       meta: " → enter: transcript check",
     });
   }
@@ -306,7 +318,7 @@ function nowRows(seatActivity: SeatActivitySummary[], inProgress: QueueRead[], s
   for (const seat of seatActivity) {
     if (seat.terminalActive !== true) continue; // ACTIVE only (null ≠ active — honest-unknown)
     const q = workBySession.get(seat.session);
-    const work = q ? (q.summary ?? bodyHead(q.body)) : "";
+    const work = q ? `${damagePrefix(q)}${q.summary ?? bodyHead(q.body)}` : "";
     // COMPACT label = logicalId; the FULL session lives in the drill action.
     const label = work ? `${seat.logicalId}  ${work}` : seat.logicalId;
     const fullDetail = work ? `${seat.session} · ${work}` : seat.session;
@@ -324,7 +336,7 @@ function finishedRows(recent: QueueRead[], cap: number, snap: FleetSnapshot): Pu
     .sort((a, b) => Date.parse(b.tsUpdated) - Date.parse(a.tsUpdated))
     .slice(0, cap)
     .map((q) => {
-      const label = q.summary ?? bodyHead(q.body);
+      const label = `${damagePrefix(q)}${q.summary ?? bodyHead(q.body)}`;
       // drill to the seat that FINISHED it (destinationSession → agent).
       return { glyph: "✓", token: "ok" as Token, time: hhmm(q.tsUpdated), label, action: seatRowAction(snap, q.destinationSession, `${q.destinationSession} · ${label}`) };
     });
@@ -339,7 +351,7 @@ function finishedRows(recent: QueueRead[], cap: number, snap: FleetSnapshot): Pu
 function upNextLane(pending: QueueRead[], cap: number, snap: FleetSnapshot): PulseLane {
   const unclaimed = pending.filter((q) => q.claimedAt == null); // unclaimed only (claimedAt null)
   const toRow = (q: QueueRead): PulseLaneRow => {
-    const label = q.summary ?? bodyHead(q.body);
+    const label = `${damagePrefix(q)}${q.summary ?? bodyHead(q.body)}`;
     // drill to the seat the work is DESTINED for (destinationSession → agent).
     return { glyph: "○", token: "dim", label, action: seatRowAction(snap, q.destinationSession, `${q.destinationSession} · ${label}`) };
   };

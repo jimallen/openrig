@@ -18,7 +18,7 @@ export function WorkflowHeader({
     <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
       <div className="space-y-3">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface-variant">{eyebrow}</p>
-        <h2 className="text-2xl font-bold uppercase tracking-[0.04em] text-on-surface sm:text-3xl">{title}</h2>
+        <h2 className="break-words text-2xl font-bold uppercase tracking-[0.04em] text-on-surface sm:text-3xl">{title}</h2>
         {description && (
           <p className="max-w-2xl text-base leading-8 text-on-surface-variant">{description}</p>
         )}

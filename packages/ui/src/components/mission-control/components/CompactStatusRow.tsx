@@ -17,6 +17,7 @@
 
 import { useState, type MouseEvent } from "react";
 import type { CompactStatusRow as CompactStatusRowData } from "../hooks/useMissionControlView.js";
+import { damagedColumns, damagedExplanation } from "../../../lib/damaged-row.js";
 
 export interface CompactStatusRowProps {
   row: CompactStatusRowData;
@@ -40,6 +41,8 @@ export function CompactStatusRow({
   highlighted = false,
 }: CompactStatusRowProps) {
   const badge = STATE_BADGES[row.state];
+  // OF-146: a damaged qitem's blank tags are unknown, not empty, and the daemon refuses every action on it.
+  const damaged = damagedColumns(row);
   const summary = row.qitemSummary ?? summarizeQitemBody(row.qitemBody);
   const fullBody = row.qitemBody?.trim() ?? "";
   const hasDetails = Boolean(fullBody || row.qitemId || row.rawSourceRef);
@@ -60,6 +63,7 @@ export function CompactStatusRow({
       data-testid="mc-status-row"
       data-state={row.state}
       data-qitem-id={row.qitemId ?? ""}
+      data-damaged={damaged.length > 0 ? "true" : undefined}
       data-highlighted={highlighted ? "true" : "false"}
       data-expanded={isExpanded ? "true" : "false"}
       id={row.qitemId ? `mc-qitem-${row.qitemId}` : undefined}
@@ -107,7 +111,7 @@ export function CompactStatusRow({
             {isExpanded ? "Hide" : "Details"}
           </button>
         ) : null}
-        {onAction ? (
+        {onAction && damaged.length === 0 ? (
           <button
             type="button"
             onClick={onAction}
@@ -118,6 +122,15 @@ export function CompactStatusRow({
           </button>
         ) : null}
       </div>
+      {damaged.length > 0 ? (
+        <p
+          data-testid="mc-damaged-note"
+          title={damagedExplanation(damaged)}
+          className="mt-2 break-words font-mono text-[10px] text-on-surface"
+        >
+          ▲ DAMAGED · {damaged.join(", ")} unreadable · do not act on it
+        </p>
+      ) : null}
       {summary ? (
         <p
           data-testid="mc-qitem-summary"

@@ -156,6 +156,25 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
     expect(row.qitemSummary).toContain("Approve the release candidate");
   });
 
+  it("OF-146: a qitem whose saved tags cannot be read keeps its `unreadable` marker on the row; a readable row carries none", async () => {
+    const damaged = await queueRepo.create({
+      sourceSession: "src@rig", destinationSession: "human-operator@kernel", body: "Choose the cover", tier: "human-gate",
+      summary: "damaged fixture", evidenceRef: "proof/damaged.md", tags: ["project:alpha"],
+    });
+    const healthy = await queueRepo.create({
+      sourceSession: "src@rig", destinationSession: "human-operator@kernel", body: "Pick the font", tier: "human-gate",
+      summary: "healthy fixture", evidenceRef: "proof/healthy.md", tags: ["project:alpha"],
+    });
+    db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run("{not json", damaged.qitemId);
+
+    for (const view of ["my-queue", "human-gate", "active-work"] as const) {
+      const rows: CompactStatusRow[] = (await readLayer.readView(view)).rows;
+      expect(rows.map((r) => r.qitemId).sort(), view).toEqual([damaged.qitemId, healthy.qitemId].sort());
+      expect(rows.find((r) => r.qitemId === damaged.qitemId)?.unreadable, view).toEqual(["tags"]);
+      expect("unreadable" in rows.find((r) => r.qitemId === healthy.qitemId)!, view).toBe(false);
+    }
+  });
+
   it("recent-ships caps at 10", async () => {
     for (let i = 0; i < 15; i++) {
       const created = await queueRepo.create({

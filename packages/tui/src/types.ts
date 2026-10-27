@@ -193,6 +193,9 @@ export interface QueueRead {
   handedOffTo: string | null;
   tier: string | null;
   tags: string[] | null;
+  /** OF-146: the saved columns the daemon could not read (OF-117). Present only on a damaged row, where a null `tags` is
+   *  unknown, not empty. */
+  unreadable?: unknown;
   summary: string | null;
   body: string;
   claimedAt: string | null;

@@ -1,3 +1,4 @@
+import { damagedPhrase } from "./damaged.js";
 import { helpScreen } from "./commands/help.js";
 import { commandFocusVisible } from "./motion.js";
 import { attentionLines } from "./attention/attention-model.js";
@@ -171,11 +172,13 @@ function queueFacts(snap: FleetSnapshot, session: string | null | undefined): { 
   const primary = rows[0];
   if (!primary) return { count: 0, work: queueIncomplete(snap) ? "unknown" : "—", now: queueIncomplete(snap) ? "not in sample" : "—" };
   const slice = primary.row.tags?.find((tag) => tag.startsWith("slice:"))?.slice("slice:".length);
-  const work = slice?.match(/^OPR(?:\.\d+){3}\.(\d+)$/)?.[1]
+  // OF-146: a damaged row's tags read null because they could not be read, so "no slice" is unknown, not "—".
+  const damaged = damagedPhrase(primary.row);
+  const work = damaged && !slice ? "unknown" : slice?.match(/^OPR(?:\.\d+){3}\.(\d+)$/)?.[1]
     ? `S${slice.slice(slice.lastIndexOf(".") + 1)}`
     : slice ?? "—";
   const summary = primary.row.summary?.trim() || primary.row.body.split("\n").find((line) => line.trim())?.trim() || primary.row.qitemId;
-  const now = primary.role === "working" ? summary : `${primary.role} · ${summary}`;
+  const now = `${damaged ? `${damaged} · ` : ""}${primary.role === "working" ? summary : `${primary.role} · ${summary}`}`;
   return { count: rows.length, work, now };
 }
 
