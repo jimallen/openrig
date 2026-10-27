@@ -31,7 +31,7 @@ import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
 import {
   piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState,
-  PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, PI_RUNNER_ERROR_MARKER, PI_PROVIDER_ENV_VARS,
+  PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, PI_RUNNER_ERROR_MARKER, PI_PROVIDER_ENV_VARS, PI_SIDECAR_TICK_MS,
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
 
@@ -342,6 +342,9 @@ export class RunnerCore {
   /** Entry ids the daemon has accepted with a known origin. Anything else is sent again on the next refresh;
    *  the daemon stores each (session, entry) once regardless. */
   private readonly postedUsageEntryIds = new Set<string>();
+  /** OF-105: a usage post loop is running, and a refresh arrived while it ran (reported again when it settles). */
+  private usagePostInFlight = false;
+  private usagePostRerun = false;
   private readonly loggedUnsafeCountEntryIds = new Set<string>();
   private readonly unhandledEventTypes = new Set<string>();
 
@@ -546,7 +549,17 @@ export class RunnerCore {
     }
     const fresh = facts.filter((fact) => !this.postedUsageEntryIds.has(fact.entryId));
     if (fresh.length === 0 && malformed === 0) return;
-    void this.postFreshUsageFacts(fresh, malformed);
+    // OF-105: one post loop at a time. A refresh that arrives while one is in flight would compute `fresh` before
+    // that loop has marked anything posted and post every chunk a second time, so it only raises the rerun flag; when
+    // the loop settles, the latest batch is reported again and sends just what is still unposted.
+    if (this.usagePostInFlight) { this.usagePostRerun = true; return; }
+    this.usagePostInFlight = true;
+    void this.postFreshUsageFacts(fresh, malformed).finally(() => {
+      this.usagePostInFlight = false;
+      if (!this.usagePostRerun) return;
+      this.usagePostRerun = false;
+      this.reportUsageFacts(this.latestUsageEntries);
+    });
   }
 
   /** OF-90: post the fresh facts in chunks the daemon accepts (at most USAGE_MAX_FACTS and USAGE_CHUNK_BODY_BYTES), in
@@ -758,8 +771,16 @@ export class RunnerCore {
       // evidence (the Notification hook, rig ps, the UI), never send gating, as a pda hold is after OF-89.
       busy: this.streaming,
       updatedAt: this.io.now(),
+      // OF-119: every write proves the runner is running; tickAlive() keeps proving it while nothing else is written.
+      aliveAt: this.io.now(),
       ...patch,
     });
+  }
+
+  /** OF-119: rewrite the sidecar so its `aliveAt` stays fresh while the runner idles. Only a ready runner ticks: before
+   *  it is ready the sidecar is not an answer, and after the child exits the `exited` record must stay the last word. */
+  tickAlive(): void {
+    if (this.ready) this.writeSidecar({});
   }
 }
 
@@ -782,7 +803,8 @@ interface RunnerArgs {
 
 /** OF-87: the pane editor for the Pi and OMP runners. A Ctrl-C byte inside a bracketed paste is pasted text, so one
  *  paste is one message and only a real key press submits /abort. (A paste whose closing marker never arrives
- *  therefore keeps swallowing Ctrl-C until it does, as in the pda runner.) */
+ *  therefore keeps swallowing Ctrl-C until it does, as in the pda runner; after PASTE_OPEN_HINT_MS the editor prints a
+ *  pane line saying so and how to close it, OF-119.) */
 export function wirePiRunnerInput(core: Pick<RunnerCore, "handleUserBlock">, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
   return createRunnerInput(input, output, (block) => core.handleUserBlock(block), { interruptInsidePaste: "content" });
 }
@@ -859,6 +881,28 @@ export function prepareRunnerSidecar(
     fsOps.writeFile(runnerStatePath, JSON.stringify(buildPendingRunnerState(launchId, now(), prior)));
   } catch { /* best-effort; the adapter pre-writes an equivalent pending record */ }
   return { catchUpSince: resuming ? prior?.lastEntryId : undefined };
+}
+
+/** OF-119: rewrite the runner's sidecar every PI_SIDECAR_TICK_MS (unref'd, so it never keeps the process alive). A runner
+ *  whose event loop is blocked stops ticking, and `rig send` stops believing its last `busy` after the alive window. */
+export function startAliveTick(core: Pick<RunnerCore, "tickAlive">, everyMs = PI_SIDECAR_TICK_MS): ReturnType<typeof setInterval> {
+  const timer = setInterval(() => core.tickAlive(), everyMs);
+  timer.unref();
+  return timer;
+}
+
+/** OF-119: write the sidecar through a temp file and a rename, so a reader never parses a half-written record (it would
+ *  read null and `rig send` would fall back to the pane classifier). Best-effort, as every sidecar write is. */
+export function writeSidecarAtomic(
+  fsOps: { writeFile(p: string, c: string): void; rename(from: string, to: string): void },
+  path: string,
+  state: PiRunnerState,
+): void {
+  try {
+    const tmp = `${path}.tmp`;
+    fsOps.writeFile(tmp, JSON.stringify(state));
+    fsOps.rename(tmp, path);
+  } catch { /* best-effort; the adapter falls back to pane markers */ }
 }
 
 /** How often an OMP runner re-delivers an unconfirmed session identity. */
@@ -1096,11 +1140,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         .catch(() => null)
         .finally(() => clearTimeout(timeout));
     },
-    writeSidecar: (state) => {
-      try {
-        fs.writeFileSync(paths.runnerStatePath, JSON.stringify(state));
-      } catch { /* best-effort; adapter falls back to pane markers */ }
-    },
+    writeSidecar: (state) => writeSidecarAtomic(
+      { writeFile: (p, c) => fs.writeFileSync(p, c), rename: (a, b) => fs.renameSync(a, b) }, paths.runnerStatePath, state),
     now: () => new Date().toISOString(),
     stopChild: () => { child.kill(); },
     sessionFileExists: (path) => fs.existsSync(path),
@@ -1155,6 +1196,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     core.handlePiLine(line);
   });
   // Re-deliver OMP identity until the daemon confirms the resume token.
+  startAliveTick(core);
   const identityRetry = runtime === "omp" ? setInterval(() => core.retrySessionIdentity(), IDENTITY_RETRY_MS) : undefined;
   identityRetry?.unref();
   // The last few stderr lines, so an OMP that exits during startup is

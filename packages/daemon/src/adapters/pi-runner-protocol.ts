@@ -72,7 +72,24 @@ export interface PiRunnerState {
   /** OF-88: the runner's own turn state, which `rig send` reads as the seat's readiness (PiRuntimeAdapter.sendReadiness).
    *  true while an agent turn is streaming. Absent in a sidecar written by a runner older than OF-88; the adapter
    *  then gives no answer and send gating stays on today's hook-and-pane logic. */
-  busy?: boolean;}
+  busy?: boolean;
+  /** OF-119: ISO time the runner last proved it was running (every sidecar write, and a tick every PI_SIDECAR_TICK_MS
+   *  while it is ready). `rig send` believes `busy` only while this is within PI_SIDECAR_ALIVE_WINDOW_MS of now, so a
+   *  hung runner frozen at `busy: false` cannot read idle forever. Absent in a sidecar from a runner older than OF-119:
+   *  the adapter then gives no answer (today's hook-and-pane logic decides). */
+  aliveAt?: string;
+}
+
+/** OF-119: how often a ready runner rewrites its sidecar, and how old `aliveAt` may be before the sidecar is no answer. */
+export const PI_SIDECAR_TICK_MS = 60_000;
+export const PI_SIDECAR_ALIVE_WINDOW_MS = 180_000;
+
+/** The ONE alive rule for the Pi/OMP sidecar (as pdaSidecarAlive is for pda): `aliveAt` is a time within the window on
+ *  either side of now. Older means the runner died without an `exited` or hung; a future one is a clock jump or a forged file. */
+export function piSidecarAlive(state: PiRunnerState, nowMs: number): boolean {
+  const alive = typeof state.aliveAt === "string" ? Date.parse(state.aliveAt) : NaN;
+  return Number.isFinite(alive) && Math.abs(nowMs - alive) <= PI_SIDECAR_ALIVE_WINDOW_MS;
+}
 
 /** The launch-scoped pending record every writer uses when resetting the
  *  sidecar for a new attempt. It deliberately CARRIES the prior lastEntryId:

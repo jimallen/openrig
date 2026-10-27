@@ -33,6 +33,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { derivePdaCost, parsePdaUsageFact, type PdaUsageFact, type PdaUsageOrigin, type PdaUsagePayload } from "./pda-runner-protocol.js";
 import { idText } from "./pda-render.js";
+import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import type { PdaUsageSink } from "./pda-runner.js";
 
 export const PDA_USAGE_PENDING_MAX = 2000;
@@ -221,7 +222,9 @@ export function createPdaUsageSink(options: PdaUsageSinkOptions): PdaUsageReport
     if (inFlight || pending.length === 0) return;
     // One post carries one envelope: the oldest pending fact's, and every pending fact that shares it.
     const env = envOf(pending[0]!);
-    const batch = pending.filter((f) => sameEnv(envOf(f), env));
+    // OF-105: and only as many as fit one post under the daemon's byte cap (a 413 would drop the whole batch). What is
+    // left is posted next: a stored or refused post flushes again at once (below), a kept one waits for the next run_end.
+    const batch = chunkUsagePost(pending.filter((f) => sameEnv(envOf(f), env)))[0]!;
     const payload: PdaUsagePayload = {
       sessionName: options.sessionName, nodeId: env.nodeId, generation: env.generation, agent: options.agent, facts: batch,
     };

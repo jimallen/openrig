@@ -164,7 +164,8 @@ export class OpenRouterChargeLookup {
     for (const item of this.unposted.values()) bySession.set(item.piSessionId, [...(bySession.get(item.piSessionId) ?? []), item]);
     for (const [piSessionId, sessionItems] of bySession) for (const items of chunkUsagePost(sessionItems)) {
       // OF-90: a post carries at most USAGE_MAX_FACTS charges within the daemon's byte cap (chunkUsagePost); a chunk
-      // the daemon still refuses with a 413 is given up at once with its code, never posted again.
+      // the daemon still refuses with a 413 is given up at once with its code, never posted again. (Defensive: the pump
+      // keeps `unposted` to a handful, so a split is not reached in practice; of105-usage-posters seeds a backlog to pin it.)
       let acknowledged: ReadonlySet<string> | false | { refused: string } = false;
       try { acknowledged = await this.io.postCharges(piSessionId, items.map((item) => item.charge)); } catch { acknowledged = false; }
       if (acknowledged && "refused" in acknowledged) {

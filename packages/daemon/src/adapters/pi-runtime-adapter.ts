@@ -28,7 +28,7 @@ import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permission-drift.js";
 import {
   piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
-  PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER,
+  PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER, piSidecarAlive,
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
 
@@ -65,6 +65,8 @@ export interface PiRuntimeAdapterDeps {
   usageFactsEnabled?: () => boolean;
   /** OPR.0.7.0.2 K4: whether usage.pi_openrouter_charge is on, read at each launch (absent = off). */
   openRouterChargeEnabled?: () => boolean;
+  /** The clock `sendReadiness` judges the sidecar's alive tick against (tests inject; defaults to the wall clock). */
+  now?: () => Date;
 }
 
 export class PiRuntimeAdapter implements RuntimeAdapter {
@@ -79,8 +81,10 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   private newLaunchId: () => string;
   private usageFactsEnabled: () => boolean;
   private openRouterChargeEnabled: () => boolean;
+  private now: () => Date;
 
   constructor(deps: PiRuntimeAdapterDeps) {
+    this.now = deps.now ?? (() => new Date());
     this.usageFactsEnabled = deps.usageFactsEnabled ?? (() => false);
     this.openRouterChargeEnabled = deps.openRouterChargeEnabled ?? (() => false);
     this.tmux = deps.tmux;
@@ -379,13 +383,16 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   /** OF-88: the runner's answer for `rig send`, from its sidecar, so a runner pane is never read by the pane
    *  classifier (a reply ending in a question looked like a prompt). Null (never a throw) means "no runner answer"
    *  and send gating falls back to today's hook-and-pane logic: no sidecar, not ready, exited, or a sidecar from a
-   *  runner older than OF-88 (no `busy` field). The transport applies the shell-foreground clause at the seam,
-   *  which is what retires a sidecar left by a killed runner (Pi's sidecar has no alive tick). */
+   *  runner older than OF-88 (no `busy` field) or older than OF-119 (no alive tick), or one whose alive tick has
+   *  stopped (a runner that hung, or died without an `exited`). The transport also applies the shell-foreground
+   *  clause at the seam, which retires a sidecar left by a killed runner whose pane went back to a shell. */
   async sendReadiness(target: RunnerReadinessTarget): Promise<AgentActivity | null> {
     let state: PiRunnerState | null;
     try { state = this.readRunnerState(target.sessionName); } catch { return null; }
     if (!state || !state.ready || state.exited || typeof state.busy !== "boolean") return null;
-    const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date().toISOString(), evidence: null, runtime: this.runtime };
+    const nowMs = this.now().getTime();
+    if (!piSidecarAlive(state, nowMs)) return null;
+    const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date(nowMs).toISOString(), evidence: null, runtime: this.runtime };
     // Only idle or running, from `busy`. OMP attention (a model error, a cancelled approval) is display-only for send
     // gating: the runner cancels the approval itself, so no prompt waits in the pane, and its remedy is a new
     // instruction, which `rig send` must be able to deliver. The code stays visible through the Notification hook.
