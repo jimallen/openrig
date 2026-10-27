@@ -388,7 +388,25 @@ describe("OF-148 daemon: rig send to a runner seat with an open paste refuses wi
     ["pda", PDA_SEAT, (over: Record<string, unknown> = {}) => pdaSidecar(over)],
   ] as const;
 
-  describe.each(SEATS)("%s seat", (_runtime, seat, write) => {
+  describe.each(SEATS)("%s seat", (runtime, seat, write) => {
+    // What Ctrl-C does once the paste is closed differs by runtime: Pi and OMP also run /abort (the runner's own hint
+    // says "aborts the current turn"), pda only clears the line. The refusal must not send a Pi user to abort a turn unwarned.
+    it("the refusal words what Ctrl-C does for this runtime, on the default, override and wait-for-idle refusals alike", async () => {
+      write({ pasteOpen: true });
+      const { transport } = setup();
+      const ends = runtime === "pda" ? "then Ctrl-C clears the line. No override" : "then Ctrl-C clears the line and aborts the current turn. No override";
+      const results = [
+        await transport.send(seat, "hello"),
+        await transport.send(seat, "hello", { dangerouslyInteract: true, reason: "drive it" }),
+        await transport.send(seat, "hello", { waitForIdleMs: 50 }),
+      ];
+      for (const r of results) {
+        expect(r.ok).toBe(false);
+        expect(r.error).toContain(ends);
+        if (runtime === "pda") expect(r.error).not.toContain("abort");
+      }
+    });
+
     it("a default send is refused with the remedy, names the unclosed paste, and writes 0 bytes", async () => {
       write({ pasteOpen: true });
       const { transport, sendText, sendKeys } = setup();
