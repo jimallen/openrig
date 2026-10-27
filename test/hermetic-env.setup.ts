@@ -72,6 +72,12 @@ const fixtureHome =
         // process, so one file's afterAll is the end of that home's life. The process
         // 'exit' hook was measured not to fire in a vitest fork (workers are torn down
         // without running it), so it is not relied on. Only the creator registers.
+        // OF-82: a file whose tests are all skipped never runs the afterAll below, so also record this
+        // home with the run's globalSetup (test/hermetic-env.global.ts), whose teardown removes it.
+        const registry = process.env["OPENRIG_TEST_FIXTURE_REGISTRY"];
+        if (registry) {
+          try { fs.writeFileSync(path.join(registry, path.basename(h)), h); } catch { /* best effort */ }
+        }
         afterAll(() => {
           for (const dir of [h, `${h}-user-home`]) {
             try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
