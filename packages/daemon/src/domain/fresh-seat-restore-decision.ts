@@ -6,6 +6,7 @@
 import type Database from "better-sqlite3";
 import { resolveFreshSeatStartup, startupFromSnapshotId, type FreshStartupContext, type SeatStartupSpecReader, type StartupFrom } from "./seat-startup-source.js";
 import { freshSeatLaunchCommand } from "./active-occupant.js";
+import { liveSeatGateInputs } from "./restore-seat-gates.js";
 import { freshSeatReplaysSnapshotStartup, startupInputFindings, validatePreRestore, type FreshSeatStartupOverride } from "./restore-preconditions.js";
 import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
 import { readNodeStartupSnapshot } from "./snapshot-capture.js";
@@ -201,6 +202,8 @@ export function listedRefusalRemedy(
     const validation = validatePreRestore(input.snapshot, {
       fsOps: { exists: input.exists },
       freshLogicalIds: unlisted,
+      // F2: the live seat facts restore validates with, so this remedy refuses exactly what that restore would refuse.
+      seatGateInputs: liveSeatGateInputs(deps, { rigId: input.rigId, fallbackRigName: input.snapshot.rig?.name ?? "" }),
       freshSeatStartup: (node) => startupToValidateForSeat(deps, {
         rigId: input.rigId, logicalId: node.logicalId, adapters: deps.runtimeAdapters, freshLogicalIds: unlisted,
         startupFrom: input.startupFrom, selectedCopy: input.snapshot!.nodeStartupContext?.[node.id] ?? null,

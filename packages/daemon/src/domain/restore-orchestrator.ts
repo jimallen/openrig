@@ -1,4 +1,4 @@
-import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
+import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -352,12 +352,7 @@ export class RestoreOrchestrator {
         freshLogicalIds: opts?.freshLogicalIds,
         // OF-57: the live facts the seat gates read, found where restoreNodeUnisolated finds them (by logical id), so a
         // seat restore will stop or skip is not checked for startup files restore will never read.
-        seatGateInputs: (node) => {
-          const liveRig = this.rigRepo.getRig(rigId);
-          const live = liveRig?.nodes.find((current) => current.logicalId === node.logicalId) ?? null;
-          const continuityRow = live?.podId ? readContinuityRow(this.db, live.podId, live.id) : undefined;
-          return { live, continuityStatus: continuityRow?.status ?? null, rigName: liveRig?.rig.name ?? snapshot.data.rig.name };
-        },
+        seatGateInputs: liveSeatGateInputs({ db: this.db, rigRepo: this.rigRepo }, { rigId, fallbackRigName: snapshot.data.rig.name }),
         // OF-32: a seat started fresh replays the snapshot's copy of its startup files only when nothing newer exists;
         // otherwise its source is decided and checked per seat before its launch (restoreNodeUnisolated), and the
         // snapshot's copy (which may name a release since deleted) cannot block the restore.
@@ -1049,7 +1044,7 @@ export class RestoreOrchestrator {
     // OF-25 (Jim, 2026-10-26, "Live settings win"): the seat is launched with the settings it has NOW, not the
     // snapshot's copy. They differ for a seat removed and grown back (or edited) since the snapshot. Everything below,
     // and postLaunchRestore through `entry`, reads these.
-    entry = { ...entry, node: withLiveSeatSettings(entry.node, liveNode) };
+    entry = { ...entry, snapshotCwd: entry.node.cwd, node: withLiveSeatSettings(entry.node, liveNode) };
     node = entry.node;
     const nodeId = liveNode.id;
     progress.nodeId = nodeId;
@@ -1521,7 +1516,12 @@ export class RestoreOrchestrator {
           // a confirmed blank agent (precision guard trigger (i)). Roll back to
           // zero sessions; the stop-and-ask is realized as awaiting-decision.
           await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
+          // F5: the saved conversation was made in the snapshot's directory; the seat now lives in another (OF-25), and a
+          // conversation is kept per directory, so say so. (Not measured against a live claude: stated as a possible cause.)
+          const movedNote = entry.snapshotCwd && entry.snapshotCwd !== node.cwd
+            ? ` The seat's working directory is now '${node.cwd ?? "(none)"}'; the snapshot had '${entry.snapshotCwd}'. A saved conversation belongs to the directory it was made in, so it may not be found from here.`
+            : "";
+          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed.${movedNote} The blank session was rolled back; no session is running. ${this.freshStartAdvice(rigId, data, node.logicalId, opts?.startupFrom)}; or check the harness state manually.` };
         }
       }
     } else if (resumeRequested && isPodAware) {
@@ -2339,6 +2339,8 @@ interface SeatRestoreProgress {
 
 interface PlanEntry {
   node: NodeWithBinding;
+  /** F5: the cwd the snapshot's copy of the seat had, set once the seat's live settings replace it (OF-25). */
+  snapshotCwd?: string | null;
 }
 
 /** OF-25: the snapshot's node with the launch settings Jim ruled the LIVE seat decides (cwd, pod, model, Codex config

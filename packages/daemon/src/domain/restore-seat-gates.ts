@@ -141,6 +141,35 @@ export function readContinuityRow(db: Database.Database, podId: string, nodeId: 
 
 export type SeatStop = Extract<SeatPreLaunchDecision, { kind: "stop" }>;
 
+/** What the seat gates read that is not in the snapshot, plus the live cwd a checkpoint is delivered into (OF-25: a seat
+ *  restores with its LIVE settings). `live: null`: the seat was removed and not grown back. */
+export interface SeatGateInputs {
+  live: { runtime: string | null; cwd: string | null } | null;
+  continuityStatus: string | null;
+  rigName: string;
+}
+
+/**
+ * The live facts restore reads for a seat, found where restoreNodeUnisolated finds them (by logical id in the rig, the
+ * continuity row of the live node), for pre-restore validation. Restore, restore-check and the `--fresh` remedy all call
+ * this, so what they validate is what restore will do.
+ */
+export function liveSeatGateInputs(
+  deps: { db: Database.Database; rigRepo: { getRig(rigId: string): { rig: { name: string }; nodes: Array<{ id: string; logicalId: string; podId?: string | null; runtime?: string | null; cwd?: string | null }> } | null } },
+  input: { rigId: string; fallbackRigName: string },
+): (node: { id: string; logicalId: string }) => SeatGateInputs {
+  return (node) => {
+    const rig = deps.rigRepo.getRig(input.rigId);
+    const live = rig?.nodes.find((candidate) => candidate.logicalId === node.logicalId) ?? null;
+    const continuityRow = live?.podId ? readContinuityRow(deps.db, live.podId, live.id) : undefined;
+    return {
+      live: live ? { runtime: live.runtime ?? null, cwd: live.cwd ?? null } : null,
+      continuityStatus: continuityRow?.status ?? null,
+      rigName: rig?.rig.name ?? input.fallbackRigName,
+    };
+  };
+}
+
 /**
  * What restore would stop at these gates, per seat of the snapshot's intended roster, without starting anything: one
  * entry per seat restore would report `failed` or `awaiting-decision`, with restore's own error text. Reads the live

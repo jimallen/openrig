@@ -214,8 +214,8 @@ describe("pre-restore validation checks the startup files only of a seat restore
   const withSessions = (sessions: unknown[], activeOccupantsByNode?: unknown) =>
     ({ ...data(), sessions, ...(activeOccupantsByNode ? { activeOccupantsByNode } : {}) }) as unknown as SnapshotData;
   const fileBlockers = (result: ReturnType<typeof validatePreRestore>) => result.blockers.filter((b) => b.code === "required_startup_file_missing").length;
-  const gateInputs = (over: { live?: { runtime: string | null } | null; continuityStatus?: string | null } = {}) =>
-    () => ({ live: "live" in over ? over.live! : { runtime: "claude-code" }, continuityStatus: over.continuityStatus ?? null, rigName: "test-rig" });
+  const gateInputs = (over: { live?: { runtime: string | null; cwd?: string | null } | null; continuityStatus?: string | null } = {}) =>
+    () => ({ live: "live" in over && over.live ? { cwd: "/live/cwd", ...over.live } : "live" in over ? null : { runtime: "claude-code", cwd: "/live/cwd" }, continuityStatus: over.continuityStatus ?? null, rigName: "test-rig" });
 
   // The snapshot alone decides these gates (no seatGateInputs given).
   it.each([
@@ -255,6 +255,42 @@ describe("pre-restore validation checks the startup files only of a seat restore
     expect(warningsFor({ live: null })).toEqual([]);
     expect(warningsFor({ live: { runtime: "codex" } })).toEqual([]);
     expect(warningsFor({ continuityStatus: "restoring" })).toEqual([]);
+  });
+
+  // F1 (review of 336cd7e6): restore delivers a checkpoint into the cwd the seat has NOW (OF-25), so that is the cwd the
+  // pre-restore check must read. Production consequence of reading the snapshot's: a regrown seat with no cwd passes the
+  // check, is launched, and then fails with "Checkpoint available but node has no cwd" with its session left running; and a
+  // regrown seat that has a cwd now is refused although the restore would deliver. The snapshot's cwd is "/project".
+  describe("a checkpoint needs the cwd the seat has now (F1)", () => {
+    const withCheckpoint = (snapshotCwd: string | undefined) => {
+      const snapshot = data();
+      snapshot.nodes[0] = { id: "node-1", logicalId: "seat", ...(snapshotCwd ? { cwd: snapshotCwd } : {}) } as never;
+      snapshot.checkpoints = { "node-1": { summary: "x", keyArtifacts: [] } } as never;
+      return snapshot;
+    };
+    const blockerCodes = (snapshot: SnapshotData, inputs?: Parameters<typeof gateInputs>[0]) =>
+      validatePreRestore(snapshot, { fsOps: { exists: () => true }, ...(inputs ? { seatGateInputs: gateInputs(inputs) } : {}) }).blockers.map((b) => b.code);
+
+    it("the snapshot's copy has a cwd and the live seat has none: refused before anything starts", () => {
+      expect(blockerCodes(withCheckpoint("/project"), { live: { runtime: "claude-code", cwd: null } })).toEqual(["checkpoint_missing_node_cwd"]);
+    });
+    it("the snapshot's copy has no cwd and the live seat has one: not refused", () => {
+      expect(blockerCodes(withCheckpoint(undefined), { live: { runtime: "claude-code", cwd: "/live/cwd" } })).toEqual([]);
+    });
+    it("both have a cwd: not refused", () => {
+      expect(blockerCodes(withCheckpoint("/project"), {})).toEqual([]);
+    });
+    it("without the live seat given, the snapshot's cwd is the answer (as before)", () => {
+      expect(blockerCodes(withCheckpoint(undefined))).toEqual(["checkpoint_missing_node_cwd"]);
+      expect(blockerCodes(withCheckpoint("/project"))).toEqual([]);
+    });
+    it.each([
+      ["removed and not grown back", { live: null }],
+      ["its runtime changed", { live: { runtime: "codex", cwd: null } }],
+      ["its continuity is 'restoring'", { continuityStatus: "restoring", live: { runtime: "claude-code", cwd: null } }],
+    ] as const)("a seat restore stops or skips needs no cwd: %s", (_label, inputs) => {
+      expect(blockerCodes(withCheckpoint(undefined), inputs)).toEqual([]);
+    });
   });
 
   it("a seat restore stops is not offered to the fresh-source decision, and a seat it starts fresh is", () => {

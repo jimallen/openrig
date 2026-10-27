@@ -210,6 +210,67 @@ describe("restore-check and restore agree about a seat's own saved startup row (
     for (const other of ["S1", "S2", "S3"].filter((id) => id !== supplier)) expect(body).not.toContain(ids[other]!);
   });
 
+  // F2 (review of 336cd7e6): the check and the `--fresh` remedy validate with the same live seat facts restore does.
+  // The required startup file is gone from every release; the seat's continuity state is 'restoring', so restore skips it
+  // (it reports `fresh`, reads none of its files, and restores the rest). Production consequence of validating without the live
+  // seat: the check is red with "required_startup_file_missing" for a restore that comes up, and its advice says restore inputs
+  // are broken.
+  const removeStartupFile = () => {
+    for (const sha of ["aaaaaaa", "bbbbbbb", "ccccccc"]) fs.rmSync(`${h.root}/releases/${sha}/rigs/team/agents/impl/guidance/role.md`, { force: true });
+  };
+  it("a seat restore skips ('restoring' continuity) is not checked for the startup files restore will not read", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: true });
+    const snapshotId = await h.down(seat.rigId);
+    const podId = (h.db.prepare("SELECT pod_id AS p FROM nodes WHERE id = ?").get(seat.nodeId) as { p: string }).p;
+    h.db.prepare("INSERT INTO continuity_state (pod_id, node_id, status) VALUES (?, ?, 'restoring')").run(podId, seat.nodeId);
+    removeStartupFile();
+
+    const check = await runCheck(false);
+    const restore = await runRestore(chosenSnapshotId(seat.rigId), false);
+
+    expect(restore.outcome).toBe("ok");
+    expect(check.evidence).not.toContain("required_startup_file_missing");
+    expectAgreement("skipped seat", check, restore);
+    void snapshotId;
+  });
+
+  it("control: the same missing file of a seat restore starts fresh is red in the check and refuses the restore", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: true });
+    policyFresh(seat.nodeId);
+    await h.down(seat.rigId);
+    removeStartupFile();
+
+    const check = await runCheck(false);
+    const restore = await runRestore(chosenSnapshotId(seat.rigId), false);
+
+    expect(restore.outcome).toBe("restore-ended");
+    expect(check.status).toBe("red");
+    expect(check.evidence).toContain("required_startup_file_missing");
+  });
+
+  // The remedy for a refused listed seat offers "leave it out of --fresh" only when that restore would not refuse the rig for
+  // the seat. A seat removed since the snapshot is not launched by either restore, so its missing file refuses nothing.
+  it("the --fresh remedy offers leaving out a seat that was removed since the snapshot, whatever its snapshot copy names", async () => {
+    h = createRestoreHarness();
+    const seat = await h.launchRig({ record: true });
+    const snapshotId = await h.down(seat.rigId);
+    removeStartupFile();
+    const snapshot = h.snapshotRepo.getSnapshot(snapshotId)!.data;
+    h.db.prepare("DELETE FROM bindings WHERE node_id = ?").run(seat.nodeId);
+    h.db.prepare("DELETE FROM nodes WHERE id = ?").run(seat.nodeId);
+
+    const { listedRefusalRemedy } = await import("../src/domain/fresh-seat-restore-decision.js");
+    const remedy = listedRefusalRemedy(
+      { db: h.db, rigRepo: h.rigRepo, runtimeAdapters: { "claude-code": h.adapter } },
+      { rigId: seat.rigId, logicalId: SEAT, snapshot, freshLogicalIds: [SEAT], startupFrom: "spec", exists },
+    );
+
+    expect(remedy).toContain(`leave ${SEAT} out of --fresh`);
+    expect(remedy).not.toContain("does not help");
+  });
+
   // A listed seat whose only source is an own row that cannot be used and a snapshot copy that cannot be used either:
   // both refuse, and the check's remedy must not claim the rig-wide route works when the rig records no spec source.
   it("listed, no spec source, own row and every snapshot copy unusable: restore refuses the seat, the check is red and does not offer --fresh as the way out", async () => {

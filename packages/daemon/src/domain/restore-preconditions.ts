@@ -1,6 +1,6 @@
 import type { SnapshotData, RestoreValidationBlocker, RigServicesRecord, NodeStartupSnapshot } from "./types.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
-import { decideSeatLaunchOutcome } from "./restore-seat-gates.js";
+import { decideSeatLaunchOutcome, type SeatGateInputs } from "./restore-seat-gates.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 
 /** OF-32/OF-36: what a seat this restore starts fresh replays, when that is not simply the snapshot's copy
@@ -33,7 +33,7 @@ export function validatePreRestore(
      *  logical id (null: removed), its continuity status and the rig's name. Absent: the gates that can be decided
      *  from the snapshot alone (occupant ambiguity, an earlier occupant's token, a resumable seat with no token) are
      *  applied, and the live ones (removed seat, runtime mismatch, `restoring`) are not. */
-    seatGateInputs?: (node: { id: string; logicalId: string }) => { live: { runtime: string | null } | null; continuityStatus: string | null; rigName: string };
+    seatGateInputs?: (node: { id: string; logicalId: string }) => SeatGateInputs;
   },
 ): { blockers: RestoreValidationBlocker[]; warnings: string[] } {
   const blockers: RestoreValidationBlocker[] = [];
@@ -109,8 +109,21 @@ export function validatePreRestore(
   }
 
   for (const node of topology.intendedNodes) {
+    const snapshotCtx = data.nodeStartupContext?.[node.id] ?? null;
+    const gateInputs = opts.seatGateInputs?.(node);
+    const outcome = decideSeatLaunchOutcome({
+      data, snapshotNodeId: node.id, logicalId: node.logicalId,
+      freshRequested: opts.freshLogicalIds?.includes(node.logicalId) ?? false,
+      ...(gateInputs ?? { live: { runtime: snapshotCtx?.runtime ?? null }, continuityStatus: null, rigName: data.rig?.name ?? "" }),
+    });
+    const startsNothing = outcome.kind === "stop" || outcome.kind === "skip_restoring";
+
     const checkpoint = checkpoints[node.id] ?? null;
-    if (checkpoint && !node.cwd) {
+    // OF-25: restore delivers a checkpoint into the cwd the seat has NOW (the live node's), so that is the cwd to check when
+    // the caller gave the live seat; the snapshot's is the answer only when it did not. A seat restore stops or skips
+    // delivers nothing, so it needs no cwd.
+    const checkpointCwd = gateInputs ? gateInputs.live?.cwd ?? null : node.cwd;
+    if (checkpoint && !checkpointCwd && !startsNothing) {
       add({
         code: "checkpoint_missing_node_cwd",
         severity: "critical",
@@ -122,20 +135,13 @@ export function validatePreRestore(
       });
     }
 
-    const snapshotCtx = data.nodeStartupContext?.[node.id] ?? null;
-
     // OF-57: whether the seat will CONSUME replay is what restore does with it, asked of the one function restore, the
     // plan and `rig launch` ask (restore-seat-gates.ts decideSeatLaunchOutcome), not a second copy of its rules.
     // A seat restore stops at a gate (removed, ambiguous occupant, runtime mismatch, an earlier occupant's token, a
     // resumable seat with no token) or skips (`restoring` continuity) starts nothing and reads none of its startup
     // files, so none are checked: a missing file of such a seat must not refuse the rig. A seat that resumes consumes
     // nothing (its projection entries are still checked, as before). Only a seat started fresh replays its files.
-    const outcome = decideSeatLaunchOutcome({
-      data, snapshotNodeId: node.id, logicalId: node.logicalId,
-      freshRequested: opts.freshLogicalIds?.includes(node.logicalId) ?? false,
-      ...(opts.seatGateInputs?.(node) ?? { live: { runtime: snapshotCtx?.runtime ?? null }, continuityStatus: null, rigName: data.rig?.name ?? "" }),
-    });
-    if (outcome.kind === "stop" || outcome.kind === "skip_restoring") continue;
+    if (startsNothing) continue;
     const consumesReplay = outcome.kind === "fresh";
     const override = consumesReplay ? opts.freshSeatStartup?.(node) : undefined;
     if (override === "resolved_at_launch") continue;

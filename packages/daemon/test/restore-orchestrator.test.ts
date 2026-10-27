@@ -2502,7 +2502,7 @@ describe("RestoreOrchestrator", () => {
   // `remoteControl` given at the top level are the SNAPSHOT's values.
   function snapshotThenRegrow(rigName: string, opts?: { podId?: string; runtime?: string; token?: string; cwd?: string; restorePolicy?: string; checkpoint?: boolean; absent?: boolean; livePodId?: string;
     model?: string; codexConfigProfile?: string; remoteControl?: boolean; startupContext?: boolean;
-    live?: { cwd?: string; podId?: string | null; model?: string | null; codexConfigProfile?: string; remoteControl?: boolean } }) {
+    live?: { cwd?: string | null; podId?: string | null; model?: string | null; codexConfigProfile?: string; remoteControl?: boolean } }) {
     const runtime = opts?.runtime ?? "claude-code";
     const rig = rigRepo.createRig(rigName);
     if (opts?.podId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.podId, rig.id, "Dev");
@@ -2527,12 +2527,12 @@ describe("RestoreOrchestrator", () => {
     db.prepare("DELETE FROM bindings WHERE node_id = ?").run(oldNode.id);
     db.prepare("DELETE FROM nodes WHERE id = ?").run(oldNode.id);
     if (opts?.livePodId) db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run(opts.livePodId, rig.id, "Moved");
-    const { podId: snapshotPod, model: snapshotModel, ...nodeOptsNoPod } = nodeOpts as typeof nodeOpts & { podId?: string; model?: string };
+    const { podId: snapshotPod, model: snapshotModel, cwd: snapshotCwd, ...nodeOptsNoPod } = nodeOpts as typeof nodeOpts & { podId?: string; model?: string; cwd?: string };
     const liveModel = opts?.live && "model" in opts.live ? opts.live.model : snapshotModel;
     const livePod = opts?.live && "podId" in opts.live ? (opts.live.podId ?? undefined) : (opts?.livePodId ?? snapshotPod);
     const newNode = rigRepo.addNode(rig.id, "dev.impl", {
       ...nodeOptsNoPod, ...(livePod ? { podId: livePod } : {}),
-      ...(opts?.live?.cwd ? { cwd: opts.live.cwd } : {}), ...(liveModel ? { model: liveModel } : {}),
+      ...(opts?.live && "cwd" in opts.live ? (opts.live.cwd ? { cwd: opts.live.cwd } : {}) : (snapshotCwd ? { cwd: snapshotCwd } : {})), ...(liveModel ? { model: liveModel } : {}),
       ...(opts?.live?.codexConfigProfile ? { codexConfigProfile: opts.live.codexConfigProfile } : {}),
     });
     if (opts?.live?.remoteControl) rigRepo.setNodeRemoteControl(newNode.id, true);
@@ -2673,6 +2673,59 @@ describe("RestoreOrchestrator", () => {
     expect(spy.mock.calls[0]![argIndex]).toBe(expected);
     // The other runtime's adapter is not the one that resumed it.
     expect(vi.mocked(runtime === "codex" ? claude.resume : codex.resume)).not.toHaveBeenCalled();
+  });
+
+  // F1 (review of 336cd7e6): a checkpoint is delivered into the cwd the seat has now, so that is the cwd the pre-restore check
+  // reads. Both directions, end to end: before this, a regrown seat with a snapshot cwd and no live cwd passed the check, was
+  // launched, and failed with "Checkpoint available but node has no cwd" with its session left running.
+  describe("a regrown seat's checkpoint needs its LIVE cwd (F1)", () => {
+    it("the snapshot's copy has a cwd, the live seat has none: restore is refused before it launches anything", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-f1-"));
+      try {
+        const { snap } = snapshotThenRegrow("regrown-f1-nolive-rig", { cwd: tmpDir, restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: null } });
+        const tmux = mockTmux();
+
+        const result = await createOrchestrator({ tmux, claude: mockClaudeResume() }).restore(snap.id);
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.code).toBe("pre_restore_validation_failed");
+        expect(result.result?.blockers?.map((b) => b.code)).toEqual(["checkpoint_missing_node_cwd"]);
+        expect(tmux.createSession).not.toHaveBeenCalled();
+      } finally { fs.rmSync(tmpDir, { recursive: true }); }
+    });
+
+    it("the snapshot's copy has no cwd, the live seat has one: the checkpoint is delivered into it", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-f1-"));
+      try {
+        const { snap, newNode } = snapshotThenRegrow("regrown-f1-live-rig", { restorePolicy: "checkpoint_only", checkpoint: true, live: { cwd: tmpDir } });
+
+        const result = await createOrchestrator({ claude: mockClaudeResume() }).restore(snap.id);
+
+        expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+        if (!result.ok) return;
+        expect(result.result.nodes).toEqual([expect.objectContaining({ nodeId: newNode.id, status: "rebuilt" })]);
+        expect(fs.readdirSync(tmpDir).length).toBeGreaterThan(0);
+      } finally { fs.rmSync(tmpDir, { recursive: true }); }
+    });
+  });
+
+  // F5: the stop-and-ask says the directory moved when it did, because a conversation is kept per directory.
+  it.each([
+    ["the live cwd differs from the snapshot's", "/live/elsewhere", true],
+    ["the live cwd is the snapshot's", "/snapshot/cwd", false],
+  ] as const)("a regrown seat whose resume fails says whether its directory moved: %s", async (_label, liveCwd, mentioned) => {
+    const { snap } = snapshotThenRegrow("regrown-f5-rig", { cwd: "/snapshot/cwd", live: { cwd: liveCwd } });
+    const claude = mockClaudeResume({ ok: false, code: "resume_failed", message: "err" } as never);
+
+    const result = await createOrchestrator({ claude }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    if (!result.ok) return;
+    const node = result.result.nodes[0]!;
+    expect(node.status).toBe("awaiting-decision");
+    expect(node.error?.includes("/live/elsewhere") && node.error.includes("/snapshot/cwd")).toBe(mentioned);
+    expect(node.error?.includes("belongs to the directory it was made in")).toBe(mentioned);
   });
 
   it("a regrown seat whose live copy has no model is resumed with none, not the snapshot's", async () => {
@@ -4389,11 +4442,9 @@ describe("RestoreOrchestrator", () => {
         edges: [],
         withCheckpoint: "orchestrator",
       });
-      // Force a pre-restore validation failure: clear the node's cwd so the
-      // checkpoint blocks restore (checkpoint_missing_node_cwd).
-      const data = JSON.parse(JSON.stringify(snap.data));
-      data.nodes[0].cwd = null;
-      db.prepare("UPDATE snapshots SET data = ? WHERE id = ?").run(JSON.stringify(data), snap.id);
+      // Force a pre-restore validation failure: clear the node's cwd so the checkpoint blocks restore
+      // (checkpoint_missing_node_cwd). The cwd a checkpoint needs is the LIVE node's (OF-25), so that is the one cleared.
+      db.prepare("UPDATE nodes SET cwd = NULL WHERE id = ?").run(snap.data.nodes[0]!.id);
 
       let invoked = false;
       const outcome = await orch.restore(snap.id, {
