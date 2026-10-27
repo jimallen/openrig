@@ -38,6 +38,11 @@ export interface RunnerInputOptions {
   interruptInsidePaste?: "interrupt" | "content";
   /** OF-119: the open-paste hint delay (default PASTE_OPEN_HINT_MS). Used only in "content" mode, where Ctrl-C cannot end a paste. */
   pasteOpenHintMs?: number;
+  /** OF-148: told when a bracketed paste has stayed open past the hint delay (true) and when it ends by any road: its
+   *  closing marker, an Esc-then-[201~ typed by hand, or the editor closing (false). Fired only on those two edges, so a
+   *  paste that closes in time reports nothing. Used only in "content" mode, with the hint. The runner records it in its
+   *  sidecar so `rig send` can refuse instead of delivering text the open paste would swallow. */
+  onPasteOpenChange?: (open: boolean) => void;
 }
 
 export function createRunnerInput(
@@ -72,15 +77,27 @@ export function createRunnerInput(
   const decoder = new StringDecoder("utf8");
   // OF-119: in "content" mode an unclosed paste holds Ctrl-C and Enter as text, so after a while say how to get out.
   let pasteHint: ReturnType<typeof setTimeout> | null = null;
+  // OF-148: whether the owner was last told "open". The report follows the hint (an open paste past the delay), so a
+  // paste still arriving, or just closed in the pane, never reads as lost to a `rig send` racing it.
+  let pasteOpenReported = false;
+  const reportPasteOpen = (open: boolean) => {
+    if (pasteOpenReported === open) return;
+    pasteOpenReported = open;
+    try { options.onPasteOpenChange?.(open); } catch { /* a sidecar write failing must not break the editor */ }
+  };
   const armPasteHint = () => {
     if (!etxInPasteIsContent) return;
     pasteHint = setTimeout(() => {
       pasteHint = null;
+      reportPasteOpen(true);
       output.write(`\n[${label}] paste still open (its end marker has not arrived): Ctrl-C and Enter are pasted text until it closes. Paste anything, or type Esc then [201~, to close it. Ctrl-C after that clears the line${options.onInterrupt ? "" : " and aborts the current turn"}.\n`);
     }, options.pasteOpenHintMs ?? PASTE_OPEN_HINT_MS);
     pasteHint.unref?.();
   };
-  const disarmPasteHint = () => { if (pasteHint) { clearTimeout(pasteHint); pasteHint = null; } };
+  const disarmPasteHint = () => {
+    if (pasteHint) { clearTimeout(pasteHint); pasteHint = null; }
+    reportPasteOpen(false);
+  };
   let pending = "";
   let paste: string | null = null;
   let pasteBytes = 0;

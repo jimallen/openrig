@@ -78,6 +78,11 @@ export interface PiRunnerState {
    *  hung runner frozen at `busy: false` cannot read idle forever. Absent in a sidecar from a runner older than OF-119:
    *  that sidecar is believed as before, from `busy` (see piSidecarAlive). */
   aliveAt?: string;
+  /** OF-148: true while the pane editor holds a bracketed paste that has stayed open past PASTE_OPEN_HINT_MS (its closing
+   *  marker was lost), so Ctrl-C and Enter are pasted text and a `rig send` would be swallowed or torn. Written only when
+   *  true, and only trusted alongside a live `aliveAt` (a dead or hung runner cannot clear it). Absent in a sidecar from
+   *  an older runner: no answer, today's behaviour. */
+  pasteOpen?: boolean;
 }
 
 /** OF-119: how often a ready runner rewrites its sidecar, and how old `aliveAt` may be before the sidecar is no answer. */
@@ -122,6 +127,9 @@ export function parsePiRunnerState(raw: string): PiRunnerState | null {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const state = parsed as Record<string, unknown>;
     if (typeof state.ready !== "boolean" || typeof state.updatedAt !== "string") return null;
+    // OF-148: a present but non-boolean pasteOpen is not a record this reader understands: no runner answer, as for any
+    // malformed field (never read as "closed" and acted on).
+    if (state.pasteOpen !== undefined && typeof state.pasteOpen !== "boolean") return null;
     return parsed as unknown as PiRunnerState;
   } catch {
     return null;

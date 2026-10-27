@@ -333,6 +333,8 @@ export class RunnerCore {
   private sessionId: string | undefined;
   private lastEntryId: string | undefined;
   private ready = false;
+  /** OF-148: the pane editor reports a bracketed paste open past the hint delay; written to the sidecar only while true. */
+  private pasteOpen = false;
   private assistantErrorShown = false;
   private started = false;
   /** OMP attention (runtime_error | permission_prompt) that must survive the
@@ -453,6 +455,7 @@ export class RunnerCore {
   /** Child process exit — honest, loud, durable. */
   handlePiExit(code: number | null): void {
     this.ready = false;
+    this.pasteOpen = false; // the `exited` record is the last word; an open paste cannot outlive the runner's answer
     this.io.mirrorLine(`[${this.runtime}-runner] EXITED ${this.runtime} exited (code ${code ?? "unknown"})`);
     this.writeSidecar({ exited: { code, at: this.io.now() } });
     this.io.postActivity(this.activityPayload("Stop", `${this.runtime}_exited`));
@@ -797,8 +800,17 @@ export class RunnerCore {
       updatedAt: this.io.now(),
       // OF-119: every write proves the runner is running; tickAlive() keeps proving it while nothing else is written.
       aliveAt: this.io.now(),
+      ...(this.pasteOpen ? { pasteOpen: true } : {}),
       ...patch,
     });
+  }
+
+  /** OF-148: the editor's open-paste edge. Written at once (not at the next alive tick), so a closed paste stops refusing
+   *  sends within one write. Before the runner is ready, or after it exited, only the flag is kept: a write then would
+   *  replace the pending or `exited` record. */
+  setPasteOpen(open: boolean): void {
+    this.pasteOpen = open;
+    if (this.ready) this.writeSidecar({});
   }
 
   /** OF-119: rewrite the sidecar so its `aliveAt` stays fresh while the runner idles. Only a ready runner ticks: before
@@ -829,8 +841,16 @@ interface RunnerArgs {
  *  paste is one message and only a real key press submits /abort. (A paste whose closing marker never arrives
  *  therefore keeps swallowing Ctrl-C until it does, as in the pda runner; after PASTE_OPEN_HINT_MS the editor prints a
  *  pane line saying so and how to close it, OF-119.) */
-export function wirePiRunnerInput(core: Pick<RunnerCore, "handleUserBlock">, input: NodeJS.ReadStream, output: NodeJS.WriteStream) {
-  return createRunnerInput(input, output, (block) => core.handleUserBlock(block), { interruptInsidePaste: "content" });
+export function wirePiRunnerInput(
+  core: Pick<RunnerCore, "handleUserBlock"> & Partial<Pick<RunnerCore, "setPasteOpen">>,
+  input: NodeJS.ReadStream,
+  output: NodeJS.WriteStream,
+) {
+  return createRunnerInput(input, output, (block) => core.handleUserBlock(block), {
+    interruptInsidePaste: "content",
+    // OF-148: `rig send` refuses while this is true (PiRuntimeAdapter.sendReadiness).
+    onPasteOpenChange: (open) => core.setPasteOpen?.(open),
+  });
 }
 
 export function parseRunnerArgs(argv: string[]): RunnerArgs {

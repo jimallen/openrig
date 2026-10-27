@@ -277,6 +277,9 @@ export interface PdaRunnerState {
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   error?: { code: PdaRunnerErrorCode; at: string };
   exited?: { code: number | null; at: string };
+  /** OF-148: true while the pane editor holds a bracketed paste open past PASTE_OPEN_HINT_MS (see PiRunnerState.pasteOpen).
+   *  Written only when true; read only alongside a live `aliveAt`; absent from an older runner. */
+  pasteOpen?: boolean;
 }
 
 /** The held codes, in one place for the sidecar parser, the hook mapping and the RSI permission-stall predicate. */
@@ -314,6 +317,7 @@ export function parsePdaRunnerState(raw: string): PdaRunnerState | null {
   if (s.exited !== undefined && !(isObj(s.exited) && typeof s.exited.at === "string"
     && (s.exited.code === null || typeof s.exited.code === "number"))) return null;
   if (s.setAside !== undefined && !isCount(s.setAside)) return null;
+  if (s.pasteOpen !== undefined && typeof s.pasteOpen !== "boolean") return null;
   return parsed as unknown as PdaRunnerState;
 }
 

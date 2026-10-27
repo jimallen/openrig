@@ -21,7 +21,7 @@ import type {
   HarnessLaunchResult, ForkSource, RunnerReadinessTarget,
 } from "../domain/runtime-adapter.js";
 import type { AgentActivity } from "../domain/types.js";
-import { resolveConcreteHint } from "../domain/runtime-adapter.js";
+import { resolveConcreteHint, RUNNER_PASTE_OPEN_REASON } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
@@ -404,6 +404,9 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     // Only idle or running, from `busy`. OMP attention (a model error, a cancelled approval) is display-only for send
     // gating: the runner cancels the approval itself, so no prompt waits in the pane, and its remedy is a new
     // instruction, which `rig send` must be able to deliver. The code stays visible through the Notification hook.
+    // OF-148: an unclosed paste holds the pane input, so a send would be swallowed or torn. Believed only here, after the
+    // alive window above: a hung or dead runner cannot hold a send refused forever. An older runner never writes it.
+    if (state.pasteOpen === true) return { ...base, state: "needs_input", reason: RUNNER_PASTE_OPEN_REASON };
     if (state.busy) return { ...base, state: "running", reason: "run_active" };
     return { ...base, state: "idle", reason: "runner_idle" };
   }
