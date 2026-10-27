@@ -44,7 +44,8 @@ describe("D15 retention-disabled growth (OF-81)", () => {
     expect(span(records[0]!)).toMatchObject({ fingerprint: "rsi.retention-disabled-growth/table:usage_samples", count: 3, controlTotal: 0, population: 3 });
     // The control: same data, sweep on => nothing to say, and the coverage says it evaluated.
     expect(on.read()).toEqual([]);
-    expect(on.coverage()[0]).toMatchObject({ unit: "tables", total: 0, evaluated: 0, partial: false });
+    // N3: a complete zero that says why it did not look (D10 does the same: "retention disabled").
+    expect(on.coverage()[0]).toMatchObject({ unit: "tables", total: 0, evaluated: 0, partial: false, note: "retention enabled: not evaluated" });
   });
 
   it("is a threshold: one stale row under it is quiet, the row that reaches it fires", () => {
@@ -91,6 +92,36 @@ describe("D15 retention-disabled growth (OF-81)", () => {
     history(f, "job-b", 2, days(30));
     expect(f.records(wd(2)).map((r) => span(r).count)).toEqual([4]);
   });
+
+  it("counts rows strictly newer within the job, so a tie at the keep boundary is kept (the sweep's `>`), and the count is exact", () => {
+    const f = fixture();
+    f.db.pragma("foreign_keys = OFF");
+    const add = (id: string, hoursOld: number) => f.db.prepare("INSERT INTO watchdog_history (history_id, job_id, evaluated_at, outcome) VALUES (?, 'job-t', ?, 'skipped')").run(id, iso(hoursOld));
+    // Newest first: t1, then a tie (t2, t2), then t3. Strictly-newer counts: 0, 1, 1, 3. All older than 14 d.
+    add("t1", days(20)); add("t2a", days(21)); add("t2b", days(21)); add("t3", days(22));
+    const wd = (keepPerJob: number) => source(f, { watchdog: () => ({ days: 14, keepPerJob }), threshold: 1 });
+
+    expect(f.records(wd(2)).map((r) => span(r).count)).toEqual([1]); // only t3 has >= 2 newer
+    expect(f.records(wd(1)).map((r) => span(r).count)).toEqual([3]); // t2a, t2b, t3
+    expect(f.records(wd(4))).toEqual([]);                            // nothing has 4 newer
+  });
+
+  it("stays linear: 50,000 stale rows in ONE job read well inside a bound a quadratic count would miss by an order of magnitude", () => {
+    const f = fixture();
+    f.db.pragma("foreign_keys = OFF");
+    const stmt = f.db.prepare("INSERT INTO watchdog_history (history_id, job_id, evaluated_at, outcome) VALUES (?, 'job-big', ?, 'skipped')");
+    const start = hoursAgo(days(20)).getTime();
+    f.db.transaction(() => { for (let i = 0; i < 50_000; i++) stmt.run(`b-${i}`, new Date(start - i * 1000).toISOString()); })();
+    const big = source(f, { watchdog: () => ({ days: 14, keepPerJob: 50 }), threshold: 10_000 });
+
+    const began = Date.now();
+    const records = f.records(big);
+    const elapsedMs = Date.now() - began;
+
+    expect(records.map((r) => span(r).count)).toEqual([49_950]);
+    // Measured: the rank form ~0.05 s here; the correlated form is ~25 s at this size (quadratic).
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 60_000);
 
   it("reports each table on its own fingerprint, so one table going quiet leaves the other's finding", () => {
     const f = fixture();

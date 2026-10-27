@@ -29,6 +29,9 @@ import { RsiFindingSource, partitionText, type FindingSpec, type RsiFindingSourc
  */
 export const RETENTION_DISABLED_GROWTH_ROWS = 10_000;
 
+/** The coverage note when the sweep is on: D15 did not look, which is not the same as looking and finding nothing. */
+export const RETENTION_ENABLED_NOTE = "retention enabled: not evaluated";
+
 export interface RetentionGrowthDeps extends RsiFindingSourceDeps {
   /** False when the daemon runs no retention sweep. When true this source reads a complete zero. Default true. */
   retentionEnabled?: boolean;
@@ -56,7 +59,7 @@ export class RetentionDisabledGrowthSource extends RsiFindingSource {
   }
 
   protected query({ db, now, limit }: SourceContext): SourceResult {
-    if (this.growthDeps.retentionEnabled !== false) return { findings: [], total: 0, unit: "tables", order: "table name" };
+    if (this.growthDeps.retentionEnabled !== false) return { findings: [], total: 0, unit: "tables", order: "table name", note: RETENTION_ENABLED_NOTE };
     const threshold = this.growthDeps.thresholdRows ?? RETENTION_DISABLED_GROWTH_ROWS;
     const cutoff = (days: number): string => new Date(now.getTime() - nonNegative("retention days", days) * 24 * 3_600_000).toISOString();
     const usageDays = this.growthDeps.usageSamplesDays();
@@ -68,11 +71,16 @@ export class RetentionDisabledGrowthSource extends RsiFindingSource {
         min(CASE WHEN captured_at < @cutoff THEN id END) AS first_id, max(CASE WHEN captured_at < @cutoff THEN id END) AS last_id,
         min(CASE WHEN captured_at < @cutoff THEN captured_at END) AS first_seen, max(CASE WHEN captured_at < @cutoff THEN captured_at END) AS last_seen
       FROM usage_samples`).get({ cutoff: cutoff(usageDays) }) as StaleRow;
+    // "Rows strictly newer in the same job" (the sweep's `>`) is rank() - 1 over the job, newest
+    // first: ties share a rank, so a tie at the keep boundary is kept, as the sweep keeps it. One
+    // pass over the table. The sweep's own correlated count is quadratic per job, and this runs
+    // synchronously on every health read in exactly the regime where the table is unbounded.
     const wd = db.prepare(`SELECT (SELECT count(*) FROM watchdog_history) AS total, count(*) AS stale,
-        min(wh.rowid) AS first_id, max(wh.rowid) AS last_id, min(wh.evaluated_at) AS first_seen, max(wh.evaluated_at) AS last_seen
-      FROM watchdog_history wh
-      WHERE wh.evaluated_at < @cutoff
-        AND (SELECT count(*) FROM watchdog_history w2 WHERE w2.job_id = wh.job_id AND w2.evaluated_at > wh.evaluated_at) >= @keep`)
+        min(rid) AS first_id, max(rid) AS last_id, min(evaluated_at) AS first_seen, max(evaluated_at) AS last_seen
+      FROM (SELECT rowid AS rid, evaluated_at,
+              rank() OVER (PARTITION BY job_id ORDER BY evaluated_at DESC) - 1 AS newer
+            FROM watchdog_history)
+      WHERE evaluated_at < @cutoff AND newer >= @keep`)
       .get({ cutoff: cutoff(watchdog.days), keep }) as StaleRow;
 
     const defaults = RETENTION_DEFAULTS;
