@@ -160,7 +160,7 @@ describe("the one registry: D10 with retention off", () => {
     expect(service.records().filter((r) => r.detector === "rsi.retention-lag")).toEqual([]);
     expect(service.coverage().find((c) => c.source === "rsi-retention-lag")).toEqual({
       source: "rsi-retention-lag", evaluatedAt: NOW.toISOString(), unit: "tables", limit: expect.any(Number), total: 0, evaluated: 0, omitted: 0,
-      partial: false, order: "single table", note: "retention disabled",
+      partial: false, order: "single table", note: "retention disabled at daemon start; a change to retention.enabled takes effect at the next daemon start",
     });
     // Control: the same old row with retention on is a finding.
     expect(new HealthProjectionService(createRsiSources({ dbPath: h.dbPath, openrigHome: h.dir, now: () => NOW })).records()

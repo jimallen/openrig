@@ -1209,6 +1209,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     slowOpRecorderAliveAt: slowOpRecorder?.lastAliveAt ? () => slowOpRecorder.lastAliveAt!() : undefined,
     retentionEnabled: healthSettingsStore.resolveOne("retention.enabled").value === true,
     retentionDays: () => { const v = healthSettingsStore.resolveOne("retention.usage_samples_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.usageSamplesRetentionDays; },
+    transitionsRetention: () => { const v = healthSettingsStore.resolveOne("retention.transitions_days").value; return typeof v === "number" ? v : RETENTION_DEFAULTS.transitionsRetentionDays; },
     watchdogRetention: () => {
       const num = (key: "retention.watchdog_days" | "retention.watchdog_keep_per_job", fallback: number): number => { const v = healthSettingsStore.resolveOne(key).value; return typeof v === "number" ? v : fallback; };
       return { days: num("retention.watchdog_days", RETENTION_DEFAULTS.watchdogRetentionDays), keepPerJob: num("retention.watchdog_keep_per_job", RETENTION_DEFAULTS.watchdogKeepPerJob) };

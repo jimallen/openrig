@@ -144,6 +144,71 @@ describe("queue-retention — pruneWatchdogHistory", () => {
     insHist(db).run("b1", "jobB", "2026-01-01T00:00:00.000Z");
     expect(pruneWatchdogHistory(db, opts({ watchdogKeepPerJob: 50 })).deletedRows).toBe(0);
   });
+
+  // The sweep deletes exactly the rows with at least K strictly-newer rows in the same job and an
+  // age past the window. This oracle restates that rule independently of the implementation (the
+  // plain correlated count), over several jobs and exact-timestamp ties at the keep boundary.
+  const oracleStale = (db: Database.Database, cutoff: string, keep: number): string[] =>
+    (db.prepare(
+      `SELECT wh.history_id AS id FROM watchdog_history wh
+        WHERE wh.evaluated_at < ?
+          AND (SELECT COUNT(*) FROM watchdog_history w2 WHERE w2.job_id = wh.job_id AND w2.evaluated_at > wh.evaluated_at) >= ?
+        ORDER BY wh.history_id`).all(cutoff, keep) as Array<{ id: string }>).map((r) => r.id);
+
+  function seedTies(db: Database.Database): void {
+    const ins = insHist(db);
+    // jobA: ties at the 2nd/3rd newest; jobB: all-equal timestamps; jobC: one row; jobD: fresh rows only.
+    const rows: Array<[string, string, string]> = [
+      ["a1", "jobA", "2026-01-01T00:00:00.000Z"], ["a2", "jobA", "2026-01-02T00:00:00.000Z"],
+      ["a3", "jobA", "2026-01-02T00:00:00.000Z"], ["a4", "jobA", "2026-01-03T00:00:00.000Z"],
+      ["a5", "jobA", "2026-01-04T00:00:00.000Z"], ["a6", "jobA", "2026-07-07T00:00:00.000Z"],
+      ["b1", "jobB", "2026-01-01T00:00:00.000Z"], ["b2", "jobB", "2026-01-01T00:00:00.000Z"],
+      ["b3", "jobB", "2026-01-01T00:00:00.000Z"], ["c1", "jobC", "2026-01-01T00:00:00.000Z"],
+      ["d1", "jobD", "2026-07-06T00:00:00.000Z"], ["d2", "jobD", "2026-07-07T00:00:00.000Z"],
+    ];
+    for (const r of rows) ins.run(...r);
+  }
+
+  for (const keep of [0, 1, 2, 3, 4, 50]) {
+    it(`deletes exactly the rows the correlated rule selects (keep ${keep}), in one batch and drained in batches of 2`, () => {
+      const cutoff = "2026-06-08T00:00:00.000Z"; // NOW - 30 d
+      const expected = (() => { const d = makeDb(); seedTies(d); return oracleStale(d, cutoff, keep); })();
+      const allIds = (d: Database.Database) => (d.prepare("SELECT history_id AS id FROM watchdog_history ORDER BY history_id").all() as Array<{ id: string }>).map((r) => r.id);
+
+      const one = makeDb(); seedTies(one);
+      const before = allIds(one);
+      expect(pruneWatchdogHistory(one, opts({ watchdogRetentionDays: 30, watchdogKeepPerJob: keep })).deletedRows).toBe(expected.length);
+      expect(allIds(one)).toEqual(before.filter((id) => !expected.includes(id)));
+
+      const drained = makeDb(); seedTies(drained);
+      let total = 0;
+      for (;;) {
+        const n = pruneWatchdogHistory(drained, opts({ watchdogRetentionDays: 30, watchdogKeepPerJob: keep, batchSize: 2 })).deletedRows;
+        if (n === 0) break;
+        expect(n).toBeLessThanOrEqual(2);
+        total += n;
+      }
+      expect(total).toBe(expected.length);
+      expect(allIds(drained)).toEqual(before.filter((id) => !expected.includes(id)));
+    });
+  }
+
+  it("stays linear per batch: draining 50,000 stale rows of ONE job finishes well inside a bound a quadratic delete misses", async () => {
+    const db = makeDb();
+    // The production index (migration 032), which the hand-built table lacks.
+    db.exec("CREATE INDEX idx_watchdog_history_job_recent ON watchdog_history (job_id, evaluated_at DESC)");
+    const ins = insHist(db);
+    const start = Date.parse(NOW) - 60 * 24 * 3_600_000;
+    db.transaction(() => { for (let i = 0; i < 50_000; i++) ins.run(`big-${i}`, "job-big", new Date(start + i * 1000).toISOString()); })();
+
+    const began = Date.now();
+    const summary = await runQueueRetentionSweep(db, opts({ watchdogRetentionDays: 14, watchdogKeepPerJob: 50, batchSize: 500, maxBatchesPerTable: 200 }));
+    const elapsedMs = Date.now() - began;
+
+    expect(summary.watchdogDeleted).toBe(49_950);
+    expect(count(db, "SELECT COUNT(*) c FROM watchdog_history")).toBe(50);
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 120_000);
 });
 
 describe("queue-retention — runQueueRetentionSweep", () => {

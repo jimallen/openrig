@@ -17,6 +17,8 @@ export interface A2bSourceOptions {
   retentionEnabled: boolean;
   /** Live `retention.usage_samples_days`; read on every scan. */
   retentionDays?: () => number;
+  /** Live `retention.transitions_days` (D15); read on every scan. */
+  transitionsRetention?: () => number;
   /** Live `retention.watchdog_days` and `retention.watchdog_keep_per_job` (D15); read on every scan. */
   watchdogRetention?: () => { days: number; keepPerJob: number };
   now?: () => Date;
@@ -45,6 +47,7 @@ export function createA2bSources(options: A2bSourceOptions): HealthObservationSo
     // D15 always registers; with the sweep on it reads as a complete zero (OF-81).
     new RetentionDisabledGrowthSource({ ...deps, retentionEnabled: options.retentionEnabled,
       usageSamplesDays: options.retentionDays ?? (() => RETENTION_DEFAULTS.usageSamplesRetentionDays),
+      transitionsDays: options.transitionsRetention ?? (() => RETENTION_DEFAULTS.transitionsRetentionDays),
       watchdog: options.watchdogRetention ?? (() => ({ days: RETENTION_DEFAULTS.watchdogRetentionDays, keepPerJob: RETENTION_DEFAULTS.watchdogKeepPerJob })) }),
   ];
   return sources;

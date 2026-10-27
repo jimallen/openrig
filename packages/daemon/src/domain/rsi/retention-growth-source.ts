@@ -1,4 +1,4 @@
-import { RETENTION_DEFAULTS } from "../queue-retention.js";
+import { RETENTION_DEFAULTS, countArchivableTransitions } from "../queue-retention.js";
 import { RSI_RETENTION_DISABLED_GROWTH } from "./detector-ids.js";
 import { RsiFindingSource, partitionText, type FindingSpec, type RsiFindingSourceDeps, type SourceContext, type SourceResult } from "./finding-builder.js";
 
@@ -14,9 +14,10 @@ import { RsiFindingSource, partitionText, type FindingSpec, type RsiFindingSourc
  * ignores the steady-state rows retention would hold anyway.
  *
  * Tables: `usage_samples` and `watchdog_history`, the two telemetry tables with a plain
- * age-delete contract. `queue_transitions` is NOT read: its sweep archives (never deletes) and is
- * gated by a terminal-state and workflow-frontier predicate this source would have to mirror; it
- * is a separate follow-up, not a silent omission.
+ * age-delete contract, and `queue_transitions`, whose sweep ARCHIVES (moves, never deletes) the
+ * transitions of terminal qitems past the window that are not on a live workflow frontier. For
+ * that table the stale count is countArchivableTransitions (queue-retention.ts), which shares the
+ * sweep's own eligibility statement, so the terminal-state and frontier rules cannot drift.
  */
 
 /**
@@ -30,13 +31,15 @@ import { RsiFindingSource, partitionText, type FindingSpec, type RsiFindingSourc
 export const RETENTION_DISABLED_GROWTH_ROWS = 10_000;
 
 /** The coverage note when the sweep is on: D15 did not look, which is not the same as looking and finding nothing. */
-export const RETENTION_ENABLED_NOTE = "retention enabled: not evaluated";
+export const RETENTION_ENABLED_NOTE = "retention enabled at daemon start: not evaluated; a change to retention.enabled takes effect at the next daemon start";
 
 export interface RetentionGrowthDeps extends RsiFindingSourceDeps {
   /** False when the daemon runs no retention sweep. When true this source reads a complete zero. Default true. */
   retentionEnabled?: boolean;
   /** Live `retention.usage_samples_days`, read on every scan. */
   usageSamplesDays: () => number;
+  /** Live `retention.transitions_days`, read on every scan. */
+  transitionsDays: () => number;
   /** Live `retention.watchdog_days` and `retention.watchdog_keep_per_job`, read on every scan. */
   watchdog: () => { days: number; keepPerJob: number };
   /** Test seam: the firing threshold. */
@@ -63,6 +66,7 @@ export class RetentionDisabledGrowthSource extends RsiFindingSource {
     const threshold = this.growthDeps.thresholdRows ?? RETENTION_DISABLED_GROWTH_ROWS;
     const cutoff = (days: number): string => new Date(now.getTime() - nonNegative("retention days", days) * 24 * 3_600_000).toISOString();
     const usageDays = this.growthDeps.usageSamplesDays();
+    const transitionsDays = nonNegative("retention transitions days", this.growthDeps.transitionsDays());
     const watchdog = this.growthDeps.watchdog();
     const keep = nonNegative("watchdog keep per job", watchdog.keepPerJob);
 
@@ -83,11 +87,16 @@ export class RetentionDisabledGrowthSource extends RsiFindingSource {
       WHERE evaluated_at < @cutoff AND newer >= @keep`)
       .get({ cutoff: cutoff(watchdog.days), keep }) as StaleRow;
 
+    // The sweep archives a terminal qitem's whole trail once its newest transition is past the window.
+    const archivable = countArchivableTransitions(db, { nowIso: now.toISOString(), transitionsRetentionDays: transitionsDays });
+    const transitions: StaleRow = { total: archivable.total, stale: archivable.stale, first_id: archivable.firstId, last_id: archivable.lastId, first_seen: archivable.firstSeen, last_seen: archivable.lastSeen };
+
     const defaults = RETENTION_DEFAULTS;
     const specs: FindingSpec[] = [];
     for (const [table, row, windowText] of [
       ["usage_samples", usage, `${usageDays} d`],
       ["watchdog_history", wd, `${watchdog.days} d, keeping the newest ${keep} per job`],
+      ["queue_transitions", transitions, `${transitionsDays} d, terminal qitems not on a live workflow frontier`],
     ] as const) {
       const stale = row.stale ?? 0;
       if (stale < threshold) continue;
@@ -96,9 +105,9 @@ export class RetentionDisabledGrowthSource extends RsiFindingSource {
         scope: { type: "instance", instanceId: this.deps.instanceId },
         count: stale, controlTotal: row.total - stale, population: row.total,
         firstSeq: row.first_id!, lastSeq: row.last_id!, firstSeen: row.first_seen!, lastSeen: row.last_seen!,
-        summary: `${table} holds ${stale} rows past its retention window and nothing is deleting them: retention.enabled is false.`,
+        summary: `${table} holds ${stale} rows past its retention window and nothing is ${table === "queue_transitions" ? "archiving" : "deleting"} them: retention.enabled is false.`,
         threshold: `retention.enabled is false AND at least ${threshold} ${table} rows are past the retention window (${windowText})`,
-        explanation: `${stale} of ${row.total} ${table} rows are rows the retention sweep would delete now: ${partitionText([["past retention", stale], ["within retention", row.total - stale]])}. The sweep is off, so the table grows without bound (defaults: usage_samples ${defaults.usageSamplesRetentionDays} d, watchdog_history ${defaults.watchdogRetentionDays} d).`,
+        explanation: `${stale} of ${row.total} ${table} rows are rows the retention sweep would ${table === "queue_transitions" ? "archive" : "delete"} now: ${partitionText([["past retention", stale], ["within retention", row.total - stale]])}. The sweep is off, so the table grows without bound (defaults: usage_samples ${defaults.usageSamplesRetentionDays} d, watchdog_history ${defaults.watchdogRetentionDays} d, queue_transitions ${defaults.transitionsRetentionDays} d).`,
         suggestedInspection: "Inspect retention.enabled and whether turning the retention sweep back on is acceptable; the setting is read once, at daemon start.",
       });
     }

@@ -17,9 +17,19 @@ import type { WatchdogJob, WatchdogJobsRepository } from "../watchdog-jobs-repos
  *      fingerprints carry forward. A failed read is never a removal.
  *   3. A fingerprint that goes quiet and returns gets a new `activated_at` (a recurrence wakes).
  *   4. Removals alone never wake.
- *   5. A source that is unavailable or partial is never invisible: an hour with nothing new
- *      and some source blind is a LOUD skip (`rsi_source_blind`, one history row naming each
- *      source and why), and the daily report asks the steward to list those rows (OF-72).
+ *   5. A source that is unavailable or partial is never invisible: the hour a source goes blind,
+ *      with nothing new, is a LOUD skip (`rsi_source_blind`, one history row and one event naming
+ *      each source and why), and the daily report asks the steward to list those rows (OF-72).
+ *      One row per blind EPISODE (a source and a reason), not per hour: while the same pairs stay
+ *      blind the hour is the quiet `rsi_source_blind_ongoing`. An episode is a state row in
+ *      `rsi_finding_state` under a reserved fingerprint prefix; it ends when its source is read
+ *      in full again (the same pass that quiets a source's gone findings), and it never counts
+ *      as an active finding, so it can neither wake the steward nor spend the budget. The row that
+ *      opens an episode is whatever the opening hour writes: the blind skip, or, when another source
+ *      has a new finding that hour, the wake / brake / budget row, which carries `newlyBlind` in its
+ *      notes. Known limits: the episode commits in the scan, before the engine inserts that row, so a
+ *      throw in between loses the row (the episode then stays quiet); and episodes are global while
+ *      history is per wake job, so a re-armed wake job's history does not show an episode already open.
  *   6. A fingerprint whose source is no longer registered goes quiet; it is not carried forward
  *      (carrying forward is for a source that is registered but could not be read).
  *   7. Retargeting the steward resets the receipt: the new steward is told what is active.
@@ -34,6 +44,12 @@ export const RSI_NO_NEW_FINDING = "rsi_no_new_finding" as const;
 /** Loud: nothing new, but at least one RSI source was unavailable or partial this hour, so the
  * absence of findings means nothing. Not in QUIET_SKIP_REASONS: the engine writes the history row. */
 export const RSI_SOURCE_BLIND = "rsi_source_blind" as const;
+/** Quiet: nothing new, and every source that is blind this hour was already recorded blind (same
+ * source, same reason) by an earlier loud row. Listed in QUIET_SKIP_REASONS. */
+export const RSI_SOURCE_BLIND_ONGOING = "rsi_source_blind_ongoing" as const;
+/** Reserved `rsi_finding_state.fingerprint` prefix of a blind-episode row. Real fingerprints are
+ * `rsi.<detector>/...` (fingerprint.ts), so none begins with it. Never an active finding. */
+const BLIND_EPISODE_PREFIX = "rsi.source-blind/";
 /** Loud: a wake was due but this job already sent its daily budget. */
 export const RSI_WAKE_BUDGET_EXHAUSTED = "rsi_wake_budget_exhausted" as const;
 /** Loud: a wake was due but the latest weekly provider window is at or above the brake. */
@@ -66,7 +82,7 @@ export const RSI_DAILY_REPORT_MESSAGE = [
   "1. Re-check declined proposals: re-propose any whose detector count has doubled or that were declined 30 or more days ago.",
   "2. List suppressed wakes (rsi_budget_brake, rsi_wake_budget_exhausted in this job's watchdog history) and every known-fix anchor added since the last report.",
   "3. List every RSI resolve with its actor_session and identity_provenance.",
-  "4. List every RSI source that was unavailable or partial (rsi_source_blind rows in this wake job's watchdog history since the last report, and the coverage in `rig health --json`): while a source is blind, no finding from it can be trusted to be absent.",
+  "4. List every RSI source that was unavailable or partial (rsi_source_blind rows in this wake job's watchdog history since the last report, one per blind episode, plus any wake or rsi_budget_brake / rsi_wake_budget_exhausted row whose evaluation notes carry `newlyBlind`: an episode that began in an hour with a new finding is named there; and the coverage in `rig health --json`): while a source is blind, no finding from it can be trusted to be absent.",
 ].join("\n");
 
 /** The receipt banked on a delivered wake (§3.4). `bucket` is the UTC hour of the attempt:
@@ -101,6 +117,8 @@ export interface FindingScanResult {
   active: ActiveFinding[];
   /** Sources that made no transitions this scan, with the reason. */
   carriedForward: Array<{ source: string; reason: "unavailable" | "partial" | "projection-failed" }>;
+  /** The carried-forward pairs whose blind episode started in THIS scan (no earlier scan had recorded them). */
+  newlyBlind: Array<{ source: string; reason: "unavailable" | "partial" | "projection-failed" }>;
 }
 
 function telemetryFingerprint(record: HealthRecord): string | null {
@@ -186,6 +204,31 @@ export function scanFindingState(
     })();
   }
 
+  // Blind episodes. A source read in full above has already had its episode rows quieted by the
+  // pass that quiets its gone findings; here each pair that is blind now either continues an
+  // active episode or starts one.
+  const newlyBlind: FindingScanResult["newlyBlind"] = [];
+  if (carriedForward.length > 0) {
+    const episode = db.prepare("SELECT state FROM rsi_finding_state WHERE fingerprint = ?");
+    const open = db.prepare(
+      `INSERT INTO rsi_finding_state (fingerprint, source, state, activated_at, last_seen_at) VALUES (?, ?, 'active', ?, ?)
+       ON CONFLICT(fingerprint) DO UPDATE SET source = excluded.source, state = 'active', activated_at = excluded.activated_at, last_seen_at = excluded.last_seen_at`,
+    );
+    const touch = db.prepare("UPDATE rsi_finding_state SET last_seen_at = ? WHERE fingerprint = ?");
+    // One source blind for a new reason is a new episode of that source: close its other reasons.
+    const closeOthers = db.prepare("UPDATE rsi_finding_state SET state = 'quiet' WHERE source = ? AND state = 'active' AND fingerprint LIKE ? AND fingerprint <> ?");
+    db.transaction(() => {
+      for (const pair of carriedForward) {
+        const key = `${BLIND_EPISODE_PREFIX}${pair.source}/${pair.reason}`;
+        const row = episode.get(key) as { state: string } | undefined;
+        if (row?.state === "active") { touch.run(nowIso, key); continue; }
+        open.run(key, pair.source, nowIso, nowIso);
+        closeOthers.run(pair.source, `${BLIND_EPISODE_PREFIX}%`, key);
+        newlyBlind.push(pair);
+      }
+    })();
+  }
+
   // A fingerprint whose source is no longer registered at all has no reader left to ever
   // clear it: quiet it. (A registered source that failed this hour is carried forward above.)
   const staleSources = (db.prepare("SELECT DISTINCT source FROM rsi_finding_state WHERE state = 'active'").all() as Array<{ source: string }>)
@@ -196,10 +239,10 @@ export function scanFindingState(
   }
 
   const active = (db.prepare(
-    "SELECT fingerprint, source, activated_at FROM rsi_finding_state WHERE state = 'active' ORDER BY fingerprint",
-  ).all() as Array<{ fingerprint: string; source: string; activated_at: string }>)
+    "SELECT fingerprint, source, activated_at FROM rsi_finding_state WHERE state = 'active' AND fingerprint NOT LIKE ? ORDER BY fingerprint",
+  ).all(`${BLIND_EPISODE_PREFIX}%`) as Array<{ fingerprint: string; source: string; activated_at: string }>)
     .map((row) => ({ fingerprint: row.fingerprint, source: row.source, activatedAt: row.activated_at }));
-  return { active, carriedForward };
+  return { active, carriedForward, newlyBlind };
 }
 
 /** Parse a banked receipt. Anything unreadable is "no receipt", which can only cause a wake. */
@@ -282,10 +325,15 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
         active: scan.active.length,
         newSinceLastWake: fresh.length,
         ...(scan.carriedForward.length ? { carriedForward: scan.carriedForward } : {}),
+        // The episode opened in the scan, so whatever row this hour writes (the blind skip, the wake,
+        // the brake or the budget skip) is the one that names it: later hours of it are quiet.
+        ...(scan.newlyBlind.length ? { newlyBlind: scan.newlyBlind } : {}),
       };
       if (fresh.length === 0) {
         // Nothing new is only reassuring when every source was read in full.
-        return { action: "skip", reason: scan.carriedForward.length ? RSI_SOURCE_BLIND : RSI_NO_NEW_FINDING, notes };
+        // Only a blind episode that starts now is loud; one already recorded stays quiet (one row per episode).
+        const reason = scan.carriedForward.length === 0 ? RSI_NO_NEW_FINDING : scan.newlyBlind.length > 0 ? RSI_SOURCE_BLIND : RSI_SOURCE_BLIND_ONGOING;
+        return { action: "skip", reason, notes };
       }
 
       const window = latestWeeklyWindow(deps.db);
