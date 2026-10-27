@@ -59,13 +59,13 @@ describe("restore, restore-check and --plan agree on a seat whose folder is gone
     expect(JSON.stringify(result.recovery.actions)).not.toContain("rig up --existing");
   });
 
-  it("a deleted folder: the plan, from the snapshot and from live rows, does not forecast a start", async () => {
+  it("a deleted folder: the plan, from the snapshot, does not forecast a start", async () => {
     const { seat, snapshotId } = await goneFolder();
-    for (const from of [snapshotId, null]) {
-      const forecast = plan(seat.rigId, from);
-      expect({ from: from ? "snapshot" : "live", action: forecast.intendedAction, status: forecast.restoreStatus }).toEqual({ from: from ? "snapshot" : "live", action: "awaiting-decision", status: "failed" });
-      expect(forecast.reason).toBe(`${SEAT} was not started: ${wording()}`);
-    }
+    // From the snapshot `rig down` took (the plan `rig up --existing --plan` prints). The no-snapshot plan of a downed rig stops
+    // at the active-occupant gate before any launch, so it says nothing about the folder.
+    const forecast = plan(seat.rigId, snapshotId);
+    expect({ action: forecast.intendedAction, status: forecast.restoreStatus }).toEqual({ action: "awaiting-decision", status: "failed" });
+    expect(forecast.reason).toBe(`${SEAT} was not started: ${wording()}`);
   });
 
   it("control: with the folder in place the check has no cwd entry and the plan forecasts a start", async () => {
@@ -74,6 +74,6 @@ describe("restore, restore-check and --plan agree on a seat whose folder is gone
     const snapshotId = await h.down(seat.rigId);
 
     expect((await check()).cwd).toBeUndefined();
-    for (const from of [snapshotId, null]) expect(plan(seat.rigId, from).intendedAction).not.toBe("awaiting-decision");
+    expect(plan(seat.rigId, snapshotId).intendedAction).not.toBe("awaiting-decision");
   });
 });
