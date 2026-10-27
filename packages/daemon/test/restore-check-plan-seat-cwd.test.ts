@@ -131,6 +131,26 @@ describe("restore recreates a project rig's own missing workspace, and only that
     expect(fs.statSync(seatDir).isDirectory()).toBe(true);
   });
 
+  // OF-124 N1: listed fresh with the default spec route, the fresh preflight judged the folder before launchNode could make it.
+  it("a seat listed fresh on the spec route also gets its workspace made again", async () => {
+    const { snapshotId, seatDir } = await downedWith("team");
+    const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists }, freshLogicalIds: [SEAT], startupFrom: "spec" } as never);
+    expect(out.ok).toBe(true);
+    const node = out.ok ? out.result.nodes.find((n) => n.logicalId === SEAT) : undefined;
+    expect(node?.status).not.toBe("failed");
+    expect(node?.error ?? "").not.toContain("does not exist");
+    expect(fs.statSync(seatDir).isDirectory()).toBe(true);
+  });
+
+  it("the same fresh spec route still refuses a folder that is not the project rig's own, and creates nothing", async () => {
+    const { snapshotId, project } = await downedWith("other-project");
+    const out = await h.restore.restore(snapshotId, { adapters: { "claude-code": h.adapter }, fsOps: { exists }, freshLogicalIds: [SEAT], startupFrom: "spec" } as never);
+    const node = out.ok ? out.result.nodes.find((n) => n.logicalId === SEAT) : undefined;
+    expect(node?.status).toBe("failed");
+    expect(node?.error).toContain("does not exist");
+    expect(fs.existsSync(path.join(project, ".workspaces"))).toBe(false);
+  });
+
   it("a folder of the same shape in a project the rig is not named for is refused as before, and nothing is created", async () => {
     const { snapshotId, project, seatDir } = await downedWith("other-project");
     const cwd = await check();

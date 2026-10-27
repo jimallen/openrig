@@ -56,4 +56,18 @@ describe("Wave-O B1 — production handover construction injects the one activit
     // The R2 discriminator, preserved: candidate captured `undefined` here.
     expect(constructed[0]!.activityOracle).toBe(sentinel);
   });
+
+  // OF-124 N3: a seat folder the person can fix is a conflict they can act on, not a server error.
+  it("a handover refused for the seat's folder answers 409 with its own code; any other create failure stays 500", async () => {
+    const post = (app: ReturnType<typeof makeApp>) => app.request("/api/seat/handover/dev-impl%40seat-rig", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "context-wall", source: "fresh" }),
+    });
+    const app = makeApp({ declareOccupantSwap: vi.fn() });
+    handover.mockResolvedValueOnce({ ok: false, code: "seat_cwd_unusable", message: "m", guidance: "g" } as never);
+    const folder = await post(app);
+    expect(folder.status).toBe(409);
+    expect(await folder.json()).toMatchObject({ code: "seat_cwd_unusable" });
+    handover.mockResolvedValueOnce({ ok: false, code: "successor_create_failed", message: "m", guidance: "g" } as never);
+    expect((await post(app)).status).toBe(500);
+  });
 });

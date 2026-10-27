@@ -925,7 +925,7 @@ describe("SeatHandoverService", () => {
     const result = await newService(tmux(), { invalidateRetiringOccupant }, () => ({ kind: "missing" }))
       .handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
 
-    expect(result).toMatchObject({ ok: false, code: "successor_create_failed" });
+    expect(result).toMatchObject({ ok: false, code: "seat_cwd_unusable" });
     expect((result as { message: string }).message).toContain("its cwd '/project' does not exist");
     expect((result as { message: string }).message).toContain("Create the folder /project");
     expect((result as { guidance: string }).guidance).toBe("The seat's folder is unusable; the seat was not touched. Fix the folder named above and retry the handover.");
