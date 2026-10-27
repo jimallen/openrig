@@ -1061,6 +1061,155 @@ describe("RigTeardownOrchestrator", () => {
       });
     });
 
+    // OF-116 F7 (Jim, 2026-10-27): rig down ends a seat's older duplicate live sessions BEFORE the auto-pre-down snapshot.
+    // Production consequence: the snapshot recorded BOTH running rows of such a seat, so `rig up --existing` after `rig down`
+    // failed the seat as "Active-occupant ambiguity: 2 candidate session rows". The rows below read the DB and the tmux calls AT
+    // THE MOMENT the snapshot is taken (a snapshot taken after the kills would pass for the wrong reason).
+    describe("a seat's older duplicate live rows end before the auto-pre-down snapshot (OF-116 F7)", () => {
+      interface AtCapture { rows: Array<{ name: string; status: string }>; killed: string[] }
+      function teardownTakingNote(tmux: TmuxAdapter, rigId: string) {
+        const seen: AtCapture[] = [];
+        const capture = {
+          captureSnapshot: vi.fn(() => {
+            seen.push({
+              rows: (db.prepare("SELECT s.session_name AS name, s.status FROM sessions s JOIN nodes n ON n.id = s.node_id WHERE n.rig_id = ? ORDER BY s.created_at, s.id").all(rigId) as AtCapture["rows"]),
+              killed: (tmux.killSession as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0] as string),
+            });
+            return { id: "snap-1", rigId, kind: "auto-pre-down", status: "complete", data: "{}", createdAt: new Date().toISOString() };
+          }),
+          db,
+        } as unknown as SnapshotCapture;
+        return { seen, td: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture: capture, eventBus }) };
+      }
+
+      it("the older live row is killed and ended first: the snapshot sees ONE running row, the seat's newer one", async () => {
+        const { rigId } = olderLiveSeat("running");
+        const tmux = tmuxWith([OLD, NEW]);
+        const { td, seen } = teardownTakingNote(tmux, rigId);
+
+        const result = await td.teardown(rigId);
+
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.rows).toEqual([{ name: OLD, status: "exited" }, { name: NEW, status: "running" }]);
+        expect(seen[0]!.killed, "the older session was killed before the snapshot, the newer one only after").toEqual([OLD]);
+        expect((tmux.killSession as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0])).toEqual([OLD, NEW]);
+        expect(result).toMatchObject({ sessionsKilled: 2, errors: [] });
+        expect(runningRows(rigId)).toBe(0);
+      });
+
+      it("control: an older row that is the seat's ONLY live row is still running when the snapshot is taken (it is the occupant)", async () => {
+        const { rigId } = olderLiveSeat("exited");
+        const tmux = tmuxWith([OLD]);
+        const { td, seen } = teardownTakingNote(tmux, rigId);
+
+        await td.teardown(rigId);
+
+        expect(seen[0]!.rows).toEqual([{ name: OLD, status: "running" }, { name: NEW, status: "exited" }]);
+        expect(seen[0]!.killed).toEqual([]);
+      });
+
+      it("an older ADOPTED duplicate is detached before the snapshot and its tmux session is left running", async () => {
+        const { rigId, olderId } = olderLiveSeat("running");
+        db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(olderId);
+        const tmux = tmuxWith([OLD, NEW]);
+        const { td, seen } = teardownTakingNote(tmux, rigId);
+
+        const result = await td.teardown(rigId);
+
+        expect(seen[0]!.rows).toEqual([{ name: OLD, status: "detached" }, { name: NEW, status: "running" }]);
+        expect(seen[0]!.killed).toEqual([]);
+        expect((tmux.killSession as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0])).toEqual([NEW]);
+        expect(result.warnings?.join(" ")).toContain(`Session '${OLD}'`);
+      });
+
+      it("a duplicate that carries the kept row's tmux name ends as a ROW before the snapshot; the session is killed once, after it", async () => {
+        const { rigId, olderId, newerId } = olderLiveSeat("running");
+        db.prepare("UPDATE sessions SET session_name = ? WHERE id = ?").run(NEW, olderId);
+        const tmux = tmuxWith([NEW]);
+        const { td, seen } = teardownTakingNote(tmux, rigId);
+
+        const result = await td.teardown(rigId);
+
+        expect(seen[0]!.rows).toEqual([{ name: NEW, status: "exited" }, { name: NEW, status: "running" }]);
+        expect(seen[0]!.killed, "no tmux session was killed before the snapshot: it is the kept row's").toEqual([]);
+        expect(tmux.killSession).toHaveBeenCalledTimes(1);
+        expect(result).toMatchObject({ sessionsKilled: 1, errors: [] });
+        expect(row(olderId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+        expect(row(newerId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      });
+
+      it("a duplicate whose kill fails stays running, is reported once, and blocks delete", async () => {
+        const { rigId, olderId, newerId } = olderLiveSeat("running");
+        const tmux = tmuxWith([OLD, NEW], { [OLD]: "stuck" });
+        const { td, seen } = teardownTakingNote(tmux, rigId);
+
+        const result = await td.teardown(rigId, { delete: true });
+
+        expect(seen[0]!.rows).toEqual([{ name: OLD, status: "running" }, { name: NEW, status: "running" }]);
+        expect(result.errors.filter(e => e.includes(`Kill failed for session '${OLD}'`))).toHaveLength(1);
+        expect(result.deleteBlocked).toBe(true);
+        expect((tmux.killSession as ReturnType<typeof vi.fn>).mock.calls.filter(c => c[0] === OLD)).toHaveLength(1);
+        expect(row(olderId)).toMatchObject({ status: "running" });
+        expect(row(newerId)).toEqual({ status: "exited", intentionally_stopped: 1 });
+      });
+    });
+
+    // OF-116 N3: an older LAUNCHED row that shares its name with a live ADOPTED row of the same seat is not a second session.
+    // Production consequence: `rig down` killed the person's adopted tmux session through the launched row's name.
+    describe("an older launched row that shares an adopted row's name leaves that session running (OF-116 N3)", () => {
+      /** One seat, newest row exited, two older live rows named X: the first created is `first`, the other `second`. */
+      function pairSeat(first: "launched" | "claimed") {
+        const rig = rigRepo.createRig("test-rig");
+        const node = rigRepo.addNode(rig.id, "dev", { runtime: "claude-code", cwd: tmpDir });
+        const make = (origin: string, created: string, status: string, name: string) => {
+          const s = sessionRegistry.registerSession(node.id, name);
+          db.prepare("UPDATE sessions SET status = ?, origin = ?, created_at = ? WHERE id = ?").run(status, origin, created, s.id);
+          return s.id;
+        };
+        const a = make(first, "2019-01-01 00:00:00", "running", "r01-shared");
+        const b = make(first === "launched" ? "claimed" : "launched", "2020-01-01 00:00:00", "running", "r01-shared");
+        make("launched", "2021-01-01 00:00:00", "exited", NEW);
+        return { rigId: rig.id, a, b };
+      }
+
+      it.each(["launched", "claimed"] as const)("the %s row is the earlier one: nothing is killed, both rows end", async (first) => {
+        const { rigId, a, b } = pairSeat(first);
+        const tmux = tmuxWith(["r01-shared"]);
+
+        const result = await buildTeardown(tmux).teardown(rigId);
+
+        expect(tmux.killSession).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ sessionsKilled: 0, errors: [] });
+        expect(runningRows(rigId)).toBe(0);
+        const claimedRow = first === "claimed" ? a : b;
+        expect(row(claimedRow)).toEqual({ status: "detached", intentionally_stopped: 0 });
+        expect(result.warnings?.join(" ")).toContain("r01-shared");
+      });
+    });
+
+      // OF-116 V8 (review-u07 R4): an ARCHIVED rig's pre-down resume-metadata refresh skips a session some other seat holds, so a
+      // namesake cannot stand in for the archived row's own token. A released session holds the name too (it is the person's).
+      it.each([
+        ["a released (detached claimed) session holds the name: the archived row is not a refresh target", "detached", "claimed", []],
+        ["control: a detached session OpenRig launched holds nothing: the archived row is a refresh target", "detached", "launched", [NEW]],
+      ] as const)("an archived rig's refresh: %s", async (_name, status, origin, refreshed) => {
+        const { rigId } = olderLiveSeat("running");
+        db.prepare("UPDATE rigs SET archived_at = ? WHERE id = ?").run(new Date().toISOString(), rigId);
+        const other = rigRepo.createRig("other-rig");
+        const held = sessionRegistry.registerSession(rigRepo.addNode(other.id, "human").id, NEW);
+        db.prepare("UPDATE sessions SET status = ?, origin = ? WHERE id = ?").run(status, origin, held.id);
+        const refresh = vi.fn(async () => undefined);
+        const td = new RigTeardownOrchestrator({
+          db, rigRepo, sessionRegistry, tmuxAdapter: tmuxWith([OLD, NEW]), snapshotCapture: mockSnapshotCapture(db), eventBus,
+          resumeMetadataRefresher: { refresh } as unknown as ResumeMetadataRefresher,
+        });
+
+        await td.teardown(rigId);
+
+        const targets = (refresh.mock.calls[0] as unknown as [Array<{ sessionName: string }>])[0];
+        expect(targets.map(s => s.sessionName)).toEqual(refreshed);
+      });
+
     it("does not treat the older row as a pre-down snapshot refresh target", async () => {
       const { rigId } = olderLiveSeat("running");
       const refresh = vi.fn(async () => undefined);

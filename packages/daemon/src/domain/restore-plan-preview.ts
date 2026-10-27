@@ -315,13 +315,15 @@ export function buildRestorePlanPreview(
       ? resolveActiveOccupantRow(sessionRows, relationMap, nodeId)
       : { kind: "none" as const };
   const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
-    const savedNodeId = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId)?.id ?? node.id;
+    const savedNode = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId);
+    const savedNodeId = savedNode?.id ?? node.id;
     const forecasted = forecast({
       logicalId: node.logicalId, snapshotNodeId: savedNodeId, live: { runtime: node.runtime ?? null },
       continuityStatus: continuity[node.id] ?? null,
       freshRequested: freshLogicalIds?.includes(node.logicalId) ?? false, occupant: resolveOccupant(savedNodeId, node.id),
       // A seat that is running is not launched by restore, so only a seat with no binding is judged.
-      cwd: node.binding ? null : node.cwd,
+      // OF-128 L7: a seat with no live cwd is launched in the snapshot's, so that is the folder judged.
+      cwd: node.binding ? null : node.cwd ?? savedNode?.cwd ?? null,
     });
     // OF-62: restore captures a pre-restore snapshot of the LIVE rig first, and that capture refuses on a damaged saved
     // row (snapshot-capture.ts, the same predicate). Nothing is started, so the plan must not say "fresh-primed".
