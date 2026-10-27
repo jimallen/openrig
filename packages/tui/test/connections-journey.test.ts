@@ -75,6 +75,16 @@ async function verify(ready: boolean | null) {
 }
 
 describe("passive Connections journey", () => {
+  it("OF-146: an open request whose saved tags are unreadable says so; a readable one beside it does not", async () => {
+    const snap = await hydrate();
+    const row = (qitemId: string, unreadable?: string[]) => ({ qitemId, sourceSession: "orch@demo", destinationSession: "alex@external", state: "pending", blockedOn: null, handedOffTo: null, tier: null, tags: null, ...(unreadable ? { unreadable } : {}), summary: "fixture decision", body: "", claimedAt: null, tsUpdated: "2026-10-27T10:00:00.000Z" });
+    snap.pending.push(row("request-bad", ["tags"]), row("request-ok"));
+    const lines = connectionsLines(snap, 140).map((l) => l.text).filter((t) => t.includes("Open request in loaded window"));
+    expect(lines).toHaveLength(2);
+    expect(lines.find((t) => t.includes("request-bad"))).toContain("DAMAGED: tags unreadable");
+    expect(lines.find((t) => t.includes("request-ok"))).not.toContain("DAMAGED");
+  });
+
   it("reads real sources, preserves attribution, navigates to route and spec then returns to work without writes or external calls", async () => {
     await verify(true);
     const before = [configPathFor(home), projectionPath(home), join(home, "state/human-channel-operations.jsonl")].map((p) => readFileSync(p, "utf8"));

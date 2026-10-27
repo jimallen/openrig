@@ -239,8 +239,10 @@ function workRows(rows: FleetSnapshot["attention"], width: number, incomplete = 
   if (rows.length === 0) return [fieldLine({ label: "rows", value: incomplete ? "not in sample; work unknown" : "none in the served bounded lists" })];
   return rows.flatMap((row) => {
     const summary = row.summary?.trim() || row.body.split("\n").find((line) => line.trim())?.trim() || "no summary served";
+    const damaged = damagedPhrase(row);
     return [
       ...wrapDetailValue("qitem", `${row.qitemId} · ${row.state}`, width),
+      ...(damaged ? wrapDetailValue("damaged", `${damaged} · what is blank here is unknown, not empty`, width) : []),
       ...wrapDetailValue("work", summary, width),
       ...(row.blockedOn ? wrapDetailValue("blocker", `blocked on ${row.blockedOn}`, width) : []),
     ];
@@ -393,7 +395,8 @@ function queueRows(snap: FleetSnapshot): FleetSnapshot["attention"] {
 function recentWorkText(snap: FleetSnapshot, row: RecentTransitionSnap): string {
   const qitem = queueRows(snap).find((candidate) => candidate.qitemId === row.qitemId);
   const work = qitem?.summary?.trim() || qitem?.body.split("\n").find((line) => line.trim())?.trim();
-  return row.summary?.trim() || work || "no work served";
+  const damaged = damagedPhrase(qitem);
+  return `${damaged ? `${damaged} · ` : ""}${row.summary?.trim() || work || "no work served"}`;
 }
 
 function agentDrillForSession(snap: FleetSnapshot, session: string): Action | undefined {

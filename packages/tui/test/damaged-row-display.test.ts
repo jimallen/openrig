@@ -110,7 +110,8 @@ describe("OF-146 Pulse lists mark a damaged row", () => {
     expect(lineWith(text, "Also waiting")[0]).not.toContain("DAMAGED");
   });
 
-  it("PARKED WITH BATON, NOW, JUST FINISHED and UP NEXT lead the damaged row's label with DAMAGED", async () => {
+  /** Two damaged rows (in progress, pending), one readable pending row, and a damaged finished row, all served by the real routes. */
+  async function laneFixture() {
     const f = fixture();
     f.seed({ state: "in-progress", tags: "{not json", body: "Stranded work" });
     f.seed({ state: "pending", tags: "{not json", body: "Queued work" });
@@ -120,15 +121,32 @@ describe("OF-146 Pulse lists mark a damaged row", () => {
     const live: FleetSnapshot = { ...snap,
       seatActivity: [{ session: `${SEAT}@${RIG}`, logicalId: SEAT, terminalActive: false, lastActivityAt: "2026-10-27T11:00:00.000Z" }],
       recentlyFinished: [finished] };
-    const parked = pulseText(live);
-    expect(lineWith(parked, "no handoff")[0]).toContain(MARK);
-    expect(lineWith(parked, "Queued work")[0]).toContain("DAMAGED Queued work");
-    expect(parked).toContain("○ Healthy queued"); // lanes share terminal rows, so pin the cell's own text
-    expect(parked).not.toContain("DAMAGED Healthy");
-    expect(lineWith(parked, "✓ 11:40")[0]).toContain("DAMAGED Shipped"); // cut at the cell edge, marker first
+    return { f, snap, live };
+  }
+
+  it("PARKED WITH BATON: a damaged in-progress row is marked", async () => {
+    const { live } = await laneFixture();
+    expect(lineWith(pulseText(live), "no handoff")[0]).toContain(MARK);
+  });
+
+  it("NOW lane: the damaged row's label leads with DAMAGED (the 30-column cell cuts it at the right)", async () => {
+    const { live } = await laneFixture();
     const now = pulseText({ ...live, seatActivity: [{ ...live.seatActivity[0]!, terminalActive: true }] });
-    // the 30-column NOW cell cuts the long label at the right, which is why the marker leads it
     expect(lineWith(now, "● dev.worker")[0]).toContain("DAMAGED Strande");
+  });
+
+  it("JUST FINISHED lane: the damaged row's label leads with DAMAGED", async () => {
+    const { live } = await laneFixture();
+    expect(lineWith(pulseText(live), "✓ 11:40")[0]).toContain("DAMAGED Shipped");
+  });
+
+  it("UP NEXT lane: the damaged row leads with DAMAGED, the readable row beside it does not", async () => {
+    const { live } = await laneFixture();
+    const text = pulseText(live);
+    expect(lineWith(text, "○")[0]).toBeDefined();
+    expect(text).toContain("DAMAGED Queued work");
+    expect(text).toContain("○ Healthy queued"); // lanes share terminal rows, so pin the cell's own text
+    expect(text).not.toContain("DAMAGED Healthy");
   });
 
   it("seat table: a damaged seat row says its slice is unknown, not '—'", async () => {
@@ -165,5 +183,47 @@ describe("OF-146 delivered updates feed marks a damaged row", () => {
     const lines = attentionLines({ ...createViewState({ instanceId: "f", getSnapshot: () => ({}) as FleetSnapshot }).get() }, { attentionRead: read } as FleetSnapshot, 120).map(l => l.text);
     expect(lines.filter(l => l.includes("Deployed the cover"))[0]).toContain(MARK);
     expect(lines.filter(l => l.includes("Deployed the font"))[0]).not.toContain("DAMAGED");
+  });
+});
+
+describe("OF-146 the other TUI queue-row listings mark a damaged row", () => {
+  it("agent detail page: CURRENT WORK and UP NEXT name the damage; a readable row does not", async () => {
+    const f = fixture();
+    f.seed({ state: "in-progress", tags: "{not json", body: "Stranded work" });
+    f.seed({ state: "pending", tags: "{not json", body: "Queued work" });
+    const text = f.render(await f.read("agent"), "agent");
+    expect(text).toContain("CURRENT WORK · 1");
+    expect(text.match(/DAMAGED: tags unreadable/g)?.length).toBe(2);
+    const ok = fixture(); ok.seed({ state: "in-progress", tags: '["a"]', body: "Stranded work" });
+    expect(ok.render(await ok.read("agent"), "agent")).not.toContain("DAMAGED");
+  });
+
+  it("agent detail page: RECENTLY FINISHED names the damage", async () => {
+    const { live } = await (async () => {
+      const f = fixture(); f.seed({ state: "pending", tags: "{not json", body: "Shipped work" });
+      const snap = await f.read("agent");
+      return { live: { ...snap, recentlyFinished: [{ ...snap.pending[0]!, state: "done" }], pending: [] } as FleetSnapshot, f };
+    })();
+    const f2 = fixture();
+    const text = f2.render(live, "agent");
+    expect(text).toContain("RECENTLY FINISHED");
+    expect(text.match(/DAMAGED: tags unreadable/g)?.length).toBe(1);
+  });
+
+  it("recent list and recent detail: the work line names the damage of the queue row it came from", async () => {
+    const f = fixture();
+    const bad = f.seed({ state: "done", tags: "{not json", body: "Shipped work" });
+    const ok = f.seed({ state: "done", tags: '["a"]', body: "Shipped fine" });
+    const snap = await f.read("rig");
+    const done = (qitemId: string, summary: string, unreadable?: string[]): QueueRead => ({ qitemId, state: "done", destinationSession: `${SEAT}@${RIG}`, blockedOn: null, handedOffTo: null, tier: null, tags: null, ...(unreadable ? { unreadable } : {}), summary, body: "", claimedAt: null, tsUpdated: "2026-10-27T11:00:00.000Z" });
+    const rows = [bad, ok].map((id, k) => ({ transitionId: k + 1, qitemId: id, ts: "2026-10-27T11:00:00Z", actorSession: "a@selected", change: "completed", summary: null, rig: RIG, targetKind: "qitem" as const, target: id }));
+    const withQueue: FleetSnapshot = { ...snap, recentlyFinished: [done(bad, "Shipped work", ["tags"]), done(ok, "Shipped fine")],
+      recentTransitions: rows, recentTransitionsScope: { kind: "rig", rig: RIG } };
+    const state = { ...createViewState({ instanceId: "fixture", getSnapshot: () => withQueue }).get(), section: "topology", viewTab: "recent", drill: [{ kind: "host", name: "fixture" }, { kind: "rig", name: RIG }] } as ViewState;
+    const list = renderScreen(state, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
+    expect(lineWith(list, "Shipped work")[0]).toContain(MARK);
+    expect(lineWith(list, "Shipped fine")[0]).not.toContain("DAMAGED");
+    const detail = renderScreen({ ...state, recentOpen: rows[0] }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
+    expect(detail).toContain(`${MARK} · Shipped work`);
   });
 });

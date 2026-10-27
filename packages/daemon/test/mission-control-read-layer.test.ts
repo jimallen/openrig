@@ -175,6 +175,16 @@ describe("MissionControlReadLayer (PL-005 Phase A; 7 views)", () => {
     }
   });
 
+  it("OF-146: recent-ships keeps the `unreadable` marker on a finished qitem whose saved tags cannot be read", async () => {
+    const damaged = await queueRepo.create({ sourceSession: "src@rig", destinationSession: "dev@rig", body: "Shipped work", summary: "damaged fixture", tags: ["project:alpha"] });
+    const healthy = await queueRepo.create({ sourceSession: "src@rig", destinationSession: "dev@rig", body: "Shipped fine", summary: "healthy fixture", tags: ["project:alpha"] });
+    db.prepare("UPDATE queue_items SET state = 'done', tags = CASE qitem_id WHEN ? THEN ? ELSE tags END").run(damaged.qitemId, "{not json");
+    const rows: CompactStatusRow[] = (await readLayer.readView("recent-ships")).rows;
+    expect(rows.map((r) => r.qitemId).sort()).toEqual([damaged.qitemId, healthy.qitemId].sort());
+    expect(rows.find((r) => r.qitemId === damaged.qitemId)?.unreadable).toEqual(["tags"]);
+    expect("unreadable" in rows.find((r) => r.qitemId === healthy.qitemId)!).toBe(false);
+  });
+
   it("recent-ships caps at 10", async () => {
     for (let i = 0; i < 15; i++) {
       const created = await queueRepo.create({
