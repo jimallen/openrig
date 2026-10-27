@@ -739,12 +739,12 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             } else {
               console.log(`  No fresh sessions started. To start a seat fresh when you decide:`);
               for (const n of awaiting) {
-                console.log(`    ${freshSeatLaunchCommand(n.logicalId, isRigName ? source : String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
+                console.log(`    ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigHandle"] ?? res.data["rigName"] ?? source), adviceStartupFrom)}`);
               }
             }
           } else {
             for (const n of awaiting) {
-              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, isRigName ? source : String(res.data["rigName"] ?? source), adviceStartupFrom)}`);
+              console.error(`  ${n.logicalId}: awaiting-decision — no session started. To deliberately start only this seat fresh, run: ${freshSeatLaunchCommand(n.logicalId, String(res.data["rigHandle"] ?? res.data["rigName"] ?? source), adviceStartupFrom)}`);
             }
           }
         }

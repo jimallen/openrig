@@ -22,7 +22,7 @@ import { remoteUpLeaf } from "../domain/topology/remote-up-leaf.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
 import { tmuxAttachCommand } from "../adapters/tmux-server.js";
-import { rigAdviceHandleIn } from "../domain/rig-ref.js";
+import { rigAdviceHandle, rigAdviceHandleIn } from "../domain/rig-ref.js";
 
 export const upRoutes = new Hono();
 
@@ -213,6 +213,8 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     status: "restored",
     rigId,
     rigName,
+    // OF-135: how the CLI's advice names this rig (its name while that reaches it alone, else its id).
+    rigHandle: rigAdviceHandle(deps.rigRepo, rigId, rig.rig.name),
     snapshotId: snapshot.id,
     snapshotKind: snapshot.kind,
     rigResult: result.result.rigResult,

@@ -276,6 +276,20 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(logs).toContain(`  ${line}`);
   });
 
+  // OF-135: a daemon that names the rig's advice handle (its id when another rig shares the name) is followed; one that
+  // does not (older daemons, the row below) leaves the canonical name.
+  it("headless hint names the rig by the daemon's rigHandle when it sends one", async () => {
+    respond = () => ({
+      status: "restored", rigId: "01RIGID", rigName: "kernel", rigHandle: "01RIGID", rigResult: "partially_restored",
+      nodes: [{ logicalId: "operator.human", status: "awaiting-decision", error: "Original session unresumable: no resume token was captured for this seat." }],
+      warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "kern", "--existing"]);
+    });
+    expect(printedSeatLaunchCommands(logs.join("\n"))).toEqual([`rig seat launch 'operator.human@01RIGID' --fresh --reason "<why>"`]);
+  });
+
   it("headless hint names the rig by the daemon's canonical name, not by whatever the operator typed after `rig up`", async () => {
     respond = () => ({
       status: "restored", rigId: "01RIGID", rigName: "kernel", rigResult: "partially_restored",

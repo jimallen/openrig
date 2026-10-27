@@ -174,7 +174,7 @@ describe("Up API route", () => {
       const res = await up(second.id);
 
       expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ status: "restored", rigId: second.id, rigName: "shared-name" });
+      expect(await res.json()).toMatchObject({ status: "restored", rigId: second.id, rigName: "shared-name", rigHandle: second.id });
       expect(restoreSpy.mock.calls.map((call) => call[0])).toEqual([second.snapshotId]); // that rig's snapshot
     });
 
@@ -194,7 +194,7 @@ describe("Up API route", () => {
       const named = stoppedRig("01ZZZZZZZZZZZZZZZZZZZZZZZZ");
       const res = await up("01ZZZZZZZZZZZZZZZZZZZZZZZZ");
       expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ rigId: named.id });
+      expect(await res.json()).toMatchObject({ rigId: named.id, rigHandle: "01ZZZZZZZZZZZZZZZZZZZZZZZZ" }); // a unique name
     });
 
     it("an archived rig's id is refused with the unarchive command, and nothing is restored", async () => {
