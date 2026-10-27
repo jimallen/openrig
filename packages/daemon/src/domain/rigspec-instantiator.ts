@@ -1,4 +1,4 @@
-import { unprojectedProjectRigError } from "./project-rig.js";
+import { projectRigWorkspaceRecreatable, unprojectedProjectRigError } from "./project-rig.js";
 import nodePath from "node:path";
 import { effortPrecedence, readSeatEffort } from "./seat-effort.js";
 import { checkCultureFile, persistedCulturePath, readGuardedStartupFile } from "./culture-file-guard.js";
@@ -2851,6 +2851,8 @@ export class PodRigInstantiator {
       {
         rigRoot, fsOps: this.deps.fsOps, skillsRoot: this.resolveSkillsRoot(), ...this.systemWorldResolutionContext(),
         cwdOverride: node.cwd ?? undefined, rigNameOverride: rig.rig.name, specDecidesSeatCwd: false,
+        // A project rig's own missing workspace is made again by the launch (launchNode, same strict rule), so it is not a refusal here.
+        ...(node.cwd && projectRigWorkspaceRecreatable(rig.rig.name, node.logicalId, node.cwd) ? { cwdsCreatedByLaunch: [node.cwd] } : {}),
         inheritedPermissionPolicy: this.inheritedPermissionPolicy(input.rigId), exec: this.deps.exec,
       },
     );

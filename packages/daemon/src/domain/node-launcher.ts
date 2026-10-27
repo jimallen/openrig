@@ -19,6 +19,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { OccupantKind } from "./session-registry.js";
 import { getSeatCwdFault, seatCwdUnusableMessage } from "./cwd-resolution.js";
+import { recreateProjectRigWorkspace } from "./project-rig.js";
 
 import type { Session, Binding } from "./types.js";
 
@@ -142,11 +143,14 @@ export class NodeLauncher {
 
     // OF-69: the backstop for every launch that goes through launchNode (first start, restore, relaunch, `up --existing`,
     // `--startup-from stored`, the TUI). tmux does not refuse a missing `-c` directory: it starts the session in $HOME, so
-    // the seat would run in the wrong place with no error. Nothing is created or changed here. A seat with no cwd at all
+    // the seat would run in the wrong place with no error. Nothing is created here except a project rig's own missing workspace (below). A seat with no cwd at all
     // has no folder to judge and keeps tmux's default. Callers that stop something first (fresh launch) run the same
-    // check earlier, before the stop. Two respawn paths do not come through here: restart-in-place
-    // (seat-restart-in-place.ts, respawnPane) and handover (successor-session-launcher.ts); see the OF-69 follow-up.
+    // check earlier, before the stop. The two respawn paths that do not come through here judge the same folder with the
+    // same helper (OF-124): restart-in-place (seat-restart-in-place.ts) and handover (successor-session-launcher.ts).
     const seatCwd = opts?.cwd ?? node.cwd ?? undefined;
+    // A project rig's own `.workspaces/<seat>` folder is the daemon's to keep: when it is gone (a `git clean -fdx`), the
+    // launch makes it again as `rig up` did, then judges it like any other. No other folder is ever created here.
+    if (seatCwd && getSeatCwdFault(seatCwd)?.kind === "missing") recreateProjectRigWorkspace(rig.rig.name, logicalId, seatCwd);
     const cwdFault = seatCwd ? getSeatCwdFault(seatCwd) : null;
     if (seatCwd && cwdFault) {
       return {

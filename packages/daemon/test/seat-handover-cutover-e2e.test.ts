@@ -93,6 +93,7 @@ describe("seat-handover cutover money-proof (isolated tmux, both retiree-exit pa
           tmuxAdapter: new TmuxAdapter(exec) as any, runtimeAdapters: { codex: marker as any },
           predecessorRecapResolver: () => ({ recap: [{ role: "user", content: "finish A5" }, { role: "assistant", content: "A5 landed; handing to v2" }], recordPath: "/tmp/pred-record.jsonl" }),
           readinessTimeoutMs: 3000, sleep,
+          seatCwdFault: () => null, // fixture seat folders are fake paths
         });
 
         // (i-a) capture the retiree PROCESS (the pane's shell PID) BEFORE cutover — the

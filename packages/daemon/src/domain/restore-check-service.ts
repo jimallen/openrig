@@ -11,6 +11,7 @@ import type { SeatStop } from "./restore-seat-gates.js";
 import { restoreRefusesRig, type RunningSessionClassification } from "./restore-running-sessions.js";
 import type { SessionLiveness } from "./session-liveness.js";
 import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd-resolution.js";
+import { projectRigWorkspaceRecreatable } from "./project-rig.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
 
@@ -558,7 +559,8 @@ export class RestoreCheckService {
 
         // OF-69: a seat that is not running is started by restore through the launcher, which refuses a folder that is
         // gone (tmux would start it in $HOME). Say so here, where the plan and the launch must agree.
-        const cwdFault = readinessCheck.status !== "green" && node.cwd ? getSeatCwdFault(node.cwd) : null;
+        // A project rig's own missing workspace is recreated by the launch, so it is not a fault to report.
+        const cwdFault = readinessCheck.status !== "green" && node.cwd && !projectRigWorkspaceRecreatable(rig.name, node.logicalId, node.cwd) ? getSeatCwdFault(node.cwd) : null;
         if (node.cwd && cwdFault) {
           const cwdCheck: CheckEntry = {
             check: `seat.${node.canonicalSessionName ?? node.logicalId}.cwd`,

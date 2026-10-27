@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
-import { applyProjectRig, prepareProjectRigWorkspaces, projectRigSlug, unprojectedProjectRigError } from "../src/domain/project-rig.js";
+import { applyProjectRig, prepareProjectRigWorkspaces, projectRigSlug, projectRigWorkspaceOwner, projectRigWorkspaceRecreatable, recreateProjectRigWorkspace, unprojectedProjectRigError } from "../src/domain/project-rig.js";
 
 const SPEC = `version: "0.2"
 name: team
@@ -144,6 +144,60 @@ describe("prepareProjectRigWorkspaces", () => {
     fs.writeFileSync(path.join(tmp, ".git", "info", "exclude"), "# existing");
     prepareProjectRigWorkspaces(tmp, [path.join(tmp, ".workspaces", "x-y")]);
     expect(fs.readFileSync(path.join(tmp, ".git", "info", "exclude"), "utf-8")).toBe("# existing\n/.workspaces/\n");
+  });
+});
+
+// OF-124: restore may recreate exactly the folder `rig up` made for a seat of a project rig, and nothing else.
+describe("the daemon-owned workspace of a project rig seat (OF-124)", () => {
+  let tmp: string;
+  let project: string;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pr-own-")); project = path.join(tmp, "My Project"); fs.mkdirSync(project); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const seatDir = () => path.join(project, ".workspaces", "dev-impl");
+
+  it("owns <project>/.workspaces/<pod>-<member> for seat <pod>.<member> of the rig the project's name gives, and nothing near it", () => {
+    expect(projectRigWorkspaceOwner("my-project", "dev.impl", seatDir())).toBe(project);
+    const nearMisses: Array<[string, string, string]> = [
+      ["another rig name", "other", seatDir()],
+      ["another seat's folder", "my-project", path.join(project, ".workspaces", "dev-other")],
+      ["not under .workspaces", "my-project", path.join(project, "elsewhere", "dev-impl")],
+      ["one level too deep", "my-project", path.join(project, ".workspaces", "x", "dev-impl")],
+      ["a traversal", "my-project", path.join(project, ".workspaces", "dev-impl", "..", "dev-impl") + "/../dev-impl"],
+      ["a relative path", "my-project", ".workspaces/dev-impl"],
+    ];
+    for (const [what, rigName, cwd] of nearMisses) expect(projectRigWorkspaceOwner(rigName, "dev.impl", cwd), what).toBeNull();
+    // Seat ids that applyProjectRig would never have made a folder for.
+    for (const logicalId of ["dev-impl", "dev.impl.x", "dev.", ".impl", "dev..impl", "dev.im pl"]) expect(projectRigWorkspaceOwner("my-project", logicalId, seatDir()), logicalId).toBeNull();
+    expect(projectRigWorkspaceOwner("", "dev.impl", seatDir())).toBeNull();
+  });
+
+  it("recreates the missing folder (and .workspaces) and keeps it out of git status, creating nothing else", () => {
+    execFileSync("git", ["init", "-q"], { cwd: project });
+    expect(recreateProjectRigWorkspace("my-project", "dev.impl", seatDir())).toBe(true);
+    expect(fs.statSync(seatDir()).isDirectory()).toBe(true);
+    expect(fs.readdirSync(project).sort()).toEqual([".git", ".workspaces"]);
+    expect(fs.readdirSync(path.join(project, ".workspaces"))).toEqual(["dev-impl"]);
+    expect(fs.readFileSync(path.join(project, ".git", "info", "exclude"), "utf-8")).toContain("/.workspaces/\n");
+  });
+
+  it("refuses, and creates nothing, when the project is gone, the folder is there already, or .workspaces is a link", () => {
+    fs.rmSync(project, { recursive: true });
+    expect(recreateProjectRigWorkspace("my-project", "dev.impl", seatDir())).toBe(false);
+    expect(fs.existsSync(project)).toBe(false);
+
+    fs.mkdirSync(seatDir(), { recursive: true });
+    expect(projectRigWorkspaceRecreatable("my-project", "dev.impl", seatDir()), "already there").toBeNull();
+    fs.writeFileSync(path.join(project, ".workspaces", "marker"), "x");
+    fs.rmSync(seatDir(), { recursive: true });
+    fs.writeFileSync(seatDir(), "a file where the folder should be");
+    expect(projectRigWorkspaceRecreatable("my-project", "dev.impl", seatDir()), "a file is the person's to fix").toBeNull();
+
+    fs.rmSync(path.join(project, ".workspaces"), { recursive: true });
+    const elsewhere = path.join(tmp, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, path.join(project, ".workspaces"));
+    expect(recreateProjectRigWorkspace("my-project", "dev.impl", seatDir())).toBe(false);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
 });
 

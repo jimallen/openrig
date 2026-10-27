@@ -108,6 +108,7 @@ describe("SeatHandoverService source execution (OPR.0.5.5.5)", () => {
       tmuxAdapter: tmux(),
       now: () => new Date("2026-04-24T18:30:00.000Z"),
       newSuccessorId: () => "01SUCCID0",
+      seatCwdFault: () => null, // the fixtures' seat folders are fake paths; the folder check has its own rows
       runtimeAdapters: { codex: codexAdapter() },
       contextUsageStore: { readSidecar } as never,
       resumeTokenCapturer: { captureCodexThreadId } as never,

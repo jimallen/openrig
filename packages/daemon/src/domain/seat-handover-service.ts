@@ -89,7 +89,7 @@ export type SeatHandoverResult =
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found" | "handover_unsupported_runtime"; message: string; guidance: string }
   | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
-  | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
+  | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed" | "seat_cwd_unusable"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
 
 interface NodeRow {
@@ -129,6 +129,8 @@ interface SeatHandoverServiceDeps {
   eventBus: EventBus;
   tmuxAdapter: TmuxAdapter;
   successorLauncher?: SuccessorSessionLauncher;
+  /** Passed to the default successor launcher: what is wrong with the seat folder it would hand tmux (tests inject a fake). */
+  seatCwdFault?: (cwd: string) => import("./cwd-resolution.js").SeatCwdFault | null;
   now?: () => Date;
   /** OpenRig identity/activity env stamped onto a created successor session,
    *  mirroring the launch identity env. Defaults to {} (the three core identity
@@ -259,6 +261,7 @@ export class SeatHandoverService {
       readinessTimeoutMs: deps.readinessTimeoutMs,
       sleep: deps.sleep,
       tmuxOptionDefaults: deps.tmuxOptionDefaults,
+      ...(deps.seatCwdFault ? { seatCwdFault: deps.seatCwdFault } : {}),
     });
     this.captureDeps = {
       contextUsageStore: deps.contextUsageStore ?? null,
@@ -482,12 +485,15 @@ export class SeatHandoverService {
     if (!launch.ok) {
       return {
         ok: false,
-        code: "successor_create_failed",
+        // The folder is the person's to fix, so the launcher's refusal code reaches the caller (409), as for launch and restore.
+        code: launch.code === "seat_cwd_unusable" ? "seat_cwd_unusable" : "successor_create_failed",
         message: `Handover failed at step "${launch.step}": ${launch.message}`,
         // The registry binding is unchanged (commit never ran). A resolve_pane failure leaves the live
         // retiree wholly untouched; a failure after the in-place respawn leaves the seat re-wakeable from
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
-        guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
+        guidance: launch.code === "seat_cwd_unusable"
+          ? "The seat's folder is unusable; the seat was not touched. Fix the folder named above and retry the handover."
+          : "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
       };
     }
 

@@ -204,6 +204,7 @@ describe("SeatLifecycleService.effortReport: four values, each from its own sour
       inPlaceRestartIo: {
         readProcess: async () => ({ cwd: "/w", exe: "/usr/local/bin/codex", env: { CODEX_HOME: "/scratch/.codex" }, apiKeyEnvNames: [] }),
         readThreadId: async () => logsThread,
+        seatCwdFault: () => null,
       },
     });
   });
