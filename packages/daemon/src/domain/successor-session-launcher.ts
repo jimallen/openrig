@@ -11,7 +11,7 @@ import { ensureCodexSeatHome } from "./codex-seat-home.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
-import { getSeatCwdFault, seatCwdFaultReason, seatCwdFixAdvice, type SeatCwdFault } from "./cwd-resolution.js";
+import { getSeatCwdFault, handoverCwdRefusalMessage, type SeatCwdFault } from "./cwd-resolution.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -223,7 +223,7 @@ export class SuccessorSessionLauncher {
         code: "seat_cwd_unusable",
         step: "resolve_pane",
         replacementStarted: false,
-        message: `${departingSession} was not handed over: its cwd '${cwd}' ${seatCwdFaultReason(cwdFault)}. ${seatCwdFixAdvice(cwd, cwdFault)}, then retry the handover. Nothing was stopped.`,
+        message: handoverCwdRefusalMessage(departingSession, cwd, cwdFault),
       };
     }
 

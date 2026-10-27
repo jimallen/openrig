@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { EventBus } from "./event-bus.js";
-import type { Policy, PolicyEvaluation, PolicyJob } from "./policies/types.js";
+import type { AfterHistoryRecorded, Policy, PolicyEvaluation, PolicyJob } from "./policies/types.js";
 import { artifactPoolReadyPolicy } from "./policies/artifact-pool-ready.js";
 import { edgeArtifactRequiredPolicy } from "./policies/edge-artifact-required.js";
 import { periodicReminderPolicy } from "./policies/periodic-reminder.js";
@@ -364,6 +364,7 @@ export class WatchdogPolicyEngine {
         skipReason: outcome.reason,
         evaluationNotes: outcome.notes ?? null,
       });
+      runAfterRecorded(outcome.afterRecorded, history);
       this.eventBus.emit({
         type: "watchdog.evaluation_skipped",
         jobId: job.jobId,
@@ -546,6 +547,7 @@ export class WatchdogPolicyEngine {
           ? { ...(outcome.notes ?? {}), deliveryReason: delivery.error }
           : delivery.status === "retained" ? { ...(outcome.notes ?? {}), outboxIds: delivery.outboxIds ?? [], retainedNotDelivered: true } : outcome.notes ?? null,
     });
+    runAfterRecorded(outcome.afterRecorded, history);
     if (!isContextUsageThreshold) {
       this.jobsRepo.recordEvaluation(job.jobId, evaluatedAt, true);
     }
@@ -573,6 +575,17 @@ export class WatchdogPolicyEngine {
       delivery,
       meaningful: true,
     };
+  }
+}
+
+/** Run a policy's post-insert hook (see AfterHistoryRecorded). A throw must not undo or abort the evaluation: the row is written
+ *  and, for a send, the receipt below must still be banked or the next hour would wake the steward again. */
+function runAfterRecorded(hook: AfterHistoryRecorded | undefined, row: WatchdogHistoryEntry): void {
+  if (!hook) return;
+  try {
+    hook({ evaluatedAt: row.evaluatedAt });
+  } catch {
+    /* best-effort bookkeeping; the policy sees the state it did not write on its next evaluation */
   }
 }
 

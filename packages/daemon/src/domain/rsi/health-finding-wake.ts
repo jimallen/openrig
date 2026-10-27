@@ -27,9 +27,13 @@ import type { WatchdogJob, WatchdogJobsRepository } from "../watchdog-jobs-repos
  *      as an active finding, so it can neither wake the steward nor spend the budget. The row that
  *      opens an episode is whatever the opening hour writes: the blind skip, or, when another source
  *      has a new finding that hour, the wake / brake / budget row, which carries `newlyBlind` in its
- *      notes. Known limits: the episode commits in the scan, before the engine inserts that row, so a
- *      throw in between loses the row (the episode then stays quiet); and episodes are global while
- *      history is per wake job, so a re-armed wake job's history does not show an episode already open.
+ *      notes. The episode row is written only after the engine has inserted that history row
+ *      (`afterRecorded`, OF-131): a throw before the insert leaves no episode, so the next hour is
+ *      loud again instead of the row being lost. Episodes are global while history is per wake job,
+ *      so a pair is "new" to a job until a row in ITS history names it: a re-armed wake job's first
+ *      blind hour is loud for an episode an earlier job opened, and carries it in `newlyBlind`.
+ *      Known limit: if the hook itself fails after the row is written, the next hour writes one more
+ *      loud row for the same pair (never a lost one).
  *   6. A fingerprint whose source is no longer registered goes quiet; it is not carried forward
  *      (carrying forward is for a source that is registered but could not be read).
  *   7. Retargeting the steward resets the receipt: the new steward is told what is active.
@@ -117,8 +121,32 @@ export interface FindingScanResult {
   active: ActiveFinding[];
   /** Sources that made no transitions this scan, with the reason. */
   carriedForward: Array<{ source: string; reason: "unavailable" | "partial" | "projection-failed" }>;
-  /** The carried-forward pairs whose blind episode started in THIS scan (no earlier scan had recorded them). */
+  /** The carried-forward pairs this wake job's history has not yet named: no episode is open for them, or one is open
+   *  but only another (earlier) wake job named it. The row this hour writes carries them as `newlyBlind`. */
   newlyBlind: Array<{ source: string; reason: "unavailable" | "partial" | "projection-failed" }>;
+  /** Open (or, for one already open, touch) the episode rows for `newlyBlind`, at the time of the history row that named
+   *  them. The engine calls it only after that row is inserted; a no-op when `newlyBlind` is empty. */
+  recordEpisodes(at: string): void;
+}
+
+/** Slack when matching an episode's start to a history row that names it: an episode opened by an earlier revision was stamped
+ *  with the scan's clock a few milliseconds after the engine stamped the row. The scan cadence is an hour, far above this. */
+const EPISODE_NAMED_SLACK_MS = 60_000;
+
+/** True when a row in THIS wake job's history, evaluated at or after the episode began, names the (source, reason) pair in
+ *  its `newlyBlind` notes. Unreadable notes or an unreadable start time count as "not named": the cost is one more loud row. */
+function jobNamedEpisode(db: Database.Database, jobId: string, pair: { source: string; reason: string }, activatedAt: string): boolean {
+  const startMs = Date.parse(activatedAt);
+  if (!Number.isFinite(startMs)) return false;
+  const row = db.prepare(
+    `SELECT 1 AS named FROM watchdog_history h
+      WHERE h.job_id = ? AND h.evaluated_at >= ?
+        AND EXISTS (
+          SELECT 1 FROM json_each(CASE WHEN json_valid(h.evaluation_notes) THEN h.evaluation_notes ELSE '{}' END, '$.newlyBlind') j
+           WHERE json_extract(j.value, '$.source') = ? AND json_extract(j.value, '$.reason') = ?)
+      LIMIT 1`,
+  ).get(jobId, new Date(startMs - EPISODE_NAMED_SLACK_MS).toISOString(), pair.source, pair.reason);
+  return row !== undefined;
 }
 
 function telemetryFingerprint(record: HealthRecord): string | null {
@@ -137,6 +165,9 @@ export function scanFindingState(
   projection: RsiFindingProjection,
   sources: readonly RsiFindingSource[],
   now: Date,
+  /** The wake job scanning. Blind episodes are global but history is per job, so it decides whether an open episode is
+   *  already named in THIS job's history. Absent (a direct caller): an open episode is treated as already named. */
+  jobId?: string,
 ): FindingScanResult {
   const nowIso = now.toISOString();
   // The SAME derivation the wake exposes as `detectorSources` (and the F3 conformance test pins):
@@ -206,9 +237,27 @@ export function scanFindingState(
 
   // Blind episodes. A source read in full above has already had its episode rows quieted by the
   // pass that quiets its gone findings; here each pair that is blind now either continues an
-  // active episode or starts one.
+  // episode THIS wake job's history has already named, or is new to this job. Nothing is opened
+  // here: `recordEpisodes` writes the episode rows, and the engine runs it only after it has
+  // inserted the history row that names them (OF-131), so a throw in between loses no episode.
   const newlyBlind: FindingScanResult["newlyBlind"] = [];
   if (carriedForward.length > 0) {
+    const episode = db.prepare("SELECT state, activated_at FROM rsi_finding_state WHERE fingerprint = ?");
+    const touch = db.prepare("UPDATE rsi_finding_state SET last_seen_at = ? WHERE fingerprint = ?");
+    for (const pair of carriedForward) {
+      const key = `${BLIND_EPISODE_PREFIX}${pair.source}/${pair.reason}`;
+      const row = episode.get(key) as { state: string; activated_at: string } | undefined;
+      if (row?.state === "active") {
+        touch.run(nowIso, key);
+        // Episodes are global, history rows are per wake job: a re-armed wake job (a new job id) has never named an episode
+        // that is already open, so for it the pair is new and its first row names it.
+        if (jobId === undefined || jobNamedEpisode(db, jobId, pair, row.activated_at)) continue;
+      }
+      newlyBlind.push(pair);
+    }
+  }
+  const recordEpisodes = (at: string): void => {
+    if (newlyBlind.length === 0) return;
     const episode = db.prepare("SELECT state FROM rsi_finding_state WHERE fingerprint = ?");
     const open = db.prepare(
       `INSERT INTO rsi_finding_state (fingerprint, source, state, activated_at, last_seen_at) VALUES (?, ?, 'active', ?, ?)
@@ -218,16 +267,15 @@ export function scanFindingState(
     // One source blind for a new reason is a new episode of that source: close its other reasons.
     const closeOthers = db.prepare("UPDATE rsi_finding_state SET state = 'quiet' WHERE source = ? AND state = 'active' AND fingerprint LIKE ? AND fingerprint <> ?");
     db.transaction(() => {
-      for (const pair of carriedForward) {
+      for (const pair of newlyBlind) {
         const key = `${BLIND_EPISODE_PREFIX}${pair.source}/${pair.reason}`;
-        const row = episode.get(key) as { state: string } | undefined;
-        if (row?.state === "active") { touch.run(nowIso, key); continue; }
-        open.run(key, pair.source, nowIso, nowIso);
+        // Already open (another job named it first): keep its start; this job's row names it too.
+        if ((episode.get(key) as { state: string } | undefined)?.state === "active") { touch.run(at, key); continue; }
+        open.run(key, pair.source, at, at);
         closeOthers.run(pair.source, `${BLIND_EPISODE_PREFIX}%`, key);
-        newlyBlind.push(pair);
       }
     })();
-  }
+  };
 
   // A fingerprint whose source is no longer registered at all has no reader left to ever
   // clear it: quiet it. (A registered source that failed this hour is carried forward above.)
@@ -242,7 +290,7 @@ export function scanFindingState(
     "SELECT fingerprint, source, activated_at FROM rsi_finding_state WHERE state = 'active' AND fingerprint NOT LIKE ? ORDER BY fingerprint",
   ).all(`${BLIND_EPISODE_PREFIX}%`) as Array<{ fingerprint: string; source: string; activated_at: string }>)
     .map((row) => ({ fingerprint: row.fingerprint, source: row.source, activatedAt: row.activated_at }));
-  return { active, carriedForward, newlyBlind };
+  return { active, carriedForward, newlyBlind, recordEpisodes };
 }
 
 /** Parse a banked receipt. Anything unreadable is "no receipt", which can only cause a wake. */
@@ -316,7 +364,7 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
     detectorSources: rsiDetectorSourceMap(deps.sources),
     async evaluate(job: PolicyJob): Promise<PolicyEvaluation> {
       const now = (deps.now ?? (() => new Date()))();
-      const scan = scanFindingState(deps.db, deps.projection, deps.sources, now);
+      const scan = scanFindingState(deps.db, deps.projection, deps.sources, now, job.jobId);
       const banked = parseWakeReceipt((deps.db.prepare(
         "SELECT last_fired_condition AS c FROM watchdog_jobs WHERE job_id = ?",
       ).get(job.jobId) as { c: string | null } | undefined)?.c);
@@ -325,27 +373,28 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
         active: scan.active.length,
         newSinceLastWake: fresh.length,
         ...(scan.carriedForward.length ? { carriedForward: scan.carriedForward } : {}),
-        // The episode opened in the scan, so whatever row this hour writes (the blind skip, the wake,
-        // the brake or the budget skip) is the one that names it: later hours of it are quiet.
+        // Whatever row this hour writes (the blind skip, the wake, the brake or the budget skip) names the pairs new to this
+        // job; the engine opens their episodes only once that row is inserted (`afterRecorded`), and later hours are quiet.
         ...(scan.newlyBlind.length ? { newlyBlind: scan.newlyBlind } : {}),
       };
+      const afterRecorded = scan.newlyBlind.length ? { afterRecorded: (row: { evaluatedAt: string }) => scan.recordEpisodes(row.evaluatedAt) } : {};
       if (fresh.length === 0) {
         // Nothing new is only reassuring when every source was read in full.
         // Only a blind episode that starts now is loud; one already recorded stays quiet (one row per episode).
         const reason = scan.carriedForward.length === 0 ? RSI_NO_NEW_FINDING : scan.newlyBlind.length > 0 ? RSI_SOURCE_BLIND : RSI_SOURCE_BLIND_ONGOING;
-        return { action: "skip", reason, notes };
+        return { action: "skip", reason, notes, ...afterRecorded };
       }
 
       const window = latestWeeklyWindow(deps.db);
       if (window && window.percent >= RSI_BRAKE_PERCENT) {
-        return { action: "skip", reason: RSI_BUDGET_BRAKE, notes: { ...notes, weeklyWindow: window, brakePercent: RSI_BRAKE_PERCENT } };
+        return { action: "skip", reason: RSI_BUDGET_BRAKE, notes: { ...notes, weeklyWindow: window, brakePercent: RSI_BRAKE_PERCENT }, ...afterRecorded };
       }
 
       const deliveredToday = (deps.db.prepare(
         "SELECT count(*) AS n FROM watchdog_history WHERE job_id = ? AND outcome = 'sent' AND delivery_status = 'ok' AND evaluated_at >= ?",
       ).get(job.jobId, utcDayStart(now)) as { n: number }).n;
       if (deliveredToday >= RSI_WAKE_DAILY_BUDGET) {
-        return { action: "skip", reason: RSI_WAKE_BUDGET_EXHAUSTED, notes: { ...notes, deliveredToday, dailyBudget: RSI_WAKE_DAILY_BUDGET } };
+        return { action: "skip", reason: RSI_WAKE_BUDGET_EXHAUSTED, notes: { ...notes, deliveredToday, dailyBudget: RSI_WAKE_DAILY_BUDGET }, ...afterRecorded };
       }
 
       const receipt: HealthFindingWakeReceipt = {
@@ -360,6 +409,7 @@ export function makeHealthFindingWakePolicy(deps: HealthFindingWakeDeps): Health
         message: buildWakeMessage(receipt),
         conditionReceipt: JSON.stringify(receipt),
         notes: { ...notes, newFingerprints: fresh.map((finding) => finding.fingerprint) },
+        ...afterRecorded,
       };
     },
   };
