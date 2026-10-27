@@ -126,6 +126,12 @@ export async function bootKernelIfNeeded(deps: KernelBootDeps): Promise<KernelBo
   // 4. Cold boot via the in-process bootstrap pipeline — FIRED, not awaited.
   const authNote = probe.claudeAuthMethod ? ` (claude authMethod: ${probe.claudeAuthMethod})` : "";
   log("info", `kernel-boot: booting kernel rig from ${variant}${authNote}`);
+  // Jim, 2026-10-26: warn when the sign-in type can't be told apart, and (OF-61) when it is API-key billing.
+  if (probe.claudeCode === "ok" && !probe.claudeAuthMethod) {
+    log("warn", "kernel-boot: Claude is signed in but its sign-in type could not be read; subscription and API-key billing cannot be told apart");
+  } else if (probe.claudeAuthMethod === "api_key") {
+    log("warn", "kernel-boot: Claude is signed in with an API key, so Claude seats are billed per use");
+  }
   const bootstrapPromise = deps.bootstrapOrchestrator.bootstrap({
     mode: "apply",
     sourceRef: specPath,

@@ -51,8 +51,20 @@ edges: []
 `;
 const AGENT = (version: string) => `name: impl
 version: "${version}"
+resources:
+  skills:
+    - id: persona-skill
+      path: skills/persona-skill
+  guidance:
+    - id: persona-guidance
+      path: guidance/persona-guidance.md
+      target: claude_md
+      merge: managed_block
 profiles:
-  default: {}
+  default:
+    uses:
+      skills: [persona-skill]
+      guidance: [persona-guidance]
 startup:
   files:
     - path: guidance/role.md
@@ -65,6 +77,9 @@ function writeRelease(dir: string, version: string) {
   fs.mkdirSync(path.join(dir, "agents", "impl", "guidance"), { recursive: true });
   fs.writeFileSync(path.join(dir, "agents", "impl", "agent.yaml"), AGENT(version));
   fs.writeFileSync(path.join(dir, "agents", "impl", "guidance", "role.md"), `# role ${version}\n`);
+  fs.writeFileSync(path.join(dir, "agents", "impl", "guidance", "persona-guidance.md"), `# persona guidance ${version}\n`);
+  fs.mkdirSync(path.join(dir, "agents", "impl", "skills", "persona-skill"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "agents", "impl", "skills", "persona-skill", "SKILL.md"), `# persona skill ${version}\n`);
 }
 
 describe("OF-99: startup files are recorded under the agent_ref path as typed", () => {
@@ -197,6 +212,7 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
 
   const storedFiles = (nodeId: string) => JSON.parse((db.prepare("SELECT resolved_files_json FROM node_startup_context WHERE node_id = ?").get(nodeId) as { resolved_files_json: string }).resolved_files_json) as ResolvedStartupFile[];
   const nodeVersion = (nodeId: string) => (db.prepare("SELECT resolved_spec_version AS v FROM nodes WHERE id = ?").get(nodeId) as { v: string }).v;
+  const nodeHash = (nodeId: string) => (db.prepare("SELECT resolved_spec_hash AS h FROM nodes WHERE id = ?").get(nodeId) as { h: string }).h;
   const retarget = (sha: string) => { fs.unlinkSync(current); fs.symlinkSync(path.join(root, "releases", sha), current); };
   const down = async (rigId: string) => {
     const result = await new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus }).teardown(rigId);
@@ -230,18 +246,43 @@ describe("OF-99: startup files are recorded under the agent_ref path as typed", 
     const role = storedFiles(seat.nodeId).find((f) => f.path === "guidance/role.md")!;
     expect(role.absolutePath).toBe(path.join(current, "agents", "impl", "guidance", "role.md"));
     expect(role.ownerRoot).toBe(path.join(current, "agents", "impl"));
-    const entries = JSON.parse((db.prepare("SELECT projection_entries_json AS j FROM node_startup_context WHERE node_id = ?").get(seat.nodeId) as { j: string }).j) as Array<{ sourcePath: string; absolutePath: string }>;
-    for (const e of entries) expect(e.absolutePath.includes(`${path.sep}releases${path.sep}aaaaaaa${path.sep}`), e.absolutePath).toBe(false);
+    const entries = JSON.parse((db.prepare("SELECT projection_entries_json AS j FROM node_startup_context WHERE node_id = ?").get(seat.nodeId) as { j: string }).j) as Array<{ category: string; sourcePath: string; absolutePath: string }>;
+    // The fixture persona uses one skill and one guidance resource; without them this loop would run over nothing.
+    expect(entries.map((e) => e.category).sort()).toEqual(["guidance", "skill"]);
+    for (const e of entries) {
+      expect(e.absolutePath.startsWith(path.join(current, "agents", "impl") + path.sep), e.absolutePath).toBe(true);
+      expect(e.sourcePath, e.sourcePath).toBe(path.join(current, "agents", "impl"));
+      expect(e.absolutePath.includes(`${path.sep}releases${path.sep}aaaaaaa${path.sep}`), e.absolutePath).toBe(false);
+    }
   });
 
   it("`rig seat launch --fresh` replays the release the link points at NOW (no spec source is recorded)", async () => {
     const seat = await launchRig();
-        retarget("bbbbbbb");
+    retarget("bbbbbbb");
 
     const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
 
     expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
     expectRoleFrom("2.0.0");
+  });
+
+  // OF-100, CHARACTERIZATION (not a statement of what should be): the seat's startup files follow the link, but the
+  // version and hash recorded on the node (what `rig whoami` shows) are those of the release current when the pod was
+  // added. A fresh launch from stored context never re-reads agent.yaml, so nothing refreshes them. Whether they SHOULD
+  // refresh is an open product call; if that lands, this row must change with it.
+  it("after a retarget, a fresh launch replays the new release but the recorded version and hash stay the old release's", async () => {
+    const seat = await launchRig();
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    const hashBefore = nodeHash(seat.nodeId);
+    expect(hashBefore).toBeTruthy();
+    retarget("bbbbbbb");
+
+    const fresh = await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "release b" });
+
+    expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
+    expectRoleFrom("2.0.0");
+    expect(nodeVersion(seat.nodeId)).toBe("1.0.0");
+    expect(nodeHash(seat.nodeId)).toBe(hashBefore);
   });
 
   it("a restore that starts the seat fresh replays the release the link points at NOW", async () => {
