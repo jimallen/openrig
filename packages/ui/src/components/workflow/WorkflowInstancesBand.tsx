@@ -29,7 +29,7 @@ export function instanceAttentionRank(i: WorkflowInstanceWithDeadline): number {
 }
 
 function statusChip(i: WorkflowInstanceWithDeadline): { glyph: string; label: string; cls: string } {
-  if (damagedColumns(i).length > 0) return { glyph: "▲", label: "DAMAGED", cls: "text-red-700" };
+  if (damagedColumns(i).length > 0) return { glyph: "▲", label: "DAMAGED", cls: "text-on-surface font-bold" };
   if (i.status === "failed") return { glyph: "▲", label: "FAILED", cls: "text-red-700" };
   if (i.deadline.state !== "healthy") return { glyph: "▲", label: i.deadline.state.toUpperCase(), cls: "text-amber-700" };
   if (i.status === "waiting") return { glyph: "◐", label: "WAITING", cls: "text-on-surface-variant" };
@@ -88,7 +88,7 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
           <span
             data-testid={`workflow-instance-damaged-${instance.instanceId}`}
             title={damagedExplanation(damaged)}
-            className="basis-full pl-5 font-mono text-[10px] text-red-700"
+            className="basis-full pl-5 font-mono text-[10px] text-on-surface"
           >
             {damaged.join(", ")} unreadable · do not act on it
           </span>

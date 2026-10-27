@@ -5,11 +5,20 @@
 // with HTTP 422 `saved_row_unreadable`. A surface must therefore show the row as damaged, name the columns, and not offer an
 // action that would act on it.
 
-export function damagedColumns(row: { unreadable?: readonly string[] | null } | null | undefined): string[] {
-  return Array.isArray(row?.unreadable) ? row!.unreadable!.map(String).filter((c) => c.length > 0) : [];
+/** The marker is `string[]` today. Damage fails toward SHOWING: any present, non-empty marker is damage, and one that does not
+ *  name columns (a string, an object, `[""]`) is shown as "unknown columns". Only absent, null, "", `[]` and false are readable. */
+export function damagedColumns(row: { unreadable?: unknown } | null | undefined): string[] {
+  const marker = row?.unreadable;
+  if (Array.isArray(marker)) {
+    if (marker.length === 0) return [];
+    const named = marker.map(String).filter((c) => c.length > 0);
+    return named.length > 0 ? named : ["unknown columns"];
+  }
+  if (marker === undefined || marker === null || marker === "" || marker === false) return [];
+  return typeof marker === "string" ? [marker] : ["unknown columns"];
 }
 
-export function isDamagedRow(row: { unreadable?: readonly string[] | null } | null | undefined): boolean {
+export function isDamagedRow(row: { unreadable?: unknown } | null | undefined): boolean {
   return damagedColumns(row).length > 0;
 }
 

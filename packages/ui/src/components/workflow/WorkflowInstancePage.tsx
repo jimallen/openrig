@@ -83,7 +83,7 @@ export function ExceptionBanner({
   if (damaged.length > 0) {
     return (
       <div data-testid="workflow-exception-banner" className="space-y-2 border border-red-700/60 bg-red-700/5 px-3 py-2">
-        <p data-testid="workflow-instance-damaged" className="font-mono text-[11px] text-red-700">
+        <p data-testid="workflow-instance-damaged" className="font-mono text-[11px] text-on-surface">
           ▲ DAMAGED — {damagedExplanation(damaged)}
         </p>
         <span className="font-mono text-[10px] text-on-surface-variant">

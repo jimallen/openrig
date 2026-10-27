@@ -16,6 +16,7 @@
  */
 
 import { shellQuote } from "../cross-host-executor.js";
+import { damagedColumnsOf } from "../lib/damaged-rows.js";
 
 export interface RenderInstance {
   guidance?: {lines: string[]};
@@ -240,7 +241,7 @@ export function renderTraceTree(
  */
 export function attentionMarker(instance: RenderInstance): string {
   // OF-136: a damaged instance is never "stuck", "failed" or "healthy": its frontier and deadline are unknown.
-  if (isDamaged(instance)) return `▲ DAMAGED (${instance.unreadable!.join(", ")})`;
+  if (isDamaged(instance)) return `▲ DAMAGED (${damagedColumnsOf(instance.unreadable).join(", ")})`;
   if (instance.status === "failed") return "▲ failed";
   if (actionableFailures(instance).length > 0) return "▲ failed-branch";
   if (isStuck(instance)) return "▲ stuck";
@@ -249,7 +250,7 @@ export function attentionMarker(instance: RenderInstance): string {
 }
 
 export function isDamaged(instance: RenderInstance): boolean {
-  return Array.isArray(instance.unreadable) && instance.unreadable.length > 0;
+  return damagedColumnsOf(instance.unreadable).length > 0;
 }
 
 /** Rail 1: stuck-ness is READ from the API field, never derived. */
@@ -303,7 +304,7 @@ export function composeAttentionRollup(instances: RenderInstance[]): AttentionRo
         instanceId: inst.instanceId,
         workflowName: inst.workflowName ?? "",
         classes: ["damaged"],
-        reasons: [`saved ${inst.unreadable!.join(", ")} not readable JSON; frontier, packets and deadline are unknown`],
+        reasons: [`saved ${damagedColumnsOf(inst.unreadable).join(", ")} not readable JSON; frontier, packets and deadline are unknown`],
         affordance: "do not route, resume or abort it: repair or remove the saved row, then run rig workflow show " + inst.instanceId,
       });
       continue;
@@ -395,7 +396,7 @@ export function renderInstanceShow(
   const lines: string[] = [];
   lines.push(`${statusGlyph(instance.status)} ${instance.instanceId}  status=${instance.status}`);
   if (isDamaged(instance)) {
-    lines.push(`  ▲ DAMAGED: saved ${instance.unreadable!.join(", ")} not readable JSON. Frontier, packets and deadline are UNKNOWN, not empty or healthy.`);
+    lines.push(`  ▲ DAMAGED: saved ${damagedColumnsOf(instance.unreadable).join(", ")} not readable JSON. Frontier, packets and deadline are UNKNOWN, not empty or healthy.`);
     lines.push("    Do not route, resume or abort it. Repair or remove the saved row, then run this command again.");
   }
   if (instance.workflowName) lines.push(`  workflow: ${instance.workflowName}${instance.workflowVersion ? ` v${instance.workflowVersion}` : ""}`);

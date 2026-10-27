@@ -9,6 +9,7 @@ import { SectionHeader } from "../ui/section-header.js";
 import { EmptyState } from "../ui/empty-state.js";
 import { ActorChip, DateChip, FlowChips, QueueStateBadge, TagPill } from "../project/ProjectMetaPrimitives.js";
 import { ToolMark } from "../graphics/RuntimeMark.js";
+import { damagedColumns, damagedExplanation } from "../../lib/damaged-row.js";
 
 export interface QueueItemViewerData {
   qitemId: string;
@@ -41,6 +42,8 @@ export interface QueueItemViewerData {
   /** Tier-3 full source-of-truth view: render EVERY field labeled, nulls shown as
    *  "—" (not hidden). Default false keeps other callsites compact. */
   fullDetail?: boolean;
+  /** OF-136: saved columns the daemon could not read (OF-117); the tags/chain shown here are unknown, not empty. */
+  unreadable?: string[];
 }
 
 const PREVIEW_LINES = 30;
@@ -72,7 +75,9 @@ export function QueueItemViewer({
   targetRepo,
   chain,
   fullDetail = false,
+  unreadable,
 }: QueueItemViewerData) {
+  const damaged = damagedColumns({ unreadable });
   const [showFull, setShowFull] = useState(false);
   const bodyLines = body ? body.split("\n") : [];
   const visibleLines = showFull ? bodyLines : bodyLines.slice(0, PREVIEW_LINES);
@@ -94,6 +99,11 @@ export function QueueItemViewer({
         <SectionHeader tone="muted">Queue item</SectionHeader>
         <h3 className="mt-1 font-mono text-xs text-on-surface break-all">{qitemId}</h3>
       </header>
+      {damaged.length > 0 ? (
+        <div data-testid="queue-item-viewer-damaged" role="note" className="mx-4 mt-3 border border-tertiary/60 bg-tertiary/5 p-3 font-mono text-[11px] text-on-surface">
+          <span className="font-bold uppercase text-tertiary">Damaged</span> {damagedExplanation(damaged)}
+        </div>
+      ) : null}
       <div className="px-4 py-3 border-b border-outline-variant space-y-2 font-mono text-xs">
         {source || destination ? (
           <MetaRow label="Route">

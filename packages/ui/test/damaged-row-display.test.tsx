@@ -99,6 +99,8 @@ describe("OF-136 workflow instance rows", () => {
     expect(text).toContain("position unknown");
     expect(text).not.toContain("FAILED");
     expect(text).not.toContain("at build");
+    // F1: the note is the theme-aware on-surface token; red-700 on the dark theme is 2.89:1 (measured ratios are in the report)
+    expect(view.getByTestId(`workflow-instance-damaged-${DAMAGED.instanceId}`).className).not.toContain("text-red-700");
   });
 
   it("when the daemon serves a flagged instance's deadline as 'unknown' the row still says DAMAGED, with its columns", async () => {
@@ -187,11 +189,17 @@ describe("OF-136 the workflows page", () => {
     expect(view.getByTestId("workflow-instance-row-01WFDAMAGEDAAAAAAAAAAAAAA").textContent).toContain("DAMAGED");
   });
 
-  it("the group header flags a damaged spec that instances were started from", async () => {
-    stubWorkflowApi([instance({ workflowName: "badspec", workflowVersion: "2" })]);
+  it("the group header flags a damaged spec that instances were started from, and does not open it (like the idle one)", async () => {
+    stubWorkflowApi([instance({ workflowName: "badspec", workflowVersion: "2" }), instance({ instanceId: "01WFOKAAAAAAAAAAAAAAAAAAAA", workflowName: "okspec", workflowVersion: "1" })]);
     const view = inRouter(<WorkflowsPage />, "/");
     const flag = await waitFor(() => view.getByTestId("workflows-group-spec-damaged-badspec"));
     expect(flag.textContent).toContain("steps_json");
+    expect(flag.textContent).toContain("cannot be opened");
+    expect(view.queryByTestId("workflows-group-spec-badspec")).toBeNull();
+    expect(view.getByTestId("workflows-group-spec-unopenable-badspec").tagName).not.toBe("BUTTON");
+    // control: a readable spec's group header is still a button
+    expect(view.getByTestId("workflows-group-spec-okspec").tagName).toBe("BUTTON");
+    expect(flag.className).not.toContain("text-red-700");
   });
 });
 
@@ -223,7 +231,9 @@ describe("OF-136 the For You feed card", () => {
     const card = attentionItemToFeedCard(attention({ tags: null, unreadable: ["tags", "chain_of_record"] }));
     const view = inRouter(<FeedCard card={card} />);
     const notice = await waitFor(() => view.getByTestId(`feed-card-damaged-${card.id}`));
-    expect(notice.getAttribute("role")).toBe("alert");
+    // a non-interrupting role: a list of damaged cards must not announce one alert per card
+    expect(notice.getAttribute("role")).toBe("note");
+    expect(notice.className).not.toContain("text-red-700"); // 2.89:1 in the dark theme (F1); measured ratios are in the report
     expect(notice.textContent).toContain("tags, chain_of_record");
     expect(notice.textContent).toContain("unknown, not empty");
     expect(view.queryByTestId("mc-verb-approve")).toBeNull();
@@ -251,10 +261,24 @@ describe("OF-136 the refusal helper", () => {
     await expect(throwIfSavedRowUnreadable(new Response("not json", { status: 422 }))).resolves.toBeUndefined();
   });
 
-  it("damagedColumns ignores a missing, empty or non-list marker", () => {
+  it("damagedColumns: absent, null, empty string and empty list are readable; anything else present is damaged (fails toward showing)", () => {
     expect(damagedColumns({ unreadable: ["a", "b"] })).toEqual(["a", "b"]);
     expect(damagedColumns({ unreadable: [] })).toEqual([]);
+    expect(damagedColumns({ unreadable: null })).toEqual([]);
+    expect(damagedColumns({ unreadable: "" })).toEqual([]);
     expect(damagedColumns({})).toEqual([]);
     expect(damagedColumns(null)).toEqual([]);
+    expect(damagedColumns({ unreadable: "tags" })).toEqual(["tags"]);
+    expect(damagedColumns({ unreadable: [""] })).toEqual(["unknown columns"]);
+    expect(damagedColumns({ unreadable: { tags: true } })).toEqual(["unknown columns"]);
+    expect(damagedColumns({ unreadable: true })).toEqual(["unknown columns"]);
+  });
+
+  it("a row with a non-list marker renders as DAMAGED, naming 'unknown columns'", async () => {
+    const odd = { ...instance({ currentStepId: "build" }), unreadable: true } as unknown as WorkflowInstanceWithDeadline;
+    const view = inRouter(<ul><WorkflowInstanceRow instance={odd} /></ul>);
+    const row = await waitFor(() => view.getByTestId("workflow-instance-row-01WFINSTANCEAAAAAAAAAAAAAA"));
+    expect(row.textContent).toContain("DAMAGED");
+    expect(row.textContent).toContain("unknown columns unreadable");
   });
 });

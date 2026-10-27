@@ -223,6 +223,24 @@ describe("OF-136 workflow instances and specs", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("workflow specs --json: stdout is the daemon's body unchanged; stderr names the damaged spec", async () => {
+    const body = { specs: [
+      { name: "ok-spec", version: "1", isBuiltIn: false },
+      { name: "bad-spec", version: "2", isBuiltIn: false, unreadable: ["steps_json"] },
+    ] };
+    await run(["workflow", "specs", "--json"], { "GET /api/workflow/specs": { status: 200, data: body } });
+    expect(stdout()).toBe(JSON.stringify(body));
+    expect(stderr()).toContain("1 workflow spec could not be read in full");
+    expect(stderr()).toContain("bad-spec v2: steps_json");
+    expect(stderr()).not.toContain("ok-spec");
+  });
+
+  it("a non-list marker on an instance still renders DAMAGED in the list and the rollup", () => {
+    const odd = { ...DAMAGED_INSTANCE, unreadable: "frontier" } as unknown as Parameters<typeof renderInstanceList>[0][number];
+    expect(renderInstanceList([odd]).join("\n")).toContain("▲ DAMAGED (frontier)");
+    expect(composeAttentionRollup([odd]).attention[0]).toMatchObject({ classes: ["damaged"] });
+  });
+
   it("workflow specs: a damaged spec is marked on its line and named on stderr", async () => {
     const specs = [
       { name: "ok-spec", version: "1", purpose: null, targetRig: null, coordinationTerminalTurnRule: "x", sourcePath: "/s/ok.yaml", cachedAt: "t", isBuiltIn: false },
@@ -262,7 +280,11 @@ describe("OF-136 helpers", () => {
     expect(damagedRowsIn([{ qitemId: "a", unreadable: ["tags"] }])).toEqual([{ id: "a", columns: ["tags"] }]);
     expect(damagedRowsIn({ items: [{ outboxId: "b", unreadable: ["tags"] }] }, "items")).toEqual([{ id: "b", columns: ["tags"] }]);
     expect(damagedRowsIn({ items: [{ outboxId: "b", unreadable: ["tags"] }] })).toEqual([]);
-    expect(damagedRowsIn([{ qitemId: "c", unreadable: [] }, { qitemId: "d", unreadable: "tags" }, { qitemId: "e" }])).toEqual([]);
+    // absent, null, "" and [] are readable; any other present marker is damage (fails toward showing)
+    expect(damagedRowsIn([{ qitemId: "c", unreadable: [] }, { qitemId: "e" }, { qitemId: "f", unreadable: null }, { qitemId: "g", unreadable: "" }])).toEqual([]);
+    expect(damagedRowsIn([{ qitemId: "d", unreadable: "tags" }])).toEqual([{ id: "d", columns: ["tags"] }]);
+    expect(damagedRowsIn([{ qitemId: "h", unreadable: [""] }, { qitemId: "i", unreadable: true }, { qitemId: "j", unreadable: {} }]))
+      .toEqual([{ id: "h", columns: ["unknown columns"] }, { id: "i", columns: ["unknown columns"] }, { id: "j", columns: ["unknown columns"] }]);
     expect(damagedRowsIn("nope")).toEqual([]);
   });
 

@@ -16,7 +16,7 @@ import {
   renderTraceTree,
 } from "./workflow-render.js";
 import { describeDaemonRejection, formatThreePart } from "./workflow-errors.js";
-import { damagedRowsIn, describeSavedRowRefusal, warnDamagedRows } from "../lib/damaged-rows.js";
+import { damagedColumnsOf, damagedRowsIn, describeSavedRowRefusal, warnDamagedRows } from "../lib/damaged-rows.js";
 
 /**
  * `rig workflow` — daemon-native Workflow Runtime (PL-004 Phase D).
@@ -520,7 +520,7 @@ Examples:
         for (const row of rows) {
           const indicator = row.isBuiltIn ? " (built-in)" : "";
           // OF-136: a cached spec with a damaged saved column is listed, marked, and not offered for use.
-          console.log(`${row.name} v${row.version}${indicator}${row.unreadable?.length ? `  ▲ DAMAGED (${row.unreadable.join(", ")})` : ""}`);
+          console.log(`${row.name} v${row.version}${indicator}${damagedColumnsOf(row.unreadable).length ? `  ▲ DAMAGED (${damagedColumnsOf(row.unreadable).join(", ")})` : ""}`);
           if (row.purpose) console.log(`  purpose: ${row.purpose.replace(/\n/g, " ").slice(0, 120)}`);
           console.log(`  source: ${row.sourcePath}`);
         }

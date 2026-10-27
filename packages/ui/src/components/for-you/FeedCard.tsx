@@ -549,7 +549,7 @@ export function FeedCard({
           // OF-136: the daemon refuses to act on this row (its saved columns are unreadable), so the card says so, in words,
           // and offers neither APPROVE nor CHAT: an action here would rest on fields that are unknown, not empty.
           <div
-            role="alert"
+            role="note"
             data-testid={`feed-card-damaged-${card.id}`}
             className="mt-3 border border-tertiary/60 bg-tertiary/5 p-3 font-mono text-[11px] text-on-surface"
           >
@@ -616,7 +616,7 @@ export function FeedCard({
             ) : null}
             {qitemViewerData ? (
               <QueueItemTrigger
-                data={qitemViewerData}
+                data={damaged.length > 0 ? { ...qitemViewerData, unreadable: damaged } : qitemViewerData}
                 testId={`feed-card-show-context-${card.id}`}
                 className="font-mono text-[10px] uppercase tracking-wide text-on-surface hover:text-on-surface underline"
               >

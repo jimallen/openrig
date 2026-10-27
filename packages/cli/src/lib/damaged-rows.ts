@@ -41,6 +41,18 @@ function rowId(row: Record<string, unknown>): string {
   return "(unnamed row)";
 }
 
+/** The marker is `string[]` today. Damage fails toward SHOWING: any present, non-empty marker is damage, and one that does not
+ *  name columns (a string, an object, `[""]`) is shown as "unknown columns". Only absent, null, "", `[]` and false are readable. */
+export function damagedColumnsOf(marker: unknown): string[] {
+  if (Array.isArray(marker)) {
+    if (marker.length === 0) return [];
+    const named = marker.map(String).filter((c) => c.length > 0);
+    return named.length > 0 ? named : ["unknown columns"];
+  }
+  if (marker === undefined || marker === null || marker === "" || marker === false) return [];
+  return typeof marker === "string" ? [marker] : ["unknown columns"];
+}
+
 /** The rows of a list response that carry a damage marker. The list may be the body itself or sit under one of `keys`. */
 export function damagedRowsIn(body: unknown, ...keys: string[]): DamagedRow[] {
   const list: unknown[] = Array.isArray(body)
@@ -51,8 +63,8 @@ export function damagedRowsIn(body: unknown, ...keys: string[]): DamagedRow[] {
   const found: DamagedRow[] = [];
   for (const row of list) {
     if (!isRecord(row)) continue;
-    const marker = row.unreadable;
-    if (Array.isArray(marker) && marker.length > 0) found.push({ id: rowId(row), columns: marker.map(String) });
+    const columns = damagedColumnsOf(row.unreadable);
+    if (columns.length > 0) found.push({ id: rowId(row), columns });
   }
   return found;
 }
