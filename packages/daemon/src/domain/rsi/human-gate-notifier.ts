@@ -68,8 +68,32 @@ export interface NotificationStore {
   deleteBannersBefore(cutoff: string): void;
 }
 
-/** `exitCode` is the child's exit code; null when it never exited normally (spawn error, timeout kill, signal). */
-export type BannerSpawner = (command: string, args: string[]) => Promise<{ ok: boolean; exitCode?: number | null }>;
+/**
+ * Why a banner program failed. `exit`: it ran and exited nonzero (`exitCode`). `spawn-error`: it could not be
+ * started, so nothing was posted. `timeout`: it outlived the bound and was killed. `signal`: it died from a signal
+ * we did not send. After `timeout` or `signal` the program may already have posted its banner.
+ */
+export type BannerFailureCause = "exit" | "spawn-error" | "timeout" | "signal";
+export type BannerSpawnResult = { ok: boolean; exitCode?: number | null; cause?: BannerFailureCause };
+export type BannerSpawner = (command: string, args: string[]) => Promise<BannerSpawnResult>;
+
+function causeOf(result: BannerSpawnResult): BannerFailureCause | undefined {
+  return result.cause ?? (typeof result.exitCode === "number" ? "exit" : undefined);
+}
+
+/** The word an operator reads in the log: exit=N, spawn_error, timeout, signal (unknown only if a spawner reports none). */
+export function bannerFailureReason(result: BannerSpawnResult): string {
+  const cause = causeOf(result);
+  if (cause === "exit") return `exit=${result.exitCode ?? "none"}`;
+  if (cause === "spawn-error") return "spawn_error";
+  return cause ?? "unknown";
+}
+
+/** OF-83 fallback rule: only when nothing can have been posted, i.e. a nonzero exit or a spawn error. */
+function shouldFallBackToOsascript(result: BannerSpawnResult): boolean {
+  const cause = causeOf(result);
+  return !result.ok && (cause === "exit" || cause === "spawn-error");
+}
 
 export type NotifierTickResult =
   | { status: "noop-platform" }
@@ -242,11 +266,12 @@ export class HumanGateNotifier {
     const terminalNotifier = this.deps.findExecutable("terminal-notifier");
     let { command, args } = bannerCommand(terminalNotifier, NOTIFICATION_TITLE, message);
     let result = await this.deps.spawner(command, args);
-    if (!result.ok && terminalNotifier) {
+    if (terminalNotifier && shouldFallBackToOsascript(result)) {
       // OF-83: terminal-notifier can be installed yet unable to post (exit 3: notifications are off for
       // fr.julienxx.oss.terminal-notifier). osascript posts under a different app identity, so try it once
-      // before giving up. The exit code is the one number that tells an operator why the first attempt failed.
-      this.log(`[rsi-notifier] terminal-notifier banner failed exit=${result.exitCode ?? "none"}; falling back to osascript`);
+      // before giving up. Not after a timeout or a signal: terminal-notifier may already have posted, and a second
+      // banner would be a duplicate (u16 review N2). The reason in the log tells an operator why it failed.
+      this.log(`[rsi-notifier] terminal-notifier banner failed ${bannerFailureReason(result)}; falling back to osascript`);
       ({ command, args } = bannerCommand(null, NOTIFICATION_TITLE, message));
       result = await this.deps.spawner(command, args);
     }
@@ -254,7 +279,7 @@ export class HumanGateNotifier {
     this.deps.store.recordBanner({ sentAt: nowIso, itemCount: pending.length, ok: result.ok });
     this.deps.store.deleteBannersBefore(new Date(dayAgo).toISOString());
     if (!result.ok) {
-      this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)} exit=${result.exitCode ?? "none"}`);
+      this.log(`[rsi-notifier] banner spawn failed command=${path.basename(command)} ${bannerFailureReason(result)}`);
       // The items stay unnotified: they are retried after the gap.
       return { status: "failed", waiting: waiting.length, command: path.basename(command) };
     }
@@ -316,15 +341,17 @@ export function sqliteNotificationStore(db: Database.Database): NotificationStor
 export const defaultBannerSpawner: BannerSpawner = (command, args) =>
   new Promise((resolve) => {
     let settled = false;
-    const done = (ok: boolean, exitCode: number | null = null) => { if (!settled) { settled = true; resolve({ ok, exitCode }); } };
+    const done = (ok: boolean, exitCode: number | null, cause?: BannerFailureCause) => {
+      if (!settled) { settled = true; resolve(ok ? { ok, exitCode } : { ok, exitCode, cause }); }
+    };
     try {
       const child = spawn(command, args, { stdio: "ignore", shell: false });
-      const timer = setTimeout(() => { child.kill(); done(false); }, SPAWN_TIMEOUT_MS);
+      const timer = setTimeout(() => { child.kill(); done(false, null, "timeout"); }, SPAWN_TIMEOUT_MS);
       timer.unref?.();
-      child.on("error", () => { clearTimeout(timer); done(false); });
-      child.on("exit", (code) => { clearTimeout(timer); done(code === 0, code); });
+      child.on("error", () => { clearTimeout(timer); done(false, null, "spawn-error"); });
+      child.on("exit", (code) => { clearTimeout(timer); done(code === 0, code, code === null ? "signal" : "exit"); });
     } catch {
-      done(false);
+      done(false, null, "spawn-error");
     }
   });
 

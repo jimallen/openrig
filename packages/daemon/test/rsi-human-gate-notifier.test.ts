@@ -82,12 +82,12 @@ interface Harness {
   notifier: HumanGateNotifier;
 }
 
-function harness(opts: { platform?: NodeJS.Platform; terminalNotifier?: string | null; spawnOk?: boolean; spawn?: (command: string) => { ok: boolean; exitCode?: number | null }; db?: Database.Database; now?: { ms: number } } = {}): Harness {
+function harness(opts: { platform?: NodeJS.Platform; terminalNotifier?: string | null; spawnOk?: boolean; spawn?: (command: string) => { ok: boolean; exitCode?: number | null; cause?: "exit" | "spawn-error" | "timeout" | "signal" }; db?: Database.Database; now?: { ms: number } } = {}): Harness {
   const db = opts.db ?? freshDb();
   const now = opts.now ?? { ms: T0 };
   const calls: Array<{ command: string; args: string[] }> = [];
   const logs: string[] = [];
-  const spawner: BannerSpawner = async (command, args) => { calls.push({ command, args }); return opts.spawn ? opts.spawn(command) : { ok: opts.spawnOk ?? true }; };
+  const spawner: BannerSpawner = async (command, args) => { calls.push({ command, args }); return opts.spawn ? opts.spawn(command) : opts.spawnOk === false ? { ok: false, exitCode: 1 } : { ok: true }; };
   const notifier = new HumanGateNotifier({
     listBlocked: sqliteBlockedRows(db),
     stewardSession: STEWARD,
@@ -569,13 +569,30 @@ describe("terminal-notifier that is installed but fails (OF-83)", () => {
     expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications").get()).toEqual({ n: 1 });
   });
 
-  it("derives the fallback from the failure, not from a fixed code: another code and a never-exited child both fall back", async () => {
-    for (const exitCode of [1, null] as const) {
-      const h = harness({ spawn: (command) => (isTn(command) ? { ok: false, exitCode } : { ok: true, exitCode: 0 }) });
+  it("derives the fallback from the failure, not from a fixed code: another code and a spawn error both fall back, and the log says which", async () => {
+    const cases = [
+      { result: { ok: false, exitCode: 1, cause: "exit" as const }, reason: "exit=1" },
+      { result: { ok: false, exitCode: null, cause: "spawn-error" as const }, reason: "spawn_error" },
+    ];
+    for (const { result, reason } of cases) {
+      const h = harness({ spawn: (command) => (isTn(command) ? result : { ok: true, exitCode: 0 }) });
       insertQueueRow(h.db, "q-a");
       expect((await h.notifier.tick()).status).toBe("sent");
       expect(h.calls).toHaveLength(2);
-      expect(h.logs[0]).toBe(`[rsi-notifier] terminal-notifier banner failed exit=${exitCode ?? "none"}; falling back to osascript`);
+      expect(h.logs[0]).toBe(`[rsi-notifier] terminal-notifier banner failed ${reason}; falling back to osascript`);
+    }
+  });
+
+  it("does not fall back after a timeout or a signal (terminal-notifier may already have posted), and logs which it was", async () => {
+    for (const cause of ["timeout", "signal"] as const) {
+      const h = harness({ spawn: () => ({ ok: false, exitCode: null, cause }) });
+      insertQueueRow(h.db, "q-a");
+      expect(await h.notifier.tick()).toMatchObject({ status: "failed", command: "terminal-notifier" });
+      expect(h.calls.map((c) => c.command)).toEqual(["/opt/homebrew/bin/terminal-notifier"]); // no osascript
+      expect(h.logs).toEqual([`[rsi-notifier] banner spawn failed command=terminal-notifier ${cause}`]);
+      // Still one attempt in the ledger and the item stays unnotified, so it retries after the gap.
+      expect(h.db.prepare("SELECT ok FROM rsi_notification_banners").all()).toEqual([{ ok: 0 }]);
+      expect(h.db.prepare("SELECT COUNT(*) AS n FROM rsi_notifications").get()).toEqual({ n: 0 });
     }
   });
 
@@ -608,7 +625,7 @@ describe("terminal-notifier that is installed but fails (OF-83)", () => {
   });
 });
 
-describe("defaultBannerSpawner reports the exit code (OF-83)", () => {
+describe("defaultBannerSpawner reports the exit code and why it failed (OF-83)", () => {
   const stub = (name: string, body: string): string => {
     const file = join(tempDir("rsi-notifier-stub-"), name);
     writeFileSync(file, `#!/bin/sh\n${body}\n`);
@@ -618,10 +635,25 @@ describe("defaultBannerSpawner reports the exit code (OF-83)", () => {
 
   it("returns the child's exit code: 0 is ok, 3 is not ok and says 3", async () => {
     expect(await defaultBannerSpawner(stub("exit-zero", "exit 0"), [])).toEqual({ ok: true, exitCode: 0 });
-    expect(await defaultBannerSpawner(stub("exit-three", "exit 3"), [])).toEqual({ ok: false, exitCode: 3 });
+    expect(await defaultBannerSpawner(stub("exit-three", "exit 3"), [])).toEqual({ ok: false, exitCode: 3, cause: "exit" });
   });
 
-  it("returns a null exit code when the child cannot be started", async () => {
-    expect(await defaultBannerSpawner(join(tempDir("rsi-notifier-stub-"), "missing"), [])).toEqual({ ok: false, exitCode: null });
+  it("says spawn-error when the child cannot be started", async () => {
+    expect(await defaultBannerSpawner(join(tempDir("rsi-notifier-stub-"), "missing"), [])).toEqual({ ok: false, exitCode: null, cause: "spawn-error" });
+  });
+
+  it("says signal when the child dies from a signal we did not send", async () => {
+    expect(await defaultBannerSpawner(stub("self-kill", "kill -9 $$"), [])).toEqual({ ok: false, exitCode: null, cause: "signal" });
+  });
+
+  it("says timeout when the child outlives the bound and is killed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const pending = defaultBannerSpawner(stub("sleeper", "exec sleep 30"), []);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await pending).toEqual({ ok: false, exitCode: null, cause: "timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

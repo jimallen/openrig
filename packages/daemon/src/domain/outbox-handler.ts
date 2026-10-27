@@ -5,14 +5,21 @@ import type Database from "better-sqlite3";
  * daemon (QueueRepository.stageWakeIntent) with an id under this prefix, and the
  * startup drain EXECUTES every pending row under it as a real wake.
  *
- * NOT a route reservation: the public `/outbox/record` audit route no longer
- * refuses caller-supplied ids under this prefix (the W4-era MF5 guard was unbuilt —
- * founder ruling, over-engineering audit: its justification required an adversary
- * inside this trust domain, where the only caller is the daemon's own localhost
- * client). A caller CAN now record an id under this prefix and the drain will
- * select it. Single source of truth for the drain query only.
+ * Single source of truth for the drain query. History: the W4-era MF5 route guard was unbuilt
+ * (founder ruling, over-engineering audit), so `/outbox/record` accepted ids under this prefix.
+ * u16 review N1 (coordinator decision, 2026-10-27) restored a narrow refusal: see
+ * DAEMON_OUTBOX_ID_PREFIXES, which the route enforces.
  */
 export const WAKE_INTENT_PREFIX = "wake-intent-";
+
+/**
+ * Outbox id prefixes the daemon itself writes (wake intents; guard-claim-, guard-nudge-,
+ * guard-watchdog-, guard-send-, guard-model- deliveries). `POST /outbox/record` refuses a caller
+ * outboxId under any of them: otherwise a caller could pre-record a predictable daemon id and get
+ * the later daemon row returned unchanged, carrying the manual-record origin marker that hides it
+ * from RSI D8 (OF-77, u16 review N1).
+ */
+export const DAEMON_OUTBOX_ID_PREFIXES = [WAKE_INTENT_PREFIX, "guard-"] as const;
 
 // `delivered` has TWO meanings in this table, keyed on the id prefix (OF-74 / review F1):
 //  - `wake-intent-*` rows (drained by QueueRepository): `delivered` = the render was CONFIRMED;
