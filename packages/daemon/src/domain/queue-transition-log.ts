@@ -60,6 +60,10 @@ export interface RecentQueueTransition {
   rig: string;
   targetKind: RecentQueueTransitionTargetKind;
   target: string;
+  /** OF-146: set (to the column) only when the item's saved `tags` are not a readable list. The target is then the qitem
+   *  because the slice/mission tag could not be read, not because the item has none: a listing marks it, never presents it
+   *  as an ordinary untagged item. */
+  unreadable?: string[];
 }
 
 interface QueueTransitionRow {
@@ -97,19 +101,25 @@ function sessionRig(session: string, knownRigs: ReadonlySet<string>): string | n
   return parsed.kind === "canonical" && knownRigs.has(parsed.rig) ? parsed.rig : null;
 }
 
-function recentTarget(row: RecentQueueTransitionRow): Pick<RecentQueueTransition, "targetKind" | "target"> {
+function recentTarget(row: RecentQueueTransitionRow): Pick<RecentQueueTransition, "targetKind" | "target" | "unreadable"> {
   let tags: string[] = [];
-  try {
-    const parsed = row.tags ? JSON.parse(row.tags) : [];
-    if (Array.isArray(parsed)) tags = parsed.filter((tag): tag is string => typeof tag === "string");
-  } catch {
-    // An invalid legacy tag field cannot turn prose into a target; retain qitem identity.
+  let unreadable = false;
+  if (row.tags) {
+    try {
+      const parsed: unknown = JSON.parse(row.tags);
+      if (Array.isArray(parsed) && parsed.every((tag) => typeof tag === "string")) tags = parsed as string[];
+      else unreadable = true;
+    } catch {
+      unreadable = true;
+    }
   }
+  // An unreadable tag field cannot turn prose into a target; the qitem identity is kept and the row is marked.
+  const marker = unreadable ? { unreadable: ["tags"] } : {};
   const slice = tags.find((tag) => tag.startsWith("slice:"))?.slice("slice:".length).trim();
   if (slice) return { targetKind: "slice", target: slice };
   const mission = tags.find((tag) => tag.startsWith("mission:"))?.slice("mission:".length).trim();
   if (mission) return { targetKind: "mission", target: mission };
-  return { targetKind: "qitem", target: row.qitem_id };
+  return { targetKind: "qitem", target: row.qitem_id, ...marker };
 }
 
 function recentChange(row: RecentQueueTransitionRow): string | null {

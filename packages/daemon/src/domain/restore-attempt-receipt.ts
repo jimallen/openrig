@@ -73,9 +73,21 @@ export function deriveRestoreAttemptReceipt(
     const originalResult = completed.result;
     const intendedRoster = started.intendedRoster ?? originalResult.intendedRoster ?? originalResult.nodes.map((node) => ({ nodeId: node.nodeId, logicalId: node.logicalId }));
     const intendedIds = new Set(intendedRoster.map((node) => node.nodeId));
+    // OF-143: `json_extract` over a damaged payload raises for the WHOLE scan, so one damaged reconciliation event of ANOTHER
+    // attempt refused this attempt's receipt. Only readable payloads are matched by attempt here. A damaged event cannot say
+    // which attempt it belongs to, but its position can: a reconciliation is written while its attempt is the latest, so an
+    // event of this attempt lies between this restore.started and the next one. A damaged event in that window may be a
+    // reconciliation of THIS attempt: the receipt refuses by name (it would otherwise report that seat as unresolved). One
+    // outside the window belongs to another attempt and is not this receipt's business.
     const reconciliationRows = db.prepare(
-      "SELECT seq, rig_id, type, payload, created_at FROM events WHERE rig_id = ? AND type = 'restore.outcome_reconciled' AND json_extract(payload, '$.attemptId') = ? ORDER BY seq",
+      "SELECT seq, rig_id, type, payload, created_at FROM events WHERE rig_id = ? AND type = 'restore.outcome_reconciled' AND json_valid(payload) AND json_extract(payload, '$.attemptId') = ? ORDER BY seq",
     ).all(rigId, attemptId) as EventRow[];
+    const damagedInWindow = db.prepare(
+      `SELECT seq FROM events WHERE rig_id = ? AND type = 'restore.outcome_reconciled' AND NOT json_valid(payload) AND seq > ?${next ? " AND seq < ?" : ""} ORDER BY seq`,
+    ).all(...(next ? [rigId, attemptId, next.seq] : [rigId, attemptId])) as Array<{ seq: number }>;
+    if (damagedInWindow.length > 0) {
+      return { ok: false, code: "attempt_corrupt", message: `Restore attempt ${attemptId} could not be decoded: saved events row ${damagedInWindow.map((row) => row.seq).join(", ")} (restore.outcome_reconciled written during this attempt) is not readable JSON, so which seats were reconciled is unknown. Repair or remove the event row.` };
+    }
     const reconciliations = reconciliationRows.flatMap((row) => {
       const event = JSON.parse(row.payload) as { nodeId: string; from: "failed" | "attention_required"; to: "operator_recovered"; evidence: unknown };
       return intendedIds.has(event.nodeId) ? [{ ...event, seq: row.seq, createdAt: row.created_at }] : [];

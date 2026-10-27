@@ -23,17 +23,36 @@ export function recoveryId(db: Database.Database, qitemId: string): string {
  * planner read that small index instead of scanning and parsing every row. */
 const RECOVERY_TAG_ROWS = `(tags LIKE '%"recovery-for:%' OR tags LIKE '%\\%')`;
 const RECOVERY_ORDER = "ORDER BY CASE WHEN state IN ('pending','in-progress','blocked') THEN 0 ELSE 1 END, ts_updated DESC, qitem_id DESC LIMIT 1";
-export function findQueueRecovery(db: Database.Database, qitemId: string): { qitemId: string; state: string } | null {
+/** A recovery row found by the text of its tags only, because the tags column is not readable JSON (OF-143). It still exists
+ * and still holds the link, so it is not "no recovery": every caller reads the row by id next (which names it) and leaves the
+ * original alone, instead of retrying, exhausting or re-opening a finding on a guess. A row whose tags were overwritten so
+ * that the quoted link text is gone cannot be found here at all (the same residual as OF-147's tags overwrite). */
+export interface QueueRecoveryRef { qitemId: string; state: string; unreadable?: true }
+const OPEN_STATES = ["pending", "in-progress", "blocked"];
+type RecoveryCandidate = { qitem_id: string; state: string; ts_updated: string };
+export function findQueueRecovery(db: Database.Database, qitemId: string): QueueRecoveryRef | null {
   const tag = recoveryTag(qitemId);
+  // The readable lookup is the pre-OF-143 statement, byte for byte (migration 099's index, one bound tag, the same row choice).
   const row = db.prepare(`SELECT qitem_id, state, ts_updated FROM queue_items
     WHERE ${RECOVERY_TAG_ROWS} AND json_valid(tags) AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)
     ${RECOVERY_ORDER}`)
-    .get(tag) as { qitem_id: string; state: string; ts_updated: string } | undefined;
-  if (!row) return null;
-  if (!["pending", "in-progress", "blocked"].includes(row.state)) {
+    .get(tag) as RecoveryCandidate | undefined;
+  // A READABLE open recovery owns the continuation whatever else exists. Otherwise a recovery whose tags are damaged is looked
+  // for by the quoted link text (instr: exact, no wildcards, so recovery-for:a never matches recovery-for:ab): it must not read
+  // as absent. Same index (its WHERE term is repeated), and only rows whose tag text could carry a recovery tag are parsed.
+  const damaged = row && OPEN_STATES.includes(row.state) ? undefined : db.prepare(`SELECT qitem_id, state, ts_updated FROM queue_items
+    WHERE ${RECOVERY_TAG_ROWS} AND NOT json_valid(tags) AND instr(tags, '"' || ? || '"') > 0
+    ${RECOVERY_ORDER}`)
+    .get(tag) as RecoveryCandidate | undefined;
+  // A closed disposition stops counting once the original changed after it (shared with the readable case).
+  const current = (candidate: RecoveryCandidate): boolean => {
+    if (OPEN_STATES.includes(candidate.state)) return true;
     const changed = lastMeaningfulTransition(db, qitemId);
-    const disposition = lastMeaningfulTransition(db, row.qitem_id);
-    if ((changed && disposition && changed.id > disposition.id) || (changed && Date.parse(changed.at) > Date.parse(row.ts_updated)) || Date.parse(failedAttempt(db, qitemId) ?? "") > Date.parse(row.ts_updated)) return null;
-  }
-  return { qitemId: row.qitem_id, state: row.state };
+    const disposition = lastMeaningfulTransition(db, candidate.qitem_id);
+    return !((changed && disposition && changed.id > disposition.id) || (changed && Date.parse(changed.at) > Date.parse(candidate.ts_updated)) || Date.parse(failedAttempt(db, qitemId) ?? "") > Date.parse(candidate.ts_updated));
+  };
+  if (row && OPEN_STATES.includes(row.state)) return { qitemId: row.qitem_id, state: row.state };
+  if (damaged && current(damaged)) return { qitemId: damaged.qitem_id, state: damaged.state, unreadable: true };
+  if (row && current(row)) return { qitemId: row.qitem_id, state: row.state };
+  return null;
 }

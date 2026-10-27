@@ -801,6 +801,9 @@ export interface WorkflowExceptionInput {
    *  out-of-band corruption state — WF-3 FR-6's guard is the
    *  prevention; this row is the detection backstop). */
   frontierRefsNonOpenPacket: boolean;
+  /** OF-146: the saved columns of this instance that are not readable JSON. Present only when damaged; the frontier was read
+   *  as empty BECAUSE of it, so no deadline verdict was made and `deadlineState`/`frontierRefsNonOpenPacket` say nothing. */
+  unreadable?: string[];
   /** The OPEN exception item for this instance (tag query), if any. */
   openItem: {
     qitemId: string;
@@ -864,6 +867,21 @@ export function deriveWorkflowExceptions(
       workflowName: w.workflowName,
       ...(w.currentStepId ? { stepId: w.currentStepId } : {}),
     };
+    // OF-146: a damaged instance is named, never silently healthy: its deadline verdict could not be made. A FAILED status
+    // is a different, readable column, so the failed-instance rows below still apply.
+    if (w.unreadable && w.unreadable.length > 0) {
+      push(
+        `${w.instanceId}|anomaly|unreadable`,
+        `${w.workflowName} instance saved state is not readable`,
+        {
+          kind: "anomaly",
+          evidence: `instance ${w.instanceId} has a saved ${w.unreadable.join(", ")} that is not readable JSON, so its deadline could not be checked (repair or remove the row)`,
+          threshold: "saved instance state must be readable",
+        },
+        trace,
+        wref,
+      );
+    }
     // The anomaly backstop fires regardless of item state — the
     // corruption is orthogonal to exception routing.
     if (w.frontierRefsNonOpenPacket) {

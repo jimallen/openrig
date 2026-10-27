@@ -36,6 +36,9 @@ export interface SliceWorkflowBinding {
   hopCount: number;
   createdAt: string;
   completedAt: string | null;
+  /** OF-146: set only when the saved frontier is not a readable list. `currentFrontier` is then `[]` BECAUSE of that, not
+   *  because the instance has no live step: a reader must not treat it as "no live step". */
+  unreadable?: string[];
 }
 
 export interface SliceWorkflowBindingResult {
@@ -123,12 +126,15 @@ export function findSliceWorkflowBinding(
 
 function rowToBinding(row: InstanceRow): SliceWorkflowBinding {
   let frontier: string[] = [];
+  let unreadable = false;
   try {
-    const parsed = JSON.parse(row.current_frontier_json);
-    if (Array.isArray(parsed)) frontier = parsed.filter((x): x is string => typeof x === "string");
+    const parsed: unknown = JSON.parse(row.current_frontier_json);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) frontier = parsed as string[];
+    else unreadable = true;
   } catch {
-    // malformed JSON — empty frontier (instance is in a degraded state;
-    // the v1 UI will still render the bound workflow_name + status).
+    // malformed JSON: served with an empty frontier AND marked, so the bound workflow_name + status still render and the
+    // damage is not mistaken for "no live step".
+    unreadable = true;
   }
   return {
     instanceId: row.instance_id,
@@ -140,5 +146,6 @@ function rowToBinding(row: InstanceRow): SliceWorkflowBinding {
     hopCount: row.hop_count,
     createdAt: row.created_at,
     completedAt: row.completed_at,
+    ...(unreadable ? { unreadable: ["current_frontier_json"] } : {}),
   };
 }

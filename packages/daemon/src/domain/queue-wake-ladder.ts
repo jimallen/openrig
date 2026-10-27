@@ -553,6 +553,11 @@ function usageLimitPoolTag(poolKey: string): string {
   return `${USAGE_LIMIT_POOL_TAG_PREFIX}${poolKey}`;
 }
 
+/** The words the ladder always begins a usage-limit blocker's body with; OF-147 finds a blocker with damaged tags by them. */
+function usageLimitBlockerBodyLead(poolKey: string): string {
+  return `Provider usage limit for ${poolKey}; `;
+}
+
 function rigOf(session: string): string {
   return session.slice(session.lastIndexOf("@") + 1);
 }
@@ -564,19 +569,22 @@ async function ensureUsageLimitBlocker(
   jitterSeconds: number,
 ): Promise<QueueItem> {
   const poolTag = usageLimitPoolTag(pool.poolKey);
+  const bodyLead = usageLimitBlockerBodyLead(pool.poolKey);
   const existing = deps.db.prepare(
     `SELECT qitem_id FROM queue_items
       WHERE state IN ('pending', 'in-progress', 'blocked')
-        AND CASE WHEN json_valid(queue_items.tags)
+        AND (CASE WHEN json_valid(queue_items.tags)
               THEN EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
                AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)
               -- OF-140: a blocker whose tags are damaged is still THERE. Matched as quoted text (instr: exact, no wildcards) so
               -- getById refuses it by name and the pool waits, instead of opening a second blocker beside it.
-              -- KNOWN RESIDUAL (review w1 F1, accepted, tracked separately): tags overwritten so that NO pool identity survives in
-              -- the text (e.g. '{not json') match neither branch; that blocker is not found and a second one is opened.
               ELSE instr(queue_items.tags, '"' || ? || '"') > 0 AND instr(queue_items.tags, '"' || ? || '"') > 0 END
+              -- OF-147: tags overwritten so that NO pool identity survives (e.g. '{not json', or a readable '[]') are matched by
+              -- what the ladder itself wrote beside the tags: the source session and the body's exact leading words (the pool
+              -- key plus the '; ' that ends it, so claude:local never matches claude:local2).
+              OR (queue_items.source_session = ? AND substr(queue_items.body, 1, length(?)) = ?))
       LIMIT 1`,
-  ).get(USAGE_LIMIT_BLOCKER_TAG, poolTag, USAGE_LIMIT_BLOCKER_TAG, poolTag) as { qitem_id: string } | undefined;
+  ).get(USAGE_LIMIT_BLOCKER_TAG, poolTag, USAGE_LIMIT_BLOCKER_TAG, poolTag, LADDER_ACTOR, bodyLead, bodyLead) as { qitem_id: string } | undefined;
 
   let blocker = existing ? deps.queueRepo.getById(existing.qitem_id) : null;
   if (blocker) {
@@ -588,7 +596,7 @@ async function ensureUsageLimitBlocker(
     blocker = await deps.queueRepo.create({
       sourceSession: LADDER_ACTOR,
       destinationSession: `wake-ladder@${rig}`,
-      body: `Provider usage limit for ${pool.poolKey}; release every dependent once at ${pool.expiresAt}.`,
+      body: `${bodyLead}release every dependent once at ${pool.expiresAt}.`,
       tags: [USAGE_LIMIT_BLOCKER_TAG, poolTag],
       expiresAt: new Date(Date.parse(pool.expiresAt) + jitterSeconds * 1000).toISOString(),
       nudge: false,
@@ -781,7 +789,11 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
       const mode = unclaimedWakeMode(row);
       if (!mode) continue;
       const disposition = findWakeRecovery(deps.db, row.qitemId);
-      if (disposition && !["pending", "in-progress", "blocked"].includes(disposition.state)) continue;
+      if (disposition && !["pending", "in-progress", "blocked"].includes(disposition.state)) {
+        // OF-143: a closed recovery whose tags are damaged still holds the disposition; name it, and leave the original alone.
+        if (disposition.unreadable) readRow(disposition.qitemId);
+        continue;
+      }
       const view = readLadder(deps.db, row.qitemId);
       if (view.exhausted) continue; // finite: an exhausted ladder never re-fires
 
