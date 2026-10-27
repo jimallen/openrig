@@ -5,14 +5,21 @@ import type Database from "better-sqlite3";
  * daemon (QueueRepository.stageWakeIntent) with an id under this prefix, and the
  * startup drain EXECUTES every pending row under it as a real wake.
  *
- * NOT a route reservation: the public `/outbox/record` audit route no longer
- * refuses caller-supplied ids under this prefix (the W4-era MF5 guard was unbuilt —
- * founder ruling, over-engineering audit: its justification required an adversary
- * inside this trust domain, where the only caller is the daemon's own localhost
- * client). A caller CAN now record an id under this prefix and the drain will
- * select it. Single source of truth for the drain query only.
+ * Single source of truth for the drain query. History: the W4-era MF5 route guard was unbuilt
+ * (founder ruling, over-engineering audit), so `/outbox/record` accepted ids under this prefix.
+ * u16 review N1 (coordinator decision, 2026-10-27) restored a narrow refusal: see
+ * DAEMON_OUTBOX_ID_PREFIXES, which the route enforces.
  */
 export const WAKE_INTENT_PREFIX = "wake-intent-";
+
+/**
+ * Outbox id prefixes the daemon itself writes (wake intents; guard-claim-, guard-nudge-,
+ * guard-watchdog-, guard-send-, guard-model- deliveries). `POST /outbox/record` refuses a caller
+ * outboxId under any of them: otherwise a caller could pre-record a predictable daemon id and get
+ * the later daemon row returned unchanged, carrying the manual-record origin marker that hides it
+ * from RSI D8 (OF-77, u16 review N1).
+ */
+export const DAEMON_OUTBOX_ID_PREFIXES = [WAKE_INTENT_PREFIX, "guard-"] as const;
 
 // `delivered` has TWO meanings in this table, keyed on the id prefix (OF-74 / review F1):
 //  - `wake-intent-*` rows (drained by QueueRepository): `delivered` = the render was CONFIRMED;
@@ -87,6 +94,15 @@ interface OutboxEntryRow {
   retirement_reason?: string | null;
 }
 
+/**
+ * Daemon-written origin marker (OF-77, RSI D8). A row recorded through the manual audit route
+ * (`POST /outbox/record`) carries this tag; the send path never does, so the D8 "outbox never
+ * settles" detector can tell an audit row (which has no delivery to settle) from a send row.
+ * Callers cannot forge or fake it: `record` strips any caller-supplied copy of the tag and adds
+ * it only when the route passes `origin: "manual-record"`.
+ */
+export const OUTBOX_ORIGIN_MANUAL_RECORD_TAG = "origin:manual-record";
+
 export interface OutboxRecordInput {
   outboxId?: string;
   senderSession: string;
@@ -98,6 +114,8 @@ export interface OutboxRecordInput {
   /** P21 §4 era-stamp: the route passes `transport:v1` (senderSession derived from the transport
    *  header chokepoint). Written onto the outbox row; absence = claimed-era. */
   identityProvenance?: string | null;
+  /** Set only by the manual audit route; stamps OUTBOX_ORIGIN_MANUAL_RECORD_TAG onto the row. */
+  origin?: "manual-record";
 }
 
 export class OutboxHandlerError extends Error {
@@ -140,7 +158,9 @@ export class OutboxHandler {
     if (existing) return this.rowToEntry(existing);
 
     const ts = new Date().toISOString();
-    const tags = input.tags ? JSON.stringify(input.tags) : null;
+    const callerTags = input.tags?.filter((t) => t !== OUTBOX_ORIGIN_MANUAL_RECORD_TAG);
+    const stamped = input.origin === "manual-record" ? [...(callerTags ?? []), OUTBOX_ORIGIN_MANUAL_RECORD_TAG] : callerTags;
+    const tags = stamped ? JSON.stringify(stamped) : null;
     const urgency = input.urgency ?? "routine";
 
     if (this.hasIdentityProvenanceColumn) {

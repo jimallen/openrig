@@ -493,6 +493,50 @@ describe("queue routes", () => {
     expect(row?.identity_provenance).toBe("transport:v1");
   });
 
+  it("outbox record — daemon stamps the manual-record origin marker (OF-77); a caller-supplied copy is not duplicated", async () => {
+    const res = await app.request("/api/queue/outbox/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "me@rig" },
+      body: JSON.stringify({ destinationSession: "you@rig", body: "audit row", tags: ["note", "origin:manual-record"] }),
+    });
+    expect(res.status).toBe(201);
+    const { outboxId } = (await res.json()) as { outboxId: string };
+    const row = db.prepare("SELECT tags FROM outbox_entries WHERE outbox_id = ?").get(outboxId) as { tags: string };
+    expect(JSON.parse(row.tags)).toEqual(["note", "origin:manual-record"]);
+    const bare = await app.request("/api/queue/outbox/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "me@rig" },
+      body: JSON.stringify({ destinationSession: "you@rig", body: "audit row without tags" }),
+    });
+    const bareId = ((await bare.json()) as { outboxId: string }).outboxId;
+    expect(JSON.parse((db.prepare("SELECT tags FROM outbox_entries WHERE outbox_id = ?").get(bareId) as { tags: string }).tags)).toEqual(["origin:manual-record"]);
+  });
+
+  it("outbox record — a non-array tags is a 400 with no row (not a 500), a null tags is still accepted (u16 N4)", async () => {
+    const post = (payload: Record<string, unknown>) => app.request("/api/queue/outbox/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "me@rig" },
+      body: JSON.stringify({ destinationSession: "you@rig", body: "audit", ...payload }),
+    });
+    const before = (db.prepare("SELECT COUNT(*) AS n FROM outbox_entries").get() as { n: number }).n;
+    for (const tags of ["x", { a: 1 }, 5]) expect((await post({ tags })).status).toBe(400);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM outbox_entries").get() as { n: number }).n).toBe(before);
+    expect((await post({ tags: null })).status).toBe(201);
+  });
+
+  it("outbox record — refuses a daemon-reserved outboxId prefix, so a squatted daemon id cannot carry the origin marker (u16 N1)", async () => {
+    const post = (outboxId: string) => app.request("/api/queue/outbox/record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "me@rig" },
+      body: JSON.stringify({ outboxId, destinationSession: "you@rig", body: "audit" }),
+    });
+    for (const outboxId of ["wake-intent-blocker-9", "wake-intent-q-abc", "guard-claim-n-1", "guard-nudge-q-1", "guard-watchdog-7"]) {
+      expect((await post(outboxId)).status, outboxId).toBe(400);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_entries WHERE outbox_id = ?").get(outboxId), outboxId).toEqual({ n: 0 });
+    }
+    expect((await post("my-own-audit-id-1")).status).toBe(201);
+  });
+
   it("POST /api/queue/create creates a qitem", async () => {
     const res = await app.request("/api/queue/create", {
       method: "POST",

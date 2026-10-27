@@ -1,4 +1,4 @@
-import { OUTBOX_DELIVERY_STATES } from "../outbox-handler.js";
+import { OUTBOX_DELIVERY_STATES, OUTBOX_ORIGIN_MANUAL_RECORD_TAG } from "../outbox-handler.js";
 import { RSI_OUTBOX_UNSETTLED } from "./detector-ids.js";
 import {
   RsiFindingSource, hoursBefore, partitionText, sortedParts,
@@ -10,7 +10,8 @@ import {
  * but no threshold, so the narrowest reading is used (listed in the PR report): per
  * `identity_provenance`, at least 10 un-retired rows dispatched in the trailing 7 days are still
  * `pending` more than 24 h after dispatch. A retired row was deliberately taken out of play and
- * is not judged at all.
+ * is not judged at all. Neither is a manual audit row (`POST /outbox/record`, daemon-stamped with
+ * OUTBOX_ORIGIN_MANUAL_RECORD_TAG): it records an event and has no delivery to settle (OF-77).
  *
  * The 7-day lower bound (Jim's decision) lets the detector go quiet once the send path is fixed:
  * the outbox has no retention, so legacy `pending` rows would otherwise fire forever. Rows older
@@ -38,7 +39,9 @@ export class OutboxUnsettledSource extends RsiFindingSource {
         CASE WHEN delivery_state IN (${known}) THEN delivery_state ELSE 'other' END AS state,
         CASE WHEN ts_dispatched >= ? THEN CASE WHEN ts_dispatched < ? THEN 'window' ELSE 'young' END ELSE 'legacy' END AS band,
         count(*) AS n, min(rowid) AS first_id, max(rowid) AS last_id, min(ts_dispatched) AS first_seen, max(ts_dispatched) AS last_seen
-      FROM outbox_entries WHERE retired_at IS NULL GROUP BY prov, state, band`).all(lookback, stale) as OutboxRow[];
+      FROM outbox_entries WHERE retired_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) WHERE value = ?)
+      GROUP BY prov, state, band`).all(lookback, stale, OUTBOX_ORIGIN_MANUAL_RECORD_TAG) as OutboxRow[];
 
     const provenances = new Map<string, Provenance>();
     const states = new Map<string, number>();

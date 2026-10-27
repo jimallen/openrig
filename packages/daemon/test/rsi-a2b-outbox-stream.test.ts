@@ -68,6 +68,32 @@ describe("D8 outbox state never settles", () => {
     expect(f.records(source(f))).toEqual([]);
   });
 
+  it("skips manual audit rows (OF-77): rows carrying the daemon's origin marker are not judged, in or out of the count", () => {
+    const tagManual = (f: F, ids: number[], tags: unknown = ["origin:manual-record"]) => {
+      for (const id of ids) f.db.prepare("UPDATE outbox_entries SET tags = ? WHERE rowid = ?").run(typeof tags === "string" ? tags : JSON.stringify(tags), id);
+    };
+    const onlyAudit = fixture();
+    tagManual(onlyAudit, pending(onlyAudit, 40, 50));
+    const mixedBelow = fixture(); // 9 send rows + 30 audit rows: the audit rows must not lift 9 to 10
+    pending(mixedBelow, 9, 50);
+    tagManual(mixedBelow, pending(mixedBelow, 30, 50));
+    const mixedAt = fixture(); // 10 send rows + 30 audit rows: fires on exactly the 10 send rows
+    const sends = pending(mixedAt, 10, 50);
+    tagManual(mixedAt, pending(mixedAt, 30, 50), ["note", "origin:manual-record"]);
+    const lookalikes = fixture(); // only the exact tag is the marker; malformed tags are ordinary rows
+    const ids = pending(lookalikes, 10, 50);
+    tagManual(lookalikes, ids.slice(0, 4), ["origin:manual-record-x"]);
+    tagManual(lookalikes, ids.slice(4, 7), "not json");
+    tagManual(lookalikes, ids.slice(7), "origin:manual-record");
+
+    expect(onlyAudit.records(source(onlyAudit))).toEqual([]);
+    expect(mixedBelow.records(source(mixedBelow))).toEqual([]);
+    const [record, ...rest] = mixedAt.records(source(mixedAt));
+    expect(rest).toEqual([]);
+    expect(span(record!)).toMatchObject({ count: 10 });
+    expect(lookalikes.records(source(lookalikes))).toHaveLength(1);
+  });
+
   it("counts per identity provenance, and names a missing provenance as unattributed", () => {
     const f = fixture();
     pending(f, 6, 50, "transport:v1"); pending(f, 6, 50, "hook:v1");

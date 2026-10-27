@@ -13,7 +13,7 @@ import { requireSenderIdentity, resolveRecordedProvenance, ORIGIN_UNKNOWN_HEADER
 import { hostname as osHostname } from "node:os";
 import type { InboxHandler } from "../domain/inbox-handler.js";
 import { InboxHandlerError } from "../domain/inbox-handler.js";
-import { type OutboxHandler } from "../domain/outbox-handler.js";
+import { DAEMON_OUTBOX_ID_PREFIXES, type OutboxHandler } from "../domain/outbox-handler.js";
 import { aggregateAttention } from "../domain/feed/attention-aggregator.js";
 import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
@@ -1211,6 +1211,10 @@ export function queueRoutes(): Hono {
     if (!identity.ok) return identity.response;
     if (!body.destinationSession) return c.json({ error: "destinationSession is required" }, 400);
     if (!body.body) return c.json({ error: "body is required" }, 400);
+    if (body.tags != null && !Array.isArray(body.tags)) return c.json({ error: "tags must be an array of strings" }, 400);
+    if (typeof body.outboxId === "string" && DAEMON_OUTBOX_ID_PREFIXES.some((prefix) => body.outboxId!.startsWith(prefix))) {
+      return c.json({ error: `outboxId may not start with a daemon-reserved prefix (${DAEMON_OUTBOX_ID_PREFIXES.join(", ")})` }, 400);
+    }
 
     const entry = getOutbox(c).record({
       outboxId: body.outboxId,
@@ -1220,6 +1224,7 @@ export function queueRoutes(): Hono {
       tags: body.tags,
       urgency: body.urgency,
       auditPointer: body.auditPointer,
+      origin: "manual-record", // OF-77: daemon-written, so RSI D8 can tell audit rows from send rows
       identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
     });
     return c.json(entry, 201);

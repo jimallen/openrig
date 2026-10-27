@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
-import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { OUTBOX_ORIGIN_MANUAL_RECORD_TAG, OutboxHandler } from "../src/domain/outbox-handler.js";
 
 describe("OutboxHandler", () => {
   let db: Database.Database;
@@ -27,6 +27,16 @@ describe("OutboxHandler", () => {
     expect(e.outboxId).toMatch(/^outbox-\d{14}-[a-f0-9]{8}$/);
     expect(e.deliveryState).toBe("pending");
     expect(e.tags).toEqual(["info"]);
+  });
+
+  it("record stamps the origin marker only for origin manual-record, once, and never trusts a caller-supplied copy (OF-77)", () => {
+    const base = { senderSession: "alice@rig", destinationSession: "bob@rig", body: "x" };
+    // The send path passes no origin: a caller who tags a send row with the marker does not get it stored.
+    expect(outbox.record({ ...base, tags: ["info", OUTBOX_ORIGIN_MANUAL_RECORD_TAG] }).tags).toEqual(["info"]);
+    expect(outbox.record({ ...base }).tags).toBeNull();
+    expect(outbox.record({ ...base, tags: ["info"], origin: "manual-record" }).tags).toEqual(["info", OUTBOX_ORIGIN_MANUAL_RECORD_TAG]);
+    expect(outbox.record({ ...base, origin: "manual-record" }).tags).toEqual([OUTBOX_ORIGIN_MANUAL_RECORD_TAG]);
+    expect(outbox.record({ ...base, tags: [OUTBOX_ORIGIN_MANUAL_RECORD_TAG], origin: "manual-record" }).tags).toEqual([OUTBOX_ORIGIN_MANUAL_RECORD_TAG]);
   });
 
   it("record is idempotent on outbox_id", () => {
