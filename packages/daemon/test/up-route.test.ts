@@ -143,6 +143,76 @@ describe("Up API route", () => {
     }
   });
 
+  // OF-135: `rig up --existing <ref>` takes a rig id as well as a name. An exact id comes first, archived included (ids
+  // are unique), then a name — the precedence of `rig down` / `rig add` (cli/src/rig-handle.ts). Names behave as before.
+  describe("a rig id as the source (OF-135)", () => {
+    function stoppedRig(name: string) {
+      const rig = rigRepo.createRig(name);
+      const node = rigRepo.addNode(rig.id, "worker", { role: "worker" });
+      const session = sessionRegistry.registerSession(node.id, `worker@${name}`);
+      db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?").run("relaunch_fresh", session.id);
+      sessionRegistry.updateStatus(session.id, "running");
+      const snapshot = snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      sessionRegistry.updateStatus(session.id, "exited");
+      return { ...rig, snapshotId: snapshot.id };
+    }
+    const up = (sourceRef: string) => app.request("/api/up", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceRef }),
+    });
+
+    it("restores the one rig an id names when two rigs share its name, and reports the rig's name", async () => {
+      stoppedRig("shared-name");
+      const second = stoppedRig("shared-name");
+      expect((await up("shared-name")).status).toBe(409); // the name stays ambiguous
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await up(second.id);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: "restored", rigId: second.id, rigName: "shared-name" });
+      expect(restoreSpy.mock.calls.map((call) => call[0])).toEqual([second.snapshotId]); // that rig's snapshot
+    });
+
+    it("an id wins over a rig whose NAME is that id", async () => {
+      const real = stoppedRig("real-rig");
+      stoppedRig(real.id); // a rig named like the first rig's id
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await up(real.id);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ rigId: real.id, rigName: "real-rig" });
+      expect(restoreSpy.mock.calls.map((call) => call[0])).toEqual([real.snapshotId]);
+    });
+
+    it("a name shaped like an id that is no rig's id is still a name", async () => {
+      const named = stoppedRig("01ZZZZZZZZZZZZZZZZZZZZZZZZ");
+      const res = await up("01ZZZZZZZZZZZZZZZZZZZZZZZZ");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ rigId: named.id });
+    });
+
+    it("an archived rig's id is refused with the unarchive command, and nothing is restored", async () => {
+      const rig = stoppedRig("archived-by-id");
+      rigRepo.archiveRig(rig.id);
+      const restoreSpy = vi.spyOn(restoreOrchestrator, "restore");
+
+      const res = await up(rig.id);
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe("rig_archived");
+      expect(body.error).toContain(`rig unarchive ${rig.id}`);
+      expect(restoreSpy).not.toHaveBeenCalled();
+    });
+
+    it("an id no rig has is not found, as an unknown name is", async () => {
+      const res = await up("01AAAAAAAAAAAAAAAAAAAAAAAA");
+      expect(res.status).toBe(404);
+      expect((await res.json()).code).toBe("rig_not_found");
+    });
+  });
+
   it("POST /api/up restoring an existing rig name includes rigResult", async () => {
     const rig = rigRepo.createRig("restore-me");
     const node = rigRepo.addNode(rig.id, "worker", { role: "worker" });

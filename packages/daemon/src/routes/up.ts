@@ -259,6 +259,18 @@ upRoutes.post("/", async (c) => {
     // Rig name: restore from latest auto-pre-down snapshot
     if (sourceKind === "rig_name") {
       const { rigRepo } = getDeps(c);
+      const freshLogicalIdsOf = () => Array.isArray(body["freshLogicalIds"])
+        ? (body["freshLogicalIds"] as unknown[]).filter((v): v is string => typeof v === "string")
+        : undefined;
+      // OF-135: a rig id first (ids are unique, so two rigs sharing a name stay reachable), then a name, as `rig down` and
+      // `rig add` resolve (cli/src/rig-handle.ts). An archived rig's id is refused: a restore never wakes an archived rig.
+      const byId = rigRepo.findRigById(sourceRef);
+      if (byId?.archived) {
+        return c.json({ error: `Rig ${sourceRef} ("${byId.rig.name}") is archived. Bring it back first: rig unarchive ${sourceRef}, then run rig up ${sourceRef} --existing.`, code: "rig_archived" }, 409);
+      }
+      if (byId) {
+        return restoreByRigId(byId.rig.id, byId.rig.name, getDeps(c), c, freshLogicalIdsOf(), plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
+      }
       const activeRigs = rigRepo.findUnarchivedRigsByName(sourceRef);
       const rigs = activeRigs.length > 0 ? activeRigs : rigRepo.findRigsByName(sourceRef);
       if (rigs.length === 0) {
@@ -266,12 +278,9 @@ upRoutes.post("/", async (c) => {
       }
       if (rigs.length > 1) {
         const ids = rigs.map((r) => r.id).join(", ");
-        return c.json({ error: `Multiple rigs named "${sourceRef}" found (IDs: ${ids}). Use rig restore --rig <rigId> with a specific rig ID.`, code: "ambiguous_name" }, 409);
+        return c.json({ error: `Multiple rigs named "${sourceRef}" found (IDs: ${ids}). Name the one you mean by its id: rig up <rig-id> --existing.`, code: "ambiguous_name" }, 409);
       }
-      const freshLogicalIds = Array.isArray(body["freshLogicalIds"])
-        ? (body["freshLogicalIds"] as unknown[]).filter((v): v is string => typeof v === "string")
-        : undefined;
-      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds, plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
+      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIdsOf(), plan, nonInterruptive, startupFrom as StartupFrom | undefined) as any;
     }
     if (startupFrom !== undefined) {
       return c.json({ ok: false, code: "invalid_startup_from", error: "startupFrom applies only when rig up restores an existing rig (rig up <rig-name> --existing); a new rig has no saved startup files." }, 400);

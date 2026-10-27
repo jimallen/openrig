@@ -3,6 +3,7 @@ import { MCP_SERVER_NAME, isPrototypeName, unsandboxedServerWarning } from "./co
 import type { NativeProcessLister } from "./native-process-lineage.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
+import { seatRefRigs } from "./rig-ref.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter, SessionProbe } from "../adapters/tmux.js";
@@ -1847,12 +1848,15 @@ export class SeatLifecycleService {
     const parsed = parseSessionName(ref);
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
-      const rigs = this.rigRepo.findUnarchivedRigsByName(parsed.rig);
-      return rigs.flatMap((rig) => getNodeInventory(this.db, rig.id).filter((entry) =>
-        entry.canonicalSessionName === ref
-        || deriveCanonicalFromEntry(entry) === ref
-        || entry.logicalId === localRef,
-      ));
+      // OF-135: a rig id first, then a name; an id ref is matched as `<member>@<that rig's name>` (see seatRefRigs).
+      return seatRefRigs(this.rigRepo, parsed.rig).flatMap((rig) => {
+        const asNamed = `${localRef}@${rig.name}`;
+        return getNodeInventory(this.db, rig.id).filter((entry) =>
+          entry.canonicalSessionName === asNamed
+          || deriveCanonicalFromEntry(entry) === asNamed
+          || entry.logicalId === localRef,
+        );
+      });
     }
     return this.rigRepo.listRigs().flatMap((rig) =>
       getNodeInventory(this.db, rig.id).filter((entry) =>
