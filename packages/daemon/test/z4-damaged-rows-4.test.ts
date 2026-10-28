@@ -256,10 +256,15 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
     tmp = mkdtempSync(join(tmpdir(), "z4-stuck-"));
     const specPath = join(tmp, "spec.yaml");
     writeFileSync(specPath, SPEC);
-    const inst = await runtime.instantiate({ specPath, rootObjective: "stuck walk", createdBySession: "ops@rig" });
-    const packetId = inst.instance.currentFrontier[0]!;
-    db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?")
-      .run(new Date(Date.now() - (WORKFLOW_STEP_STUCK_THRESHOLD_SECONDS + 3600) * 1000).toISOString(), packetId);
+    /** A second run of the same workflow whose first packet is overdue. */
+    const addOverdueInstance = async (): Promise<string> => {
+      const inst = await runtime.instantiate({ specPath, rootObjective: "stuck walk", createdBySession: "ops@rig" });
+      const id = inst.instance.currentFrontier[0]!;
+      db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?")
+        .run(new Date(Date.now() - (WORKFLOW_STEP_STUCK_THRESHOLD_SECONDS + 3600) * 1000).toISOString(), id);
+      return id;
+    };
+    const packetId = await addOverdueInstance();
     const lines: string[] = [];
     const sweep = () => runWorkflowBootSweep({
       log: (line: string) => lines.push(line),
@@ -267,7 +272,7 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
       reconcileStuckExceptions: () => runtime.reconcileStuckExceptions(),
     });
     const exceptionRows = () => db.prepare("SELECT qitem_id, tags FROM queue_items WHERE tags LIKE '%exception:stuck_overdue%'").all() as Array<{ qitem_id: string; tags: string }>;
-    return { sweep, lines, ensureLines, exceptionRows, queueRepo, packetId };
+    return { sweep, lines, ensureLines, exceptionRows, queueRepo, packetId, addOverdueInstance };
   }
   /** Rewrite the item the first sweep opened into the historical form: same tags, no recovery-for link. */
   function makeHistorical(row: { qitem_id: string; tags: string }): void {
@@ -295,6 +300,21 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
 
     expect((await sweep()).exceptionItemsCreated, "the stale damaged disposition does not hold the new episode").toBe(1);
     expect(exceptionRows()).toHaveLength(2);
+  });
+
+  it("a damaged historical item belongs to ITS occurrence only: another run of the same workflow still opens its own item", async () => {
+    const { sweep, ensureLines, exceptionRows, addOverdueInstance } = await setup();
+    expect((await sweep()).exceptionItemsCreated).toBe(1);
+    const [first] = exceptionRows();
+    makeHistorical(first!);
+    truncate(db, first!.qitem_id);
+    await addOverdueInstance();
+
+    const second = await sweep();
+
+    expect(second.exceptionItemsCreated, "the other run's packet is not covered by the first run's damaged item").toBe(1);
+    expect(exceptionRows()).toHaveLength(2);
+    expect(ensureLines.filter((line) => line.includes(first!.qitem_id) && line.includes("not readable JSON"))).toHaveLength(1);
   });
 
   it("a historical item whose tags are damaged is not 'no item': a second sweep creates nothing and names it", async () => {
