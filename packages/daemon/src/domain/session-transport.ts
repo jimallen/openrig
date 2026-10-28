@@ -1399,8 +1399,20 @@ export class SessionTransport {
     return { ok: true, sessions };
   }
 
+  /** OF-156: the rigs `--rig <ref>` names: the rig with that id (an id wins, as everywhere a rig ref is read), else the
+   *  rigs with that name, as before (names keep working, unchanged). */
+  private rigsForRef(ref: string): Array<{ id: string; name: string }> {
+    const byId = this.rigRepo.findRigById(ref);
+    return byId ? [byId.rig] : this.rigRepo.findRigsByName(ref);
+  }
+
+  /** OF-156: the broadcast header names a rig given by id by its name (the recipients read names, not ids). */
+  private rigLabel(ref: string): string {
+    return this.rigRepo.findRigById(ref)?.rig.name ?? ref;
+  }
+
   private resolveByRig(rigName: string): ResolveResult {
-    const rigs = this.rigRepo.findRigsByName(rigName);
+    const rigs = this.rigsForRef(rigName);
     if (rigs.length === 0) {
       return {
         ok: false,
@@ -1428,7 +1440,7 @@ export class SessionTransport {
   private resolveByPod(podName: string, rigName?: string): ResolveResult {
     // Get rigs to search
     const rigs = rigName
-      ? this.rigRepo.findRigsByName(rigName)
+      ? this.rigsForRef(rigName)
       : this.rigRepo.listRigs();
 
     if (rigs.length === 0) {
@@ -2857,7 +2869,7 @@ export class SessionTransport {
     // Send/broadcast header (ruling 03c35295): the scope (recipient-scale truth) + the timestamp are
     // computed ONCE per fan-out at send-time — every recipient's header carries the same envelope facts.
     const recipientNames = resolved.sessions.map((s) => s.sessionName);
-    const scope = scopeForTarget(target, recipientNames);
+    const scope = scopeForTarget("rig" in target && target.rig ? { ...target, rig: this.rigLabel(target.rig) } : target, recipientNames);
     const stampISO = opts?.stampISO ?? new Date().toISOString();
     // GHOST-STAGE (g): resolve the SENDER's occupant generation ONCE per fan-out (same sender for
     // every recipient), at the same seam as stampISO. Local sender ⇒ its atom-B generation-uuid;

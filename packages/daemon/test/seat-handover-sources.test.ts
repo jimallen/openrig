@@ -429,6 +429,17 @@ describe("SeatHandoverService source execution (OPR.0.5.5.5)", () => {
     return db.prepare("SELECT id, status, claimed_node_id FROM discovered_sessions WHERE tmux_session = ? AND tmux_pane = ?").all("dev-impl@seat-rig", "%9");
   }
 
+  // OF-155 review: origin='claimed' means "a session the person started" to every reader (rig seat stop refuses it, rig
+  // down leaves it running, rig up --existing reattaches it). A successor OpenRig launched into the seat's pane is OpenRig's.
+  it.each(["fresh", "rebuild", "fork:dev-impl@seat-rig"] as const)("a %s handover records its successor as launched by OpenRig (origin=launched)", async (source) => {
+    const { node } = seedSeat({ resumeToken: "native-abc" });
+
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source });
+
+    expect(result).toMatchObject({ ok: true, result: { mutated: true } });
+    expect(db.prepare("SELECT origin FROM sessions WHERE id = ?").get(liveSessionId(node.id))).toEqual({ origin: "launched" });
+  });
+
   it.each(["rebuild", "fresh"] as const)("%s twice in a row: the second handover succeeds and the seat follows each new occupant (#981)", async (source) => {
     const { node, sessionId } = seedSeat();
 

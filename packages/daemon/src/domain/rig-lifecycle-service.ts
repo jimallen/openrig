@@ -443,7 +443,9 @@ export class RigLifecycleService {
     }
 
     const preserveDetachedClaimedSession = node.latest_session_origin === "claimed" && node.latest_session_status === "detached";
-    const keepSession = preserveDetachedClaimedSession || sessionOwner !== null;
+    // OF-155 (Jim, 2026-10-28): a live adopted session is not OpenRig's to kill, here as in rig down and rig seat stop.
+    const keepLiveAdoptedSession = node.latest_session_origin === "claimed" && ["running", "idle", "unknown"].includes(node.latest_session_status ?? "");
+    const keepSession = preserveDetachedClaimedSession || keepLiveAdoptedSession || sessionOwner !== null;
 
     let sessionsKilled = 0;
     // The older (already superseded) sessions go first: if one cannot be killed the removal is refused with the seat's
@@ -553,7 +555,10 @@ export class RigLifecycleService {
       nodeId: node.node_id,
       logicalId: node.logical_id,
       sessionsKilled,
-      ...(adoptedOlderNames.length > 0 ? { warnings: adoptedOlderNames.map((n) => `Older session '${n}' was adopted (origin=claimed), not launched by OpenRig: the node was removed and its tmux session was left running.`) } : {}),
+      ...(adoptedOlderNames.length > 0 || keepLiveAdoptedSession ? { warnings: [
+        ...(keepLiveAdoptedSession ? [`Session '${node.latest_session_name}' was adopted (origin=claimed), not launched by OpenRig: the node was removed and its tmux session was left running. It is yours to stop: end it yourself if it is no longer wanted.`] : []),
+        ...adoptedOlderNames.map((n) => `Older session '${n}' was adopted (origin=claimed), not launched by OpenRig: the node was removed and its tmux session was left running.`),
+      ] } : {}),
       ...(sessionOwner ? { sessionKeptFor: `${sessionOwner.logical_id}@${sessionOwner.rig_name}` } : {}),
       ...(fallbackDestination !== undefined ? { fallbackDestination } : {}),
       reroutedQitemIds: activeQitemIds,

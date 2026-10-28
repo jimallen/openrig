@@ -1041,11 +1041,14 @@ export class SeatHandoverService {
       const retiringGeneration =
         this.sessionRegistry.currentOccupantGenerationForSession(input.latestSession.session_name) ?? undefined;
       // atom-B: a seat handover mints a HANDOVER-kind occupant generation (not the default 'adopt').
+      // OF-155 review: a successor OpenRig launched (fresh, fork, rebuild: respawned into the seat's pane) is OpenRig's,
+      // so it is recorded 'launched'; only a discovered successor, a session the person started, is 'claimed'.
       const newSession = this.sessionRegistry.registerClaimedSession(
         input.node.id,
         input.discovered.tmuxSession,
         "handover",
         input.occupantGeneration,
+        input.reportedSource.mode === "discovered" ? "claimed" : "launched",
       );
       // W3: registerClaimedSession mints the successor generation. Only now may
       // the exact adapter-returned launch effect be attached to that tenure.

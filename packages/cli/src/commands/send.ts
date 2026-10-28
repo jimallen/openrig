@@ -258,7 +258,7 @@ export function sendCommand(depsOverride?: SendDeps): Command {
     .argument("[text]", "Message text to send")
     .option("--to <sessions>", "Multi-recipient: comma-list or repeated (--to a,b or --to a --to b)", collectSessions, [] as string[])
     .option("--pod <name>", "Send to every seat in a pod (fan-out, per-recipient results)")
-    .option("--rig <name>", "Send to every seat in a rig (fan-out, per-recipient results)")
+    .option("--rig <name-or-id>", "Send to every seat in a rig, named by name or id (fan-out, per-recipient results)")
     .option("--verify", "Verify pane only delivery by checking content after send")
     .option("--force", "Back-compat no-op: a mid-task/busy pane already sends-with-advisory by default; --force never bypasses the interactive-prompt/permission guard")
     .option("--wait-for-idle <seconds>", "Wait until the target is explicitly idle before sending")

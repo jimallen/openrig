@@ -845,6 +845,18 @@ describe("SeatHandoverService", () => {
     expect(durableRows()).toBe(before);
   });
 
+  // OF-155 review: a discovered successor is a session the person started, so it stays origin='claimed' (adopted).
+  it("a discovered handover records its successor as adopted (origin=claimed)", async () => {
+    seedSeat();
+    const discovered = seedDiscovery();
+
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: `discovered:${discovered.id}` });
+
+    expect(result.ok && "result" in result).toBe(true);
+    const newSessionId = result.ok && "result" in result ? result.result.newSessionId : "";
+    expect(db.prepare("SELECT origin FROM sessions WHERE id = ?").get(newSessionId)).toEqual({ origin: "claimed" });
+  });
+
   it("B2: captures the discovered successor's live resume token at commit (codex)", async () => {
     const { node } = seedSeat({ runtime: "codex" });
     const discovered = seedDiscovery();

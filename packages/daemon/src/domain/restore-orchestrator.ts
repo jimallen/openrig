@@ -1,4 +1,5 @@
 import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
+import { reattachableAdoptedSession } from "./adopted-reattach.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -992,6 +993,23 @@ export class RestoreOrchestrator {
     }
   }
 
+  /** OF-155: the seat's adopted session that rig down left running (adopted-reattach.ts decides which), asked of tmux:
+   *  `live`, `gone` (it ended), `unknown` (tmux cannot say), or `none` (the seat has no such session). Read-only. */
+  private async probeAdoptedSession(nodeId: string): Promise<
+    | { kind: "live" | "unknown"; sessionId: string; sessionName: string }
+    | { kind: "gone" | "none" }
+  > {
+    const adopted = reattachableAdoptedSession(this.db, nodeId);
+    if (!adopted) return { kind: "none" };
+    let alive: boolean;
+    try {
+      alive = await this.tmuxAdapter.hasSession(adopted.sessionName);
+    } catch {
+      return { kind: "unknown", ...adopted };
+    }
+    return alive ? { kind: "live", ...adopted } : { kind: "gone" };
+  }
+
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
    *  will act (see validatePreRestore's `freshSeatStartup`). */
   private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined, selectedCopy: NodeStartupSnapshot | null): FreshSeatStartupOverride {
@@ -1044,6 +1062,26 @@ export class RestoreOrchestrator {
     // logical id but has a new node id, and a write keyed by the old one violates the foreign key to `nodes`.
     let node = entry.node;
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
+    // OF-155 (Jim, 2026-10-28, option A): rig down leaves a seat's adopted session running (detached, binding kept). The
+    // seat comes back by reattaching that session, before any gate: nothing is started, so a live conversation never gets
+    // a second process. Review F4: a seat listed --fresh whose adopted session is still live is refused with advice, since
+    // starting it fresh would silently leave the person's session running untracked; once it has ended, --fresh proceeds.
+    if (liveNode) {
+      const freshListed = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
+      const adopted = await this.probeAdoptedSession(liveNode.id);
+      if (adopted.kind === "live" && freshListed) {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_live",
+          error: `${node.logicalId} was not started fresh: its adopted session '${adopted.sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${adopted.sessionId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.` };
+      }
+      if (adopted.kind === "live") {
+        this.sessionRegistry.updateStatus(adopted.sessionId, "running");
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "resumed", reattached: { sessionId: adopted.sessionId, sessionName: adopted.sessionName } };
+      }
+      if (adopted.kind === "unknown") {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_liveness_unknown",
+          error: `${node.logicalId} was not restored: its adopted session '${adopted.sessionName}', which rig down left running, could not be checked in tmux, so restore neither reattached it nor started a second session. Nothing was changed for this seat. Retry rig up --existing once tmux answers.` };
+      }
+    }
     // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier
     // occupant's token, `restoring` continuity, resumable seat with no token) are decided by restore-seat-gates.ts,
     // the function restore-check asks, so the check cannot be greener than this.

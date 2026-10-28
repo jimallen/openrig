@@ -33,7 +33,7 @@ export function broadcastCommand(depsOverride?: BroadcastDeps): Command {
 
   cmd
     .argument("[text]", "Message text to broadcast (optional with --context)")
-    .option("--rig <name>", "Broadcast to all sessions in a rig")
+    .option("--rig <name-or-id>", "Broadcast to all sessions in a rig, named by name or id")
     .option("--pod <name>", "Broadcast to matching pod names across all rigs unless --rig is set")
     .option("--force", "Send even if targets appear mid-task")
     .option("--host <id>", "Broadcast on a remote host declared in ~/.openrig/hosts.yaml (http hosts only — CLI-direct to the remote daemon's fan-out)")

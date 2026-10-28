@@ -40,7 +40,8 @@ export class DiscoveryRepository {
     this.db = db;
   }
 
-  /** Upsert: preserve id + first_seen_at on rescan, update mutable fields. */
+  /** Upsert: preserve id + first_seen_at on rescan, update mutable fields. OF-154: a claim whose node was deleted
+   *  (claimed_node_id set NULL by the foreign key, migration 013) holds nothing, so a rescan makes the record active again. */
   upsertDiscoveredSession(data: UpsertData): DiscoveredSession {
     const existing = this.db.prepare(
       "SELECT id, first_seen_at FROM discovered_sessions WHERE tmux_session = ? AND tmux_pane = ?"
@@ -52,7 +53,7 @@ export class DiscoveryRepository {
           tmux_window = ?, pid = ?, cwd = ?, active_command = ?,
           runtime_hint = ?, confidence = ?, evidence_json = ?, config_json = ?,
           last_seen_at = datetime('now'),
-          status = CASE WHEN status = 'claimed' THEN 'claimed' ELSE 'active' END
+          status = CASE WHEN status = 'claimed' AND claimed_node_id IS NOT NULL THEN 'claimed' ELSE 'active' END
         WHERE id = ?`
       ).run(
         data.tmuxWindow ?? null, data.pid ?? null, data.cwd ?? null, data.activeCommand ?? null,

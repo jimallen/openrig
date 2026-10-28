@@ -2484,6 +2484,58 @@ describe("SessionTransport", () => {
     expect(sent[0]).toBe("raw ping"); // unchanged (the --raw carve-out)
   });
 
+  // OF-156: `--rig` takes a rig id as well as a name (send and broadcast both resolve here). An id wins, as for every rig
+  // ref (cli/src/rig-handle.ts); a name keeps reaching every rig that carries it, as before.
+  describe("--rig by id (OF-156)", () => {
+    function runningSeat(rigId: string, logicalId: string, sessionName: string) {
+      const node = rigRepo.addNode(rigId, logicalId, { role: "worker", runtime: "claude-code" });
+      const session = sessionRegistry.registerSession(node.id, sessionName);
+      sessionRegistry.updateStatus(session.id, "running");
+      sessionRegistry.updateBinding(node.id, { tmuxSession: sessionName });
+    }
+    function twins() {
+      const a = rigRepo.createRig("twin");
+      runningSeat(a.id, "dev.a", "dev-a@twin");
+      const b = rigRepo.createRig("twin");
+      runningSeat(b.id, "dev.b", "dev-b@twin");
+      return { a, b };
+    }
+    const names = (result: Awaited<ReturnType<ReturnType<typeof createTransport>["resolveSessions"]>>) =>
+      result.ok ? result.sessions.map((s) => s.sessionName).sort() : result;
+
+    it("an id reaches that rig alone; the shared name still reaches both", async () => {
+      const { a, b } = twins();
+      const transport = createTransport();
+      expect(names(await transport.resolveSessions({ rig: a.id }))).toEqual(["dev-a@twin"]);
+      expect(names(await transport.resolveSessions({ rig: b.id }))).toEqual(["dev-b@twin"]);
+      expect(names(await transport.resolveSessions({ rig: "twin" }))).toEqual(["dev-a@twin", "dev-b@twin"]);
+    });
+
+    it("--pod with --rig <id> searches that rig alone", async () => {
+      const { b } = twins();
+      expect(names(await createTransport().resolveSessions({ pod: "dev", rig: b.id }))).toEqual(["dev-b@twin"]);
+    });
+
+    it("an id wins over a rig whose name is that id", async () => {
+      const { a } = twins();
+      const lookalike = rigRepo.createRig(a.id);
+      runningSeat(lookalike.id, "dev.c", "dev-c@lookalike");
+      expect(names(await createTransport().resolveSessions({ rig: a.id }))).toEqual(["dev-a@twin"]);
+    });
+
+    it("the broadcast header names the rig, not the id it was given", async () => {
+      const { a } = twins();
+      const sent: string[] = [];
+      const transport = createTransport(mockTmux({ sendText: async (_t, text) => { sent.push(text); return { ok: true }; } }));
+
+      await transport.broadcast({ rig: a.id }, "status", { envelopeSender: "orch@my-rig", stampISO: "2026-08-06T17:42:09Z" });
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain("To: broadcast to twin (1 seats)");
+      expect(sent[0]).not.toContain(a.id);
+    });
+  });
+
   // ── GHOST-STAGE (h): delivered-at latency stamped at the WRITE moment ──
   const H_ENVELOPE =
     'From: a@r\nTo: dev-impl@my-rig\nSent: 08-06 17:42Z\n---\nhi\n---\n↩ Reply: rig send a@r "..."';

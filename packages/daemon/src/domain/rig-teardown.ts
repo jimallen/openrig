@@ -54,7 +54,7 @@ interface LatestNodeSession {
   resumeType: string | null;
   resumeToken: string | null;
   cwd: string | null;
-  /** Set on older rows only: an adopted (`claimed`) session is not OpenRig's to kill. */
+  /** An adopted (`claimed`) session is not OpenRig's to kill (OF-155: the latest row's as well as an older one's). */
   origin?: "claimed" | "launched";
 }
 
@@ -62,6 +62,8 @@ interface LatestNodeSession {
 interface TeardownRun {
   rigId: string;
   archived: boolean;
+  /** `rig down --delete`: the rig's rows are deleted afterwards, so advice cannot name a row to release. */
+  deleting: boolean;
   result: TeardownResult;
   killFailures: number;
   /** A tmux name is killed at most once per teardown. Rows sharing a name (a seat's older row often carries the
@@ -145,7 +147,7 @@ export class RigTeardownOrchestrator {
     // then fails the seat on. Only a row with a LATER live row on the same seat is a duplicate: an older row that is the
     // seat's only live occupant is still recorded as the occupant.
     const c: TeardownRun = {
-      rigId, archived: archived.archived_at !== null, result, killFailures: 0,
+      rigId, archived: archived.archived_at !== null, deleting: opts?.delete === true, result, killFailures: 0,
       handledNames: new Map(), rowsEndedEarly: [],
       claimedNames: this.deps.sessionRegistry.getClaimedLiveSessionNames(rigId),
       currentLiveGuidanceTargets,
@@ -264,12 +266,15 @@ export class RigTeardownOrchestrator {
       c.killFailures++;
       return;
     }
-    if (older && session.origin === "claimed" && handled === undefined) {
-      // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it), but the seat has moved past this
-      // row. End the ROW only, with no stop intent (nothing of ours stopped it), and leave its tmux session running.
-      // `detached` (what `rig unclaim` writes), not `exited`, so the row still holds the name against another seat's kill.
+    if (session.origin === "claimed" && handled === undefined) {
+      // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it). End the ROW only, with no stop intent
+      // (nothing of ours stopped it), and leave its tmux session running. `detached` (what `rig unclaim` writes), not
+      // `exited`, so the row still holds the name against another seat's kill. OF-155 (Jim, 2026-10-28): the seat's
+      // LATEST adopted session is left running too, as rig seat stop leaves it.
       this.deps.sessionRegistry.updateStatus(session.sessionId, "detached");
-      (result.warnings ??= []).push(`Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running. Release it with: rig unclaim ${session.sessionId}`);
+      (result.warnings ??= []).push(older
+        ? `Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running.${c.deleting ? "" : ` Release it with: rig unclaim ${session.sessionId}`}`
+        : `Session '${session.sessionName}' was adopted (origin=claimed), not launched by OpenRig: rig down ended its row and left its tmux session running, as rig seat stop would. It is yours to stop: end it yourself if it is no longer wanted.${c.deleting ? " The rig is deleted, so nothing of OpenRig's holds it any more." : ` rig up --existing reattaches it; to release it from this seat instead: rig unclaim ${session.sessionId}`}`);
       return;
     }
     // An archived rig may retain a stale row for a name now owned by a live rig.

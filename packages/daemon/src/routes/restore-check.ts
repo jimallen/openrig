@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { reattachableAdoptedSession } from "../domain/adopted-reattach.js";
 import { dirname, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
@@ -221,6 +222,7 @@ export function createRestoreCheckService(
       { exists: existsSync, readFile: (path) => readFileSync(path, "utf-8") },
       resolve(import.meta.dirname, "../../assets/plugins/openrig-core/hooks/claude.json"),
     ).map(({ event }) => event),
+    reattachableAdopted: (nodeId) => reattachableAdoptedSession(rigRepo.db, nodeId), // OF-155: the rule restore uses
     rigRefs: rigRepo, // OF-152: ids across every rig (archived included), names among unarchived ones
     listRigs: () => {
       const rigs = rigRepo.listRigs();
