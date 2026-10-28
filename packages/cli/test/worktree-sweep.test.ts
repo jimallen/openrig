@@ -110,6 +110,20 @@ function verdict(rep: RepoReport, p: string): WorktreeVerdict {
 }
 const codes = (v: WorktreeVerdict): string[] => v.reasons.map((r) => r.code);
 
+function addMergedSubmoduleWorktree(f: Fixture): string {
+  const subsrc = path.join(f.root, "subsrc");
+  git(f.root, "init", "-b", "main", subsrc);
+  fs.writeFileSync(path.join(subsrc, "s.txt"), "s\n");
+  git(subsrc, "add", ".");
+  git(subsrc, "commit", "-m", "s");
+  const p = f.addWorktree("unit-a");
+  git(p, "-c", "protocol.file.allow=always", "submodule", "add", subsrc, "vendor");
+  git(p, "commit", "-m", "add submodule");
+  git(f.repo, "merge", "--ff-only", "unit-a");
+  git(f.repo, "push", "origin", "main");
+  return p;
+}
+
 describe("z3 worktree sweep: what it removes", () => {
   it("removes a merged, clean, idle worktree on --apply, keeps its branch, and leaves the main checkout", async () => {
     const f = makeFixture();
@@ -317,18 +331,9 @@ describe("z3 worktree sweep: what it must never remove", () => {
     expect(fs.existsSync(p)).toBe(true);
   });
 
-  it("when our checks pass but git itself refuses (submodule), reports remove-refused, leaves the directory, exits non-zero", async () => {
+  it("when our checks pass but git itself refuses (submodule), reports remove-refused and leaves the directory", async () => {
     const f = makeFixture();
-    const subsrc = path.join(f.root, "subsrc");
-    git(f.root, "init", "-b", "main", subsrc);
-    fs.writeFileSync(path.join(subsrc, "s.txt"), "s\n");
-    git(subsrc, "add", ".");
-    git(subsrc, "commit", "-m", "s");
-    const p = f.addWorktree("unit-a");
-    git(p, "-c", "protocol.file.allow=always", "submodule", "add", subsrc, "vendor");
-    git(p, "commit", "-m", "add submodule");
-    git(f.repo, "merge", "--ff-only", "unit-a");
-    git(f.repo, "push", "origin", "main");
+    const p = addMergedSubmoduleWorktree(f);
     const dry = await sweep(f);
     expect(verdict(dry, p).outcome).toBe("would-remove");
     const rep = await sweep(f, { apply: true });
@@ -402,6 +407,15 @@ describe("z3 worktree sweep: the CLI surface", () => {
     const p = f.addWorktree("unit-a");
     const r = await run(["--repo", f.repo, "--apply"]);
     expect(r.out).toContain("too-recent");
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("exits non-zero when git refuses a removal the sweep attempted", async () => {
+    const f = makeFixture();
+    const p = addMergedSubmoduleWorktree(f);
+    const r = await run(["--repo", f.repo, "--older-than", "0s", "--apply"]);
+    expect(r.out).toContain("remove-refused");
+    expect(r.exitCode).toBe(1);
     expect(fs.existsSync(p)).toBe(true);
   });
 
