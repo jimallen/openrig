@@ -1564,17 +1564,20 @@ export class TmuxAdapter {
 
   /** Get a session-scoped user option value. Returns null if not set or error. */
   /** a2: a session's user option (`@name`), keeping "unset" apart from "could not be read" (getSessionOption folds both
-   *  into null). Read as a format (`#{@name}`), which expands an unset option to an empty string; a missing session or
-   *  server is still an error. (`show-option -q` cannot be used: it also hides "can't find session", measured on tmux 3.4.) */
+   *  into null). Measured on tmux 3.4 (adopted-marker-real-tmux.test.ts): `show-option -v` answers an unset user option
+   *  with "invalid option: <key>" and a missing session with "no such session"; `show-option -q` and `display-message`
+   *  both answer a missing session with exit 0 and no output, so neither can tell it from an unset option. */
   async readSessionOption(sessionName: string, key: string): Promise<{ ok: true; value: string | null } | { ok: false; error: string }> {
     const exact = exactTarget(sessionName, "pane");
-    const format = `#{${key}}`;
     try {
-      const output = await this.run(["tmux", "display-message", "-p", "-t", exact, format],
-        `tmux display-message -p -t ${shellQuote(exact)} ${shellQuote(format)}`);
+      const output = await this.run(["tmux", "show-option", "-v", "-t", exact, key],
+        `tmux show-option -v -t ${shellQuote(exact)} ${shellQuote(key)}`);
       return { ok: true, value: output.trim() || null };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      const reported = tmuxReportedError(err);
+      const text = reported instanceof Error ? reported.message : String(reported);
+      if (text.includes(`invalid option: ${key}`)) return { ok: true, value: null };
+      return { ok: false, error: text.trim() };
     }
   }
 
