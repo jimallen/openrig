@@ -244,6 +244,23 @@ function hasSeatTargetSuccessor(db: Database.Database, sourceQitemId: string, ta
   }
 }
 
+/** OF-168: the rows that could be this closed row's successor on a seat target but whose `chain_of_record` is not JSON, so
+ *  `hasSeatTargetSuccessor` cannot tell. Found by the quoted source id (instr: exact, no wildcards). The finding still opens
+ *  (unknown is not "verified"); these rows are named in it and in the log so it does not read as "there is no successor". */
+function unreadableSeatTargetSuccessors(db: Database.Database, sourceQitemId: string, target: string): string[] {
+  try {
+    return (db.prepare(
+      `SELECT s.qitem_id FROM queue_items s
+        WHERE (s.destination_session = ? OR s.qitem_id = ?) AND s.qitem_id != ?
+          AND s.chain_of_record IS NOT NULL AND NOT json_valid(s.chain_of_record)
+          AND instr(s.chain_of_record, '"' || ? || '"') > 0
+        ORDER BY s.qitem_id`,
+    ).all(target, target, sourceQitemId, sourceQitemId) as Array<{ qitem_id: string }>).map((row) => row.qitem_id);
+  } catch {
+    return [];
+  }
+}
+
 function hasLiveLadder(db: Database.Database, qitemId: string): boolean {
   const notes = db
     .prepare("SELECT transition_note FROM queue_transitions WHERE qitem_id = ? ORDER BY transition_id DESC")
@@ -580,6 +597,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         targets.push("(unspecified)");
       }
       const verified = custodyVerifiedTargets(deps.db, row.qitemId);
+      const unreadableSuccessors = new Set<string>();
       const verificationTargets = targets.filter((target) => {
         if (verified.has(target)) return false;
         if (target.startsWith("qitem-")) {
@@ -596,16 +614,22 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           // A successor row that exists but cannot be read is still a local successor (named in the log, not a failed tick).
           return readRow(target, true) === null;
         }
-        return !hasSeatTargetSuccessor(deps.db, row.qitemId, target);
+        if (hasSeatTargetSuccessor(deps.db, row.qitemId, target)) return false;
+        for (const id of unreadableSeatTargetSuccessors(deps.db, row.qitemId, target)) unreadableSuccessors.add(id);
+        return true;
       });
       if (verificationTargets.length === 0) continue;
+      const unreadableNote = unreadableSuccessors.size > 0
+        ? ` (candidate successor row${unreadableSuccessors.size === 1 ? "" : "s"} ${[...unreadableSuccessors].join(", ")} could not be read: saved chain_of_record is not JSON)`
+        : "";
+      if (unreadableNote) log(`[stuck-sweep] ${row.qitemId}: successor check inconclusive${unreadableNote}; repair or remove the row`);
       candidates.push({
         kind: "dangling-closure",
         row,
         route: row.destinationSession,
         ageMinutes: minutesSince(row.tsUpdated, now),
         evidenceAt: latestIso(row.tsUpdated),
-        why: `closed (${row.closureReason ?? "?"}) with successor custody that this local store cannot fully verify`,
+        why: `closed (${row.closureReason ?? "?"}) with successor custody that this local store cannot fully verify${unreadableNote}`,
         verificationTargets,
       });
     }

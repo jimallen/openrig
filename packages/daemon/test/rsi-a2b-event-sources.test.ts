@@ -30,7 +30,8 @@ interface Case {
   wrongType: (f: F, key: string, hoursAgo: number) => number;
   fingerprint: (key: string) => string;
   scope: (key: string) => unknown;
-  /** Statements one read prepares: the grouped pass, plus D5's identity cross-check. */
+  /** Statements one read prepares: the grouped pass, the one constant count of events whose payload is not JSON (OF-168, named on the
+   *  coverage row), plus D5's identity cross-check. Still independent of the number of subjects. */
   statements: number;
 }
 
@@ -47,7 +48,7 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "SessionStart", rawSubtype: "compact", hoursAgo: h, type: "agent.activity_shadow" }),
     fingerprint: (key) => `rsi.compaction-storm/seat:${key}`,
     scope: (key) => ({ type: "seat", rigId: "rig-1", seatId: `node-${key}` }),
-    statements: 2,
+    statements: 3,
   },
   {
     label: "D9 permission-prompt stall", detectorId: RSI_PERMISSION_STALL, create: createPermissionStallSource, threshold: 8, windowHours: 24,
@@ -64,7 +65,7 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.activity({ seat: key, rawEvent: "Notification", rawSubtype: null, state: "needs_input", hoursAgo: h, type: "agent.session_identity" }),
     fingerprint: (key) => `rsi.permission-stall/seat:${key}`,
     scope: (key) => ({ type: "seat", rigId: "rig-1", seatId: `node-${key}` }),
-    statements: 1,
+    statements: 2,
   },
   {
     label: "D12 watchdog delivery failure", detectorId: RSI_WATCHDOG_DELIVERY_FAILURE, create: createWatchdogDeliveryFailureSource, threshold: 3, windowHours: 168,
@@ -76,7 +77,7 @@ const cases: Case[] = [
     wrongType: (f, key, h) => f.fired({ jobId: key, deliveryStatus: "failed", hoursAgo: h, type: "watchdog.evaluation_skipped" }),
     fingerprint: (key) => `rsi.watchdog-delivery-failure/job:${key}`,
     scope: () => ({ type: "instance", instanceId: INSTANCE }),
-    statements: 1,
+    statements: 2,
   },
 ];
 

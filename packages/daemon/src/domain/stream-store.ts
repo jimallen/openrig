@@ -167,33 +167,48 @@ export class StreamStore {
     const limit = opts?.limit ?? 100;
     const conditions: string[] = [];
     const params: unknown[] = [];
+    // The conditions that are not the hint-tag filter, for naming the rows that filter cannot read (OF-168).
+    const plainConditions: string[] = [];
+    const plainParams: unknown[] = [];
+    const addPlain = (condition: string, ...values: unknown[]): void => {
+      conditions.push(condition);
+      params.push(...values);
+      plainConditions.push(condition);
+      plainParams.push(...values);
+    };
 
     if (!opts?.includeArchived) {
-      conditions.push("archived_at IS NULL");
+      addPlain("archived_at IS NULL");
     }
     if (opts?.afterSortKey) {
-      conditions.push("(ts_emitted, stream_sort_key) > (SELECT ts_emitted, stream_sort_key FROM stream_items WHERE stream_sort_key = ?)");
-      params.push(opts.afterSortKey);
+      addPlain("(ts_emitted, stream_sort_key) > (SELECT ts_emitted, stream_sort_key FROM stream_items WHERE stream_sort_key = ?)", opts.afterSortKey);
     }
     if (opts?.sourceSession) {
-      conditions.push("source_session = ?");
-      params.push(opts.sourceSession);
+      addPlain("source_session = ?", opts.sourceSession);
     }
     if (opts?.hintDestination) {
-      conditions.push("hint_destination = ?");
-      params.push(opts.hintDestination);
+      addPlain("hint_destination = ?", opts.hintDestination);
     }
     if (opts?.hintTag) {
       conditions.push("json_valid(stream_items.hint_tags) AND EXISTS (SELECT 1 FROM json_each(stream_items.hint_tags) WHERE json_each.value = ?)");
       params.push(opts.hintTag);
     }
     if (opts?.since) {
-      conditions.push("ts_emitted >= ?");
-      params.push(opts.since);
+      addPlain("ts_emitted >= ?", opts.since);
     }
     if (opts?.until) {
-      conditions.push("ts_emitted <= ?");
-      params.push(opts.until);
+      addPlain("ts_emitted <= ?", opts.until);
+    }
+    if (opts?.hintTag) {
+      // OF-168: a stream item whose hint_tags are damaged cannot say whether it carries this tag, so the filter cannot match it.
+      // Which items match is unchanged; the ones whose tag text names the tag (and match every other filter) are NAMED in the log.
+      const unreadable = this.db.prepare(
+        `SELECT stream_item_id FROM stream_items WHERE hint_tags IS NOT NULL AND NOT json_valid(hint_tags) AND instr(hint_tags, '"' || ? || '"') > 0${plainConditions.map((c) => ` AND ${c}`).join("")}
+         ORDER BY ts_emitted, stream_sort_key LIMIT 20`,
+      ).all(opts.hintTag, ...plainParams) as Array<{ stream_item_id: string }>;
+      if (unreadable.length > 0) {
+        console.error(`[stream] list hintTag ${JSON.stringify(opts.hintTag)}: ${unreadable.map((row) => row.stream_item_id).join(", ")} not listed: saved hint_tags are not readable JSON, so a match on that tag is unknown (repair or remove the row)`);
+      }
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

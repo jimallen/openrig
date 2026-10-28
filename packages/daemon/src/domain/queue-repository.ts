@@ -29,6 +29,7 @@ import {
 } from "./queue-wake-repository.js";
 import { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { RowColumnReader } from "./unreadable-row.js";
+import { findDamagedTagRows } from "./damaged-tag-rows.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
 import { parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
 
@@ -3366,6 +3367,12 @@ export class QueueRepository {
       // OF-117: a row whose tags are not JSON is not a match (json_each would throw "malformed JSON" for every row of the listing).
       conditions.push("json_valid(queue_items.tags) AND EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = ?)");
       params.push(opts.tag);
+      // OF-168: a row whose tags are damaged cannot say whether it carries this tag, so the listing cannot match it. Which rows match
+      // is unchanged; the rows whose tag text names the tag are NAMED in the log so the listing does not read as complete.
+      const unreadable = findDamagedTagRows(this.db, { tags: [opts.tag] });
+      if (unreadable.length > 0) {
+        console.error(`[queue] list --tag ${JSON.stringify(opts.tag)}: ${unreadable.slice(0, 20).map((row) => row.qitemId).join(", ")}${unreadable.length > 20 ? ` and ${unreadable.length - 20} more` : ""} not listed: saved tags are not readable JSON, so a match on that tag is unknown (repair or remove the row)`);
+      }
     }
 
     if (opts?.rig) {

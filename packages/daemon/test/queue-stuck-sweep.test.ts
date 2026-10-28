@@ -1031,6 +1031,72 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
     expect(repo.list({ destinationSession: "next@r" })).toHaveLength(0);
   });
 
+  // OF-168: hasSeatTargetSuccessor reads a row whose chain_of_record is not JSON as "not a successor". The finding still opens (unknown
+  // is not verified), but it must say which rows could not be read instead of reading as "there is no successor".
+  describe("OF-168: a candidate successor whose chain_of_record is not JSON is named in the finding and the log", () => {
+    async function closeToSeat() {
+      const row = await mkRow();
+      await repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: closureState, closureReason: "handed_off_to", closureTarget: "next@r" });
+      return row;
+    }
+    const sweepLogged = async () => {
+      const lines: string[] = [];
+      await runSweep({ log: (line: string) => lines.push(line) });
+      return lines;
+    };
+
+    it("names the unreadable candidate in the finding body and in the log; the finding opens as before", async () => {
+      const row = await closeToSeat();
+      const candidate = await mkRow("next@r");
+      db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(`["${row.qitemId}"`, candidate.qitemId);
+
+      const lines = await sweepLogged();
+
+      const findings = await findingsFor(row.qitemId);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.summary).toContain("successor-verification-required");
+      expect(findings[0]!.body).toContain(`(candidate successor row ${candidate.qitemId} could not be read: saved chain_of_record is not JSON)`);
+      expect(lines.filter((line) => line.includes(row.qitemId) && line.includes("successor check inconclusive") && line.includes(candidate.qitemId))).toHaveLength(1);
+    });
+
+    it("control: nothing unreadable, nothing named", async () => {
+      const row = await closeToSeat();
+
+      const lines = await sweepLogged();
+
+      const findings = await findingsFor(row.qitemId);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.body).not.toContain("could not be read");
+      expect(lines.filter((line) => line.includes("successor check inconclusive"))).toEqual([]);
+    });
+
+    it("an unreadable chain that does not name this row, or sits on another seat, is not named", async () => {
+      const row = await closeToSeat();
+      const unrelated = await mkRow("next@r");
+      db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run('["qitem-someone-else"', unrelated.qitemId);
+      const elsewhere = await mkRow("other@r");
+      db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(`["${row.qitemId}"`, elsewhere.qitemId);
+
+      const lines = await sweepLogged();
+
+      const findings = await findingsFor(row.qitemId);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.body).not.toContain("could not be read");
+      expect(lines.filter((line) => line.includes("successor check inconclusive"))).toEqual([]);
+    });
+
+    it("a READABLE chain that names the row is a successor: no finding at all (the unreadable lookup changes nothing)", async () => {
+      const row = await closeToSeat();
+      const linked = await mkRow("next@r");
+      db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(JSON.stringify([row.qitemId]), linked.qitemId);
+
+      const lines = await sweepLogged();
+
+      expect(await findingsFor(row.qitemId)).toHaveLength(0);
+      expect(lines.filter((line) => line.includes("successor check inconclusive"))).toEqual([]);
+    });
+  });
+
   it("TRANSACTIONAL HANDOFF: repo.handoff to a seat target creates linked successor in same txn — zero findings", async () => {
     const row = await mkRow();
     await repo.handoff({
