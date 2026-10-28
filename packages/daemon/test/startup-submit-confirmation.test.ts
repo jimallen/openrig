@@ -186,6 +186,17 @@ describe("startup prompt submission", () => {
       expect(f.composer()).toBe("Line one[31m\n\tindented line two");
     });
 
+    // a5 review F5: the orchestrator path itself pins CR (kept) and U+009F (the last C1 control, removed), so neither
+    // is pinned only by the function's own rows and the adapters'.
+    it("OF-169: through the orchestrator, CR survives and U+009F is removed", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "first\rsecond\u009fthird\r\nfourth");
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true });
+      const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
+      expect(texts).toEqual(["first\rsecondthird\r\nfourth"]);
+    });
+
     it("keeps prelaunch delivery before harness launch and adds only the bounded check delay", async () => {
       const f = fixture(0, "claude-code", false, true);
       await f.start({ startupActions: [], resolvedStartupFiles: [file("CLAUDE.md", true, "guidance_merge"), file("role.md")] });
