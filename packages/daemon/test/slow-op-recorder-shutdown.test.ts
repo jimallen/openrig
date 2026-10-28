@@ -7,6 +7,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
+// These two pins start a real node process (tsx + the whole daemon module graph). Under heavy host load
+// that start-up alone has exceeded 20-30 s. Both wait on events (healthz, child exit), never on a clock,
+// so the ceiling only bounds a genuine hang; a quiet machine finishes in seconds.
+const HEAVY_LOAD_CEILING_MS = 120_000;
 const tempDirs: string[] = [];
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-slow-op-shutdown-"));
@@ -128,7 +132,7 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-  }, 30_000);
+  }, HEAVY_LOAD_CEILING_MS);
 
   it("is bounded with no other referenced handles: a hanging close logs and exits nonzero", async () => {
     // No setInterval, no server — the ONLY thing that may keep the process
@@ -159,7 +163,7 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-  }, 20_000);
+  }, HEAVY_LOAD_CEILING_MS);
 });
 
 function getFreePort(): Promise<number> {
@@ -175,7 +179,7 @@ function getFreePort(): Promise<number> {
 }
 
 async function waitForHealthz(port: number, child: ReturnType<typeof spawn>, stderr: () => string): Promise<void> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + (HEAVY_LOAD_CEILING_MS - 20_000);
   let exited = false;
   child.once("exit", () => { exited = true; });
   while (Date.now() < deadline) {

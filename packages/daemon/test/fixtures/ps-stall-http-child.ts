@@ -65,7 +65,24 @@ if (runAsChild) {
     db = createMigratedDb();
     seedHostShaped(db);
     const app = buildStallApp(db);
-    server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, (info) => {
+    // Longest synchronous stall of this process's event loop, in CPU milliseconds. A handler that blocks the loop for S
+    // ms of work shows up as ~S ms of CPU consumed between two consecutive ticks of this timer; a host that merely
+    // deschedules the process (heavy load) stretches the wall-clock gap but consumes almost no CPU in it. The wall-clock
+    // /healthz round trip cannot tell those apart: it read 375-1011 ms under host load against a 250 ms budget that
+    // the same code meets with 25-40 ms on a quiet host.
+    // The event loop's own thread (GC and pool threads would otherwise count against it).
+    const cpuNow = (previous?: NodeJS.CpuUsage) => process.threadCpuUsage(previous);
+    let lastTick = cpuNow();
+    let worstCpuStallMs = 0;
+    setInterval(() => {
+      const delta = cpuNow(lastTick);
+      lastTick = cpuNow();
+      worstCpuStallMs = Math.max(worstCpuStallMs, (delta.user + delta.system) / 1000);
+    }, 5).unref();
+    const outer = new Hono();
+    outer.get("/__worst-cpu-stall-ms", (c) => c.json({ worstCpuStallMs }));
+    outer.route("/", app);
+    server = serve({ fetch: outer.fetch, port: 0, hostname: "127.0.0.1" }, (info) => {
       process.stdout.write(`READY ${info.port}\n`);
     });
   } catch (e) {

@@ -158,7 +158,9 @@ const HEADER = (parentSession?: string) => JSON.stringify({ type: "session", ver
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** Retry an assertion until it holds or `ms` pass (then its last failure is thrown). */
-async function eventually(assertion: () => void, ms = 3000): Promise<void> {
+// Waits for an outcome (a real file read reaching the store), so a generous cap costs a quiet machine
+// nothing; 3 s was a clock that a heavily loaded host overran.
+async function eventually(assertion: () => void, ms = 60_000): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
     try { assertion(); return; } catch (error) { if (Date.now() > deadline) throw error; }

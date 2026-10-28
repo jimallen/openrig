@@ -7,6 +7,10 @@ const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const p of dirs.splice(0)) fs.rmSync(p, { force: true, recursive: true }); });
 function fixture(options = {}) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "request-records-")); dirs.push(dir); const file = path.join(dir, "slow.jsonl"); return { dir, file, recorder: new SlowOpRecorder({ logPath: file, ...options }) }; }
 function rows(file: string) { return fs.readFileSync(file, "utf8").trim().split("\n").map(s => JSON.parse(s)); }
+// Every wait below is a Worker round trip (flush/close) resolving on its own; the ceiling only bounds a
+// genuine hang. The vitest default of 20 s was overrun by Worker start-up and 1025 queued writes on a
+// heavily loaded host.
+const WORKER_ROUND_TRIP_CEILING_MS = 120_000;
 it("writes fast diagnostic events asynchronously with bounded backlog, explicit drops and private rotation", async () => {
   const { recorder, file, dir } = fixture({ maxBytes: 1000 });
   const wait = vi.spyOn(Atomics, "wait");
@@ -24,7 +28,7 @@ it("writes fast diagnostic events asynchronously with bounded backlog, explicit 
     const files = fs.readdirSync(dir); expect(files.length).toBeLessThanOrEqual(4);
     for (const name of files) { const stat = fs.statSync(path.join(dir, name)); expect(stat.size).toBeLessThanOrEqual(1000); expect(stat.mode & 0o777).toBe(0o600); }
   } finally { await recorder.close(); }
-});
+}, WORKER_ROUND_TRIP_CEILING_MS);
 it("retains write-failure and worker-loss drain refusal", async () => {
   const { recorder, file } = fixture();
   try {
@@ -37,4 +41,4 @@ it("retains write-failure and worker-loss drain refusal", async () => {
   expect(second.recorder.recordDiagnostic({ phase: "lost" })).toBe(false);
   await expect(second.recorder.flush()).rejects.toThrow("terminated");
   await second.recorder.close().catch(() => {});
-});
+}, WORKER_ROUND_TRIP_CEILING_MS);

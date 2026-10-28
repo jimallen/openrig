@@ -13,10 +13,11 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
+import { reapWhenOwnerDies, waitGone } from "./orphan-reaper.js";
 
 export interface RigResult {
   stdout: string;
@@ -67,6 +68,8 @@ export interface SpawnScenarioDaemonOptions {
   port?: number;
   /** Per-invocation timeout for `rig` subprocesses (ms). */
   timeoutMs?: number;
+  /** How long `stop()` waits for the daemon to exit after `rig daemon stop`, and again after each signal it then sends (ms). */
+  stopGraceMs?: number;
 }
 
 /** Reserve an ephemeral free port on 127.0.0.1 (closed immediately; best-effort). */
@@ -122,6 +125,7 @@ export async function spawnScenarioDaemon(
   opts: SpawnScenarioDaemonOptions,
 ): Promise<ScenarioDaemon> {
   const { rigBin, timeoutMs } = opts;
+  const stopGraceMs = opts.stopGraceMs ?? 15_000;
   // `rigBin` is a node script run as `node <rigBin>`: when the CLI has not been built it is absent, and the
   // only symptom would be a node "Cannot find module" buried inside "scenario-local daemon failed to start".
   if (!existsSync(rigBin)) {
@@ -152,13 +156,39 @@ export async function spawnScenarioDaemon(
       );
     }
   };
+  // The daemon is detached by `rig daemon start`, so it outlives this runner. Its pid is read back from the scratch
+  // OPENRIG_HOME's own daemon.json, and a watchdog stops exactly that pid (and this scaffold's tmux server) if the runner
+  // dies or times out before `stop()` runs. Without it a daemon ran for ~28 h after its home had been deleted.
+  const readDaemonPid = (): number | null => {
+    try {
+      const pid = (JSON.parse(readFileSync(join(scaffold.openrigHome, "daemon.json"), "utf8")) as { pid?: unknown }).pid;
+      return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : null;
+    } catch { return null; }
+  };
+  let reaper: { disarm: () => void } | undefined;
+  const arm = (pids: number[]) => {
+    reaper?.disarm();
+    reaper = reapWhenOwnerDies({ pids, tmuxSockets: [scaffold.tmuxSocketPath] });
+  };
   const killProc = async () => {
     // `rig daemon stop` reads daemon.json under the scratch OPENRIG_HOME and
-    // SIGTERMs the daemon. Best-effort (already-down is fine).
+    // SIGTERMs the daemon. Best-effort (already-down is fine), but the daemon must really be gone before the
+    // scaffold (and the daemon.json that names it) can be deleted: a swallowed stop failure leaked it.
+    const pid = readDaemonPid();
     await runRig(["daemon", "stop"], scaffold.env, rigBin, timeoutMs).catch(() => {});
+    if (pid !== null && !(await waitGone(pid, stopGraceMs))) {
+      try { process.kill(pid, "SIGTERM"); } catch { /* gone meanwhile */ }
+      if (!(await waitGone(pid, stopGraceMs))) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* gone meanwhile */ }
+        await waitGone(pid, stopGraceMs);
+      }
+    }
+    arm([]); // the daemon is gone: keep only the tmux server protected until stop() cleans up
   };
 
   await startProc();
+  const startedPid = readDaemonPid();
+  arm(startedPid === null ? [] : [startedPid]);
 
   const baseUrl = `http://127.0.0.1:${port}`;
   const readEnv: Record<string, string | undefined> = { ...scaffold.env, OPENRIG_URL: baseUrl };
@@ -171,10 +201,14 @@ export async function spawnScenarioDaemon(
     restart: async () => {
       await killProc();
       await startProc();
+      const pid = readDaemonPid();
+      arm(pid === null ? [] : [pid]);
     },
     stop: async () => {
-      await killProc();
-      scaffold.cleanup();
+      try { await killProc(); } finally {
+        reaper?.disarm();
+        scaffold.cleanup();
+      }
     },
   };
 }

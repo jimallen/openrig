@@ -202,6 +202,12 @@ describe("mission notes resolver parity", () => {
 
 describe("shipped refocus notes resolution", () => {
   it("uses the real CLI resolver for every locked outcome and reports command failure honestly", () => {
+    // The shim stands in for the shipped `rig`, which is the BUILT CLI (as in the other daemon tests that
+    // drive it): trace-to-root.py gives each `rig scope resolve-notes` 10 s, and a `tsx` start-up of
+    // the TypeScript source (2 s on a quiet host, over 10 s on a heavily loaded one) turned a loaded host
+    // into a false "NOTES RESOLUTION GAP". `npm run build` produces it; say so rather than fail obscurely.
+    const scopeCommandModule = path.join(REPO_ROOT, "packages/cli/dist/commands/scope.js");
+    expect(fs.existsSync(scopeCommandModule), `${scopeCommandModule} is missing: build the CLI first (npm run build)`).toBe(true);
     const root = fs.mkdtempSync(path.join(process.env.TMPDIR ?? "/tmp", "scope-notes-refocus-"));
     const workNode = path.join(root, "work-node");
     const bin = path.join(root, "bin");
@@ -223,14 +229,14 @@ if [ "\${OPENRIG_TEST_SCOPE_RESOLVE_FAIL:-}" = "1" ] && [ "$1" = "scope" ] && [ 
   exit 23
 fi
 if [ "$1" = "scope" ]; then shift; fi
-exec "$OPENRIG_TEST_NODE" --import tsx "$OPENRIG_TEST_SCOPE_LAUNCHER" "$@"
+exec "$OPENRIG_TEST_NODE" "$OPENRIG_TEST_SCOPE_LAUNCHER" "$@"
 `, "utf8");
     fs.chmodSync(rig, 0o755);
     const baseEnv = {
       ...process.env,
       PATH: `${bin}:${process.env.PATH || ""}`,
       OPENRIG_TEST_NODE: process.execPath,
-      OPENRIG_TEST_SCOPE_COMMAND: path.join(REPO_ROOT, "packages/cli/src/commands/scope.ts"),
+      OPENRIG_TEST_SCOPE_COMMAND: scopeCommandModule,
       OPENRIG_TEST_SCOPE_LAUNCHER: launcher,
       OPENRIG_WORKSPACE_ROOT: workNode,
     } as NodeJS.ProcessEnv;
@@ -288,7 +294,7 @@ exec "$OPENRIG_TEST_NODE" --import tsx "$OPENRIG_TEST_SCOPE_LAUNCHER" "$@"
       if (fs.existsSync(currentPath)) fs.chmodSync(currentPath, 0o600);
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 });
 
 // OPR.0.4.4.19 FR-10 — classifier-level backstop tests (run against the

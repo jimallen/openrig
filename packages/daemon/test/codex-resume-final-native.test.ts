@@ -7,7 +7,13 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { reapWhenOwnerDies, stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
+// Each row drives a real tmux pane and polls it for output that arrives on its own; the polls resolve the
+// moment the text is there. The ceilings only bound a genuine hang (10 s / 30 s were overrun on a heavily
+// loaded host).
+const POLL_CEILING_MS = 60_000;
+const TEST_CEILING_MS = 150_000;
 const run = promisify(exec);
 const runFile = promisify(execFile);
 
@@ -32,6 +38,8 @@ async function finalObservation(output: string) {
   delete env.TMUX;
   delete env.TMUX_TMPDIR;
   const tmux = async (args: string[]) => (await runFile("tmux", ["-S", socket, ...args], { env })).stdout;
+  // The server outlives the runner: reap it if this worker dies or the test times out before the finally below.
+  const reaper = reapWhenOwnerDies({ tmuxSockets: [socket] });
   try {
     await tmux(["-f", "/dev/null", "new-session", "-d", "-s", "fixture", "-x", "160", "-y", "40", "/bin/bash --noprofile --norc -i"]);
     const adapter = new TmuxAdapter(async cmd => {
@@ -43,13 +51,13 @@ async function finalObservation(output: string) {
     const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines) => {
       captures++;
       if (captures === 1) {
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 10_000 }).toContain("fixture waiting for final observation");
+        await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_CEILING_MS }).toContain("fixture waiting for final observation");
       }
       if (captures === 27) {
         // The default budget has 26 loop observations plus one final read.
         // Release output only at that final boundary, avoiding timer races.
         fs.writeFileSync(gate, output);
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 10_000 }).toContain(output);
+        await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_CEILING_MS }).toContain(output);
       }
       return nativeCapture(target, lines);
     });
@@ -63,8 +71,10 @@ async function finalObservation(output: string) {
     expect(capture).toHaveBeenCalledTimes(27);
     return result;
   } finally {
-    await tmux(["kill-server"]).catch(() => {});
-    fs.rmSync(home, { recursive: true, force: true });
+    try { await stopOwnedTmuxServer(socket, env); } finally {
+      reaper.disarm();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   }
 }
 
@@ -72,22 +82,22 @@ describe.skipIf(process.platform === "win32")("native terminal final Codex resum
   it("retains a late access-token refusal as recoverable attention with evidence", async () => {
     const output = "Your access token could not be refreshed. Please sign in again.";
     expect(await finalObservation(output)).toMatchObject({ ok: false, code: "attention_required", evidence: expect.stringContaining(output) });
-  }, 30_000);
+  }, TEST_CEILING_MS);
 
   it("retains a late incompatible-client notice as recoverable attention", async () => {
     const output = "This model requires a newer version of Codex.";
     expect(await finalObservation(output)).toMatchObject({ ok: false, code: "attention_required", evidence: expect.stringContaining(output) });
-  }, 30_000);
+  }, TEST_CEILING_MS);
 
   it("retains a late missing saved session as a fresh-retry outcome", async () => {
     expect(await finalObservation("Error: No saved session found for that token.")).toMatchObject({
       ok: false, code: "retry_fresh", message: "Codex resume failed: no saved session found for the requested token",
     });
-  }, 30_000);
+  }, TEST_CEILING_MS);
 
   it("still accepts a ready interactive prompt arriving at the final read", async () => {
     expect(await finalObservation("OpenAI Codex (v0.0.0)\n› Ask Codex to do anything")).toMatchObject({ ok: true });
-  }, 30_000);
+  }, TEST_CEILING_MS);
 
   it("preserves the shell fallback without claiming readiness or attention from unrelated output", async () => {
     // The production launch stages this fixture via /bin/sh. Native tmux sees
@@ -95,5 +105,5 @@ describe.skipIf(process.platform === "win32")("native terminal final Codex resum
     expect(await finalObservation("fixture output remains inconclusive")).toMatchObject({
       ok: false, code: "retry_fresh", message: "Codex resume failed: pane returned to shell instead of entering Codex",
     });
-  }, 30_000);
+  }, TEST_CEILING_MS);
 });

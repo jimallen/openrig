@@ -14,6 +14,7 @@ describe.skipIf(process.platform === "win32")("Pi native PATH semantics", () => 
       const first = path.join(temp, "first"), second = path.join(temp, "second");
       fs.mkdirSync(first); fs.mkdirSync(second);
       const session = path.join(temp, "session.jsonl");
+      const probeStartedFile = path.join(temp, "version-probe-started");
       fs.writeFileSync(session, "fixture\n");
       const good = path.join(second, "pi");
       fs.writeFileSync(good, `#!${process.execPath}
@@ -40,7 +41,7 @@ exec ${quote(process.execPath)} ${quote(good)}
         fs.writeFileSync(path.join(first, "pi"), "#!/no/such/interpreter\n", { mode: 0o700 });
       } else if (kind === "stubborn-version") {
         fs.writeFileSync(path.join(first, "pi"), `#!${process.execPath}
-if(process.argv.includes('--version')) { process.on('SIGTERM',()=>{}); setInterval(()=>{},1000); }
+if(process.argv.includes('--version')) { require('node:fs').writeFileSync(${JSON.stringify(probeStartedFile)}, String(Date.now())); process.on('SIGTERM',()=>{}); setInterval(()=>{},1000); }
 else { process.stdin.resume(); console.error('Error: Unknown options: --name, --no-approve'); setTimeout(()=>process.exit(1),100); }
 `, { mode: 0o700 });
       } else if (kind === "relative") fs.copyFileSync(good, path.join(first, "pi"));
@@ -64,7 +65,9 @@ else { process.stdin.resume(); console.error('Error: Unknown options: --name, --
       };
       child.stdout.on("data", take); child.stderr.on("data", take);
       const closed = new Promise<void>((resolve, reject) => { child.once("close", () => resolve()); child.once("error", reject); });
-      const timer = setTimeout(() => { timedOut = true; stop(); }, 6500);
+      // Hang guard only. The child ends by itself (ready marker or exit), so a quiet machine never waits on
+      // this; it must outlast `tsx` start-up of the runner on a heavily loaded host (6.5 s did not).
+      const timer = setTimeout(() => { timedOut = true; stop(); }, 90_000);
       try {
         await closed;
         const elapsedMs = Date.now() - started;
@@ -73,8 +76,12 @@ else { process.stdin.resume(); console.error('Error: Unknown options: --name, --
         expect(timedOut, output).toBe(false);
         if (kind === "stubborn-version") {
           expect(ready).toBe(false);
-          expect(elapsedMs).toBeGreaterThanOrEqual(2900);
-          expect(elapsedMs).toBeLessThan(6500);
+          // The runner's own bound on a version probe that ignores SIGTERM is 3 s (SIGKILL), measured from
+          // when that probe started: process start-up before it is the host's load, not the bound.
+          const probeStarted = Number(fs.readFileSync(probeStartedFile, "utf8"));
+          const probeMs = started + elapsedMs - probeStarted;
+          expect(probeMs).toBeGreaterThanOrEqual(2900);
+          expect(probeMs).toBeLessThan(6500);
           expect(child.exitCode, output).toBe(1);
           expect(state.exited.code).toBe(1);
           expect(output).toContain("unknown version");
@@ -83,5 +90,5 @@ else { process.stdin.resume(); console.error('Error: Unknown options: --name, --
         clearTimeout(timer); stop();
         fs.rmSync(temp, { recursive: true, force: true });
       }
-    }, 12000);
+    }, 120_000);
 });

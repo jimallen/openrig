@@ -8,6 +8,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
+import { reapWhenOwnerDies, stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(execFile);
 const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
@@ -56,6 +57,9 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
     const socket = path.join(root, "tmux");
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color" };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 5000 })).stdout;
+    // This test's tmux server (and the interactive shells in its sessions) outlives the runner. If the worker dies or the
+    // test times out, the finally below never runs and the server ran for days after its socket directory was deleted.
+    const reaper = reapWhenOwnerDies({ tmuxSockets: [socket] });
     const fake = path.join(root, "off-path-claude"), recorder = path.join(root, "record.cjs"), cli = path.join(root, "paired-rig");
     fs.writeFileSync(recorder, `const fs = require('node:fs'); const cp = require('node:child_process');
 fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2), node:process.env.OPENRIG_NODE_ID,
@@ -131,8 +135,10 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
       expect(cells).toHaveLength(36);
       expect(cells.filter(cell => !cell.started || cell.exit !== 0 || cell.issues.length)).toEqual([]);
     } finally {
-      await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      try { await stopOwnedTmuxServer(socket, env); } finally {
+        reaper.disarm();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     }
   }, 90_000);
 });

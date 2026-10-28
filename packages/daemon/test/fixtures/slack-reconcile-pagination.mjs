@@ -12,6 +12,11 @@ const { SeenStore } = await load("domain/gateway/slack/state-store");
 const { fetchRecentMessageTexts } = await load("domain/gateway/slack/slack-api");
 const { reconcileToken } = await load("domain/gateway/slack/message");
 const scenarios = group === "recovery" ? ["root", "thread", "found-first", "absent", "deep-absent-root", "deep-absent-thread", "receipt-retry", "pending-receipt"] : ["api-error", "initial-api-error", "cursor-loop", "missing-cursor", "page-bound", "deadline"];
+// The scan's total budget must be shorter than two responses together and longer than one response plus the
+// host's scheduling noise. 160/250 ms left 90 ms of slack, which a loaded host used up before the first page
+// arrived (the scan then failed outright instead of timing out on its second page).
+const PROBE_RESPONSE_DELAY_MS = 1200;
+const PROBE_BUDGET_MS = 2000;
 const results = [];
 for (const scenario of scenarios) {
   const posted = [];
@@ -54,7 +59,7 @@ for (const scenario of scenarios) {
     else if (scenario === "page-bound") json.response_metadata.next_cursor = `page-${reads}`;
     const send = () => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(json)); };
     if (scenario === "deadline" && (!deadlineProbed || cursor)) {
-      const timer = setTimeout(() => { timers.delete(timer); send(); }, deadlineProbed ? 16_000 : 160);
+      const timer = setTimeout(() => { timers.delete(timer); send(); }, deadlineProbed ? 16_000 : PROBE_RESPONSE_DELAY_MS);
       timers.add(timer);
     } else send();
   });
@@ -77,9 +82,9 @@ for (const scenario of scenarios) {
     assert.equal((await subsystemSlackDeliver(opts)(decision)).ok, false);
     assert.ok(attempted.load().has(decision.decisionId));
     if (scenario === "deadline") {
-      // Two real delayed responses would each fit 250ms independently, but not
-      // the scan's single total 250ms budget. Probe the actual production helper.
-      const scan = await fetchRecentMessageTexts(opts.botToken, opts.channel, undefined, fetchImpl, 100, 250, reconcileToken(decision.decisionId));
+      // Two real delayed responses would each fit the budget independently, but not
+      // the scan's single total budget (2 x 1200 ms > 2000 > 1200 ms). Probe the actual production helper.
+      const scan = await fetchRecentMessageTexts(opts.botToken, opts.channel, undefined, fetchImpl, 100, PROBE_BUDGET_MS, reconcileToken(decision.decisionId));
       assert.ok(scan.incomplete?.includes("timeout"));
       assert.equal(scan.messages.some((message) => message.text.includes(reconcileToken(decision.decisionId))), false);
       assert.equal(queried.length, 2);
