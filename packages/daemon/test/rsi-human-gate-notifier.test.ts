@@ -128,7 +128,7 @@ describe("selection: which rows become banners", () => {
     insertQueueRow(h.db, "q-plain-human", { tags: ["not-rsi", "rsi:fp:lookalike"], blockedOn: "human-other@kernel" });
     insertQueueRow(h.db, "q-rsi-agent", { blockedOn: "improve-engineer@kernel" });
     insertQueueRow(h.db, "q-rsi-pending", { state: "pending" });
-    insertQueueRow(h.db, "q-untagged", { tags: [] });
+    insertQueueRow(h.db, "q-untagged", { tags: [], blockedOn: "human-other@kernel" });
     const result = await h.notifier.tick();
     expect(result).toEqual({ status: "idle", waiting: 0 });
     expect(h.calls).toHaveLength(0);
@@ -486,7 +486,8 @@ describe("platform and failure posture", () => {
   it("reads queue state through a read-only handle and leaves queue_items untouched", async () => {
     const db = freshDb(true);
     insertQueueRow(db, "q-a");
-    insertQueueRow(db, "q-b", { tags: ["plain"] });
+    // Parked on another human seat, not the inbox: not RSI (no steward tag set) and not addressed to human@kernel.
+    insertQueueRow(db, "q-b", { tags: ["plain"], blockedOn: "human-other@kernel" });
     const before = JSON.stringify(db.prepare("SELECT * FROM queue_items ORDER BY qitem_id").all());
     const ro = new Database(db.name, { readonly: true, fileMustExist: true });
     open.push(ro);
