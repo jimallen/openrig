@@ -395,7 +395,8 @@ function queueRows(snap: FleetSnapshot): FleetSnapshot["attention"] {
 function recentWorkText(snap: FleetSnapshot, row: RecentTransitionSnap): string {
   const qitem = queueRows(snap).find((candidate) => candidate.qitemId === row.qitemId);
   const work = qitem?.summary?.trim() || qitem?.body.split("\n").find((line) => line.trim())?.trim();
-  const damaged = damagedPhrase(qitem);
+  // The recent row carries its own marker (the item may be older than any queue lane the snapshot holds), so either one marks it.
+  const damaged = damagedPhrase(qitem) || damagedPhrase(row);
   return `${damaged ? `${damaged} · ` : ""}${row.summary?.trim() || work || "no work served"}`;
 }
 

@@ -56,7 +56,8 @@ export interface RenderInstance {
   failureOccurrences?: RenderFailureOccurrence[];
   /** Named broken joins; never collapse these to an apparently actionable row. */
   unknowns?: string[];
-  exceptionObligations?: Array<{ qitemId: string; ownerSession: string; state: string; evidenceRef: string | null; inspectCommand: string }>;
+  /** OF-159: an item whose saved columns the daemon could not read carries only `qitemId`, `unreadable` and `inspectCommand`. */
+  exceptionObligations?: Array<{ qitemId: string; ownerSession?: string; state?: string; evidenceRef?: string | null; inspectCommand: string; unreadable?: unknown }>;
   exceptionReadiness?: {
     selection: { state: string; role: string | null; source: string; entryRole: string | null };
     routes: Array<{ exceptionClass: string; state: string; roleResolution: string; destinationSession: string | null; position: string | null; resolvedVia: string | null; message: string }>;
@@ -449,6 +450,11 @@ export function renderInstanceShow(
     lines.push(`    advisory: ${r.nextAction}`);
   }
   for (const q of instance.exceptionObligations ?? []) {
+    const damaged = damagedColumnsOf(q.unreadable);
+    if (damaged.length > 0) {
+      lines.push(`  exception obligation: ${q.qitemId} · ▲ DAMAGED: saved ${damaged.join(", ")} not readable JSON. Its owner and state are UNKNOWN, not absent; nothing will act on it until it is repaired or removed.`);
+      continue;
+    }
     lines.push(`  exception obligation: ${q.qitemId} · owner=${q.ownerSession} · state=${q.state}`);
     lines.push(`    evidence: ${q.evidenceRef ?? "UNVERIFIED"} · inspect: ${q.inspectCommand}`);
   }

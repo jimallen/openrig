@@ -88,7 +88,7 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
           <span
             data-testid={`workflow-instance-damaged-${instance.instanceId}`}
             title={damagedExplanation(damaged)}
-            className="basis-full pl-5 font-mono text-[10px] text-on-surface"
+            className="order-last basis-full pl-5 font-mono text-[10px] text-on-surface"
           >
             {damaged.join(", ")} unreadable · do not act on it
           </span>

@@ -226,4 +226,22 @@ describe("OF-146 the other TUI queue-row listings mark a damaged row", () => {
     const detail = renderScreen({ ...state, recentOpen: rows[0] }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
     expect(detail).toContain(`${MARK} · Shipped work`);
   });
+
+  // OF-159: the daemon marks the recent-transition row itself (its tags could not be read, so the target fell back to the qitem).
+  // The item may be older than every lane the snapshot holds, so the marker on the transition is the only one the list has.
+  it("recent list and recent detail: a transition whose own row is marked unreadable shows the damage when no queue lane holds the item", async () => {
+    const f = fixture();
+    const bad = f.seed({ state: "done", tags: "{not json", body: "Old shipped work" });
+    const ok = f.seed({ state: "done", tags: '["a"]', body: "Old fine work" });
+    const snap = await f.read("rig");
+    const rows = [bad, ok].map((id, k) => ({ transitionId: k + 1, qitemId: id, ts: "2026-10-27T11:00:00Z", actorSession: "a@selected", change: "completed", summary: k === 0 ? "Old shipped work" : "Old fine work", rig: RIG,
+      targetKind: "qitem" as const, target: id, ...(k === 0 ? { unreadable: ["tags"] } : {}) }));
+    const withQueue: FleetSnapshot = { ...snap, recentlyFinished: [], recentTransitions: rows, recentTransitionsScope: { kind: "rig", rig: RIG } };
+    const state = { ...createViewState({ instanceId: "fixture", getSnapshot: () => withQueue }).get(), section: "topology", viewTab: "recent", drill: [{ kind: "host", name: "fixture" }, { kind: "rig", name: RIG }] } as ViewState;
+    const list = renderScreen(state, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
+    expect(lineWith(list, "Old shipped work")[0]).toContain(MARK);
+    expect(lineWith(list, "Old fine work")[0]).not.toContain("DAMAGED");
+    const detail = renderScreen({ ...state, recentOpen: rows[0] }, withQueue, { cols: 160, rows: 100 }).lines.join("\n");
+    expect(detail).toContain(`${MARK} · Old shipped work`);
+  });
 });

@@ -4,6 +4,7 @@ import type { AgentActivity } from "./types.js";
 import type { OperatorDeliveryEngine } from "./gateway/operator-delivery-engine.js";
 import { openPromptRefusals, CLOSE_PREFIX, REFUSED_PREFIX } from "./policies/parked-owner-consumer.js";
 import { findQueueRecovery, recoveryTag } from "./queue-recovery.js";
+import { findDamagedTagRows } from "./damaged-tag-rows.js";
 import { lastMeaningfulTransition, type WaitingView } from "./queue-waiting.js";
 // S01 (OPR.0.5.5.1) — WAKE OR ESCALATE ON BATONS. A handoff whose wake fails must never
 // silently park: today one failed nudge is recorded and nothing follows (the measured
@@ -1056,6 +1057,14 @@ async function advancePromptRefusals(
         AND json_valid(tags) AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)
         AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?) LIMIT 1`)
         .get(PROMPT_ALERT_TAG, `${PROMPT_EPISODE_TAG}${episode.key}`)) continue;
+      // OF-159: the same, for a closed disposition whose saved tags are damaged (the lookup above parses tags, so it cannot see
+      // it). It is not "no disposition": reading it as absent would open the alert again for an episode already closed. Named, final.
+      const damagedClosed = findDamagedTagRows(deps.db, { tags: [PROMPT_ALERT_TAG, `${PROMPT_EPISODE_TAG}${episode.key}`] })
+        .find(row => !["pending", "in-progress", "blocked"].includes(row.state));
+      if (damagedClosed) {
+        (deps.log ?? console.error)(`[wake-ladder] ${damagedClosed.qitemId} skipped: its saved tags are not readable JSON, so its closed prompt disposition is treated as final for this episode (repair or remove the row)`);
+        continue;
+      }
       const rows = episode.ids.map(id => readCandidate(id, primary.destinationSession)).filter((row): row is QueueItem =>
         Boolean(row && row.destinationSession === primary.destinationSession && ["pending", "in-progress", "blocked"].includes(row.state)));
       if (!rows.length) continue;
@@ -1073,6 +1082,11 @@ async function advancePromptRefusals(
   const aggregates = deps.db.prepare(`SELECT qitem_id FROM queue_items WHERE state IN ('pending','in-progress','blocked')
     AND json_valid(tags) AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`)
     .all(PROMPT_ALERT_TAG) as Array<{ qitem_id: string }>;
+  // OF-159: an open prompt aggregate whose saved tags are damaged is not in the list above (it parses tags). It is named every
+  // tick, not silently skipped; a destination's ladder leaves it alone through ensureEscalationRow, which finds it by tag text.
+  for (const damaged of findDamagedTagRows(deps.db, { tags: [PROMPT_ALERT_TAG], states: ["pending", "in-progress", "blocked"] })) {
+    (deps.log ?? console.error)(`[wake-ladder] ${damaged.qitemId} skipped: its saved tags are not readable JSON (repair or remove the row)`);
+  }
   for (const { qitem_id } of aggregates) {
     // OF-140: a damaged prompt aggregate is named and skipped; it neither ends the whole prompt pass nor reads as retired.
     const aggregate = readOrName(deps, qitem_id);

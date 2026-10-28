@@ -55,6 +55,7 @@ import type { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { disarmAllWorkflowKeepalives, disarmWorkflowKeepalive, ensureWorkflowKeepaliveArmed } from "./workflow-keepalive-arming.js";
 import { evaluateStepDeadline, type WorkflowDeadlineVerdict } from "./workflow-deadline.js";
 import { isUnreadableRowError } from "./unreadable-row.js";
+import { findDamagedTagRows } from "./damaged-tag-rows.js";
 import {
   rigDeclaresRole,
   rigMemberExists,
@@ -71,6 +72,8 @@ import type {
   WorkflowStepTrailEntry,
 } from "./workflow-types.js";
 import { compileProjectLifecycle, type LifecycleCompilation } from "./project-lifecycle-compiler.js";
+
+const OPEN_QUEUE_STATES = ["pending", "in-progress", "blocked"] as const;
 
 export interface WorkflowRuntimeDeps {
   guidanceLibrary?: GuidanceInput["library"];
@@ -228,16 +231,32 @@ export class WorkflowRuntime {
       instance.lifecycleBinding?.graphSource as LifecycleCompilation["graphSource"] | undefined), instance.boundRig, instanceId);
   }
 
+  /** The instance's exception items. A damaged item is MARKED (`unreadable: [columns]`, nothing else read from it), never left
+   * out: a listing that drops it reads as "no such obligation" (OF-159). */
   exceptionObligations(instanceId: string) {
-    return (this.db.prepare(`SELECT qitem_id FROM queue_items WHERE json_valid(tags)
+    const instanceTag = `instance:${instanceId}`;
+    const inspectCommand = (qitemId: string) => "rig queue show " + qitemId + " --full --json";
+    const entries: Array<{ tsCreated: string; qitemId: string; entry: ExceptionObligation }> = [];
+    const readable = this.db.prepare(`SELECT qitem_id, ts_created FROM queue_items WHERE json_valid(tags)
       AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'workflow-exception')
-      AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?) ORDER BY ts_created, qitem_id`)
-      .all(`instance:${instanceId}`) as Array<{ qitem_id: string }>).map(row => {
+      AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`)
+      .all(instanceTag) as Array<{ qitem_id: string; ts_created: string }>;
+    for (const row of readable) {
+      try {
         const q = this.queueRepo.getById(row.qitem_id)!;
-        return { qitemId: q.qitemId, ownerSession: q.destinationSession, state: q.state,
-          evidenceRef: q.evidenceRef, tags: q.tags, handedOffFrom: q.handedOffFrom,
-          inspectCommand: "rig queue show " + q.qitemId + " --full --json" };
-      });
+        entries.push({ tsCreated: row.ts_created, qitemId: row.qitem_id, entry: { qitemId: q.qitemId, ownerSession: q.destinationSession, state: q.state,
+          evidenceRef: q.evidenceRef, tags: q.tags, handedOffFrom: q.handedOffFrom, inspectCommand: inspectCommand(q.qitemId) } });
+      } catch (err) {
+        if (!isUnreadableRowError(err)) throw err;
+        entries.push({ tsCreated: row.ts_created, qitemId: row.qitem_id, entry: { qitemId: row.qitem_id, unreadable: [...err.columns], inspectCommand: inspectCommand(row.qitem_id) } });
+      }
+    }
+    for (const damaged of findDamagedTagRows(this.db, { tags: ["workflow-exception", instanceTag] })) {
+      entries.push({ tsCreated: damaged.tsCreated, qitemId: damaged.qitemId, entry: { qitemId: damaged.qitemId, unreadable: ["tags"], inspectCommand: inspectCommand(damaged.qitemId) } });
+    }
+    return entries
+      .sort((a, b) => (a.tsCreated < b.tsCreated ? -1 : a.tsCreated > b.tsCreated ? 1 : a.qitemId < b.qitemId ? -1 : a.qitemId > b.qitemId ? 1 : 0))
+      .map(({ entry }) => entry);
   }
 
   async instantiateLifecycle(input: {
@@ -873,9 +892,17 @@ export class WorkflowRuntime {
           AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'exception:stuck_overdue')
           AND (? IS NULL OR EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?))`
       ).all(instanceId ?? null, `instance:${instanceId}`) as Array<{ qitem_id: string; tags: string }>;
+      // OF-159: a stuck-exception item whose saved tags are damaged cannot be rechecked (its instance and packet live there). It is
+      // named every pass and left open, never skipped as if it were not an item.
+      for (const damaged of findDamagedTagRows(this.db, { tags: ["workflow-exception", "exception:stuck_overdue", ...(instanceId ? [`instance:${instanceId}`] : [])], states: OPEN_QUEUE_STATES })) {
+        console.error(`[workflow-runtime] stuck exception ${damaged.qitemId} left open: its saved tags are not readable JSON (repair or remove the row)`);
+      }
       for (const row of rows) {
         const tags: unknown = JSON.parse(row.tags);
-        if (!Array.isArray(tags)) continue;
+        if (!Array.isArray(tags)) {
+          console.error(`[workflow-runtime] stuck exception ${row.qitem_id} left open: its saved tags are not a list of tags (repair or remove the row)`);
+          continue;
+        }
         const one = (prefix: string): string | undefined => {
           const values = tags.filter((tag) => typeof tag === "string" && tag.startsWith(prefix));
           return values.length === 1 ? values[0]!.slice(prefix.length) : undefined;
@@ -1316,6 +1343,11 @@ export class WorkflowRuntime {
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`,
     ).all(`instance:${instanceId}`, `occurrence:${failedPacketId}`) as Array<{ qitem_id: string }>;
+    // OF-159: an exception item for this occurrence whose saved tags are damaged cannot be closed here (nor read to prove it is this
+    // occurrence's); it is named and left open, so the redrive does not report the occurrence cleared while it hides.
+    for (const damaged of findDamagedTagRows(this.db, { tags: ["workflow-exception", `instance:${instanceId}`, `occurrence:${failedPacketId}`], states: OPEN_QUEUE_STATES })) {
+      console.error(`[workflow-runtime] exception item ${damaged.qitemId} for occurrence ${failedPacketId} left open: its saved tags are not readable JSON (repair or remove the row)`);
+    }
     for (const row of openItems) {
       const closed = this.queueRepo.updateWithinTransaction({
         qitemId: row.qitem_id,
@@ -1825,6 +1857,11 @@ export class WorkflowRuntime {
     });
   }
 }
+
+/** One exception item in `workflow show`; a damaged one carries only its id, the damaged columns and the inspect command. */
+export type ExceptionObligation =
+  | { qitemId: string; ownerSession: string; state: string; evidenceRef: string | null; tags: string[] | null; handedOffFrom: string | null; inspectCommand: string; unreadable?: undefined }
+  | { qitemId: string; unreadable: string[]; inspectCommand: string };
 
 /** WorkflowInstance + the derived FR-2 deadline verdict (additive read shape). */
 export type WorkflowInstanceWithDeadline = WorkflowInstance & {

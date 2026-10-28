@@ -271,6 +271,9 @@ export interface RecentTransitionSnap {
   rig?: string | null;
   targetKind: "qitem" | "slice" | "mission";
   target: string;
+  /** OF-159: the daemon's marker (OF-146) that this item's saved tags are not readable, so `target` fell back to the qitem
+   *  because the slice/mission tag could not be read, not because the item has none. */
+  unreadable?: string[];
 }
 
 export type HealthScope =
