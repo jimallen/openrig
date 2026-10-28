@@ -23,6 +23,8 @@ export type KeepCode =
   | "contains-another-worktree"
   | "status-unreadable"
   | "uncommitted-changes"
+  | "secret-looking-ignored-file"
+  | "ignored-files-unreadable"
   | "operation-in-progress"
   | "head-unreadable"
   | "not-merged"
@@ -184,6 +186,18 @@ async function dirSizeKiB(dir: string): Promise<number | null> {
   });
 }
 
+// Ignored files may be deleted (they are regenerable by git's own definition) EXCEPT ones that look
+// like secrets: .env / .env.*, *.pem, *.key. Dependency trees (node_modules) are skipped because
+// packages ship fixture keys; template suffixes are not secrets.
+const TEMPLATE_ENV = /\.(example|sample|template|dist)$/i;
+export function looksSecret(relPath: string): boolean {
+  const parts = relPath.split("/");
+  if (parts.includes("node_modules")) return false;
+  const base = parts[parts.length - 1] ?? "";
+  if (base === ".env" || (base.startsWith(".env.") && !TEMPLATE_ENV.test(base))) return true;
+  return /\.(pem|key)$/i.test(base);
+}
+
 const OPERATION_MARKERS = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"];
 
 async function newestActivityMs(gitDir: string): Promise<{ ms: number | null; error: string | null }> {
@@ -285,6 +299,16 @@ async function sweepRepo(
       if (status.code !== 0) keep("status-unreadable", status.stderr.trim() || `git status exited ${status.code}`);
       else if (status.stdout.length > 0) {
         keep("uncommitted-changes", `${status.stdout.split("\0").filter(Boolean).length} changed or untracked path(s)`);
+      }
+
+      const ignored = await git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], wt.path);
+      if (ignored.code !== 0) {
+        keep("ignored-files-unreadable", ignored.stderr.trim() || `git ls-files exited ${ignored.code}`);
+      } else {
+        const secrets = ignored.stdout.split("\0").filter((f) => f && looksSecret(f));
+        if (secrets.length > 0) {
+          keep("secret-looking-ignored-file", `${secrets.slice(0, 5).join(", ")}${secrets.length > 5 ? ` (+${secrets.length - 5} more)` : ""}`);
+        }
       }
 
       const gd = await git(["rev-parse", "--path-format=absolute", "--git-dir"], wt.path);

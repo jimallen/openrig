@@ -12,10 +12,10 @@ export function worktreeCommand(): Command {
   cmd
     .command("sweep")
     .description(
-      "Report (default) or remove (--apply) linked git worktrees that are merged into the target ref, clean, unlocked, not in use and not recently touched. Never touches the main checkout, uncommitted work or unmerged commits.",
+      "Report (default) or remove (--apply) linked git worktrees that are merged into the target ref, clean, unlocked, not in use and not recently touched. Never touches the main checkout, uncommitted work, unmerged commits, or a worktree holding ignored secret-looking files (.env, .env.*, *.pem, *.key). A repo without origin/HEAD (for example eztrack) needs --into <ref>.",
     )
     .option("--repo <path>", "Repository to sweep (repeatable; defaults to the repo containing the current directory)", (v: string, acc: string[]) => [...acc, v], [] as string[])
-    .option("--into <ref>", "Ref a worktree's HEAD must be merged into (default: the remote default branch, origin/HEAD; a local branch is never guessed)")
+    .option("--into <ref>", "Ref a worktree's HEAD must be merged into (default: the remote default branch, origin/HEAD; required when the repo has none; a local branch is never guessed)")
     .option("--older-than <duration>", "Keep worktrees with git activity newer than this (e.g. 30m, 24h, 7d; 0s disables)", "24h")
     .option("--apply", "Actually remove the worktrees reported as REMOVE (default is a dry run)")
     .option("--json", "JSON output for agents")

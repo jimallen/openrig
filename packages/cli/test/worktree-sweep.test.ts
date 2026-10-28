@@ -155,6 +155,26 @@ describe("z3 worktree sweep: what it removes", () => {
     expect(fs.existsSync(p)).toBe(false);
   });
 
+  it("still removes ignored dependency trees even when a package inside ships a .pem/.key fixture", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    fs.mkdirSync(path.join(p, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(p, "node_modules", "pkg", "fixture.pem"), "x\n");
+    fs.writeFileSync(path.join(p, "node_modules", "pkg", ".env"), "x\n");
+    expect(verdict(await sweep(f), p).outcome).toBe("would-remove");
+  });
+
+  it("removes a worktree whose ignored files are only .env.example-style templates", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    fs.appendFileSync(path.join(p, ".gitignore"), ".env*\n");
+    git(p, "commit", "-am", "ignore env");
+    git(f.repo, "merge", "--ff-only", "unit-a");
+    git(f.repo, "push", "origin", "main");
+    fs.writeFileSync(path.join(p, ".env.example"), "A=\n");
+    expect(verdict(await sweep(f), p).outcome).toBe("would-remove");
+  });
+
   it("removes a detached worktree sitting on a merged commit", async () => {
     const f = makeFixture();
     git(f.repo, "worktree", "add", "--detach", f.wt("det"));
@@ -202,6 +222,25 @@ describe("z3 worktree sweep: what it must never remove", () => {
     expect(codes(verdict(rep, p))).toEqual(["uncommitted-changes"]);
     expect(fs.existsSync(path.join(p, "new-file.ts"))).toBe(true);
   });
+
+  it.each([[".env"], [".env.local"], ["certs/server.pem"], ["deploy.key"]])(
+    "keeps a worktree holding the ignored secret-looking file %s, and names it",
+    async (rel) => {
+      const f = makeFixture();
+      const p = f.addWorktree("unit-a");
+      fs.appendFileSync(path.join(p, ".gitignore"), ".env*\n*.pem\n*.key\ncerts/\n");
+      git(p, "commit", "-am", "ignore secrets");
+      git(f.repo, "merge", "--ff-only", "unit-a");
+      git(f.repo, "push", "origin", "main");
+      fs.mkdirSync(path.dirname(path.join(p, rel)), { recursive: true });
+      fs.writeFileSync(path.join(p, rel), "SECRET=1\n");
+      const rep = await sweep(f, { apply: true });
+      const v = verdict(rep, p);
+      expect(codes(v)).toEqual(["secret-looking-ignored-file"]);
+      expect(v.reasons[0]!.detail).toContain(rel);
+      expect(fs.readFileSync(path.join(p, rel), "utf8")).toBe("SECRET=1\n");
+    },
+  );
 
   it("keeps a worktree with a commit that is not on the target ref", async () => {
     const f = makeFixture();
