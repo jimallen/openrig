@@ -44,6 +44,8 @@ interface PlanPreviewNode {
   runtimePrompt?: string;
   /** The status restore reports when it stops this seat before launching it (absent on older daemons). */
   restoreStatus?: "failed" | "awaiting-decision";
+  /** OF-163: restore would reattach this seat's adopted session, which rig down left running (absent on older daemons). */
+  reattach?: { sessionId: string; sessionName: string };
 }
 
 interface PlanPreviewResponse {
@@ -562,8 +564,11 @@ export function summarizeReadiness(c: StartCandidate): string {
   // The whole restore is refused (OF-62): no seat is ready, whatever each seat's own forecast says.
   if (c.preview.restoreRefusal) return "[restore refused]";
   // A seat restore reports failed (removed since the snapshot) has nothing to ask: the rest is still ready to resume.
-  const actions = c.preview.nodes.filter((n) => n.restoreStatus !== "failed").map((n) => n.intendedAction);
+  const restored = c.preview.nodes.filter((n) => n.restoreStatus !== "failed");
+  const actions = restored.map((n) => n.intendedAction);
   if (actions.length === 0) return "[mixed]";
+  // z6 review F4: a rig whose every seat is reattached starts nothing and resumes nothing.
+  if (restored.every((n) => n.reattach)) return "[ready to reattach]";
   if (actions.every((a) => a === "resume-original")) return "[ready to resume]";
   if (actions.some((a) => a === "awaiting-decision")) return "[will ask before fresh]";
   if (actions.every((a) => a === "fresh-primed")) return "[fresh start]";

@@ -44,4 +44,17 @@ describe("rig start readiness label", () => {
     delete c.preview!.restoreRefusal;
     expect(summarizeReadiness(c)).toBe("[ready to resume]");
   });
+  // z6 review F4: a rig whose every seat would be reattached (adopted sessions rig down left running) starts and resumes nothing.
+  it("every restored seat reattached reads ready to reattach; a removed seat beside them does not change that", () => {
+    expect(summarizeReadiness(candidate([
+      { logicalId: "a", intendedAction: "resume-original", reattach: { sessionId: "s1", sessionName: "a@r" } },
+      { logicalId: "gone", intendedAction: "awaiting-decision", restoreStatus: "failed" },
+    ]))).toBe("[ready to reattach]");
+  });
+  it("control: a reattached seat beside a resumed one reads ready to resume", () => {
+    expect(summarizeReadiness(candidate([
+      { logicalId: "a", intendedAction: "resume-original", reattach: { sessionId: "s1", sessionName: "a@r" } },
+      { logicalId: "b", intendedAction: "resume-original" },
+    ]))).toBe("[ready to resume]");
+  });
 });

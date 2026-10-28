@@ -1,6 +1,7 @@
 import { captureSkippingUnreadable } from "../domain/snapshot-capture.js";
 import { inventoryCaptureOptions, type ShadowCapture } from "../domain/shadow-capture.js";
 import { DeliveryGuardError } from "../domain/seat-delivery-guard.js";
+import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { observeInventoryHandler, observeInventoryQuery } from "../domain/request-phase-observer.js";
 import type Database from "better-sqlite3";
@@ -26,7 +27,7 @@ import type { SeatStructuralActivityService } from "../domain/seat-structural-ac
 import { deriveRigLifecycleState, deriveRigLifecycleFromInventory } from "../domain/ps-projection.js";
 import { identityVerdictConfirmsSessionMissing } from "../domain/types.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
-import { buildRestorePlanPreview, collectPreviewSessionRows, readPreviewContinuity, readPreviewReattach } from "../domain/restore-plan-preview.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals, readPreviewContinuity, readPreviewReattach } from "../domain/restore-plan-preview.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { composeRigStatus, type SeatLifecycleInput } from "../domain/rig-status-compose.js";
 import { createRestoreCheckService } from "./restore-check.js";
@@ -735,7 +736,26 @@ rigsRoutes.post("/:id/up", async (c) => {
   // OPR.0.3.4.4 — read-only plan gate BEFORE the auto-rehydrate capture
   // (the capture is itself a mutation) and before restoreOrch.restore().
   if (plan) {
-    return c.json(buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)), 200);
+    // OF-171: the plan forecasts the --fresh list this route restores with, and names a listed seat restore would refuse,
+    // asked of the function restore calls (as POST /api/up does). This route restores with the default startup source.
+    let refusals = new Map<string, string>();
+    let refusalPredictionError: string | undefined;
+    try {
+      refusals = await predictedPlanRefusals(
+        {
+          db: repo.db, rigRepo: repo, specReader: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? null,
+          runtimeAdapters: (c.get("runtimeAdapters" as never) as Record<string, RuntimeAdapter> | undefined) ?? {}, exists: existsSync,
+        },
+        rig, snapshot ?? null, freshLogicalIds, "spec",
+      );
+    } catch (err) {
+      // Never read as "nothing refused": the plan says the prediction could not be made.
+      refusalPredictionError = err instanceof Error ? err.message : String(err);
+    }
+    return c.json({
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)),
+      ...(refusalPredictionError ? { refusalPredictionError } : {}),
+    }, 200);
   }
 
   if (!snapshot) {

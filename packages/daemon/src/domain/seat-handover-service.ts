@@ -1003,7 +1003,10 @@ export class SeatHandoverService {
   }
 
   /** The seat's latest session row, by id: the same definition node-inventory uses for the `current_occupant` this hands over
-   *  from (OF-144 review F2: kept, so the departing row is always the occupant's). */
+   *  from (OF-144 review F2: kept, so the departing row is always the occupant's). It agrees with the reattach rule's
+   *  `created_at DESC, id DESC` (adopted-reattach.ts) because every session row is inserted by session-registry.ts with a
+   *  monotonic ULID id and the default created_at, which nothing rewrites: a created_at tie falls to the id. They differ
+   *  only if the clock steps back a second or more while one daemon runs (z6 review F5, unit a2). */
   private lookupLatestSession(nodeId: string): SessionRow | null {
     return this.db.prepare(
       "SELECT id, session_name, status, origin FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1"

@@ -15,6 +15,7 @@ import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd
 import { projectRigWorkspaceRecreatable } from "./project-rig.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
+import { contestedAdoptedSessionReason, type AdoptedSessionLeftRunning } from "./adopted-reattach.js";
 
 // --- Types ---
 
@@ -252,7 +253,7 @@ export interface RestoreCheckDeps {
   listRigs: () => Array<{ rigId: string; name: string; hasServices?: boolean }>;
   /** OF-155: the seat's adopted session that rig down left running, which rig up --existing reattaches
    *  (adopted-reattach.ts, the rule restore uses). Absent: no seat is read as one. */
-  reattachableAdopted?: (nodeId: string) => { sessionId: string; sessionName: string } | null;
+  reattachableAdopted?: (nodeId: string) => AdoptedSessionLeftRunning | null;
   /** OF-152: the rig lookup advice names rigs by (ids across every rig, archived included; names among unarchived ones).
    *  Absent: advice reads `listRigs`, which knows no archived rig. */
   rigRefs?: RigRefLookup;
@@ -1250,6 +1251,18 @@ export class RestoreCheckService {
       };
     }
 
+    // z2 review F5: another seat's live row names this adopted session too. Restore fails the seat before asking tmux
+    // (adopted_session_contested) and starts nothing, so the check says that, whatever tmux answered.
+    const contested = !dbReady ? this.adoptedLeftRunning(node, "contested") : null;
+    if (contested?.kind === "contested") {
+      return {
+        check,
+        status: "red",
+        evidence: `Adopted session ${contested.sessionName}, which rig down left running, is also the live session of seat ${contested.heldBy.seat} (row ${contested.heldBy.sessionId})`,
+        remediation: `rig up --existing would fail this seat (adopted_session_contested): ${contestedAdoptedSessionReason(contested)}; then rerun rig restore-check`,
+        remediationSafe: false,
+      };
+    }
     // OF-155 review F1: tmux cannot answer for an adopted session rig down left running. Restore fails such a seat
     // (adopted_liveness_unknown) and starts nothing, so the check says that, never "restore it".
     const adoptedUnknown = !dbReady && tmux === "unreadable" ? this.adoptedLeftRunning(node) : null;
@@ -2182,13 +2195,14 @@ export class RestoreCheckService {
     };
   }
 
-  /** OF-155: the seat's adopted session rig down left running, when it is the session this check probed. Unreadable reads as
-   *  none, which keeps the stricter "live although the DB does not show it running" advice (nothing is acted on). */
-  private adoptedLeftRunning(node: NodeInventoryEntry): { sessionId: string; sessionName: string } | null {
+  /** OF-155: the seat's adopted session rig down left running, when it is the session this check probed and of the kind
+   *  asked (`reattach` unless named: a contested one is not reattached). Unreadable reads as none, which keeps the stricter
+   *  "live although the DB does not show it running" advice (nothing is acted on). */
+  private adoptedLeftRunning(node: NodeInventoryEntry, kind: AdoptedSessionLeftRunning["kind"] = "reattach"): AdoptedSessionLeftRunning | null {
     if (!node.nodeId || !this.deps.reattachableAdopted || !node.canonicalSessionName) return null;
     try {
       const adopted = this.deps.reattachableAdopted(node.nodeId);
-      return adopted && adopted.sessionName === node.canonicalSessionName ? adopted : null;
+      return adopted && adopted.kind === kind && adopted.sessionName === node.canonicalSessionName ? adopted : null;
     } catch {
       return null;
     }

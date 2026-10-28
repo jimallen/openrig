@@ -1,5 +1,5 @@
 import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
-import { reattachableAdoptedSession } from "./adopted-reattach.js";
+import { contestedAdoptedSessionReason, reattachableAdoptedSession } from "./adopted-reattach.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -994,20 +994,24 @@ export class RestoreOrchestrator {
   }
 
   /** OF-155: the seat's adopted session that rig down left running (adopted-reattach.ts decides which), asked of tmux:
-   *  `live`, `gone` (it ended), `unknown` (tmux cannot say), or `none` (the seat has no such session). Read-only. */
+   *  `live`, `gone` (it ended), `unknown` (tmux cannot say), or `none` (the seat has no such session). Read-only.
+   *  z2 review F5: `contested` (another seat's live row names the same tmux session) is decided before tmux is asked. */
   private async probeAdoptedSession(nodeId: string): Promise<
     | { kind: "live" | "unknown"; sessionId: string; sessionName: string }
+    | { kind: "contested"; sessionId: string; sessionName: string; heldBy: { sessionId: string; seat: string } }
     | { kind: "gone" | "none" }
   > {
     const adopted = reattachableAdoptedSession(this.db, nodeId);
     if (!adopted) return { kind: "none" };
+    if (adopted.kind === "contested") return adopted;
+    const { sessionId, sessionName } = adopted;
     let alive: boolean;
     try {
-      alive = await this.tmuxAdapter.hasSession(adopted.sessionName);
+      alive = await this.tmuxAdapter.hasSession(sessionName);
     } catch {
-      return { kind: "unknown", ...adopted };
+      return { kind: "unknown", sessionId, sessionName };
     }
-    return alive ? { kind: "live", ...adopted } : { kind: "gone" };
+    return alive ? { kind: "live", sessionId, sessionName } : { kind: "gone" };
   }
 
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
@@ -1069,6 +1073,10 @@ export class RestoreOrchestrator {
     if (liveNode) {
       const freshListed = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
       const adopted = await this.probeAdoptedSession(liveNode.id);
+      if (adopted.kind === "contested") {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_contested",
+          error: `${node.logicalId} was not restored: ${contestedAdoptedSessionReason(adopted)}. Nothing was changed for this seat.` };
+      }
       if (adopted.kind === "live" && freshListed) {
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_live",
           error: `${node.logicalId} was not started fresh: its adopted session '${adopted.sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${adopted.sessionId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.` };
