@@ -1,9 +1,12 @@
 // OF-67 — lines the daemon types into a cmux terminal surface.
 //
 // A cmux surface is an interactive shell, so a typed line meets the same line-editor widgets a tmux pane does
-// (autopair rewrites quotes and brackets). A line is typed as it stands only when it is one line (no LF or CR) of
-// no more than MAX_TYPED_BYTES that holds none of ()[]{}"'` (isTypedLineWidgetSafe); any other line is written to a private script
-// the shell removes as it starts, and only `/bin/sh <script>` is typed.
+// (autopair rewrites quotes and brackets). A line is typed as it stands only when it holds no control character (C0,
+// DEL or C1: LF and CR end the line, and ETX, EOT, ESC, TAB, DEL and the 8-bit CSI are read by the tty or the line editor
+// as keys, whatever quoting surrounds them) and is no more than MAX_TYPED_BYTES with none of ()[]{}"'`
+// (isTypedLineWidgetSafe); any other line is written to a private script the shell removes as it starts, and only
+// `/bin/sh <script>` is typed. A control byte inside a script file is just file content, so the quoted word that holds it
+// reaches the program unchanged. (a5: a rig-spec member id, which only has to be free of dots, can reach the helper console.)
 //
 // Staging is the control for widgets, line breaks and length, nothing else. A line with a `;`, `&`, `|`, `$`, `<`,
 // `>` or `\` is typed raw when it is otherwise widget-safe, and a staged script runs all of its text just as a
@@ -15,6 +18,7 @@ import { shellWord } from "./tmux-server.js";
 
 /** The longest line typed unstaged: the canonical tty input bound the tmux path also keeps. */
 const MAX_TYPED_BYTES = 512;
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 const TYPED_SAFE_PATH = /^\/[A-Za-z0-9_./-]*$/;
 
 /**
@@ -27,7 +31,7 @@ export type StagedCmuxLine =
   | { ok: false; message: string };
 
 export async function stageCmuxLine(line: string, fileOps: TmuxFileOps = defaultTmuxFileOps()): Promise<StagedCmuxLine> {
-  if (!line.includes("\n") && !line.includes("\r") && Buffer.byteLength(line, "utf8") <= MAX_TYPED_BYTES && isTypedLineWidgetSafe(line)) {
+  if (!CONTROL_CHARACTER.test(line) && Buffer.byteLength(line, "utf8") <= MAX_TYPED_BYTES && isTypedLineWidgetSafe(line)) {
     return { ok: true, line, discard: async () => {} };
   }
   const path = fileOps.tmpName();
