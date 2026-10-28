@@ -2003,6 +2003,20 @@ describe("StartupOrchestrator", () => {
       expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
     });
 
+    it("R4 control: a stop on a REQUIRED file's send, which the adapter does report, still ends as attention_required", async () => {
+      const seed = seedSession();
+      const t = unreadable();
+      const adapter = mockAdapter({ deliverStartup: vi.fn(async (_files, _binding, send) => {
+        const failed: Array<{ path: string; error: string }> = [];
+        for (const _ of [0, 1]) { try { await send?.("required file"); } catch (error) { failed.push({ path: "required.md", error: (error as Error).message }); } }
+        return { delivered: 0, failed };
+      }) });
+      const result = await createOrchestrator({ tmux: t, readFile: () => "x" }).startNode(resumeInput(seed, { adapter, resolvedStartupFiles: [{ ...optionalFile, required: true }], startupActions: [] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("twice in a row");
+    });
+
     // R5 (z1 review): a guarded send under a shell-named foreground lists every process. One listing serves a short burst.
     // The adapter reports the process it launched, so the launch lists nothing: every listing counted here is a guarded send's.
     const LIVE_TREE: NativeProcessRow[] = [PANE_SHELL, LAUNCHER, CLAUDE_PROC];
