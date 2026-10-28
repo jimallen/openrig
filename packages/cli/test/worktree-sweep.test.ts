@@ -842,6 +842,49 @@ describe("z3 worktree sweep: the macOS lsof in-use probe (injected runner)", () 
     await expect(lsofCwdProbe(async () => ({ stdout: lsofOut("/a", "/b"), error: null }))).resolves.toEqual({ cwds: ["/a", "/b"], unreadable: 0 });
   });
 
+  // The real runner (`runLsof`: execFile glue and its error mapping) driven through a stub `lsof` found on PATH, so the
+  // error mapping and the buffer limit are executed, not just the parser behind them. The real lsof is never run.
+  describe("the real runner, against a stub lsof on PATH", () => {
+    const savedPath = process.env.PATH;
+    afterEach(() => {
+      process.env.PATH = savedPath;
+    });
+    function stubLsof(script: string): void {
+      const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "a4-stub-lsof-")));
+      roots.push(dir);
+      fs.writeFileSync(path.join(dir, "lsof"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+      process.env.PATH = dir;
+    }
+    const RECORDS = "printf 'p100\\nfcwd\\nn/stub/one\\np101\\nfcwd\\nn/stub/two\\n'";
+
+    it("a clean run is a usable listing", async () => {
+      stubLsof(RECORDS);
+      await expect(defaultCwdProbe({ platform: DARWIN })).resolves.toEqual({ cwds: ["/stub/one", "/stub/two"], unreadable: 0 });
+    });
+
+    it("exit 1 with the rest printed is a usable listing (lsof could not inspect some processes)", async () => {
+      stubLsof(`${RECORDS}\nexit 1`);
+      await expect(defaultCwdProbe({ platform: DARWIN })).resolves.toEqual({ cwds: ["/stub/one", "/stub/two"], unreadable: 0 });
+    });
+
+    it("any other exit status fails the probe even though records were printed", async () => {
+      stubLsof(`${RECORDS}\nexit 2`);
+      await expect(defaultCwdProbe({ platform: DARWIN })).rejects.toThrow(/lsof failed \(2\)/);
+    });
+
+    it("output cut off at the buffer limit fails the probe rather than passing as a complete listing", async () => {
+      stubLsof(RECORDS);
+      await expect(defaultCwdProbe({ platform: DARWIN, lsofMaxBuffer: 16 })).rejects.toThrow(/lsof failed \(ERR_CHILD_PROCESS_STDIO_MAXBUFFER\)/);
+    });
+
+    it("lsof not on PATH fails the probe as unavailable", async () => {
+      const empty = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "a4-no-lsof-")));
+      roots.push(empty);
+      process.env.PATH = empty;
+      await expect(defaultCwdProbe({ platform: DARWIN })).rejects.toThrow(/lsof unavailable/);
+    });
+  });
+
   it("the platform decides the path: darwin uses the injected lsof runner, never /proc", async () => {
     let calls = 0;
     await defaultCwdProbe({ platform: DARWIN, lsof: async () => { calls += 1; return { stdout: lsofOut("/x"), error: null }; } });

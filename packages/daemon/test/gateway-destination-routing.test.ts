@@ -225,6 +225,15 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     expect(ids).toEqual([typo, other, paneRow, realPane].sort());
   });
 
+  it("LOCAL HUMAN INBOX LEGACY ROWS: one call, mixed order — inbox, then a near-miss, then inbox again: the near-miss failure stays listed", async () => {
+    const first = await legacyRow("human@kernel", LEGACY_UNROUTABLE);
+    const typo = await legacyRow("human-typo@kernel", LEGACY_UNROUTABLE.replace("human@kernel", "human-typo@kernel"));
+    const last = await legacyRow("human@kernel", LEGACY_UNROUTABLE);
+    // findUndelivered orders by ts_created; pin the order so the destination sequence is the one under test.
+    [first, typo, last].forEach((id, i) => h.db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?").run(`2026-10-01T00:00:0${i}.000Z`, id));
+    expect(h.repo.findUndelivered({}).map((u) => u.qitemId)).toEqual([typo]);
+  });
+
   it("LOCAL HUMAN INBOX LEGACY ROWS: with the registry unreadable the exact inbox literal is still the inbox class and its legacy row stays held", async () => {
     h = makeHarness({ registryReadable: () => false });
     const inbox = await legacyRow("human@kernel", LEGACY_UNROUTABLE);

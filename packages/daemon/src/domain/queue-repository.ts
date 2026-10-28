@@ -3695,8 +3695,9 @@ export class QueueRepository {
         const lastNudge = item.lastNudgeResult ?? "";
         if (item.state === "pending" && (lastNudge.startsWith("failed:") || lastNudge.startsWith("unroutable:"))) {
           // The operator's local inbox is a held destination (z7): a row written before the inbox existed still carries
-          // the old "unroutable:" literal, but the queue row is its delivery. Asked of the one resolver, so a real pane
-          // or a registered human of that name keeps its own class and its failure stays listed.
+          // the old "unroutable:" literal, but the queue row is its delivery. Held whatever the legacy result text says
+          // (failed: or unroutable:), the same as the stuck sweep. Asked of the one resolver, so a real pane or a
+          // registered human of that name keeps its own class and its failure stays listed.
           const destination = item.destinationSession;
           let held = inboxByDestination.get(destination);
           if (held === undefined) {

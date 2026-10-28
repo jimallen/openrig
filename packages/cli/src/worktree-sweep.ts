@@ -163,11 +163,15 @@ export interface LsofRun {
 export interface CwdProbeDeps {
   platform?: NodeJS.Platform;
   lsof?: () => Promise<LsofRun>;
+  /** Injectable for tests: the real runner's stdout buffer limit, so a cut-off listing can be produced cheaply. */
+  lsofMaxBuffer?: number;
 }
 
-function runLsof(): Promise<LsofRun> {
+const LSOF_MAX_BUFFER = 64 * 1024 * 1024;
+
+function runLsof(maxBuffer: number): Promise<LsofRun> {
   return new Promise((resolve) => {
-    execFile("lsof", ["-d", "cwd", "-Fn"], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+    execFile("lsof", ["-d", "cwd", "-Fn"], { maxBuffer }, (err, stdout) => {
       resolve({ stdout: String(stdout), error: err ? { code: (err as NodeJS.ErrnoException).code, message: err.message } : null });
     });
   });
@@ -209,7 +213,7 @@ export async function defaultCwdProbe(deps: CwdProbeDeps = {}): Promise<CwdProbe
     }
     return { cwds, unreadable };
   }
-  return lsofCwdProbe(deps.lsof ?? runLsof);
+  return lsofCwdProbe(deps.lsof ?? (() => runLsof(deps.lsofMaxBuffer ?? LSOF_MAX_BUFFER)));
 }
 
 async function dirSizeKiB(dir: string): Promise<number | null> {
