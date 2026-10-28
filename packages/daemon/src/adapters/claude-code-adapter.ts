@@ -1,5 +1,6 @@
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
+import { stripPasteTerminators } from "../domain/packet-text.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -215,7 +216,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
                 await sendInteractiveText(content);
                 break;
               }
-              const textResult = await this.tmux.sendText(binding.tmuxSession, content);
+              // OF-160 (z5): the direct leg pastes operator-authored file content bracketed;
+              // strip the paste-end marker so it can never close the paste early. The callback
+              // leg is stripped inside the orchestrator's sendInteractiveText.
+              const textResult = await this.tmux.sendText(binding.tmuxSession, stripPasteTerminators(content));
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
               const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);

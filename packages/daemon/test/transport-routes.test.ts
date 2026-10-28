@@ -20,6 +20,8 @@ import { SessionTransport } from "../src/domain/session-transport.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { setSelfHostId, getSelfHostId } from "../src/domain/hosts/fanout-contract.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import type { AgentActivity } from "../src/domain/types.js";
+import type { RunnerSendReadinessSource } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { transportRoutes } from "../src/routes/transport.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
@@ -566,6 +568,106 @@ describe("transport routes", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).reason).toBe("paste_terminator_in_text");
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  // ── OF-160 (z5): every send refusal is a deliberate 4xx, never the 500 fallback. The rule the
+  //    neighbouring rows follow: request-formation problems are 400 (paste_terminator_in_text,
+  //    invalid_wait_for_idle, …), target-STATE refusals are 409 (target_needs_input,
+  //    target_activity_unknown, …). The three unmapped reasons below are all target-state refusals.
+
+  function seedRunnerSeat() {
+    const { rig } = seedRig();
+    const node = rigRepo.addNode(rig.id, "dev.pda", { role: "worker", runtime: "pda" });
+    const sess = sessionRegistry.registerSession(node.id, "dev-pda@my-rig");
+    sessionRegistry.updateStatus(sess.id, "running");
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-pda@my-rig" });
+  }
+
+  const runnerAnswer = (state: AgentActivity["state"], reason: string): AgentActivity =>
+    ({ state, reason, evidenceSource: "runtime_hook", sampledAt: "2026-10-28T00:00:00.000Z", evidence: null });
+
+  function runnerSource(answer: AgentActivity): RunnerSendReadinessSource {
+    return { runtimes: new Set(["pda"]), ask: async () => answer };
+  }
+
+  function runnerTransport(tmux: TmuxAdapter, source: RunnerSendReadinessSource): SessionTransport {
+    const eventBus = new EventBus(db);
+    return new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, eventBus,
+      agentActivityStore: new AgentActivityStore({ db, eventBus }), runnerSendReadiness: source });
+  }
+
+  it("OF-160: POST /send refused for a runner seat's needs-input override returns 409 runner_input_no_override, not 500", async () => {
+    seedRunnerSeat();
+    const tmux = mockTmux({ getPaneCommand: async () => "node", capturePaneContent: async () => "Do you want to proceed?" });
+    const app = createApp({ sessionTransport: runnerTransport(tmux, runnerSource(runnerAnswer("needs_input", "pda_message_held"))) });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-pda@my-rig", text: "1", dangerouslyInteract: true, reason: "drive it" }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("runner_input_no_override");
+    expect(body.sent).toBe(false);
+  });
+
+  it("OF-160: POST /send to a runner seat with an unobservable pane foreground returns 409 target_runner_unverified, not 500", async () => {
+    seedRunnerSeat();
+    const tmux = mockTmux({ getPaneCommand: async () => null });
+    const app = createApp({ sessionTransport: runnerTransport(tmux, runnerSource(runnerAnswer("idle", "runner_idle"))) });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-pda@my-rig", text: "hello" }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("target_runner_unverified");
+    expect(body.sent).toBe(false);
+  });
+
+  it("OF-160: POST /send to a non-Claude runtime seat showing a shell returns 409 target_runtime_unverified, not 500", async () => {
+    seedRig();
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const tmux = mockTmux({ sendText, getPaneCommand: async () => "zsh" });
+    const app = createApp({ sessionTransport: new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux }) });
+    const res = await app.request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-qa@my-rig", text: "hello" }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("target_runtime_unverified");
+    expect(body.sent).toBe(false);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  // OF-160-F2 (z5 review nit): target_runtime_conflict (binding change detected before/after the
+  // paste, session-transport.ts:1762) is a target-state refusal and belongs at 409 with its
+  // neighbours, never the 500 fallback.
+  it("OF-160-F2: POST /send refused when the recipient binding changes mid-wait returns 409 target_runtime_conflict, not 500", async () => {
+    const { node1 } = seedRig();
+    const IDLE_PANE = "› Use /skills to list available skills\n\n  gpt-5.5 high · Context [████ ] · ~/code/projects/openrig";
+    let captured = false;
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const tmux = mockTmux({
+      sendText,
+      capturePaneContent: async () => {
+        if (!captured) { captured = true; throw new Error("capture unavailable"); }
+        return IDLE_PANE;
+      },
+    });
+    // The binding flips during the first idle-wait poll: the pre-paste recipient check must refuse.
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux,
+      waitForIdlePollMs: 10,
+      sleep: async () => { sessionRegistry.updateBinding(node1.id, { tmuxPane: "%rebound" }); } });
+    const res = await createApp({ sessionTransport: transport }).request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "hello", waitForIdleMs: 50 }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("target_runtime_conflict");
+    expect(body.sent).toBe(false);
     expect(sendText).not.toHaveBeenCalled();
   });
 

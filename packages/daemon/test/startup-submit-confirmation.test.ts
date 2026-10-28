@@ -123,6 +123,25 @@ describe("startup prompt submission", () => {
       expect(f.submitted).toHaveLength(1);
     });
 
+    // OF-160 (z5): both operator-authored interactive bodies — a send_text file and an
+    // after_ready identity action — cross sendInteractiveText, which must strip the paste-end
+    // marker (both CSI forms) before the bracketed paste, so neither can end the paste early
+    // and type its tail as keystrokes.
+    it("OF-160: a paste-end marker in a startup file or an identity action never reaches the pane", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line one\u001b[201~injected\nline two");
+      const result = await f.start({
+        resolvedStartupFiles: [file("role.md")],
+        startupActions: [{ type: "send_text", builtin: "session_identity", value: "identity \u009b201~ tail", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }],
+      });
+      expect(result).toMatchObject({ ok: true });
+      const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const t of texts) expect(t, JSON.stringify(t)).not.toMatch(/\u001b\[201~|\u009b201~/);
+      expect(texts.some(t => t.includes("Line oneinjected\nline two"))).toBe(true);
+      expect(texts.some(t => t.includes("identity  tail"))).toBe(true);
+    });
+
     it("keeps prelaunch delivery before harness launch and adds only the bounded check delay", async () => {
       const f = fixture(0, "claude-code", false, true);
       await f.start({ startupActions: [], resolvedStartupFiles: [file("CLAUDE.md", true, "guidance_merge"), file("role.md")] });

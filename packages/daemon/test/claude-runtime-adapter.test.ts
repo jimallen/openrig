@@ -355,6 +355,24 @@ describe("Claude Code runtime adapter", () => {
     expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
   });
 
+  // OF-160 (z5): the direct send_text leg (no orchestrator interactive callback — e.g. a caller
+  // that drives deliverStartup itself) pastes operator-authored file content; the paste-end marker
+  // is stripped first, in both CSI forms. The callback leg is stripped by the orchestrator's
+  // sendInteractiveText (pinned in startup-submit-confirmation.test.ts).
+  it("OF-160: a send_text startup file carrying the paste-end marker is stripped before the paste (direct leg)", async () => {
+    const tmux = mockTmux();
+    const fs = mockFs({ "/rig/startup/pack.md": "alpha\u001b[201~beta\nsecond \u009b201~line" });
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: fs, sleep: async () => {} });
+    const file: ResolvedStartupFile = {
+      path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
+      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
+    };
+    const result = await adapter.deliverStartup([file], makeBinding());
+    expect(result.delivered).toBe(1);
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "alphabeta\nsecond line");
+    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
+  });
+
   // OPR.0.3.3.16 - a >100KB send_text startup pack must still travel through the
   // sendText -> sleep -> sendKeys(["Enter"]) sequence unchanged. The large-payload
   // buffer mechanics live in TmuxAdapter; the adapter's job is to hand the full

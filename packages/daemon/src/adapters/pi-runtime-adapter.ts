@@ -10,6 +10,7 @@
 // future contract, never a hidden mode here (BR-2).
 
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
+import { stripPasteTerminators } from "../domain/packet-text.js";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
@@ -194,7 +195,9 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
           case "send_text": {
             if (binding.tmuxSession) {
               // The runner reads pane stdin and forwards as RPC prompt (FR-3).
-              const textResult = await this.tmux.sendText(binding.tmuxSession, content);
+              // OF-160 (z5): strip the paste-end marker first — operator-authored file content
+              // travels inside a bracketed paste and must never close it early.
+              const textResult = await this.tmux.sendText(binding.tmuxSession, stripPasteTerminators(content));
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
               const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);

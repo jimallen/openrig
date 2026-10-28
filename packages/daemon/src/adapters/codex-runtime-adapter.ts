@@ -1,5 +1,6 @@
 import { operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
+import { stripPasteTerminators } from "../domain/packet-text.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
@@ -360,7 +361,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           }
           case "send_text": {
             if (binding.tmuxSession) {
-              const textResult = await this.tmux.sendText(binding.tmuxSession, content);
+              // OF-160 (z5): startup-file content is operator-authored prose pasted bracketed;
+              // strip the paste-end marker so it can never close the paste early here.
+              const textResult = await this.tmux.sendText(binding.tmuxSession, stripPasteTerminators(content));
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
               const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);

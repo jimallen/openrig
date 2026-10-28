@@ -77,3 +77,26 @@ describe("StubRuntimeAdapter.checkReady — readiness honesty (RED: adapter abse
     expect(result.ready, "stale pane bytes must not prove current liveness").toBe(false);
   });
 });
+
+// OF-160 (z5): the stub adapter runs the same runtime-agnostic startup-file delivery as the other
+// runtimes; its send_text leg types operator-authored file content into the pane. Strip both CSI
+// forms of the paste-end marker before sendText.
+describe("OF-160: StubRuntimeAdapter send_text startup files never carry the paste-end marker into the pane", () => {
+  it("strips the paste-end marker (both CSI forms) before the paste", async () => {
+    const mod = await import(STUB_ADAPTER_MODULE) as { StubRuntimeAdapter: new (deps: unknown) => {
+      deliverStartup(files: unknown[], b: unknown): Promise<{ delivered: number; failed: unknown[] }> } };
+    const tmux = tmuxWith({ hasSession: true });
+    const adapter = new mod.StubRuntimeAdapter({
+      tmux, fsOps: memFs({ "/work/startup/pack.md": "alpha\u001b[201~beta \u009b201~gamma" }), sleep: async () => {},
+    });
+    const file = {
+      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
+      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"],
+    };
+    const result = await adapter.deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" });
+    expect(result.failed).toEqual([]);
+    expect(result.delivered).toBe(1);
+    expect(tmux.sendText).toHaveBeenCalledWith("dev-impl@test-rig", "alphabeta gamma");
+    expect(tmux.sendKeys).toHaveBeenCalledWith("dev-impl@test-rig", ["Enter"]);
+  });
+});
