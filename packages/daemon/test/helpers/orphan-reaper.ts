@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
 
@@ -161,6 +161,37 @@ export async function terminateIdentified(ids: ProcessIdentity[], graceMs: numbe
 
 const NO_SERVER = /no server running|error connecting to|no such file or directory|failed to connect/i;
 
+export interface TmuxCallResult { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }
+
+/**
+ * Run one tmux client command with a HARD bound. `execFile`'s timeout is not enough against a stopped (SIGSTOPped) server:
+ * a tmux client hands its stdout/stderr descriptors to the server, so while the server is stopped the pipes never close and
+ * `execFile` never calls back (measured on macOS: the test hung to its 60 s limit), and a SIGTERMed client exits 0 as if
+ * it had succeeded. Here the client gets stdio it can pass on without consequence being waited for: the call settles on the
+ * client's own `exit` (after a brief drain), a timeout SIGKILLs the client and is reported as `timedOut`, and the pipes are
+ * destroyed rather than awaited.
+ */
+export function tmuxCall(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<TmuxCallResult> {
+  return new Promise((resolve) => {
+    let client: ChildProcess;
+    let stdout = "", stderr = "", timedOut = false, settled = false;
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      client.stdout?.destroy();
+      client.stderr?.destroy();
+      resolve({ code, signal, stdout, stderr, timedOut });
+    };
+    client = spawn("tmux", args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => { timedOut = true; try { client.kill("SIGKILL"); } catch { /* gone */ } }, timeoutMs);
+    client.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+    client.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    client.once("error", (error) => { stderr += error.message; finish(null, null); });
+    client.once("exit", (code, signal) => { setTimeout(() => finish(code, signal), 50); });
+  });
+}
+
 export interface TmuxStopOptions {
   /** The server's pid recorded when it was started (see `tmuxServerPid`); looked up if absent. */
   pid?: number;
@@ -176,20 +207,15 @@ export interface TmuxStopOptions {
  * silent "nothing to stop" orphans the live server.
  */
 export async function tmuxServerPid(socket: string, env: NodeJS.ProcessEnv, commandTimeoutMs = 30_000): Promise<number | null> {
-  let last: unknown;
+  let last = "";
   for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const out = (await run("tmux", ["-S", socket, "display-message", "-p", "#{pid}"], { env, timeout: commandTimeoutMs })).stdout.trim();
-      if (/^\d+$/.test(out)) return Number(out);
-      last = new Error(`unexpected display-message output: ${out}`);
-    } catch (error) {
-      const e = error as { killed?: boolean; signal?: string | null; stderr?: string; message?: string };
-      const text = `${e.stderr ?? ""} ${e.message ?? ""}`;
-      if (!e.killed && !e.signal && NO_SERVER.test(text)) return null;
-      last = error;
-    }
+    const r = await tmuxCall(["-S", socket, "display-message", "-p", "#{pid}"], env, commandTimeoutMs);
+    const out = r.stdout.trim();
+    if (!r.timedOut && r.code === 0 && /^\d+$/.test(out)) return Number(out);
+    if (!r.timedOut && r.code !== 0 && NO_SERVER.test(r.stderr)) return null; // tmux positively says there is no server
+    last = r.timedOut ? `no answer within ${commandTimeoutMs} ms` : `exit ${r.code ?? r.signal}: ${(r.stderr || out).split("\n")[0]}`;
   }
-  throw new Error(`the tmux server on ${socket} could not be located, so it cannot be verified stopped: ${String((last as Error)?.message ?? last).split("\n")[0]}`);
+  throw new Error(`the tmux server on ${socket} could not be located, so it cannot be verified stopped: ${last}`);
 }
 
 /**
@@ -202,7 +228,7 @@ export async function stopOwnedTmuxServer(socket: string, env: NodeJS.ProcessEnv
   const pid = options.pid ?? await tmuxServerPid(socket, env, commandTimeoutMs);
   if (pid === null) return;
   if (!processAlive(pid)) return;
-  await run("tmux", ["-S", socket, "kill-server"], { env, timeout: commandTimeoutMs }).catch(() => {});
+  await tmuxCall(["-S", socket, "kill-server"], env, commandTimeoutMs);
   if (await waitGone(pid, graceMs)) return;
   const command = await run("ps", ["-o", "command=", "-p", String(pid)]).then((r) => r.stdout, () => "");
   if (command !== "" && !command.includes(socket)) return; // the pid was reused by something that is not our tmux server
