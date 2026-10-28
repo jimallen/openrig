@@ -54,7 +54,7 @@ describe("reapWhenOwnerDies", () => {
 
   it.skipIf(!hasTmux)("stops the tmux server on the listed socket once the owner is killed", async () => {
     const dir = tempDir(), socket = path.join(dir, "tmux"), owner = longSleeper();
-    const env = { ...process.env, HOME: dir, TMPDIR: dir };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, TMPDIR: dir };
     delete env.TMUX;
     cleanups.push(() => { try { execFileSync("tmux", ["-S", socket, "kill-server"], { env, stdio: "ignore" }); } catch { /* gone */ } });
     execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "a", "sleep 600"], { env });
@@ -70,7 +70,7 @@ describe("reapWhenOwnerDies", () => {
 describe.skipIf(!hasTmux)("stopOwnedTmuxServer", () => {
   it("leaves no server and no session shell behind", async () => {
     const dir = tempDir(), socket = path.join(dir, "tmux");
-    const env = { ...process.env, HOME: dir, TMPDIR: dir };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, TMPDIR: dir };
     delete env.TMUX;
     execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "a", "sleep 600"], { env });
     const serverPid = Number(execFileSync("tmux", ["-S", socket, "display-message", "-p", "#{pid}"], { env, encoding: "utf8" }).trim());
