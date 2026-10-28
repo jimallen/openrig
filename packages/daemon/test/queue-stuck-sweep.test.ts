@@ -334,6 +334,37 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       expect(await findingsFor(worker.qitemId)).toHaveLength(1);
     });
 
+    it("the sweep asks the resolver, not the string: a registered human or a pane that resolves human@kernel keeps its finding", async () => {
+      // A registry entry whose id is "human" makes human@kernel a registry alias (gateway-routable), not the local inbox.
+      db.prepare("INSERT INTO rigs(id,name) VALUES ('fixture-rig','r')").run();
+      db.prepare("INSERT INTO nodes(id,rig_id,logical_id,runtime,profile) VALUES ('fixture-node','fixture-rig','worker','codex','none')").run();
+      const registered: HumanFragment = { entityId: "human", class: "human", displayName: "Registered", address: "human@external",
+        connectorBindings: [{ kind: "slack", connectorRef: "slack-main", secretsRef: "vault:slack-main", role: "primary" }], prefs: { deliveryClass: "A" } };
+      repo = new QueueRepository(db, new EventBus(db), {
+        validateRig: () => true,
+        loadHumanRegistry: () => ({ ok: true, entities: [registered] }),
+        transport: { send: async () => ({ ok: true, verified: true }) },
+      });
+      const aliased = await toInbox("Registered human named human");
+      ageCreated(aliased.qitemId, 600);
+      await runSweep();
+      expect(await findingsFor(aliased.qitemId)).toHaveLength(1);
+
+      // And a real pane bound to human@kernel.
+      db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES ('sess-h', 'fixture-node', 'human@kernel')").run();
+      db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session) VALUES ('binding-h', 'fixture-node', 'tmux', 'human@kernel')").run();
+      repo = new QueueRepository(db, new EventBus(db), {
+        validateRig: () => true,
+        loadHumanRegistry: () => ({ ok: true, entities: [] }),
+        transport: { send: async () => ({ ok: true, verified: true }) },
+      });
+      expect(repo.classifyDestinationOf("human@kernel").class).toBe("pane-bound");
+      const paned = await toInbox("Pane bound human@kernel");
+      ageCreated(paned.qitemId, 600);
+      await runSweep();
+      expect(await findingsFor(paned.qitemId)).toHaveLength(1);
+    });
+
     it("an older human@kernel row that still carries the pre-inbox unroutable literal yields no finding (the undelivered half), while a failed worker row does", async () => {
       inboxRepo();
       const legacy = await toInbox("Created before the inbox existed");

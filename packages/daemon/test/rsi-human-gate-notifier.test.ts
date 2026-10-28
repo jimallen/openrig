@@ -11,7 +11,9 @@ import { isSettingsValidKey } from "../src/domain/user-settings/settings-store.j
 import {
   defaultBannerSpawner,
   defaultFindExecutable,
+  BANNER_FAILURE_STREAK,
   HumanGateNotifier,
+  HumanInboxBannerHealthSource,
   MAX_BANNERS_PER_DAY,
   MIN_BANNER_GAP_MS,
   REMINDER_INTERVAL_MS,
@@ -694,6 +696,83 @@ describe("local human inbox: every open item addressed to human@kernel", () => {
     const message = messageOf(h.calls[0]!);
     expect(message).not.toMatch(/[\u0000-\u001f\u202e\u200b]/);
     expect(message).toContain("from dev -a@rig INJECTED");
+  });
+});
+
+// z7 review F6: the oldest waiting item leads the banner.
+describe("local human inbox: the oldest waiting item leads", () => {
+  it("names the oldest item first whatever order the rows were written in", async () => {
+    const h = harness();
+    const rowFor = (id: string, createdAt: string) => {
+      insertQueueRow(h.db, id, { state: "pending", blockedOn: null, source: "dev-a@some-rig", destination: "human@kernel", tags: [], summary: `summary ${id}` });
+      h.db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?").run(createdAt, id);
+    };
+    rowFor("q-newest", "2031-03-04T04:00:00.000Z");
+    rowFor("q-oldest", "2031-03-04T01:00:00.000Z");
+    rowFor("q-middle", "2031-03-04T02:00:00.000Z");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(messageOf(h.calls[0]!)).toBe("3 item(s) waiting for you · from dev-a@some-rig · q-oldest · summary q-oldest");
+  });
+});
+
+// z7 review F3: the stuck sweep no longer escalates an item to Jim, so the banner is its only signal; `rig health` must say
+// when that signal cannot be delivered. Coverage-only source: no findings, one "unavailable" row while it is true.
+describe("local human inbox: rig health says when the banner cannot reach Jim", () => {
+  const coverageOf = (source: HumanInboxBannerHealthSource) => source.coverage();
+
+  it("reports unavailable after the banner spawn fails several times in a row, from the durable attempt table, and clears on a success", async () => {
+    const h = harness({ spawnOk: false });
+    const source = new HumanInboxBannerHealthSource(() => new Date(h.now.ms));
+    source.attach(() => sqliteNotificationStore(h.db).listBanners());
+    insertQueueRow(h.db, "q-fail", { state: "pending", blockedOn: null, source: "dev-a@some-rig", destination: "human@kernel", tags: [] });
+    expect(coverageOf(source)).toEqual([]);
+    for (let i = 0; i < BANNER_FAILURE_STREAK; i += 1) {
+      expect(coverageOf(source), `after ${i} failed attempts`).toEqual([]);
+      expect((await h.notifier.tick()).status).toBe("failed");
+      h.now.ms += MIN_BANNER_GAP_MS + MIN;
+    }
+    const rows = coverageOf(source);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source: "human-inbox-banner", status: "unavailable", partial: true });
+    expect(JSON.stringify(rows[0])).toContain(`last ${BANNER_FAILURE_STREAK} macOS banner attempts failed`);
+    // A later successful banner ends the streak. The persisted attempt rows are the evidence, not process memory.
+    const restarted = new HumanInboxBannerHealthSource(() => new Date(h.now.ms));
+    restarted.attach(() => sqliteNotificationStore(h.db).listBanners());
+    expect(coverageOf(restarted)).toHaveLength(1);
+    sqliteNotificationStore(h.db).recordBanner({ sentAt: new Date(h.now.ms).toISOString(), itemCount: 1, ok: true });
+    expect(coverageOf(source)).toEqual([]);
+  });
+
+  it("stays silent for a failure that is not yet a streak, and reads no findings", () => {
+    const store = { rows: [{ sentAt: "2031-03-04T05:00:00.000Z", itemCount: 1, ok: false }, { sentAt: "2031-03-04T05:20:00.000Z", itemCount: 1, ok: false }] };
+    const source = new HumanInboxBannerHealthSource(() => new Date(T0));
+    source.attach(() => store.rows);
+    expect(coverageOf(source)).toEqual([]);
+    expect(source.read()).toEqual([]);
+    // Positive control: the same two plus one more failed attempt is a streak.
+    store.rows.push({ sentAt: "2031-03-04T05:40:00.000Z", itemCount: 1, ok: false });
+    expect(coverageOf(source)).toHaveLength(1);
+  });
+
+  it("reports unavailable for the life of the process when the notifier could not be built, and says nothing when it is built", async () => {
+    const dir = tempDir("rsi-notifier-health-");
+    const okPath = join(dir, "ok.sqlite");
+    const ok = await createDaemon({ dbPath: okPath });
+    open.push(ok.db);
+    expect((ok.deps.healthProjection!.list().coverage ?? []).map((c) => c.source)).not.toContain("human-inbox-banner");
+
+    const brokenPath = join(dir, "broken.sqlite");
+    const seeded = createDb(brokenPath);
+    migrate(seeded, ALL_MIGRATIONS);
+    seeded.exec("DROP TABLE rsi_notifications");
+    seeded.close();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const broken = await createDaemon({ dbPath: brokenPath });
+    open.push(broken.db);
+    expect(broken.humanGateNotifier).toBeUndefined();
+    const row = (broken.deps.healthProjection!.list().coverage ?? []).find((c) => c.source === "human-inbox-banner");
+    expect(row).toMatchObject({ status: "unavailable", partial: true });
+    expect(JSON.stringify(row)).toContain("class=SqliteError");
   });
 });
 

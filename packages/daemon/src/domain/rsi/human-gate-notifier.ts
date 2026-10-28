@@ -4,6 +4,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import { isHumanSeatSession } from "../human-route-enforcer.js";
 import { LOCAL_HUMAN_INBOX_ADDRESS } from "../gateway/destination-resolver.js";
+import type { HealthObservationSource, HealthDetectorObservation, HealthSourceCoverage } from "../health-detectors.js";
 
 /**
  * Notification context (rsi-design-9k-rev2 section 3.1 and 3.7): a macOS banner for each RSI
@@ -319,6 +320,45 @@ export class HumanGateNotifier {
   }
 }
 
+/** This many latest banner attempts in a row, all failed, is "banners keep failing". */
+export const BANNER_FAILURE_STREAK = 3;
+
+/**
+ * `rig health` coverage for the one signal an item to Jim now has. The stuck sweep no longer escalates inbox items, so a
+ * banner that cannot be posted (notifications off, spawn errors) or a notifier that was never built would leave an item
+ * unseen with nothing saying so. This source reads no findings; it only reports an "unavailable" coverage row while that
+ * is true. The banner failures come from the durable attempt table (rsi_notification_banners); a construction failure is
+ * known for the life of this daemon process. Silent when healthy, and on a platform with no banners by design.
+ */
+export class HumanInboxBannerHealthSource implements HealthObservationSource {
+  readonly name = "human-inbox-banner";
+  private listBanners: (() => BannerRow[]) | null = null;
+  private constructionFailure: string | null = null;
+  constructor(private readonly clock: () => Date = () => new Date()) {}
+
+  attach(listBanners: () => BannerRow[]): void { this.listBanners = listBanners; }
+  markConstructionFailed(errorClass: string): void { this.constructionFailure = errorClass; }
+
+  read(): readonly HealthDetectorObservation[] { return []; }
+
+  coverage(): readonly HealthSourceCoverage[] {
+    const evaluatedAt = this.clock().toISOString();
+    const unavailable = (reason: string): HealthSourceCoverage[] => [{ source: this.name, evaluatedAt, status: "unavailable", partial: true, reason }];
+    if (this.constructionFailure) {
+      return unavailable(`the macOS banner notifier was not built (class=${this.constructionFailure}); items addressed to human@kernel are not announced`);
+    }
+    if (!this.listBanners) return [];
+    const recent = this.listBanners()
+      .filter((b) => Number.isFinite(Date.parse(b.sentAt)))
+      .sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt))
+      .slice(0, BANNER_FAILURE_STREAK);
+    if (recent.length === BANNER_FAILURE_STREAK && recent.every((b) => !b.ok)) {
+      return unavailable(`the last ${BANNER_FAILURE_STREAK} macOS banner attempts failed (latest ${recent[0]!.sentAt}); check that notifications are allowed for terminal-notifier / Script Editor. Items addressed to human@kernel are not being announced`);
+    }
+    return [];
+  }
+}
+
 /** Reads the rows that can wait on the human from the daemon database: every `blocked` row, and every `pending` row addressed to the inbox. SELECT only. */
 export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[] {
   const stmt = db.prepare(
@@ -330,7 +370,8 @@ export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[
     "COALESCE((SELECT MAX(t.transition_id) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.state = 'blocked' " +
     "AND COALESCE((SELECT p.state FROM queue_transitions p WHERE p.qitem_id = t.qitem_id AND p.transition_id < t.transition_id " +
     "ORDER BY p.transition_id DESC LIMIT 1), '') <> 'blocked'), q.ts_updated) ELSE q.ts_created END AS episode " +
-    "FROM queue_items q WHERE q.state = 'blocked' OR (q.state = 'pending' AND q.destination_session = ?)",
+    // Oldest first, so the banner's lead (the first new entry) is the oldest waiting item, not whichever the table returns first.
+    "FROM queue_items q WHERE q.state = 'blocked' OR (q.state = 'pending' AND q.destination_session = ?) ORDER BY q.ts_created ASC, q.qitem_id ASC",
   );
   return () => (stmt.all(LOCAL_HUMAN_INBOX_ADDRESS) as Array<{ qitem_id: string; source_session: string; destination_session: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null; episode: string | number }>)
     .map((r) => ({ qitemId: r.qitem_id, sourceSession: r.source_session, destinationSession: r.destination_session, episode: String(r.episode), state: r.state, blockedOn: r.blocked_on, tags: parseTags(r.tags), summary: r.summary }));

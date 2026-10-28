@@ -173,6 +173,10 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     expect(fresh.lastNudgeResult).toMatch(/^held-local-inbox:/);
     expect(fresh.lastNudgeResult).not.toMatch(/unroutable|failed|gateway-owned|tmux/);
     expect(h.repo.findUndelivered()).toHaveLength(0);
+    // The create staged a wake intent (outbox "wake-intent-<id>"). Its final state is what the daemon-start drain
+    // (drainPendingWakeIntents) tallies as delivered / failed; a held inbox row is delivered, never a failed wake.
+    const intent = h.db.prepare("SELECT delivery_state FROM outbox_entries WHERE outbox_id = ?").get(`wake-intent-${item.qitemId}`) as { delivery_state: string } | undefined;
+    expect(intent?.delivery_state).toBe("delivered");
   });
 
   it("LOCAL HUMAN INBOX IS ONE LITERAL: near-miss human addresses stay unroutable and loud", async () => {
