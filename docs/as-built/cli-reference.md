@@ -73,6 +73,7 @@ recovery cockpit; it is not automatically a reason to exit before rendering.
 | Check, share, or start a rig bundle | `rig bundle check`, `rig bundle`, `rig up <GitHub folder link>`; [packaging source map](architecture/packaging-bootstrap-bundles.md). |
 | Find a specialist seat across rigs and hosts | `rig roster` (read-only). |
 | Read event, queue-transition, and tenure telemetry | `rig telemetry`. |
+| Clean up merged git worktrees that seats leave behind | `rig worktree sweep` (dry run unless `--apply`; a repo without `origin/HEAD`, such as eztrack, needs `--into <ref>`); [worktree sweep](../reference/worktree-sweep.md). |
 
 Do not confuse `rig project`'s coordination/classification surface with
 `rig scope`'s project and work-tree commands. Likewise, `rig spec` manages

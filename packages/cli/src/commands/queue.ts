@@ -61,9 +61,9 @@ export interface GatewayDeliveryResult extends DeliveryResultBase {
 export interface TerminalDeliveryResult extends DeliveryResultBase {
   receiptSource: "terminal";
   /** The class of wakeResult: verified; delivered-ack-pending; claimed (a claimed row whose wake wasn't confirmed);
-   *  retained:*; failed:* or unroutable:* (failed); indeterminate:* or an unrecognised value (indeterminate); none yet
+   *  retained:*; held-local-inbox:* (held in the operator's local inbox, nothing sent to a pane); failed:* or unroutable:* (failed); indeterminate:* or an unrecognised value (indeterminate); none yet
    *  (still-pending); or no wake requested by --no-nudge (not-requested). */
-  outcome: "verified" | "delivered-ack-pending" | "claimed" | "retained" | "failed" | "indeterminate" | "still-pending" | "not-requested";
+  outcome: "verified" | "delivered-ack-pending" | "claimed" | "retained" | "held-local-inbox" | "failed" | "indeterminate" | "still-pending" | "not-requested";
   /** The row's lastNudgeResult as recorded; null before any wake result. */
   wakeResult: string | null;
   /** A claim shows the seat took the item; it does not prove the body was read.
@@ -135,13 +135,14 @@ function terminalWakeOutcome(wakeResult: string | null): TerminalDeliveryResult[
   if (wakeResult === "verified" || wakeResult === "delivered-ack-pending" || wakeResult === "claimed") return wakeResult;
   if (wakeResult.startsWith("failed:") || wakeResult.startsWith("unroutable:")) return "failed";
   if (wakeResult.startsWith("retained:")) return "retained";
+  if (wakeResult.startsWith("held-local-inbox:")) return "held-local-inbox";
   return "indeterminate";
 }
 
 /** Only these known states mean "not delivered yet, nothing went wrong". An unknown value never gets that label. */
 function isKnownUnconfirmed(wakeResult: string | null, outcome: TerminalDeliveryResult["outcome"]): boolean {
   if (outcome === "not-requested" || wakeResult === null || wakeResult === "delivered-ack-pending") return true;
-  return wakeResult.startsWith("indeterminate:") || wakeResult.startsWith("retained:");
+  return wakeResult.startsWith("indeterminate:") || wakeResult.startsWith("retained:") || wakeResult.startsWith("held-local-inbox:");
 }
 
 function terminalDeliveryResult(
@@ -161,6 +162,7 @@ function terminalDeliveryResult(
     "delivered-ack-pending": "Terminal receipt unconfirmed (delivered-ack-pending): the wake was sent, but its render could not be confirmed.",
     "claimed": "Terminal receipt unconfirmed, but the seat has claimed the item (claimed).",
     "retained": `The wake is held (${wakeResult}): nothing was typed into the pane. A held create wake is not retried automatically; inspect it with rig seat held-messages ${seat}.`,
+    "held-local-inbox": "It is held in the operator's local inbox: the queue row is the delivery, the operator is notified by a desktop banner, and no wake was typed into any pane.",
     "failed": `The wake failed (${wakeResult}).`,
     "indeterminate": `Terminal receipt unconfirmed (${wakeResult}).`,
     "still-pending": waitedMs === null ? "No terminal receipt was recorded before the claim." : `No terminal receipt was recorded within ${waitedMs}ms.`,

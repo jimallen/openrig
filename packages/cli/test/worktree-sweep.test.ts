@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
 import { createProgram } from "../src/index.js";
-import { newestActivityMs, parseDuration, parseWorktreeList, renderSweepReport, sweepWorktrees, type CwdProbeResult, type RepoReport, type WorktreeVerdict } from "../src/worktree-sweep.js";
+import { defaultCwdProbe, lsofCwdProbe, newestActivityMs, parseDuration, parseWorktreeList, renderSweepReport, sweepWorktrees, type CwdProbeResult, type LsofRun, type RepoReport, type WorktreeVerdict } from "../src/worktree-sweep.js";
 
 const NOBODY_HOME: CwdProbeResult = { cwds: [], unreadable: 0 };
 const noProbe = async (): Promise<CwdProbeResult> => NOBODY_HOME;
@@ -759,5 +759,92 @@ describe("z3 worktree sweep: parsing helpers", () => {
     expect(text).toContain("KEEP");
     expect(text).toContain("uncommitted-changes");
     expect(text).toContain("3 process working directories were unreadable");
+  });
+});
+
+// a4 (z3 review gap): the macOS in-use path (`lsof -d cwd -Fn`) was never exercised. The runner is injected, so these
+// rows run on any host and never read the real process table. The consequence under test is data loss: a probe that
+// reads "lsof said nothing useful" as "nobody is standing in this worktree" would remove a worktree someone is using.
+describe("z3 worktree sweep: the macOS lsof in-use probe (injected runner)", () => {
+  const DARWIN = "darwin" as const;
+  // lsof -d cwd -Fn prints, per process: p<pid>, f<fd> (always "fcwd" here), n<path>.
+  const lsofOut = (...cwds: string[]): string => cwds.map((c, i) => `p${100 + i}\nfcwd\nn${c}\n`).join("");
+  const probeWith = (run: LsofRun) => (): Promise<CwdProbeResult> => defaultCwdProbe({ platform: DARWIN, lsof: async () => run });
+  const exit = (code: unknown, message: string) => ({ code, message });
+
+  it("a process whose cwd is inside the worktree keeps it (in-use), even beside unrelated processes", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const sub = path.join(fs.realpathSync(p), "src");
+    fs.mkdirSync(sub);
+    const rep = await sweep(f, { apply: true, probe: probeWith({ stdout: lsofOut("/", "/Users/someone", sub), error: null }) });
+    expect(codes(verdict(rep, p))).toEqual(["in-use"]);
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("no process in the worktree: a merged clean one is removed; a sibling path with the same prefix does not count", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const lookalike = `${fs.realpathSync(p)}-other`;
+    const rep = await sweep(f, { apply: true, probe: probeWith({ stdout: lsofOut("/", "/Users/someone", lookalike), error: null }) });
+    expect(verdict(rep, p).outcome).toBe("removed");
+    expect(fs.existsSync(p)).toBe(false);
+  });
+
+  it("lsof exit 1 (some processes not inspectable) with the rest printed is a usable listing, both ways", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const q = f.addWorktree("unit-b");
+    const stdout = lsofOut("/", fs.realpathSync(q));
+    const rep = await sweep(f, { probe: probeWith({ stdout, error: exit(1, "Command failed: lsof -d cwd -Fn") }) });
+    expect(verdict(rep, p).outcome).toBe("would-remove");
+    expect(codes(verdict(rep, q))).toEqual(["in-use"]);
+  });
+
+  it("lsof missing (ENOENT) keeps everything with the probe-failed reason", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const rep = await sweep(f, { apply: true, probe: probeWith({ stdout: "", error: exit("ENOENT", "spawn lsof ENOENT") }) });
+    const v = verdict(rep, p);
+    expect(codes(v)).toEqual(["in-use-probe-failed"]);
+    expect(v.reasons[0]!.detail).toContain("lsof unavailable");
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it.each<[string, LsofRun]>([
+    ["lsof killed by a signal", { stdout: "", error: exit(null, "Command failed: lsof (SIGKILL)") }],
+    ["exit 1 with nothing printed", { stdout: "", error: exit(1, "Command failed: lsof -d cwd -Fn") }],
+    ["exit status above 1", { stdout: "", error: exit(2, "Command failed: lsof") }],
+    ["success with empty output", { stdout: "", error: null }],
+    ["output that is not lsof -F records", { stdout: "lsof: WARNING: can't stat() fuse file system\n", error: null }],
+    ["permission-denied spawn (EACCES)", { stdout: "", error: exit("EACCES", "spawn lsof EACCES") }],
+  ])("an unreadable result keeps everything: %s", async (_label, run) => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const rep = await sweep(f, { apply: true, probe: probeWith(run) });
+    expect(codes(verdict(rep, p))).toEqual(["in-use-probe-failed"]);
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("lsof output cut off at the buffer limit is not a listing: the partial output omits the busy worktree, so it must keep", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    // The truncated stdout holds only other processes; the process standing in unit-a came after the cut.
+    const rep = await sweep(f, {
+      apply: true,
+      probe: probeWith({ stdout: lsofOut("/", "/Users/someone"), error: exit("ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "stdout maxBuffer length exceeded") }),
+    });
+    expect(codes(verdict(rep, p))).toEqual(["in-use-probe-failed"]);
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("the probe reports no unreadable-process count on macOS (lsof sees only the invoking user's processes)", async () => {
+    await expect(lsofCwdProbe(async () => ({ stdout: lsofOut("/a", "/b"), error: null }))).resolves.toEqual({ cwds: ["/a", "/b"], unreadable: 0 });
+  });
+
+  it("the platform decides the path: darwin uses the injected lsof runner, never /proc", async () => {
+    let calls = 0;
+    await defaultCwdProbe({ platform: DARWIN, lsof: async () => { calls += 1; return { stdout: lsofOut("/x"), error: null }; } });
+    expect(calls).toBe(1);
   });
 });

@@ -115,7 +115,7 @@ export type NotifierTickResult =
 
 export interface HumanGateNotifierDeps {
   /** Every row in state `blocked`, plus every `pending` row addressed to the inbox. Must be read-only. */
-  listBlocked: () => BlockedQueueRow[];
+  listWaiting: () => BlockedQueueRow[];
   /** The configured `rsi.steward_session`; only its items are RSI items. Null when none is valid: the inbox banner does not depend on RSI. */
   stewardSession: string | null;
   store: NotificationStore;
@@ -257,7 +257,7 @@ export class HumanGateNotifier {
   private async tickOnce(): Promise<NotifierTickResult> {
     const nowMs = this.clock().getTime();
     const nowIso = new Date(nowMs).toISOString();
-    const waiting = selectWaitingItems(this.deps.listBlocked(), this.deps.stewardSession);
+    const waiting = selectWaitingItems(this.deps.listWaiting(), this.deps.stewardSession);
     // A stored time that is unparseable or later than now cannot be a past banner: the row is ignored (for the gap, the
     // cap and the item's own entry state), so one bad row cannot block every banner. A sent banner rewrites the item's row.
     const rows = this.deps.store.list()
@@ -360,7 +360,7 @@ export class HumanInboxBannerHealthSource implements HealthObservationSource {
 }
 
 /** Reads the rows that can wait on the human from the daemon database: every `blocked` row, and every `pending` row addressed to the inbox. SELECT only. */
-export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[] {
+export function sqliteWaitingRows(db: Database.Database): () => BlockedQueueRow[] {
   const stmt = db.prepare(
     "SELECT q.qitem_id, q.source_session, q.destination_session, q.state, q.blocked_on, q.tags, q.summary, " +
     // The parking episode is the transition that ENTERED blocked from another state. A blocked-to-blocked

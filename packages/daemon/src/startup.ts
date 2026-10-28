@@ -2673,7 +2673,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
     const notificationStore = rsiNotifier.sqliteNotificationStore(db);
     humanGateNotifier = new rsiNotifier.HumanGateNotifier({
-      listBlocked: rsiNotifier.sqliteBlockedRows(db),
+      listWaiting: rsiNotifier.sqliteWaitingRows(db),
       stewardSession: validSteward,
       store: notificationStore,
       spawner: rsiNotifier.defaultBannerSpawner,

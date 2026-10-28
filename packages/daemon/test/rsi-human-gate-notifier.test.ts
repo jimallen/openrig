@@ -18,7 +18,7 @@ import {
   MIN_BANNER_GAP_MS,
   REMINDER_INTERVAL_MS,
   selectWaitingItems,
-  sqliteBlockedRows,
+  sqliteWaitingRows,
   sqliteNotificationStore,
   type BannerSpawner,
   type BlockedQueueRow,
@@ -92,7 +92,7 @@ function harness(opts: { steward?: string | null; platform?: NodeJS.Platform; te
   const logs: string[] = [];
   const spawner: BannerSpawner = async (command, args) => { calls.push({ command, args }); return opts.spawn ? opts.spawn(command) : opts.spawnOk === false ? { ok: false, exitCode: 1 } : { ok: true }; };
   const notifier = new HumanGateNotifier({
-    listBlocked: sqliteBlockedRows(db),
+    listWaiting: sqliteWaitingRows(db),
     stewardSession: opts.steward === undefined ? STEWARD : opts.steward,
     store: sqliteNotificationStore(db),
     spawner,
@@ -454,7 +454,7 @@ describe("platform and failure posture", () => {
     const calls: string[] = [];
     const logs: string[] = [];
     const notifier = new HumanGateNotifier({
-      listBlocked: () => { calls.push("list"); return []; },
+      listWaiting: () => { calls.push("list"); return []; },
       stewardSession: STEWARD,
       store: sqliteNotificationStore(db),
       spawner: async (c) => { calls.push(c); return { ok: true }; },
@@ -474,7 +474,7 @@ describe("platform and failure posture", () => {
   it("logs a failing read by class only, never its message", async () => {
     const logs: string[] = [];
     const notifier = new HumanGateNotifier({
-      listBlocked: () => { throw new RangeError("qitem body: secret-token-abc"); },
+      listWaiting: () => { throw new RangeError("qitem body: secret-token-abc"); },
       stewardSession: STEWARD,
       store: sqliteNotificationStore(freshDb()),
       spawner: async () => ({ ok: true }),
@@ -495,7 +495,7 @@ describe("platform and failure posture", () => {
     const ro = new Database(db.name, { readonly: true, fileMustExist: true });
     open.push(ro);
     // The queue read works on a handle that cannot write: it is SELECT only.
-    expect(sqliteBlockedRows(ro)().map((r: BlockedQueueRow) => r.qitemId).sort()).toEqual(["q-a", "q-b"]);
+    expect(sqliteWaitingRows(ro)().map((r: BlockedQueueRow) => r.qitemId).sort()).toEqual(["q-a", "q-b"]);
     expect(() => ro.prepare("UPDATE queue_items SET state = 'done'").run()).toThrow(/readonly/i);
     const h = harness({ db });
     await h.notifier.tick();

@@ -196,6 +196,43 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     expect(h.repo.classifyDestinationOf("human@kernel").class).toBe("pane-bound");
   });
 
+  // z7 review F7 census (a4): findUndelivered feeds GET /api/queue/undelivered (rig queue undelivered) and the stuck sweep.
+  // A row written before the inbox existed still carries the old "unroutable:" literal; it is held, not undelivered.
+  const LEGACY_UNROUTABLE = "unroutable: 'human@kernel' has no terminal transport on this daemon and names no registered human";
+  async function legacyRow(destination: string, nudgeResult: string) {
+    const item = await h.repo.create({ sourceSession: "orch-lead@v-openrig-build", destinationSession: "dev-a@rig1", body: "legacy", summary: "legacy", evidenceRef: EVIDENCE, nudge: false });
+    h.db.prepare("UPDATE queue_items SET destination_session = ?, last_nudge_result = ? WHERE qitem_id = ?").run(destination, nudgeResult, item.qitemId);
+    return item.qitemId;
+  }
+
+  it("LOCAL HUMAN INBOX LEGACY ROWS: a pending human@kernel row with the old unroutable/failed literal is held, not listed as undelivered", async () => {
+    const legacyUnroutable = await legacyRow("human@kernel", LEGACY_UNROUTABLE);
+    const legacyFailed = await legacyRow("human@kernel", "failed: Session 'human@kernel' not found");
+    const ids = h.repo.findUndelivered({}).map((u) => u.qitemId);
+    expect(ids).not.toContain(legacyUnroutable);
+    expect(ids).not.toContain(legacyFailed);
+  });
+
+  it("LOCAL HUMAN INBOX LEGACY ROWS: controls — near-miss addresses and a pane named human@kernel keep their failure rows", async () => {
+    const typo = await legacyRow("human-typo@kernel", LEGACY_UNROUTABLE.replace("human@kernel", "human-typo@kernel"));
+    const other = await legacyRow("human@host", "unroutable: 'human@host' has no terminal transport on this daemon and names no registered human");
+    const paneRow = await legacyRow("dev-a@rig1", "failed: tmux reports no session");
+    h.db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES ('node-h', 'rig-1', 'human', 'terminal')").run();
+    h.db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES ('sess-h', 'node-h', 'human@kernel')").run();
+    h.db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session) VALUES ('binding-h', 'node-h', 'tmux', 'human@kernel')").run();
+    const realPane = await legacyRow("human@kernel", "failed: tmux reports no session");
+    const ids = h.repo.findUndelivered({}).map((u) => u.qitemId).sort();
+    expect(ids).toEqual([typo, other, paneRow, realPane].sort());
+  });
+
+  it("LOCAL HUMAN INBOX LEGACY ROWS: with the registry unreadable the exact inbox literal is still the inbox class and its legacy row stays held", async () => {
+    h = makeHarness({ registryReadable: () => false });
+    const inbox = await legacyRow("human@kernel", LEGACY_UNROUTABLE);
+    // An unreadable registry cannot promote or demote a registered human; the exact inbox literal still classifies as the inbox.
+    expect(h.repo.classifyDestinationOf("human@kernel").class).toBe("local-human-inbox");
+    expect(h.repo.findUndelivered({}).map((u) => u.qitemId)).not.toContain(inbox);
+  });
+
   it("FLOOR: pane-bound dispatch is byte-identical — the known seat rides terminal transport unchanged", async () => {
     const item = await h.repo.create({
       sourceSession: "orch-lead@v-openrig-build",
