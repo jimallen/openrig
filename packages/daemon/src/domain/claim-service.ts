@@ -172,6 +172,8 @@ export class ClaimService {
       ...(observation.ok ? { tmuxPane: observation.pane } : {}),
     });
     if (!observation.ok) {
+      // a2: the new session's pane is not known, so the binding must not keep the previous occupant's.
+      this.sessionRegistry.clearBindingPane(nodeId);
       new SeatIdentityStore(this.db).upsert(paneObservationVerdict({
         nodeId,
         sessionId,

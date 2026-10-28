@@ -428,3 +428,40 @@ describe("restore and restore-check compare the binding's pane before a reattach
     expect(result.recovery.actions[0]!.reason).toContain(`It reattaches the adopted sessions rig down left running (reattached: ${seat.sessionName})`);
   });
 });
+
+// a2: a reconcile adopts a live session onto the seat's EXISTING binding, and updateBinding keeps a pane it is not given.
+// When the live pane cannot be observed, the previous occupant's pane must not stay on the binding: restore would read it as
+// "replaced" (a false refusal). It is cleared, so restore reads the pane as unknown (adopted_liveness_unknown, with advice).
+describe("reconcile keeps the binding's pane honest (a2)", () => {
+  let db: Database.Database;
+  afterEach(() => db?.close());
+
+  async function reconcileWithPanes(panes: Array<{ id: string }>) {
+    db = createFullTestDb();
+    const tmux: TmuxAdapter = Object.assign(mockTmuxAdapter(), {
+      hasSession: async () => true,
+      listPanes: async () => panes.map((pane) => ({ ...pane, index: 0, cwd: "/tmp", width: 80, height: 24, active: true })),
+      getPanePid: async () => 4242,
+      getPaneCommand: async () => "zsh",
+    });
+    const setup = createTestApp(db, { tmux });
+    const rig = setup.rigRepo.createRig("rec-rig");
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
+    const old = setup.sessionRegistry.registerSession(node.id, "dev-impl@rec-rig");
+    setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@rec-rig", tmuxPane: "%7" });
+    setup.sessionRegistry.markDetached(old.id);
+
+    const result = await setup.claimService.reconcileSession({ sessionName: "dev-impl@rec-rig" });
+
+    expect(result.ok).toBe(true);
+    return setup.sessionRegistry.getBindingForNode(node.id);
+  }
+
+  it("the live pane cannot be observed: the previous occupant's pane is cleared, not kept", async () => {
+    expect(await reconcileWithPanes([])).toMatchObject({ tmuxSession: "dev-impl@rec-rig", tmuxPane: null });
+  });
+
+  it("the live pane is observed: it is recorded in place of the previous occupant's", async () => {
+    expect(await reconcileWithPanes([{ id: "%4" }])).toMatchObject({ tmuxSession: "dev-impl@rec-rig", tmuxPane: "%4" });
+  });
+});

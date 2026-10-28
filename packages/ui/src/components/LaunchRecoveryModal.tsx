@@ -241,7 +241,9 @@ export function LaunchRecoveryModal({ rigId, rigName, open, onOpenChange }: Laun
                     <TableCell className="py-2" data-testid={`plan-verdict-${s.logicalId}`}>
                       {s.restoreStatus === "failed"
                         ? <StatusPip status="error" variant="pill" label="will fail" />
-                        : <StatusPip status={verdictPip[s.intendedAction]} variant="pill" label={s.intendedAction} />}
+                        : s.reattach
+                          ? <StatusPip status="running" variant="pill" label="reattach" />
+                          : <StatusPip status={verdictPip[s.intendedAction]} variant="pill" label={s.intendedAction} />}
                     </TableCell>
                     <TableCell className="py-2 font-mono text-[9px] text-secondary">
                       {s.runtimePrompt ?? s.reason ?? "—"}

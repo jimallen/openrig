@@ -800,6 +800,13 @@ export class SessionRegistry {
     return row ? this.rowToBinding(row) : null;
   }
 
+  /** a2: forget the binding's pane. updateBinding keeps a pane it is not given, so a reconcile onto an existing binding that
+   *  could not observe the live session's pane would otherwise leave the previous occupant's: a stale pane reads as another
+   *  session's (adopted-reattach.ts checkAdoptedPane), where an unrecorded one reads as unknown. */
+  clearBindingPane(nodeId: string): void {
+    this.db.prepare("UPDATE bindings SET tmux_pane = NULL, updated_at = datetime('now') WHERE node_id = ?").run(nodeId);
+  }
+
   updateBinding(nodeId: string, fields: BindingFields): Binding {
     // Atomic upsert: entire read-modify-write is inside a transaction
     const upsert = this.db.transaction(() => {
