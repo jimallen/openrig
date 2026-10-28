@@ -88,6 +88,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     restoreOrchestrator: c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined,
     runtimeAdapters: c.get("runtimeAdapters" as never) as Record<string, import("../domain/runtime-adapter.js").RuntimeAdapter> | undefined,
     podInstantiator: c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined,
+    tmuxAdapter: c.get("tmuxAdapter" as never) as import("../adapters/tmux.js").TmuxAdapter | undefined,
   };
 }
 
@@ -153,7 +154,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
       refusalPredictionError = err instanceof Error ? err.message : String(err);
     }
     return c.json({
-      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig), rigAdviceHandleIn(snapshotRepo.db, rig.rig.id, rig.rig.name), readPreviewReattach(snapshotRepo.db, rig)),
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(snapshotRepo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(snapshotRepo.db, rig.rig.id), refusals, readPreviewContinuity(snapshotRepo.db, rig), rigAdviceHandleIn(snapshotRepo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(snapshotRepo.db, rig, deps.tmuxAdapter)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),
     }, 200);
   }

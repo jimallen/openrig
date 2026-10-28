@@ -299,7 +299,7 @@ rigsRoutes.get("/:id/status", async (c) => {
   const snapshotRepo = c.get("snapshotRepo" as never) as SnapshotRepository;
   const snapshot = snapshotRepo.findLatestRestoreUsable(rig.rig.id) ?? null;
   // Read-only per-seat forecast (mutated:false) — the restore-plan signal.
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig));
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(repo.db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined));
 
   // ps-lifecycle — per-node lifecycleState (never from pane text).
   const nodes: SeatLifecycleInput[] = getNodeInventory(repo.db, rig.rig.id).map((e) => ({
@@ -357,7 +357,7 @@ rigsRoutes.post("/:id/launch-plan", async (c) => {
   // a2 (OF-171 sibling): a listed seat restore would refuse is named here too.
   const { refusals, refusalPredictionError } = await planRefusals(c, repo, rig, snapshot, freshLogicalIds);
   return c.json({
-    ...buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)),
+    ...buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(repo.db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)),
     ...(refusalPredictionError ? { refusalPredictionError } : {}),
   }, 200);
 });
@@ -764,7 +764,7 @@ rigsRoutes.post("/:id/up", async (c) => {
     // (as POST /api/up does). This route restores with the default startup source.
     const { refusals, refusalPredictionError } = await planRefusals(c, repo, rig, snapshot ?? null, freshLogicalIds);
     return c.json({
-      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)),
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(repo.db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),
     }, 200);
   }

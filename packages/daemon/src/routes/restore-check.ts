@@ -223,7 +223,7 @@ export function createRestoreCheckService(
       resolve(import.meta.dirname, "../../assets/plugins/openrig-core/hooks/claude.json"),
     ).map(({ event }) => event),
     reattachableAdopted: (nodeId) => reattachableAdoptedSession(rigRepo.db, nodeId), // OF-155: the rule restore uses
-    listPanes: tmuxAdapter ? (target) => tmuxAdapter.listPanes(target) : undefined, // a2: the pane check restore makes
+    readSessionOption: tmuxAdapter ? (session, key) => tmuxAdapter.readSessionOption(session, key) : undefined, // a2: the marker check restore makes
     rigRefs: rigRepo, // OF-152: ids across every rig (archived included), names among unarchived ones
     listRigs: () => {
       const rigs = rigRepo.listRigs();

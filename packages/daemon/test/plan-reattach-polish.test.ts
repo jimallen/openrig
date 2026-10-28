@@ -5,6 +5,9 @@
 //   it (adopted_session_contested) and starts nothing, and the plan, the startup forecast and restore-check say so.
 // - z6 review F5: the reattach rule (created_at, then id) and the handover's departing row (id) pick the same row when
 //   two rows share a created_at second.
+// - a2 review (b94822a4) F1/F2/F5: the adopted session is told by the OpenRig marker a claim writes into it (@rigged_node_id),
+//   not by pane id; F3: the plan, status, startup forecast and restore-check run restore's own probe, so none says
+//   "reattach" for a seat restore refuses; F4: an `unknown` row holds a tmux name as a running one does.
 // Deployed entrypoints: server.ts mounts routes/rigs.ts at /api/rigs, routes/startup.ts at /api/startup, routes/seat.ts at
 // /api/seat and routes/restore-check.ts; startup.ts constructs RestoreOrchestrator (rig up --existing).
 import fs from "node:fs";
@@ -17,6 +20,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 import { snapshotMatchesCurrentOccupants } from "../src/domain/rehydrate-eligibility.js";
 import { reattachableAdoptedSession } from "../src/domain/adopted-reattach.js";
+import { PodRepository } from "../src/domain/pod-repository.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
 const post = (body: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -25,13 +29,21 @@ describe("plan and status around an adopted session rig down left running (unit 
   let db: Database.Database;
   afterEach(() => db?.close());
 
-  /** As restore-plan-reattach-routes.test.ts: one seat whose adopted session rig down left running. */
-  function adoptedSeatAfterDown(tmux?: "absent" | "present") {
+  /** As restore-plan-reattach-routes.test.ts: one seat whose adopted session rig down left running, live in tmux (or absent)
+   *  and carrying this seat's OpenRig marker, another seat's, none, or one tmux cannot read. */
+  function adoptedSeatAfterDown(tmux: "absent" | "present" = "present", marker: "own" | "other" | "unset" | "unreadable" = "own") {
     db = createFullTestDb();
-    const probing = (state: "absent" | "present"): TmuxAdapter => Object.assign(mockTmuxAdapter(), { probeSession: async () => ({ state }) });
-    const setup = createTestApp(db, tmux ? { tmux: probing(tmux) } : undefined);
+    let nodeId = "";
+    const probing = (state: "absent" | "present"): TmuxAdapter => Object.assign(mockTmuxAdapter(), {
+      probeSession: async () => ({ state }),
+      hasSession: async () => state === "present",
+      readSessionOption: async () => marker === "unreadable" ? { ok: false as const, error: "server exited unexpectedly" }
+        : { ok: true as const, value: marker === "own" ? nodeId : marker === "other" ? "node-of-another-seat" : null },
+    });
+    const setup = createTestApp(db, { tmux: probing(tmux) });
     const rig = setup.rigRepo.createRig("plan-adopted-rig");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "claude-code" });
+    nodeId = node.id;
     const session = setup.sessionRegistry.registerSession(node.id, "dev-impl@plan-adopted-rig");
     db.prepare("UPDATE sessions SET origin = 'claimed', status = 'running' WHERE id = ?").run(session.id);
     setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@plan-adopted-rig", tmuxPane: "%3" });
@@ -41,7 +53,7 @@ describe("plan and status around an adopted session rig down left running (unit 
   }
 
   /** A seat of another rig whose live row carries the same tmux session name. */
-  function otherSeatHolding(setup: ReturnType<typeof createTestApp>, status: "running" | "exited") {
+  function otherSeatHolding(setup: ReturnType<typeof createTestApp>, status: "running" | "unknown" | "exited") {
     const other = setup.rigRepo.createRig("other-rig");
     const node = setup.rigRepo.addNode(other.id, "dev.impl", { role: "worker", runtime: "claude-code" });
     const session = setup.sessionRegistry.registerSession(node.id, "dev-impl@other-rig");
@@ -190,6 +202,65 @@ describe("plan and status around an adopted session rig down left running (unit 
     });
   });
 
+  // a2 review F4: a row whose status is `unknown` may still own the tmux session, so it holds the name as a running row does.
+  it("an `unknown` row of another seat holds the name: the plan forecasts the contested failure", async () => {
+    const { setup, rigId } = adoptedSeatAfterDown();
+    const holderId = otherSeatHolding(setup, "unknown");
+
+    const seat = (await (await setup.app.request(`/api/rigs/${rigId}/up`, post({ plan: true }))).json()).nodes[0];
+
+    expect(seat).toMatchObject({ restoreStatus: "failed", reason: expect.stringContaining(`is also the live session of seat dev.impl@other-rig (row ${holderId})`) });
+    expect(seat.reattach).toBeUndefined();
+  });
+
+  // a2 review F3: every surface reads restore's probe, so a seat restore fails (marked as another seat's, or not told) is
+  // forecast as failing everywhere, and nowhere as a reattach.
+  describe("a2 review F3: every surface agrees with restore on a seat it would not reattach", () => {
+    const failing = [
+      ["marked as another seat's", "other", "is live, but it is marked as another seat's (@rigged_node_id=node-of-another-seat)"],
+      ["carrying no marker", "unset", "it carries no OpenRig marker (@rigged_node_id): it may have been recreated since rig down"],
+      ["whose marker cannot be read", "unreadable", "its OpenRig marker (@rigged_node_id) could not be read: server exited unexpectedly"],
+    ] as const;
+
+    it.each(failing)("plan routes, session %s: forecast to fail, no reattach", async (_label, marker, words) => {
+      const { setup, rigId } = adoptedSeatAfterDown("present", marker);
+
+      for (const [path, init] of [[`/api/rigs/${rigId}/up`, post({ plan: true })], [`/api/rigs/${rigId}/launch-plan`, post({})], ["/api/up", post({ sourceRef: rigId, plan: true })]] as const) {
+        const seat = (await (await setup.app.request(path, init)).json()).nodes[0];
+        expect(seat, path).toMatchObject({ intendedAction: "awaiting-decision", restoreStatus: "failed", reason: expect.stringContaining(words) });
+        expect(seat.reattach, path).toBeUndefined();
+      }
+    });
+
+    it.each(failing)("GET /api/rigs/:id/status, session %s: no reattach field, not counted as one", async (_label, marker) => {
+      const { setup, rigId } = adoptedSeatAfterDown("present", marker);
+
+      const body = await (await setup.app.request(`/api/rigs/${rigId}/status`)).json();
+
+      expect(body.perSeat[0].reattach).toBeUndefined();
+      expect(body.src.join(" ")).not.toContain("reattach");
+    });
+
+    it.each(failing)("GET /api/startup/:rigId, session %s: forecast to fail, no reattach", async (_label, marker, words) => {
+      const { setup, rigId } = adoptedSeatAfterDown("present", marker);
+
+      const seat = (await (await setup.app.request(`/api/startup/${rigId}`)).json()).seats[0];
+
+      expect(seat).toMatchObject({ restoreStatus: "failed", reason: expect.stringContaining(words) });
+      expect(seat.reattach).toBeUndefined();
+    });
+
+    it("control: the session carries this seat's marker, so every surface says reattach", async () => {
+      const { setup, rigId, sessionId } = adoptedSeatAfterDown("present", "own");
+
+      const plan = (await (await setup.app.request(`/api/rigs/${rigId}/up`, post({ plan: true }))).json()).nodes[0];
+      const status = await (await setup.app.request(`/api/rigs/${rigId}/status`)).json();
+
+      expect(plan.reattach).toEqual({ sessionId, sessionName: "dev-impl@plan-adopted-rig" });
+      expect(status.perSeat[0].reattach).toEqual({ sessionId, sessionName: "dev-impl@plan-adopted-rig" });
+    });
+  });
+
   describe("z6 review F5: the reattach rule and the handover's departing row agree on a created_at tie", () => {
     function twoRowsOneSecond() {
       db = createFullTestDb();
@@ -208,7 +279,7 @@ describe("plan and status around an adopted session rig down left running (unit 
     it("the reattach rule picks the later id", () => {
       const { nodeId, second } = twoRowsOneSecond();
 
-      expect(reattachableAdoptedSession(db, nodeId)).toEqual({ kind: "reattach", sessionId: second, sessionName: "dev-impl@seat-rig", boundPane: null });
+      expect(reattachableAdoptedSession(db, nodeId)).toEqual({ kind: "reattach", sessionId: second, sessionName: "dev-impl@seat-rig" });
     });
 
     it("the handover refuses the adopted occupant by the same row", async () => {
@@ -233,6 +304,7 @@ describe("restore and restore-check: another seat's live row names the adopted s
     const seat = await h.launchRig();
     const row = h.db.prepare("SELECT id FROM sessions WHERE node_id = ?").get(seat.nodeId) as { id: string };
     h.db.prepare("UPDATE sessions SET origin = 'claimed', resume_type = 'claude_session_id', resume_token = 'adopted-token' WHERE id = ?").run(row.id);
+    await h.tmux.setSessionOption(seat.sessionName, "@rigged_node_id", seat.nodeId); // the marker a claim writes
     const { snapshotId } = await new RigTeardownOrchestrator({
       db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, tmuxAdapter: h.tmux, snapshotCapture: h.snapshotCapture, eventBus: new EventBus(h.db),
     }).teardown(seat.rigId);
@@ -315,21 +387,21 @@ describe("restore and restore-check: another seat's live row names the adopted s
   });
 });
 
-// a2 (z2 review F5, pane half): tmux names a session by name alone, so a session the person recreated under the same name
-// after rig down would pass a name check. Restore reattaches only when the pane the seat's binding names is one of the live
-// session's panes (pane ids are unique for the tmux server's life); an unreadable or unrecorded pane is unknown, never a match.
-describe("restore and restore-check compare the binding's pane before a reattach (a2)", () => {
+// a2 review (b94822a4) F1, F2, F5: tmux names a session by name alone, so a session the person recreated under the same name
+// after rig down would pass a name check. Restore reattaches only a live session that carries this seat's OpenRig marker
+// (@rigged_node_id, written at claim); another seat's marker is `replaced`, none or an unreadable one is `unknown`.
+describe("restore and restore-check tell the adopted session by its OpenRig marker (a2)", () => {
   let h: RestoreHarness;
   afterEach(() => h?.cleanup());
   const exists = (p: string) => fs.existsSync(p);
 
-  /** A seat whose adopted session, under its own name, rig down left running in tmux pane %fresh (the harness's pane). */
+  /** A seat whose adopted session, under its own name and carrying the seat's marker, rig down left running. */
   async function adoptedAfterDown() {
     h = createRestoreHarness();
     const seat = await h.launchRig();
     const row = h.db.prepare("SELECT id FROM sessions WHERE node_id = ?").get(seat.nodeId) as { id: string };
     h.db.prepare("UPDATE sessions SET origin = 'claimed', resume_type = 'claude_session_id', resume_token = 'adopted-token' WHERE id = ?").run(row.id);
-    h.sessionRegistry.updateBinding(seat.nodeId, { tmuxSession: seat.sessionName, tmuxPane: "%fresh" });
+    await h.tmux.setSessionOption(seat.sessionName, "@rigged_node_id", seat.nodeId);
     const { snapshotId } = await new RigTeardownOrchestrator({
       db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, tmuxAdapter: h.tmux, snapshotCapture: h.snapshotCapture, eventBus: new EventBus(h.db),
     }).teardown(seat.rigId);
@@ -346,43 +418,42 @@ describe("restore and restore-check compare the binding's pane before a reattach
   const rowStatus = (id: string) => (h.db.prepare("SELECT status FROM sessions WHERE id = ?").get(id) as { status: string }).status;
   const check = () => createRestoreCheckService(h.rigRepo, h.snapshotRepo, h.tmux, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst })
     .checkWithLiveness({ rig: "team", noQueue: true, noHooks: true });
-  /** The binding names another pane than the live session's: as if the person recreated the session after rig down. */
-  const bindOtherPane = (nodeId: string) => h.db.prepare("UPDATE bindings SET tmux_pane = '%9' WHERE node_id = ?").run(nodeId);
+  /** The person ended the session and started another of the same name: tmux options go with the session. */
+  const recreate = async (name: string) => { await h.tmux.killSession(name); await h.tmux.createSession(name); };
 
-  it.each([[undefined], [["dev.impl"]]] as const)("a live session in another pane is not reattached: adopted_session_replaced, nothing started or changed (fresh %s)", async (fresh) => {
+  it.each([[undefined], [["dev.impl"]]] as const)("a live session marked as another seat's is not reattached: adopted_session_replaced, nothing started or changed (fresh %s)", async (fresh) => {
     const { seat, rowId, snapshotId } = await adoptedAfterDown();
-    bindOtherPane(seat.nodeId);
+    await h.tmux.setSessionOption(seat.sessionName, "@rigged_node_id", "node-of-another-seat");
 
     const node = await upExisting(seat.rigId, snapshotId, fresh ? [...fresh] : undefined);
 
     expect(node).toEqual({
       nodeId: seat.nodeId, logicalId: "dev.impl", status: "failed", errorCode: "adopted_session_replaced",
-      error: `dev.impl was not restored: its adopted session '${seat.sessionName}', which rig down left running, is live, but the seat's binding names pane %9, which is not one of that session's panes (%fresh): the session may have been recreated since rig down, so restore neither reattaches it nor starts this seat. If it is the same conversation, release it with rig unclaim ${rowId} and claim it again; otherwise end it. Nothing was changed for this seat.`,
+      error: `dev.impl was not restored: its adopted session '${seat.sessionName}', which rig down left running, is live, but it is marked as another seat's (@rigged_node_id=node-of-another-seat), so it is not the session rig down left: restore neither reattaches it nor starts this seat. Release it from this seat with rig unclaim ${rowId}. Nothing was changed for this seat.`,
     });
     expect(rowStatus(rowId)).toBe("detached");
     expect(vi.mocked(h.tmux.createSession)).not.toHaveBeenCalled();
-    expect(await h.tmux.hasSession(seat.sessionName)).toBe(true);
     expect(h.delivered).toEqual([]);
   });
 
   it.each([
-    ["no pane is recorded", () => { h.db.prepare("UPDATE bindings SET tmux_pane = NULL").run(); }, "the seat's binding records no pane for it"],
-    ["tmux lists no pane", () => { vi.mocked(h.tmux.listPanes).mockResolvedValue([]); }, "tmux listed no pane for it"],
-    ["the pane list cannot be read", () => { vi.mocked(h.tmux.listPanes).mockRejectedValue(new Error("permission denied")); }, "its panes could not be read (permission denied)"],
-  ] as const)("%s: unknown, never a match: adopted_liveness_unknown, nothing started or changed", async (_label, arrange, why) => {
+    ["recreated under the same name (no marker)", async (name: string) => { await recreate(name); }, "it carries no OpenRig marker (@rigged_node_id): it may have been recreated since rig down, or the marker was never written"],
+    ["its marker cannot be read", async () => { vi.mocked(h.tmux.readSessionOption).mockResolvedValue({ ok: false, error: "server exited unexpectedly" }); }, "its OpenRig marker (@rigged_node_id) could not be read: server exited unexpectedly"],
+  ] as const)("a live session %s: unknown, never a match: adopted_liveness_unknown, nothing started or changed", async (_label, arrange, why) => {
     const { seat, rowId, snapshotId } = await adoptedAfterDown();
-    arrange();
+    await arrange(seat.sessionName);
 
     const node = await upExisting(seat.rigId, snapshotId);
 
-    expect(node).toMatchObject({ status: "failed", errorCode: "adopted_liveness_unknown" });
-    expect(node?.error).toContain(`is live, but it could not be matched to the pane the seat's binding names (${why})`);
-    expect(node?.error).toContain(`rig unclaim ${rowId}`);
+    expect(node).toEqual({
+      nodeId: seat.nodeId, logicalId: "dev.impl", status: "failed", errorCode: "adopted_liveness_unknown",
+      error: `dev.impl was not restored: its adopted session '${seat.sessionName}', which rig down left running, is live, but it could not be told to be the session rig down left (${why}), so restore neither reattaches it nor starts a second session. Retry once tmux answers; if the session was recreated, release the seat with rig unclaim ${rowId}. Nothing was changed for this seat.`,
+    });
     expect(rowStatus(rowId)).toBe("detached");
     expect(vi.mocked(h.tmux.createSession)).not.toHaveBeenCalled();
   });
 
-  it("control: the session is in the pane the binding names, so it is reattached", async () => {
+  it("control: the live session carries this seat's marker, so it is reattached", async () => {
     const { seat, rowId, snapshotId } = await adoptedAfterDown();
 
     const node = await upExisting(seat.rigId, snapshotId);
@@ -390,36 +461,36 @@ describe("restore and restore-check compare the binding's pane before a reattach
     expect(node).toEqual({ nodeId: seat.nodeId, logicalId: "dev.impl", status: "resumed", reattached: { sessionId: rowId, sessionName: seat.sessionName } });
   });
 
-  it("restore-check is red for a session in another pane, in restore's words, and does not count it as a reattach", async () => {
+  it("restore-check is red for a session marked as another seat's, in restore's words, and does not count it as a reattach", async () => {
     const { seat, rowId } = await adoptedAfterDown();
-    bindOtherPane(seat.nodeId);
+    await h.tmux.setSessionOption(seat.sessionName, "@rigged_node_id", "node-of-another-seat");
 
     const result = await check();
 
     expect(result.checks.find((c) => c.check === `seat.${seat.sessionName}.readiness`)).toMatchObject({
       status: "red",
-      evidence: `Adopted session ${seat.sessionName}, which rig down left running, is live, but the seat's binding names pane %9, which is not one of its panes (%fresh)`,
+      evidence: `Adopted session ${seat.sessionName}, which rig down left running, is live, but it is marked as another seat's (@rigged_node_id=node-of-another-seat)`,
       remediation: expect.stringContaining(`rig up --existing would fail this seat (adopted_session_replaced): its adopted session '${seat.sessionName}'`),
     });
     expect(JSON.stringify(result)).toContain(`rig unclaim ${rowId}`);
     expect(JSON.stringify(result)).not.toContain("It reattaches the adopted sessions");
   });
 
-  it("restore-check: an unrecorded pane is unknown, red, and not counted as a reattach", async () => {
+  it("restore-check: a recreated session (no marker) is unknown, red, and not counted as a reattach", async () => {
     const { seat } = await adoptedAfterDown();
-    h.db.prepare("UPDATE bindings SET tmux_pane = NULL").run();
+    await recreate(seat.sessionName);
 
     const result = await check();
 
     expect(result.checks.find((c) => c.check === `seat.${seat.sessionName}.readiness`)).toMatchObject({
       status: "red",
-      evidence: `Adopted session ${seat.sessionName}, which rig down left running, is live, but it could not be matched to the pane the seat's binding names (the seat's binding records no pane for it)`,
+      evidence: `Adopted session ${seat.sessionName}, which rig down left running, is live, but it could not be told to be the session rig down left (it carries no OpenRig marker (@rigged_node_id): it may have been recreated since rig down, or the marker was never written)`,
       remediation: expect.stringContaining("(adopted_liveness_unknown)"),
     });
     expect(JSON.stringify(result)).not.toContain("It reattaches the adopted sessions");
   });
 
-  it("control: restore-check, the session in the binding's pane: the reattach is predicted", async () => {
+  it("control: restore-check, the session carries this seat's marker: the reattach is predicted", async () => {
     const { seat } = await adoptedAfterDown();
 
     const result = await check();
@@ -429,39 +500,49 @@ describe("restore and restore-check compare the binding's pane before a reattach
   });
 });
 
-// a2: a reconcile adopts a live session onto the seat's EXISTING binding, and updateBinding keeps a pane it is not given.
-// When the live pane cannot be observed, the previous occupant's pane must not stay on the binding: restore would read it as
-// "replaced" (a false refusal). It is cleared, so restore reads the pane as unknown (adopted_liveness_unknown, with advice).
-describe("reconcile keeps the binding's pane honest (a2)", () => {
+// a2: self-attach adopts a session the person started (origin claimed), as a claim does, so it writes the same marker.
+describe("self-attach writes the OpenRig marker a claim writes (a2)", () => {
   let db: Database.Database;
   afterEach(() => db?.close());
+  const tmuxContext = { attachmentType: "tmux" as const, tmuxSession: "person-shell", tmuxWindow: "@1", tmuxPane: "%2" };
 
-  async function reconcileWithPanes(panes: Array<{ id: string }>) {
+  function app() {
     db = createFullTestDb();
-    const tmux: TmuxAdapter = Object.assign(mockTmuxAdapter(), {
-      hasSession: async () => true,
-      listPanes: async () => panes.map((pane) => ({ ...pane, index: 0, cwd: "/tmp", width: 80, height: 24, active: true })),
-      getPanePid: async () => 4242,
-      getPaneCommand: async () => "zsh",
-    });
-    const setup = createTestApp(db, { tmux });
-    const rig = setup.rigRepo.createRig("rec-rig");
-    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal" });
-    const old = setup.sessionRegistry.registerSession(node.id, "dev-impl@rec-rig");
-    setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@rec-rig", tmuxPane: "%7" });
-    setup.sessionRegistry.markDetached(old.id);
-
-    const result = await setup.claimService.reconcileSession({ sessionName: "dev-impl@rec-rig" });
-
-    expect(result.ok).toBe(true);
-    return setup.sessionRegistry.getBindingForNode(node.id);
+    const setSessionOption = vi.fn(async () => ({ ok: true as const }));
+    const setup = createTestApp(db, { tmux: Object.assign(mockTmuxAdapter(), { setSessionOption }) });
+    const rig = setup.rigRepo.createRig("attach-rig");
+    return { setup, rig, setSessionOption };
   }
 
-  it("the live pane cannot be observed: the previous occupant's pane is cleared, not kept", async () => {
-    expect(await reconcileWithPanes([])).toMatchObject({ tmuxSession: "dev-impl@rec-rig", tmuxPane: null });
+  it("attachToNode from tmux marks the session with the seat's node id", async () => {
+    const { setup, rig, setSessionOption } = app();
+    const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+
+    const result = await setup.selfAttachService.attachToNode({ rigId: rig.id, logicalId: "dev.impl", context: tmuxContext });
+
+    expect(result.ok).toBe(true);
+    expect(setSessionOption).toHaveBeenCalledWith("person-shell", "@rigged_node_id", node.id);
   });
 
-  it("the live pane is observed: it is recorded in place of the previous occupant's", async () => {
-    expect(await reconcileWithPanes([{ id: "%4" }])).toMatchObject({ tmuxSession: "dev-impl@rec-rig", tmuxPane: "%4" });
+  it("attachToPod from tmux marks the session with the new seat's node id", async () => {
+    const { setup, rig, setSessionOption } = app();
+    const pod = new PodRepository(db).createPod(rig.id, "dev", "Dev");
+
+    const result = await setup.selfAttachService.attachToPod({ rigId: rig.id, podNamespace: "dev", memberName: "impl", runtime: "claude-code", context: tmuxContext });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(pod.id).toBeTruthy();
+    expect(setSessionOption).toHaveBeenCalledWith("person-shell", "@rigged_node_id", result.nodeId);
+  });
+
+  it("control: an external CLI attach has no tmux session to mark", async () => {
+    const { setup, rig, setSessionOption } = app();
+    setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code" });
+
+    const result = await setup.selfAttachService.attachToNode({ rigId: rig.id, logicalId: "dev.impl", displayName: "person-cli@attach-rig" });
+
+    expect(result.ok).toBe(true);
+    expect(setSessionOption).not.toHaveBeenCalled();
   });
 });

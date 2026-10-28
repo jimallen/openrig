@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 /** An adopted session the shared rule found, and whether another seat holds a session of the same tmux name. */
 export type AdoptedSessionLeftRunning =
-  | { kind: "reattach"; sessionId: string; sessionName: string; boundPane: string | null }
+  | { kind: "reattach"; sessionId: string; sessionName: string }
   | { kind: "contested"; sessionId: string; sessionName: string; heldBy: { sessionId: string; seat: string } };
 
 /**
@@ -11,15 +11,15 @@ export type AdoptedSessionLeftRunning =
  * back by reattaching that session (option A), never by starting a second process on its conversation.
  *
  * The ONE reading of "this seat has an adopted session rig down left running", shared by restore (which reattaches it) and
- * restore-check (which predicts it), so the check cannot disagree with restore. Liveness is the caller's: it is a tmux
- * question. `rig unclaim` clears the binding, so a released session is not reattached.
+ * restore-check (which predicts it), so the check cannot disagree with restore. Liveness and identity are tmux questions
+ * (probeAdoptedSession below). `rig unclaim` clears the binding, so a released session is not reattached.
  */
 export function reattachableAdoptedSession(db: Database.Database, nodeId: string): AdoptedSessionLeftRunning | null {
   const latest = db.prepare(
     "SELECT id, session_name, status, origin, intentionally_stopped FROM sessions WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
   ).get(nodeId) as { id: string; session_name: string; status: string; origin: string | null; intentionally_stopped: number } | undefined;
   if (!latest || latest.origin !== "claimed" || latest.status !== "detached" || latest.intentionally_stopped) return null;
-  const binding = db.prepare("SELECT tmux_session, tmux_pane FROM bindings WHERE node_id = ?").get(nodeId) as { tmux_session: string | null; tmux_pane: string | null } | undefined;
+  const binding = db.prepare("SELECT tmux_session FROM bindings WHERE node_id = ?").get(nodeId) as { tmux_session: string | null } | undefined;
   if (binding?.tmux_session !== latest.session_name) return null;
   // z2 review F5: tmux names a session by name alone, host-wide. When another seat (of this rig or another) has a live
   // row of the same name, a live tmux session of that name may be that seat's, not the one rig down left: reattaching it
@@ -32,35 +32,95 @@ export function reattachableAdoptedSession(db: Database.Database, nodeId: string
   if (holder) {
     return { kind: "contested", sessionId: latest.id, sessionName: latest.session_name, heldBy: { sessionId: holder.id, seat: `${holder.logical_id}@${holder.rig_name}` } };
   }
-  return { kind: "reattach", sessionId: latest.id, sessionName: latest.session_name, boundPane: binding.tmux_pane };
+  return { kind: "reattach", sessionId: latest.id, sessionName: latest.session_name };
 }
 
-/** Whether a live tmux session of the adopted session's name is the one rig down left: the pane the seat's binding names
- *  is one of its panes. tmux pane ids are unique for the server's life, so a session the person recreated under the same
- *  name has other panes. `unknown` when no pane is recorded or tmux does not list the session's panes: never a match. */
-export type AdoptedPaneCheck =
+/**
+ * a2 (review F1, F2, F5 of b94822a4): which tmux session is the one rig down left is told by the OpenRig marker every claim
+ * writes into the adopted session (`@rigged_node_id`, claim-service setRiggedMetadata; self-attach and a discovered
+ * handover successor write it too), never by pane id. A session option is read the same for any window layout, and a session
+ * the person recreated under the same name does not carry it, on this tmux server or a fresh one (where pane ids restart at
+ * %0). `rig unclaim` blanks it. Unset or unreadable is `unknown`: never a match.
+ */
+export const ADOPTED_MARKER_OPTION = "@rigged_node_id";
+
+export type SessionOptionRead = { ok: true; value: string | null } | { ok: false; error: string };
+
+export type AdoptedIdentityCheck =
   | { kind: "same" }
-  | { kind: "replaced"; boundPane: string; panes: string[] }
+  | { kind: "replaced"; marker: string }
   | { kind: "unknown"; why: string };
 
-export async function checkAdoptedPane(
-  adopted: { sessionName: string; boundPane: string | null },
-  listPanes: (target: string) => Promise<Array<{ id: string }>>,
-): Promise<AdoptedPaneCheck> {
-  if (!adopted.boundPane) return { kind: "unknown", why: "the seat's binding records no pane for it" };
-  let panes: string[];
+export async function checkAdoptedIdentity(
+  nodeId: string,
+  sessionName: string,
+  readSessionOption: (session: string, key: string) => Promise<SessionOptionRead>,
+): Promise<AdoptedIdentityCheck> {
+  let read: SessionOptionRead;
   try {
-    panes = (await listPanes(adopted.sessionName)).map((pane) => pane.id);
+    read = await readSessionOption(sessionName, ADOPTED_MARKER_OPTION);
   } catch (err) {
-    return { kind: "unknown", why: `its panes could not be read (${err instanceof Error ? err.message : String(err)})` };
+    read = { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-  if (panes.length === 0) return { kind: "unknown", why: "tmux listed no pane for it" };
-  return panes.includes(adopted.boundPane) ? { kind: "same" } : { kind: "replaced", boundPane: adopted.boundPane, panes };
+  if (!read.ok) return { kind: "unknown", why: `its OpenRig marker (${ADOPTED_MARKER_OPTION}) could not be read: ${read.error}` };
+  if (!read.value) return { kind: "unknown", why: `it carries no OpenRig marker (${ADOPTED_MARKER_OPTION}): it may have been recreated since rig down, or the marker was never written` };
+  return read.value === nodeId ? { kind: "same" } : { kind: "replaced", marker: read.value };
 }
 
-/** Restore's words for a seat whose adopted session is live but not in the pane its binding names (kind `replaced`). */
-export function replacedAdoptedSessionReason(adopted: { sessionId: string; sessionName: string }, pane: { boundPane: string; panes: string[] }): string {
-  return `its adopted session '${adopted.sessionName}', which rig down left running, is live, but the seat's binding names pane ${pane.boundPane}, which is not one of that session's panes (${pane.panes.join(", ")}): the session may have been recreated since rig down, so restore neither reattaches it nor starts this seat. If it is the same conversation, release it with rig unclaim ${adopted.sessionId} and claim it again; otherwise end it`;
+/** The adopted session rig down left running, as restore finds it at apply time: the shared rule (DB), then tmux. */
+export type AdoptedSessionProbe =
+  | { kind: "none" }
+  | { kind: "gone" }
+  | { kind: "live"; sessionId: string; sessionName: string }
+  | { kind: "unknown"; sessionId: string; sessionName: string; why?: string }
+  | { kind: "replaced"; sessionId: string; sessionName: string; marker: string }
+  | { kind: "contested"; sessionId: string; sessionName: string; heldBy: { sessionId: string; seat: string } };
+
+/** The one probe restore, its plan and its forecasts run, so none of them can say "reattach" for a seat restore refuses.
+ *  `contested` is decided before tmux is asked. No tmux to ask is `unknown`. Read-only. */
+export async function probeAdoptedSession(
+  db: Database.Database,
+  nodeId: string,
+  tmux: { hasSession(name: string): Promise<boolean>; readSessionOption(session: string, key: string): Promise<SessionOptionRead> } | null | undefined,
+): Promise<AdoptedSessionProbe> {
+  const adopted = reattachableAdoptedSession(db, nodeId);
+  if (!adopted) return { kind: "none" };
+  if (adopted.kind === "contested") return adopted;
+  const { sessionId, sessionName } = adopted;
+  if (!tmux) return { kind: "unknown", sessionId, sessionName, why: "tmux is not available to this check" };
+  let alive: boolean;
+  try {
+    alive = await tmux.hasSession(sessionName);
+  } catch {
+    return { kind: "unknown", sessionId, sessionName };
+  }
+  if (!alive) return { kind: "gone" };
+  const identity = await checkAdoptedIdentity(nodeId, sessionName, (session, key) => tmux.readSessionOption(session, key));
+  if (identity.kind === "replaced") return { kind: "replaced", sessionId, sessionName, marker: identity.marker };
+  if (identity.kind === "unknown") return { kind: "unknown", sessionId, sessionName, why: identity.why };
+  return { kind: "live", sessionId, sessionName };
+}
+
+/** a2: best-effort, write the OpenRig marker into a session the person started that a seat adopts (claim-service does it in
+ *  setRiggedMetadata). A failed write leaves the marker unset, which restore later reads as unknown, never as a match. */
+export async function writeAdoptedMarker(tmux: { setSessionOption(session: string, key: string, value: string): Promise<unknown> } | null | undefined, sessionName: string, nodeId: string): Promise<void> {
+  if (!tmux) return;
+  try {
+    await tmux.setSessionOption(sessionName, ADOPTED_MARKER_OPTION, nodeId);
+  } catch { /* best-effort */ }
+}
+
+/** Restore's words for a live adopted session marked as another seat's (kind `replaced`). */
+export function replacedAdoptedSessionReason(adopted: { sessionId: string; sessionName: string }, marker: string): string {
+  return `its adopted session '${adopted.sessionName}', which rig down left running, is live, but it is marked as another seat's (${ADOPTED_MARKER_OPTION}=${marker}), so it is not the session rig down left: restore neither reattaches it nor starts this seat. Release it from this seat with rig unclaim ${adopted.sessionId}`;
+}
+
+/** Restore's words for an adopted session it cannot tell (kind `unknown`): tmux did not answer, or the session is live but
+ *  its marker is unset or unreadable. */
+export function unknownAdoptedSessionReason(adopted: { sessionId: string; sessionName: string; why?: string }): string {
+  return adopted.why
+    ? `its adopted session '${adopted.sessionName}', which rig down left running, is live, but it could not be told to be the session rig down left (${adopted.why}), so restore neither reattaches it nor starts a second session. Retry once tmux answers; if the session was recreated, release the seat with rig unclaim ${adopted.sessionId}`
+    : `its adopted session '${adopted.sessionName}', which rig down left running, could not be checked in tmux, so restore neither reattached it nor started a second session`;
 }
 
 /** z2 review F5: restore's words for a seat whose adopted session another seat's live row also names (kind `contested`). */

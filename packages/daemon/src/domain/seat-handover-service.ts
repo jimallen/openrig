@@ -1,3 +1,4 @@
+import { writeAdoptedMarker } from "./adopted-reattach.js";
 import type Database from "better-sqlite3";
 import { readSeatEffort } from "./seat-effort.js";
 import { NativePermissionStore } from "./native-permission-store.js";
@@ -718,6 +719,8 @@ export class SeatHandoverService {
     // Post-commit + non-blocking (mirrors FR-3): the async derivation cannot run
     // inside better-sqlite3's synchronous transaction. Never logs the token.
     if (input.reportedSource.mode === "discovered" && "result" in committed) {
+      // a2: a discovered successor is a session the person started (origin claimed): it carries the seat's OpenRig marker.
+      await writeAdoptedMarker(this.tmuxAdapter, discovered.tmuxSession, input.node.id);
       await this.captureDiscoveredResumeToken({
         rigId: input.status.rig_id,
         nodeId: input.node.id,
@@ -1006,7 +1009,8 @@ export class SeatHandoverService {
    *  from (OF-144 review F2: kept, so the departing row is always the occupant's). It agrees with the reattach rule's
    *  `created_at DESC, id DESC` (adopted-reattach.ts) because every session row is inserted by session-registry.ts with a
    *  monotonic ULID id and the default created_at, which nothing rewrites: a created_at tie falls to the id. They differ
-   *  only if the clock steps back a second or more while one daemon runs (z6 review F5, unit a2). */
+   *  only if the clock steps back a second or more, while a daemon runs or across a daemon restart (the id factory is per
+   *  process) (z6 review F5, unit a2). */
   private lookupLatestSession(nodeId: string): SessionRow | null {
     return this.db.prepare(
       "SELECT id, session_name, status, origin FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1"

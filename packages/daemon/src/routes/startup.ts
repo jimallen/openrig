@@ -133,10 +133,9 @@ startupRoutes.get("/:rigId", async (c) => {
   const snapshot = currentSnapshot(c, rig);
   const observedByNode = new Map<string, Awaited<ReturnType<typeof observeSeat>>>();
   for (const node of rig.nodes) observedByNode.set(node.id, await observeSeat(c, rig, node));
-  // OF-163 review F3: restore reattaches only a live adopted session, so a seat observed stopped gets no reattach forecast.
-  const reattach = readPreviewReattach(repo(c).db, rig);
-  // z2 review F5: restore refuses a contested one before asking tmux, so that forecast stands whatever was observed.
-  for (const node of rig.nodes) if (observedByNode.get(node.id)?.state === "stopped" && reattach.get(node.logicalId)?.kind !== "contested") reattach.delete(node.logicalId);
+  // OF-163 review F3 / a2 review F3: restore's own probe (liveness, then the OpenRig marker), so a seat restore would not
+  // reattach gets no reattach forecast, and one it would fail is forecast as failing.
+  const reattach = await readPreviewReattach(repo(c).db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined);
   const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name), reattach);
   const auth = await defaultProbeRuntimes();
   const history = sessions(c).getSessionsForRig(rig.rig.id);

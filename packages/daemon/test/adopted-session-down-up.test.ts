@@ -30,11 +30,12 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
     if (sessionName !== seat.sessionName) {
       await h.tmux.killSession(seat.sessionName);
       h.db.prepare("UPDATE sessions SET session_name = ? WHERE id = ?").run(sessionName, row.id);
-      // a2: the pane the harness tmux gives the session, as a claim records it (restore reattaches only in that pane).
-      h.sessionRegistry.updateBinding(seat.nodeId, { tmuxSession: sessionName, tmuxPane: "%fresh" });
+      h.sessionRegistry.updateBinding(seat.nodeId, { tmuxSession: sessionName, tmuxPane: "%3" });
       await h.tmux.createSession(sessionName);
     }
     h.db.prepare("UPDATE sessions SET origin = 'claimed', resume_type = 'claude_session_id', resume_token = 'adopted-token' WHERE id = ?").run(row.id);
+    // a2: the OpenRig marker a claim writes into the adopted session (claim-service setRiggedMetadata).
+    await h.tmux.setSessionOption(sessionName, "@rigged_node_id", seat.nodeId);
     return { seat, rowId: row.id, sessionName };
   }
   const down = (rigId: string, opts?: { delete?: boolean }) => new RigTeardownOrchestrator({
