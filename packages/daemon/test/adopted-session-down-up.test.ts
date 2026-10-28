@@ -124,6 +124,24 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
     expect(row(rowId), "the ordinary restore path superseded the old row").toMatchObject({ status: "superseded" });
   });
 
+  // The rule's every condition (adopted-reattach.ts): only a row rig down detached from an adopted session is reattached.
+  // Each shape below is the same live session and binding with one condition false; reattaching it would attach a session
+  // that is not this seat's adopted one (a launched seat's name now held by someone else, or a session someone stopped).
+  it.each([
+    ["the row is not adopted (a launched seat's detached row)", "UPDATE sessions SET origin = 'launched' WHERE id = ?"],
+    ["the row is not detached (it ended)", "UPDATE sessions SET status = 'exited' WHERE id = ?"],
+    ["the row carries a stop intent", "UPDATE sessions SET intentionally_stopped = 1 WHERE id = ?"],
+  ] as const)("not reattached when %s", async (_label, shape) => {
+    const { seat, rowId } = await adoptedSeat("person-shell");
+    const { snapshotId } = await down(seat.rigId);
+    h.db.prepare(shape).run(rowId);
+
+    const node = await upExisting(seat.rigId, snapshotId!);
+
+    expect(node?.reattached).toBeUndefined();
+    expect(row(rowId)).not.toMatchObject({ status: "running" });
+  });
+
   it("tmux cannot say whether the adopted session is live: the seat fails, neither reattached nor started", async () => {
     const { seat, rowId, sessionName } = await adoptedSeat("person-shell");
     const { snapshotId } = await down(seat.rigId);
