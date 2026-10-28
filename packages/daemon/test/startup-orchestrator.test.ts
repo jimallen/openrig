@@ -1550,13 +1550,13 @@ describe("StartupOrchestrator", () => {
   // injected `sleep` is the only thing that advances the clock, so a check that never waits cannot see the exit.
   describe("OF-161: a resumed Claude must still be in the foreground after it has had time to exit", () => {
     const NATIVE_MESSAGE = "No conversation found with session ID fe08b428-e2c5-49da-ad48-ea8d604e99c3";
-    function exitingClaude(exitedPane: string, claudeExitsAtMs = 1000) {
+    function exitingClaude(exitedPane: string, claudeExitsAtMs = 1000, exitedCommand = "zsh") {
       let elapsed = 0;
       const sleeps: number[] = [];
       const pane = () => elapsed < claudeExitsAtMs
         ? { command: "claude", content: "" }
-        : { command: "zsh", content: exitedPane };
-      const t = mockTmux({ capturePaneContent: vi.fn(async () => pane().content) });
+        : { command: exitedCommand, content: exitedPane };
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => pane().content), getPaneCommand: vi.fn(async () => pane().command) });
       const adapter = mockAdapter({
         checkReady: vi.fn(async () => {
           const probe = assessNativeResumeProbe({ runtime: "claude-code", paneCommand: pane().command, paneContent: pane().content });
@@ -1591,6 +1591,74 @@ describe("StartupOrchestrator", () => {
       expect(result.missingConversation).toBeUndefined();
       expect(result.errors.join("\n")).toContain("claude: command crashed");
       expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    // F1 (review): a healthy resumed pane can repaint history that mentions the phrase; the probe reads the phrase first.
+    it("a resumed Claude still in the foreground is NOT failed because its repainted history contains the phrase", async () => {
+      const seed = seedSession();
+      const history = `Claude Code v2.1.220\n> we saw: ${NATIVE_MESSAGE}\n❯ \n? for shortcuts`;
+      const { t, adapter, orch } = exitingClaude(history, 1000, "claude");
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent: history })).toMatchObject({ code: "no_conversation_found" });
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(readyEvents(seed.nodeId)).toHaveLength(1);
+      expect(t.killSession).not.toHaveBeenCalled();
+    });
+
+    // F2 (review): the settle window is a heuristic, so typing re-checks the foreground itself.
+    it("types nothing into a pane whose Claude exited after the settle read", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh") });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter: mockAdapter(), isRestore: true,
+        resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("no longer in the foreground");
+      expect(t.sendText).not.toHaveBeenCalled();
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    it("control: with Claude in the foreground the startup action is typed", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "claude") });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter: mockAdapter(), isRestore: true,
+        resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    it("control: a FRESH launch types even while its pane still shows the shell (the launch command is typed from it)", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh") });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter: mockAdapter(), startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    // F5 (review): the settle read's attention branch.
+    it("a provider gate seen at the settle read is attention_required, not ready, and nothing is typed", async () => {
+      const seed = seedSession();
+      const adapter = mockAdapter({ checkReady: vi.fn().mockResolvedValueOnce({ ready: true })
+        .mockResolvedValueOnce({ ready: false, code: "trust_gate", reason: "workspace trust approval" }) });
+      const t = mockTmux();
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1",
+        resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required", errors: [expect.stringContaining("workspace trust approval")] });
+      expect(t.sendText).not.toHaveBeenCalled();
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    // F5 (review): after a failed resume falls back to a fresh launch, input.resumeToken is still set but nothing resumed.
+    it("a fresh fallback after a failed resume takes no resume wait", async () => {
+      const seed = seedSession();
+      const { adapter, orch, sleeps } = exitingClaude("never reached", 60_000);
+      const launchHarness = vi.fn()
+        .mockResolvedValueOnce({ ok: false, error: "no conversation", recovery: "retry_fresh", missingConversation: true })
+        .mockResolvedValueOnce({ ok: true });
+      const result = await orch.startNode(makeInput(seed, { adapter: { ...adapter, launchHarness }, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: true }));
+      expect(launchHarness).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(sleeps).toEqual([]);
     });
 
     it("control: a resumed Claude that is still in the foreground after the wait is ready and resumed", async () => {
