@@ -78,9 +78,12 @@ else { process.stdin.resume(); console.error('Error: Unknown options: --name, --
           expect(ready).toBe(false);
           // The runner's own bound on a version probe that ignores SIGTERM is 3 s (SIGKILL), measured from
           // when that probe started: process start-up before it is the host's load, not the bound.
+          // The floor stays on the whole run (the probe cannot have been cut short: it lasts 3 s after the runner
+          // started). Only the ceiling is measured from the probe's own start, because spawnSync's 3 s clock began
+          // before the stub's node had booted, so the stub's start time cannot be a floor.
           const probeStarted = Number(fs.readFileSync(probeStartedFile, "utf8"));
           const probeMs = started + elapsedMs - probeStarted;
-          expect(probeMs).toBeGreaterThanOrEqual(2900);
+          expect(elapsedMs).toBeGreaterThanOrEqual(2900);
           expect(probeMs).toBeLessThan(6500);
           expect(child.exitCode, output).toBe(1);
           expect(state.exited.code).toBe(1);

@@ -24,6 +24,10 @@ async function closeServer(server: ServerType | undefined): Promise<void> {
   await closed;
 }
 
+// Every wait below resolves the moment its event happens (a frame arrives, a close fires, a call is recorded);
+// these ceilings only bound a genuine hang. The old 1-2 s / 10 s bounds were overrun on a heavily loaded host.
+const WS_EVENT_CEILING_MS = 60_000;
+
 const TOKEN = "test-ws-route-token";
 let PORT = 0; // assigned by the kernel once the server listens
 
@@ -290,7 +294,7 @@ describe("terminal WebSocket input ordering", () => {
 
     await vi.waitFor(() => {
       expect(textCompletions.join("")).toBe("echo");
-    }, { timeout: 1000 });
+    }, { timeout: WS_EVENT_CEILING_MS });
     ws.close();
   });
 });
@@ -349,8 +353,8 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     expect(result.reason).toContain("tmux session terminated");
     await vi.waitFor(() => {
       expect(stopPipePaneCalls).toContain("death-test");
-    }, { timeout: 2000 });
-  }, 10000);
+    }, { timeout: WS_EVENT_CEILING_MS });
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // OPR.0.4.0.38 - the broker behaviors at the real WebSocket route: multiple
@@ -426,11 +430,11 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     await vi.waitFor(() => {
       expect(aRecv.join("")).toContain("FANOUT-BYTES");
       expect(bRecv.join("")).toContain("FANOUT-BYTES");
-    }, { timeout: 1500 });
+    }, { timeout: WS_EVENT_CEILING_MS });
 
     a.close();
     b.close();
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 
   it("a client resize message never resizes the pane (FR-7): only the one canonical geometry call", async () => {
     resizeWindowCalls.length = 0;
@@ -438,7 +442,7 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     // One canonical-geometry resize happens at broker open.
     await vi.waitFor(() => {
       expect(resizeWindowCalls).toHaveLength(1);
-    }, { timeout: 1000 });
+    }, { timeout: WS_EVENT_CEILING_MS });
     expect(resizeWindowCalls[0]).toEqual({ cols: 90, rows: 27 });
 
     ws.send(JSON.stringify({ type: "resize", cols: 200, rows: 9 }));
@@ -447,7 +451,7 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     expect(resizeWindowCalls).toHaveLength(1); // unchanged - the resize was ignored
 
     ws.close();
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // OPR.0.4.0.38 - the detach-during-attach race (dev1-guard watchpoint #4): a
@@ -509,8 +513,8 @@ describe("terminal WebSocket detach-during-attach race", () => {
       expect(stopPipePaneCalls).toContain("race-session");
       expect(capturedOutputPath).toBeTruthy();
       expect(fs.existsSync(capturedOutputPath!)).toBe(false);
-    }, { timeout: 2000 });
-  }, 10000);
+    }, { timeout: WS_EVENT_CEILING_MS });
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // OPR.0.4.4.20 delta-C — the send-at-open race (found by the slice-20 P2 VM
@@ -567,9 +571,9 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     };
     await vi.waitFor(() => {
       expect(sentTexts).toEqual([preamble]);
-    }, { timeout: 2000 });
+    }, { timeout: WS_EVENT_CEILING_MS });
     ws.close();
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 
   it("caps pre-attach buffering instead of accepting unbounded early frames", async () => {
     sentTexts.length = 0;
@@ -583,7 +587,7 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     const evt = await closed;
     expect(evt.code).toBe(1009);
     expect(sentTexts).toEqual([]);
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // Exercise the real WebSocket callback: node-ws does not await async onOpen.

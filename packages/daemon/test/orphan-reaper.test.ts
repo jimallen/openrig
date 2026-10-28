@@ -5,6 +5,7 @@
 // a real daemon or ~/.openrig.
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -96,6 +97,30 @@ if (a === "daemon" && b === "start") {
 `);
     return { bin, pidFile };
   }
+
+  it("a killed runner (no teardown) leaves no daemon behind: the helper's watchdog stops the daemon it started", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, false);
+    const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./fixtures/scenario-daemon-orphan-child.ts", import.meta.url)), bin],
+      { stdio: ["ignore", "pipe", "inherit"] });
+    cleanups.push(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
+    let root = "";
+    await new Promise<void>((resolve, reject) => {
+      let out = "";
+      child.stdout!.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+        const m = /READY (\S+)/.exec(out);
+        if (m) { root = m[1]!; resolve(); }
+      });
+      child.once("exit", (code) => reject(new Error(`fixture exited ${code} before READY`)));
+    });
+    cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    cleanups.push(() => { try { process.kill(-pid, "SIGKILL"); } catch { /* gone */ } try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } });
+    expect(processAlive(pid), "positive control: the daemon runs while its runner lives").toBe(true);
+    child.kill("SIGKILL");
+    expect(await waitGone(pid, 60_000), "daemon stopped after its runner was killed").toBe(true);
+  }, 120_000);
 
   for (const ignoreTerm of [false, true]) {
     it(`leaves no daemon behind when \`rig daemon stop\` does not stop it${ignoreTerm ? " and it ignores SIGTERM" : ""}`, async () => {
