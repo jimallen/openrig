@@ -11,6 +11,7 @@ import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
   ProjectionResult, StartupDeliveryResult, ForkSource,
 } from "./runtime-adapter.js";
+import { isShellForeground } from "./shell-classifier.js";
 import { adapterStartupContent, isAttentionRequiredReadinessCode, resolveConcreteHint } from "./runtime-adapter.js";
 import type { ProjectionPlan } from "./projection-planner.js";
 import { issueStartupChallenge, STARTUP_PROOF_INSTRUCTION_LINE } from "./startup-proof.js";
@@ -31,7 +32,8 @@ import { readStoredJsonObject } from "./stored-json.js";
 // Expanded startup text can put the current input marker above 50 scrollback lines.
 /** OF-161: how long a resumed Claude gets to exit before the resume counts as held. `claude --resume <id>` is the pane's
  *  foreground process while it starts, so a read taken at launch cannot tell a resume from one about to print "No
- *  conversation found" and quit. A missing conversation is reported within about a second; this leaves margin. */
+ *  conversation found" and quit. This is a heuristic window: how quickly Claude reports a missing conversation has NOT
+ *  been measured. A later exit is caught by the foreground check made before any startup text is typed. */
 const CLAUDE_RESUME_SETTLE_MS = 2500;
 const STARTUP_SUBMIT_CAPTURE_LINES = 200;
 // Claude Code 2.1.289 has taken Enter on a large startup paste after the first look, while the composer
@@ -159,6 +161,8 @@ type StartupDeliveryInput = StartupInput & {
   submissionWarnings: string[]; stagedSubmissionWarning?: string;
   warnings: string[];
   startupAttemptId: string; sendOrder: number; submissionDiagnostics: StartupSubmissionDiagnostic[];
+  /** OF-161: set for a resumed Claude launch; every send first re-checks that the pane's foreground is not a shell. */
+  guardShellForeground?: boolean;
   /** Claude only: whether the latest interactive send was observed submitted (a clear composer). */
   lastSubmissionConfirmed?: boolean;
 };
@@ -509,12 +513,15 @@ export class StartupOrchestrator {
         const held = await input.adapter.checkReady(input.binding);
         if (!held.ready) {
           if (held.code === "no_conversation_found" || held.code === "returned_to_shell") {
-            const native = await this.paneTail(input.binding.tmuxSession);
-            const missing = held.code === "no_conversation_found";
-            errors.push(`Claude resume failed: ${missing ? "no conversation found for the requested session" : "the pane returned to its shell instead of staying in Claude"}${native ? ` (pane output: ${native})` : ""}`);
-            return this.fail(input, "failed", errors, native || undefined, false, "retry_fresh", missing);
-          }
-          if (isAttentionRequiredReadinessCode(held.code)) {
+            // The phrase also appears in a healthy resumed pane whose repainted history mentions it, so it counts only
+            // when the foreground really is a shell. An unreadable foreground proves nothing and is not a failure.
+            if (await this.foregroundIsShell(input.binding.tmuxSession)) {
+              const native = await this.paneTail(input.binding.tmuxSession);
+              const missing = held.code === "no_conversation_found";
+              errors.push(`Claude resume failed: ${missing ? "no conversation found for the requested session" : "the pane returned to its shell instead of staying in Claude"}${native ? ` (pane output: ${native})` : ""}`);
+              return this.fail(input, "failed", errors, native || undefined, false, "retry_fresh", missing);
+            }
+          } else if (isAttentionRequiredReadinessCode(held.code)) {
             errors.push(`Startup requires attention: ${held.reason ?? "unknown"}`);
             return this.fail(input, "attention_required", errors, undefined, false);
           }
@@ -524,6 +531,8 @@ export class StartupOrchestrator {
         warnings.push(`${input.sessionName ?? input.nodeId}: the resumed Claude could not be re-checked after launch: ${(err as Error).message}`);
       }
     }
+
+    deliveryInput.guardShellForeground = !input.skipHarnessLaunch && input.adapter.runtime === "claude-code" && continuityOutcome === "resumed";
 
     // The adapter returned the exact enforcing value it inserted, and readiness
     // proved this managed launch became live. Persistence is deliberately
@@ -731,6 +740,15 @@ export class StartupOrchestrator {
     try { return this.readStartupFile(file); } catch { return ""; }
   }
 
+  /** True only when the pane's foreground command is positively a shell; an unreadable pane is not. */
+  private async foregroundIsShell(session: string | null | undefined): Promise<boolean> {
+    if (!session) return false;
+    try {
+      const command = await this.tmuxAdapter.getPaneCommand(session);
+      return !!command && isShellForeground(command.trim().toLowerCase());
+    } catch { return false; }
+  }
+
   /** The last non-empty lines of the pane, for a failure that should quote what the runtime itself said. */
   private async paneTail(session: string | null | undefined): Promise<string> {
     if (!session) return "";
@@ -929,8 +947,12 @@ export class StartupOrchestrator {
   }
 
   private async sendInteractiveText(input: StartupDeliveryInput, text: string, source: StartupSubmissionDiagnostic["source"], actionIndex?: number): Promise<StartupSendFailure | null> {
-    const sendOrder = ++input.sendOrder;
     const tmuxSession = input.binding.tmuxSession!;
+    // OF-161: a resumed Claude that exited after the settle read must not have startup text typed into its shell.
+    if (input.guardShellForeground && await this.foregroundIsShell(tmuxSession)) {
+      return { error: `Claude is no longer in the foreground of ${tmuxSession} (its pane is back at a shell); nothing was typed` };
+    }
+    const sendOrder = ++input.sendOrder;
     input.lastSubmissionConfirmed = false;
     const textResult = await this.tmuxAdapter.sendText(tmuxSession, text);
     if (!textResult.ok) {
