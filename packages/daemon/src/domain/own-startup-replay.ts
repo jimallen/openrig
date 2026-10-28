@@ -135,14 +135,14 @@ export function seatStartupForRestore(
   if (!from) return { kind: "none_usable", why, ownRow: own.kind !== "none" };
   return {
     kind: "fallback", context: from.context, from, why,
-    warning: `Restore: ${seat.logicalId}: ${why}. This fresh start replays the copy of its startup files saved in snapshot ${from.snapshotId} (${from.kind}, ${from.createdAt}), the newest snapshot of this rig whose copy can be used; a successful launch saves it as the seat's new context.${skippedNote(from)}`,
+    warning: `Restore: ${seat.logicalId}: ${why}. This fresh start replays the copy of its startup files saved in snapshot ${from.snapshotId} (${from.kind}, ${from.createdAt}), the newest snapshot of this rig whose copy can be used; a successful launch saves it as the seat's new context.${unreadableSnapshotsNote(from)}`,
   };
 }
 
-/** OF-168: the newer snapshots passed over on the way to `from` because their saved data is not JSON: what they hold for this seat is
+/** OF-168: (every caller that offers or replays a snapshot copy says this) the newer snapshots passed over on the way to `from` because their saved data is not JSON: what they hold for this seat is
  *  unknown, so the operator is told rather than left to assume the newest snapshot was read. Empty when none were. */
-function skippedNote(from: UsableSnapshotCopy): string {
-  return from.skippedUnreadable?.length ? ` Newer snapshot${from.skippedUnreadable.length === 1 ? "" : "s"} ${from.skippedUnreadable.join(", ")} could not be read (saved data is not JSON) and ${from.skippedUnreadable.length === 1 ? "was" : "were"} passed over; repair or remove ${from.skippedUnreadable.length === 1 ? "it" : "them"}.` : "";
+export function unreadableSnapshotsNote(from: UsableSnapshotCopy | null): string {
+  return from?.skippedUnreadable?.length ? ` Newer snapshot${from.skippedUnreadable.length === 1 ? "" : "s"} ${from.skippedUnreadable.join(", ")} could not be read (saved data is not JSON) and ${from.skippedUnreadable.length === 1 ? "was" : "were"} passed over; repair or remove ${from.skippedUnreadable.length === 1 ? "it" : "them"}.` : "";
 }
 
 /** The sentence restore refuses with when no snapshot holds a usable copy. */

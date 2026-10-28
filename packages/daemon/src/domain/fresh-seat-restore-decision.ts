@@ -8,7 +8,7 @@ import { resolveFreshSeatStartup, specSourceUntrusted, startupFromSnapshotId, ty
 import { freshSeatLaunchCommand } from "./active-occupant.js";
 import { liveSeatGateInputs } from "./restore-seat-gates.js";
 import { freshSeatReplaysSnapshotStartup, startupInputFindings, validatePreRestore, type FreshSeatStartupOverride } from "./restore-preconditions.js";
-import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable } from "./own-startup-replay.js";
+import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, startupContextUnusable, unreadableSnapshotsNote } from "./own-startup-replay.js";
 import { readNodeStartupSnapshot } from "./snapshot-capture.js";
 import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibility.js";
 import { deriveCanonicalSessionName, deriveSessionName } from "./session-name.js";
@@ -197,7 +197,7 @@ export function listedRefusalRemedy(
   if (best && input.startupFrom !== `snapshot:${best.snapshotId}`
     && startupInputFindings({ id: live!.id, logicalId: input.logicalId }, best.context, input.exists, true).blockers.length === 0) {
     const others = input.freshLogicalIds.length > 1 ? " (--startup-from applies to every seat listed with --fresh)" : "";
-    routes.push(`start ${input.logicalId} from snapshot ${best.snapshotId}'s copy of its startup files (${best.kind}, taken ${best.createdAt}): rig up ${quote(rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from snapshot:${best.snapshotId}${others}`);
+    routes.push(`start ${input.logicalId} from snapshot ${best.snapshotId}'s copy of its startup files (${best.kind}, taken ${best.createdAt}): rig up ${quote(rigName)} --existing --fresh ${quote(input.logicalId)} --startup-from snapshot:${best.snapshotId}${others}${unreadableSnapshotsNote(best)}`);
   }
   let leaveOutRefusal: string | null = null;
   if (input.snapshot) {
