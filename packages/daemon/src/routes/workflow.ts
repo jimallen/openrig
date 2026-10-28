@@ -10,6 +10,7 @@ import {
 } from "../domain/workflow-runtime.js";
 import { WorkflowSpecError } from "../domain/workflow-spec-cache.js";
 import { WorkflowHumanDestinationError } from "../domain/workflow-human-destination.js";
+import { UnreadableRowError } from "../domain/unreadable-row.js";
 
 /**
  * Workflow runtime HTTP routes (PL-004 Phase D). Backs `rig workflow` CLI.
@@ -122,6 +123,8 @@ export function workflowRoutes(): Hono {
         : 500;
       return c.json({ error: err.code, message: err.message, ...(err.meta ?? {}) }, status as 200);
     }
+    // OF-168: a refusal naming a damaged saved row keeps its 422 `saved_row_unreadable` body (not a bare 500 "internal_error").
+    if (err instanceof UnreadableRowError) return err.getResponse();
     const message = err instanceof Error ? err.message : "internal error";
     return c.json({ error: "internal_error", message }, 500);
   }

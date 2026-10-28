@@ -17,7 +17,7 @@ import { resolveStartupProof } from "./startup-resolver.js";
 import { serializeStartupContext } from "./startup-orchestrator.js";
 import { reanchorBuiltinStartupFile, reanchorShippedProjectionEntry } from "./builtin-startup-files.js";
 import type { SkillLoadout, SkillRuntime } from "./skill-catalog.js";
-import { newestUsableSnapshotCopy, startupContextUnusable, type UsableSnapshotCopy } from "./own-startup-replay.js";
+import { newestUsableSnapshotCopy, startupContextUnusable, unreadableSnapshotsNote, type UsableSnapshotCopy } from "./own-startup-replay.js";
 import { rigAdviceHandleIn } from "./rig-ref.js";
 
 /** What the operator asked a fresh launch to start from. `snapshot:<id>` (OF-36 Q2, Jim 2026-10-20): that snapshot's
@@ -335,7 +335,7 @@ function malformedContextGuidance(
   const repair = "the saved row has to be repaired outside restore";
   // OF-36 Q2: when some snapshot holds a valid copy, the narrowest way back is that copy, for this seat only.
   const viaSnapshot = how.snapshotRoute
-    ? `To start only this seat from the newest snapshot copy of its startup files that is valid, leaving the other seats running: rig seat launch ${quote(`${input.logicalId}@${how.rigName}`)} --fresh --stop --startup-from snapshot:${how.snapshotRoute.snapshotId} --reason "<why>" (snapshot ${how.snapshotRoute.snapshotId}, ${how.snapshotRoute.kind}, taken ${how.snapshotRoute.createdAt}; the launch saves that copy as the seat's new context). `
+    ? `To start only this seat from the newest snapshot copy of its startup files that is valid, leaving the other seats running: rig seat launch ${quote(`${input.logicalId}@${how.rigName}`)} --fresh --stop --startup-from snapshot:${how.snapshotRoute.snapshotId} --reason "<why>" (snapshot ${how.snapshotRoute.snapshotId}, ${how.snapshotRoute.kind}, taken ${how.snapshotRoute.createdAt}; the launch saves that copy as the seat's new context).${unreadableSnapshotsNote(how.snapshotRoute)} `
     : "No snapshot of this rig holds a valid copy of this seat's startup files. ";
   // OF-36 Q1: `rig down` now snapshots the rig even when this seat's context is not JSON (that seat gets no copy), so
   // one restore route serves both kinds of damage.
@@ -434,7 +434,7 @@ export function readSnapshotStartupCopy(
       ok: false as const,
       message,
       guidance: best
-        ? `The newest snapshot of this rig whose copy of ${seat.logicalId}'s startup files can be used is ${best.snapshotId} (${best.kind}, taken ${best.createdAt}): --startup-from snapshot:${best.snapshotId}.`
+        ? `The newest snapshot of this rig whose copy of ${seat.logicalId}'s startup files can be used is ${best.snapshotId} (${best.kind}, taken ${best.createdAt}): --startup-from snapshot:${best.snapshotId}.${unreadableSnapshotsNote(best)}`
         : `No snapshot of this rig holds a copy of ${seat.logicalId}'s startup files that can be used.`,
     };
   };

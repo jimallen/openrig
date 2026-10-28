@@ -53,7 +53,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride } from "./restore-preconditions.js";
-import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, type SeatStartupForRestore } from "./own-startup-replay.js";
+import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, unreadableSnapshotsNote, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
 import { classifySessionLiveness } from "./session-liveness.js";
@@ -1222,7 +1222,7 @@ export class RestoreOrchestrator {
         const now = newestUsableSnapshotCopy(this.db, rigId, node.logicalId, seatRuntime);
         const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
         const next = now
-          ? `To start it from the newest snapshot copy that can be used now (snapshot ${now.snapshotId}, ${now.kind}, taken ${now.createdAt}): rig seat launch ${quote(`${node.logicalId}@${rigName}`)} --fresh --startup-from snapshot:${now.snapshotId} --reason "<why>".`
+          ? `To start it from the newest snapshot copy that can be used now (snapshot ${now.snapshotId}, ${now.kind}, taken ${now.createdAt}): rig seat launch ${quote(`${node.logicalId}@${rigName}`)} --fresh --startup-from snapshot:${now.snapshotId} --reason "<why>".${unreadableSnapshotsNote(now)}`
           : noUsableCopyRemedy({ scope: "seat", rigName, logicalId: node.logicalId, specRecorded: !!this.rigRepo.getRigSpecSource(rigId), ownRow: this.db.prepare("SELECT 1 FROM node_startup_context WHERE node_id = ?").get(nodeId) !== undefined, ...(specSourceUntrusted(this.seatStartupSource, rigId) ? { specUntrusted: { rigId } } : {}) });
         return { nodeId, logicalId: node.logicalId, status: "failed", error: `Fresh start refused: ${node.logicalId}: snapshot ${carried.snapshotId}, whose copy of its startup files this restore checked before it started, was removed before the seat's launch, so restore does not choose another copy unchecked. ${next} No session was started.` };
       }

@@ -14,6 +14,7 @@ import {
   MISSION_CONTROL_VERBS,
 } from "./mission-control-action-log.js";
 import { readStoredJsonObject } from "../stored-json.js";
+import { NAMED_ROWS_LIMIT } from "../named-rows.js";
 
 export interface AuditQueryInput {
   qitemId?: string;
@@ -41,6 +42,12 @@ export interface AuditQueryResult {
   rows: MissionControlActionEntry[];
   hasMore: boolean;
   nextBeforeId: string | null;
+  /** OF-168: present only when a scope filter was given AND rows matching every OTHER filter have an `audit_notes_json` that is not
+   *  JSON. Such a row cannot say what scope it carries, so a scope filter cannot match it; it is named here (action ids, newest
+   *  first, at most NAMED_ROWS_LIMIT) instead of the filtered browse reading as if it did not exist. Which rows match is unchanged. */
+  unreadableAuditNotes?: string[];
+  /** How many MORE such rows exist beyond the ones named; present only when the list was cut at NAMED_ROWS_LIMIT. */
+  unreadableAuditNotesMore?: number;
 }
 
 interface ActionRow {
@@ -61,6 +68,7 @@ interface ActionRow {
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+
 
 export class MissionControlAuditQueryError extends Error {
   constructor(
@@ -87,17 +95,21 @@ export class MissionControlAuditBrowse {
     const limit = clampLimit(input.limit);
     const where: string[] = [];
     const params: Array<string | number> = [];
+    // The conditions that are NOT scope filters, in order, for the damaged-notes naming below (same text, same parameters).
+    const plain: Array<{ sql: string; param?: string | number }> = [];
+    const addPlain = (sql: string, param?: string | number): void => {
+      where.push(sql);
+      if (param !== undefined) params.push(param);
+      plain.push(param === undefined ? { sql } : { sql, param });
+    };
     if (input.qitemId) {
-      where.push("qitem_id = ?");
-      params.push(input.qitemId);
+      addPlain("qitem_id = ?", input.qitemId);
     }
     if (input.actionVerb) {
-      where.push("action_verb = ?");
-      params.push(input.actionVerb);
+      addPlain("action_verb = ?", input.actionVerb);
     }
     if (input.actorSession) {
-      where.push("actor_session = ?");
-      params.push(input.actorSession);
+      addPlain("actor_session = ?", input.actorSession);
     }
     // OPR.0.4.4.19 FR-9 — filter on the pinned audit_notes_json shape via
     // SQLite JSON1 (ships with better-sqlite3). NULL audit_notes_json rows
@@ -119,12 +131,10 @@ export class MissionControlAuditBrowse {
       params.push(input.approvalScope);
     }
     if (input.since) {
-      where.push("acted_at >= ?");
-      params.push(input.since);
+      addPlain("acted_at >= ?", input.since);
     }
     if (input.until) {
-      where.push("acted_at <= ?");
-      params.push(input.until);
+      addPlain("acted_at <= ?", input.until);
     }
     if (input.beforeId) {
       // Look up the cursor row's rowid so pagination uses SQLite's
@@ -132,8 +142,7 @@ export class MissionControlAuditBrowse {
       // action_id (whose same-ms tail is random; non-deterministic
       // for tiebreaks). Filed lesson:
       // feedback_ulid_tiebreaker_nondeterministic.md.
-      where.push("rowid < (SELECT rowid FROM mission_control_actions WHERE action_id = ?)");
-      params.push(input.beforeId);
+      addPlain("rowid < (SELECT rowid FROM mission_control_actions WHERE action_id = ?)", input.beforeId);
     }
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     // Fetch limit+1 to detect hasMore without a separate count query.
@@ -145,10 +154,25 @@ export class MissionControlAuditBrowse {
     const hasMore = rows.length > limit;
     const trimmed = hasMore ? rows.slice(0, limit) : rows;
     const nextBeforeId = hasMore && trimmed.length > 0 ? trimmed[trimmed.length - 1]!.action_id : null;
+    const scoped = Boolean(input.scopeTier || input.scopeId || input.scopePath || input.approvalScope);
+    let unreadableAuditNotes: string[] = [];
+    let unreadableAuditNotesMore = 0;
+    if (scoped) {
+      const damagedWhere = `audit_notes_json IS NOT NULL AND NOT json_valid(audit_notes_json)${plain.map((c) => ` AND ${c.sql}`).join("")}`;
+      const plainParams = plain.flatMap((c) => (c.param === undefined ? [] : [c.param]));
+      unreadableAuditNotes = (this.db.prepare(`SELECT action_id FROM mission_control_actions WHERE ${damagedWhere} ORDER BY acted_at DESC, rowid DESC LIMIT ?`)
+        .all(...plainParams, NAMED_ROWS_LIMIT) as Array<{ action_id: string }>).map((r) => r.action_id);
+      if (unreadableAuditNotes.length === NAMED_ROWS_LIMIT) {
+        const total = (this.db.prepare(`SELECT count(*) AS n FROM mission_control_actions WHERE ${damagedWhere}`).get(...plainParams) as { n: number }).n;
+        unreadableAuditNotesMore = total - NAMED_ROWS_LIMIT;
+      }
+    }
     return {
       rows: trimmed.map(rowToEntry),
       hasMore,
       nextBeforeId,
+      ...(unreadableAuditNotes.length > 0 ? { unreadableAuditNotes } : {}),
+      ...(unreadableAuditNotesMore > 0 ? { unreadableAuditNotesMore } : {}),
     };
   }
 }

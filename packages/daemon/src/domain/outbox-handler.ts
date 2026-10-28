@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { RowColumnReader } from "./unreadable-row.js";
+import { namedRows } from "./named-rows.js";
 
 /**
  * The EXECUTABLE wake-intent namespace. A durable wake intent is written by the
@@ -239,15 +240,43 @@ export class OutboxHandler {
     const usage = this.db.prepare(`SELECT count(*) AS count, coalesce(sum(length(CAST(body AS BLOB))),0) AS bytes
       FROM outbox_entries WHERE delivery_state='retained' AND json_valid(guard_binding) AND json_extract(guard_binding,'$.nodeId')=?`)
       .get(nodeId) as { count: number; bytes: number };
-    // OF-117: a retained row whose binding is not JSON names no node, so no node's quota counts it (heldForNode names it).
+    // OF-168: a retained row whose binding is not JSON names no node, so it may be THIS node's: it counts toward every node's quota
+    // (reading it as absent admitted new held messages past a quota it may already fill) and a refusal names it.
+    const damaged = this.db.prepare(`SELECT outbox_id, length(CAST(body AS BLOB)) AS bytes FROM outbox_entries
+      WHERE delivery_state='retained' AND guard_binding IS NOT NULL AND NOT json_valid(guard_binding) ORDER BY ts_dispatched,outbox_id`)
+      .all() as Array<{ outbox_id: string; bytes: number }>;
+    const count = usage.count + damaged.length;
+    const bytes = usage.bytes + damaged.reduce((sum, row) => sum + row.bytes, 0);
     const size = Buffer.byteLength(body, "utf8");
-    if (size > 1024 * 1024 || usage.count >= 100 || usage.bytes + size > 8 * 1024 * 1024) {
-      throw new OutboxHandlerError("retained_quota_full", "Held-message quota is full. Retire a specific held message to release active quota; no input was written.");
+    if (size > 1024 * 1024 || count >= 100 || bytes + size > 8 * 1024 * 1024) {
+      // The way out for a row that cannot be read: retire it by id (retire() accepts it; the daemon cannot say which seat it was for).
+      const named = damaged.length > 0
+        ? ` ${damaged.length} held message${damaged.length === 1 ? "" : "s"} with an unreadable binding (${namedRows(damaged.map((row) => row.outbox_id))}) count${damaged.length === 1 ? "s" : ""} toward every seat's quota until retired or removed: rig seat retire-held-message <any seat> <id> --reason <text>.`
+        : "";
+      throw new OutboxHandlerError("retained_quota_full", `Held-message quota is full. Retire a specific held message to release active quota; no input was written.${named}`);
     }
+  }
+
+  /** OF-168: a retained message whose guard binding is not JSON (it names no seat; it counts toward every seat's quota). */
+  isUnreadableHeld(outboxId: string): boolean {
+    return this.hasDamagedBinding(outboxId, "retained");
+  }
+
+  private hasDamagedBinding(outboxId: string, state: "retained" | "retired"): boolean {
+    return this.db.prepare(`SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND delivery_state = ? AND guard_binding IS NOT NULL AND NOT json_valid(guard_binding)`).get(outboxId, state) !== undefined;
   }
 
   retire(outboxId: string, actor: string, reason: string): OutboxEntry {
     if (!actor.trim() || !reason.trim()) throw new OutboxHandlerError("retirement_reason_required", "Actor and reason are required.");
+    // OF-168: a retained row whose binding is not JSON is released by this explicit act by id. It is the only way out of the quota it
+    // counts against, and the act needs nothing the binding holds; the reason records that the binding was unreadable.
+    if (this.isUnreadableHeld(outboxId)) {
+      this.db.prepare(`UPDATE outbox_entries SET delivery_state='retired', retired_at=?, retired_by=?, retirement_reason=?
+        WHERE outbox_id=? AND delivery_state='retained'`).run(new Date().toISOString(), actor, `${reason} [guard_binding was not readable JSON when retired]`, outboxId);
+      return this.rowToEntry(this.getByIdRaw(outboxId)!, "mark");
+    }
+    // Retiring it again is the same answer, not a refusal of the row that was just released.
+    if (this.hasDamagedBinding(outboxId, "retired")) return this.rowToEntry(this.getByIdRaw(outboxId)!, "mark");
     const entry = this.getByIdOrThrow(outboxId);
     if (entry.deliveryState === "retired") return entry;
     if (entry.deliveryState !== "retained") throw new OutboxHandlerError("delivery_not_retained", "Only retained messages can be retired.");

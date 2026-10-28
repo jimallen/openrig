@@ -275,7 +275,7 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
       reconcileStuckExceptions: () => runtime.reconcileStuckExceptions(),
     });
     const exceptionRows = () => db.prepare("SELECT qitem_id, tags FROM queue_items WHERE tags LIKE '%exception:stuck_overdue%'").all() as Array<{ qitem_id: string; tags: string }>;
-    return { sweep, lines, ensureLines, exceptionRows, queueRepo, packetId, addOverdueInstance };
+    return { sweep, lines, ensureLines, exceptionRows, queueRepo, packetId, addOverdueInstance, ensurer };
   }
   /** Rewrite the item the first sweep opened into the historical form: same tags, no recovery-for link. */
   function makeHistorical(row: { qitem_id: string; tags: string }): void {
@@ -316,6 +316,33 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
     const second = await sweep();
 
     expect(second.exceptionItemsCreated, "the other run's packet is not covered by the first run's damaged item").toBe(1);
+    expect(exceptionRows()).toHaveLength(2);
+    expect(ensureLines.filter((line) => line.includes(first!.qitem_id) && line.includes("not readable JSON"))).toHaveLength(1);
+  });
+
+  // z4 review D4: the "ITS occurrence only" row above uses a SECOND INSTANCE, whose instance tag already tells the two apart, so
+  // dropping the `occurrence:` tag from the ensurer's damaged lookup survived. Here the second occurrence is inside the SAME
+  // instance (a second overdue packet of one run: same workflow, class, instance), so the occurrence tag alone tells them apart.
+  it("a damaged historical item belongs to ITS occurrence only: a second overdue packet of the SAME instance still opens its own item", async () => {
+    const { sweep, ensureLines, exceptionRows, queueRepo, packetId, ensurer } = await setup();
+    expect((await sweep()).exceptionItemsCreated).toBe(1);
+    const [first] = exceptionRows();
+    const instanceId = (JSON.parse(first!.tags) as string[]).find((tag) => tag.startsWith("instance:"))!.slice("instance:".length);
+    makeHistorical(first!);
+    truncate(db, first!.qitem_id);
+    const secondPacket = await queueRepo.create({ sourceSession: "ops@rig", destinationSession: "producer@rig", body: "second overdue packet of the same run", nudge: false });
+    const overdue = (id: string) => ({
+      workflowName: "z4-stuck-pipeline", workflowVersion: "1", createdBySession: "ops@rig",
+      verdict: { state: "overdue-unclaimed" as const, evidence: { instanceId, stepId: "produce", packetId: id, ownerSession: "producer@rig", packetState: "pending",
+        anchor: "created_at" as const, anchorAt: new Date(0).toISOString(), overdueBySeconds: 3600, ageSeconds: 7200, claimedAt: null } },
+    });
+
+    const own = await ensurer(overdue(packetId));
+    expect(own, "control: the damaged item IS the first occurrence's item").toEqual({ outcome: "deduped", qitemId: first!.qitem_id });
+    const other = await ensurer(overdue(secondPacket.qitemId));
+
+    expect(other.outcome, "the second packet's occurrence is not covered by the first packet's damaged item").toBe("created");
+    expect(other.qitemId).not.toBe(first!.qitem_id);
     expect(exceptionRows()).toHaveLength(2);
     expect(ensureLines.filter((line) => line.includes(first!.qitem_id) && line.includes("not readable JSON"))).toHaveLength(1);
   });

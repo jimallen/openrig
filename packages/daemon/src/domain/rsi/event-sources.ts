@@ -133,7 +133,15 @@ class EventThresholdSource extends RsiFindingSource {
         suggestedInspection: text.suggestedInspection,
       };
     });
-    return { findings, total: firing.length, unit: `${c.subjectNoun}s`, order: "count desc, subject" };
+    // OF-168: the grouped read above counts only events whose payload is JSON (json_extract over a damaged payload would end the whole
+    // scan). A damaged event cannot be judged, so it is in neither the universe nor the hits: the coverage row says how many were left
+    // out, so a quiet detector is not read as "every event was judged". Nothing about which events are counted changes.
+    const unjudged = db.prepare("SELECT count(*) AS n, min(seq) AS first_seq, max(seq) AS last_seq FROM events WHERE type = ? AND created_at >= ? AND NOT json_valid(payload)")
+      .get(c.eventType, since) as { n: number; first_seq: number | null; last_seq: number | null };
+    const note = unjudged.n > 0
+      ? `${unjudged.n} ${c.eventType} event(s) in the window (seq ${unjudged.first_seq} to ${unjudged.last_seq}) have a payload that is not readable JSON and were not judged (a damaged payload cannot be classified, so this may include events the detector would have ignored); the counts above leave them out. Repair or remove the event rows.`
+      : undefined;
+    return { findings, total: firing.length, unit: `${c.subjectNoun}s`, order: "count desc, subject", ...(note !== undefined ? { note } : {}) };
   }
 }
 
@@ -163,7 +171,11 @@ export function createCompactionStormSource(deps: RsiFindingSourceDeps): RsiFind
     crossCheck: (db, since, sessionStarts) => {
       const identities = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND json_valid(payload) AND json_extract(payload, '$.provenance') = 'hook' AND created_at >= ?").get(since) as { n: number }).n;
       if (identities !== sessionStarts) {
-        throw new Error(`${RSI_COMPACTION_STORM}: ${sessionStarts} SessionStart activity events disagree with ${identities} hook agent.session_identity events in the same window`);
+        // OF-168: the count above leaves out an identity event whose payload is not JSON (its provenance cannot be read). Say so, so a
+        // disagreement caused by a damaged row is not read as a wrong counted series.
+        const unreadable = (db.prepare("SELECT count(*) AS n FROM events WHERE type = 'agent.session_identity' AND created_at >= ? AND NOT json_valid(payload)").get(since) as { n: number }).n;
+        const damaged = unreadable > 0 ? ` (${unreadable} agent.session_identity event(s) in the window have a payload that is not readable JSON and were not counted; repair or remove them)` : "";
+        throw new Error(`${RSI_COMPACTION_STORM}: ${sessionStarts} SessionStart activity events disagree with ${identities} hook agent.session_identity events in the same window${damaged}`);
       }
     },
     scope: seatScope,

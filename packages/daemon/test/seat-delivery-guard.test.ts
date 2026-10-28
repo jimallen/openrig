@@ -315,6 +315,30 @@ function httpFixture() {
   return {...f,app,post};
 }
 describe("supported route effects and lifecycle preflight",()=>{
+  // OF-168: a retained message whose guard binding is not JSON names no seat; the quota refusal tells the operator to retire it by id.
+  it("retire-held-message releases a held message whose binding is not JSON by id (any seat), recording that the binding was unreadable",async()=>{
+    const f=httpFixture();
+    await f.post("/api/seat/set-typing-guard/worker@test",{enabled:true,reason:"draft"});
+    expect((await f.post("/api/transport/send",{session:"worker@test",text:"message",deliveryId:"damaged-id",verify:true,force:true})).status).toBe(200);
+    f.db.prepare("UPDATE outbox_entries SET guard_binding=? WHERE outbox_id='damaged-id'").run("{not json");
+
+    const retired=await f.post("/api/seat/retire-held-message/sibling@test/damaged-id",{reason:"operator cleared it"});
+
+    expect(retired.status).toBe(200);
+    expect(f.db.prepare("SELECT delivery_state AS s, retired_by AS by, retirement_reason AS why FROM outbox_entries WHERE outbox_id='damaged-id'").get())
+      .toEqual({s:"retired",by:"human@test",why:"operator cleared it [guard_binding was not readable JSON when retired]"});
+    f.db.close();
+  });
+  it("retire-held-message still answers 404 for another seat's readable held message, and for an id that is not held at all",async()=>{
+    const f=httpFixture();
+    await f.post("/api/seat/set-typing-guard/worker@test",{enabled:true,reason:"draft"});
+    expect((await f.post("/api/transport/send",{session:"worker@test",text:"message",deliveryId:"readable-id",verify:true,force:true})).status).toBe(200);
+
+    expect((await f.post("/api/seat/retire-held-message/sibling@test/readable-id",{reason:"not mine"})).status).toBe(404);
+    expect(f.db.prepare("SELECT delivery_state AS s FROM outbox_entries WHERE outbox_id='readable-id'").get()).toEqual({s:"retained"});
+    expect((await f.post("/api/seat/retire-held-message/worker@test/no-such-id",{reason:"x"})).status).toBeGreaterThanOrEqual(400);
+    f.db.close();
+  });
   it("enable/read/send/retire/read-by-ID/disable exposes actual custody once, no body actor override",async()=>{
     const f=httpFixture();
     expect((await f.post("/api/seat/set-typing-guard/worker@test",{enabled:true,reason:"draft"})).status).toBe(200);
