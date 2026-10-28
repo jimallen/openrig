@@ -380,6 +380,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       log(`[stuck-sweep] ${row.qitemId} skipped: its saved ${row.unreadable.join(", ")} is not readable JSON (repair or remove the row)`);
       return true;
     };
+    // Asked of the one destination resolver, so a real pane or a registered human of that name keeps its own class.
+    const isLocalHumanInbox = (destination: string): boolean => deps.queueRepo.classifyDestinationOf(destination).class === "local-human-inbox";
     // The same for every loop below that reads a row by id (claimed, unclaimed, wait-notice, custody) and for the lookups that
     // read a related row: a damaged row is named and skipped (null), never a failed tick for every other row.
     const readRow = (qitemId: string, existsIfUnreadable = false) => {
@@ -459,6 +461,9 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       if (skipUnreadable(row)) continue;
       if (isFindingRow(row)) continue;
       if (hasLiveLadder(deps.db, row.qitemId)) continue;
+      // Jim's inbox is a held destination: an older row still carrying the pre-inbox "unroutable:" literal
+      // is not undelivered, and a recovery item routed back to the same inbox is only noise.
+      if (isLocalHumanInbox(row.destinationSession)) continue;
       candidates.push({
         kind: "undelivered-wake",
         row,
@@ -493,6 +498,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       // that human; it is not stuck, and a finding would post the human again. Unposted, failed,
       // legacy and non-human rows keep this net.
       if (deps.queueRepo.humanNotificationPostedThisEpisode(row.qitemId)) continue;
+      // Jim's inbox: an item waiting on the operator is not stuck; the banner is its reminder.
+      if (isLocalHumanInbox(row.destinationSession)) continue;
       candidates.push({
         kind: "unclaimed-obligation",
         row,

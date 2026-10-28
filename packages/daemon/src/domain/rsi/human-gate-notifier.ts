@@ -3,10 +3,14 @@ import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { isHumanSeatSession } from "../human-route-enforcer.js";
+import { LOCAL_HUMAN_INBOX_ADDRESS } from "../gateway/destination-resolver.js";
 
 /**
  * Notification context (rsi-design-9k-rev2 section 3.1 and 3.7): a macOS banner for each RSI
- * item that waits on a human gate.
+ * item that waits on a human gate, and (z7, Jim 2026-10-28) for every open item addressed to the
+ * operator's local inbox (`human@kernel`, LOCAL_HUMAN_INBOX_ADDRESS): questions, reports, replies and
+ * gates alike. Local only: nothing here leaves the machine. All of them share one gap, one daily cap and
+ * one 24 h reminder rule, so a seat that floods the inbox spends the same budget as everything else.
  *
  * Reads queue state, never writes it. The notifier's only writes go to its own table,
  * `rsi_notifications`, which RSI lane B1 creates in its migration:
@@ -34,16 +38,20 @@ export const MAX_BANNERS_PER_DAY = 12;
 export const OSASCRIPT_PATH = "/usr/bin/osascript";
 export const NOTIFICATION_GROUP = "openrig-rsi";
 export const NOTIFICATION_TITLE = "OpenRig RSI";
+/** Title when anything waiting is not a steward RSI item. */
+export const INBOX_NOTIFICATION_TITLE = "OpenRig";
 const SPAWN_TIMEOUT_MS = 5_000;
 const MAX_FIELD_CHARS = 120;
 const MAX_MESSAGE_CHARS = 300;
 
-/** A blocked queue row as the notifier reads it. Filtering to the human-gate RSI set is the notifier's job. */
+/** A queue row as the notifier reads it (blocked rows, and open rows addressed to the inbox). Filtering to what waits on the human is the notifier's job. */
 export interface BlockedQueueRow {
   qitemId: string;
+  /** Where the item is addressed (queue_items.destination_session). */
+  destinationSession: string;
   /** The seat that created the item. Only the configured steward's items are RSI items. */
   sourceSession: string;
-  /** Identifies one parking episode (latest transition into `blocked`): a re-park is a new episode, so a new entry. */
+  /** Identifies one waiting episode: for a parked row the latest transition into `blocked` (a re-park is a new episode, so a new entry); for an open row its creation time. */
   episode: string;
   state: string;
   blockedOn: string | null;
@@ -105,10 +113,10 @@ export type NotifierTickResult =
   | { status: "error"; errorClass: string };
 
 export interface HumanGateNotifierDeps {
-  /** Every row in state `blocked`. Must be read-only. */
+  /** Every row in state `blocked`, plus every `pending` row addressed to the inbox. Must be read-only. */
   listBlocked: () => BlockedQueueRow[];
-  /** The configured `rsi.steward_session`; only its items are RSI items. */
-  stewardSession: string;
+  /** The configured `rsi.steward_session`; only its items are RSI items. Null when none is valid: the inbox banner does not depend on RSI. */
+  stewardSession: string | null;
   store: NotificationStore;
   spawner: BannerSpawner;
   /** Absolute path of an installed binary, or null. */
@@ -119,13 +127,27 @@ export interface HumanGateNotifierDeps {
   intervalMs?: number;
 }
 
+/** A row the banner is about. `rsi` rows keep the RSI wording; `inbox` rows are anything else waiting on the human. */
+export type WaitingItem = BlockedQueueRow & { kind: "rsi" | "inbox" };
+
 /**
- * The set the banner is about: parked on a human seat, created by the configured steward, and tagged rsi.
- * The tag is free text any seat can write, so the source is the authority; without it any seat could
- * spend the daily banner budget.
+ * The set the banner is about.
+ *  - rsi: parked on a human seat, created by the configured steward, and tagged rsi. The tag is free text any
+ *    seat can write, so the source is the authority for the RSI wording.
+ *  - inbox: addressed to the operator's local inbox and open (pending), or parked on it. The sender is not
+ *    trusted either (source_session is a label), so these rows get generic wording, and the shared gap and
+ *    daily cap are what stop a spamming seat.
  */
-export function selectWaitingRsiItems(rows: BlockedQueueRow[], stewardSession: string): BlockedQueueRow[] {
-  return rows.filter((r) => r.state === "blocked" && isHumanSeatSession(r.blockedOn) && r.sourceSession === stewardSession && r.tags.includes(RSI_TAG));
+export function selectWaitingItems(rows: BlockedQueueRow[], stewardSession: string | null): WaitingItem[] {
+  const out: WaitingItem[] = [];
+  for (const r of rows) {
+    if (r.state === "blocked" && isHumanSeatSession(r.blockedOn) && stewardSession !== null && r.sourceSession === stewardSession && r.tags.includes(RSI_TAG)) {
+      out.push({ ...r, kind: "rsi" });
+    } else if ((r.state === "pending" && r.destinationSession === LOCAL_HUMAN_INBOX_ADDRESS) || (r.state === "blocked" && r.blockedOn === LOCAL_HUMAN_INBOX_ADDRESS)) {
+      out.push({ ...r, kind: "inbox" });
+    }
+  }
+  return out;
 }
 
 /** Key of one parking episode in rsi_notifications (its schema has only qitem_id as the key). */
@@ -146,10 +168,17 @@ function tagValue(tags: string[], prefix: string): string | null {
   return hit ? hit.slice(prefix.length) : null;
 }
 
-export function composeBannerMessage(waiting: BlockedQueueRow[], lead: BlockedQueueRow): string {
-  const stage = clean(tagValue(lead.tags, "rsi:stage:") ?? "unstaged", MAX_FIELD_CHARS);
-  const fp = clean(tagValue(lead.tags, "rsi:fp:") ?? "unknown", MAX_FIELD_CHARS);
-  const head = `${waiting.length} RSI item(s) waiting · ${stage} ${fp} · rsi-decide ${clean(lead.qitemId, MAX_FIELD_CHARS)}`;
+export function composeBannerMessage(waiting: WaitingItem[], lead: WaitingItem): string {
+  const allRsi = waiting.every((w) => w.kind === "rsi");
+  const noun = allRsi ? "RSI item(s) waiting" : "item(s) waiting for you";
+  let head: string;
+  if (lead.kind === "rsi") {
+    const stage = clean(tagValue(lead.tags, "rsi:stage:") ?? "unstaged", MAX_FIELD_CHARS);
+    const fp = clean(tagValue(lead.tags, "rsi:fp:") ?? "unknown", MAX_FIELD_CHARS);
+    head = `${waiting.length} ${noun} · ${stage} ${fp} · rsi-decide ${clean(lead.qitemId, MAX_FIELD_CHARS)}`;
+  } else {
+    head = `${waiting.length} ${noun} · from ${clean(lead.sourceSession, MAX_FIELD_CHARS)} · ${clean(lead.qitemId, MAX_FIELD_CHARS)}`;
+  }
   const summary = lead.summary ? clean(lead.summary, MAX_FIELD_CHARS) : "";
   return clean(summary ? `${head} · ${summary}` : head, MAX_MESSAGE_CHARS);
 }
@@ -227,7 +256,7 @@ export class HumanGateNotifier {
   private async tickOnce(): Promise<NotifierTickResult> {
     const nowMs = this.clock().getTime();
     const nowIso = new Date(nowMs).toISOString();
-    const waiting = selectWaitingRsiItems(this.deps.listBlocked(), this.deps.stewardSession);
+    const waiting = selectWaitingItems(this.deps.listBlocked(), this.deps.stewardSession);
     // A stored time that is unparseable or later than now cannot be a past banner: the row is ignored (for the gap, the
     // cap and the item's own entry state), so one bad row cannot block every banner. A sent banner rewrites the item's row.
     const rows = this.deps.store.list()
@@ -264,7 +293,8 @@ export class HumanGateNotifier {
     const lead = pending.find((p) => !byKey.has(episodeKey(p))) ?? pending[0]!;
     const message = composeBannerMessage(waiting, lead);
     const terminalNotifier = this.deps.findExecutable("terminal-notifier");
-    let { command, args } = bannerCommand(terminalNotifier, NOTIFICATION_TITLE, message);
+    const title = waiting.every((w) => w.kind === "rsi") ? NOTIFICATION_TITLE : INBOX_NOTIFICATION_TITLE;
+    let { command, args } = bannerCommand(terminalNotifier, title, message);
     let result = await this.deps.spawner(command, args);
     if (terminalNotifier && shouldFallBackToOsascript(result)) {
       // OF-83: terminal-notifier can be installed yet unable to post (exit 3: notifications are off for
@@ -272,7 +302,7 @@ export class HumanGateNotifier {
       // before giving up. Not after a timeout or a signal: terminal-notifier may already have posted, and a second
       // banner would be a duplicate (u16 review N2). The reason in the log tells an operator why it failed.
       this.log(`[rsi-notifier] terminal-notifier banner failed ${bannerFailureReason(result)}; falling back to osascript`);
-      ({ command, args } = bannerCommand(null, NOTIFICATION_TITLE, message));
+      ({ command, args } = bannerCommand(null, title, message));
       result = await this.deps.spawner(command, args);
     }
     this.lastResult = { at: nowIso, command: path.basename(command), ok: result.ok };
@@ -289,19 +319,21 @@ export class HumanGateNotifier {
   }
 }
 
-/** Reads `blocked` rows from the daemon database. SELECT only. */
+/** Reads the rows that can wait on the human from the daemon database: every `blocked` row, and every `pending` row addressed to the inbox. SELECT only. */
 export function sqliteBlockedRows(db: Database.Database): () => BlockedQueueRow[] {
   const stmt = db.prepare(
-    "SELECT q.qitem_id, q.source_session, q.state, q.blocked_on, q.tags, q.summary, " +
+    "SELECT q.qitem_id, q.source_session, q.destination_session, q.state, q.blocked_on, q.tags, q.summary, " +
     // The parking episode is the transition that ENTERED blocked from another state. A blocked-to-blocked
-    // transition (a second update, a watchdog park-wake, a custody move) is the same episode.
+    // transition (a second update, a watchdog park-wake, a custody move) is the same episode. An open
+    // (pending) row has one episode for its life: its creation time.
+    "CASE WHEN q.state = 'blocked' THEN " +
     "COALESCE((SELECT MAX(t.transition_id) FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.state = 'blocked' " +
     "AND COALESCE((SELECT p.state FROM queue_transitions p WHERE p.qitem_id = t.qitem_id AND p.transition_id < t.transition_id " +
-    "ORDER BY p.transition_id DESC LIMIT 1), '') <> 'blocked'), q.ts_updated) AS episode " +
-    "FROM queue_items q WHERE q.state = 'blocked'",
+    "ORDER BY p.transition_id DESC LIMIT 1), '') <> 'blocked'), q.ts_updated) ELSE q.ts_created END AS episode " +
+    "FROM queue_items q WHERE q.state = 'blocked' OR (q.state = 'pending' AND q.destination_session = ?)",
   );
-  return () => (stmt.all() as Array<{ qitem_id: string; source_session: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null; episode: string | number }>)
-    .map((r) => ({ qitemId: r.qitem_id, sourceSession: r.source_session, episode: String(r.episode), state: r.state, blockedOn: r.blocked_on, tags: parseTags(r.tags), summary: r.summary }));
+  return () => (stmt.all(LOCAL_HUMAN_INBOX_ADDRESS) as Array<{ qitem_id: string; source_session: string; destination_session: string; state: string; blocked_on: string | null; tags: string | null; summary: string | null; episode: string | number }>)
+    .map((r) => ({ qitemId: r.qitem_id, sourceSession: r.source_session, destinationSession: r.destination_session, episode: String(r.episode), state: r.state, blockedOn: r.blocked_on, tags: parseTags(r.tags), summary: r.summary }));
 }
 
 function parseTags(raw: string | null): string[] {
