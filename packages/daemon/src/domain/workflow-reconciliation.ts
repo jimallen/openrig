@@ -7,6 +7,7 @@ import { WorkflowSpecCache } from "./workflow-spec-cache.js";
 import type { WorkflowInstance, WorkflowSpec } from "./workflow-types.js";
 import type { EventBus } from "./event-bus.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { UnreadableRowError } from "./unreadable-row.js";
 
 export interface GraphReconciliation {
   status: "current" | "source-only" | "compatible" | "incompatible" | "unavailable" | "unbound";
@@ -179,7 +180,16 @@ export function recoverGraphOperation(db: Database.Database, key: string): { kin
   } };
   const match = db.prepare("SELECT wi.instance_id, revision.value AS receipt FROM workflow_instances wi, json_each(CASE WHEN json_valid(wi.lifecycle_binding_json) THEN wi.lifecycle_binding_json ELSE '{}' END, '$.revisionHistory') revision WHERE json_extract(revision.value, '$.operationKey') = ?")
     .get(key) as { instance_id: string; receipt: string } | undefined;
-  return match ? { kind: "revision", instance: store.getByIdOrThrow(match.instance_id), receipt: JSON.parse(match.receipt) } : null;
+  if (match) return { kind: "revision", instance: store.getByIdOrThrow(match.instance_id), receipt: JSON.parse(match.receipt) };
+  // OF-168: the scan above reads a damaged lifecycle binding as `{}`, so a revision receipt kept in one reads as "no such operation".
+  // This readback is the idempotency guard (reviseGraph and instantiate go on to apply the effect when it finds nothing), so a
+  // damaged binding that still carries this operation key (instr: the quoted key as the daemon wrote it, compact JSON, exact, no
+  // wildcards, so op-1 never matches op-10) refuses by name instead of letting the operation run a second time on a guess.
+  // Residual: a binding overwritten so that the quoted key text is gone cannot be found here (the same residual as OF-143).
+  const damaged = db.prepare(`SELECT instance_id FROM workflow_instances WHERE lifecycle_binding_json IS NOT NULL AND NOT json_valid(lifecycle_binding_json)
+    AND instr(lifecycle_binding_json, ?) > 0 ORDER BY instance_id LIMIT 1`).get(`"operationKey":${JSON.stringify(key)}`) as { instance_id: string } | undefined;
+  if (damaged) throw new UnreadableRowError("workflow_instances", damaged.instance_id, ["lifecycle_binding_json"]);
+  return null;
 }
 
 export function reviseGraph(db: Database.Database, bus: EventBus, input: {
