@@ -71,18 +71,26 @@ export async function settleResume(runtime: NativeRuntime, input: {
     await input.sleep(input.settleMs ?? RESUME_SETTLE_MS);
     const paneCommand = await input.tmux.getPaneCommand(input.session);
     const paneContent = (await input.tmux.capturePaneContent(input.session, 40)) ?? "";
+    // Nothing came back from either read: that is an unreadable pane, not a pane that says nothing is wrong.
+    if (!paneCommand?.trim() && !paneContent.trim()) {
+      return { outcome: "unreadable", reason: "the pane could not be read at the settle check (empty pane command and capture)" };
+    }
     const probe = assessNativeResumeProbe({ runtime, paneCommand, paneContent });
     if (probe.status === "attention_required") {
       return { outcome: "attention", detail: probe.detail, evidence: paneContent.split("\n").slice(-12).join("\n") };
     }
-    if (!isResumeGoneCode(runtime, probe.code)) return { outcome: "held" };
+    // A drawn TUI above a shell prompt probes as "resumed" (the screen wins over the command), so a pane whose foreground
+    // is a shell is checked against the process tree whatever the text says. The text is evidence only when it names the
+    // runtime's own "not found" message; the foreground name alone proves nothing.
+    const shellForeground = isShellForeground((paneCommand ?? "").trim().toLowerCase());
+    if (!isResumeGoneCode(runtime, probe.code) && !shellForeground) return { outcome: "held" };
     // The phrase also appears in a healthy pane whose repainted history mentions it, so it counts only when the
     // foreground is a shell with no process of the runtime beneath it.
     const state = await paneForegroundState(runtime, { session: input.session, tmux: input.tmux, listProcesses: input.listProcesses });
     if (state === "unreadable") return { outcome: "unreadable", reason: `the pane foreground could not be read at the settle check (${probe.code})` };
     if (state === "runtime") return { outcome: "held" };
     const tail = paneContent.split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 400);
-    return { outcome: "gone", code: probe.code, missing: probe.code !== "returned_to_shell", tail };
+    return { outcome: "gone", code: probe.code, missing: probe.code === (runtime === "codex" ? "no_saved_session" : "no_conversation_found"), tail };
   } catch (err) {
     return { outcome: "unreadable", reason: `the resumed runtime could not be re-checked after launch: ${(err as Error).message}` };
   }

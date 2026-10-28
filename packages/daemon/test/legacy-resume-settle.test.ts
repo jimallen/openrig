@@ -100,6 +100,45 @@ describe("OF-167: ClaudeResumeAdapter believes 'resumed' only if Claude is still
     expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
   });
 
+  // N1: the screen wins over the command in the probe, so an exited Claude's drawn TUI above a shell prompt reads as
+  // "resumed". A shell-named foreground is therefore checked against the process tree whatever the text says.
+  it("Claude exits for some other reason and leaves its TUI above a shell prompt: retry_fresh, not held", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterCommand: "zsh", afterPane: `${CLAUDE_TUI}\n$ ` });
+    const result = await resume(c, tmux, async () => [CLAUDE_PANE]);
+    expect(result).toEqual({ ok: false, code: "retry_fresh", message: "Claude resume failed: pane returned to shell instead of entering Claude" });
+  });
+
+  it("a live Claude under a shell-named foreground (TUI on screen) is held, with no warning", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterCommand: "zsh", afterPane: CLAUDE_TUI });
+    const result = await resume(c, tmux, async () => CLAUDE_TREE);
+    expect(result).toEqual({ ok: true, appliedLaunch: expect.objectContaining({ runtime: "claude-code" }) });
+  });
+
+  it("a shell-named foreground whose listing cannot be read keeps the resume with a warning", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterCommand: "zsh", afterPane: CLAUDE_TUI });
+    const result = await resume(c, tmux, async (): Promise<NativeProcessRow[]> => { throw new Error("ps unavailable"); });
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
+  });
+
+  // N5: two empty reads are an unreadable pane, not a pane with nothing wrong.
+  it("both the pane command and the capture empty at the settle read: kept, with an unreadable warning", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterCommand: "", afterPane: "" });
+    const result = await resume(c, tmux, async () => CLAUDE_TREE);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
+  });
+
+  it("control: an empty capture alone (the command is readable) is not an unreadable pane", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "claude", upPane: CLAUDE_TUI, afterCommand: "claude", afterPane: "" });
+    expect(await resume(c, tmux, async () => CLAUDE_TREE)).toEqual({ ok: true, appliedLaunch: expect.objectContaining({ runtime: "claude-code" }) });
+  });
+
   it("an unreadable pane (the settle read throws) is a warning, not a failure", async () => {
     const c = clock();
     const tmux = tmuxFor(c, { exitsAtMs: 60_000, upCommand: "claude", upPane: CLAUDE_TUI, afterCommand: "claude", afterPane: CLAUDE_TUI });
@@ -175,6 +214,27 @@ describe("OF-167: CodexResumeAdapter believes 'resumed' only if Codex is still t
     const c = clock();
     const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "node", upPane: CODEX_TUI, afterCommand: "bash", afterPane: CODEX_MISSING });
     const result = await resume(c, tmux, listProcesses);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
+  });
+
+  it("Codex exits for some other reason and leaves its TUI above a shell prompt: retry_fresh, not held", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "node", upPane: CODEX_TUI, afterCommand: "bash", afterPane: `${CODEX_TUI}\n$ ` });
+    const result = await resume(c, tmux, async () => [CODEX_PANE, CODEX_TREE[1]!]);
+    expect(result).toEqual({ ok: false, code: "retry_fresh", message: "Codex resume failed: pane returned to shell instead of entering Codex" });
+  });
+
+  it("a live Codex under a shell-named foreground (TUI on screen) is held, with no warning", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "node", upPane: CODEX_TUI, afterCommand: "sh", afterPane: CODEX_TUI });
+    expect(await resume(c, tmux, async () => CODEX_TREE)).toEqual({ ok: true, appliedLaunch: expect.objectContaining({ runtime: "codex" }) });
+  });
+
+  it("both the pane command and the capture empty at the settle read: kept, with an unreadable warning", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "node", upPane: CODEX_TUI, afterCommand: "", afterPane: "" });
+    const result = await resume(c, tmux, async () => CODEX_TREE);
     expect(result).toMatchObject({ ok: true });
     expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
   });

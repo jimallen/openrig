@@ -211,7 +211,8 @@ describe("ClaudeResumeAdapter", () => {
       const getPaneCommand = vi
         .fn<(_: string) => Promise<string | null>>()
         .mockResolvedValueOnce("zsh")
-        .mockResolvedValueOnce("claude");
+        .mockResolvedValueOnce("claude")
+        .mockResolvedValue("claude"); // the OF-167 settle read
       const capturePaneContent = vi.fn(async () => "");
       const adapter = new ClaudeResumeAdapter(
         mockTmux({ getPaneCommand, capturePaneContent }),
@@ -228,18 +229,18 @@ describe("ClaudeResumeAdapter", () => {
       const getPaneCommand = vi
         .fn<(_: string) => Promise<string | null>>()
         .mockResolvedValueOnce("zsh")
-        .mockResolvedValueOnce("2.1.89");
+        .mockResolvedValueOnce("2.1.89")
+        .mockResolvedValue("2.1.89"); // the OF-167 settle read sees the same live pane
+      const tui = [
+        "Claude Code v2.1.89",
+        "❯ Baseline warmup 4/6 for dev.impl.",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "  ? for shortcuts                                             ● high · /effort",
+      ].join("\n");
       const capturePaneContent = vi
         .fn<(_: string, __?: number) => Promise<string | null>>()
         .mockResolvedValueOnce("")
-        .mockResolvedValueOnce(
-          [
-            "Claude Code v2.1.89",
-            "❯ Baseline warmup 4/6 for dev.impl.",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "  ? for shortcuts                                             ● high · /effort",
-          ].join("\n")
-        );
+        .mockResolvedValue(tui);
       const adapter = new ClaudeResumeAdapter(
         mockTmux({ getPaneCommand, capturePaneContent }),
         { pollMs: 0, maxWaitMs: 1, sleep: async () => {} }
@@ -347,10 +348,10 @@ describe("ClaudeResumeAdapter", () => {
     it("treats the edit-approval footer as a live Claude TUI during resume verification", async () => {
       const getPaneCommand = vi
         .fn<(_: string) => Promise<string | null>>()
-        .mockResolvedValueOnce("2.1.89");
+        .mockResolvedValue("2.1.89");
       const capturePaneContent = vi
         .fn<(_: string, __?: number) => Promise<string | null>>()
-        .mockResolvedValueOnce(
+        .mockResolvedValue(
           [
             "Loading startup skills and recovering identity.",
             "",

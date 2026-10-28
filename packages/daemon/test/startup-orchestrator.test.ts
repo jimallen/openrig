@@ -2093,6 +2093,38 @@ describe("StartupOrchestrator", () => {
       expect(listings).toBe(2);
     });
 
+    // N2: an ABSENT answer is never reused. Optional-file refusals are swallowed into warnings, so a second send can follow
+    // a refused one inside the memo window; it must be refused on its own reading, not waved through on the first.
+    it("R5: a refused send (Claude gone) is not remembered: the next send inside the window is refused too", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "") });
+      const adapter = mockAdapter({ deliverStartup: vi.fn(async (_files, _binding, send) => {
+        for (const _ of [0, 1]) { try { await send?.("optional file"); } catch { /* the adapter drops an optional file's failure */ } }
+        return { delivered: 0, failed: [] };
+      }) });
+      const listProcesses = vi.fn(async () => [PANE_SHELL]);
+      const result = await createOrchestrator({ tmux: t, readFile: () => "x", listProcesses, now: () => 1_000_000 })
+        .startNode(resumeInput(seed, { adapter, resolvedStartupFiles: [optionalFile], startupActions: [] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).not.toHaveBeenCalled();
+      expect(listProcesses.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // N3: the pid is read from the PANE the binding names, not the session. The fake answers only for that pane.
+    it("R5: the process tree is read from the binding's pane, not from the session name", async () => {
+      const seed = seedSession();
+      const getPanePid = vi.fn(async (target: string) => target === "%7" ? 100 : null);
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => ""), getPanePid });
+      const binding = { ...makeBinding(), tmuxPane: "%7" };
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => PANE_WITH_CLAUDE })
+        .startNode(resumeInput(seed, { adapter: launchedAdapter(), binding }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect((result.warnings ?? []).filter((w) => w.includes("could not be read"))).toEqual([]);
+      expect(getPanePid).toHaveBeenCalledWith("%7");
+      expect(getPanePid).not.toHaveBeenCalledWith("r01-impl");
+    });
+
     it("R5: a non-shell foreground never lists processes for a send", async () => {
       const { listings, t } = await guardedSends(threeActions, { foreground: "claude" });
       expect(t.sendText).toHaveBeenCalledTimes(3);
