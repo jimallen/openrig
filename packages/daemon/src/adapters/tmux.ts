@@ -1563,13 +1563,15 @@ export class TmuxAdapter {
   }
 
   /** Get a session-scoped user option value. Returns null if not set or error. */
-  /** a2: a session option, keeping "unset" apart from "could not be read" (getSessionOption folds both into null).
-   *  `-q` makes an unset option an empty answer; a missing session or server is still an error, reported as such. */
+  /** a2: a session's user option (`@name`), keeping "unset" apart from "could not be read" (getSessionOption folds both
+   *  into null). Read as a format (`#{@name}`), which expands an unset option to an empty string; a missing session or
+   *  server is still an error. (`show-option -q` cannot be used: it also hides "can't find session", measured on tmux 3.4.) */
   async readSessionOption(sessionName: string, key: string): Promise<{ ok: true; value: string | null } | { ok: false; error: string }> {
     const exact = exactTarget(sessionName, "pane");
+    const format = `#{${key}}`;
     try {
-      const output = await this.run(["tmux", "show-option", "-q", "-v", "-t", exact, key],
-        `tmux show-option -q -v -t ${shellQuote(exact)} ${shellQuote(key)}`);
+      const output = await this.run(["tmux", "display-message", "-p", "-t", exact, format],
+        `tmux display-message -p -t ${shellQuote(exact)} ${shellQuote(format)}`);
       return { ok: true, value: output.trim() || null };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

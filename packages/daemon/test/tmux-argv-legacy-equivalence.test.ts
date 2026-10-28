@@ -145,6 +145,7 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.setServerOption("copy-command", "pbcopy -x 'y'");
   await a.showServerOption("copy-command");
   await a.getSessionOption(SESSION, "@openrig-x");
+  await a.readSessionOption(SESSION, "@openrig-x");
   await a.readAllSessionWindowActivity();
   await a.readAllPaneProcesses();
   await a.readPaneLastActivity(SESSION);
