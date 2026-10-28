@@ -25,6 +25,9 @@ export type KeepCode =
   | "uncommitted-changes"
   | "secret-looking-ignored-file"
   | "ignored-files-unreadable"
+  | "nested-repo-in-ignored-path"
+  | "hidden-index-flags"
+  | "index-flags-unreadable"
   | "operation-in-progress"
   | "head-unreadable"
   | "not-merged"
@@ -81,6 +84,8 @@ export interface SweepOptions {
   /** Injectable for tests. Default reads every process's cwd (/proc on Linux, lsof elsewhere). */
   cwdProbe?: () => Promise<CwdProbeResult>;
   now?: () => number;
+  /** Injectable for tests; default reads git-dir timestamps. */
+  activity?: (gitDir: string) => Promise<{ ms: number | null; error: string | null }>;
 }
 
 interface GitResult {
@@ -186,21 +191,87 @@ async function dirSizeKiB(dir: string): Promise<number | null> {
   });
 }
 
-// Ignored files may be deleted (they are regenerable by git's own definition) EXCEPT ones that look
-// like secrets: .env / .env.*, *.pem, *.key. Dependency trees (node_modules) are skipped because
-// packages ship fixture keys; template suffixes are not secrets.
-const TEMPLATE_ENV = /\.(example|sample|template|dist)$/i;
+// Ignored files may be deleted (regenerable by git's own definition) EXCEPT anything secret-looking.
+// STRICT (Jim, z3 review F2): no template exemption (.env.example etc. are kept too), matched
+// case-insensitively on the basename: .env, .env.*, .envrc, *.env, *.pem, *.key, id_rsa*,
+// id_ed25519*, .npmrc, .netrc, credentials*; and anything under a directory named secrets.
+// The only skipped paths are real dependency trees (see isDependencyTree).
+const SECRET_BASENAME = [/^\.env($|\.|rc$)/, /\.env$/, /\.(pem|key)$/, /^id_rsa/, /^id_ed25519/, /^\.npmrc$/, /^\.netrc$/, /^credentials/];
 export function looksSecret(relPath: string): boolean {
-  const parts = relPath.split("/");
-  if (parts.includes("node_modules")) return false;
+  const parts = relPath.toLowerCase().split("/");
+  if (parts.slice(0, -1).includes("secrets")) return true;
   const base = parts[parts.length - 1] ?? "";
-  if (base === ".env" || (base.startsWith(".env.") && !TEMPLATE_ENV.test(base))) return true;
-  return /\.(pem|key)$/i.test(base);
+  return SECRET_BASENAME.some((re) => re.test(base));
 }
 
-const OPERATION_MARKERS = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"];
+// A node_modules directory is a real dependency tree only when its parent directory has a
+// package.json. A node_modules anywhere else (config/node_modules/...) is just a directory name
+// and gets no exemption. A stat error other than ENOENT throws (caller keeps the worktree).
+async function isDependencyTree(worktree: string, relParent: string): Promise<boolean> {
+  try {
+    return (await fs.stat(path.join(worktree, relParent, "package.json"))).isFile();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
+}
 
-async function newestActivityMs(gitDir: string): Promise<{ ms: number | null; error: string | null }> {
+async function underDependencyTree(worktree: string, rel: string): Promise<boolean> {
+  const parts = rel.split("/");
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (parts[i] === "node_modules" && (await isDependencyTree(worktree, parts.slice(0, i).join("/")))) return true;
+  }
+  return false;
+}
+
+const WALK_ENTRY_CAP = 500_000;
+
+/** Finds `.git` entries under an ignored directory; git's own listing does not descend into nested repos. */
+async function findNestedRepos(worktree: string, relDir: string, found: string[], budget: { left: number }): Promise<void> {
+  const entries = await fs.readdir(path.join(worktree, relDir), { withFileTypes: true });
+  for (const e of entries) {
+    if (--budget.left < 0) throw new Error(`more than ${WALK_ENTRY_CAP} entries under ignored paths`);
+    const rel = `${relDir}/${e.name}`;
+    if (e.name === ".git") found.push(rel);
+    else if (e.isDirectory()) {
+      if (e.name === "node_modules" && (await isDependencyTree(worktree, relDir))) continue;
+      await findNestedRepos(worktree, rel, found, budget);
+    }
+  }
+}
+
+interface IgnoredScan {
+  secrets: string[];
+  nestedRepos: string[];
+  error: string | null;
+}
+
+async function scanIgnored(worktree: string): Promise<IgnoredScan> {
+  const out: IgnoredScan = { secrets: [], nestedRepos: [], error: null };
+  const files = await git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], worktree);
+  if (files.code !== 0) return { ...out, error: files.stderr.trim() || `git ls-files exited ${files.code}` };
+  const dirs = await git(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], worktree);
+  if (dirs.code !== 0) return { ...out, error: dirs.stderr.trim() || `git ls-files --directory exited ${dirs.code}` };
+  try {
+    for (const f of files.stdout.split("\0")) {
+      if (f && looksSecret(f) && !(await underDependencyTree(worktree, f))) out.secrets.push(f);
+    }
+    const budget = { left: WALK_ENTRY_CAP };
+    for (const d of dirs.stdout.split("\0")) {
+      if (!d.endsWith("/")) continue;
+      const rel = d.slice(0, -1);
+      if (await underDependencyTree(worktree, rel + "/x")) continue;
+      await findNestedRepos(worktree, rel, out.nestedRepos, budget);
+    }
+  } catch (err) {
+    out.error = err instanceof Error ? err.message : String(err);
+  }
+  return out;
+}
+
+const OPERATION_MARKERS = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "sequencer"];
+
+export async function newestActivityMs(gitDir: string): Promise<{ ms: number | null; error: string | null }> {
   let newest: number | null = null;
   for (const rel of ["HEAD", "index", path.join("logs", "HEAD")]) {
     try {
@@ -257,7 +328,10 @@ async function sweepRepo(
   const main = listed[0];
   if (main && !main.bare) report.mainWorktree = main.path;
 
-  const target = await resolveTarget(repo, opts.into);
+  // F3: run everything from the MAIN checkout (or the git dir of a bare repo), never from a linked
+  // worktree the caller named: that one may itself be removed mid-sweep, taking the cwd with it.
+  const home = main && !main.bare ? main.path : commonDir;
+  const target = await resolveTarget(home, opts.into);
   if ("error" in target) {
     report.error = target.error;
     return report;
@@ -301,13 +375,23 @@ async function sweepRepo(
         keep("uncommitted-changes", `${status.stdout.split("\0").filter(Boolean).length} changed or untracked path(s)`);
       }
 
-      const ignored = await git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], wt.path);
-      if (ignored.code !== 0) {
-        keep("ignored-files-unreadable", ignored.stderr.trim() || `git ls-files exited ${ignored.code}`);
-      } else {
-        const secrets = ignored.stdout.split("\0").filter((f) => f && looksSecret(f));
-        if (secrets.length > 0) {
-          keep("secret-looking-ignored-file", `${secrets.slice(0, 5).join(", ")}${secrets.length > 5 ? ` (+${secrets.length - 5} more)` : ""}`);
+      const scan = await scanIgnored(wt.path);
+      if (scan.error !== null) keep("ignored-files-unreadable", scan.error);
+      if (scan.secrets.length > 0) {
+        keep("secret-looking-ignored-file", `${scan.secrets.slice(0, 5).join(", ")}${scan.secrets.length > 5 ? ` (+${scan.secrets.length - 5} more)` : ""}`);
+      }
+      if (scan.nestedRepos.length > 0) {
+        keep("nested-repo-in-ignored-path", `${scan.nestedRepos.slice(0, 5).join(", ")}${scan.nestedRepos.length > 5 ? ` (+${scan.nestedRepos.length - 5} more)` : ""}; its files are invisible to git here`);
+      }
+
+      // Edits hidden from `git status`: --assume-unchanged ('h') and --skip-worktree ('S') files
+      // look clean to status AND to `git worktree remove`, so they must be found here.
+      const flags = await git(["ls-files", "-v", "-z"], wt.path);
+      if (flags.code !== 0) keep("index-flags-unreadable", flags.stderr.trim() || `git ls-files -v exited ${flags.code}`);
+      else {
+        const hidden = flags.stdout.split("\0").filter((e) => e.length > 2 && e[0] !== "H");
+        if (hidden.length > 0) {
+          keep("hidden-index-flags", `${hidden.slice(0, 5).map((e) => `${e.slice(2)} [${e[0]}]`).join(", ")}${hidden.length > 5 ? ` (+${hidden.length - 5} more)` : ""}: assume-unchanged/skip-worktree edits are invisible to git status`);
         }
       }
 
@@ -321,7 +405,7 @@ async function sweepRepo(
           if (present === null) keep("operation-in-progress", `could not check ${marker}`);
           else if (present) keep("operation-in-progress", `${marker} present`);
         }
-        const act = await newestActivityMs(gitDir);
+        const act = await (opts.activity ?? newestActivityMs)(gitDir);
         if (act.ms === null) keep("age-unreadable", act.error ?? "unknown");
         else if (opts.olderThanMs > 0 && now - act.ms < opts.olderThanMs) {
           keep("too-recent", `last git activity ${Math.round((now - act.ms) / 60_000)} minute(s) ago`);
@@ -347,7 +431,7 @@ async function sweepRepo(
     };
 
     if (verdict.outcome === "would-remove" && opts.apply) {
-      const rm = await git(["worktree", "remove", wt.path], repo); // never --force
+      const rm = await git(["worktree", "remove", wt.path], home); // never --force
       if (rm.code === 0) verdict.outcome = "removed";
       else {
         verdict.outcome = "kept";

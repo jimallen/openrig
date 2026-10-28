@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
 import { createProgram } from "../src/index.js";
-import { parseDuration, parseWorktreeList, renderSweepReport, sweepWorktrees, type CwdProbeResult, type RepoReport, type WorktreeVerdict } from "../src/worktree-sweep.js";
+import { newestActivityMs, parseDuration, parseWorktreeList, renderSweepReport, sweepWorktrees, type CwdProbeResult, type RepoReport, type WorktreeVerdict } from "../src/worktree-sweep.js";
 
 const NOBODY_HOME: CwdProbeResult = { cwds: [], unreadable: 0 };
 const noProbe = async (): Promise<CwdProbeResult> => NOBODY_HOME;
@@ -110,6 +110,22 @@ function verdict(rep: RepoReport, p: string): WorktreeVerdict {
 }
 const codes = (v: WorktreeVerdict): string[] => v.reasons.map((r) => r.code);
 
+/** Repo-wide ignore rules without a commit (info/exclude applies to every linked worktree). */
+function exclude(f: Fixture, ...patterns: string[]): void {
+  fs.appendFileSync(path.join(f.repo, ".git", "info", "exclude"), patterns.join("\n") + "\n");
+}
+
+/** Commit a tracked file in the worktree and fast-forward origin/main over it, so the worktree stays merged and clean. */
+function commitTracked(f: Fixture, name: string, rel: string, content: string): void {
+  const file = path.join(f.wt(name), rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  git(f.wt(name), "add", rel);
+  git(f.wt(name), "commit", "-m", `add ${rel}`);
+  git(f.repo, "merge", "--ff-only", name);
+  git(f.repo, "push", "origin", "main");
+}
+
 function addMergedSubmoduleWorktree(f: Fixture): string {
   const subsrc = path.join(f.root, "subsrc");
   git(f.root, "init", "-b", "main", subsrc);
@@ -155,24 +171,36 @@ describe("z3 worktree sweep: what it removes", () => {
     expect(fs.existsSync(p)).toBe(false);
   });
 
-  it("still removes ignored dependency trees even when a package inside ships a .pem/.key fixture", async () => {
+  it("still removes ignored dependency trees (node_modules beside a package.json) even when a package ships a .pem/.env fixture", async () => {
     const f = makeFixture();
     const p = f.addWorktree("unit-a");
-    fs.mkdirSync(path.join(p, "node_modules", "pkg"), { recursive: true });
+    commitTracked(f, "unit-a", "package.json", "{}\n");
+    exclude(f, "node_modules/");
+    fs.mkdirSync(path.join(p, "node_modules", "pkg", "node_modules", "deep"), { recursive: true });
     fs.writeFileSync(path.join(p, "node_modules", "pkg", "fixture.pem"), "x\n");
     fs.writeFileSync(path.join(p, "node_modules", "pkg", ".env"), "x\n");
+    fs.writeFileSync(path.join(p, "node_modules", "pkg", "node_modules", "deep", "k.key"), "x\n");
     expect(verdict(await sweep(f), p).outcome).toBe("would-remove");
   });
 
-  it("removes a worktree whose ignored files are only .env.example-style templates", async () => {
+  it("removes a worktree whose ignored files are ordinary build output (positive control for the secret scan)", async () => {
     const f = makeFixture();
     const p = f.addWorktree("unit-a");
-    fs.appendFileSync(path.join(p, ".gitignore"), ".env*\n");
-    git(p, "commit", "-am", "ignore env");
-    git(f.repo, "merge", "--ff-only", "unit-a");
-    git(f.repo, "push", "origin", "main");
-    fs.writeFileSync(path.join(p, ".env.example"), "A=\n");
+    exclude(f, "build/");
+    fs.mkdirSync(path.join(p, "build", "out"), { recursive: true });
+    fs.writeFileSync(path.join(p, "build", "out", "main.js"), "x\n");
     expect(verdict(await sweep(f), p).outcome).toBe("would-remove");
+  });
+
+  it("with --repo naming a removable LINKED worktree, still removes every worktree (runs from the main checkout)", async () => {
+    const f = makeFixture();
+    const a = f.addWorktree("a");
+    const b = f.addWorktree("b");
+    const rep = await sweepWorktrees({ repos: [a], olderThanMs: 0, apply: true, cwdProbe: noProbe, now: TEN_DAYS_LATER });
+    expect(rep.repos[0]!.worktrees.map((w) => [w.path, w.outcome]).sort()).toEqual([[a, "removed"], [b, "removed"]]);
+    expect(fs.existsSync(a)).toBe(false);
+    expect(fs.existsSync(b)).toBe(false);
+    expect(fs.existsSync(f.repo)).toBe(true);
   });
 
   it("removes a detached worktree sitting on a merged commit", async () => {
@@ -223,15 +251,33 @@ describe("z3 worktree sweep: what it must never remove", () => {
     expect(fs.existsSync(path.join(p, "new-file.ts"))).toBe(true);
   });
 
-  it.each([[".env"], [".env.local"], ["certs/server.pem"], ["deploy.key"]])(
+  it.each([
+    [".env"],
+    [".env.local"],
+    ["certs/server.pem"],
+    ["deploy.key"],
+    [".env.example"],
+    [".env.production.dist"],
+    [".envrc"],
+    ["prod.env"],
+    ["id_rsa"],
+    ["id_ed25519.pub"],
+    [".npmrc"],
+    [".netrc"],
+    ["credentials.json"],
+    ["secrets/aws.json"],
+    [".ENV"],
+    ["ID_RSA"],
+    ["Server.PEM"],
+    ["Deploy.Key"],
+    ["SECRETS/token.txt"],
+    ["config/node_modules/real.key"],
+  ])(
     "keeps a worktree holding the ignored secret-looking file %s, and names it",
     async (rel) => {
       const f = makeFixture();
       const p = f.addWorktree("unit-a");
-      fs.appendFileSync(path.join(p, ".gitignore"), ".env*\n*.pem\n*.key\ncerts/\n");
-      git(p, "commit", "-am", "ignore secrets");
-      git(f.repo, "merge", "--ff-only", "unit-a");
-      git(f.repo, "push", "origin", "main");
+      exclude(f, "*");
       fs.mkdirSync(path.dirname(path.join(p, rel)), { recursive: true });
       fs.writeFileSync(path.join(p, rel), "SECRET=1\n");
       const rep = await sweep(f, { apply: true });
@@ -273,6 +319,164 @@ describe("z3 worktree sweep: what it must never remove", () => {
     git(f.repo, "push", "origin", "main");
     const rep = await sweep(f, { apply: true });
     expect(codes(verdict(rep, p))).toEqual(["not-merged"]);
+  });
+
+  it.each([["assume-unchanged", "--assume-unchanged"], ["skip-worktree", "--skip-worktree"]])(
+    "keeps a worktree whose edit is hidden by %s (invisible to git status and to git's own remove)",
+    async (_label, flag) => {
+      const f = makeFixture();
+      const p = f.addWorktree("unit-a");
+      git(p, "update-index", flag, "README.md");
+      fs.writeFileSync(path.join(p, "README.md"), "hidden local edit\n");
+      expect(git(p, "status", "--porcelain")).toBe(""); // the premise: status cannot see it
+      const rep = await sweep(f, { apply: true });
+      const v = verdict(rep, p);
+      expect(codes(v)).toEqual(["hidden-index-flags"]);
+      expect(v.reasons[0]!.detail).toContain("README.md");
+      expect(fs.readFileSync(path.join(p, "README.md"), "utf8")).toBe("hidden local edit\n");
+    },
+  );
+
+  it("keeps a worktree holding a nested git repo under an ignored directory (its .env is invisible to ls-files)", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    exclude(f, "vendor/");
+    const inner = path.join(p, "vendor", "inner");
+    fs.mkdirSync(inner, { recursive: true });
+    git(inner, "init", "-b", "main");
+    fs.writeFileSync(path.join(inner, ".env"), "SECRET=1\n");
+    const rep = await sweep(f, { apply: true });
+    const v = verdict(rep, p);
+    expect(codes(v)).toEqual(["nested-repo-in-ignored-path"]);
+    expect(v.reasons[0]!.detail).toContain("vendor/inner/.git");
+    expect(fs.readFileSync(path.join(inner, ".env"), "utf8")).toBe("SECRET=1\n");
+  });
+
+  it("does not exempt a node_modules directory that is not beside a package.json", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    exclude(f, "node_modules/");
+    fs.mkdirSync(path.join(p, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(p, "node_modules", "pkg", "k.pem"), "x\n");
+    expect(codes(verdict(await sweep(f), p))).toEqual(["secret-looking-ignored-file"]);
+  });
+
+  it.each([
+    ["rebase-merge", "dir"],
+    ["rebase-apply", "dir"],
+    ["sequencer", "dir"],
+    ["MERGE_HEAD", "sha"],
+    ["CHERRY_PICK_HEAD", "sha"],
+    ["REVERT_HEAD", "sha"],
+    ["BISECT_LOG", "file"],
+  ])("keeps a worktree with %s present in its git dir", async (marker, kind) => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const gitDir = git(p, "rev-parse", "--path-format=absolute", "--git-dir");
+    const target = path.join(gitDir, marker);
+    if (kind === "dir") fs.mkdirSync(target);
+    else fs.writeFileSync(target, kind === "sha" ? git(p, "rev-parse", "HEAD") + "\n" : "");
+    const rep = await sweep(f, { apply: true });
+    const v = verdict(rep, p);
+    expect(v.outcome).toBe("kept");
+    expect(v.reasons.filter((r) => r.code === "operation-in-progress").map((r) => r.detail)).toContain(`${marker} present`);
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("keeps a worktree whose index is corrupt: status, ignored-file scan and hidden-flag scan all fail closed", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const gitDir = git(p, "rev-parse", "--path-format=absolute", "--git-dir");
+    fs.writeFileSync(path.join(gitDir, "index"), "this is not an index\n");
+    const rep = await sweep(f, { apply: true });
+    const v = verdict(rep, p);
+    expect(v.outcome).toBe("kept");
+    expect(codes(v)).toEqual(expect.arrayContaining(["status-unreadable", "ignored-files-unreadable", "index-flags-unreadable"]));
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("keeps a worktree whose HEAD names a commit that does not exist (head-unreadable)", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const gitDir = git(p, "rev-parse", "--path-format=absolute", "--git-dir");
+    fs.writeFileSync(path.join(gitDir, "HEAD"), "1234567890123456789012345678901234567890\n");
+    const rep = await sweep(f, { apply: true });
+    const v = verdict(rep, p);
+    expect(v.outcome).toBe("kept");
+    expect(codes(v)).toContain("head-unreadable");
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("keeps a worktree when the ancestry check itself errors (a commit between HEAD and the target is missing)", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a"); // HEAD = seed commit A
+    // main gains B then C (pushed); the worktree stays on A. Deleting loose object B breaks the walk C -> B -> A.
+    fs.writeFileSync(path.join(f.repo, "b.txt"), "b\n");
+    git(f.repo, "add", ".");
+    git(f.repo, "commit", "-m", "B");
+    const b = git(f.repo, "rev-parse", "HEAD");
+    fs.writeFileSync(path.join(f.repo, "c.txt"), "c\n");
+    git(f.repo, "add", ".");
+    git(f.repo, "commit", "-m", "C");
+    git(f.repo, "push", "origin", "main");
+    const obj = path.join(f.repo, ".git", "objects", b.slice(0, 2), b.slice(2));
+    expect(fs.existsSync(obj)).toBe(true); // premise: loose, so deleting it really breaks the chain
+    fs.rmSync(obj);
+    const rep = await sweep(f, { apply: true });
+    const v = verdict(rep, p);
+    expect(v.outcome).toBe("kept");
+    expect(codes(v)).toContain("merge-check-failed");
+    expect(codes(v)).not.toContain("not-merged");
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("keeps a worktree whose git-dir timestamps cannot be read (age-unreadable)", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const rep = await sweepWorktrees({
+      repos: [f.repo],
+      olderThanMs: 24 * 3_600_000,
+      apply: true,
+      cwdProbe: noProbe,
+      now: TEN_DAYS_LATER,
+      activity: async () => ({ ms: null, error: "stat refused" }),
+    });
+    const v = verdict(rep.repos[0]!, p);
+    expect(codes(v)).toEqual(["age-unreadable"]);
+    expect(v.reasons[0]!.detail).toBe("stat refused");
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
+  it("newestActivityMs: an empty git dir is an error, a readable one is a time (and a non-ENOENT stat error is an error)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "z3-act-"));
+    roots.push(dir);
+    expect((await newestActivityMs(dir)).ms).toBeNull();
+    expect((await newestActivityMs(dir)).error).toMatch(/no HEAD/);
+    fs.writeFileSync(path.join(dir, "HEAD"), "x");
+    expect((await newestActivityMs(dir)).ms).toBeGreaterThan(0);
+    const file = path.join(dir, "afile");
+    fs.writeFileSync(file, "x");
+    const bad = await newestActivityMs(file); // HEAD under a regular file: ENOTDIR, not ENOENT
+    expect(bad.ms).toBeNull();
+    expect(bad.error).toMatch(/HEAD/);
+  });
+
+  it("keeps a worktree when walking its ignored directories fails", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    exclude(f, "build/");
+    const locked = path.join(p, "build", "sub");
+    fs.mkdirSync(locked, { recursive: true });
+    fs.writeFileSync(path.join(locked, "f"), "x\n");
+    fs.chmodSync(locked, 0o000);
+    try {
+      const rep = await sweep(f, { apply: true });
+      const v = verdict(rep, p);
+      expect(v.outcome).toBe("kept");
+      expect(codes(v)).toContain("ignored-files-unreadable");
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
   });
 
   it("keeps a locked worktree", async () => {
