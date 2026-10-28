@@ -275,6 +275,30 @@ describe("restore and restore-check: another seat's live row names the adopted s
     expect(node).toMatchObject({ status: "resumed", reattached: { sessionId: rowId, sessionName: seat.sessionName } });
   });
 
+  // Restore fails a contested seat before it asks tmux, so tmux being unreadable does not make it an "adopted liveness unknown" seat.
+  it("restore-check, tmux cannot answer: still the contested failure, not counted among adopted sessions it cannot check", async () => {
+    const { seat, holderId } = await contestedSeat("running");
+    const realProbe = vi.mocked(h.tmux.probeSession!).getMockImplementation()!;
+    vi.mocked(h.tmux.probeSession!).mockImplementation(async (name: string) => {
+      if (name === seat.sessionName) throw new Error("tmux probe failed (injected)");
+      return realProbe(name);
+    });
+    const realHas = vi.mocked(h.tmux.hasSession).getMockImplementation()!;
+    vi.mocked(h.tmux.hasSession).mockImplementation(async (name: string) => {
+      if (name === seat.sessionName) throw new Error("tmux probe failed (injected)");
+      return realHas(name);
+    });
+
+    const result = await createRestoreCheckService(h.rigRepo, h.snapshotRepo, h.tmux, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst })
+      .checkWithLiveness({ rig: "team", noQueue: true, noHooks: true });
+
+    expect(result.checks.find((c) => c.check === `seat.${seat.sessionName}.readiness`)).toMatchObject({
+      status: "red",
+      evidence: `Adopted session ${seat.sessionName}, which rig down left running, is also the live session of seat dev.impl@other (row ${holderId})`,
+    });
+    expect(JSON.stringify(result)).not.toContain("It also probes an adopted session rig down left running");
+  });
+
   it("restore-check is red for the seat, in restore's words, and does not count it as a reattach", async () => {
     const { seat, rowId, holderId } = await contestedSeat("running");
 
