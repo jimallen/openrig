@@ -15,6 +15,7 @@ import {
   MAX_BANNERS_PER_DAY,
   MIN_BANNER_GAP_MS,
   REMINDER_INTERVAL_MS,
+  selectWaitingItems,
   sqliteBlockedRows,
   sqliteNotificationStore,
   type BannerSpawner,
@@ -600,7 +601,8 @@ describe("local human inbox: every open item addressed to human@kernel", () => {
 
   it("keeps the steward-source rule for the RSI wording: a steward RSI park leads with RSI wording, another seat's rsi tag does not", async () => {
     const h = harness();
-    inboxRow(h, "q-spoof", { source: "some-other@rig", tags: ["rsi", "rsi:stage:proposal", "rsi:fp:rsi.x/rig:a"], summary: "Pretending" });
+    // A park on Jim by another seat, tagged like an RSI proposal: waiting for Jim, but not the steward's, so no RSI wording.
+    insertQueueRow(h.db, "q-spoof", { source: "some-other@rig", destination: "orch@rig", blockedOn: "human@kernel", tags: ["rsi", "rsi:stage:proposal", "rsi:fp:rsi.x/rig:a"], summary: "Pretending" });
     expect((await h.notifier.tick()).status).toBe("sent");
     expect(messageOf(h.calls[0]!)).not.toContain("rsi-decide");
     expect(messageOf(h.calls[0]!)).not.toContain("RSI");
@@ -649,6 +651,23 @@ describe("local human inbox: every open item addressed to human@kernel", () => {
     h.now.ms += 30 * MIN;
     expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 1 });
     expect(h.calls).toHaveLength(1);
+  });
+
+  it("selects by state and address on its own, whatever the reader returns: pending to the inbox, parked on the inbox, nothing else", () => {
+    const row = (o: Partial<BlockedQueueRow>): BlockedQueueRow => ({
+      qitemId: "q", destinationSession: "human@kernel", sourceSession: "dev-a@some-rig", episode: "1", state: "pending", blockedOn: null, tags: [], summary: null, ...o,
+    });
+    const kinds = (rows: BlockedQueueRow[]) => selectWaitingItems(rows, STEWARD).map((w) => `${w.qitemId}:${w.kind}`);
+    expect(kinds([
+      row({ qitemId: "pending-inbox" }),
+      row({ qitemId: "parked-inbox", state: "blocked", blockedOn: "human@kernel", destinationSession: "orch@rig" }),
+      row({ qitemId: "pending-elsewhere", destinationSession: "dev-b@some-rig" }),
+      row({ qitemId: "claimed-inbox", state: "in-progress" }),
+      row({ qitemId: "done-inbox", state: "done" }),
+      row({ qitemId: "typo", destinationSession: "human-typo@kernel" }),
+      row({ qitemId: "steward-park", state: "blocked", blockedOn: "human-other@kernel", sourceSession: STEWARD, tags: ["rsi"] }),
+      row({ qitemId: "steward-park-on-inbox", state: "blocked", blockedOn: "human@kernel", sourceSession: STEWARD, tags: ["rsi"] }),
+    ])).toEqual(["pending-inbox:inbox", "parked-inbox:inbox", "steward-park:rsi", "steward-park-on-inbox:rsi"]);
   });
 
   it("a seat flooding the inbox spends one banner per gap and never more than the daily cap", async () => {
