@@ -153,8 +153,52 @@ function within(parent: string, child: string): boolean {
   return child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
 }
 
-export async function defaultCwdProbe(): Promise<CwdProbeResult> {
-  if (process.platform === "linux") {
+/** What running `lsof -d cwd -Fn` produced: its stdout and, if the run errored, the error (exec's `code` is a number for an exit status). */
+export interface LsofRun {
+  stdout: string;
+  error: { code?: unknown; message: string } | null;
+}
+
+/** Injectable for tests: the platform and the lsof command runner. The defaults are the real ones. */
+export interface CwdProbeDeps {
+  platform?: NodeJS.Platform;
+  lsof?: () => Promise<LsofRun>;
+  /** Injectable for tests: the real runner's stdout buffer limit, so a cut-off listing can be produced cheaply. */
+  lsofMaxBuffer?: number;
+}
+
+const LSOF_MAX_BUFFER = 64 * 1024 * 1024;
+
+function runLsof(maxBuffer: number): Promise<LsofRun> {
+  return new Promise((resolve) => {
+    execFile("lsof", ["-d", "cwd", "-Fn"], { maxBuffer }, (err, stdout) => {
+      resolve({ stdout: String(stdout), error: err ? { code: (err as NodeJS.ErrnoException).code, message: err.message } : null });
+    });
+  });
+}
+
+/**
+ * macOS and other non-Linux hosts. lsof exits 1 when it could not inspect some processes yet still
+ * prints the rest, and that exit status alone is tolerated. Anything else (lsof missing, killed,
+ * output cut off at the buffer limit, any other status) or an empty list is a probe failure
+ * (thrown), never a partial or empty "nothing in use": a cut-off listing could omit the very
+ * process standing in a worktree.
+ */
+export async function lsofCwdProbe(run: () => Promise<LsofRun>): Promise<CwdProbeResult> {
+  const res = await run();
+  if (res.error) {
+    if (res.error.code === "ENOENT") throw new Error(`lsof unavailable: ${res.error.message}`);
+    if (res.error.code !== 1) throw new Error(`lsof failed (${String(res.error.code ?? "no exit status")}): ${res.error.message}`);
+  }
+  const cwds = res.stdout.split("\n").filter((l) => l.startsWith("n/")).map((l) => l.slice(1));
+  if (cwds.length === 0) throw new Error("lsof returned no process working directories");
+  // unreadable stays 0: lsof prints no record for a process it may not inspect (measured: exit 0, empty stderr, a third of
+  // the process table absent), so there is no signal to count. Documented in docs/reference/worktree-sweep.md.
+  return { cwds, unreadable: 0 };
+}
+
+export async function defaultCwdProbe(deps: CwdProbeDeps = {}): Promise<CwdProbeResult> {
+  if ((deps.platform ?? process.platform) === "linux") {
     const cwds: string[] = [];
     let unreadable = 0;
     for (const entry of await fs.readdir("/proc")) {
@@ -169,18 +213,7 @@ export async function defaultCwdProbe(): Promise<CwdProbeResult> {
     }
     return { cwds, unreadable };
   }
-  // lsof exits 1 when it could not inspect some processes yet still prints the rest; a spawn
-  // failure or empty output is a probe failure (thrown), never an empty "nothing in use".
-  const res = await new Promise<{ stdout: string; spawnError: Error | null }>((resolve) => {
-    execFile("lsof", ["-d", "cwd", "-Fn"], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
-      const spawnErr = err && (err as NodeJS.ErrnoException).code === "ENOENT" ? err : null;
-      resolve({ stdout: String(stdout), spawnError: spawnErr });
-    });
-  });
-  if (res.spawnError) throw new Error(`lsof unavailable: ${res.spawnError.message}`);
-  const cwds = res.stdout.split("\n").filter((l) => l.startsWith("n/")).map((l) => l.slice(1));
-  if (cwds.length === 0) throw new Error("lsof returned no process working directories");
-  return { cwds, unreadable: 0 };
+  return lsofCwdProbe(deps.lsof ?? (() => runLsof(deps.lsofMaxBuffer ?? LSOF_MAX_BUFFER)));
 }
 
 async function dirSizeKiB(dir: string): Promise<number | null> {

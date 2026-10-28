@@ -3669,6 +3669,7 @@ export class QueueRepository {
     const sql = `SELECT ${columns} FROM queue_items WHERE ${conditions.join(" AND ")} ORDER BY ts_created ASC`;
     const rows = this.db.prepare(sql).all(...params) as QueueItemRow[];
     const out: QueueItem[] = [];
+    const inboxByDestination = new Map<string, boolean>();
     for (const r of rows) {
       const item = this.rowToItem(r, !opts?.compact, opts?.damage ?? "refuse");
       const ledger = this.deliveryOutcomeFor(item.qitemId);
@@ -3693,7 +3694,17 @@ export class QueueRepository {
         // transition; that historical episode is not a current obligation.
         const lastNudge = item.lastNudgeResult ?? "";
         if (item.state === "pending" && (lastNudge.startsWith("failed:") || lastNudge.startsWith("unroutable:"))) {
-          out.push(item);
+          // The operator's local inbox is a held destination (z7): a row written before the inbox existed still carries
+          // the old "unroutable:" literal, but the queue row is its delivery. Held whatever the legacy result text says
+          // (failed: or unroutable:), the same as the stuck sweep. Asked of the one resolver, so a real pane or a
+          // registered human of that name keeps its own class and its failure stays listed.
+          const destination = item.destinationSession;
+          let held = inboxByDestination.get(destination);
+          if (held === undefined) {
+            held = this.classifyDestinationOf(destination).class === "local-human-inbox";
+            inboxByDestination.set(destination, held);
+          }
+          if (!held) out.push(item);
         }
       }
       if (opts?.limit !== undefined && out.length >= opts.limit) break;

@@ -555,6 +555,23 @@ describe("rig queue CLI", () => {
       expect(reads).toBe(1);
     });
 
+    it("a held-local-inbox wake says the item is held in the operator's local inbox, not 'receipt unconfirmed'", async () => {
+      const wakeResult = "held-local-inbox: 'human@kernel' is the operator's local inbox — the queue row is the delivery; the macOS banner notifies the operator; no nudge was sent";
+      const { result, reads } = await verify([{ lastNudgeResult: wakeResult }], { destinationSession: "human@kernel" });
+      expect(reads).toBe(1);
+      expect(result).toMatchObject({ receiptSource: "terminal", destinationKind: "human", outcome: "held-local-inbox", wakeResult, nextAction: "rig queue show qitem-t --json" });
+      expect(result.detail).toMatch(/^The qitem is saved\. It is held in the operator's local inbox/);
+      expect(result.detail).not.toContain("Terminal receipt unconfirmed");
+      expect(result.detail).not.toContain("The wake failed");
+      expect(result.detail).toContain("This is not a failed handoff.");
+    });
+
+    it("a held-local-inbox wake with a claim keeps the claim text and the held wording", async () => {
+      const { result } = await verify([{ lastNudgeResult: "held-local-inbox: x", state: "in-progress", claimedAt: "2026-10-11T20:00:00.000Z", pickup: { state: "working" } }], { destinationSession: "human@kernel" });
+      expect(result).toMatchObject({ outcome: "held-local-inbox", claim: { observed: true }, nextAction: null });
+      expect(result.detail).toContain("held in the operator's local inbox");
+    });
+
     it("a claimed row's unconfirmed wake reads claimed, not indeterminate, and is never verified", async () => {
       const { result, reads } = await verify([{ lastNudgeResult: "claimed", state: "in-progress", claimedAt: "2026-10-11T20:00:00.000Z", pickup: { state: "working" } }]);
       expect(reads).toBe(1);
