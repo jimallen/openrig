@@ -460,7 +460,8 @@ describe("z3 worktree sweep: what it must never remove", () => {
     fs.writeFileSync(file, "x");
     const bad = await newestActivityMs(file); // HEAD under a regular file: ENOTDIR, not ENOENT
     expect(bad.ms).toBeNull();
-    expect(bad.error).toMatch(/HEAD/);
+    expect(bad.error).toMatch(/ENOTDIR/); // the real stat error, not the generic "no timestamps found" text
+    expect(bad.error).not.toMatch(/no HEAD/);
   });
 
   it("keeps a worktree when walking its ignored directories fails", async () => {
