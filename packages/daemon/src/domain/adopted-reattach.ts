@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 /** An adopted session the shared rule found, and whether another seat holds a session of the same tmux name. */
 export type AdoptedSessionLeftRunning =
-  | { kind: "reattach"; sessionId: string; sessionName: string }
+  | { kind: "reattach"; sessionId: string; sessionName: string; boundPane: string | null }
   | { kind: "contested"; sessionId: string; sessionName: string; heldBy: { sessionId: string; seat: string } };
 
 /**
@@ -19,7 +19,7 @@ export function reattachableAdoptedSession(db: Database.Database, nodeId: string
     "SELECT id, session_name, status, origin, intentionally_stopped FROM sessions WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
   ).get(nodeId) as { id: string; session_name: string; status: string; origin: string | null; intentionally_stopped: number } | undefined;
   if (!latest || latest.origin !== "claimed" || latest.status !== "detached" || latest.intentionally_stopped) return null;
-  const binding = db.prepare("SELECT tmux_session FROM bindings WHERE node_id = ?").get(nodeId) as { tmux_session: string | null } | undefined;
+  const binding = db.prepare("SELECT tmux_session, tmux_pane FROM bindings WHERE node_id = ?").get(nodeId) as { tmux_session: string | null; tmux_pane: string | null } | undefined;
   if (binding?.tmux_session !== latest.session_name) return null;
   // z2 review F5: tmux names a session by name alone, host-wide. When another seat (of this rig or another) has a live
   // row of the same name, a live tmux session of that name may be that seat's, not the one rig down left: reattaching it
@@ -32,7 +32,35 @@ export function reattachableAdoptedSession(db: Database.Database, nodeId: string
   if (holder) {
     return { kind: "contested", sessionId: latest.id, sessionName: latest.session_name, heldBy: { sessionId: holder.id, seat: `${holder.logical_id}@${holder.rig_name}` } };
   }
-  return { kind: "reattach", sessionId: latest.id, sessionName: latest.session_name };
+  return { kind: "reattach", sessionId: latest.id, sessionName: latest.session_name, boundPane: binding.tmux_pane };
+}
+
+/** Whether a live tmux session of the adopted session's name is the one rig down left: the pane the seat's binding names
+ *  is one of its panes. tmux pane ids are unique for the server's life, so a session the person recreated under the same
+ *  name has other panes. `unknown` when no pane is recorded or tmux does not list the session's panes: never a match. */
+export type AdoptedPaneCheck =
+  | { kind: "same" }
+  | { kind: "replaced"; boundPane: string; panes: string[] }
+  | { kind: "unknown"; why: string };
+
+export async function checkAdoptedPane(
+  adopted: { sessionName: string; boundPane: string | null },
+  listPanes: (target: string) => Promise<Array<{ id: string }>>,
+): Promise<AdoptedPaneCheck> {
+  if (!adopted.boundPane) return { kind: "unknown", why: "the seat's binding records no pane for it" };
+  let panes: string[];
+  try {
+    panes = (await listPanes(adopted.sessionName)).map((pane) => pane.id);
+  } catch (err) {
+    return { kind: "unknown", why: `its panes could not be read (${err instanceof Error ? err.message : String(err)})` };
+  }
+  if (panes.length === 0) return { kind: "unknown", why: "tmux listed no pane for it" };
+  return panes.includes(adopted.boundPane) ? { kind: "same" } : { kind: "replaced", boundPane: adopted.boundPane, panes };
+}
+
+/** Restore's words for a seat whose adopted session is live but not in the pane its binding names (kind `replaced`). */
+export function replacedAdoptedSessionReason(adopted: { sessionId: string; sessionName: string }, pane: { boundPane: string; panes: string[] }): string {
+  return `its adopted session '${adopted.sessionName}', which rig down left running, is live, but the seat's binding names pane ${pane.boundPane}, which is not one of that session's panes (${pane.panes.join(", ")}): the session may have been recreated since rig down, so restore neither reattaches it nor starts this seat. If it is the same conversation, release it with rig unclaim ${adopted.sessionId} and claim it again; otherwise end it`;
 }
 
 /** z2 review F5: restore's words for a seat whose adopted session another seat's live row also names (kind `contested`). */

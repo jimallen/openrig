@@ -23,6 +23,9 @@ export interface RigStatusSeat {
   lastVerified?: string | null;
   reason?: string;
   runtimePrompt?: string;
+  /** Restore would reattach this seat's adopted session, which rig down left running: nothing is started for it
+   *  (intendedAction stays resume-original). Absent on older daemons. */
+  reattach?: { sessionId: string; sessionName: string };
 }
 
 export interface RigStatusObject {

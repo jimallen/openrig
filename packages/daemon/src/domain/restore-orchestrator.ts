@@ -1,5 +1,5 @@
 import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
-import { contestedAdoptedSessionReason, reattachableAdoptedSession } from "./adopted-reattach.js";
+import { checkAdoptedPane, contestedAdoptedSessionReason, reattachableAdoptedSession, replacedAdoptedSessionReason } from "./adopted-reattach.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -995,9 +995,12 @@ export class RestoreOrchestrator {
 
   /** OF-155: the seat's adopted session that rig down left running (adopted-reattach.ts decides which), asked of tmux:
    *  `live`, `gone` (it ended), `unknown` (tmux cannot say), or `none` (the seat has no such session). Read-only.
-   *  z2 review F5: `contested` (another seat's live row names the same tmux session) is decided before tmux is asked. */
+   *  z2 review F5: `contested` (another seat's live row names the same tmux session) is decided before tmux is asked; a live
+   *  session is `live` only in the pane the seat's binding names, `replaced` in other panes, `unknown` if that cannot be read. */
   private async probeAdoptedSession(nodeId: string): Promise<
-    | { kind: "live" | "unknown"; sessionId: string; sessionName: string }
+    | { kind: "live"; sessionId: string; sessionName: string }
+    | { kind: "unknown"; sessionId: string; sessionName: string; why?: string }
+    | { kind: "replaced"; sessionId: string; sessionName: string; boundPane: string; panes: string[] }
     | { kind: "contested"; sessionId: string; sessionName: string; heldBy: { sessionId: string; seat: string } }
     | { kind: "gone" | "none" }
   > {
@@ -1011,7 +1014,11 @@ export class RestoreOrchestrator {
     } catch {
       return { kind: "unknown", sessionId, sessionName };
     }
-    return alive ? { kind: "live", sessionId, sessionName } : { kind: "gone" };
+    if (!alive) return { kind: "gone" };
+    const pane = await checkAdoptedPane(adopted, (target) => this.tmuxAdapter.listPanes(target));
+    if (pane.kind === "replaced") return { kind: "replaced", sessionId, sessionName, boundPane: pane.boundPane, panes: pane.panes };
+    if (pane.kind === "unknown") return { kind: "unknown", sessionId, sessionName, why: pane.why };
+    return { kind: "live", sessionId, sessionName };
   }
 
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
@@ -1077,6 +1084,10 @@ export class RestoreOrchestrator {
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_contested",
           error: `${node.logicalId} was not restored: ${contestedAdoptedSessionReason(adopted)}. Nothing was changed for this seat.` };
       }
+      if (adopted.kind === "replaced") {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_replaced",
+          error: `${node.logicalId} was not restored: ${replacedAdoptedSessionReason(adopted, adopted)}. Nothing was changed for this seat.` };
+      }
       if (adopted.kind === "live" && freshListed) {
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_live",
           error: `${node.logicalId} was not started fresh: its adopted session '${adopted.sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${adopted.sessionId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.` };
@@ -1087,7 +1098,10 @@ export class RestoreOrchestrator {
       }
       if (adopted.kind === "unknown") {
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_liveness_unknown",
-          error: `${node.logicalId} was not restored: its adopted session '${adopted.sessionName}', which rig down left running, could not be checked in tmux, so restore neither reattached it nor started a second session. Nothing was changed for this seat. Retry rig up --existing once tmux answers.` };
+          error: adopted.why
+            // a2: the session is live, but whether it is the one rig down left cannot be told (its pane is not known).
+            ? `${node.logicalId} was not restored: its adopted session '${adopted.sessionName}', which rig down left running, is live, but it could not be matched to the pane the seat's binding names (${adopted.why}), so restore neither reattached it nor started a second session. Nothing was changed for this seat. Retry rig up --existing once tmux answers, or release it with rig unclaim ${adopted.sessionId}.`
+            : `${node.logicalId} was not restored: its adopted session '${adopted.sessionName}', which rig down left running, could not be checked in tmux, so restore neither reattached it nor started a second session. Nothing was changed for this seat. Retry rig up --existing once tmux answers.` };
       }
     }
     // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier

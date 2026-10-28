@@ -354,11 +354,35 @@ rigsRoutes.post("/:id/launch-plan", async (c) => {
 
   const snapshotRepo = c.get("snapshotRepo" as never) as SnapshotRepository;
   const snapshot = snapshotRepo.findLatestRestoreUsable(rig.rig.id) ?? null;
-  return c.json(
-    buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)),
-    200,
-  );
+  // a2 (OF-171 sibling): a listed seat restore would refuse is named here too.
+  const { refusals, refusalPredictionError } = await planRefusals(c, repo, rig, snapshot, freshLogicalIds);
+  return c.json({
+    ...buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)),
+    ...(refusalPredictionError ? { refusalPredictionError } : {}),
+  }, 200);
 });
+
+/** OF-171: the listed (--fresh) seats a restore with the default startup source would refuse, by logical id, asked of the
+ *  function restore calls (predictedPlanRefusals). A prediction that throws is reported, never read as "nothing refused". */
+async function planRefusals(
+  c: { get: (key: string) => unknown },
+  repo: RigRepository,
+  rig: NonNullable<ReturnType<RigRepository["getRig"]>>,
+  snapshot: Parameters<typeof predictedPlanRefusals>[2],
+  freshLogicalIds: string[] | undefined,
+): Promise<{ refusals: Map<string, string>; refusalPredictionError?: string }> {
+  try {
+    return { refusals: await predictedPlanRefusals(
+      {
+        db: repo.db, rigRepo: repo, specReader: (c.get("podInstantiator") as SeatStartupSpecReader | undefined) ?? null,
+        runtimeAdapters: (c.get("runtimeAdapters") as Record<string, RuntimeAdapter> | undefined) ?? {}, exists: existsSync,
+      },
+      rig, snapshot, freshLogicalIds, "spec",
+    ) };
+  } catch (err) {
+    return { refusals: new Map(), refusalPredictionError: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 rigsRoutes.post("/", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
@@ -736,22 +760,9 @@ rigsRoutes.post("/:id/up", async (c) => {
   // OPR.0.3.4.4 — read-only plan gate BEFORE the auto-rehydrate capture
   // (the capture is itself a mutation) and before restoreOrch.restore().
   if (plan) {
-    // OF-171: the plan forecasts the --fresh list this route restores with, and names a listed seat restore would refuse,
-    // asked of the function restore calls (as POST /api/up does). This route restores with the default startup source.
-    let refusals = new Map<string, string>();
-    let refusalPredictionError: string | undefined;
-    try {
-      refusals = await predictedPlanRefusals(
-        {
-          db: repo.db, rigRepo: repo, specReader: (c.get("podInstantiator" as never) as SeatStartupSpecReader | undefined) ?? null,
-          runtimeAdapters: (c.get("runtimeAdapters" as never) as Record<string, RuntimeAdapter> | undefined) ?? {}, exists: existsSync,
-        },
-        rig, snapshot ?? null, freshLogicalIds, "spec",
-      );
-    } catch (err) {
-      // Never read as "nothing refused": the plan says the prediction could not be made.
-      refusalPredictionError = err instanceof Error ? err.message : String(err);
-    }
+    // OF-171: the plan forecasts the --fresh list this route restores with, and names a listed seat restore would refuse
+    // (as POST /api/up does). This route restores with the default startup source.
+    const { refusals, refusalPredictionError } = await planRefusals(c, repo, rig, snapshot ?? null, freshLogicalIds);
     return c.json({
       ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), readPreviewReattach(repo.db, rig)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),

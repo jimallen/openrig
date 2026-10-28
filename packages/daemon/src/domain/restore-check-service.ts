@@ -15,7 +15,7 @@ import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd
 import { projectRigWorkspaceRecreatable } from "./project-rig.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
-import { contestedAdoptedSessionReason, type AdoptedSessionLeftRunning } from "./adopted-reattach.js";
+import { checkAdoptedPane, contestedAdoptedSessionReason, replacedAdoptedSessionReason, type AdoptedPaneCheck, type AdoptedSessionLeftRunning } from "./adopted-reattach.js";
 
 // --- Types ---
 
@@ -254,6 +254,9 @@ export interface RestoreCheckDeps {
   /** OF-155: the seat's adopted session that rig down left running, which rig up --existing reattaches
    *  (adopted-reattach.ts, the rule restore uses). Absent: no seat is read as one. */
   reattachableAdopted?: (nodeId: string) => AdoptedSessionLeftRunning | null;
+  /** a2: the panes of a tmux session, as restore reads them to tell whether a live adopted session is the one rig down left
+   *  (adopted-reattach.ts checkAdoptedPane). Absent: no pane can be read, so such a seat's pane is unknown. */
+  listPanes?: (target: string) => Promise<Array<{ id: string }>>;
   /** OF-152: the rig lookup advice names rigs by (ids across every rig, archived included; names among unarchived ones).
    *  Absent: advice reads `listRigs`, which knows no archived rig. */
   rigRefs?: RigRefLookup;
@@ -302,6 +305,8 @@ export interface RestoreCheckDeps {
 
 interface RigRollupInput {
   liveness: Map<string, SeatLiveness>;
+  /** a2: by node id, whether a live adopted session rig down left running is in the pane its binding names. */
+  adoptedPanes: Map<string, AdoptedPaneCheck>;
   rig: { rigId: string; name: string };
   nodes: NodeInventoryEntry[];
   checks: CheckEntry[];
@@ -398,7 +403,28 @@ export class RestoreCheckService {
         try { liveness.set(name, await probe(name)); } catch { liveness.set(name, "unreadable"); }
       }));
     }
-    return this.check(opts, liveness, await this.predictListedRefusals(opts), await this.classifyRunning(opts, liveness));
+    return this.check(opts, liveness, await this.predictListedRefusals(opts), await this.classifyRunning(opts, liveness), await this.readAdoptedPanes(opts, liveness));
+  }
+
+  /** a2: for each seat whose adopted session rig down left running is live, whether it is in the pane its binding names, by
+   *  node id: restore's own check (checkAdoptedPane). A seat not read here has no entry, which the check reads as unknown. */
+  private async readAdoptedPanes(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness>): Promise<Map<string, AdoptedPaneCheck>> {
+    const out = new Map<string, AdoptedPaneCheck>();
+    const listPanes = this.deps.listPanes;
+    if (!listPanes) return out;
+    const seats: Array<{ nodeId: string; adopted: { sessionName: string; boundPane: string | null } }> = [];
+    try {
+      for (const rig of this.deps.listRigs()) {
+        if (opts.rig && rig.name !== opts.rig) continue;
+        for (const node of this.deps.getNodeInventory(rig.rigId)) {
+          if (!node.nodeId || !node.canonicalSessionName || liveness.get(node.canonicalSessionName) !== "live") continue;
+          const adopted = this.adoptedLeftRunning(node);
+          if (adopted?.kind === "reattach") seats.push({ nodeId: node.nodeId, adopted });
+        }
+      }
+    } catch { /* runCheck reports the same read failure as its own unknown result */ }
+    await Promise.all(seats.map(async ({ nodeId, adopted }) => { out.set(nodeId, await checkAdoptedPane(adopted, listPanes)); }));
+    return out;
   }
 
   /** Per rig, restore's own reading of its DB-running rows (every row, raw status) against tmux. The liveness already
@@ -449,7 +475,7 @@ export class RestoreCheckService {
    * `liveness` is the per-session tmux answer gathered by checkWithLiveness();
    * omitted, every seat is judged on DB state alone (the pre-OF-29 behaviour).
    */
-  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map(), running: RunningClassifications = new Map()): RestoreCheckResult {
+  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map(), running: RunningClassifications = new Map(), adoptedPanes: Map<string, AdoptedPaneCheck> = new Map()): RestoreCheckResult {
     const checks: CheckEntry[] = [];
     // rev1-r2 no-false-ready: ready-seat caveat signals that default compact
     // COMPUTES but does NOT emit (AC-4 token-safe) still count toward the
@@ -559,7 +585,7 @@ export class RestoreCheckService {
       }
 
       for (const node of nodes) {
-        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused", rig.name);
+        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused", rig.name, adoptedPanes);
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
@@ -638,7 +664,7 @@ export class RestoreCheckService {
         }
       }
 
-      rigRollupInputs.push({ liveness, rig, nodes, checks: rigChecks, preconditionError });
+      rigRollupInputs.push({ liveness, adoptedPanes, rig, nodes, checks: rigChecks, preconditionError });
     }
 
     const internalRollups = rigRollupInputs.map((input) => this.buildRigRollup(input));
@@ -1194,7 +1220,7 @@ export class RestoreCheckService {
     };
   }
 
-  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false, rigName = ""): CheckEntry {
+  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false, rigName = "", adoptedPanes: Map<string, AdoptedPaneCheck> = new Map()): CheckEntry {
     const session = node.canonicalSessionName ?? node.logicalId;
     const check = `seat.${session}.readiness`;
     // OF-47: restore (rig up --existing) is offered as a way back only when restore's own rule lets it run.
@@ -1276,6 +1302,26 @@ export class RestoreCheckService {
       };
     }
     const adopted = !dbReady && tmux === "live" ? this.adoptedLeftRunning(node) : null;
+    // a2: restore reattaches a live adopted session only in the pane the seat's binding names (checkAdoptedPane).
+    const adoptedPane = adopted && node.nodeId ? adoptedPanes.get(node.nodeId) ?? { kind: "unknown" as const, why: "its panes were not read" } : null;
+    if (adopted && adoptedPane?.kind === "replaced") {
+      return {
+        check,
+        status: "red",
+        evidence: `Adopted session ${adopted.sessionName}, which rig down left running, is live, but the seat's binding names pane ${adoptedPane.boundPane}, which is not one of its panes (${adoptedPane.panes.join(", ")})`,
+        remediation: `rig up --existing would fail this seat (adopted_session_replaced): ${replacedAdoptedSessionReason(adopted, adoptedPane)}; then rerun rig restore-check`,
+        remediationSafe: false,
+      };
+    }
+    if (adopted && adoptedPane?.kind === "unknown") {
+      return {
+        check,
+        status: "red",
+        evidence: `Adopted session ${adopted.sessionName}, which rig down left running, is live, but it could not be matched to the pane the seat's binding names (${adoptedPane.why})`,
+        remediation: `rig up --existing would neither reattach it nor start this seat (adopted_liveness_unknown). Check that tmux is reachable, or release it with rig unclaim ${adopted.sessionId}; then rerun rig restore-check`,
+        remediationSafe: false,
+      };
+    }
     if (adopted) {
       // OF-155: rig down left this adopted session running; rig up --existing reattaches it (option A), starting nothing.
       return {
@@ -2126,7 +2172,9 @@ export class RestoreCheckService {
       const hasCaveat = nodeChecks.some((check) => check.status === "yellow");
       const seatLiveness = node.canonicalSessionName ? input.liveness.get(node.canonicalSessionName) : undefined;
       if (seatLiveness === "live") {
-        (node.sessionStatus === "running" ? liveRunningSeats : this.adoptedLeftRunning(node) ? reattachSeats : liveUnrecordedSeats).push(session);
+        // a2: only a seat restore would reattach (its adopted session in the pane its binding names) counts as a reattach.
+        const reattaches = !!this.adoptedLeftRunning(node) && !!node.nodeId && input.adoptedPanes.get(node.nodeId)?.kind === "same";
+        (node.sessionStatus === "running" ? liveRunningSeats : reattaches ? reattachSeats : liveUnrecordedSeats).push(session);
       }
       if (seatLiveness === "dead") deadSeatIds.push(node.logicalId);
       if (seatLiveness === "unreadable") {

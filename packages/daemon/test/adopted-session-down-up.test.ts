@@ -30,7 +30,8 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
     if (sessionName !== seat.sessionName) {
       await h.tmux.killSession(seat.sessionName);
       h.db.prepare("UPDATE sessions SET session_name = ? WHERE id = ?").run(sessionName, row.id);
-      h.sessionRegistry.updateBinding(seat.nodeId, { tmuxSession: sessionName, tmuxPane: "%3" });
+      // a2: the pane the harness tmux gives the session, as a claim records it (restore reattaches only in that pane).
+      h.sessionRegistry.updateBinding(seat.nodeId, { tmuxSession: sessionName, tmuxPane: "%fresh" });
       await h.tmux.createSession(sessionName);
     }
     h.db.prepare("UPDATE sessions SET origin = 'claimed', resume_type = 'claude_session_id', resume_token = 'adopted-token' WHERE id = ?").run(row.id);
