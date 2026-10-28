@@ -468,7 +468,7 @@ Examples:
           }
 
           const resStatus = res.data["status"] as string;
-          const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport }>) ?? [];
+          const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport; reattached?: { sessionName: string } }>) ?? [];
           const rigResult = res.data["rigResult"] as string | undefined;
 
           if (!opts.json) {
@@ -476,6 +476,8 @@ Examples:
             for (const n of nodes) {
               if (n.status === "awaiting-decision" && n.error) {
                 console.log(`    ${n.logicalId}: awaiting-decision -- ${n.error}`);
+              } else if (n.reattached) {
+                console.log(`    ${n.logicalId}: reattached -- adopted session ${n.reattached.sessionName}, which rig down left running`); // OF-163
               } else {
                 console.log(`    ${n.logicalId}: ${n.status}`);
               }

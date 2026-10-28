@@ -208,6 +208,7 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     return c.json(result, 502);
   }
   if (result.code === "current_occupant_required" ||
+    result.code === "adopted_occupant" || // OF-164: the person releases or stops it first
     result.code === "discovered_not_active" ||
     result.code === "successor_tmux_absent" ||
     result.code === "successor_already_managed" ||

@@ -647,9 +647,10 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         } else if (res.data["wouldCaptureCurrentState"] === true) {
           console.log(`Snapshot: none usable — apply would first capture current DB state as an auto-rehydrate snapshot.`);
         }
-        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reason?: string; tokenState?: string; provenance?: string | null; lastVerified?: string | null; freshRequired?: boolean; runtimePrompt?: string; wouldRefuse?: string }>) ?? [];
+        const planNodes = (res.data["nodes"] as Array<{ logicalId: string; intendedAction: string; reattach?: { sessionName: string }; reason?: string; tokenState?: string; provenance?: string | null; lastVerified?: string | null; freshRequired?: boolean; runtimePrompt?: string; wouldRefuse?: string }>) ?? [];
         for (const n of planNodes) {
-          console.log(`  ${n.logicalId}: ${n.intendedAction}${n.reason ? ` — ${n.reason}` : ""}`);
+          // OF-163: a seat apply would reattach (its adopted session left running by rig down) is named as such.
+          console.log(`  ${n.logicalId}: ${n.reattach ? "reattach" : n.intendedAction}${n.reason ? ` — ${n.reason}` : ""}`);
           // OPR.0.4.3.20 FR-6 — per-seat token truth: present/missing/stale/unverified
           // + provenance + freshness + expected runtime prompt + explicit --fresh.
           if (n.tokenState) {
@@ -686,7 +687,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         }
         console.log(`Rig "${rigName ?? rigId}" restored (ID: ${rigId})`);
         if (rigResult) console.log(`Result: ${rigResult}`);
-        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport }>) ?? [];
+        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport; reattached?: { sessionName: string } }>) ?? [];
         for (const n of nodes) {
           // OPR.0.3.4.2 — the five-term vocabulary renders distinctly; the
           // awaiting-decision reason is part of the line (not a dead end).
@@ -696,6 +697,9 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
             // OF-32: a seat refused before its launch (for example its spec can no longer start it) says why and
             // what to do; the reason was dropped from the human output before.
             console.log(`  ${n.logicalId}: failed — ${n.error}`);
+          } else if (n.reattached) {
+            // OF-163: nothing was started; the adopted session rig down left running is the seat's again.
+            console.log(`  ${n.logicalId}: reattached — adopted session ${n.reattached.sessionName}, which rig down left running`);
           } else {
             console.log(`  ${n.logicalId}: ${n.status}`);
           }

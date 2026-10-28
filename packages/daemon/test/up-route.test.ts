@@ -601,6 +601,33 @@ describe("Up API route", () => {
       return db_.prepare(`SELECT * FROM ${table} ORDER BY id`).all();
     }
 
+    // OF-163: a seat whose adopted session rig down left running (detached, binding kept) is planned as the reattach restore
+    // does (adopted-reattach.ts), through the route's own wiring; a seat listed --fresh is not.
+    it.each([[undefined, true], [["worker"], false]] as const)("plan:true with freshLogicalIds %s predicts the reattach: %s", async (fresh, reattach) => {
+      const rig = rigRepo.createRig("plan-adopted-rig");
+      const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
+      const sess = sessionRegistry.registerSession(node.id, "worker@plan-adopted-rig");
+      db.prepare("UPDATE sessions SET origin = 'claimed', status = 'running' WHERE id = ?").run(sess.id);
+      sessionRegistry.updateBinding(node.id, { tmuxSession: "worker@plan-adopted-rig", tmuxPane: "%3" });
+      snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
+      sessionRegistry.updateStatus(sess.id, "detached"); // as rig down leaves an adopted session (OF-155)
+
+      const res = await app.request("/api/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceRef: "plan-adopted-rig", plan: true, ...(fresh ? { freshLogicalIds: fresh } : {}) }),
+      });
+
+      expect(res.status).toBe(200);
+      const seat = (await res.json()).nodes[0];
+      if (reattach) {
+        expect(seat).toMatchObject({ intendedAction: "resume-original", reattach: { sessionId: sess.id, sessionName: "worker@plan-adopted-rig" }, freshRequired: false });
+        expect(seat.reason).toBe("reattaches its adopted session worker@plan-adopted-rig, which rig down left running; nothing is started (if that session has ended by then, restore goes the ordinary way)");
+      } else {
+        expect(seat.reattach).toBeUndefined();
+      }
+    });
+
     it("plan:true returns a read-only preview: restore() NOT called, zero session/snapshot mutation", async () => {
       const rig = rigRepo.createRig("plan-ro-rig");
       const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
