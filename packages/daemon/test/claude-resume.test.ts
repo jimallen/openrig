@@ -36,27 +36,27 @@ function mockTmux(overrides?: {
 describe("ClaudeResumeAdapter", () => {
   describe("canResume", () => {
     it("claude_name + token -> true", () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("claude_name", "my-session")).toBe(true);
     });
 
     it("claude_id + token -> true", () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("claude_id", "abc-123")).toBe(true);
     });
 
     it("no token -> false", () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("claude_name", null)).toBe(false);
     });
 
     it("resume_type=none -> false", () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("none", "token")).toBe(false);
     });
 
     it("codex_id -> false (cross-harness)", () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("codex_id", "token")).toBe(false);
     });
   });
@@ -66,7 +66,7 @@ describe("ClaudeResumeAdapter", () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
-      const adapter = new ClaudeResumeAdapter(tmux);
+      const adapter = new ClaudeResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo");
 
@@ -84,7 +84,7 @@ describe("ClaudeResumeAdapter", () => {
     it("0.5.2-07: a SPEC-pinned model emits --model on the legacy resume command", async () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText });
-      const adapter = new ClaudeResumeAdapter(tmux);
+      const adapter = new ClaudeResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo", undefined, "gpt-5.4-cheap");
 
@@ -96,7 +96,7 @@ describe("ClaudeResumeAdapter", () => {
     it("#75: a SPEC-pinned effort emits --effort on the legacy resume command", async () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText });
-      const adapter = new ClaudeResumeAdapter(tmux);
+      const adapter = new ClaudeResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo", undefined, "gpt-5.4-cheap", undefined, undefined, "high");
 
@@ -106,7 +106,7 @@ describe("ClaudeResumeAdapter", () => {
     });
 
     it("returns { ok: true } on success", async () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       const result = await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo");
       expect(result).toEqual({ ok: true, appliedLaunch: CLAUDE_FLOOR_EFFECT });
     });
@@ -120,14 +120,14 @@ describe("ClaudeResumeAdapter", () => {
     });
 
     it("resume_type=none -> { ok: false, code: 'no_resume' }", async () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       const result = await adapter.resume("r99-demo1-lead", "none", "token", "/repo");
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.code).toBe("no_resume");
     });
 
     it("no token -> { ok: false, code: 'no_resume' }", async () => {
-      const adapter = new ClaudeResumeAdapter(mockTmux());
+      const adapter = new ClaudeResumeAdapter(mockTmux(), { settleMs: 0 });
       const result = await adapter.resume("r99-demo1-lead", "claude_name", null, "/repo");
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.code).toBe("no_resume");
@@ -136,7 +136,7 @@ describe("ClaudeResumeAdapter", () => {
     it("shell-sensitive token is quoted in command", async () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
-      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText, sendKeys }));
+      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText, sendKeys }), { settleMs: 0 });
 
       await adapter.resume("r99-demo1-lead", "claude_name", "tok; rm -rf /", "/repo");
 
@@ -221,7 +221,7 @@ describe("ClaudeResumeAdapter", () => {
       const result = await adapter.resume("r99-demo1-lead", "claude_name", "my-session", "/repo");
 
       expect(result).toEqual({ ok: true, appliedLaunch: CLAUDE_FLOOR_EFFECT });
-      expect(getPaneCommand).toHaveBeenCalledTimes(2);
+      expect(getPaneCommand).toHaveBeenCalledTimes(3); // two polls plus the OF-167 settle read
     });
 
     it("treats a live Claude TUI as success even when tmux reports a version-string foreground command", async () => {

@@ -36,22 +36,22 @@ function mockTmux(overrides?: {
 describe("CodexResumeAdapter", () => {
   describe("canResume", () => {
     it("codex_id + token -> true", () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("codex_id", "uuid-123")).toBe(true);
     });
 
     it("codex_last WITHOUT token -> true", () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("codex_last", null)).toBe(true);
     });
 
     it("no token + not codex_last -> false", () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("codex_id", null)).toBe(false);
     });
 
     it("claude_name -> false (cross-harness)", () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       expect(adapter.canResume("claude_name", "token")).toBe(false);
     });
   });
@@ -61,7 +61,7 @@ describe("CodexResumeAdapter", () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
-      const adapter = new CodexResumeAdapter(tmux);
+      const adapter = new CodexResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo");
 
@@ -77,7 +77,7 @@ describe("CodexResumeAdapter", () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
-      const adapter = new CodexResumeAdapter(tmux);
+      const adapter = new CodexResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo", null, undefined, "gpt-5.4-cheap");
 
@@ -88,7 +88,7 @@ describe("CodexResumeAdapter", () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
-      const adapter = new CodexResumeAdapter(tmux);
+      const adapter = new CodexResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo", null, undefined, "gpt-5.4-cheap", "high");
 
@@ -99,7 +99,7 @@ describe("CodexResumeAdapter", () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
       const tmux = mockTmux({ sendText, sendKeys });
-      const adapter = new CodexResumeAdapter(tmux);
+      const adapter = new CodexResumeAdapter(tmux, { settleMs: 0 });
 
       await adapter.resume("r99-demo1-impl", "codex_last", null, "/repo");
 
@@ -109,7 +109,7 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("returns { ok: true } on success", async () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       const result = await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo");
       expect(result).toEqual({ ok: true, appliedLaunch: CODEX_FLOOR_EFFECT });
     });
@@ -123,14 +123,14 @@ describe("CodexResumeAdapter", () => {
     });
 
     it("resume_type=none -> { ok: false, code: 'no_resume' }", async () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       const result = await adapter.resume("r99-demo1-impl", "none", null, "/repo");
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.code).toBe("no_resume");
     });
 
     it("no token + not codex_last -> { ok: false, code: 'no_resume' }", async () => {
-      const adapter = new CodexResumeAdapter(mockTmux());
+      const adapter = new CodexResumeAdapter(mockTmux(), { settleMs: 0 });
       const result = await adapter.resume("r99-demo1-impl", "codex_id", null, "/repo");
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.code).toBe("no_resume");
@@ -139,7 +139,7 @@ describe("CodexResumeAdapter", () => {
     it("shell-sensitive token is quoted in command", async () => {
       const sendText = vi.fn(async (...args: unknown[]) => ({ ok: true as const }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
-      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }));
+      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }), { settleMs: 0 });
 
       await adapter.resume("r99-demo1-impl", "codex_id", "uuid; rm -rf /", "/repo");
 
@@ -180,7 +180,7 @@ describe("CodexResumeAdapter", () => {
       const sendKeys = vi.fn()
         .mockResolvedValueOnce({ ok: false as const, code: "session_not_found", message: "err" })
         .mockResolvedValueOnce({ ok: true as const });
-      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }));
+      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }), { settleMs: 0 });
 
       const result = await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo");
 
@@ -193,7 +193,7 @@ describe("CodexResumeAdapter", () => {
     it("sendText fails -> NO C-c attempt", async () => {
       const sendText = vi.fn(async () => ({ ok: false as const, code: "session_not_found", message: "err" }));
       const sendKeys = vi.fn(async () => ({ ok: true as const }));
-      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }));
+      const adapter = new CodexResumeAdapter(mockTmux({ sendText, sendKeys }), { settleMs: 0 });
 
       await adapter.resume("r99-demo1-impl", "codex_id", "uuid-123", "/repo");
 

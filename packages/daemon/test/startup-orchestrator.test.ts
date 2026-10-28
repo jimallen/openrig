@@ -109,7 +109,7 @@ describe("StartupOrchestrator", () => {
   afterEach(() => { db.close(); });
 
   function createOrchestrator(
-    opts?: TmuxAdapter | { tmux?: TmuxAdapter; readFile?: (path: string) => string; readinessSettings?: Pick<SettingsStore, "resolveOne">; sleep?: (ms: number) => Promise<void>; listProcesses?: NativeProcessLister },
+    opts?: TmuxAdapter | { tmux?: TmuxAdapter; readFile?: (path: string) => string; readinessSettings?: Pick<SettingsStore, "resolveOne">; sleep?: (ms: number) => Promise<void>; listProcesses?: NativeProcessLister; now?: () => number },
   ): StartupOrchestrator {
     const normalized = opts && "sendText" in opts
       ? { tmux: opts as TmuxAdapter }
@@ -125,6 +125,7 @@ describe("StartupOrchestrator", () => {
       } as unknown as Pick<SettingsStore, "resolveOne">),
       sleep: normalized.sleep ?? (async () => {}),
       listProcesses: normalized.listProcesses ?? (async () => PANE_WITH_CLAUDE),
+      ...(normalized.now ? { now: normalized.now } : {}),
     });
   }
 
@@ -1814,6 +1815,243 @@ describe("StartupOrchestrator", () => {
       const result = await orch.startNode(makeInput(seed, { adapter }));
       expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
       expect(sleeps).toEqual([]);
+    });
+  });
+  // OF-167: the pod-aware Codex resume has the same first-read race as Claude had (OF-161). Fixtures are the shape measured
+  // on Sparky: the pane shell -> `sh /tmp/openrig-tmux-send-....txt` -> `node .../codex` -> `codex`, so the foreground NAME
+  // is `sh`/`bash` and proves nothing. Codex's message for a missing session is "No saved session found".
+  describe("OF-167: a resumed Codex must still be under the pane after it has had time to exit", () => {
+    const CODEX_PANE: NativeProcessRow = { pid: 100, ppid: 1, pgid: 100, tpgid: 101, executableName: "bash", command: "-bash", startedAt: T0 };
+    const CODEX_LAUNCHER: NativeProcessRow = { pid: 101, ppid: 100, pgid: 101, tpgid: 101, executableName: "sh", command: "sh /tmp/openrig-tmux-send-4242-0b8c9d3e-1111-4222-8333-444455556666.txt", startedAt: T0 };
+    const CODEX_NODE: NativeProcessRow = { pid: 102, ppid: 101, pgid: 101, tpgid: 101, executableName: "node", command: "node /home/u/.nvm/versions/node/v22/bin/codex resume tok-1", startedAt: T0 };
+    const CODEX_BIN: NativeProcessRow = { pid: 103, ppid: 102, pgid: 101, tpgid: 101, executableName: "codex", command: "/home/u/lib/node_modules/@openai/codex/vendor/codex/codex resume tok-1", startedAt: T0 };
+    const CODEX_LIVE = [CODEX_PANE, CODEX_LAUNCHER, CODEX_NODE, CODEX_BIN];
+    const CODEX_GONE = [CODEX_PANE, CODEX_LAUNCHER];
+    const MISSING = "No saved session found with ID 019a-tok";
+    const CODEX_TUI = "OpenAI Codex (v0.0.0)\n› Ask Codex to do anything";
+    const readyEvents = (nodeId: string) => db.prepare("SELECT type FROM events WHERE node_id = ? AND type = 'node.startup_ready'").all(nodeId);
+    const codexAdapter = (t: TmuxAdapter, extra: Partial<RuntimeAdapter> = {}) => mockAdapter({ runtime: "codex",
+      checkReady: vi.fn(async () => {
+        const probe = assessNativeResumeProbe({ runtime: "codex", paneCommand: await t.getPaneCommand("r01-impl"), paneContent: (await t.capturePaneContent("r01-impl", 40)) ?? "" });
+        return { ready: probe.status === "resumed", code: probe.code, reason: probe.detail };
+      }), ...extra });
+    const resumeInput = (seed: ReturnType<typeof seedSession>, adapter: RuntimeAdapter, extra: Partial<StartupInput> = {}) => makeInput(seed, { adapter, isRestore: true,
+      resumeToken: "tok-1", resumeType: "codex_id", allowFreshFallback: false, startupActions: [makeAction()], ...extra });
+    /** Codex is up (foreground `node`, TUI) until `exitsAtMs`, then the pane shows `afterPane` under `afterCommand`. */
+    function exitingCodex(afterPane: string, exitsAtMs = 1000, afterCommand = "bash", survives = false) {
+      let elapsed = 0; const sleeps: number[] = [];
+      const up = () => elapsed < exitsAtMs;
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => up() ? "node" : afterCommand), capturePaneContent: vi.fn(async () => up() ? CODEX_TUI : afterPane) });
+      const orch = createOrchestrator({ tmux: t, sleep: async (ms) => { sleeps.push(ms); elapsed += ms; }, listProcesses: async () => survives || up() ? CODEX_LIVE : CODEX_GONE });
+      return { t, orch, sleeps, adapter: codexAdapter(t) };
+    }
+
+    it("a resume whose session is missing is failed with Codex's own message, never ready, and nothing is typed", async () => {
+      const seed = seedSession();
+      const { t, orch, adapter } = exitingCodex(`${MISSING}\n$ `);
+      const result = await orch.startNode(resumeInput(seed, adapter));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh", missingConversation: true });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain(MISSING);
+      expect(result.errors.join("\n")).toContain("Codex resume failed");
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("a pane that fell back to its shell without a message is failed (retry_fresh), keeping the pane output, not marked missing", async () => {
+      const seed = seedSession();
+      const { orch, adapter } = exitingCodex("codex: segfault\n$ ");
+      const result = await orch.startNode(resumeInput(seed, adapter));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.missingConversation).toBeUndefined();
+      expect(result.errors.join("\n")).toContain("codex: segfault");
+      expect(result.errors.join("\n")).toContain("returned to its shell");
+    });
+
+    // Foreground names measured/modelled: the launcher shell (sh, bash), Codex's node wrapper, and codex itself.
+    it.each(["sh", "bash", "node", "codex"])("a live Codex (foreground %s) whose repainted history contains the phrase is NOT failed", async (foreground) => {
+      const seed = seedSession();
+      const history = `${CODEX_TUI}\n> we saw: ${MISSING}`;
+      const { t, orch, adapter } = exitingCodex(history, 1000, foreground, true);
+      expect(assessNativeResumeProbe({ runtime: "codex", paneCommand: foreground, paneContent: history })).toMatchObject({ code: "no_saved_session" });
+      const result = await orch.startNode(resumeInput(seed, adapter));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(readyEvents(seed.nodeId)).toHaveLength(1);
+      expect(t.killSession).not.toHaveBeenCalled();
+    });
+
+    it("the measured live tree under an sh foreground: both sends are typed and nothing says the foreground could not be read", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "sh"), capturePaneContent: vi.fn(async () => CODEX_TUI) });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => CODEX_LIVE })
+        .startNode(resumeInput(seed, codexAdapter(t), { startupActions: [makeAction(), makeAction({ value: "/second" })] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(t.sendText).toHaveBeenCalledTimes(2);
+      expect((result.warnings ?? []).filter((w) => w.includes("could not be read"))).toEqual([]);
+    });
+
+    it("types nothing into a pane whose Codex exited after the settle read", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "bash"), capturePaneContent: vi.fn(async () => CODEX_TUI) });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => CODEX_GONE }).startNode(resumeInput(seed, mockAdapter({ runtime: "codex" })));
+      expect(result).toMatchObject({ ok: false });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("Codex is no longer in the foreground");
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("a Claude beneath the pane is not the Codex this seat resumed", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "bash"), capturePaneContent: vi.fn(async () => "") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => [CODEX_PANE, CODEX_LAUNCHER, CLAUDE_PROC] }).startNode(resumeInput(seed, mockAdapter({ runtime: "codex" })));
+      expect(result).toMatchObject({ ok: false });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("an unreadable foreground at the settle read does not fail the Codex resume but is recorded as a warning", async () => {
+      const seed = seedSession();
+      const adapter = mockAdapter({ runtime: "codex", checkReady: vi.fn().mockResolvedValueOnce({ ready: true })
+        .mockResolvedValue({ ready: false, code: "no_saved_session", reason: "phrase" }) });
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }) });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, adapter, { startupActions: [] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(result.warnings?.join("\n")).toContain("Codex's pane foreground could not be read at the settle check");
+    });
+
+    it("control: a Codex that is still under the pane after the wait is ready and resumed", async () => {
+      const seed = seedSession();
+      const { orch, adapter, sleeps } = exitingCodex("never reached", 60_000);
+      expect(await orch.startNode(resumeInput(seed, adapter))).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(sleeps.length).toBeGreaterThan(0);
+    });
+
+    it("control: a fresh Codex launch takes no resume wait and is not guarded", async () => {
+      const seed = seedSession();
+      const { t, orch, adapter, sleeps } = exitingCodex("never reached", 60_000);
+      const result = await orch.startNode(makeInput(seed, { adapter, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(sleeps).not.toContain(2500);
+      expect(t.sendText).toHaveBeenCalled();
+    });
+  });
+
+  describe("OF-161 follow-ups: unreadable strikes, stale stops, process listings per send", () => {
+    const resumeInput = (seed: ReturnType<typeof seedSession>, extra: Partial<StartupInput> = {}) => makeInput(seed, { adapter: mockAdapter(), isRestore: true,
+      resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()], ...extra });
+    const readyEvents = (nodeId: string) => db.prepare("SELECT type FROM events WHERE node_id = ? AND type = 'node.startup_ready'").all(nodeId);
+    const missingAfterReady = () => vi.fn().mockResolvedValueOnce({ ready: true }).mockResolvedValue({ ready: false, code: "no_conversation_found", reason: "phrase" });
+    const unreadable = () => mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }), capturePaneContent: vi.fn(async () => "last pane line") });
+
+    // R3 (z1 review): the unreadable settle read and the first unreadable send are two unreadable reads in a row.
+    it("R3: an unreadable settle read counts as the first strike, so the first unreadable send stops the typing", async () => {
+      const seed = seedSession();
+      const t = unreadable();
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { adapter: mockAdapter({ checkReady: missingAfterReady() }) }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("unreadable");
+      expect(result.errors.join("\n")).toContain("twice in a row");
+      expect(t.sendText).not.toHaveBeenCalled();
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    it("R3: a settle read that threw counts as the first strike too", async () => {
+      const seed = seedSession();
+      const t = unreadable();
+      const adapter = mockAdapter({ checkReady: vi.fn().mockResolvedValueOnce({ ready: true }).mockRejectedValue(new Error("capture failed")) });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { adapter }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("R3 control: a readable foreground at the first send after an unreadable settle read types, and resets the count", async () => {
+      const seed = seedSession();
+      const reads = vi.fn().mockRejectedValueOnce(new Error("x")).mockResolvedValue("claude");
+      const t = mockTmux({ getPaneCommand: reads });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { adapter: mockAdapter({ checkReady: missingAfterReady() }),
+        startupActions: [makeAction(), makeAction({ value: "/b" }), makeAction({ value: "/c" })] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(3);
+    });
+
+    // R4 (z1 review): the Claude adapter turns an OPTIONAL file's failed send into nothing; the stop that send recorded
+    // went with it and must not turn a later, unrelated failure into attention_required.
+    function swallowingAdapter() {
+      return mockAdapter({ deliverStartup: vi.fn(async (_files, _binding, send) => {
+        for (const _ of [0, 1]) { try { await send?.("optional file"); } catch { /* an optional file's failure is dropped by the adapter */ } }
+        return { delivered: 0, failed: [] };
+      }) });
+    }
+    const optionalFile: ResolvedStartupFile = { path: "optional.md", absolutePath: "/fixture/optional.md", ownerRoot: "/fixture", deliveryHint: "send_text", required: false, appliesOn: ["restore"] };
+    it("R4: a stop recorded by a swallowed optional-file send does not turn a later plain failure into attention_required", async () => {
+      const seed = seedSession();
+      // reads: two unreadable (both swallowed sends; the second records the stop), then readable for the action.
+      const reads = vi.fn().mockRejectedValueOnce(new Error("x")).mockRejectedValueOnce(new Error("x")).mockResolvedValue("claude");
+      const t = mockTmux({ getPaneCommand: reads, sendText: vi.fn(async () => ({ ok: false as const, message: "fixture transport failure" })), capturePaneContent: vi.fn(async () => "pane") });
+      const result = await createOrchestrator({ tmux: t, readFile: () => "x" }).startNode(resumeInput(seed, { adapter: swallowingAdapter(), resolvedStartupFiles: [optionalFile] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("fixture transport failure");
+      expect(result.errors.join("\n")).not.toContain("twice in a row");
+      expect(db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ startup_status: "failed" });
+    });
+
+    it("R4 control: a stop on a send whose failure is NOT swallowed still ends as attention_required", async () => {
+      const seed = seedSession();
+      const t = unreadable();
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/second" })] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+    });
+
+    // R5 (z1 review): a guarded send under a shell-named foreground lists every process. One listing serves a short burst.
+    // The adapter reports the process it launched, so the launch lists nothing: every listing counted here is a guarded send's.
+    const LIVE_TREE: NativeProcessRow[] = [PANE_SHELL, LAUNCHER, CLAUDE_PROC];
+    const threeActions = [makeAction(), makeAction({ value: "/b" }), makeAction({ value: "/c" })];
+    const launchedAdapter = () => mockAdapter({ launchHarness: vi.fn(async (_binding, opts) => ({ ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id",
+      launchedProcess: { pid: 102, startedAt: T0 } })) });
+    async function guardedSends(actions: StartupAction[], o: { foreground?: string; now?: () => number; lists?: (call: number) => Promise<NativeProcessRow[]>; twice?: boolean } = {}) {
+      const seed = seedSession();
+      let calls = 0;
+      const listProcesses = vi.fn(async () => (o.lists ?? (async () => LIVE_TREE))(calls++));
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => o.foreground ?? "zsh"), capturePaneContent: vi.fn(async () => "") });
+      const orch = createOrchestrator({ tmux: t, listProcesses, now: o.now ?? (() => 1_000_000) });
+      const result = await orch.startNode(resumeInput(seed, { adapter: launchedAdapter(), startupActions: actions }));
+      if (o.twice) await orch.startNode(resumeInput(seed, { adapter: launchedAdapter(), startupActions: actions }));
+      return { listings: listProcesses.mock.calls.length, t, result };
+    }
+    it("R5: a burst of guarded sends within the window lists processes once", async () => {
+      const { listings, result, t } = await guardedSends(threeActions);
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(3);
+      expect(listings).toBe(1);
+    });
+
+    it("R5: the remembered answer expires, so sends further apart than the window each list again", async () => {
+      let clock = 1_000_000;
+      const { listings, result } = await guardedSends(threeActions, { now: () => (clock += 10_000) });
+      expect(result).toMatchObject({ ok: true });
+      expect(listings).toBe(3);
+    });
+
+    it("R5: the memo is per startup, not shared between two startups of the same seat", async () => {
+      expect((await guardedSends([makeAction()], { twice: true })).listings).toBe(2);
+    });
+
+    it("R5: only a positive answer is remembered; an unreadable one is re-read by the next send", async () => {
+      // The first listing lacks the pane pid (unreadable); every later one shows no Claude under the pane (gone).
+      const { result, t, listings } = await guardedSends([makeAction(), makeAction({ value: "/b" })], {
+        lists: async (call) => call === 0 ? [LAUNCHER, CLAUDE_PROC] : [PANE_SHELL] });
+      expect(result).toMatchObject({ ok: false });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("no longer in the foreground");
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect(listings).toBe(2);
+    });
+
+    it("R5: a non-shell foreground never lists processes for a send", async () => {
+      const { listings, t } = await guardedSends(threeActions, { foreground: "claude" });
+      expect(t.sendText).toHaveBeenCalledTimes(3);
+      expect(listings).toBe(0);
     });
   });
 });

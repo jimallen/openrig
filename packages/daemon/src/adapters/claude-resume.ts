@@ -7,6 +7,7 @@ import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume
 import { claudeRemoteControlArg, claudeRemoteControlArgs, claudeRemoteControlNameMissing } from "./claude-remote-control.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
+import { holdResumedPoll } from "../domain/resume-settle.js";
 import { verifyClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { observeClaudePermission, type AppliedLaunchObservation } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
@@ -14,7 +15,8 @@ import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 
 export type ResumeResult =
   // `launchedProcess` (Claude): the process this resume's own identity check observed (#1077).
-  | { ok: true; appliedLaunch?: AppliedLaunchObservation; launchedProcess?: ClaudeLaunchedProcess }
+  // `warnings`: observations that did not fail the resume (an unreadable settle read), for the caller's warnings.
+  | { ok: true; appliedLaunch?: AppliedLaunchObservation; launchedProcess?: ClaudeLaunchedProcess; warnings?: string[] }
   // Non-terminal: a chooser or an inconclusive observation must preserve the
   // launch. Attention is not proof of native identity or successful continuity.
   | { ok: false; code: "attention_required"; message: string; evidence?: string }
@@ -34,6 +36,8 @@ interface ClaudeResumeOptions {
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** OF-167: how long a resume the poll called resumed is given to exit before it is believed. */
+  settleMs?: number;
 }
 
 export class ClaudeResumeAdapter {
@@ -112,7 +116,12 @@ export class ClaudeResumeAdapter {
       code: "attention_required",
       message: `Claude resume observation unavailable; launch retained: ${error instanceof Error ? error.message : String(error)}`,
     }));
-    return result.ok ? { ...result, appliedLaunch } : result;
+    if (!result.ok) return result;
+    // OF-167: the poll's first "resumed" read can be taken while `claude --resume` is still starting, before it prints
+    // "No conversation found" and exits. Believe it only if Claude is still there after the settle window.
+    const held = await holdResumedPoll("claude-code", result, { session: tmuxSessionName, tmux: this.tmux,
+      listProcesses: this.options.listProcesses, sleep: this.options.sleep ?? sleep, settleMs: this.options.settleMs });
+    return held.ok ? { ...held, appliedLaunch } : held;
   }
 
   private async verifyResume(tmuxSessionName: string, resumeToken: string): Promise<ResumeResult> {
