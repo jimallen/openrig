@@ -75,10 +75,15 @@ describe("OF-162: a fresh launch with an unverified first message", () => {
   });
   afterEach(() => db.close());
 
-  function run(opts: { runtime?: string; submissionUnverified: boolean; type?: string }) {
-    const checkReady = opts.submissionUnverified
-      ? vi.fn().mockResolvedValueOnce({ ready: true }).mockRejectedValueOnce(new Error("composer capture unavailable"))
-      : vi.fn(async () => ({ ready: true }));
+  function run(opts: { runtime?: string; submissionUnverified: boolean; type?: string; resume?: boolean }) {
+    // Reads: launch readiness, (a resume's settle read,) then the post-delivery read that goes unverified.
+    const lastRead = opts.resume ? 3 : 2;
+    let reads = 0;
+    const checkReady = vi.fn(async () => {
+      reads += 1;
+      if (opts.submissionUnverified && reads === lastRead) throw new Error("composer capture unavailable");
+      return { ready: true };
+    });
     const adapter = {
       runtime: opts.runtime ?? "claude-code",
       listInstalled: vi.fn(async () => []), project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
@@ -90,9 +95,10 @@ describe("OF-162: a fresh launch with an unverified first message", () => {
     const orch = new StartupOrchestrator({ db, sessionRegistry: reg, eventBus: bus, tmuxAdapter: tmux, readFile: () => "Read the project instructions.",
       readinessSettings: { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) } as unknown as Pick<SettingsStore, "resolveOne">, sleep: async () => {} });
     const binding: NodeBinding = { id: "b1", nodeId: seed.nodeId, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." };
-    const input: StartupInput = { ...seed, binding, adapter, isRestore: false,
+    const input: StartupInput = { ...seed, binding, adapter, isRestore: opts.resume === true,
+      ...(opts.resume ? { resumeToken: CLAUDE_ID, resumeType: "claude_id", allowFreshFallback: false } : {}),
       plan: { runtime: "claude-code", cwd: ".", entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
-      resolvedStartupFiles: [{ path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture", deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"] }],
+      resolvedStartupFiles: [{ path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture", deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"] }],
       startupActions: [] };
     return orch.startNode(input);
   }
@@ -107,6 +113,13 @@ describe("OF-162: a fresh launch with an unverified first message", () => {
     const result = await run({ submissionUnverified: false });
     expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
     expect(result.ok && result.submission).toBeFalsy();
+    expect(probeOf(db, seed.sessionId)).toMatchObject({ resume_token: CLAUDE_ID, probe: "resumable", never_verified: 0 });
+  });
+
+  it("control: a RESUMED seat's id was persisted by its earlier conversation, so an unverified submission leaves it resumable", async () => {
+    reg.updateResumeToken(seed.sessionId, "claude_id", CLAUDE_ID, "hook");
+    const result = await run({ resume: true, submissionUnverified: true });
+    expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed", submission: { status: "unverified" } });
     expect(probeOf(db, seed.sessionId)).toMatchObject({ resume_token: CLAUDE_ID, probe: "resumable", never_verified: 0 });
   });
 
