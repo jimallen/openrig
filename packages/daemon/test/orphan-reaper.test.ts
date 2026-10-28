@@ -187,9 +187,12 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
   try { process.kill(Number(fs.readFileSync(${JSON.stringify(pidFile)}, "utf8"))); } catch {}
   setTimeout(() => {
     const port = fs.readFileSync(${JSON.stringify(pidFile + ".port")}, "utf8");
-    const again = spawn(process.execPath, ["-e", "require('net').createServer().listen(Number(process.env.A6_PORT), '127.0.0.1'); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", env: { ...process.env, A6_PORT: port } });
+    const ready = ${JSON.stringify(pidFile + ".ready")};
+    const again = spawn(process.execPath, ["-e", "require('net').createServer().listen(Number(process.env.A6_PORT), '127.0.0.1', () => require('fs').writeFileSync(process.env.A6_READY, '1')); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", env: { ...process.env, A6_PORT: port, A6_READY: ready } });
     again.unref();
     fs.writeFileSync(${JSON.stringify(pidFile + ".replacement")}, String(again.pid));
+    // Exit only once the replacement is really listening, so a slow host cannot make it undiscoverable by the time stop() looks.
+    const wait = setInterval(() => { if (fs.existsSync(ready)) { clearInterval(wait); process.exit(0); } }, 20);
   }, 400);
 }` : ""}
 `);
