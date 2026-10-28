@@ -363,6 +363,28 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       expect(f.files.get(staged.line.slice("/bin/sh ".length))).toBe(`/bin/rm -f -- ${staged.line.slice("/bin/sh ".length)}\n${line}\n`);
     });
 
+    // a5: every control, not only LF and CR. A typed ETX cancels the line, EOT closes the shell, ESC and the 8-bit CSI open
+    // an escape sequence, TAB completes, DEL erases; quoting does not stop the tty or the editor reading them.
+    it.each([
+      ["NUL", "\u0000"], ["ETX (Ctrl-C)", "\u0003"], ["EOT (Ctrl-D)", "\u0004"], ["TAB", "\t"], ["VT", "\u000b"],
+      ["FF", "\u000c"], ["ESC", "\u001b"], ["US", "\u001f"], ["DEL", "\u007f"], ["C1 NEL", "\u0085"], ["8-bit CSI", "\u009b"], ["C1 APC", "\u009f"],
+    ])("stages a line holding %s: nothing typed holds a control, and the script keeps the line byte for byte", async (_label, ch) => {
+      const line = `echo x${ch}y`; // no quote or bracket, so only the control can force staging
+      const f = fileOps();
+      const staged = await stageCmuxLine(line, f.ops);
+      expect(`${staged.line}\n`).toMatch(STAGED);
+      expect(staged.line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(f.files.get(staged.line.slice("/bin/sh ".length))).toBe(`/bin/rm -f -- ${staged.line.slice("/bin/sh ".length)}\n${line}\n`);
+    });
+
+    it("controls: printable non-ASCII (the first code points past DEL/C1) and a plain line are still typed as they stand", async () => {
+      const f = fileOps();
+      for (const line of ["echo caf\u00e9 \u65e5\u672c \u00a0x", "echo \u00a0", "tmux attach -t dev-impl@rig-1"]) {
+        expect((await stageCmuxLine(line, f.ops)).line).toBe(line);
+      }
+      expect(f.files.size).toBe(0);
+    });
+
     it.each(["echo a\nrm -rf x", "echo a\rrm -rf x"])("stages a line holding a line break (it would run as two commands)", async (line) => {
       const f = fileOps();
       const staged = await stageCmuxLine(line, f.ops);
@@ -411,7 +433,7 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
   });
 
   describe("node open-in-cmux", () => {
-    function open(binding: Record<string, unknown>, sendOk = true, writeFails = false) {
+    function open(binding: Record<string, unknown>, sendOk = true, writeFails = false, logicalId = "dev.impl") {
       const sent: string[] = [];
       const adapter = {
         currentWorkspace: async () => ({ ok: true as const, data: "ws-1" }),
@@ -419,10 +441,10 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
         sendText: async (_s: string, text: string) => { sent.push(text); return sendOk ? { ok: true as const, data: undefined } : { ok: false as const, code: "request_failed", message: "x" }; },
         focusSurface: async () => ({ ok: true as const, data: undefined }),
       };
-      const rigRepo = { getRig: () => ({ nodes: [{ id: "n1", logicalId: "dev.impl", binding }] }) };
+      const rigRepo = { getRig: () => ({ nodes: [{ id: "n1", logicalId, binding }] }) };
       const f = fileOps({ writeFails });
       const service = new NodeCmuxService(rigRepo as never, { updateBinding: vi.fn() } as never, adapter as never, undefined, f.ops);
-      return { sent, f, run: () => service.openOrFocusNodeSurface("rig", "dev.impl") };
+      return { sent, f, run: () => service.openOrFocusNodeSurface("rig", logicalId) };
     }
     afterEach(() => { setDaemonTmuxServer([]); });
 
@@ -451,6 +473,22 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       const calls = runStaged([...f.files.values()][0]!);
       expect(fs.existsSync(sentinel)).toBe(false);
       expect(calls).toEqual([["tmux", "attach", "-t", name]]);
+    });
+
+    // a5 trace (control, green before and after the fix): a node with no tmux session and no external name is named by
+    // its logical id, and a rig spec only requires a member id to be free of dots, so the id can hold controls. It
+    // reaches the helper console through shellWord, whose quotes already force staging, and the script hands `rig` the id
+    // unchanged. So no name path types a raw control today; the control rule above is defence in depth.
+    it.each([
+      ["ETX", "dev\u0003impl"], ["EOT", "dev\u0004impl"], ["ESC", "dev\u001b[31mimpl"], ["TAB", "dev\timpl"], ["DEL", "dev\u007fimpl"],
+    ])("an unbound node whose logical id holds %s gets a staged helper console, and rig receives the id as one argument", async (_label, logicalId) => {
+      const { sent, f, run } = open({ attachmentType: "external_cli" }, true, false, logicalId);
+      expect((await run()).ok).toBe(true);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatch(STAGED);
+      const calls = runStaged([...f.files.values()][0]!);
+      expect(calls).toContainEqual(["rig", "capture", logicalId]);
+      expect(calls).toContainEqual(["rig", "transcript", logicalId, "--tail", "100"]);
     });
 
     it.each([
