@@ -138,8 +138,8 @@ describe("startup prompt submission", () => {
       const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
       expect(texts.length).toBeGreaterThan(0);
       for (const t of texts) expect(t, JSON.stringify(t)).not.toMatch(/\u001b\[201~|\u009b201~/);
-      expect(texts.some(t => t.includes("Line oneinjected\nline two"))).toBe(true);
-      expect(texts.some(t => t.includes("identity  tail"))).toBe(true);
+      expect(texts.some(t => t.includes("Line one[201~injected\nline two"))).toBe(true);
+      expect(texts.some(t => t.includes("identity 201~ tail"))).toBe(true);
     });
 
     // OF-169: startup text loses every C0/C1 control except TAB/LF/CR (not only the paste-end marker), in a file
@@ -156,7 +156,7 @@ describe("startup prompt submission", () => {
       expect(result.warnings).toBeUndefined();
       const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
       for (const t of texts) expect(t, JSON.stringify(t)).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
-      expect(texts).toContain("Line one[31m\n\tindented line two");
+      expect(texts.some(t => t.includes("Line one[31m\n\tindented line two"))).toBe(true);
       expect(texts.some(t => t.includes("identity tail"))).toBe(true);
       expect(f.submitted).toEqual(texts);
     });

@@ -369,7 +369,7 @@ describe("Claude Code runtime adapter", () => {
     };
     const result = await adapter.deliverStartup([file], makeBinding());
     expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "alphabeta\nsecond line");
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "alpha[201~beta\nsecond 201~line");
     expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
   });
 

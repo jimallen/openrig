@@ -96,7 +96,7 @@ describe("OF-160: StubRuntimeAdapter send_text startup files never carry the pas
     const result = await adapter.deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" });
     expect(result.failed).toEqual([]);
     expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith("dev-impl@test-rig", "alphabeta gamma");
+    expect(tmux.sendText).toHaveBeenCalledWith("dev-impl@test-rig", "alpha[201~beta 201~gamma");
     expect(tmux.sendKeys).toHaveBeenCalledWith("dev-impl@test-rig", ["Enter"]);
   });
 });

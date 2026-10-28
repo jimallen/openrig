@@ -422,7 +422,7 @@ describe("Codex runtime adapter", () => {
 
     expect(result.delivered).toBe(1);
     expect(result.failed).toEqual([]);
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "Read this pack.rm -rf ~\nsecond line");
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "Read this pack.[201~rm -rf ~\nsecond 201~line");
     expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
   });
 

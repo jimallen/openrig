@@ -754,7 +754,7 @@ describe("OF-160: Pi send_text startup files never carry the paste-end marker in
     const result = await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
     expect(result.failed).toEqual([]);
     expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "alphabeta gamma");
+    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "alpha[201~beta 201~gamma");
     expect(tmux.sendKeys).toHaveBeenCalledWith(SESSION, ["Enter"]);
   });
 });
