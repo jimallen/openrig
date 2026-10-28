@@ -1483,8 +1483,11 @@ ${integrityYaml}
     const bundlePath = path.join(tmpDir, "svc-test.rigbundle");
     await pack(staging, bundlePath);
 
-    // Record existing podbundle- dirs before test
-    const tmpBase = os.tmpdir();
+    // The resolver extracts into os.tmpdir(). That directory is shared by every concurrently running test
+    // file and every other run on the host, and any of them may create (and later remove) its own
+    // `podbundle-*` directory while this test runs: counting new ones there blamed this test for them.
+    // Give the resolver a private TMPDIR for exactly this call, so any `podbundle-*` found is its own.
+    const tmpBase = fs.mkdtempSync(path.join(tmpDir, "private-tmpdir-"));
     const preExistingDirs = new Set(fs.readdirSync(tmpBase).filter((d) => d.startsWith("podbundle-")));
 
     const podBundleResolver = new PodBundleSourceResolver();
@@ -1514,7 +1517,16 @@ ${integrityYaml}
       podInstantiator: mockPodInstantiator as any,
     });
 
-    const result = await orch.bootstrap({ mode: "apply", sourceRef: bundlePath, sourceKind: "rig_bundle" });
+    // TMPDIR is changed only around this one call, and restored on every path (including a failed positive control).
+    const inheritedTmpdir = process.env["TMPDIR"];
+    process.env["TMPDIR"] = tmpBase;
+    let result;
+    try {
+      expect(os.tmpdir(), "positive control: the resolver's os.tmpdir() is the private one").toBe(tmpBase);
+      result = await orch.bootstrap({ mode: "apply", sourceRef: bundlePath, sourceKind: "rig_bundle" });
+    } finally {
+      if (inheritedTmpdir === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = inheritedTmpdir;
+    }
 
     expect(result.status).toBe("failed");
     expect(result.errors.some((e: string) => e.includes("Service-backed rigs cannot be launched from .rigbundle"))).toBe(true);

@@ -61,7 +61,11 @@ function fakeCodex(mode: Record<string, unknown>) {
   const cwd = nodePath.join(root, "seat dir");
   const home = nodePath.join(root, "home");
   fs.mkdirSync(bin); fs.mkdirSync(cwd); fs.mkdirSync(home);
-  fs.writeFileSync(nodePath.join(bin, "codex"), FAKE_CODEX, { mode: 0o755 });
+  // `codex` is a tiny sh wrapper that records its own pid at once and then execs the node fake (same pid),
+  // so a test can name the reader's process even when the deadline fires before node has finished starting.
+  fs.writeFileSync(nodePath.join(bin, "codex.js"), FAKE_CODEX);
+  fs.writeFileSync(nodePath.join(bin, "codex"),
+    `#!/bin/sh\necho $$ > "$(dirname "$0")/shell.pid"\nexec ${JSON.stringify(process.execPath)} "$(dirname "$0")/codex.js" "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(nodePath.join(bin, "mode.json"), JSON.stringify({ config: FLOOR_CONFIG, requirements: { requirements: null }, ...mode }));
   const launchPath = `${bin}:${process.env.PATH}`;
   const read = (file: string) => JSON.parse(fs.readFileSync(nodePath.join(bin, file), "utf8"));
@@ -70,10 +74,23 @@ function fakeCodex(mode: Record<string, unknown>) {
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+// A process the reader has killed leaves asynchronously (SIGKILL is delivered, then the kernel and the
+// reaper finish): wait for the death itself, not for a number of milliseconds.
+async function expectGone(pid: number, what: string): Promise<void> {
+  await expect.poll(() => alive(pid), { timeout: 30_000, interval: 20, message: `${what} (pid ${pid}) is gone` }).toBe(false);
+}
+// Where the test wants an ANSWER, the deadline must not be what decides the outcome: the reader returns
+// the moment it has the answers, so a generous deadline costs a quiet machine nothing. (The 4 s default
+// is production's; node start-up alone has exceeded it on a loaded host.)
+const ANSWER_DEADLINE_MS = 60_000;
+// The hang row needs its sh wrapper to have run `echo $$ > shell.pid` before the deadline kills the reader: 300 ms left a
+// reader killed before its wrapper ran (no pid file, a false failure on a starved host); a second leaves a wide margin.
+const NO_ANSWER_DEADLINE_MS = 1_000;
+
 describe("#275 codexNetworkDefaultReader (fake codex)", () => {
   it("runs the seat's executable with its PATH, HOME, CODEX_HOME and cwd, and asks only for config", async () => {
     const f = fakeCodex({});
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, home: f.home, codexHome: f.codexHome })(f.cwd);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, home: f.home, codexHome: f.codexHome, deadlineMs: ANSWER_DEADLINE_MS })(f.cwd);
     expect(result.apply).toBe(true);
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
     const seen = f.read("seen.json");
@@ -84,50 +101,53 @@ describe("#275 codexNetworkDefaultReader (fake codex)", () => {
     expect(received.map((m) => m.method)).toEqual(["initialize", "initialized", "config/read", "configRequirements/read"]);
     expect(received[0]!.params).toMatchObject({ capabilities: { experimentalApi: true } });
     expect(received[2]!.params).toEqual({ includeLayers: true, cwd: f.cwd });
-    expect(alive(seen.pid)).toBe(false);
+    await expectGone(seen.pid, "the reader");
   });
 
   it("an explicit opt-out is preserved", async () => {
     const f = fakeCodex({ config: USER_FALSE_CONFIG });
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath })(f.cwd);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: ANSWER_DEADLINE_MS })(f.cwd);
     expect(result).toMatchObject({ apply: false, reason: "network access is set explicitly in Codex configuration" });
   });
 
   it("an RPC error is not success, even though the process would exit 0", async () => {
     const f = fakeCodex({ configError: true });
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath })(f.cwd);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: ANSWER_DEADLINE_MS })(f.cwd);
     expect(result).toMatchObject({ apply: false, reason: "codex app-server returned an error for request 2" });
   });
 
   it("no answer by the deadline adds nothing, and the reader is gone", async () => {
     const f = fakeCodex({ hang: true });
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: 300, graceMs: 200 })(f.cwd);
-    expect(result).toMatchObject({ apply: false, reason: "codex app-server did not answer within 300 ms" });
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(300);
-    expect(alive(f.read("seen.json").pid)).toBe(false);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: NO_ANSWER_DEADLINE_MS, graceMs: 200 })(f.cwd);
+    expect(result).toMatchObject({ apply: false, reason: `codex app-server did not answer within ${NO_ANSWER_DEADLINE_MS} ms` });
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(NO_ANSWER_DEADLINE_MS);
+    // The deadline can fire before node has started (the wrapper has already named the pid), so the pid
+    // comes from the wrapper, not from the node fake's seen.json.
+    await expect.poll(() => f.exists("shell.pid"), { timeout: 30_000, interval: 20, message: "the wrapper recorded its pid" }).toBe(true);
+    await expectGone(Number(fs.readFileSync(nodePath.join(f.bin, "shell.pid"), "utf8")), "the reader");
   });
 
   it("a reader that ignores EOF and TERM is killed, and an unrelated process survives", async () => {
     const unrelated = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
     cleanups.push(() => { try { unrelated.kill("SIGKILL"); } catch { /* gone */ } });
     const f = fakeCodex({ ignoreEof: true, ignoreTerm: true });
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: 2_000, graceMs: 200 })(f.cwd);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: ANSWER_DEADLINE_MS, graceMs: 200 })(f.cwd);
     expect(result.apply).toBe(true); // it answered; cleanup is separate from the decision
-    expect(alive(f.read("seen.json").pid)).toBe(false);
+    await expectGone(f.read("seen.json").pid, "the reader");
     expect(alive(unrelated.pid!)).toBe(true);
   });
 
   it("cleanup reaches the reader's own descendants after it exits", async () => {
     const f = fakeCodex({ grandchild: true });
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, graceMs: 200 })(f.cwd);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, graceMs: 200, deadlineMs: ANSWER_DEADLINE_MS })(f.cwd);
     expect(result.apply).toBe(true);
     const grandchild = Number(fs.readFileSync(nodePath.join(f.bin, "grandchild.pid"), "utf8"));
-    expect(alive(grandchild)).toBe(false);
+    await expectGone(grandchild, "the reader's grandchild");
   });
 
   it("a missing executable or an early exit adds nothing", async () => {
     const f = fakeCodex({ exitEarly: true });
-    expect(await codexNetworkDefaultReader({ launchPath: f.launchPath })(f.cwd))
+    expect(await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: ANSWER_DEADLINE_MS })(f.cwd))
       .toMatchObject({ apply: false, reason: "codex app-server exited before answering" });
     const empty = fs.mkdtempSync(nodePath.join(os.tmpdir(), "or275-empty-"));
     cleanups.push(() => fs.rmSync(empty, { recursive: true, force: true }));

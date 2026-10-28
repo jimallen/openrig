@@ -53,7 +53,10 @@ function nestedRun(outcome: "pass" | "fail", opts: { skippedFile?: boolean; glob
   }
 }
 
-describe("hermetic setup fixture-home cleanup (OF-80)", () => {
+// Each row below runs a whole nested vitest as a child process and waits for it to exit (spawnSync), which
+// has taken longer than the 20 s default on a heavily loaded host. The nested run ends by itself; the
+// ceiling only bounds a genuine hang.
+describe("hermetic setup fixture-home cleanup (OF-80)", { timeout: 180_000 }, () => {
   it("leaves no fixture home behind after a passing run", () => {
     const r = nestedRun("pass");
     expect(r.homeSeen, "positive control: the nested run was given a fixture home").toContain(PREFIX);

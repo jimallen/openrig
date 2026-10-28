@@ -188,10 +188,13 @@ it("enforces the whole-shutdown deadline with no other referenced handles", asyn
   `;
   const result = await promisify(execFile)(process.execPath,
     ["--import", "tsx", "--input-type=module", "--eval", source], {
-      timeout: 5000,
+      // Hang guard only: the child exits by itself as soon as its 150 ms shutdown deadline fires, so a
+      // quiet machine never waits on this. It must outlast tsx start-up under heavy host load (an
+      // earlier 5 s kill reported the killed child as `code: null`, a false failure of the pin).
+      timeout: 60_000,
       env: { PATH: process.env.PATH, HOME: dir, OPENRIG_HOME: dir, OPENRIG_DB: path.join(dir, "unused.sqlite"),
         CODEX_HOME: dir, CLAUDE_CONFIG_DIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir },
     }).catch(error => error);
   expect(result.code).toBe(1);
   expect(JSON.parse(fs.readFileSync(receiptPath, "utf8"))).toMatchObject({ outcome: "timed-out", phase: "health-diagnosis" });
-}, 7000);
+}, 70_000);

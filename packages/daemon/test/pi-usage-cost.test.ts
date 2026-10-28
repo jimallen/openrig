@@ -1,7 +1,7 @@
 // OPR.0.7.0.2 (cost reporting, Pi atom): Pi cost from PERSISTED session entries, counted once, with a fork's
 // inherited history kept apart from the new occupant's spend. Hermetic: Pi 1.3.0-shaped entry fixtures, a fake
 // runner IO, an in-memory database and the activity route; no Pi process, no account, no provider call.
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -156,9 +156,13 @@ const SESSION = "devpi-a@rig";
 const SESSION_FILE = "/state/pi/devpi-a@rig/sessions/2026_0197.jsonl";
 const HEADER = (parentSession?: string) => JSON.stringify({ type: "session", version: 3, id: "0197a2f0", timestamp: at(8), cwd: "/w", ...(parentSession ? { parentSession } : {}) });
 
+// Rows wait on real file reads reaching the store (see `eventually`); the 20 s default test timeout fired first on a heavily loaded host.
+vi.setConfig({ testTimeout: 120_000 });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** Retry an assertion until it holds or `ms` pass (then its last failure is thrown). */
-async function eventually(assertion: () => void, ms = 3000): Promise<void> {
+// Waits for an outcome (a real file read reaching the store), so a generous cap costs a quiet machine
+// nothing; 3 s was a clock that a heavily loaded host overran.
+async function eventually(assertion: () => void, ms = 60_000): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
     try { assertion(); return; } catch (error) { if (Date.now() > deadline) throw error; }
@@ -520,9 +524,19 @@ describe("runner → authenticated route → SQLite → cost view", () => {
       const cut = valid.indexOf("\n"); // the header without its newline
       writeFileSync(file, valid.slice(0, cut));
       let grown = false;
-      const p = pipeline(() => forkHeader(at(7), file), () => readPiSessionEntryIds(file, undefined, {
-        afterStat: () => { if (!grown) { grown = true; appendFileSync(file, valid.slice(cut)); } } }));
+      // The parent read runs in the background. A refresh that arrives while it is still in flight joins that read
+      // instead of starting another, so the second refresh below must wait until the torn read has answered:
+      // otherwise (a slow host) it joined the torn read and nothing ever read the completed file.
+      const reads = { started: 0, finished: 0, lastAnswered: true };
+      const p = pipeline(() => forkHeader(at(7), file), () => {
+        reads.started += 1;
+        return readPiSessionEntryIds(file, undefined, {
+          afterStat: () => { if (!grown) { grown = true; appendFileSync(file, valid.slice(cut)); } } })
+          .then((ids) => { reads.finished += 1; reads.lastAnswered = ids !== null; return ids; });
+      });
       await p.refresh(forkEntries);
+      await eventually(() => expect(reads.started === 1 && reads.finished === 1).toBe(true));
+      expect(reads.lastAnswered, "the torn read answered nothing").toBe(false);
       expect(p.view()).toMatchObject({ entries: { own: 2, unknownOrigin: { count: 2 } } });
       expect(p.view().costUsd).toBeCloseTo(0.05, 10); // the copied b1 is not charged
       await p.refresh(forkEntries);

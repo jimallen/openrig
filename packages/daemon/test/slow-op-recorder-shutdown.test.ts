@@ -7,6 +7,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
+// These two pins start a real node process (tsx + the whole daemon module graph). Under heavy host load
+// that start-up alone has exceeded 20-30 s. Both wait on events (healthz, child exit), never on a clock,
+// so the ceiling only bounds a genuine hang; a quiet machine finishes in seconds.
+const HEAVY_LOAD_CEILING_MS = 300_000;
 const tempDirs: string[] = [];
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-slow-op-shutdown-"));
@@ -40,11 +44,11 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     // round-trip can be starved under heavy vitest parallelism; this asserts
     // clean-drain success, not a wall-clock budget (production keeps the 5s
     // default). The hanging-close pin below proves the bound itself fires.
-    const code = await drainSlowOpRecorderOnShutdown(recorder, { timeoutMs: 20_000 });
+    const code = await drainSlowOpRecorderOnShutdown(recorder, { timeoutMs: HEAVY_LOAD_CEILING_MS - 20_000 });
     expect(code).toBe(0);
     const records = await readRecords(logPath);
     expect(records.map((r) => r.site)).toEqual(["test.drain.a", "test.drain.b"]);
-  }, 30_000);
+  }, HEAVY_LOAD_CEILING_MS);
 
   it("returns 0 when no recorder is wired", async () => {
     const { drainSlowOpRecorderOnShutdown } = await loadIndex();
@@ -70,10 +74,10 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     const recorder = new SlowOpRecorder({ logPath: path.join(notADir, "slow-operations.jsonl") });
     recorder.recordMeasurement("test.write.fail", 300);
     const logs: string[] = [];
-    const code = await drainSlowOpRecorderOnShutdown(recorder, { timeoutMs: 20_000, log: (m: string) => logs.push(m) });
+    const code = await drainSlowOpRecorderOnShutdown(recorder, { timeoutMs: HEAVY_LOAD_CEILING_MS - 20_000, log: (m: string) => logs.push(m) });
     expect(code).toBe(1);
     expect(logs.join(" ")).toMatch(/slow-operation/);
-  }, 30_000);
+  }, HEAVY_LOAD_CEILING_MS);
 
   it("treats a FALSEY promise rejection as a failure (logs + nonzero), not a silent success", async () => {
     const { drainSlowOpRecorderOnShutdown } = await loadIndex();
@@ -128,7 +132,7 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-  }, 30_000);
+  }, HEAVY_LOAD_CEILING_MS);
 
   it("is bounded with no other referenced handles: a hanging close logs and exits nonzero", async () => {
     // No setInterval, no server — the ONLY thing that may keep the process
@@ -159,7 +163,7 @@ describe("drainSlowOpRecorderOnShutdown — bounded shutdown drain", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-  }, 20_000);
+  }, HEAVY_LOAD_CEILING_MS);
 });
 
 function getFreePort(): Promise<number> {
@@ -175,7 +179,7 @@ function getFreePort(): Promise<number> {
 }
 
 async function waitForHealthz(port: number, child: ReturnType<typeof spawn>, stderr: () => string): Promise<void> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + (HEAVY_LOAD_CEILING_MS - 20_000);
   let exited = false;
   child.once("exit", () => { exited = true; });
   while (Date.now() < deadline) {

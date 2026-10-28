@@ -3,12 +3,33 @@ import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { serve, type ServerType } from "@hono/node-server";
 import http from "node:http";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
 import * as fs from "node:fs";
 import { browserBoundary } from "../src/middleware/browser-boundary.js";
 import { registerTerminalWs } from "../src/routes/terminal-ws.js";
 
+// Every server here listens on a port the kernel assigns. The fixed ports (19876-19881) were shared by
+// concurrent runs of this file on one host, and 19879 was used by two describes of this very file, the
+// first one's close() not awaited, so a later listen could hit EADDRINUSE.
+async function listeningPort(server: ServerType): Promise<number> {
+  if (!server.listening) await once(server, "listening");
+  return (server.address() as AddressInfo).port;
+}
+async function closeServer(server: ServerType | undefined): Promise<void> {
+  if (!server) return;
+  const closed = once(server, "close");
+  server.close();
+  (server as http.Server).closeAllConnections?.();
+  await closed;
+}
+
+// Every wait below resolves the moment its event happens (a frame arrives, a close fires, a call is recorded);
+// these ceilings only bound a genuine hang. The old 1-2 s / 10 s bounds were overrun on a heavily loaded host.
+const WS_EVENT_CEILING_MS = 60_000;
+
 const TOKEN = "test-ws-route-token";
-const PORT = 19876;
+let PORT = 0; // assigned by the kernel once the server listens
 
 let server: ServerType;
 
@@ -29,13 +50,13 @@ beforeAll(async () => {
   app.use("/api/*", browserBoundary({ webUiEnabled: true, bearerTokens: [TOKEN], warn: () => {} }));
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: TOKEN });
-  server = serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" });
+  server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
   injectWebSocket(server);
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  PORT = await listeningPort(server);
 });
 
-afterAll(() => {
-  server?.close();
+afterAll(async () => {
+  await closeServer(server);
 });
 
 function rawUpgrade(path: string, extraHeaders?: Record<string, string>): Promise<{ statusCode: number; body: string }> {
@@ -102,7 +123,7 @@ describe("terminal WebSocket route (production path)", () => {
 });
 
 describe("terminal WebSocket DNS rebinding and origin protection", () => {
-  const NO_AUTH_PORT = 19879;
+  let NO_AUTH_PORT = 0; // assigned by the kernel once the server listens
   let noAuthServer: ServerType;
 
   beforeAll(async () => {
@@ -125,13 +146,13 @@ describe("terminal WebSocket DNS rebinding and origin protection", () => {
     }));
     const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
     registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: null });
-    noAuthServer = serve({ fetch: app.fetch, port: NO_AUTH_PORT, hostname: "127.0.0.1" });
+    noAuthServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
     injectWebSocket(noAuthServer);
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    NO_AUTH_PORT = await listeningPort(noAuthServer);
   });
 
-  afterAll(() => {
-    noAuthServer?.close();
+  afterAll(async () => {
+    await closeServer(noAuthServer);
   });
 
   function noAuthUpgrade(path: string, extraHeaders?: Record<string, string>): Promise<{ statusCode: number; body: string }> {
@@ -225,7 +246,7 @@ describe("terminal WebSocket DNS rebinding and origin protection", () => {
 });
 
 describe("terminal WebSocket input ordering", () => {
-  const ORDER_PORT = 19878;
+  let ORDER_PORT = 0; // assigned by the kernel once the server listens
   const ORDER_TOKEN = "order-test-token";
   let orderServer: ServerType;
   const textCompletions: string[] = [];
@@ -250,13 +271,13 @@ describe("terminal WebSocket input ordering", () => {
     });
     const { injectWebSocket: inject3, upgradeWebSocket: upgrade3 } = createNodeWebSocket({ app: app3 });
     registerTerminalWs(app3, upgrade3 as never, { bearerToken: ORDER_TOKEN });
-    orderServer = serve({ fetch: app3.fetch, port: ORDER_PORT, hostname: "127.0.0.1" });
+    orderServer = serve({ fetch: app3.fetch, port: 0, hostname: "127.0.0.1" });
     inject3(orderServer);
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    ORDER_PORT = await listeningPort(orderServer);
   });
 
-  afterAll(() => {
-    orderServer?.close();
+  afterAll(async () => {
+    await closeServer(orderServer);
   });
 
   it("serializes rapid text messages before calling tmux", async () => {
@@ -273,13 +294,13 @@ describe("terminal WebSocket input ordering", () => {
 
     await vi.waitFor(() => {
       expect(textCompletions.join("")).toBe("echo");
-    }, { timeout: 1000 });
+    }, { timeout: WS_EVENT_CEILING_MS });
     ws.close();
   });
 });
 
 describe("terminal WebSocket lifecycle (session death)", () => {
-  const LIFECYCLE_PORT = 19877;
+  let LIFECYCLE_PORT = 0; // assigned by the kernel once the server listens
   const LIFECYCLE_TOKEN = "lifecycle-test-token";
   let lifecycleServer: ServerType;
   let sessionAlive = true;
@@ -301,13 +322,13 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     });
     const { injectWebSocket: inject2, upgradeWebSocket: upgrade2 } = createNodeWebSocket({ app: app2 });
     registerTerminalWs(app2, upgrade2 as never, { bearerToken: LIFECYCLE_TOKEN, livenessIntervalMs: 100 });
-    lifecycleServer = serve({ fetch: app2.fetch, port: LIFECYCLE_PORT, hostname: "127.0.0.1" });
+    lifecycleServer = serve({ fetch: app2.fetch, port: 0, hostname: "127.0.0.1" });
     inject2(lifecycleServer);
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    LIFECYCLE_PORT = await listeningPort(lifecycleServer);
   });
 
-  afterAll(() => {
-    lifecycleServer?.close();
+  afterAll(async () => {
+    await closeServer(lifecycleServer);
   });
 
   it("session death closes the WebSocket with code 1001", async () => {
@@ -332,15 +353,15 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     expect(result.reason).toContain("tmux session terminated");
     await vi.waitFor(() => {
       expect(stopPipePaneCalls).toContain("death-test");
-    }, { timeout: 2000 });
-  }, 10000);
+    }, { timeout: WS_EVENT_CEILING_MS });
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // OPR.0.4.0.38 - the broker behaviors at the real WebSocket route: multiple
 // subscribers of one session share ONE pipe and a fanned-out stream, and a
 // client resize message never reaches the pane (FR-7 fixed geometry).
 describe("terminal WebSocket broker (multi-subscriber route)", () => {
-  const BROKER_PORT = 19879;
+  let BROKER_PORT = 0; // assigned by the kernel once the server listens
   const BROKER_TOKEN = "broker-test-token";
   let brokerServer: ServerType;
   const startPipePaneCalls: string[] = [];
@@ -372,13 +393,13 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     });
     const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
     registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: BROKER_TOKEN });
-    brokerServer = serve({ fetch: app.fetch, port: BROKER_PORT, hostname: "127.0.0.1" });
+    brokerServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
     injectWebSocket(brokerServer);
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    BROKER_PORT = await listeningPort(brokerServer);
   });
 
-  afterAll(() => {
-    brokerServer?.close();
+  afterAll(async () => {
+    await closeServer(brokerServer);
   });
 
   function openWs(session: string): Promise<WebSocket> {
@@ -409,11 +430,11 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     await vi.waitFor(() => {
       expect(aRecv.join("")).toContain("FANOUT-BYTES");
       expect(bRecv.join("")).toContain("FANOUT-BYTES");
-    }, { timeout: 1500 });
+    }, { timeout: WS_EVENT_CEILING_MS });
 
     a.close();
     b.close();
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 
   it("a client resize message never resizes the pane (FR-7): only the one canonical geometry call", async () => {
     resizeWindowCalls.length = 0;
@@ -421,7 +442,7 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     // One canonical-geometry resize happens at broker open.
     await vi.waitFor(() => {
       expect(resizeWindowCalls).toHaveLength(1);
-    }, { timeout: 1000 });
+    }, { timeout: WS_EVENT_CEILING_MS });
     expect(resizeWindowCalls[0]).toEqual({ cols: 90, rows: 27 });
 
     ws.send(JSON.stringify({ type: "resize", cols: 200, rows: 9 }));
@@ -430,14 +451,14 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     expect(resizeWindowCalls).toHaveLength(1); // unchanged - the resize was ignored
 
     ws.close();
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // OPR.0.4.0.38 - the detach-during-attach race (dev1-guard watchpoint #4): a
 // WebSocket that closes WHILE the async broker attach is still in flight must
 // not leave a phantom subscriber holding the pipe open.
 describe("terminal WebSocket detach-during-attach race", () => {
-  const RACE_PORT = 19880;
+  let RACE_PORT = 0; // assigned by the kernel once the server listens
   const RACE_TOKEN = "race-test-token";
   let raceServer: ServerType;
   const stopPipePaneCalls: string[] = [];
@@ -467,13 +488,13 @@ describe("terminal WebSocket detach-during-attach race", () => {
     });
     const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
     registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: RACE_TOKEN });
-    raceServer = serve({ fetch: app.fetch, port: RACE_PORT, hostname: "127.0.0.1" });
+    raceServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
     injectWebSocket(raceServer);
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    RACE_PORT = await listeningPort(raceServer);
   });
 
-  afterAll(() => {
-    raceServer?.close();
+  afterAll(async () => {
+    await closeServer(raceServer);
   });
 
   it("closing the WS mid-attach still tears the broker down (stops pipe, deletes temp - no leak)", async () => {
@@ -492,8 +513,8 @@ describe("terminal WebSocket detach-during-attach race", () => {
       expect(stopPipePaneCalls).toContain("race-session");
       expect(capturedOutputPath).toBeTruthy();
       expect(fs.existsSync(capturedOutputPath!)).toBe(false);
-    }, { timeout: 2000 });
-  }, 10000);
+    }, { timeout: WS_EVENT_CEILING_MS });
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // OPR.0.4.4.20 delta-C — the send-at-open race (found by the slice-20 P2 VM
@@ -503,7 +524,7 @@ describe("terminal WebSocket detach-during-attach race", () => {
 // one pre-populated CHAT frame was lost every time attach was slower than the
 // client. The route must buffer early frames and drain them post-attach.
 describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
-  const EARLY_PORT = 19881;
+  let EARLY_PORT = 0; // assigned by the kernel once the server listens
   const EARLY_TOKEN = "early-frame-test-token";
   let earlyServer: ServerType;
   const sentTexts: string[] = [];
@@ -531,13 +552,13 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     });
     const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
     registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: EARLY_TOKEN });
-    earlyServer = serve({ fetch: app.fetch, port: EARLY_PORT, hostname: "127.0.0.1" });
+    earlyServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
     injectWebSocket(earlyServer);
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    EARLY_PORT = await listeningPort(earlyServer);
   });
 
-  afterAll(() => {
-    earlyServer?.close();
+  afterAll(async () => {
+    await closeServer(earlyServer);
   });
 
   it("a text frame sent at ws-open (attach in flight) is buffered and delivered, not dropped", async () => {
@@ -550,9 +571,9 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     };
     await vi.waitFor(() => {
       expect(sentTexts).toEqual([preamble]);
-    }, { timeout: 2000 });
+    }, { timeout: WS_EVENT_CEILING_MS });
     ws.close();
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 
   it("caps pre-attach buffering instead of accepting unbounded early frames", async () => {
     sentTexts.length = 0;
@@ -566,7 +587,7 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     const evt = await closed;
     expect(evt.code).toBe(1009);
     expect(sentTexts).toEqual([]);
-  }, 10000);
+  }, 2 * WS_EVENT_CEILING_MS);
 });
 
 // Exercise the real WebSocket callback: node-ws does not await async onOpen.
