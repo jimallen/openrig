@@ -304,6 +304,48 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       .rejects.toMatchObject({ code: "human_route_fields_required" });
   });
 
+  // z7 (Jim, 2026-10-28): human@kernel is the operator's local inbox, a held destination. The live specimen was
+  // an "unroutable:" nudge that the undelivered half turned into qitem-recovery rows routed back to the same inbox.
+  describe("z7 local human inbox: an item waiting on the operator is not stuck", () => {
+    function inboxRepo(): void {
+      // A real topology (so the repository's empty-topology shortcut is off) and an empty human registry.
+      db.prepare("INSERT INTO rigs(id,name) VALUES ('fixture-rig','r')").run();
+      db.prepare("INSERT INTO nodes(id,rig_id,logical_id,runtime,profile) VALUES ('fixture-node','fixture-rig','worker','codex','none')").run();
+      repo = new QueueRepository(db, new EventBus(db), {
+        validateRig: () => true,
+        loadHumanRegistry: () => ({ ok: true, entities: [] }),
+        transport: { send: async () => ({ ok: true, verified: true }) },
+      });
+    }
+    const toInbox = (body: string) => repo.create({
+      sourceSession: "sender@r", destinationSession: "human@kernel", body,
+      summary: "Question for Jim", evidenceRef: "rig queue show qitem-x",
+    });
+
+    it("a pending row to human@kernel that is old and unclaimed yields no finding (the A1 net), while a worker row of the same age does", async () => {
+      inboxRepo();
+      const held = await toInbox("An RSI question");
+      const worker = await mkRow();
+      expect(repo.getById(held.qitemId)!.lastNudgeResult ?? "").not.toMatch(/^unroutable:/);
+      ageCreated(held.qitemId, 600);
+      ageCreated(worker.qitemId, 600);
+      await runSweep();
+      expect(await findingsFor(held.qitemId)).toHaveLength(0);
+      expect(await findingsFor(worker.qitemId)).toHaveLength(1);
+    });
+
+    it("an older human@kernel row that still carries the pre-inbox unroutable literal yields no finding (the undelivered half), while a failed worker row does", async () => {
+      inboxRepo();
+      const legacy = await toInbox("Created before the inbox existed");
+      setNudgeResult(legacy.qitemId, "unroutable: 'human@kernel' has no terminal transport on this daemon and names no registered human", new Date());
+      const worker = await mkRow();
+      failNudge(worker.qitemId);
+      await runSweep();
+      expect(await findingsFor(legacy.qitemId)).toHaveLength(0);
+      expect(await findingsFor(worker.qitemId)).toHaveLength(1);
+    });
+  });
+
   it("DESTINATION-NOT-TAG: a completely tagless stuck row is found (the 0.5.3 lesson's exact shape)", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
