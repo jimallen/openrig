@@ -272,6 +272,13 @@ describe("z3 worktree sweep: what it must never remove", () => {
     ["ID_RSA"],
     ["Server.PEM"],
     ["Deploy.Key"],
+    ["cert.p12"],
+    ["CERT.PFX"],
+    ["store.jks"],
+    [".pgpass"],
+    ["config/secrets"],
+    ["Token.txt"],
+    ["tokens.json"],
     ["SECRETS/token.txt"],
     ["config/node_modules/real.key"],
   ])(
@@ -462,6 +469,42 @@ describe("z3 worktree sweep: what it must never remove", () => {
     expect(bad.ms).toBeNull();
     expect(bad.error).toMatch(/ENOTDIR/); // the real stat error, not the generic "no timestamps found" text
     expect(bad.error).not.toMatch(/no HEAD/);
+  });
+
+  it("keeps a worktree when git status prints errors (mode-000 directory holding an untracked file)", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    const locked = path.join(p, "hidden");
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, "unsaved.ts"), "precious\n");
+    fs.chmodSync(locked, 0o000);
+    try {
+      const rep = await sweep(f, { apply: true });
+      const v = verdict(rep, p);
+      expect(v.outcome).toBe("kept");
+      expect(codes(v)).toContain("status-unreadable");
+      expect(v.reasons.find((r) => r.code === "status-unreadable")!.detail).toMatch(/hidden/);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+    expect(fs.readFileSync(path.join(locked, "unsaved.ts"), "utf8")).toBe("precious\n");
+  });
+
+  it("fails closed when the ignored-path walk reaches its entry cap, and not before", async () => {
+    const f = makeFixture();
+    const p = f.addWorktree("unit-a");
+    exclude(f, "build/");
+    fs.mkdirSync(path.join(p, "build"));
+    fs.writeFileSync(path.join(p, "build", "one"), "1\n");
+    fs.writeFileSync(path.join(p, "build", "two"), "2\n");
+    const at = async (cap: number) => {
+      const r = await sweepWorktrees({ repos: [f.repo], olderThanMs: 0, apply: false, cwdProbe: noProbe, now: TEN_DAYS_LATER, walkEntryCap: cap });
+      return verdict(r.repos[0]!, p);
+    };
+    expect((await at(2)).outcome).toBe("would-remove"); // exactly the cap is allowed
+    const over = await at(1);
+    expect(codes(over)).toEqual(["ignored-files-unreadable"]);
+    expect(over.reasons[0]!.detail).toContain("more than 1 entries");
   });
 
   it("keeps a worktree when walking its ignored directories fails", async () => {

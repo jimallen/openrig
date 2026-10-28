@@ -84,6 +84,8 @@ export interface SweepOptions {
   /** Injectable for tests. Default reads every process's cwd (/proc on Linux, lsof elsewhere). */
   cwdProbe?: () => Promise<CwdProbeResult>;
   now?: () => number;
+  /** Injectable for tests: ignored-path entries the nested-repo walk may visit before failing closed. */
+  walkEntryCap?: number;
   /** Injectable for tests; default reads git-dir timestamps. */
   activity?: (gitDir: string) => Promise<{ ms: number | null; error: string | null }>;
 }
@@ -196,7 +198,7 @@ async function dirSizeKiB(dir: string): Promise<number | null> {
 // case-insensitively on the basename: .env, .env.*, .envrc, *.env, *.pem, *.key, id_rsa*,
 // id_ed25519*, .npmrc, .netrc, credentials*; and anything under a directory named secrets.
 // The only skipped paths are real dependency trees (see isDependencyTree).
-const SECRET_BASENAME = [/^\.env($|\.|rc$)/, /\.env$/, /\.(pem|key)$/, /^id_rsa/, /^id_ed25519/, /^\.npmrc$/, /^\.netrc$/, /^credentials/];
+const SECRET_BASENAME = [/^\.env($|\.|rc$)/, /\.env$/, /\.(pem|key|p12|pfx|jks)$/, /^id_rsa/, /^id_ed25519/, /^\.npmrc$/, /^\.netrc$/, /^\.pgpass$/, /^credentials/, /^token/, /^secrets$/];
 export function looksSecret(relPath: string): boolean {
   const parts = relPath.toLowerCase().split("/");
   if (parts.slice(0, -1).includes("secrets")) return true;
@@ -224,13 +226,13 @@ async function underDependencyTree(worktree: string, rel: string): Promise<boole
   return false;
 }
 
-const WALK_ENTRY_CAP = 500_000;
+export const WALK_ENTRY_CAP = 500_000;
 
 /** Finds `.git` entries under an ignored directory; git's own listing does not descend into nested repos. */
-async function findNestedRepos(worktree: string, relDir: string, found: string[], budget: { left: number }): Promise<void> {
+async function findNestedRepos(worktree: string, relDir: string, found: string[], budget: { left: number; cap: number }): Promise<void> {
   const entries = await fs.readdir(path.join(worktree, relDir), { withFileTypes: true });
   for (const e of entries) {
-    if (--budget.left < 0) throw new Error(`more than ${WALK_ENTRY_CAP} entries under ignored paths`);
+    if (--budget.left < 0) throw new Error(`more than ${budget.cap} entries under ignored paths`);
     const rel = `${relDir}/${e.name}`;
     if (e.name === ".git") found.push(rel);
     else if (e.isDirectory()) {
@@ -246,7 +248,7 @@ interface IgnoredScan {
   error: string | null;
 }
 
-async function scanIgnored(worktree: string): Promise<IgnoredScan> {
+async function scanIgnored(worktree: string, cap: number): Promise<IgnoredScan> {
   const out: IgnoredScan = { secrets: [], nestedRepos: [], error: null };
   const files = await git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], worktree);
   if (files.code !== 0) return { ...out, error: files.stderr.trim() || `git ls-files exited ${files.code}` };
@@ -256,7 +258,7 @@ async function scanIgnored(worktree: string): Promise<IgnoredScan> {
     for (const f of files.stdout.split("\0")) {
       if (f && looksSecret(f) && !(await underDependencyTree(worktree, f))) out.secrets.push(f);
     }
-    const budget = { left: WALK_ENTRY_CAP };
+    const budget = { left: cap, cap };
     for (const d of dirs.stdout.split("\0")) {
       if (!d.endsWith("/")) continue;
       const rel = d.slice(0, -1);
@@ -370,12 +372,15 @@ async function sweepRepo(
       }
 
       const status = await git(["status", "--porcelain=v1", "--untracked-files=all", "-z"], wt.path);
-      if (status.code !== 0) keep("status-unreadable", status.stderr.trim() || `git status exited ${status.code}`);
-      else if (status.stdout.length > 0) {
+      // Any stderr (e.g. "could not open directory") means git did not see everything, even at exit 0.
+      if (status.code !== 0 || status.stderr.trim() !== "") {
+        keep("status-unreadable", status.stderr.trim() || `git status exited ${status.code}`);
+      }
+      if (status.stdout.length > 0) {
         keep("uncommitted-changes", `${status.stdout.split("\0").filter(Boolean).length} changed or untracked path(s)`);
       }
 
-      const scan = await scanIgnored(wt.path);
+      const scan = await scanIgnored(wt.path, opts.walkEntryCap ?? WALK_ENTRY_CAP);
       if (scan.error !== null) keep("ignored-files-unreadable", scan.error);
       if (scan.secrets.length > 0) {
         keep("secret-looking-ignored-file", `${scan.secrets.slice(0, 5).join(", ")}${scan.secrets.length > 5 ? ` (+${scan.secrets.length - 5} more)` : ""}`);
