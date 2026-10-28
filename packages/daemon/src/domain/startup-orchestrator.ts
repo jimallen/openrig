@@ -29,6 +29,10 @@ import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProce
 import { readStoredJsonObject } from "./stored-json.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
+/** OF-161: how long a resumed Claude gets to exit before the resume counts as held. `claude --resume <id>` is the pane's
+ *  foreground process while it starts, so a read taken at launch cannot tell a resume from one about to print "No
+ *  conversation found" and quit. A missing conversation is reported within about a second; this leaves margin. */
+const CLAUDE_RESUME_SETTLE_MS = 2500;
 const STARTUP_SUBMIT_CAPTURE_LINES = 200;
 // Claude Code 2.1.289 has taken Enter on a large startup paste after the first look, while the composer
 // still showed that paste collapsed. Only that transient is looked at again, 200 ms apart, up to this many
@@ -497,6 +501,30 @@ export class StartupOrchestrator {
       return this.fail(input, "failed", errors);
     }
 
+    // OF-161: a resume is held only if the runtime is still in the foreground after it has had time to exit. Nothing is
+    // typed into the pane before this, so a pane that fell back to its shell never receives startup content.
+    if (!input.skipHarnessLaunch && input.adapter.runtime === "claude-code" && continuityOutcome === "resumed" && input.resumeToken) {
+      try {
+        await this.sleep(CLAUDE_RESUME_SETTLE_MS);
+        const held = await input.adapter.checkReady(input.binding);
+        if (!held.ready) {
+          if (held.code === "no_conversation_found" || held.code === "returned_to_shell") {
+            const native = await this.paneTail(input.binding.tmuxSession);
+            const missing = held.code === "no_conversation_found";
+            errors.push(`Claude resume failed: ${missing ? "no conversation found for the requested session" : "the pane returned to its shell instead of staying in Claude"}${native ? ` (pane output: ${native})` : ""}`);
+            return this.fail(input, "failed", errors, native || undefined, false, "retry_fresh", missing);
+          }
+          if (isAttentionRequiredReadinessCode(held.code)) {
+            errors.push(`Startup requires attention: ${held.reason ?? "unknown"}`);
+            return this.fail(input, "attention_required", errors, undefined, false);
+          }
+        }
+      } catch (err) {
+        // An unreadable pane is not a positive failure; the resume stays as launch verified it.
+        warnings.push(`${input.sessionName ?? input.nodeId}: the resumed Claude could not be re-checked after launch: ${(err as Error).message}`);
+      }
+    }
+
     // The adapter returned the exact enforcing value it inserted, and readiness
     // proved this managed launch became live. Persistence is deliberately
     // best-effort: observation failure yields UNKNOWN, never a failed launch.
@@ -646,6 +674,11 @@ export class StartupOrchestrator {
           ...(deliveryInput.submissionDiagnostics.length ? { diagnostics: deliveryInput.submissionDiagnostics } : {}),
           ...(deliveryInput.stagedSubmissionWarning ? { warning: deliveryInput.stagedSubmissionWarning } : {}) }
       : undefined;
+    // OF-162: a fresh Claude launch whose first message was not seen submitted has no transcript on disk, so the id it
+    // stored (launch scrape or SessionStart hook) must not be offered as a resume target until a prompt proves it.
+    if (submission && continuityOutcome === "fresh" && input.adapter.runtime === "claude-code") {
+      try { this.sessionRegistry.markResumeUnproven(input.sessionId); } catch { /* best-effort: the submission warning still stands */ }
+    }
     this.eventBus.emit({ type: "node.startup_ready", rigId: input.rigId, nodeId: input.nodeId, ...(submission ? { submission } : {}) });
 
     return { ok: true, startupStatus: "ready", continuityOutcome, ...(submission ? { submission } : {}) };
@@ -696,6 +729,15 @@ export class StartupOrchestrator {
 
   private safeReadStartupFile(file: ResolvedStartupFile): string {
     try { return this.readStartupFile(file); } catch { return ""; }
+  }
+
+  /** The last non-empty lines of the pane, for a failure that should quote what the runtime itself said. */
+  private async paneTail(session: string | null | undefined): Promise<string> {
+    if (!session) return "";
+    try {
+      const content = (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
+      return content.split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" | ").slice(0, 400);
+    } catch { return ""; }
   }
 
   private fail(
