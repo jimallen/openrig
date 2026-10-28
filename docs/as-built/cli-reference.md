@@ -9,20 +9,24 @@ applies-when: |
   the source that implements a command. Use command help for invocation details.
 siblings: [README.md, codemap.md]
 prerequisite-reads: [../reference/help.md]
-last-verified-against-source: e8f0ab340db773392ec8be75b072d1c0f3068a50
-last-updated: 2026-10-08
+last-verified-against-source: c5119726c448247f557c2078ef860ea09c158dac
+last-updated: 2026-10-28
 ---
 
 # CLI Reference — Registered Commands and Options
 
-Verified against source commit `e8f0ab340db773392ec8be75b072d1c0f3068a50`.
+Verified against source commit `c5119726c448247f557c2078ef860ea09c158dac`.
 The inventory below comes from the actual Commander tree returned by
 [`createProgram()`](../../packages/cli/src/index.ts), not a grep of command
 strings or an installed CLI from a different commit.
 
-There are **87 top-level registrations**, **356 registered command objects**
+The registration inventory (the tables, the counts and the stamp) was re-derived at that commit on 2026-10-28 by running the
+snippet below and reconciling every row. The authored prose between the tables was last read against `e8f0ab340db773392ec8be75b072d1c0f3068a50`
+and was not re-read then.
+
+There are **89 top-level registrations**, **367 registered command objects**
 below `rig` (including groups and the hidden `restore apply` command), and
-**1,082 explicitly registered option objects**, including the root version
+**1,141 explicitly registered option objects**, including the root version
 option. Aliases do not add command objects; short/long spellings of one
 option do not add option objects. Commander-generated help is additional.
 These are source counts, not a claim about a deployed release.
@@ -194,6 +198,13 @@ Root: `rig`; declared option: `-V, --version`.
 |---|---|---|
 | `rig parked [seat]` | — | `--rig <rig>`<br>`--json` |
 
+### worktree
+
+| Invocation | Aliases | Declared options |
+|---|---|---|
+| `rig worktree` | — | — |
+| `rig worktree sweep` | — | `--repo <path>` (repeatable)<br>`--into <ref>`<br>`--older-than <duration>`<br>`--apply`<br>`--json` |
+
 ### export
 
 | Invocation | Aliases | Declared options |
@@ -283,7 +294,7 @@ Root: `rig`; declared option: `-V, --version`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig up <source>` | — | `--non-interruptive`<br>`--no-non-interruptive`<br>`--plan`<br>`--yes`<br>`--cwd <path>`<br>`--target <root>`<br>`--preset <name>`<br>`--seat <member=runtime>` (repeatable)<br>`--existing`<br>`--fresh <seats...>`<br>`--startup-from <spec\|stored>`<br>`--json`<br>`--host <id>` |
+| `rig up <source>` | — | `--non-interruptive`<br>`--no-non-interruptive`<br>`--plan`<br>`--yes`<br>`--cwd <path>`<br>`--target <root>`<br>`--preset <name>`<br>`--seat <member=runtime>` (repeatable)<br>`--existing`<br>`--on-existing <choice>`<br>`--fresh <seats...>`<br>`--startup-from <source>`<br>`--json`<br>`--host <id>` |
 
 ### down
 
@@ -364,7 +375,7 @@ Root: `rig`; declared option: `-V, --version`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig send [session] [text]` | — | `--to <sessions>` (repeatable)<br>`--pod <name>`<br>`--rig <name>`<br>`--verify`<br>`--force`<br>`--wait-for-idle <seconds>`<br>`--raw`<br>`--dangerously-interact`<br>`--reason <text>`<br>`--host <id>`<br>`--from <session>`<br>`--context <ref>`<br>`--file <path>` (`-` = stdin; safe for `$(...)`, backticks, leading `---`; use with a quoted heredoc)<br>`--json` |
+| `rig send [session] [text]` | — | `--to <sessions>` (repeatable)<br>`--pod <name>`<br>`--rig <name-or-id>`<br>`--verify`<br>`--force`<br>`--wait-for-idle <seconds>`<br>`--raw`<br>`--dangerously-interact`<br>`--reason <text>`<br>`--host <id>`<br>`--from <session>`<br>`--context <ref>`<br>`--file <path>` (`-` = stdin; safe for `$(...)`, backticks, leading `---`; use with a quoted heredoc)<br>`--json` |
 
 ### stream
 
@@ -390,10 +401,10 @@ Root: `rig`; declared option: `-V, --version`.
 | `rig queue resolve <qitemId>` | — | `--decision <text>` **required**<br>`--actor <session>`<br>`--bearer <token>`<br>`--no-notify`<br>`--json` |
 | `rig queue handoff <qitemId>` | — | `--from <session>`<br>`--to <session>` **required**<br>`--body <text>`<br>`--body-file <path>`<br>`--note <text>`<br>`--priority <priority>`<br>`--tier <tier>`<br>`--tags <tags>`<br>`--gate <role>`<br>`--target-repo <name>`<br>`--summary <text>`<br>`--evidence-ref <path>`<br>`--host <id>`<br>`--no-nudge`<br>`--full`<br>`--json` |
 | `rig queue handoff-and-complete <qitemId>` | — | `--from <session>`<br>`--to <session>` **required**<br>`--body <text>`<br>`--body-file <path>`<br>`--note <text>`<br>`--priority <priority>`<br>`--tier <tier>`<br>`--tags <tags>`<br>`--gate <role>`<br>`--target-repo <name>`<br>`--summary <text>`<br>`--evidence-ref <path>`<br>`--host <id>`<br>`--no-nudge`<br>`--full`<br>`--json` |
-| `rig queue whoami` | — | `--session <session>`<br>`--recent-limit <n>`<br>`--json` |
+| `rig queue whoami` | — | `--session <session>`<br>`--recent-limit <n>`<br>`--work-candidates`<br>`--json` |
 | `rig queue fallback <qitemId>` | — | `--destination <session>` **required**<br>`--reason <text>`<br>`--json` |
 | `rig queue show <qitemId>` | — | `--full`<br>`--json` |
-| `rig queue transitions <qitemId>` | — | `--json` |
+| `rig queue transitions <qitemId>` | — | `--json`<br>`--full` |
 | `rig queue list` | — | `-a, --all`<br>`-A, --all-rigs`<br>`--full`<br>`--owned`<br>`--mine`<br>`-o <format>`<br>`--destination <session>`<br>`--source <session>`<br>`--state <state>`<br>`--target-repo <name>`<br>`--limit <n>`<br>`--json` |
 | `rig queue overdue` | — | `--rig <name>`<br>`-A, --all-rigs`<br>`--full`<br>`--limit <n>`<br>`--json` |
 | `rig queue undelivered` | — | `--rig <name>`<br>`-A, --all-rigs`<br>`--full`<br>`--limit <n>`<br>`--json` |
@@ -503,13 +514,13 @@ Root: `rig`; declared option: `-V, --version`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig capture [session]` | — | `--rig <name>`<br>`--pod <name>`<br>`--lines <n>`<br>`--host <id>`<br>`--json` |
+| `rig capture [session]` | — | `--rig <name>`<br>`--pod <name>`<br>`--lines <n>`<br>`--history-plus-pane`<br>`--host <id>`<br>`--json` |
 
 ### broadcast
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig broadcast [text]` | — | `--rig <name>`<br>`--pod <name>`<br>`--force`<br>`--host <id>`<br>`--context <ref>`<br>`--json` |
+| `rig broadcast [text]` | — | `--rig <name-or-id>`<br>`--pod <name>`<br>`--force`<br>`--host <id>`<br>`--context <ref>`<br>`--json` |
 
 ### walk
 
@@ -628,6 +639,14 @@ Root: `rig`; declared option: `-V, --version`.
 | `rig mode unset <scope> [qualifier]` | — | `--bearer <token>`<br>`--json` |
 | `rig mode defaults` | — | `--json` |
 
+### spec-source
+
+| Invocation | Aliases | Declared options |
+|---|---|---|
+| `rig spec-source` | — | — |
+| `rig spec-source show <rig>` | — | `--json` |
+| `rig spec-source set <rig> <path>` | — | `--operator <address>`<br>`--bearer <token>`<br>`--json` |
+
 ### policy
 
 | Invocation | Aliases | Declared options |
@@ -647,7 +666,7 @@ Root: `rig`; declared option: `-V, --version`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig whoami` | — | `--node-id <id>`<br>`--session <name>`<br>`--host <id>`<br>`--all-hosts`<br>`--hosts <ids>`<br>`--json`<br>`--full`<br>`--verbose` |
+| `rig whoami` | — | `--node-id <id>`<br>`--session <name>`<br>`--host <id>`<br>`--all-hosts`<br>`--hosts <ids>`<br>`--json`<br>`--full`<br>`--verbose`<br>`--all-peers` |
 
 ### config
 
@@ -695,7 +714,7 @@ Root: `rig`; declared option: `-V, --version`.
 | Invocation | Aliases | Declared options |
 |---|---|---|
 | `rig provider` | — | — |
-| `rig provider status` | — | `--json`<br>`--refresh`<br>`--provider <p>` |
+| `rig provider status` | — | `--json`<br>`--refresh`<br>`--provider <p>`<br>`--all-hosts`<br>`--hosts <ids>` |
 | `rig provider accounts` | — | `--json`<br>`--provider <p>`<br>`--account <a>` |
 | `rig provider bindings` | — | `--json`<br>`--provider <p>`<br>`--account <a>` |
 | `rig provider signals` | — | `--json`<br>`--provider <p>`<br>`--account <a>` |
@@ -708,6 +727,7 @@ Root: `rig`; declared option: `-V, --version`.
 |---|---|---|
 | `rig usage` | — | — |
 | `rig usage top` | — | `--window <duration>`<br>`--top <n>`<br>`--json` |
+| `rig usage cost` | — | `--seat <session>`<br>`--json` |
 | `rig usage series` | — | `--seat <session>`<br>`--lane <lane>`<br>`--since <iso>`<br>`--until <iso>`<br>`--limit <n>`<br>`--json` |
 
 ### telemetry
@@ -827,7 +847,7 @@ Relative paths differ by flag: `--culture` is taken from the directory the comma
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig restore-check` | — | `--json`<br>`--full`<br>`--ready`<br>`--rig <name>`<br>`--no-queue`<br>`--no-hooks` |
+| `rig restore-check` | — | `--json`<br>`--full`<br>`--ready`<br>`--rig <name>`<br>`--no-queue`<br>`--no-hooks`<br>`--fresh <seats...>`<br>`--startup-from <source>` |
 
 ### restore-packet
 
@@ -869,11 +889,16 @@ Relative paths differ by flag: `--culture` is taken from the directory the comma
 | `rig seat switch-client <seat>` | — | `--to-window <n>`<br>`--client <id>`<br>`--json` |
 | `rig seat clear-attention <session>` | — | `--reason <text>`<br>`--json` |
 | `rig seat set-permissions <seat>` | — | `--mode <mode>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
+| `rig seat set-effort <seat>` | — | `--effort <level>`<br>`--clear`<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
+| `rig seat set-mcp <seat> <server> <state>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--spec <file>`<br>`--json` |
+| `rig seat effort <seat>` | — | `--json` |
 | `rig seat set-model <seat>` | — | `--model <id>` **required**<br>`--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
-| `rig seat launch <seat>` | — | `--fresh` **required**<br>`--reason <text>` **required**<br>`--stop`<br>`--startup-from <spec\|stored>`<br>`--operator <address>`<br>`--json` |
+| `rig seat launch <seat>` | — | `--fresh` **required**<br>`--reason <text>` **required**<br>`--plan`<br>`--stop`<br>`--startup-from <source>`<br>`--operator <address>`<br>`--json` |
+| `rig seat restart <seat>` | — | `--keep-conversation` **required**<br>`--reason <text>`<br>`--plan`<br>`--verify`<br>`--expect-account <text>`<br>`--operator <address>`<br>`--json` |
 | `rig seat continue <seat>` | — | `--json` |
 | `rig seat stop <seat>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat clean <seat>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
+| `rig seat pda-release <session>` | — | `--reason <text>` **required**<br>`--operator <address>`<br>`--json` |
 | `rig seat set-resume-token <session>` | — | `--token-stdin`<br>`--reason <text>` **required**<br>`--json` |
 
 A `rig seat stop` that successfully kills the current session records that it
@@ -969,6 +994,6 @@ unchanged.
 | Invocation | Aliases | Declared options |
 |---|---|---|
 | `rig proof` | — | `--workspace <path>` |
-| `rig proof show [scope]` | — | `--json` |
-| `rig proof judge <scope-item>` | — | `--verdict <verdict>` **required**<br>`--reason <text>` **required**<br>`--evidence <ref>` (repeatable)<br>`--subject <kind:ref>`<br>`--comparison <ref>`<br>`--revision <revision>`<br>`--operation-id <id>`<br>`--replace`<br>`--json` |
+| `rig proof show [scope]` | — | `--project <id>`<br>`--json` |
+| `rig proof judge <scope-item>` | — | `--project <id>`<br>`--verdict <verdict>` **required**<br>`--reason <text>` **required**<br>`--evidence <ref>` (repeatable)<br>`--subject <kind:ref>`<br>`--comparison <ref>`<br>`--revision <revision>`<br>`--operation-id <id>`<br>`--replace`<br>`--json` |
 | `rig proof add <slice-path>` | — | `--mission <name>`<br>`--artifact-type <type>` **required**<br>`--verdict <verdict>` **required**<br>`--candidate-sha <sha>` **required**<br>`--money-evidence <line>` **required**<br>`--slice-id <dot-id>`<br>`--file <path>`<br>`--body <text>`<br>`--name <filename>`<br>`--replace`<br>`--evidences <refs>`<br>`--self-check <text>`<br>`--media <refs>`<br>`--json` |
