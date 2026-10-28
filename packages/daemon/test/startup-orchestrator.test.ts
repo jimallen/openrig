@@ -364,7 +364,8 @@ describe("StartupOrchestrator", () => {
     }));
     expect(result).toMatchObject({ ok: false, startupStatus: "attention_required",
       errors: [expect.stringContaining("workspace trust approval")] });
-    expect(adapter.checkReady).toHaveBeenCalledTimes(2);
+    // Launch readiness, the post-delivery read, and (OF-161) one more read after a resume has had time to exit.
+    expect(adapter.checkReady).toHaveBeenCalledTimes(source === "restore_preload" ? 3 : 2);
     expect(t.sendText).toHaveBeenCalledTimes(1);
     expect(t.sendKeys).toHaveBeenCalledTimes(1); // no extra Enter into the trust menu
     expect(t.killSession).not.toHaveBeenCalled();
@@ -1541,5 +1542,76 @@ describe("StartupOrchestrator", () => {
     // Both files were delivered — overlay appended, not replacing role guidance
     expect(deliveredFiles).toContain("guidance/role.md");
     expect(deliveredFiles).toContain("openrig-start.md");
+  });
+  // OF-161 (measured live 2026-10-28, improve-engineer@kernel, restore attempt 96253): `claude --resume <id>` is the pane's
+  // foreground process for the first moments, so every one-shot readiness read said "resumed" and the seat was reported
+  // resumed while Claude printed "No conversation found with session ID ..." and exited to the shell. These rows model
+  // that clock: Claude is in the foreground until `claudeExitsAtMs`, then the pane shows `exitedPane`. The orchestrator's
+  // injected `sleep` is the only thing that advances the clock, so a check that never waits cannot see the exit.
+  describe("OF-161: a resumed Claude must still be in the foreground after it has had time to exit", () => {
+    const NATIVE_MESSAGE = "No conversation found with session ID fe08b428-e2c5-49da-ad48-ea8d604e99c3";
+    function exitingClaude(exitedPane: string, claudeExitsAtMs = 1000) {
+      let elapsed = 0;
+      const sleeps: number[] = [];
+      const pane = () => elapsed < claudeExitsAtMs
+        ? { command: "claude", content: "" }
+        : { command: "zsh", content: exitedPane };
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => pane().content) });
+      const adapter = mockAdapter({
+        checkReady: vi.fn(async () => {
+          const probe = assessNativeResumeProbe({ runtime: "claude-code", paneCommand: pane().command, paneContent: pane().content });
+          return { ready: probe.status === "resumed", code: probe.code, reason: probe.detail };
+        }),
+      });
+      const orch = new StartupOrchestrator({
+        db, sessionRegistry, eventBus, tmuxAdapter: t,
+        readinessSettings: { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) } as unknown as Pick<SettingsStore, "resolveOne">,
+        sleep: async (ms) => { sleeps.push(ms); elapsed += ms; },
+      });
+      return { t, adapter, orch, sleeps };
+    }
+    const readyEvents = (nodeId: string) => db.prepare("SELECT type FROM events WHERE node_id = ? AND type = 'node.startup_ready'").all(nodeId);
+
+    it("reports a resume whose conversation is missing as failed with Claude's own message, never ready", async () => {
+      const seed = seedSession();
+      const { t, adapter, orch } = exitingClaude(`${NATIVE_MESSAGE}\n$ `);
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "fe08b428-e2c5-49da-ad48-ea8d604e99c3",
+        resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh", missingConversation: true });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain(NATIVE_MESSAGE);
+      expect(db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ startup_status: "failed" });
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+      // Nothing was typed into the shell the pane fell back to.
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("reports a pane that fell back to its shell without a native message as failed, keeping the pane output", async () => {
+      const seed = seedSession();
+      const { adapter, orch } = exitingClaude("claude: command crashed\n$ ");
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.missingConversation).toBeUndefined();
+      expect(result.errors.join("\n")).toContain("claude: command crashed");
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    it("control: a resumed Claude that is still in the foreground after the wait is ready and resumed", async () => {
+      const seed = seedSession();
+      const { adapter, orch, sleeps } = exitingClaude("never reached", 60_000);
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(sleeps.length).toBeGreaterThan(0);
+      expect(readyEvents(seed.nodeId)).toHaveLength(1);
+    });
+
+    it("control: a fresh launch takes no resume wait", async () => {
+      const seed = seedSession();
+      const { adapter, orch, sleeps } = exitingClaude("never reached", 60_000);
+      const result = await orch.startNode(makeInput(seed, { adapter }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(sleeps).toEqual([]);
+    });
   });
 });

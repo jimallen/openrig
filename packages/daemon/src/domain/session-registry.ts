@@ -40,6 +40,10 @@ interface BindingFields {
   cmuxSurface?: string;
 }
 
+/** OF-162: the probe status of a resume id the runtime has not yet proved it persisted. Claude writes a transcript only
+ *  after the first message, so the id its SessionStart hook reports names no conversation until a prompt is submitted. */
+export const UNPROVEN_RESUME_STATUS = "unproven";
+
 /** A token write that changes the value invalidates what was known about how the old one began. */
 const CLEAR_ROTATION_ON_TOKEN_CHANGE =
   "resume_rotated_from = CASE WHEN resume_token IS ? THEN resume_rotated_from ELSE NULL END, " +
@@ -464,10 +468,13 @@ export class SessionRegistry {
     this.db
       .prepare(
         "UPDATE sessions SET resume_type = ?, resume_token = ?, resume_provenance = COALESCE(?, resume_provenance), " +
-          "resume_last_verified = datetime('now'), resume_last_probe_status = 'resumable', " +
+          // OF-162: re-writing the SAME token (a late SessionStart hook) must not certify a conversation that was never
+          // persisted; only a token change, or `confirmResumeProven`, lifts the `unproven` mark.
+          `resume_last_verified = CASE WHEN resume_token IS ? AND resume_last_probe_status = '${UNPROVEN_RESUME_STATUS}' THEN resume_last_verified ELSE datetime('now') END, ` +
+          `resume_last_probe_status = CASE WHEN resume_token IS ? AND resume_last_probe_status = '${UNPROVEN_RESUME_STATUS}' THEN '${UNPROVEN_RESUME_STATUS}' ELSE 'resumable' END, ` +
           `${CLEAR_ROTATION_ON_TOKEN_CHANGE} WHERE id = ?`,
       )
-      .run(type, token, prov, token, token, sessionId);
+      .run(type, token, prov, token, token, token, token, sessionId);
     return true;
   }
 
@@ -572,6 +579,26 @@ export class SessionRegistry {
       )
       .run(normalizedType, normalizedToken, sessionId);
     return result.changes > 0;
+  }
+
+  /** OF-162: keep this Claude session's resume id, but not as a usable one. Called when a fresh launch's first message
+   *  was not seen submitted: Claude has then written no transcript, so `claude --resume <id>` would find nothing.
+   *  Restore previews show it as unverified, crash-cart discovery skips it, and a late hook re-writing the same id does
+   *  not certify it. Returns whether a stored Claude id was marked. */
+  markResumeUnproven(sessionId: string): boolean {
+    return this.db.prepare(
+      `UPDATE sessions SET resume_last_probe_status = '${UNPROVEN_RESUME_STATUS}', resume_last_verified = NULL ` +
+      "WHERE id = ? AND resume_type = 'claude_id' AND resume_token IS NOT NULL AND trim(resume_token) != ''",
+    ).run(sessionId).changes > 0;
+  }
+
+  /** OF-162: native evidence that the conversation exists (a prompt was submitted in the current generation, so Claude
+   *  has persisted its transcript). Lifts only the `unproven` mark; any other status is left as it was. */
+  confirmResumeProven(sessionId: string): boolean {
+    return this.db.prepare(
+      "UPDATE sessions SET resume_last_verified = datetime('now'), resume_last_probe_status = 'resumable' " +
+      `WHERE id = ? AND resume_last_probe_status = '${UNPROVEN_RESUME_STATUS}'`,
+    ).run(sessionId).changes > 0;
   }
 
   /** OPR.0.4.3.20 FR-6 — record a live resume-probe outcome WITHOUT clearing the
