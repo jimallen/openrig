@@ -1216,7 +1216,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const num = (key: "retention.watchdog_days" | "retention.watchdog_keep_per_job", fallback: number): number => { const v = healthSettingsStore.resolveOne(key).value; return typeof v === "number" ? v : fallback; };
       return { days: num("retention.watchdog_days", RETENTION_DEFAULTS.watchdogRetentionDays), keepPerJob: num("retention.watchdog_keep_per_job", RETENTION_DEFAULTS.watchdogKeepPerJob) };
     } });
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Coverage-only: says so in `rig health` when the inbox banner cannot announce items to human@kernel (armed below).
+  const humanInboxBannerHealth = new (await import("./domain/rsi/human-gate-notifier.js")).HumanInboxBannerHealthSource();
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxBannerHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
@@ -2658,28 +2660,34 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   const { app, injectWebSocket } = createAppWithWebSocket(deps);
 
-  // RSI human-gate banners (rsi-design-9k-rev2 3.7). Armed only when `rsi.steward_session` (RSI lane B1's key) is
-  // VALID by B1's own rule (rsiStewardValidity): an invalid value disarms the wake and the notifier alike.
-  // Optional machinery never stops the daemon booting: a failure here (for example the rsi_notifications table
-  // missing after a partial rollback) logs its class once and leaves the notifier off.
+  // Human banners (rsi-design-9k-rev2 3.7, and z7: the operator's local inbox). Always armed: every open item addressed to
+  // `human@kernel` raises a banner whether or not RSI is configured. `rsi.steward_session` (RSI lane B1's key) only adds the
+  // RSI wording for the steward's items, and only when it is VALID by B1's own rule (rsiStewardValidity); an invalid value
+  // is treated as no steward. Optional machinery never stops the daemon booting: a failure here (for example the
+  // rsi_notifications table missing after a partial rollback) logs its class once and leaves the notifier off.
   let humanGateNotifier: import("./domain/rsi/human-gate-notifier.js").HumanGateNotifier | undefined;
   try {
     const steward = healthSettingsStore.resolveOne("rsi.steward_session").value;
     const { rsiStewardValidity } = await import("./domain/rsi/health-finding-wake.js");
-    if (typeof steward === "string" && rsiStewardValidity(steward) === "valid") {
-      const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
-      humanGateNotifier = new rsiNotifier.HumanGateNotifier({
-        listBlocked: rsiNotifier.sqliteBlockedRows(db),
-        stewardSession: steward.trim(),
-        store: rsiNotifier.sqliteNotificationStore(db),
-        spawner: rsiNotifier.defaultBannerSpawner,
-        findExecutable: rsiNotifier.defaultFindExecutable,
-      });
-      console.log(`[rsi-notifier] armed for steward session ${steward.trim()}`);
-    }
+    const validSteward = typeof steward === "string" && rsiStewardValidity(steward) === "valid" ? steward.trim() : null;
+    const rsiNotifier = await import("./domain/rsi/human-gate-notifier.js");
+    const notificationStore = rsiNotifier.sqliteNotificationStore(db);
+    humanGateNotifier = new rsiNotifier.HumanGateNotifier({
+      listBlocked: rsiNotifier.sqliteBlockedRows(db),
+      stewardSession: validSteward,
+      store: notificationStore,
+      spawner: rsiNotifier.defaultBannerSpawner,
+      findExecutable: rsiNotifier.defaultFindExecutable,
+    });
+    humanInboxBannerHealth.attach(() => notificationStore.listBanners());
+    console.log(validSteward
+      ? `[rsi-notifier] armed for steward session ${validSteward} and the local human inbox`
+      : "[rsi-notifier] armed for the local human inbox (no valid rsi.steward_session)");
   } catch (err) {
     humanGateNotifier = undefined;
-    console.error(`[rsi-notifier] disabled: construction failed class=${err instanceof Error ? err.constructor.name : typeof err}`);
+    const errorClass = err instanceof Error ? err.constructor.name : typeof err;
+    humanInboxBannerHealth.markConstructionFailed(errorClass);
+    console.error(`[rsi-notifier] disabled: construction failed class=${errorClass}`);
   }
   return { app, db, deps, contextMonitor, eventLoopMonitor, humanGateNotifier, injectWebSocket };
 }

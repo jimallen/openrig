@@ -29,13 +29,24 @@
 //      (canonical-form aliases like human-founder@kernel — the live 4-row
 //      specimen class) is gateway-routable: a PANELLESS virtual identity whose
 //      delivery rides the gateway, exactly like its @external address.
-//   4. Anything else is unroutable, with teaching that names BOTH checks.
+//   4. The local human inbox (exactly `human@kernel`, LOCAL_HUMAN_INBOX_ADDRESS) is a held
+//      destination: the operator's own inbox on this machine. It has no terminal and no
+//      connector, so nothing is dispatched; the queue row IS the delivery and the macOS
+//      banner (rsi/human-gate-notifier.ts) is how the operator learns of it. It sits AFTER
+//      the pane and registry legs, so a real pane or a registered human of that name still
+//      wins, and it matches the one literal address only: near misses (human-typo@kernel,
+//      human@host) stay unroutable so a mistyped address is still refused loudly.
+//   5. Anything else is unroutable, with teaching that names BOTH checks.
 import { parseSessionName } from "../session-name.js";
 import { resolveRegisteredHumanAddress, type HumanFragment } from "./human-registry.js";
+
+/** The one address that names the operator's own inbox on this machine (Jim, 2026-10-28). */
+export const LOCAL_HUMAN_INBOX_ADDRESS = "human@kernel";
 
 export type DestinationClass =
   | { class: "pane-bound" }
   | { class: "gateway-routable"; resolvedHuman: string | null; via: "external-address" | "registry-alias" }
+  | { class: "local-human-inbox"; address: typeof LOCAL_HUMAN_INBOX_ADDRESS }
   | { class: "unroutable"; teaching: string };
 
 export interface ClassifyDeps {
@@ -58,6 +69,9 @@ export function classifyDestination(destination: string, deps: ClassifyDeps): De
   const aliasResolved = deps.entities ? resolveRegisteredHumanAddress(destination, deps.entities) : null;
   if (aliasResolved) {
     return { class: "gateway-routable", resolvedHuman: aliasResolved, via: "registry-alias" };
+  }
+  if (destination === LOCAL_HUMAN_INBOX_ADDRESS) {
+    return { class: "local-human-inbox", address: LOCAL_HUMAN_INBOX_ADDRESS };
   }
   return {
     class: "unroutable",

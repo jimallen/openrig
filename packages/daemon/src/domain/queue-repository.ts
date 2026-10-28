@@ -1419,6 +1419,16 @@ export class QueueRepository {
           `gateway-owned: '${destinationSession}' is a virtual ${destClass.via === "registry-alias" ? "paneless human" : "@external"} destination${resolvedNote} — delivery rides the gateway subsystem (Slack connector), whose own ledger is the delivery record; tmux was not consulted (it can never hold this address class)`,
       };
     }
+    if (destClass.class === "local-human-inbox") {
+      // Jim's inbox: a valid destination with nothing to dispatch. The row is the delivery; the
+      // macOS banner (rsi/human-gate-notifier.ts) tells the operator. "verified" settles the
+      // wake intent as delivered; the "held-local-inbox:" literal is outside every retry/escalation
+      // vocabulary (queue-wake-ladder classifyWakeResult, findUndelivered), so no ladder, no finding.
+      return {
+        classified: "verified",
+        nudgeResult: `held-local-inbox: '${destinationSession}' is the operator's local inbox — the queue row is the delivery; the macOS banner notifies the operator; no nudge was sent`,
+      };
+    }
     if (destClass.class === "unroutable") {
       return { classified: "failed", nudgeResult: destClass.teaching };
     }

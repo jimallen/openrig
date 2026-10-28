@@ -159,6 +159,43 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     expect(fresh.lastNudgeResult).not.toMatch(/tmux reports no session/);
   });
 
+  // z7 (Jim, 2026-10-28): human@kernel is the operator's local inbox, a held destination. Live specimen at c07871fbf:
+  // every row to it recorded "unroutable: 'human@kernel' has no terminal transport ... names no registered human".
+  it("LOCAL HUMAN INBOX: human@kernel is held, not unroutable: tmux is never consulted and nothing reads as a failed or gateway-owned wake", async () => {
+    const item = await h.repo.create({
+      sourceSession: "orch-lead@v-openrig-build", destinationSession: "human@kernel",
+      body: "daily report", summary: "Steward daily report", evidenceRef: EVIDENCE,
+    });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
+    const fresh = h.repo.getById(item.qitemId)!;
+    expect(h.sends).toHaveLength(0);
+    expect(fresh.state).toBe("pending");
+    expect(fresh.lastNudgeResult).toMatch(/^held-local-inbox:/);
+    expect(fresh.lastNudgeResult).not.toMatch(/unroutable|failed|gateway-owned|tmux/);
+    expect(h.repo.findUndelivered()).toHaveLength(0);
+    // The create staged a wake intent (outbox "wake-intent-<id>"). Its final state is what the daemon-start drain
+    // (drainPendingWakeIntents) tallies as delivered / failed; a held inbox row is delivered, never a failed wake.
+    const intent = h.db.prepare("SELECT delivery_state FROM outbox_entries WHERE outbox_id = ?").get(`wake-intent-${item.qitemId}`) as { delivery_state: string } | undefined;
+    expect(intent?.delivery_state).toBe("delivered");
+  });
+
+  it("LOCAL HUMAN INBOX IS ONE LITERAL: near-miss human addresses stay unroutable and loud", async () => {
+    for (const near of ["human-typo@kernel", "human@host", "human@kernel2", "Human@kernel"]) {
+      expect(h.repo.classifyDestinationOf(near).class, near).toBe("unroutable");
+    }
+    expect(h.repo.classifyDestinationOf("human@kernel").class).toBe("local-human-inbox");
+  });
+
+  it("LOCAL HUMAN INBOX YIELDS: a registered human named 'human' or a real pane for human@kernel still wins its own class", async () => {
+    const registered = makeHarness({ entities: () => [{ ...FOUNDER_FRAGMENT, entityId: "human", address: "human@external" }] });
+    expect(registered.repo.classifyDestinationOf("human@kernel")).toMatchObject({ class: "gateway-routable", via: "registry-alias" });
+    registered.db.close();
+    h.db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES ('node-h', 'rig-1', 'human', 'terminal')").run();
+    h.db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES ('sess-h', 'node-h', 'human@kernel')").run();
+    h.db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session) VALUES ('binding-h', 'node-h', 'tmux', 'human@kernel')").run();
+    expect(h.repo.classifyDestinationOf("human@kernel").class).toBe("pane-bound");
+  });
+
   it("FLOOR: pane-bound dispatch is byte-identical — the known seat rides terminal transport unchanged", async () => {
     const item = await h.repo.create({
       sourceSession: "orch-lead@v-openrig-build",
@@ -552,6 +589,7 @@ describe("GET /api/queue/:qitemId carries the destination class", () => {
     ["human-founder@kernel", "gateway-routable"],
     ["founder@external", "gateway-routable"],
     ["revieweer@rig1", "unroutable"],
+    ["human@kernel", "local-human-inbox"],
   ] as const)("%s reads as %s on a --no-nudge row", async (destinationSession, destinationClass) => {
     const h = makeHarness({ entities: () => [FOUNDER_FRAGMENT, MIKE] });
     const app = new Hono();

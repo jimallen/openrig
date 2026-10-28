@@ -11,10 +11,13 @@ import { isSettingsValidKey } from "../src/domain/user-settings/settings-store.j
 import {
   defaultBannerSpawner,
   defaultFindExecutable,
+  BANNER_FAILURE_STREAK,
   HumanGateNotifier,
+  HumanInboxBannerHealthSource,
   MAX_BANNERS_PER_DAY,
   MIN_BANNER_GAP_MS,
   REMINDER_INTERVAL_MS,
+  selectWaitingItems,
   sqliteBlockedRows,
   sqliteNotificationStore,
   type BannerSpawner,
@@ -62,12 +65,12 @@ function park(db: Database.Database, id: string, ts = "2031-03-04T00:00:00.000Z"
 function insertQueueRow(
   db: Database.Database,
   id: string,
-  opts: { state?: string; blockedOn?: string | null; tags?: string[]; summary?: string | null; source?: string } = {},
+  opts: { state?: string; blockedOn?: string | null; tags?: string[]; summary?: string | null; source?: string; destination?: string } = {},
 ): void {
   db.prepare(
     "INSERT INTO queue_items (qitem_id, ts_created, ts_updated, source_session, destination_session, state, tags, blocked_on, body, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
-    id, "2031-03-04T00:00:00.000Z", "2031-03-04T00:00:00.000Z", opts.source ?? STEWARD, STEWARD,
+    id, "2031-03-04T00:00:00.000Z", "2031-03-04T00:00:00.000Z", opts.source ?? STEWARD, opts.destination ?? STEWARD,
     opts.state ?? "blocked", JSON.stringify(opts.tags ?? ["rsi", "rsi:fp:rsi.x/rig:a", "rsi:stage:proposal"]),
     opts.blockedOn === undefined ? "human@kernel" : opts.blockedOn, "body", opts.summary === undefined ? "plain summary" : opts.summary,
   );
@@ -82,7 +85,7 @@ interface Harness {
   notifier: HumanGateNotifier;
 }
 
-function harness(opts: { platform?: NodeJS.Platform; terminalNotifier?: string | null; spawnOk?: boolean; spawn?: (command: string) => { ok: boolean; exitCode?: number | null; cause?: "exit" | "spawn-error" | "timeout" | "signal" }; db?: Database.Database; now?: { ms: number } } = {}): Harness {
+function harness(opts: { steward?: string | null; platform?: NodeJS.Platform; terminalNotifier?: string | null; spawnOk?: boolean; spawn?: (command: string) => { ok: boolean; exitCode?: number | null; cause?: "exit" | "spawn-error" | "timeout" | "signal" }; db?: Database.Database; now?: { ms: number } } = {}): Harness {
   const db = opts.db ?? freshDb();
   const now = opts.now ?? { ms: T0 };
   const calls: Array<{ command: string; args: string[] }> = [];
@@ -90,7 +93,7 @@ function harness(opts: { platform?: NodeJS.Platform; terminalNotifier?: string |
   const spawner: BannerSpawner = async (command, args) => { calls.push({ command, args }); return opts.spawn ? opts.spawn(command) : opts.spawnOk === false ? { ok: false, exitCode: 1 } : { ok: true }; };
   const notifier = new HumanGateNotifier({
     listBlocked: sqliteBlockedRows(db),
-    stewardSession: STEWARD,
+    stewardSession: opts.steward === undefined ? STEWARD : opts.steward,
     store: sqliteNotificationStore(db),
     spawner,
     findExecutable: (name) => (name === "terminal-notifier" ? (opts.terminalNotifier === undefined ? "/opt/homebrew/bin/terminal-notifier" : opts.terminalNotifier) : null),
@@ -125,10 +128,10 @@ describe("selection: which rows become banners", () => {
 
   it("does not notify a non-RSI human-gate item, an RSI item parked on an agent, or a non-blocked RSI item", async () => {
     const h = harness();
-    insertQueueRow(h.db, "q-plain-human", { tags: ["not-rsi", "rsi:fp:lookalike"] });
+    insertQueueRow(h.db, "q-plain-human", { tags: ["not-rsi", "rsi:fp:lookalike"], blockedOn: "human-other@kernel" });
     insertQueueRow(h.db, "q-rsi-agent", { blockedOn: "improve-engineer@kernel" });
     insertQueueRow(h.db, "q-rsi-pending", { state: "pending" });
-    insertQueueRow(h.db, "q-untagged", { tags: [] });
+    insertQueueRow(h.db, "q-untagged", { tags: [], blockedOn: "human-other@kernel" });
     const result = await h.notifier.tick();
     expect(result).toEqual({ status: "idle", waiting: 0 });
     expect(h.calls).toHaveLength(0);
@@ -139,11 +142,12 @@ describe("selection: which rows become banners", () => {
 
   it("counts only items created by the configured steward: another seat's rsi-tagged park cannot spend the banner budget", async () => {
     const h = harness();
-    for (let i = 0; i < MAX_BANNERS_PER_DAY; i += 1) insertQueueRow(h.db, `q-junk-${i}`, { source: "some-other@rig" });
+    // Parked on a human seat that is not the inbox, so only the RSI rule could count them.
+    for (let i = 0; i < MAX_BANNERS_PER_DAY; i += 1) insertQueueRow(h.db, `q-junk-${i}`, { source: "some-other@rig", blockedOn: "human-other@kernel" });
     expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 0 });
     // Near misses of the steward name are not the steward.
     for (const near of ["improve-steward@other", "improve-steward@kernel2", "Improve-Steward@kernel", "improve-steward"]) {
-      insertQueueRow(h.db, `q-near-${near}`, { source: near });
+      insertQueueRow(h.db, `q-near-${near}`, { source: near, blockedOn: "human-other@kernel" });
     }
     expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 0 });
     insertQueueRow(h.db, "q-real");
@@ -485,7 +489,8 @@ describe("platform and failure posture", () => {
   it("reads queue state through a read-only handle and leaves queue_items untouched", async () => {
     const db = freshDb(true);
     insertQueueRow(db, "q-a");
-    insertQueueRow(db, "q-b", { tags: ["plain"] });
+    // Parked on another human seat, not the inbox: not RSI (no steward tag set) and not addressed to human@kernel.
+    insertQueueRow(db, "q-b", { tags: ["plain"], blockedOn: "human-other@kernel" });
     const before = JSON.stringify(db.prepare("SELECT * FROM queue_items ORDER BY qitem_id").all());
     const ro = new Database(db.name, { readonly: true, fileMustExist: true });
     open.push(ro);
@@ -504,28 +509,29 @@ describe("daemon wiring", () => {
     expect(isSettingsValidKey("rsi.steward_session")).toBe(true);
   });
 
-  it("arms the notifier when rsi.steward_session is set, and builds none when it is unset", async () => {
+  it("arms the notifier for the local human inbox whether or not rsi.steward_session is set, and names the steward only when it is", async () => {
     const dir = tempDir("rsi-notifier-wiring-");
     const log = vi.spyOn(console, "log");
     const unset = await createDaemon({ dbPath: join(dir, "unset.sqlite") });
     open.push(unset.db);
-    expect(unset.humanGateNotifier).toBeUndefined();
+    expect(unset.humanGateNotifier).toBeInstanceOf(HumanGateNotifier);
+    expect(log.mock.calls.map((c) => String(c[0]))).toContain("[rsi-notifier] armed for the local human inbox (no valid rsi.steward_session)");
 
     process.env["OPENRIG_RSI_STEWARD_SESSION"] = STEWARD;
     const armed = await createDaemon({ dbPath: join(dir, "armed.sqlite") });
     open.push(armed.db);
     expect(armed.humanGateNotifier).toBeInstanceOf(HumanGateNotifier);
-    expect(log.mock.calls.map((c) => String(c[0]))).toContain(`[rsi-notifier] armed for steward session ${STEWARD}`);
+    expect(log.mock.calls.map((c) => String(c[0]))).toContain(`[rsi-notifier] armed for steward session ${STEWARD} and the local human inbox`);
   });
 
-  it("uses B1's steward validity rule: an invalid value (no '@') disarms the notifier as it disarms the wake", async () => {
+  it("uses B1's steward validity rule: an invalid value (no '@') is no steward, so the RSI wording is off and the inbox banner stays armed", async () => {
     const dir = tempDir("rsi-notifier-invalid-");
     const log = vi.spyOn(console, "log");
     process.env["OPENRIG_RSI_STEWARD_SESSION"] = "no-at-sign";
     const invalid = await createDaemon({ dbPath: join(dir, "invalid.sqlite") });
     open.push(invalid.db);
-    expect(invalid.humanGateNotifier).toBeUndefined();
-    expect(log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[rsi-notifier] armed"))).toEqual([]);
+    expect(invalid.humanGateNotifier).toBeInstanceOf(HumanGateNotifier);
+    expect(log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[rsi-notifier] armed"))).toEqual(["[rsi-notifier] armed for the local human inbox (no valid rsi.steward_session)"]);
     // B1 disarms on the same value (its rule, the same function).
     expect(rsiStewardValidity("no-at-sign")).toBe("invalid");
     expect(rsiStewardValidity("  ")).toBe("unset");
@@ -547,6 +553,229 @@ describe("daemon wiring", () => {
     const lines = error.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[rsi-notifier]"));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^\[rsi-notifier\] disabled: construction failed class=SqliteError$/);
+  });
+});
+
+// z7 (Jim, 2026-10-28, "macOS banner for all of them"): every open item addressed to human@kernel raises the banner, not
+// just blocked RSI proposals. HARD RULE as above: nothing here can post a real notification; the spawner is injected.
+describe("local human inbox: every open item addressed to human@kernel", () => {
+  const OTHER = "dev-a@some-rig";
+  const inboxRow = (h: Harness, id: string, o: { source?: string; summary?: string | null; tags?: string[]; state?: string; destination?: string } = {}): void =>
+    insertQueueRow(h.db, id, { state: o.state ?? "pending", blockedOn: null, source: o.source ?? OTHER, destination: o.destination ?? "human@kernel", tags: o.tags ?? [], summary: o.summary ?? "A question for Jim" });
+
+  it("banners an RSI question from a non-steward seat, with the plain title and no RSI wording", async () => {
+    const h = harness();
+    inboxRow(h, "q-question", { tags: ["rsi", "rsi:question"], summary: "Which fingerprint first?" });
+    const result = await h.notifier.tick();
+    expect(result.status).toBe("sent");
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.args[h.calls[0]!.args.indexOf("-title") + 1]).toBe("OpenRig");
+    expect(messageOf(h.calls[0]!)).toBe(`1 item(s) waiting for you · from ${OTHER} · q-question · Which fingerprint first?`);
+  });
+
+  it("banners the steward's daily report and a reply to Jim, folded into one banner with the count", async () => {
+    const h = harness();
+    inboxRow(h, "q-report", { source: STEWARD, tags: ["report"], summary: "Daily report" });
+    inboxRow(h, "q-reply", { summary: "Reply" });
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(h.calls).toHaveLength(1);
+    expect(messageOf(h.calls[0]!)).toMatch(/^2 item\(s\) waiting for you · from /);
+    expect(messageOf(h.calls[0]!)).not.toContain("RSI");
+    expect(messageOf(h.calls[0]!)).not.toContain("rsi-decide");
+  });
+
+  it("banners a gate parked on human@kernel by any seat", async () => {
+    const h = harness();
+    insertQueueRow(h.db, "q-gate", { source: OTHER, destination: "orch@rig", tags: ["gate"], blockedOn: "human@kernel", summary: "Release gate" });
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(messageOf(h.calls[0]!)).toBe(`1 item(s) waiting for you · from ${OTHER} · q-gate · Release gate`);
+  });
+
+  it("works with no steward configured: the inbox banner does not depend on RSI", async () => {
+    const h = harness({ steward: null });
+    inboxRow(h, "q-nosteward");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    // Without a steward nothing is an RSI item, even a lookalike tagged rsi from a seat named like the usual steward.
+    insertQueueRow(h.db, "q-lookalike", { source: STEWARD, blockedOn: "human-other@kernel" });
+    h.now.ms += 30 * MIN;
+    expect(await h.notifier.tick()).toMatchObject({ status: "idle", waiting: 1 });
+  });
+
+  it("keeps the steward-source rule for the RSI wording: a steward RSI park leads with RSI wording, another seat's rsi tag does not", async () => {
+    const h = harness();
+    // A park on Jim by another seat, tagged like an RSI proposal: waiting for Jim, but not the steward's, so no RSI wording.
+    insertQueueRow(h.db, "q-spoof", { source: "some-other@rig", destination: "orch@rig", blockedOn: "human@kernel", tags: ["rsi", "rsi:stage:proposal", "rsi:fp:rsi.x/rig:a"], summary: "Pretending" });
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(messageOf(h.calls[0]!)).not.toContain("rsi-decide");
+    expect(messageOf(h.calls[0]!)).not.toContain("RSI");
+    h.now.ms += 30 * MIN;
+    insertQueueRow(h.db, "q-real");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(messageOf(h.calls[1]!)).toContain("rsi-decide q-real");
+    expect(messageOf(h.calls[1]!)).toMatch(/^2 item\(s\) waiting for you/);
+  });
+
+  it("does not banner what is not open and addressed to the inbox", async () => {
+    const h = harness();
+    inboxRow(h, "q-claimed", { state: "in-progress" });
+    inboxRow(h, "q-done", { state: "done" });
+    inboxRow(h, "q-typo", { destination: "human-typo@kernel" });
+    inboxRow(h, "q-host", { destination: "human@host" });
+    inboxRow(h, "q-agent", { destination: "dev-b@some-rig" });
+    insertQueueRow(h.db, "q-gate-elsewhere", { source: OTHER, destination: "orch@rig", blockedOn: "dev-b@some-rig", tags: ["gate"] });
+    expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 0 });
+    expect(h.calls).toHaveLength(0);
+    // Positive control: the same fixture plus one open inbox row does banner.
+    inboxRow(h, "q-open");
+    expect((await h.notifier.tick()).status).toBe("sent");
+  });
+
+  it("stops once Jim picks the item up, and reminds an unanswered item at most once in 24 hours", async () => {
+    const h = harness();
+    inboxRow(h, "q-a");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    h.now.ms += 23 * 60 * MIN;
+    expect((await h.notifier.tick()).status).toBe("idle");
+    h.now.ms = T0 + REMINDER_INTERVAL_MS + MIN;
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(h.calls).toHaveLength(2);
+    h.db.prepare("UPDATE queue_items SET state = 'done' WHERE qitem_id = 'q-a'").run();
+    h.now.ms += REMINDER_INTERVAL_MS;
+    expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 0 });
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("an edit to a waiting item is not a new arrival: its episode is its creation, so a later ts_updated does not re-banner it", async () => {
+    const h = harness();
+    inboxRow(h, "q-edit");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    h.db.prepare("UPDATE queue_items SET ts_updated = '2031-03-04T09:00:00.000Z' WHERE qitem_id = 'q-edit'").run();
+    h.now.ms += 30 * MIN;
+    expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 1 });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("selects by state and address on its own, whatever the reader returns: pending to the inbox, parked on the inbox, nothing else", () => {
+    const row = (o: Partial<BlockedQueueRow>): BlockedQueueRow => ({
+      qitemId: "q", destinationSession: "human@kernel", sourceSession: "dev-a@some-rig", episode: "1", state: "pending", blockedOn: null, tags: [], summary: null, ...o,
+    });
+    const kinds = (rows: BlockedQueueRow[]) => selectWaitingItems(rows, STEWARD).map((w) => `${w.qitemId}:${w.kind}`);
+    expect(kinds([
+      row({ qitemId: "pending-inbox" }),
+      row({ qitemId: "parked-inbox", state: "blocked", blockedOn: "human@kernel", destinationSession: "orch@rig" }),
+      row({ qitemId: "pending-elsewhere", destinationSession: "dev-b@some-rig" }),
+      row({ qitemId: "claimed-inbox", state: "in-progress" }),
+      row({ qitemId: "done-inbox", state: "done" }),
+      row({ qitemId: "typo", destinationSession: "human-typo@kernel" }),
+      row({ qitemId: "steward-park", state: "blocked", blockedOn: "human-other@kernel", sourceSession: STEWARD, tags: ["rsi"] }),
+      row({ qitemId: "steward-park-on-inbox", state: "blocked", blockedOn: "human@kernel", sourceSession: STEWARD, tags: ["rsi"] }),
+    ])).toEqual(["pending-inbox:inbox", "parked-inbox:inbox", "steward-park:rsi", "steward-park-on-inbox:rsi"]);
+  });
+
+  it("a seat flooding the inbox spends one banner per gap and never more than the daily cap", async () => {
+    const h = harness();
+    for (let i = 0; i < 40; i += 1) inboxRow(h, `q-flood-${i}`, { source: `spam-${i}@rig` });
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(messageOf(h.calls[0]!)).toMatch(/^40 item\(s\) waiting for you/);
+    h.now.ms += 5 * MIN;
+    expect((await h.notifier.tick()).status).toBe("idle");
+    // A new flooder every gap for a day: the cap, not the flood, bounds the banners.
+    for (let i = 0; i < 100; i += 1) {
+      h.now.ms += MIN_BANNER_GAP_MS + MIN;
+      inboxRow(h, `q-more-${i}`, { source: `spam-more-${i}@rig` });
+      await h.notifier.tick();
+      if (h.now.ms - T0 > REMINDER_INTERVAL_MS - 30 * MIN) break;
+    }
+    expect(h.calls).toHaveLength(MAX_BANNERS_PER_DAY);
+  });
+
+  it("shows the sender as text only: control and bidi characters are stripped from the source and the id", async () => {
+    const h = harness();
+    inboxRow(h, "q-\u202Eevil", { source: "dev\u0007\u200B-a@rig\nINJECTED", summary: "ok" });
+    expect((await h.notifier.tick()).status).toBe("sent");
+    const message = messageOf(h.calls[0]!);
+    expect(message).not.toMatch(/[\u0000-\u001f\u202e\u200b]/);
+    expect(message).toContain("from dev -a@rig INJECTED");
+  });
+});
+
+// z7 review F6: the oldest waiting item leads the banner.
+describe("local human inbox: the oldest waiting item leads", () => {
+  it("names the oldest item first whatever order the rows were written in", async () => {
+    const h = harness();
+    const rowFor = (id: string, createdAt: string) => {
+      insertQueueRow(h.db, id, { state: "pending", blockedOn: null, source: "dev-a@some-rig", destination: "human@kernel", tags: [], summary: `summary ${id}` });
+      h.db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?").run(createdAt, id);
+    };
+    rowFor("q-newest", "2031-03-04T04:00:00.000Z");
+    rowFor("q-oldest", "2031-03-04T01:00:00.000Z");
+    rowFor("q-middle", "2031-03-04T02:00:00.000Z");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    expect(messageOf(h.calls[0]!)).toBe("3 item(s) waiting for you · from dev-a@some-rig · q-oldest · summary q-oldest");
+  });
+});
+
+// z7 review F3: the stuck sweep no longer escalates an item to Jim, so the banner is its only signal; `rig health` must say
+// when that signal cannot be delivered. Coverage-only source: no findings, one "unavailable" row while it is true.
+describe("local human inbox: rig health says when the banner cannot reach Jim", () => {
+  const coverageOf = (source: HumanInboxBannerHealthSource) => source.coverage();
+
+  it("reports unavailable after the banner spawn fails several times in a row, from the durable attempt table, and clears on a success", async () => {
+    const h = harness({ spawnOk: false });
+    const source = new HumanInboxBannerHealthSource(() => new Date(h.now.ms));
+    source.attach(() => sqliteNotificationStore(h.db).listBanners());
+    insertQueueRow(h.db, "q-fail", { state: "pending", blockedOn: null, source: "dev-a@some-rig", destination: "human@kernel", tags: [] });
+    expect(coverageOf(source)).toEqual([]);
+    for (let i = 0; i < BANNER_FAILURE_STREAK; i += 1) {
+      expect(coverageOf(source), `after ${i} failed attempts`).toEqual([]);
+      expect((await h.notifier.tick()).status).toBe("failed");
+      h.now.ms += MIN_BANNER_GAP_MS + MIN;
+    }
+    const rows = coverageOf(source);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source: "human-inbox-banner", status: "unavailable", partial: true });
+    expect(JSON.stringify(rows[0])).toContain(`last ${BANNER_FAILURE_STREAK} macOS banner attempts failed`);
+    // A later successful banner ends the streak. The persisted attempt rows are the evidence, not process memory.
+    const restarted = new HumanInboxBannerHealthSource(() => new Date(h.now.ms));
+    restarted.attach(() => sqliteNotificationStore(h.db).listBanners());
+    expect(coverageOf(restarted)).toHaveLength(1);
+    sqliteNotificationStore(h.db).recordBanner({ sentAt: new Date(h.now.ms).toISOString(), itemCount: 1, ok: true });
+    expect(coverageOf(source)).toEqual([]);
+  });
+
+  it("stays silent for a failure that is not yet a streak, and reads no findings", () => {
+    const store = { rows: [{ sentAt: "2031-03-04T05:00:00.000Z", itemCount: 1, ok: false }, { sentAt: "2031-03-04T05:20:00.000Z", itemCount: 1, ok: false }] };
+    const source = new HumanInboxBannerHealthSource(() => new Date(T0));
+    source.attach(() => store.rows);
+    expect(coverageOf(source)).toEqual([]);
+    expect(source.read()).toEqual([]);
+    // Positive control: the same two plus one more failed attempt is a streak.
+    store.rows.push({ sentAt: "2031-03-04T05:40:00.000Z", itemCount: 1, ok: false });
+    expect(coverageOf(source)).toHaveLength(1);
+  });
+
+  it("reports unavailable for the life of the process when the notifier could not be built, and says nothing when it is built", async () => {
+    const dir = tempDir("rsi-notifier-health-");
+    const okPath = join(dir, "ok.sqlite");
+    const ok = await createDaemon({ dbPath: okPath });
+    open.push(ok.db);
+    expect((ok.deps.healthProjection!.list().coverage ?? []).map((c) => c.source)).not.toContain("human-inbox-banner");
+    // The daemon's own source reads the same durable attempt table: three failed attempts there surface in its health coverage.
+    for (let i = 0; i < BANNER_FAILURE_STREAK; i += 1) ok.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES (?, 1, 0)").run(new Date(Date.now() - (i + 1) * MIN).toISOString());
+    expect((ok.deps.healthProjection!.list().coverage ?? []).map((c) => c.source)).toContain("human-inbox-banner");
+
+    const brokenPath = join(dir, "broken.sqlite");
+    const seeded = createDb(brokenPath);
+    migrate(seeded, ALL_MIGRATIONS);
+    seeded.exec("DROP TABLE rsi_notifications");
+    seeded.close();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const broken = await createDaemon({ dbPath: brokenPath });
+    open.push(broken.db);
+    expect(broken.humanGateNotifier).toBeUndefined();
+    const row = (broken.deps.healthProjection!.list().coverage ?? []).find((c) => c.source === "human-inbox-banner");
+    expect(row).toMatchObject({ status: "unavailable", partial: true });
+    expect(JSON.stringify(row)).toContain("class=SqliteError");
   });
 });
 
