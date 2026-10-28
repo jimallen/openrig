@@ -312,6 +312,17 @@ describe("queue items: one damaged saved column names its row; the rows beside i
         expect(db.prepare("SELECT * FROM queue_items WHERE qitem_id = ?").get(recovery.qitemId)).toEqual(before);
       });
 
+      it("finding link: a shared recovery the sweep could not read is not counted as a finding it routed", async () => {
+        const stuck = await overdue();
+        const recovery = await item("recovery for the stuck row");
+        db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(`["recovery-for:${stuck.qitemId}", "x`, recovery.qitemId);
+        const recorded: Array<{ outcome: string; findings?: number }> = [];
+        const status = { record: (outcome: "clean" | "findings" | "failed", detail?: { error?: string; findings?: number }) => { recorded.push({ outcome, findings: detail?.findings }); } };
+        const result = await runStuckSweep({ db, queueRepo: repo, log: () => {}, now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null, status } as never);
+        expect(result.findings.map((f) => f.action)).toEqual(["unreadable"]);
+        expect(recorded).toEqual([{ outcome: "findings", findings: 0 }]);
+      });
+
       // Same class as review F2b: a row the sweep could not read is not a row that stopped being stuck.
       it("an open finding about a row that has become unreadable stays open (it is not closed as 'no longer detected')", async () => {
         const stuck = await overdue();

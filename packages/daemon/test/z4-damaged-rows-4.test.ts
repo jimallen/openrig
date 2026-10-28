@@ -169,6 +169,14 @@ describe("OF-159: workflow runtime exception items", () => {
       expect(errors.some((line) => line.includes("ex-2"))).toBe(true);
     });
 
+    it("a CLOSED damaged stuck-exception item is not named (only open items wait on a recheck)", async () => {
+      await item("ex-1", exceptionTags("i1", "p1"));
+      db.prepare("UPDATE queue_items SET state = 'done' WHERE qitem_id = 'ex-1'").run();
+      truncate(db, "ex-1");
+      runtime.reconcileStuckExceptions("i1");
+      expect(errors).toEqual([]);
+    });
+
     it("an item whose tags are valid JSON but not a list is named, not skipped silently", async () => {
       await item("ex-1", exceptionTags("i1", "p1"));
       db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(JSON.stringify({ a: "workflow-exception", b: "exception:stuck_overdue", c: "instance:i1" }), "ex-1");
@@ -259,7 +267,7 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
       reconcileStuckExceptions: () => runtime.reconcileStuckExceptions(),
     });
     const exceptionRows = () => db.prepare("SELECT qitem_id, tags FROM queue_items WHERE tags LIKE '%exception:stuck_overdue%'").all() as Array<{ qitem_id: string; tags: string }>;
-    return { sweep, lines, ensureLines, exceptionRows };
+    return { sweep, lines, ensureLines, exceptionRows, queueRepo, packetId };
   }
   /** Rewrite the item the first sweep opened into the historical form: same tags, no recovery-for link. */
   function makeHistorical(row: { qitem_id: string; tags: string }): void {
@@ -273,6 +281,20 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
     makeHistorical(exceptionRows()[0]!);
     expect((await sweep()).exceptionItemsCreated).toBe(0);
     expect(exceptionRows()).toHaveLength(1);
+  });
+
+  // The damaged lookup must not widen the readable one: a modern item (recovery-for link) is the occurrence's item only while its
+  // closed disposition is current (findQueueRecovery). Once the packet moved after it closed, a new episode opens a NEW item.
+  it("a damaged item with a recovery link whose closed disposition is stale does not suppress a new episode's item", async () => {
+    const { sweep, exceptionRows, queueRepo, packetId } = await setup();
+    expect((await sweep()).exceptionItemsCreated).toBe(1);
+    const [first] = exceptionRows();
+    await queueRepo.update({ qitemId: first!.qitem_id, actorSession: "ops@rig", state: "done", closureReason: "no-follow-on" });
+    truncate(db, first!.qitem_id);
+    queueRepo.transitionLog.append({ qitemId: packetId, state: "pending", actorSession: "agent@rig", transitionNote: "the packet moved after the item closed" });
+
+    expect((await sweep()).exceptionItemsCreated, "the stale damaged disposition does not hold the new episode").toBe(1);
+    expect(exceptionRows()).toHaveLength(2);
   });
 
   it("a historical item whose tags are damaged is not 'no item': a second sweep creates nothing and names it", async () => {
@@ -351,8 +373,44 @@ describe("OF-159: the prompt ladder does not reopen a closed alert's episode, an
     await tick("blocked");
 
     expect(alerts(OPEN), "a damaged disposition is not an absent one").toEqual([]);
-    expect(lines.filter((line) => line.includes(alert!.qitem_id) && line.includes("not readable JSON")), lines.join("\n")).not.toHaveLength(0);
+    // The ladder's other readers may name the row in their own words; these two lines are this change's: the episode check names it
+    // as a closed disposition, and the open-aggregate pass (which is for OPEN alerts) does not.
+    expect(lines.filter((line) => line.includes(alert!.qitem_id) && line.includes("closed prompt disposition")), lines.join("\n")).toHaveLength(1);
+    expect(lines.filter((line) => line.includes(alert!.qitem_id) && line.includes("tags are not readable JSON (repair")), lines.join("\n")).toEqual([]);
     expect(wakes).toEqual([]);
+  });
+
+  it("a damaged OPEN alert beside an open original is not a closed disposition: it is left alone, nothing is opened or woken, and it is not called final", async () => {
+    await refusedBaton();
+    await tick("blocked");
+    const [alert] = alerts(OPEN);
+    truncate(db, alert!.qitem_id);
+
+    lines.length = 0;
+    await tick("blocked");
+
+    expect(lines.filter((line) => line.includes("closed prompt disposition")), lines.join("\n")).toEqual([]);
+    expect(alerts(OPEN).map((row) => row.qitem_id)).toEqual([alert!.qitem_id]);
+    expect(stateOf(db, alert!.qitem_id)).toBe("pending");
+    expect(wakes).toEqual([]);
+  });
+
+  it("a damaged closed alert closes only ITS episode: a later refusal episode of the same work still opens an alert", async () => {
+    const original = await refusedBaton();
+    await tick("blocked");
+    const [alert] = alerts(OPEN);
+    await repo.update({ qitemId: alert!.qitem_id, actorSession: "ops@fixture", state: "done", closureReason: "no-follow-on" });
+    truncate(db, alert!.qitem_id);
+    const key2 = `${seat}|fixture#2`;
+    for (const transitionNote of [`parked-owner wake reserved: ${key2}; obligations ${original}`, `${REFUSED_PREFIX} ${key2}; Refused: interactive prompt`]) {
+      repo.transitionLog.append({ qitemId: original, state: "pending", actorSession: "watchdog@system", transitionNote });
+    }
+
+    await tick("blocked");
+
+    const open = alerts(OPEN);
+    expect(open, "the new episode is not held by the old episode's damaged disposition").toHaveLength(1);
+    expect(rawTags(db, open[0]!.qitem_id)).toContain(`prompt-episode:${key2}`);
   });
 
   // The retire pass reads aggregates through a json_valid scan, and the per-original pass only visits OPEN originals. An alert
@@ -367,7 +425,7 @@ describe("OF-159: the prompt ladder does not reopen a closed alert's episode, an
     lines.length = 0;
     await tick("blocked");
 
-    expect(lines.filter((line) => line.includes(alert!.qitem_id) && line.includes("not readable JSON")), lines.join("\n")).toHaveLength(1);
+    expect(lines.filter((line) => line.includes(alert!.qitem_id) && line.includes("tags are not readable JSON (repair")), lines.join("\n")).toHaveLength(1);
     expect(stateOf(db, alert!.qitem_id), "named and left alone, not retired on a guess").toBe("pending");
     expect(alerts(OPEN).map((row) => row.qitem_id), "no second alert").toEqual([alert!.qitem_id]);
     expect(wakes).toEqual([]);
