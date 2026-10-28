@@ -257,7 +257,7 @@ export function isProbeShellReady(input: ProbeShellReadyInput): boolean {
   return SHELL_COMMANDS.has(paneCommand) && paneContent.length > 0;
 }
 
-export function looksLikeClaudeTui(paneContent: string): boolean {
+function looksLikeClaudeTui(paneContent: string): boolean {
   const hasPrompt = hasClaudeComposerPrompt(paneContent);
   if (!hasPrompt) return false;
 

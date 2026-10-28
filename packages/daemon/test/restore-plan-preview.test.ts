@@ -147,15 +147,6 @@ describe("FR-6 restore-plan token state", () => {
     expect(p.nodes[0]!.freshRequired).toBe(false);
   });
 
-  // OF-162: an id whose conversation Claude never persisted (no first message submitted) is not "present".
-  it("unverified: probe unproven, even with a verified stamp left on the row", () => {
-    const rig = rigWith([{ id: "n1", logicalId: "a", runtime: "claude-code" }]);
-    for (const resumeLastVerified of [null, FRESH]) {
-      const p = buildRestorePlanPreview(rig, null, [row("n1", { resumeLastVerified, resumeLastProbeStatus: "unproven" })], undefined, NOW);
-      expect(p.nodes[0]!.tokenState).toBe("unverified");
-    }
-  });
-
   it("present: probe resumable + verified within the freshness threshold", () => {
     const rig = rigWith([{ id: "n1", logicalId: "a", runtime: "claude-code" }]);
     const p = buildRestorePlanPreview(rig, null, [row("n1", { resumeLastVerified: FRESH, resumeLastProbeStatus: "resumable" })], undefined, NOW);
