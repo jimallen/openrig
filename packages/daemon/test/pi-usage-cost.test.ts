@@ -524,9 +524,19 @@ describe("runner → authenticated route → SQLite → cost view", () => {
       const cut = valid.indexOf("\n"); // the header without its newline
       writeFileSync(file, valid.slice(0, cut));
       let grown = false;
-      const p = pipeline(() => forkHeader(at(7), file), () => readPiSessionEntryIds(file, undefined, {
-        afterStat: () => { if (!grown) { grown = true; appendFileSync(file, valid.slice(cut)); } } }));
+      // The parent read runs in the background. A refresh that arrives while it is still in flight joins that read
+      // instead of starting another, so the second refresh below must wait until the torn read has answered:
+      // otherwise (a slow host) it joined the torn read and nothing ever read the completed file.
+      const reads = { started: 0, finished: 0, lastAnswered: true };
+      const p = pipeline(() => forkHeader(at(7), file), () => {
+        reads.started += 1;
+        return readPiSessionEntryIds(file, undefined, {
+          afterStat: () => { if (!grown) { grown = true; appendFileSync(file, valid.slice(cut)); } } })
+          .then((ids) => { reads.finished += 1; reads.lastAnswered = ids !== null; return ids; });
+      });
       await p.refresh(forkEntries);
+      await eventually(() => expect(reads.started === 1 && reads.finished === 1).toBe(true));
+      expect(reads.lastAnswered, "the torn read answered nothing").toBe(false);
       expect(p.view()).toMatchObject({ entries: { own: 2, unknownOrigin: { count: 2 } } });
       expect(p.view().costUsd).toBeCloseTo(0.05, 10); // the copied b1 is not charged
       await p.refresh(forkEntries);
