@@ -86,5 +86,9 @@ directly inside a directory holding a `package.json`) are skipped.
 On Linux the probe reads `/proc/<pid>/cwd` and counts processes it cannot read (reported as a note). On macOS and
 other hosts it runs `lsof -d cwd -Fn`. `lsof` exit status 1 (some processes not inspectable) with the rest printed
 is accepted; `lsof` missing, killed, any other exit status, output cut off at the buffer limit, or an empty or
-non-`lsof` listing makes the probe fail and every worktree is kept with `in-use-probe-failed`. `lsof` sees only the
-invoking user's processes and the macOS probe cannot count the ones it missed.
+non-`lsof` listing makes the probe fail and every worktree is kept with `in-use-probe-failed`. `lsof` lists only the
+processes it is allowed to inspect and gives no per-process signal for the rest: measured on a macOS laptop as a
+non-root user, `lsof -d cwd -Fpfn` exited 0 with empty stderr and listed 1049 of the 1443 processes `ps -A` showed, with no
+record at all for the other 394. There is nothing to count, so the macOS probe reports 0 unreadable processes and the
+sweep prints no "unreadable" note there. A process of another user standing in a worktree is therefore invisible on
+macOS (Linux counts and reports such processes).

@@ -46,7 +46,7 @@ const MAX_FIELD_CHARS = 120;
 const MAX_MESSAGE_CHARS = 300;
 
 /** A queue row as the notifier reads it (blocked rows, and open rows addressed to the inbox). Filtering to what waits on the human is the notifier's job. */
-export interface BlockedQueueRow {
+export interface WaitingQueueRow {
   qitemId: string;
   /** Where the item is addressed (queue_items.destination_session). */
   destinationSession: string;
@@ -115,7 +115,7 @@ export type NotifierTickResult =
 
 export interface HumanGateNotifierDeps {
   /** Every row in state `blocked`, plus every `pending` row addressed to the inbox. Must be read-only. */
-  listWaiting: () => BlockedQueueRow[];
+  listWaiting: () => WaitingQueueRow[];
   /** The configured `rsi.steward_session`; only its items are RSI items. Null when none is valid: the inbox banner does not depend on RSI. */
   stewardSession: string | null;
   store: NotificationStore;
@@ -129,7 +129,7 @@ export interface HumanGateNotifierDeps {
 }
 
 /** A row the banner is about. `rsi` rows keep the RSI wording; `inbox` rows are anything else waiting on the human. */
-export type WaitingItem = BlockedQueueRow & { kind: "rsi" | "inbox" };
+export type WaitingItem = WaitingQueueRow & { kind: "rsi" | "inbox" };
 
 /**
  * The set the banner is about.
@@ -139,7 +139,7 @@ export type WaitingItem = BlockedQueueRow & { kind: "rsi" | "inbox" };
  *    trusted either (source_session is a label), so these rows get generic wording, and the shared gap and
  *    daily cap are what stop a spamming seat.
  */
-export function selectWaitingItems(rows: BlockedQueueRow[], stewardSession: string | null): WaitingItem[] {
+export function selectWaitingItems(rows: WaitingQueueRow[], stewardSession: string | null): WaitingItem[] {
   const out: WaitingItem[] = [];
   for (const r of rows) {
     if (r.state === "blocked" && isHumanSeatSession(r.blockedOn) && r.sourceSession === stewardSession && r.tags.includes(RSI_TAG)) {
@@ -152,7 +152,7 @@ export function selectWaitingItems(rows: BlockedQueueRow[], stewardSession: stri
 }
 
 /** Key of one parking episode in rsi_notifications (its schema has only qitem_id as the key). */
-export function episodeKey(row: Pick<BlockedQueueRow, "qitemId" | "episode">): string {
+export function episodeKey(row: Pick<WaitingQueueRow, "qitemId" | "episode">): string {
   return `${row.qitemId}@${row.episode}`;
 }
 
@@ -360,7 +360,7 @@ export class HumanInboxBannerHealthSource implements HealthObservationSource {
 }
 
 /** Reads the rows that can wait on the human from the daemon database: every `blocked` row, and every `pending` row addressed to the inbox. SELECT only. */
-export function sqliteWaitingRows(db: Database.Database): () => BlockedQueueRow[] {
+export function sqliteWaitingRows(db: Database.Database): () => WaitingQueueRow[] {
   const stmt = db.prepare(
     "SELECT q.qitem_id, q.source_session, q.destination_session, q.state, q.blocked_on, q.tags, q.summary, " +
     // The parking episode is the transition that ENTERED blocked from another state. A blocked-to-blocked

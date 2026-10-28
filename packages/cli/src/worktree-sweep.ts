@@ -188,6 +188,8 @@ export async function lsofCwdProbe(run: () => Promise<LsofRun>): Promise<CwdProb
   }
   const cwds = res.stdout.split("\n").filter((l) => l.startsWith("n/")).map((l) => l.slice(1));
   if (cwds.length === 0) throw new Error("lsof returned no process working directories");
+  // unreadable stays 0: lsof prints no record for a process it may not inspect (measured: exit 0, empty stderr, a third of
+  // the process table absent), so there is no signal to count. Documented in docs/reference/worktree-sweep.md.
   return { cwds, unreadable: 0 };
 }
 

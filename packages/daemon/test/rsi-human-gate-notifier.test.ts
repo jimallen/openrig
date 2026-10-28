@@ -21,7 +21,7 @@ import {
   sqliteWaitingRows,
   sqliteNotificationStore,
   type BannerSpawner,
-  type BlockedQueueRow,
+  type WaitingQueueRow,
 } from "../src/domain/rsi/human-gate-notifier.js";
 import { rsiStewardValidity } from "../src/domain/rsi/health-finding-wake.js";
 
@@ -495,7 +495,7 @@ describe("platform and failure posture", () => {
     const ro = new Database(db.name, { readonly: true, fileMustExist: true });
     open.push(ro);
     // The queue read works on a handle that cannot write: it is SELECT only.
-    expect(sqliteWaitingRows(ro)().map((r: BlockedQueueRow) => r.qitemId).sort()).toEqual(["q-a", "q-b"]);
+    expect(sqliteWaitingRows(ro)().map((r: WaitingQueueRow) => r.qitemId).sort()).toEqual(["q-a", "q-b"]);
     expect(() => ro.prepare("UPDATE queue_items SET state = 'done'").run()).toThrow(/readonly/i);
     const h = harness({ db });
     await h.notifier.tick();
@@ -656,10 +656,10 @@ describe("local human inbox: every open item addressed to human@kernel", () => {
   });
 
   it("selects by state and address on its own, whatever the reader returns: pending to the inbox, parked on the inbox, nothing else", () => {
-    const row = (o: Partial<BlockedQueueRow>): BlockedQueueRow => ({
+    const row = (o: Partial<WaitingQueueRow>): WaitingQueueRow => ({
       qitemId: "q", destinationSession: "human@kernel", sourceSession: "dev-a@some-rig", episode: "1", state: "pending", blockedOn: null, tags: [], summary: null, ...o,
     });
-    const kinds = (rows: BlockedQueueRow[]) => selectWaitingItems(rows, STEWARD).map((w) => `${w.qitemId}:${w.kind}`);
+    const kinds = (rows: WaitingQueueRow[]) => selectWaitingItems(rows, STEWARD).map((w) => `${w.qitemId}:${w.kind}`);
     expect(kinds([
       row({ qitemId: "pending-inbox" }),
       row({ qitemId: "parked-inbox", state: "blocked", blockedOn: "human@kernel", destinationSession: "orch@rig" }),
