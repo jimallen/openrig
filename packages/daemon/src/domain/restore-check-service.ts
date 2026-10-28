@@ -321,6 +321,9 @@ interface RecoveryRigInput {
   liveUnrecordedSeats: string[];
   /** OF-155: seats whose adopted session rig down left running, live in tmux: rig up --existing reattaches them. */
   reattachSeats: string[];
+  /** OF-155 review F1: of the seats whose liveness could not be read, those whose adopted session rig down left running:
+   *  restore probes these too, and fails them (adopted_liveness_unknown) rather than reattach or start them. */
+  unknownAdoptedSeats: string[];
   /** Seats tmux says are not live, as logical ids (for the per-seat fresh-launch advice). */
   deadSeatIds: string[];
   /** Seats whose tmux liveness could not be read. */
@@ -638,7 +641,7 @@ export class RestoreCheckService {
     }
 
     const internalRollups = rigRollupInputs.map((input) => this.buildRigRollup(input));
-    const rigRollups: RigRestoreRollup[] = internalRollups.map(({ liveRunningSeats: _a, liveUnrecordedSeats: _b, reattachSeats: _r, deadSeatIds: _c, unknownLivenessSeats: _unknown, ...rollup }) => rollup);
+    const rigRollups: RigRestoreRollup[] = internalRollups.map(({ liveRunningSeats: _a, liveUnrecordedSeats: _b, reattachSeats: _r, unknownAdoptedSeats: _ua, deadSeatIds: _c, unknownLivenessSeats: _unknown, ...rollup }) => rollup);
     for (const rollup of internalRollups) {
       const latestSnapshot = restoreInputsByRig.get(rollup.rigId) ?? this.inspectLatestSnapshot(rollup.rigId);
       recoveryRigInputs.push({
@@ -652,6 +655,7 @@ export class RestoreCheckService {
         liveRunningSeats: rollup.liveRunningSeats,
         liveUnrecordedSeats: rollup.liveUnrecordedSeats,
         reattachSeats: rollup.reattachSeats,
+        unknownAdoptedSeats: rollup.unknownAdoptedSeats,
         deadSeatIds: rollup.deadSeatIds,
         unknownLivenessSeats: rollup.unknownLivenessSeats,
         restoreRefused: restoreRefusedByRig.get(rollup.rigId) ?? false,
@@ -1246,6 +1250,18 @@ export class RestoreCheckService {
       };
     }
 
+    // OF-155 review F1: tmux cannot answer for an adopted session rig down left running. Restore fails such a seat
+    // (adopted_liveness_unknown) and starts nothing, so the check says that, never "restore it".
+    const adoptedUnknown = !dbReady && tmux === "unreadable" ? this.adoptedLeftRunning(node) : null;
+    if (adoptedUnknown) {
+      return {
+        check,
+        status: "red",
+        evidence: `Adopted session ${adoptedUnknown.sessionName}, which rig down left running, could not be checked in tmux`,
+        remediation: `rig up --existing would neither reattach it nor start this seat (adopted_liveness_unknown). Check that tmux is reachable, then rerun rig restore-check`,
+        remediationSafe: false,
+      };
+    }
     const adopted = !dbReady && tmux === "live" ? this.adoptedLeftRunning(node) : null;
     if (adopted) {
       // OF-155: rig down left this adopted session running; rig up --existing reattaches it (option A), starting nothing.
@@ -1837,7 +1853,9 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because this check cannot tell whether those seats are live. Restore itself only probes seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts.`,
+          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because this check cannot tell whether those seats are live. ${input.unknownAdoptedSeats.length > 0
+            ? `Restore probes the seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts. It also probes an adopted session rig down left running (${input.unknownAdoptedSeats.join(", ")}): one it cannot check fails that seat (adopted_liveness_unknown), neither reattached nor started.`
+            : "Restore itself only probes seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts."}`,
         });
         continue;
       }
@@ -2065,7 +2083,7 @@ export class RestoreCheckService {
       : ` Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; to start a seat on this rig's spec (${source}) as it is now instead, list it: rig up ${shellQuote(this.rigHandle(rigId, rigName))} --existing --fresh <seat>.`;
   }
 
-  private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; reattachSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {
+  private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; reattachSeats: string[]; unknownAdoptedSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {
     const blockingChecks = input.checks.filter((check) => check.status === "red");
     const caveatChecks = input.checks.filter((check) => check.status === "yellow");
     const expectedNodes = input.nodes.length;
@@ -2073,6 +2091,7 @@ export class RestoreCheckService {
     const liveRunningSeats: string[] = [];
     const liveUnrecordedSeats: string[] = [];
     const reattachSeats: string[] = [];
+    const unknownAdoptedSeats: string[] = [];
     const deadSeatIds: string[] = [];
     const unknownLivenessSeats: string[] = [];
     let blockedNodes = 0;
@@ -2097,7 +2116,10 @@ export class RestoreCheckService {
         (node.sessionStatus === "running" ? liveRunningSeats : this.adoptedLeftRunning(node) ? reattachSeats : liveUnrecordedSeats).push(session);
       }
       if (seatLiveness === "dead") deadSeatIds.push(node.logicalId);
-      if (seatLiveness === "unreadable") unknownLivenessSeats.push(session);
+      if (seatLiveness === "unreadable") {
+        unknownLivenessSeats.push(session);
+        if (node.sessionStatus !== "running" && this.adoptedLeftRunning(node)) unknownAdoptedSeats.push(session);
+      }
       const runningReady = seatRunningReady(node, input.liveness);
       if (runningReady) runningReadyNodes += 1;
       if (hasBlocking) blockedNodes += 1;
@@ -2154,6 +2176,7 @@ export class RestoreCheckService {
       liveRunningSeats,
       liveUnrecordedSeats,
       reattachSeats,
+      unknownAdoptedSeats,
       deadSeatIds,
       unknownLivenessSeats,
     };

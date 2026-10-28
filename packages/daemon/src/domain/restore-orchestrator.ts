@@ -993,11 +993,10 @@ export class RestoreOrchestrator {
     }
   }
 
-  /** OF-155: reattach the seat's adopted session that rig down left running (adopted-reattach.ts decides which): `reattached`
-   *  (row marked running again) when tmux has it live, `gone` when it ended, `unknown` when tmux cannot say, `none` when the
-   *  seat has no such session. */
-  private async reattachAdoptedSession(nodeId: string): Promise<
-    | { kind: "reattached" | "unknown"; sessionId: string; sessionName: string }
+  /** OF-155: the seat's adopted session that rig down left running (adopted-reattach.ts decides which), asked of tmux:
+   *  `live`, `gone` (it ended), `unknown` (tmux cannot say), or `none` (the seat has no such session). Read-only. */
+  private async probeAdoptedSession(nodeId: string): Promise<
+    | { kind: "live" | "unknown"; sessionId: string; sessionName: string }
     | { kind: "gone" | "none" }
   > {
     const adopted = reattachableAdoptedSession(this.db, nodeId);
@@ -1008,9 +1007,7 @@ export class RestoreOrchestrator {
     } catch {
       return { kind: "unknown", ...adopted };
     }
-    if (!alive) return { kind: "gone" };
-    this.sessionRegistry.updateStatus(adopted.sessionId, "running");
-    return { kind: "reattached", ...adopted };
+    return alive ? { kind: "live", ...adopted } : { kind: "gone" };
   }
 
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
@@ -1067,10 +1064,17 @@ export class RestoreOrchestrator {
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
     // OF-155 (Jim, 2026-10-28, option A): rig down leaves a seat's adopted session running (detached, binding kept). The
     // seat comes back by reattaching that session, before any gate: nothing is started, so a live conversation never gets
-    // a second process. A seat listed for a fresh start is not reattached.
-    if (liveNode && !(opts?.freshLogicalIds?.includes(node.logicalId) ?? false)) {
-      const adopted = await this.reattachAdoptedSession(liveNode.id);
-      if (adopted.kind === "reattached") {
+    // a second process. Review F4: a seat listed --fresh whose adopted session is still live is refused with advice, since
+    // starting it fresh would silently leave the person's session running untracked; once it has ended, --fresh proceeds.
+    if (liveNode) {
+      const freshListed = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
+      const adopted = await this.probeAdoptedSession(liveNode.id);
+      if (adopted.kind === "live" && freshListed) {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_live",
+          error: `${node.logicalId} was not started fresh: its adopted session '${adopted.sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${adopted.sessionId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.` };
+      }
+      if (adopted.kind === "live") {
+        this.sessionRegistry.updateStatus(adopted.sessionId, "running");
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "resumed", reattached: { sessionId: adopted.sessionId, sessionName: adopted.sessionName } };
       }
       if (adopted.kind === "unknown") {

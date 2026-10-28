@@ -114,12 +114,29 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
     expect(row(rowId), "the ordinary restore path superseded the old row").toMatchObject({ status: "superseded" });
   });
 
-  it("control: a seat listed to start fresh is not reattached", async () => {
-    const { seat, rowId } = await adoptedSeat("person-shell");
+  // Review F4: --fresh would start a new conversation and leave the person's live session running untracked. Refused with
+  // advice instead; once the adopted session has ended, --fresh goes ahead.
+  it("a seat listed --fresh whose adopted session is still live is refused with advice: nothing started, nothing changed", async () => {
+    const { seat, rowId, sessionName } = await adoptedSeat("person-shell");
     const { snapshotId } = await down(seat.rigId);
 
     const node = await upExisting(seat.rigId, snapshotId!, ["dev.impl"]);
 
+    expect(node).toMatchObject({ status: "failed", errorCode: "adopted_session_live" });
+    expect(node?.error).toBe(`dev.impl was not started fresh: its adopted session '${sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${rowId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.`);
+    expect(vi.mocked(h.tmux.createSession)).not.toHaveBeenCalled();
+    expect(row(rowId)).toEqual({ status: "detached", stopped: 0 });
+    expect(await h.tmux.hasSession(sessionName)).toBe(true);
+  });
+
+  it("control: a seat listed --fresh whose adopted session has ended is started fresh", async () => {
+    const { seat, rowId, sessionName } = await adoptedSeat("person-shell");
+    const { snapshotId } = await down(seat.rigId);
+    await h.tmux.killSession(sessionName);
+
+    const node = await upExisting(seat.rigId, snapshotId!, ["dev.impl"]);
+
+    expect(node?.errorCode).toBeUndefined();
     expect(node?.reattached).toBeUndefined();
     expect(row(rowId), "the ordinary restore path superseded the old row").toMatchObject({ status: "superseded" });
   });
@@ -180,8 +197,55 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
     expect(all).not.toContain("would be refused");
   });
 
-  it("rig remove leaves a live latest adopted session running and says so", async () => {
+  const check = () => createRestoreCheckService(h.rigRepo, h.snapshotRepo, h.tmux, { runtimeAdapters: { "claude-code": h.adapter }, specReader: h.inst })
+    .checkWithLiveness({ rig: "team", noQueue: true, noHooks: true });
+
+  // Review F1: restore fails such a seat (adopted_liveness_unknown) and starts nothing; the check says the same.
+  it("restore-check, tmux cannot answer for the adopted session: says restore would neither reattach nor start it", async () => {
     const { seat, sessionName } = await adoptedSeat("person-shell");
+    await down(seat.rigId);
+    const realHas = vi.mocked(h.tmux.hasSession).getMockImplementation()!;
+    vi.mocked(h.tmux.hasSession).mockImplementation(async (name: string) => {
+      if (name === sessionName) throw new Error("tmux probe failed (injected)");
+      return realHas(name);
+    });
+    const realProbe = vi.mocked(h.tmux.probeSession!).getMockImplementation()!;
+    vi.mocked(h.tmux.probeSession!).mockImplementation(async (name: string) => {
+      if (name === sessionName) throw new Error("tmux probe failed (injected)");
+      return realProbe(name);
+    });
+
+    const result = await check();
+
+    expect(result.checks.find((c) => c.check === `seat.${sessionName}.readiness`)).toMatchObject({
+      status: "red",
+      evidence: `Adopted session ${sessionName}, which rig down left running, could not be checked in tmux`,
+      remediation: "rig up --existing would neither reattach it nor start this seat (adopted_liveness_unknown). Check that tmux is reachable, then rerun rig restore-check",
+    });
+    expect(result.recovery.status).toBe("unknown");
+    const reasons = JSON.stringify(result.recovery.unknown.map((r) => r.reason));
+    expect(reasons).toContain(`It also probes an adopted session rig down left running (${sessionName}): one it cannot check fails that seat (adopted_liveness_unknown), neither reattached nor started.`);
+    expect(reasons).not.toContain("only probes seats the DB shows running");
+    expect(JSON.stringify(result)).not.toContain("resumes its conversation");
+  });
+
+  // Review F2: a session that ended after rig down is not predicted as a reattach (restore does not reattach it either).
+  it("restore-check, the adopted session ended after rig down: no reattach is predicted", async () => {
+    const { seat, sessionName } = await adoptedSeat("person-shell");
+    await down(seat.rigId);
+    await h.tmux.killSession(sessionName);
+
+    const result = await check();
+
+    const readiness = result.checks.find((c) => c.check === `seat.${sessionName}.readiness`);
+    expect(readiness, "the population: the seat is checked").toBeDefined();
+    expect(JSON.stringify(readiness)).not.toContain("reattach");
+    expect(JSON.stringify(result.recovery)).not.toContain("reattached");
+  });
+
+  it.each(["running", "idle", "unknown"] as const)("rig remove leaves a live latest adopted session (%s) running and says so", async (status) => {
+    const { seat, rowId, sessionName } = await adoptedSeat("person-shell");
+    h.db.prepare("UPDATE sessions SET status = ? WHERE id = ?").run(status, rowId);
     const eventBus = new EventBus(h.db);
     const lifecycle = new RigLifecycleService({ db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, discoveryRepo: new DiscoveryRepository(h.db), eventBus, queueRepo: new QueueRepository(h.db, eventBus), tmuxAdapter: h.tmux });
 
