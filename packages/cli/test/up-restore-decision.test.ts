@@ -494,8 +494,8 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
       status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig",
       snapshot: { id: "snap-9", kind: "auto-pre-down", createdAt: "2026-06-11T00:00:00Z" }, wouldCaptureCurrentState: false,
       nodes: [
-        { logicalId: "dev.impl", intendedAction: "resume-original", reattach: { sessionId: "s-1", sessionName: "person-shell" }, reason: "reattaches its adopted session person-shell" },
-        { logicalId: "dev.qa", intendedAction: "resume-original" },
+        { logicalId: "dev.impl", intendedAction: "resume-original", reattach: { sessionId: "s-1", sessionName: "person-shell" }, reason: "reattaches its adopted session person-shell", tokenState: "missing" },
+        { logicalId: "dev.qa", intendedAction: "resume-original", tokenState: "present" },
       ],
       mutated: false,
     });
@@ -505,6 +505,9 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     const output = logs.join("\n");
     expect(output).toContain("dev.impl: reattach — reattaches its adopted session person-shell");
     expect(output).toContain("dev.qa: resume-original");
+    // Review F2: a reattach starts nothing, so no token line is printed under it; a resumed seat keeps its line (control).
+    expect(output).not.toContain("token: missing");
+    expect(output).toContain("token: present");
   });
 
   // OPR.0.3.4.4 — plan-restore preview render + honest-async timeout.

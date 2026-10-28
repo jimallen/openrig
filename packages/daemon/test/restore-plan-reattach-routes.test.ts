@@ -3,15 +3,18 @@
 // Deployed entrypoint: server.ts mounts routes/rigs.ts at /api/rigs and routes/startup.ts at /api/startup.
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
-import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
+import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
 describe("plan routes forecast the reattach of an adopted session rig down left running (OF-163)", () => {
   let db: Database.Database;
   afterEach(() => db?.close());
 
-  function adoptedSeatAfterDown() {
+  function adoptedSeatAfterDown(tmux?: "absent" | "present") {
     db = createFullTestDb();
-    const setup = createTestApp(db);
+    // observeSeat asks tmux's probeSession; the default double has none (it reads "unverified").
+    const probing = (state: "absent" | "present"): TmuxAdapter => Object.assign(mockTmuxAdapter(), { probeSession: async () => ({ state }) });
+    const setup = createTestApp(db, tmux ? { tmux: probing(tmux) } : undefined);
     const rig = setup.rigRepo.createRig("plan-adopted-rig");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "claude-code" });
     const session = setup.sessionRegistry.registerSession(node.id, "dev-impl@plan-adopted-rig");
@@ -45,5 +48,38 @@ describe("plan routes forecast the reattach of an adopted session rig down left 
 
     expect(res.status).toBe(200);
     expect((await res.json()).perSeat[0]).toMatchObject({ intendedAction: "resume-original", reason: REASON, freshRequired: false });
+  });
+
+  // Review F1: a damaged saved row makes restore refuse the whole rig before any seat (OF-62), so the plan forecasts that
+  // refusal for the seat, not a reattach (nor the --fresh refusal over an adopted session).
+  it.each([[undefined], [["dev.impl"]]] as const)("a damaged saved row wins over the adopted session's forecast (fresh %s)", async (fresh) => {
+    const { setup, rigId } = adoptedSeatAfterDown();
+    db.prepare("UPDATE nodes SET package_refs = '{not json' WHERE logical_id = 'dev.impl'").run();
+
+    // POST /api/up (the rig up --plan route) passes the --fresh list to the plan; the rig id names this rig (OF-135).
+    const res = await setup.app.request("/api/up", post({ sourceRef: rigId, plan: true, ...(fresh ? { freshLogicalIds: fresh } : {}) }));
+
+    expect(res.status).toBe(200);
+    const seat = (await res.json()).nodes[0];
+    expect(seat).toMatchObject({ intendedAction: "awaiting-decision", restoreStatus: "failed", savedRowDamage: ["package_refs is not JSON"] });
+    expect(seat.reattach).toBeUndefined();
+    expect(String(seat.wouldRefuse ?? "")).not.toContain("adopted session");
+  });
+
+  // Review F3: GET /api/startup observes each seat; restore reattaches only a live adopted session, so a seat observed stopped
+  // gets the ordinary forecast.
+  it.each([["absent", false], ["present", true]] as const)("GET /api/startup/:rigId with tmux %s: reattach forecast %s", async (tmux, reattach) => {
+    const { setup, rigId } = adoptedSeatAfterDown(tmux);
+
+    const res = await setup.app.request(`/api/startup/${rigId}`);
+
+    expect(res.status).toBe(200);
+    const seat = (await res.json()).seats[0];
+    expect(seat.observed.state === "stopped").toBe(!reattach);
+    if (reattach) expect(seat).toMatchObject({ reattach: { sessionName: "dev-impl@plan-adopted-rig" }, reason: REASON });
+    else {
+      expect(seat.reattach).toBeUndefined();
+      expect(seat.reason).not.toBe(REASON);
+    }
   });
 });

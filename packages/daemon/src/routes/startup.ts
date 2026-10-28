@@ -131,7 +131,12 @@ startupRoutes.get("/:rigId", async (c) => {
   const rig = repo(c).getRig(c.req.param("rigId"));
   if (!rig) return c.json({ ok: false, message: "Rig is no longer available." }, 404);
   const snapshot = currentSnapshot(c, rig);
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name), readPreviewReattach(repo(c).db, rig));
+  const observedByNode = new Map<string, Awaited<ReturnType<typeof observeSeat>>>();
+  for (const node of rig.nodes) observedByNode.set(node.id, await observeSeat(c, rig, node));
+  // OF-163 review F3: restore reattaches only a live adopted session, so a seat observed stopped gets no reattach forecast.
+  const reattach = readPreviewReattach(repo(c).db, rig);
+  for (const node of rig.nodes) if (observedByNode.get(node.id)?.state === "stopped") reattach.delete(node.logicalId);
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name), reattach);
   const auth = await defaultProbeRuntimes();
   const history = sessions(c).getSessionsForRig(rig.rig.id);
   const seats = [];
@@ -139,7 +144,7 @@ startupRoutes.get("/:rigId", async (c) => {
     const forecast = plan.nodes.find((entry) => entry.logicalId === node.logicalId)!;
     const hasHistory = history.some((session) => session.nodeId === node.id);
     const available = node.runtime === "codex" ? auth.codex === "ok" : node.runtime === "claude-code" ? auth.claudeCode === "ok" : true;
-    const observed = await observeSeat(c, rig, node);
+    const observed = observedByNode.get(node.id)!;
     seats.push({ ...forecast, hasHistory, nodeId: node.id, runtime: node.runtime, model: node.model,
       revision: startupRevision(repo(c).db, node), observed,
       contextPending: history.some((session) => session.nodeId === node.id && dep<import("../domain/startup-orchestrator.js").StartupOrchestrator>(c, "startupOrchestrator")?.canContinueFresh(node.id, session.id)),

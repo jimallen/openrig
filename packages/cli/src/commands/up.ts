@@ -653,7 +653,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
           console.log(`  ${n.logicalId}: ${n.reattach ? "reattach" : n.intendedAction}${n.reason ? ` — ${n.reason}` : ""}`);
           // OPR.0.4.3.20 FR-6 — per-seat token truth: present/missing/stale/unverified
           // + provenance + freshness + expected runtime prompt + explicit --fresh.
-          if (n.tokenState) {
+          if (n.tokenState && !n.reattach) { // OF-163 review F2: a reattach starts nothing, so no token state applies
             const reverify = (n.tokenState === "stale" || n.tokenState === "unverified") ? " — re-verify" : "";
             const prov = n.provenance ? ` (${n.provenance})` : "";
             const verified = n.lastVerified ? `, verified ${n.lastVerified}` : "";
