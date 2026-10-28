@@ -1651,6 +1651,32 @@ describe("StartupOrchestrator", () => {
       expect(t.sendText).not.toHaveBeenCalled();
     });
 
+    // The live shape (measured 2026-10-28): the pane's foreground is `zsh`, with `claude` (ucomm claude, argv0 claude)
+    // beneath it and its MCP / caffeinate / pyright children.
+    const LIVE_CLAUDE: NativeProcessRow = { pid: 102, ppid: 100, pgid: 100, tpgid: 100, executableName: "claude", command: "claude --permission-mode auto --resume tok-1", startedAt: T0 };
+    const LIVE_CHILDREN: NativeProcessRow[] = [
+      { pid: 103, ppid: 102, pgid: 100, tpgid: 100, executableName: "codebase-memory-m", command: "/u/.local/bin/codebase-memory-mcp", startedAt: T0 },
+      { pid: 104, ppid: 102, pgid: 100, tpgid: 100, executableName: "caffeinate", command: "caffeinate -i -t 3600", startedAt: T0 },
+      { pid: 105, ppid: 102, pgid: 100, tpgid: 100, executableName: "node", command: "node /u/.npm/_npx/x/node_modules/.bin/pyright-langserver --stdio", startedAt: T0 },
+    ];
+    it("live tree under a zsh foreground: both sends are typed and nothing says the foreground could not be read", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => [PANE_SHELL, LIVE_CLAUDE, ...LIVE_CHILDREN] })
+        .startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/second" })] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(2);
+      expect((result.warnings ?? []).filter((w) => w.includes("could not be read"))).toEqual([]);
+    });
+
+    it("the same live tree without the claude row: nothing is typed", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => [PANE_SHELL, ...LIVE_CHILDREN] }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: false });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
     it("a Claude running elsewhere on the machine is not this pane's Claude: nothing is typed", async () => {
       const seed = seedSession();
       const elsewhere: NativeProcessRow = { ...CLAUDE_PROC, pid: 900, ppid: 1, pgid: 900, tpgid: 900 };

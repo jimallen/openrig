@@ -747,9 +747,15 @@ export async function claudePaneOccupancy(input: {
       }
       return false;
     };
-    const claudeLike = (row: NativeProcessRow): boolean =>
-      /claude/i.test(row.executableName ?? "") || /claude/i.test(tokens(row.command)[0] ?? "")
-      || /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(row.executableName ?? "");
+    // Live shapes: ucomm `claude` (Linux) or `claude.exe` (macOS) with argv0 `claude`; a versioned native binary
+    // (ucomm is only the version); an npm install is `node .../claude-code/cli.js`, so a path naming claude in argv
+    // tokens 1-2 counts too.
+    const claudeLike = (row: NativeProcessRow): boolean => {
+      const argv = tokens(row.command);
+      return /claude/i.test(row.executableName ?? "") || /claude/i.test(argv[0] ?? "")
+        || /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(row.executableName ?? "")
+        || argv.slice(1, 3).some((token) => /claude/i.test(token));
+    };
     return rows.some((row) => row.pid !== panePid && descends(row) && claudeLike(row)) ? "present" : "absent";
   } catch { return "unobservable"; }
 }
