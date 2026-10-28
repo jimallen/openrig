@@ -189,12 +189,16 @@ export class SessionRegistry {
     );
   }
 
-  /** Register a claimed session — skips naming validation, sets origin='claimed', startup_status='ready'. */
+  /** Register a claimed session — skips naming validation, sets origin='claimed', startup_status='ready'.
+   *  `origin` says who started the process: 'claimed' (the default) for a session the person started and OpenRig adopted;
+   *  'launched' for a handover successor OpenRig itself launched (OF-155 review: every origin='claimed' reader, such as
+   *  rig seat stop refusing and rig down leaving the session running, means "a session the person started"). */
   registerClaimedSession(
     nodeId: string,
     sessionName: string,
     kind: OccupantKind = "adopt",
     reservedGeneration?: string | null,
+    origin: "claimed" | "launched" = "claimed",
   ): Session {
     if (!validateClaimedSessionName(sessionName)) {
       throw new Error(
@@ -207,15 +211,15 @@ export class SessionRegistry {
     if (this.restorePolicyIsInheritable()) {
       this.db
         .prepare(
-          "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status, restore_policy) VALUES (?, ?, ?, 'running', 'claimed', 'ready', COALESCE((SELECT restore_policy FROM nodes WHERE id = ?), 'resume_if_possible'))"
+          "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status, restore_policy) VALUES (?, ?, ?, 'running', ?, 'ready', COALESCE((SELECT restore_policy FROM nodes WHERE id = ?), 'resume_if_possible'))"
         )
-        .run(id, nodeId, sessionName, nodeId);
+        .run(id, nodeId, sessionName, origin, nodeId);
     } else {
       this.db
         .prepare(
-          "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status) VALUES (?, ?, ?, 'running', 'claimed', 'ready')"
+          "INSERT INTO sessions (id, node_id, session_name, status, origin, startup_status) VALUES (?, ?, ?, 'running', ?, 'ready')"
         )
-        .run(id, nodeId, sessionName);
+        .run(id, nodeId, sessionName, origin);
     }
     this.mintOccupantTenureBestEffort(nodeId, kind, reservedGeneration); // atom-B: mint this occupant generation
     this.observeWatchdogRegistration(nodeId, sessionName, kind);
