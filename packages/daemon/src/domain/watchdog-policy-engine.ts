@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { inertStartupText } from "./packet-text.js";
 import { parse as parseYaml } from "yaml";
 import type { EventBus } from "./event-bus.js";
 import type { AfterHistoryRecorded, Policy, PolicyEvaluation, PolicyJob } from "./policies/types.js";
@@ -74,7 +75,10 @@ export function formatWatchdogDeliveryMessage(
   source: WatchdogDeliverySource,
   message: string,
 ): string {
-  return `[OpenRig watchdog scheduler · policy: ${source.policy} · job: ${source.jobId}]\n${message}`;
+  // OF-169: the watchdog is a system sender, so the whole payload (wrapper and the job's operator-set message) loses
+  // C0/C1 controls except TAB/LF/CR before SessionTransport.send, which is unchanged. Idempotent: a retained body
+  // replayed by startup.ts is already stripped.
+  return inertStartupText(`[OpenRig watchdog scheduler · policy: ${source.policy} · job: ${source.jobId}]\n${message}`);
 }
 
 export interface PolicyContextParser {
