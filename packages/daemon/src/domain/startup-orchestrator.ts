@@ -13,7 +13,6 @@ import type {
   ProjectionResult, StartupDeliveryResult, ForkSource,
 } from "./runtime-adapter.js";
 import { isShellForeground } from "./shell-classifier.js";
-import { looksLikeClaudeTui } from "./native-resume-probe.js";
 import { adapterStartupContent, isAttentionRequiredReadinessCode, resolveConcreteHint } from "./runtime-adapter.js";
 import type { ProjectionPlan } from "./projection-planner.js";
 import { issueStartupChallenge, STARTUP_PROOF_INSTRUCTION_LINE } from "./startup-proof.js";
@@ -28,7 +27,7 @@ import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
-import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister } from "./native-process-lineage.js";
+import { claudePaneOccupancy, observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister } from "./native-process-lineage.js";
 import { readStoredJsonObject } from "./stored-json.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
@@ -522,7 +521,7 @@ export class StartupOrchestrator {
           if (held.code === "no_conversation_found" || held.code === "returned_to_shell") {
             // The phrase also appears in a healthy resumed pane whose repainted history mentions it, so it counts only
             // when the foreground is a shell with no Claude UI on screen. An unreadable pane proves nothing: say so.
-            const state = await this.foregroundState(input.binding.tmuxSession);
+            const state = await this.foregroundState(input.binding);
             if (state === "unreadable") {
               warnings.push(`${input.sessionName ?? input.nodeId}: the resumed Claude's pane foreground could not be read at the settle check (${held.code}); the resume was not failed`);
             } else if (state === "gone") {
@@ -750,16 +749,19 @@ export class StartupOrchestrator {
     try { return this.readStartupFile(file); } catch { return ""; }
   }
 
-  /** `gone`: the foreground is a shell and no Claude UI is on screen. `runtime`: anything else readable (a wrapper
-   *  script that does not exec shows a shell while Claude's UI is visible). `unreadable`: it could not be read. */
-  private async foregroundState(session: string | null | undefined): Promise<"runtime" | "gone" | "unreadable"> {
+  /** Is the resumed Claude still in this pane? A non-shell foreground command is taken as running. A shell-named
+   *  foreground is not evidence either way (Claude under a launcher shell shows `zsh`/`bash`/`sh`), so the process
+   *  tree decides: `gone` only when the pane's own pid is listed and no Claude descends from it. Anything unreadable is
+   *  `unreadable`, which warns but never fails the node. */
+  private async foregroundState(binding: NodeBinding): Promise<"runtime" | "gone" | "unreadable"> {
+    const session = binding.tmuxSession;
     if (!session) return "unreadable";
     try {
       const command = await this.tmuxAdapter.getPaneCommand(session);
       if (!command) return "unreadable";
       if (!isShellForeground(command.trim().toLowerCase())) return "runtime";
-      const content = (await this.tmuxAdapter.capturePaneContent(session, 40)) ?? "";
-      return looksLikeClaudeTui(content) ? "runtime" : "gone";
+      const occupancy = await claudePaneOccupancy({ target: binding.tmuxPane ?? session, tmux: this.tmuxAdapter, listProcesses: this.listProcesses });
+      return occupancy === "present" ? "runtime" : occupancy === "absent" ? "gone" : "unreadable";
     } catch { return "unreadable"; }
   }
 
@@ -976,7 +978,7 @@ export class StartupOrchestrator {
     const tmuxSession = input.binding.tmuxSession!;
     // OF-161: a resumed Claude that exited after the settle read must not have startup text typed into its shell.
     if (input.guardShellForeground) {
-      const state = await this.foregroundState(tmuxSession);
+      const state = await this.foregroundState(input.binding);
       if (state === "gone") {
         return { error: `Claude is no longer in the foreground of ${tmuxSession} (its pane is back at a shell); nothing was typed` };
       }
