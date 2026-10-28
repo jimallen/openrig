@@ -102,6 +102,9 @@ describe("OF-159: workflow runtime exception items", () => {
       await item("ex-b", exceptionTags("i1", "p2"));
       await item("ex-a", exceptionTags("i1", "p1"));
       await item("ex-other", exceptionTags("i2", "p1"));
+      // Creation order is the ordering key; two creates can share a millisecond, so pin it by hand (ex-b first, ex-a later).
+      db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?").run("2026-01-01T00:00:01.000Z", "ex-b");
+      db.prepare("UPDATE queue_items SET ts_created = ? WHERE qitem_id = ?").run("2026-01-01T00:00:02.000Z", "ex-a");
       const listed = runtime.exceptionObligations("i1");
       expect(listed.map((o) => o.qitemId)).toEqual(["ex-b", "ex-a"]);
       expect(listed[0]).toMatchObject({ ownerSession: "owner@r", state: "pending", inspectCommand: "rig queue show ex-b --full --json" });
@@ -315,6 +318,30 @@ describe("OF-159: the stuck-exception ensurer does not open a second item beside
     expect(second.exceptionItemsCreated, "the other run's packet is not covered by the first run's damaged item").toBe(1);
     expect(exceptionRows()).toHaveLength(2);
     expect(ensureLines.filter((line) => line.includes(first!.qitem_id) && line.includes("not readable JSON"))).toHaveLength(1);
+  });
+
+  // The damaged lookup must name the same class and workflow as the readable one: a damaged item of ANOTHER exception class or
+  // workflow that shares this occurrence and instance is not this item, so it must not suppress the needed stuck_overdue item.
+  it.each([
+    ["exception class", "exception:stuck_overdue", "exception:workflow_failed"],
+    ["workflow", "workflow:z4-stuck-pipeline", "workflow:another-pipeline"],
+  ])("a damaged historical item of another %s with the same instance and occurrence does not suppress the needed item", async (_what, from, to) => {
+    const { sweep, ensureLines, exceptionRows, queueRepo, packetId } = await setup();
+    expect((await sweep()).exceptionItemsCreated).toBe(1);
+    const [first] = exceptionRows();
+    makeHistorical(first!);
+    // The new item's id is derived from the packet's last meaningful transition; move it so the new item cannot collide with the old row.
+    queueRepo.transitionLog.append({ qitemId: packetId, state: "pending", actorSession: "agent@rig", transitionNote: "the packet moved" });
+    const tags = (JSON.parse(rawTags(db, first!.qitem_id)) as string[]).map((tag) => (tag === from ? to : tag));
+    expect(tags, "the fixture really carries the tag it swaps").toContain(to);
+    db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(JSON.stringify(tags), first!.qitem_id);
+    truncate(db, first!.qitem_id);
+
+    const second = await sweep();
+
+    expect(second.exceptionItemsCreated, "the other item is not this occurrence's stuck_overdue item").toBe(1);
+    expect(ensureLines.filter((line) => line.includes(first!.qitem_id) && line.includes("not readable JSON")), "the other item is not named as this occurrence's").toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM queue_items WHERE tags LIKE '%exception:stuck_overdue%' AND qitem_id != ?").get(first!.qitem_id), "a new stuck_overdue item was opened").toEqual({ n: 1 });
   });
 
   it("a historical item whose tags are damaged is not 'no item': a second sweep creates nothing and names it", async () => {
