@@ -60,7 +60,8 @@ async function finalObservation(output: string) {
       sleep: async () => {},
     });
     const result = await resume.resume("fixture", "codex_id", "fixture-id", home);
-    expect(capture).toHaveBeenCalledTimes(27);
+    // A resume the poll accepts takes one more read after the settle window (OF-167); a refused one does not.
+    expect(capture).toHaveBeenCalledTimes(result.ok ? 28 : 27);
     return result;
   } finally {
     await tmux(["kill-server"]).catch(() => {});

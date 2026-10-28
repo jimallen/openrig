@@ -232,6 +232,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       } catch (err) {
         if (file.required) {
           failed.push({ path: file.path, error: (err as Error).message });
+        } else {
+          // An optional file that could not be delivered is not a startup failure, but it is not silence either.
+          warnings.push(`Optional startup file ${file.path} was not delivered: ${(err as Error).message}`);
         }
       }
     }

@@ -610,6 +610,19 @@ describe("RestoreOrchestrator", () => {
     }
   });
 
+  // OF-167: an unreadable settle read does not fail a legacy resume, but its warning must reach the restore result.
+  it.each(["claude", "codex"] as const)("attemptResume hands the %s resume adapter's warnings to the caller's warning list", async (which) => {
+    const result: ResumeResult = { ok: true, warnings: [`${which}-seat: settle read could not be read`] };
+    const orch = createOrchestrator(which === "claude" ? { claude: mockClaudeResume(result) } : { codex: mockCodexResume(result) });
+    const rig = rigRepo.createRig(`legacy-warnings-${which}`);
+    const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: which === "claude" ? "claude-code" : "codex", cwd: WORK_DIR });
+    const warnings: string[] = [];
+    const attemptResume: (...args: unknown[]) => Promise<unknown> = Reflect.get(orch, "attemptResume").bind(orch);
+    const outcome = await attemptResume(node.id, `${which}-seat`, which === "claude" ? "claude_id" : "codex_id", "tok", "/work", null, null, "floor", undefined, warnings);
+    expect(outcome).toMatchObject({ kind: "resumed" });
+    expect(warnings).toContain(`${which}-seat: settle read could not be read`);
+  });
+
   it("attemptResume forwards effort to claude and codex resume adapters", async () => {
     const claudeResume = vi.fn(async () => ({ ok: true as const }));
     const codexResume = vi.fn(async () => ({ ok: true as const }));

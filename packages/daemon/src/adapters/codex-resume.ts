@@ -5,6 +5,8 @@ import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import type { ResumeResult } from "./claude-resume.js";
 import { assessNativeResumeProbe, buildCodexResumeCore } from "../domain/native-resume-probe.js";
+import { holdResumedPoll } from "../domain/resume-settle.js";
+import type { NativeProcessLister } from "../domain/native-process-lineage.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { shellQuote } from "./shell-quote.js";
 import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
@@ -26,6 +28,10 @@ interface CodexResumeOptions {
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** OF-167: how long a resume the poll called resumed is given to exit before it is believed. */
+  settleMs?: number;
+  /** OF-167: the process lister behind the settle read's occupancy check; absent reads the host's `ps`. */
+  listProcesses?: NativeProcessLister;
   exec?: (cmd: string) => Promise<string>;
   /** #69: whether the installed Codex supports --no-daemon; absent keeps the existing invocation. */
   detectDaemonSupport?: CodexDaemonSupportDetector;
@@ -138,7 +144,12 @@ export class CodexResumeAdapter {
     }
 
     const result = await this.verifyResume(tmuxSessionName);
-    return result.ok ? { ...result, appliedLaunch } : result;
+    if (!result.ok) return result;
+    // OF-167: the poll's first "resumed" read can be taken while `codex resume` is still starting, before it prints
+    // "No saved session found" and exits. Believe it only if Codex is still under the pane after the settle window.
+    const held = await holdResumedPoll("codex", result, { session: tmuxSessionName, tmux: this.tmux,
+      listProcesses: this.options.listProcesses, sleep: this.options.sleep ?? sleep, settleMs: this.options.settleMs });
+    return held.ok ? { ...held, appliedLaunch } : held;
   }
 
   // Mirrors ClaudeResumeAdapter.verifyResume: poll the pane, run the native

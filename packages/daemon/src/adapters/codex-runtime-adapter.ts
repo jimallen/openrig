@@ -332,7 +332,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
-  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding): Promise<StartupDeliveryResult> {
+  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
     try { this.ensureManagedBootstrap(binding); } catch (err) {
       console.error(`[openrig] codex bootstrap warning: ${(err as Error).message}`);
     }
@@ -361,6 +361,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           }
           case "send_text": {
             if (binding.tmuxSession) {
+              // The orchestrator's guarded send re-checks the pane before typing (OF-167); it strips the marker itself.
+              if (sendInteractiveText) {
+                await sendInteractiveText(content);
+                break;
+              }
               // OF-160 (z5): startup-file content is operator-authored prose pasted bracketed;
               // strip the paste-end marker so it can never close the paste early here.
               const textResult = await this.tmux.sendText(binding.tmuxSession, stripPasteTerminators(content));
@@ -376,6 +381,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       } catch (err) {
         if (file.required) {
           failed.push({ path: file.path, error: (err as Error).message });
+        } else {
+          // An optional file that could not be delivered is not a startup failure, but it is not silence either.
+          warnings.push(`Optional startup file ${file.path} was not delivered: ${(err as Error).message}`);
         }
       }
     }

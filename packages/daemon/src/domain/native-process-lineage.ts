@@ -731,6 +731,17 @@ export async function claudePaneOccupancy(input: {
   tmux: { getPanePid(target: string): Promise<number | null> };
   listProcesses?: NativeProcessLister;
 }): Promise<"present" | "absent" | "unobservable"> {
+  return nativePaneOccupancy("claude-code", input);
+}
+
+/** OF-167: the same occupancy truth for any native runtime. Codex shape measured on Sparky: pane `bash`/`sh` ->
+ *  `sh /tmp/openrig-tmux-send-<id>.txt` -> `node .../codex` -> `codex`, so the foreground name (`sh`/`bash`) proves
+ *  nothing and a descendant naming codex (ucomm, argv0, or an argv path in tokens 1-2) is what counts. */
+export async function nativePaneOccupancy(runtime: NativeRuntime, input: {
+  target: string;
+  tmux: { getPanePid(target: string): Promise<number | null> };
+  listProcesses?: NativeProcessLister;
+}): Promise<"present" | "absent" | "unobservable"> {
   try {
     const panePid = await input.tmux.getPanePid(input.target);
     if (!panePid) return "unobservable";
@@ -756,6 +767,12 @@ export async function claudePaneOccupancy(input: {
         || /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(row.executableName ?? "")
         || argv.slice(1, 3).some((token) => /claude/i.test(token));
     };
-    return rows.some((row) => row.pid !== panePid && descends(row) && claudeLike(row)) ? "present" : "absent";
+    const codexLike = (row: NativeProcessRow): boolean => {
+      const argv = tokens(row.command);
+      return /codex/i.test(row.executableName ?? "") || /codex/i.test(argv[0] ?? "")
+        || argv.slice(1, 3).some((token) => /codex/i.test(token));
+    };
+    const runtimeLike = runtime === "codex" ? codexLike : claudeLike;
+    return rows.some((row) => row.pid !== panePid && descends(row) && runtimeLike(row)) ? "present" : "absent";
   } catch { return "unobservable"; }
 }

@@ -894,3 +894,36 @@ describe("Claude Code runtime adapter", () => {
   // grep confirms provisionActivityHooks/upsertCommandHook/etc. removed
   // from adapter source.
 });
+
+// R4 follow-up: an optional startup file that could not be delivered is a warning, never silence; a required one fails.
+// ClaudeCodeAdapter also hands every send_text file to the orchestrator's guarded send when it is given one.
+describe("ClaudeCodeAdapter.deliverStartup: send failures", () => {
+  const file = (required: boolean): ResolvedStartupFile => ({
+    path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
+    deliveryHint: "send_text", required, appliesOn: ["fresh_start", "restore"],
+  });
+  const adapterWith = () => new ClaudeCodeAdapter({ tmux: mockTmux(), fsOps: mockFs({ "/rig/startup/pack.md": "body" }), sleep: async () => {} });
+
+  it("an optional file whose guarded send fails is reported as a warning naming the file and the reason", async () => {
+    const result = await adapterWith().deliverStartup([file(false)], makeBinding(), async () => { throw new Error("pane unreadable twice") });
+    expect(result.failed).toEqual([]);
+    expect(result.delivered).toBe(0);
+    expect(result.warnings).toEqual(["Optional startup file startup/pack.md was not delivered: pane unreadable twice"]);
+  });
+
+  it("a required file whose guarded send fails is a failure, not a warning", async () => {
+    const result = await adapterWith().deliverStartup([file(true)], makeBinding(), async () => { throw new Error("pane unreadable twice") });
+    expect(result.failed).toEqual([{ path: "startup/pack.md", error: "pane unreadable twice" }]);
+    expect(result.warnings).toBeUndefined();
+  });
+
+  it("a send_text file goes through the guarded send, whole, and never through the adapter's own paste", async () => {
+    const tmux = mockTmux();
+    const sent: string[] = [];
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs({ "/rig/startup/pack.md": "body" }), sleep: async () => {} });
+    const result = await adapter.deliverStartup([file(true)], makeBinding(), async (text) => { sent.push(text); });
+    expect(result).toMatchObject({ delivered: 1, failed: [] });
+    expect(sent).toEqual(["body"]);
+    expect(tmux.sendText).not.toHaveBeenCalled();
+  });
+});

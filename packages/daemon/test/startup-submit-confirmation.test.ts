@@ -204,7 +204,9 @@ describe("startup prompt submission", () => {
       f.tmux.sendText.mockImplementationOnce(send).mockRejectedValueOnce(new Error("paste unavailable"));
       const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("first.md"), file("bad.md", required)] });
       expect(result.ok).toBe(!required);
-      expect(result.warnings).toEqual([expect.stringContaining("unverified")]);
+      // An optional file that could not be sent is reported, not dropped; a required one is an error instead.
+      expect(result.warnings).toEqual(required ? [expect.stringContaining("unverified")]
+        : [expect.stringContaining("unverified"), expect.stringContaining("Optional startup file bad.md was not delivered: paste unavailable")]);
       if (!result.ok) expect(result.errors).toEqual(["Post-launch file delivery failed: bad.md: paste unavailable"]);
       expect(f.tmux.sendText).toHaveBeenCalledTimes(2);
       expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
