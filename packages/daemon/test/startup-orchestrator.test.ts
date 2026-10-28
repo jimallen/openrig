@@ -1923,7 +1923,7 @@ describe("StartupOrchestrator", () => {
       const seed = seedSession();
       const { orch, adapter, sleeps } = exitingCodex("never reached", 60_000);
       expect(await orch.startNode(resumeInput(seed, adapter))).toMatchObject({ ok: true, continuityOutcome: "resumed" });
-      expect(sleeps.length).toBeGreaterThan(0);
+      expect(sleeps).toContain(2500); // the settle wait itself, not the 200 ms pauses inside a send
     });
 
     it("control: a fresh Codex launch takes no resume wait and is not guarded", async () => {
