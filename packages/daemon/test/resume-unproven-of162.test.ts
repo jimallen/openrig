@@ -11,7 +11,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { StartupOrchestrator, type StartupInput } from "../src/domain/startup-orchestrator.js";
 import type { RuntimeAdapter, NodeBinding } from "../src/domain/runtime-adapter.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 
 const CLAUDE_ID = "fe08b428-e2c5-49da-ad48-ea8d604e99c3";
@@ -84,16 +84,18 @@ describe("OF-162: a fresh launch with an unverified first message", () => {
       if (opts.submissionUnverified && reads === lastRead) throw new Error("composer capture unavailable");
       return { ready: true };
     });
-    const adapter = {
+    const adapter: RuntimeAdapter = {
       runtime: opts.runtime ?? "claude-code",
       listInstalled: vi.fn(async () => []), project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
       deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })), checkReady,
       launchHarness: vi.fn(async () => ({ ok: true as const, resumeToken: CLAUDE_ID, resumeType: opts.type ?? "claude_id" })),
-    } as unknown as RuntimeAdapter;
-    const tmux = { sendText: vi.fn(async () => ({ ok: true as const })), hasSession: vi.fn(async () => true), sendKeys: vi.fn(async () => ({ ok: true as const })),
-      capturePaneContent: vi.fn(async () => "❯ \n") } as unknown as TmuxAdapter;
+    };
+    const tmux: TmuxAdapter = Object.assign(Object.create(TmuxAdapter.prototype), {
+      sendText: vi.fn(async () => ({ ok: true as const })), hasSession: vi.fn(async () => true), sendKeys: vi.fn(async () => ({ ok: true as const })),
+      capturePaneContent: vi.fn(async () => "❯ \n") });
+    const settings: Pick<SettingsStore, "resolveOne"> = { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) };
     const orch = new StartupOrchestrator({ db, sessionRegistry: reg, eventBus: bus, tmuxAdapter: tmux, readFile: () => "Read the project instructions.",
-      readinessSettings: { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) } as unknown as Pick<SettingsStore, "resolveOne">, sleep: async () => {} });
+      readinessSettings: settings, sleep: async () => {} });
     const binding: NodeBinding = { id: "b1", nodeId: seed.nodeId, tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." };
     const input: StartupInput = { ...seed, binding, adapter, isRestore: opts.resume === true,
       ...(opts.resume ? { resumeToken: CLAUDE_ID, resumeType: "claude_id", allowFreshFallback: false } : {}),

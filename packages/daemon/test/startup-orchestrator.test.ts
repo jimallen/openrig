@@ -98,7 +98,7 @@ describe("StartupOrchestrator", () => {
   afterEach(() => { db.close(); });
 
   function createOrchestrator(
-    opts?: TmuxAdapter | { tmux?: TmuxAdapter; readFile?: (path: string) => string; readinessSettings?: Pick<SettingsStore, "resolveOne"> },
+    opts?: TmuxAdapter | { tmux?: TmuxAdapter; readFile?: (path: string) => string; readinessSettings?: Pick<SettingsStore, "resolveOne">; sleep?: (ms: number) => Promise<void> },
   ): StartupOrchestrator {
     const normalized = opts && "sendText" in opts
       ? { tmux: opts as TmuxAdapter }
@@ -112,7 +112,7 @@ describe("StartupOrchestrator", () => {
       readinessSettings: normalized.readinessSettings ?? ({
         resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }),
       } as unknown as Pick<SettingsStore, "resolveOne">),
-      sleep: async () => {},
+      sleep: normalized.sleep ?? (async () => {}),
     });
   }
 
@@ -1563,11 +1563,7 @@ describe("StartupOrchestrator", () => {
           return { ready: probe.status === "resumed", code: probe.code, reason: probe.detail };
         }),
       });
-      const orch = new StartupOrchestrator({
-        db, sessionRegistry, eventBus, tmuxAdapter: t,
-        readinessSettings: { resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }) } as unknown as Pick<SettingsStore, "resolveOne">,
-        sleep: async (ms) => { sleeps.push(ms); elapsed += ms; },
-      });
+      const orch = createOrchestrator({ tmux: t, sleep: async (ms) => { sleeps.push(ms); elapsed += ms; } });
       return { t, adapter, orch, sleeps };
     }
     const readyEvents = (nodeId: string) => db.prepare("SELECT type FROM events WHERE node_id = ? AND type = 'node.startup_ready'").all(nodeId);
