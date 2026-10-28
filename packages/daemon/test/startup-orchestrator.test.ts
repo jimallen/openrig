@@ -1919,6 +1919,37 @@ describe("StartupOrchestrator", () => {
       expect(result.warnings?.join("\n")).toContain("Codex's pane foreground could not be read at the settle check");
     });
 
+    // Codex startup FILES used to be pasted by the adapter itself, past the guard above. The orchestrator now hands the
+    // adapter its guarded send, so a file gets the same pre-type check as a startup action.
+    const codexFile: ResolvedStartupFile = { path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture",
+      deliveryHint: "send_text", required: true, appliesOn: ["restore"] };
+    const sendingAdapter = (t: TmuxAdapter) => codexAdapter(t, { deliverStartup: vi.fn(async (files, _binding, send) => {
+      const failed: Array<{ path: string; error: string }> = [];
+      for (const file of files) { try { await send?.(`body of ${file.path}`); } catch (error) { failed.push({ path: file.path, error: (error as Error).message }); } }
+      return { delivered: files.length - failed.length, failed };
+    }) });
+    it("hands the Codex adapter the guarded send for its startup files", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "sh"), capturePaneContent: vi.fn(async () => CODEX_TUI) });
+      const adapter = sendingAdapter(t);
+      const result = await createOrchestrator({ tmux: t, readFile: () => "x", listProcesses: async () => CODEX_LIVE })
+        .startNode(resumeInput(seed, adapter, { resolvedStartupFiles: [codexFile], startupActions: [] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(adapter.deliverStartup).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Function));
+      expect(t.sendText).toHaveBeenCalledWith("r01-impl", "body of role.md");
+    });
+
+    it("types no Codex startup file into a pane whose Codex has exited", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "bash"), capturePaneContent: vi.fn(async () => CODEX_TUI) });
+      const result = await createOrchestrator({ tmux: t, readFile: () => "x", listProcesses: async () => CODEX_GONE })
+        .startNode(resumeInput(seed, sendingAdapter(t), { resolvedStartupFiles: [codexFile], startupActions: [] }));
+      expect(result).toMatchObject({ ok: false });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("Codex is no longer in the foreground");
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
     it("control: a Codex that is still under the pane after the wait is ready and resumed", async () => {
       const seed = seedSession();
       const { orch, adapter, sleeps } = exitingCodex("never reached", 60_000);

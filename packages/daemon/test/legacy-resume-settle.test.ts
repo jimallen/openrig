@@ -179,6 +179,22 @@ describe("OF-167: CodexResumeAdapter believes 'resumed' only if Codex is still t
     expect(result.ok && result.warnings?.join("\n")).toContain("could not be read at the settle check");
   });
 
+  // codex_last carries no token; the settle does not depend on one.
+  it("a `codex_last` resume (no token) that prints 'No saved session found' after the first read is retry_fresh too", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 1000, upCommand: "node", upPane: CODEX_TUI, afterCommand: "bash", afterPane: CODEX_MISSING });
+    const result = await new CodexResumeAdapter(tmux, { sleep: c.sleep, listProcesses: async () => [CODEX_PANE] }).resume("seat", "codex_last", null, "/repo");
+    expect(result).toEqual({ ok: false, code: "retry_fresh", message: "Codex resume failed: no saved session found for the requested token" });
+  });
+
+  it("control: a `codex_last` resume whose Codex stays up is resumed after the window", async () => {
+    const c = clock();
+    const tmux = tmuxFor(c, { exitsAtMs: 60_000, upCommand: "node", upPane: CODEX_TUI, afterCommand: "node", afterPane: CODEX_TUI });
+    const result = await new CodexResumeAdapter(tmux, { sleep: c.sleep, listProcesses: async () => CODEX_TREE }).resume("seat", "codex_last", null, "/repo");
+    expect(result).toMatchObject({ ok: true });
+    expect(c.sleeps).toContain(2500);
+  });
+
   it("a Codex auth refusal that appeared during the window is attention_required", async () => {
     const c = clock();
     const refusal = "Your access token could not be refreshed because your refresh token was already used.\nPlease log out and sign in again.";

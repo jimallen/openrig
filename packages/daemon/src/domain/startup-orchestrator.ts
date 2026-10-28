@@ -627,9 +627,9 @@ export class StartupOrchestrator {
     // 7. Deliver post-launch files (send_text → TUI, now that harness is ready)
     if (postLaunchFiles.length > 0) {
       try {
-        // Keep reads/provisioning and required/optional errors in the adapter. Only Claude's
+        // Keep reads/provisioning and required/optional errors in the adapter. Claude's and Codex's
         // already-partitioned interactive files use the same bounded check as startup actions.
-        const checkedSend = input.adapter.runtime === "claude-code" ? async (content: string) => {
+        const checkedSend = input.adapter.runtime === "claude-code" || input.adapter.runtime === "codex" ? async (content: string) => {
           const failure = await this.sendInteractiveText(deliveryInput, content, "post_launch_file");
           if (failure) throw new Error(failure.error);
         } : undefined;
