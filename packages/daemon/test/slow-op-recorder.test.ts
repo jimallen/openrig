@@ -87,7 +87,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
 
     const dir = tempDir();
     const logPath = path.join(dir, "slow-operations.jsonl");
-    const recorder = new mod.SlowOpRecorder({ logPath });
+    const recorder = new mod.SlowOpRecorder({ logPath, barrierTimeoutMs: COLD_START_BOUND_MS });
     const secret = "OPENRIG_TEST_SECRET_DO_NOT_RECORD";
     process.env.OPENRIG_TEST_SECRET = secret;
     try {
@@ -175,7 +175,9 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     expect(mod, "slow-op-recorder production module is missing").not.toBeNull();
     if (!mod) return;
 
-    const recorder = new mod.SlowOpRecorder({ logPath: tempDir() });
+    // The log path is a directory, so the worker acknowledges the begin as FAILED ("begin_barrier_failed"); with the
+    // default 250 ms bound a loaded machine timed the barrier out first ("begin_barrier_timeout") and the snapshot differed.
+    const recorder = new mod.SlowOpRecorder({ logPath: tempDir(), barrierTimeoutMs: COLD_START_BOUND_MS });
     recorder.setDegradedHandler(() => {
       throw new Error("stream sink failed");
     });
@@ -552,7 +554,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
 
     const dir = tempDir();
     const logPath = path.join(dir, "slow-operations.jsonl");
-    const recorder = new mod.SlowOpRecorder({ logPath });
+    const recorder = new mod.SlowOpRecorder({ logPath, barrierTimeoutMs: COLD_START_BOUND_MS });
     const oldNoKernel = process.env.OPENRIG_NO_KERNEL;
     process.env.OPENRIG_NO_KERNEL = "1";
     const daemon = await createTestDaemon({
