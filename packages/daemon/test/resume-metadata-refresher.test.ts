@@ -5,7 +5,8 @@ import Database from "better-sqlite3";
 import { describe, it, expect, vi } from "vitest";
 import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { seedCodexThreads } from "./helpers/codex-state.js";
-import type { SessionRegistry } from "../src/domain/session-registry.js";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
 function mockTmux(overrides?: Partial<TmuxAdapter>): TmuxAdapter {
@@ -54,6 +55,34 @@ function createCodexLogsDb(homeDir: string, pid: number, threadId: string, dbNam
 }
 
 describe("ResumeMetadataRefresher", () => {
+  // OF-160 (z5 review F1): pin the guard IN the refresher itself — the default probe (no injected
+  // probeClaudeResume) must refuse a token outside the typed-word set BEFORE any pane work, so a
+  // paste-end marker in a stored token can never reach a probe pane. Removing the isTypedResumeWord
+  // guard at resume-metadata-refresher.ts:304 fails this row (the earlier resume-token-validation
+  // row pins only the predicate).
+  it("OF-160 invariant: the default resume probe refuses a paste-marked token without touching tmux", async () => {
+    const db = createFullTestDb();
+    try {
+      const registry = new SessionRegistry(db);
+      const markSpy = vi.spyOn(registry, "markResumeProbeResult");
+      const tmux = mockTmux();
+      const refresher = new ResumeMetadataRefresher({ sessionRegistry: registry, tmuxAdapter: tmux, sleep: async () => {} });
+
+      await refresher.refresh([
+        { sessionId: "sess-1", sessionName: "dev-design@demo-rig", runtime: "claude-code",
+          resumeType: "claude_id", resumeToken: "abc\u001b[201~123", cwd: "/repo" },
+      ]);
+
+      expect(markSpy).toHaveBeenCalledWith("sess-1", "inconclusive");
+      expect(tmux.createSession).not.toHaveBeenCalled();
+      expect(tmux.sendText).not.toHaveBeenCalled();
+      expect(tmux.sendKeys).not.toHaveBeenCalled();
+      // The probe verdict is a stale-marker write, and with no session row it is a no-op UPDATE —
+      // nothing else was persisted.
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+    } finally { db.close(); }
+  });
+
   it("PERF FIX 2 — the periodic snapshot refresh is SINGLE-ATTEMPT per codex seat: no x8 retry burst under failing discovery", async () => {
     const sessionRegistry = {
       isForkClaimingHeldToken: vi.fn(() => false),

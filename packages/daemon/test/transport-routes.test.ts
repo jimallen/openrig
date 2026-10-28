@@ -641,6 +641,36 @@ describe("transport routes", () => {
     expect(sendText).not.toHaveBeenCalled();
   });
 
+  // OF-160-F2 (z5 review nit): target_runtime_conflict (binding change detected before/after the
+  // paste, session-transport.ts:1762) is a target-state refusal and belongs at 409 with its
+  // neighbours, never the 500 fallback.
+  it("OF-160-F2: POST /send refused when the recipient binding changes mid-wait returns 409 target_runtime_conflict, not 500", async () => {
+    const { node1 } = seedRig();
+    const IDLE_PANE = "› Use /skills to list available skills\n\n  gpt-5.5 high · Context [████ ] · ~/code/projects/openrig";
+    let captured = false;
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const tmux = mockTmux({
+      sendText,
+      capturePaneContent: async () => {
+        if (!captured) { captured = true; throw new Error("capture unavailable"); }
+        return IDLE_PANE;
+      },
+    });
+    // The binding flips during the first idle-wait poll: the pre-paste recipient check must refuse.
+    const transport = new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux,
+      waitForIdlePollMs: 10,
+      sleep: async () => { sessionRegistry.updateBinding(node1.id, { tmuxPane: "%rebound" }); } });
+    const res = await createApp({ sessionTransport: transport }).request("/api/transport/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "hello", waitForIdleMs: 50 }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("target_runtime_conflict");
+    expect(body.sent).toBe(false);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
   it("POST /send with waitForIdleMs waits for idle and returns activity evidence", async () => {
     seedRig();
     let captureCount = 0;

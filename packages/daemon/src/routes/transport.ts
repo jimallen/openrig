@@ -144,6 +144,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         runner_input_no_override: 409,
         target_runtime_unverified: 409,
         target_runner_unverified: 409,
+        target_runtime_conflict: 409, // OF-160-F2: binding changed before/after the paste
       };
       const status = (statusMap[result.reason ?? ""] ?? 500) as 400 | 404 | 409 | 500 | 502 | 503;
       return c.json(result, status);
