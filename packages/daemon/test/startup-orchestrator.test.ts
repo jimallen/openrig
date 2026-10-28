@@ -16,6 +16,15 @@ import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-obse
 import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import type { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { assessNativeResumeProbe } from "../src/domain/native-resume-probe.js";
+import type { NativeProcessLister, NativeProcessRow } from "../src/domain/native-process-lineage.js";
+
+// The pane is pid 100. A launcher shell (101) runs Claude (102) WITHOUT exec, so the pane's foreground name is a shell.
+const T0 = "Wed Oct 28 08:00:00 2026";
+const PANE_SHELL: NativeProcessRow = { pid: 100, ppid: 1, pgid: 100, tpgid: 101, executableName: "zsh", command: "-zsh", startedAt: T0 };
+const LAUNCHER: NativeProcessRow = { pid: 101, ppid: 100, pgid: 101, tpgid: 101, executableName: "sh", command: "/bin/sh launch.sh", startedAt: T0 };
+const CLAUDE_PROC: NativeProcessRow = { pid: 102, ppid: 101, pgid: 101, tpgid: 101, executableName: "2.1.285", command: "/home/u/.local/share/claude/versions/2.1.285 --permission-mode auto --resume tok-1", startedAt: T0 };
+const PANE_WITH_CLAUDE: NativeProcessRow[] = [PANE_SHELL, LAUNCHER, CLAUDE_PROC];
+const PANE_WITHOUT_CLAUDE: NativeProcessRow[] = [PANE_SHELL];
 
 // -- Mocks --
 
@@ -29,6 +38,8 @@ function mockTmux(overrides?: Partial<TmuxAdapter>): TmuxAdapter {
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
+    getPaneCommand: vi.fn(async () => "claude"),
+    getPanePid: vi.fn(async () => 100),
     capturePaneContent: vi.fn(async () => "❯ \n────────────────────\n⏵⏵ accept edits on (shift+tab to cycle)\n"),
     ...overrides,
   } as unknown as TmuxAdapter;
@@ -98,7 +109,7 @@ describe("StartupOrchestrator", () => {
   afterEach(() => { db.close(); });
 
   function createOrchestrator(
-    opts?: TmuxAdapter | { tmux?: TmuxAdapter; readFile?: (path: string) => string; readinessSettings?: Pick<SettingsStore, "resolveOne"> },
+    opts?: TmuxAdapter | { tmux?: TmuxAdapter; readFile?: (path: string) => string; readinessSettings?: Pick<SettingsStore, "resolveOne">; sleep?: (ms: number) => Promise<void>; listProcesses?: NativeProcessLister },
   ): StartupOrchestrator {
     const normalized = opts && "sendText" in opts
       ? { tmux: opts as TmuxAdapter }
@@ -112,7 +123,8 @@ describe("StartupOrchestrator", () => {
       readinessSettings: normalized.readinessSettings ?? ({
         resolveOne: () => ({ value: 30, source: "default", defaultValue: 30 }),
       } as unknown as Pick<SettingsStore, "resolveOne">),
-      sleep: async () => {},
+      sleep: normalized.sleep ?? (async () => {}),
+      listProcesses: normalized.listProcesses ?? (async () => PANE_WITH_CLAUDE),
     });
   }
 
@@ -364,7 +376,8 @@ describe("StartupOrchestrator", () => {
     }));
     expect(result).toMatchObject({ ok: false, startupStatus: "attention_required",
       errors: [expect.stringContaining("workspace trust approval")] });
-    expect(adapter.checkReady).toHaveBeenCalledTimes(2);
+    // Launch readiness, the post-delivery read, and (OF-161) one more read after a resume has had time to exit.
+    expect(adapter.checkReady).toHaveBeenCalledTimes(source === "restore_preload" ? 3 : 2);
     expect(t.sendText).toHaveBeenCalledTimes(1);
     expect(t.sendKeys).toHaveBeenCalledTimes(1); // no extra Enter into the trust menu
     expect(t.killSession).not.toHaveBeenCalled();
@@ -1541,5 +1554,266 @@ describe("StartupOrchestrator", () => {
     // Both files were delivered — overlay appended, not replacing role guidance
     expect(deliveredFiles).toContain("guidance/role.md");
     expect(deliveredFiles).toContain("openrig-start.md");
+  });
+  // OF-161 (measured live 2026-10-28, improve-engineer@kernel, restore attempt 96253): `claude --resume <id>` is the pane's
+  // foreground process for the first moments, so every one-shot readiness read said "resumed" and the seat was reported
+  // resumed while Claude printed "No conversation found with session ID ..." and exited to the shell. These rows model
+  // that clock: Claude is in the foreground until `claudeExitsAtMs`, then the pane shows `exitedPane`. The orchestrator's
+  // injected `sleep` is the only thing that advances the clock, so a check that never waits cannot see the exit.
+  describe("OF-161: a resumed Claude must still be in the foreground after it has had time to exit", () => {
+    const NATIVE_MESSAGE = "No conversation found with session ID fe08b428-e2c5-49da-ad48-ea8d604e99c3";
+    // `survives`: Claude stays up (its UI just repaints text that mentions the phrase). The foreground NAME is whatever
+    // `exitedCommand` says once the clock passes `claudeExitsAtMs`; the process tree says whether Claude is really there.
+    function exitingClaude(exitedPane: string, claudeExitsAtMs = 1000, exitedCommand = "zsh", survives = false) {
+      let elapsed = 0;
+      const sleeps: number[] = [];
+      const exited = () => elapsed >= claudeExitsAtMs;
+      const pane = () => !exited()
+        ? { command: "zsh", content: "" }
+        : { command: exitedCommand, content: exitedPane };
+      const t = mockTmux({ capturePaneContent: vi.fn(async () => pane().content), getPaneCommand: vi.fn(async () => pane().command) });
+      const adapter = mockAdapter({
+        checkReady: vi.fn(async () => {
+          // The adapter's own probe reads the name and the text; before the exit Claude is the foreground.
+          const probe = assessNativeResumeProbe({ runtime: "claude-code", paneCommand: exited() ? pane().command : "claude", paneContent: pane().content });
+          return { ready: probe.status === "resumed", code: probe.code, reason: probe.detail };
+        }),
+      });
+      const orch = createOrchestrator({ tmux: t, sleep: async (ms) => { sleeps.push(ms); elapsed += ms; },
+        listProcesses: async () => (survives || !exited() ? PANE_WITH_CLAUDE : PANE_WITHOUT_CLAUDE) });
+      return { t, adapter, orch, sleeps };
+    }
+    const readyEvents = (nodeId: string) => db.prepare("SELECT type FROM events WHERE node_id = ? AND type = 'node.startup_ready'").all(nodeId);
+
+    it("reports a resume whose conversation is missing as failed with Claude's own message, never ready", async () => {
+      const seed = seedSession();
+      const { t, adapter, orch } = exitingClaude(`${NATIVE_MESSAGE}\n$ `);
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "fe08b428-e2c5-49da-ad48-ea8d604e99c3",
+        resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh", missingConversation: true });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain(NATIVE_MESSAGE);
+      expect(db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ startup_status: "failed" });
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+      // Nothing was typed into the shell the pane fell back to.
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("reports a pane that fell back to its shell without a native message as failed, keeping the pane output", async () => {
+      const seed = seedSession();
+      const { adapter, orch } = exitingClaude("claude: command crashed\n$ ");
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "failed", recovery: "retry_fresh" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.missingConversation).toBeUndefined();
+      expect(result.errors.join("\n")).toContain("claude: command crashed");
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    // F1 (review) + measured live: Claude runs under a launcher shell without exec, so the foreground name is
+    // usually zsh/bash/sh. A healthy resumed pane can repaint history that mentions the phrase; the probe reads the
+    // phrase first. The process tree, not the name, says Claude is still there.
+    it.each(["claude", "zsh", "bash", "sh"])("a resumed Claude (foreground %s) is NOT failed because its repainted history contains the phrase", async (foreground) => {
+      const seed = seedSession();
+      const history = `Claude Code v2.1.220\n> we saw: ${NATIVE_MESSAGE}\n❯ \n? for shortcuts`;
+      const { t, adapter, orch } = exitingClaude(history, 1000, foreground, true);
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: foreground, paneContent: history })).toMatchObject({ code: "no_conversation_found" });
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(readyEvents(seed.nodeId)).toHaveLength(1);
+      expect(t.killSession).not.toHaveBeenCalled();
+    });
+
+    const TUI = "Claude Code v2.1.220\n❯ \n? for shortcuts";
+    // Headerless: looksLikeClaudeTui (needs "Claude Code v" or "accept edits on") does not recognise this screen.
+    const AUTO_SCREEN = "❯ \n⏵⏵ auto mode on (shift+tab to cycle)\n";
+    const resumeInput = (seed: ReturnType<typeof seedSession>, extra: Partial<StartupInput> = {}) => makeInput(seed, { adapter: mockAdapter(), isRestore: true,
+      resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()], ...extra });
+
+    // F2 (review): the settle window is a heuristic, so typing re-checks that Claude is still in the pane.
+    it("types nothing into a pane whose Claude exited after the settle read", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "$ ") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => PANE_WITHOUT_CLAUDE }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: false });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("no longer in the foreground");
+      expect(t.sendText).not.toHaveBeenCalled();
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    // The screen is not evidence: an exited Claude leaves its last screen (UI, auto-mode bar) on the pane.
+    it.each([["its TUI", TUI], ["its auto-mode screen", AUTO_SCREEN]])("types nothing when %s is still drawn but no Claude process is left under the pane", async (_name, screen) => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "sh"), capturePaneContent: vi.fn(async () => `${screen}Resume this session with:\nclaude --resume tok-1\n$ `) });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => PANE_WITHOUT_CLAUDE }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: false });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    // The live shape (measured 2026-10-28): the pane's foreground is `zsh`, with `claude` (ucomm claude, argv0 claude)
+    // beneath it and its MCP / caffeinate / pyright children.
+    const LIVE_CLAUDE: NativeProcessRow = { pid: 102, ppid: 100, pgid: 100, tpgid: 100, executableName: "claude", command: "claude --permission-mode auto --resume tok-1", startedAt: T0 };
+    const LIVE_CHILDREN: NativeProcessRow[] = [
+      { pid: 103, ppid: 102, pgid: 100, tpgid: 100, executableName: "codebase-memory-m", command: "/u/.local/bin/codebase-memory-mcp", startedAt: T0 },
+      { pid: 104, ppid: 102, pgid: 100, tpgid: 100, executableName: "caffeinate", command: "caffeinate -i -t 3600", startedAt: T0 },
+      { pid: 105, ppid: 102, pgid: 100, tpgid: 100, executableName: "node", command: "node /u/.npm/_npx/x/node_modules/.bin/pyright-langserver --stdio", startedAt: T0 },
+    ];
+    it("live tree under a zsh foreground: both sends are typed and nothing says the foreground could not be read", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => [PANE_SHELL, LIVE_CLAUDE, ...LIVE_CHILDREN] })
+        .startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/second" })] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(2);
+      expect((result.warnings ?? []).filter((w) => w.includes("could not be read"))).toEqual([]);
+    });
+
+    it("the same live tree without the claude row: nothing is typed", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => [PANE_SHELL, ...LIVE_CHILDREN] }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: false });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("a Claude running elsewhere on the machine is not this pane's Claude: nothing is typed", async () => {
+      const seed = seedSession();
+      const elsewhere: NativeProcessRow = { ...CLAUDE_PROC, pid: 900, ppid: 1, pgid: 900, tpgid: 900 };
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "$ ") });
+      const result = await createOrchestrator({ tmux: t, listProcesses: async () => [PANE_SHELL, elsewhere] }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: false });
+      expect(t.sendText).not.toHaveBeenCalled();
+    });
+
+    it("a native Claude whose argv never says `claude` (versioned binary name only) still counts as running under the pane", async () => {
+      const seed = seedSession();
+      const bare: NativeProcessRow = { ...CLAUDE_PROC, command: "/opt/x/2.1.285 --permission-mode auto" };
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "") });
+      expect(await createOrchestrator({ tmux: t, listProcesses: async () => [PANE_SHELL, LAUNCHER, bare] }).startNode(resumeInput(seed))).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    it("control: with Claude in the foreground the startup action is typed", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "claude") });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    // Measured live: Claude under a launcher shell shows the shell as the foreground (zsh, bash; sh in fixtures).
+    it.each([["zsh", TUI], ["bash", TUI], ["sh", AUTO_SCREEN], ["zsh", AUTO_SCREEN], ["bash", ""]])("types when the foreground is %s but Claude runs under the pane (screen %j)", async (foreground, screen) => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => foreground), capturePaneContent: vi.fn(async () => screen) });
+      expect(await createOrchestrator({ tmux: t }).startNode(resumeInput(seed))).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    // Unreadable foreground: never a silent pass.
+    it("an unreadable foreground at the settle read does not fail the resume but is recorded as a warning", async () => {
+      const seed = seedSession();
+      const adapter = mockAdapter({ checkReady: vi.fn().mockResolvedValueOnce({ ready: true })
+        .mockResolvedValue({ ready: false, code: "no_conversation_found", reason: "phrase" }) });
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }) });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { adapter, startupActions: [] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(result.warnings?.join("\n")).toContain("could not be read at the settle check");
+    });
+
+    it.each([
+      ["a listing that lacks the pane's own pid", async () => [LAUNCHER, CLAUDE_PROC]],
+      ["a listing that cannot be read", async (): Promise<NativeProcessRow[]> => { throw new Error("ps unavailable"); }],
+      ["an empty listing", async (): Promise<NativeProcessRow[]> => []],
+    ])("%s is unreadable, not proof that Claude is gone: warn and type", async (_name, listProcesses) => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "$ ") });
+      const result = await createOrchestrator({ tmux: t, listProcesses }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect(result.warnings?.join("\n")).toContain("could not be read before typing");
+    });
+
+    it("one unreadable foreground before typing proceeds with a warning", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }) });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect(result.warnings?.join("\n")).toContain("could not be read before typing");
+    });
+
+    it("two unreadable foreground reads in a row stop the typing: attention_required with the pane tail", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }), capturePaneContent: vi.fn(async () => "last pane line") });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/second" })] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("twice in a row");
+      expect(result.errors.join("\n")).toContain("last pane line");
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+      expect(db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ startup_status: "attention_required" });
+    });
+
+    it("a readable foreground between two unreadable ones resets the count", async () => {
+      const seed = seedSession();
+      const reads = vi.fn().mockRejectedValueOnce(new Error("x")).mockResolvedValueOnce("claude").mockRejectedValueOnce(new Error("x")).mockResolvedValue("claude");
+      const t = mockTmux({ getPaneCommand: reads });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/b" }), makeAction({ value: "/c" })] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(3);
+    });
+
+    it("control: a FRESH launch types even while its pane still shows the shell (the launch command is typed from it)", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh") });
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter: mockAdapter(), startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    // F5 (review): the settle read's attention branch.
+    it("a provider gate seen at the settle read is attention_required, not ready, and nothing is typed", async () => {
+      const seed = seedSession();
+      const adapter = mockAdapter({ checkReady: vi.fn().mockResolvedValueOnce({ ready: true })
+        .mockResolvedValueOnce({ ready: false, code: "trust_gate", reason: "workspace trust approval" }) });
+      const t = mockTmux();
+      const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1",
+        resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required", errors: [expect.stringContaining("workspace trust approval")] });
+      expect(t.sendText).not.toHaveBeenCalled();
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+    });
+
+    // F5 (review): after a failed resume falls back to a fresh launch, input.resumeToken is still set but nothing resumed.
+    it("a fresh fallback after a failed resume takes no resume wait", async () => {
+      const seed = seedSession();
+      const { adapter, orch, sleeps } = exitingClaude("never reached", 60_000);
+      const launchHarness = vi.fn()
+        .mockResolvedValueOnce({ ok: false, error: "no conversation", recovery: "retry_fresh", missingConversation: true })
+        .mockResolvedValueOnce({ ok: true });
+      const result = await orch.startNode(makeInput(seed, { adapter: { ...adapter, launchHarness }, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: true }));
+      expect(launchHarness).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(sleeps).toEqual([]);
+    });
+
+    it("control: a resumed Claude that is still in the foreground after the wait is ready and resumed", async () => {
+      const seed = seedSession();
+      const { adapter, orch, sleeps } = exitingClaude("never reached", 60_000);
+      const result = await orch.startNode(makeInput(seed, { adapter, isRestore: true, resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(sleeps.length).toBeGreaterThan(0);
+      expect(readyEvents(seed.nodeId)).toHaveLength(1);
+    });
+
+    it("control: a fresh launch takes no resume wait", async () => {
+      const seed = seedSession();
+      const { adapter, orch, sleeps } = exitingClaude("never reached", 60_000);
+      const result = await orch.startNode(makeInput(seed, { adapter }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "fresh" });
+      expect(sleeps).toEqual([]);
+    });
   });
 });

@@ -136,6 +136,10 @@ function tokenStateFor(
   const provenance = latest.resumeProvenance ?? null;
   const lastVerified = latest.resumeLastVerified ?? null;
   const probe = latest.resumeLastProbeStatus ?? null;
+  // OF-162: the id exists, but the runtime never persisted a conversation under it (no first message was submitted).
+  if (probe === "unproven") {
+    return { tokenState: "unverified", provenance, lastVerified };
+  }
   if (probe === "not_resumable" || probe === "inconclusive") {
     return { tokenState: "stale", provenance, lastVerified };
   }

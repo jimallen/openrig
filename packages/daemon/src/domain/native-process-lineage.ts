@@ -719,3 +719,43 @@ export async function observeClaudeDelivery(
   }
   return first.state === second.state && first.fingerprint && first.fingerprint === second.fingerprint ? second : unknown;
 }
+
+/** OF-161: is a Claude process running under this pane, whatever name the pane's foreground shows? Claude run by a
+ *  launcher shell that does not exec leaves `zsh`/`bash`/`sh` as the foreground name, so the name proves nothing.
+ *  `absent` needs positive evidence: the process listing contains the pane's own pid and no descendant of it looks like
+ *  Claude. A listing that cannot be read, or that lacks the pane's pid, is `unobservable`, never `absent`. The Claude test
+ *  is deliberately loose (any descendant naming claude, or a versioned native binary label): wrongly saying `present`
+ *  only declines to fail a seat, while wrongly saying `absent` would kill one. */
+export async function claudePaneOccupancy(input: {
+  target: string;
+  tmux: { getPanePid(target: string): Promise<number | null> };
+  listProcesses?: NativeProcessLister;
+}): Promise<"present" | "absent" | "unobservable"> {
+  try {
+    const panePid = await input.tmux.getPanePid(input.target);
+    if (!panePid) return "unobservable";
+    const rows = await (input.listProcesses ?? listNativeProcesses)();
+    const byPid = new Map(rows.map((row) => [row.pid, row]));
+    if (!byPid.has(panePid)) return "unobservable";
+    const descends = (row: NativeProcessRow): boolean => {
+      const seen = new Set<number>();
+      let current: NativeProcessRow | undefined = row;
+      while (current && !seen.has(current.pid)) {
+        if (current.pid === panePid) return true;
+        seen.add(current.pid);
+        current = byPid.get(current.ppid);
+      }
+      return false;
+    };
+    // Live shapes: ucomm `claude` (Linux) or `claude.exe` (macOS) with argv0 `claude`; a versioned native binary
+    // (ucomm is only the version); an npm install is `node .../claude-code/cli.js`, so a path naming claude in argv
+    // tokens 1-2 counts too.
+    const claudeLike = (row: NativeProcessRow): boolean => {
+      const argv = tokens(row.command);
+      return /claude/i.test(row.executableName ?? "") || /claude/i.test(argv[0] ?? "")
+        || /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(row.executableName ?? "")
+        || argv.slice(1, 3).some((token) => /claude/i.test(token));
+    };
+    return rows.some((row) => row.pid !== panePid && descends(row) && claudeLike(row)) ? "present" : "absent";
+  } catch { return "unobservable"; }
+}
