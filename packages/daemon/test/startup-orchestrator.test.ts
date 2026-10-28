@@ -29,6 +29,7 @@ function mockTmux(overrides?: Partial<TmuxAdapter>): TmuxAdapter {
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
+    getPaneCommand: vi.fn(async () => "claude"),
     capturePaneContent: vi.fn(async () => "❯ \n────────────────────\n⏵⏵ accept edits on (shift+tab to cycle)\n"),
     ...overrides,
   } as unknown as TmuxAdapter;
@@ -1608,7 +1609,7 @@ describe("StartupOrchestrator", () => {
     // F2 (review): the settle window is a heuristic, so typing re-checks the foreground itself.
     it("types nothing into a pane whose Claude exited after the settle read", async () => {
       const seed = seedSession();
-      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh") });
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => "$ ") });
       const result = await createOrchestrator({ tmux: t }).startNode(makeInput(seed, { adapter: mockAdapter(), isRestore: true,
         resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
       expect(result).toMatchObject({ ok: false });
@@ -1625,6 +1626,69 @@ describe("StartupOrchestrator", () => {
         resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()] }));
       expect(result).toMatchObject({ ok: true });
       expect(t.sendText).toHaveBeenCalled();
+    });
+
+    const TUI = "Claude Code v2.1.220\n❯ \n? for shortcuts";
+    const resumeInput = (seed: ReturnType<typeof seedSession>, extra: Partial<StartupInput> = {}) => makeInput(seed, { adapter: mockAdapter(), isRestore: true,
+      resumeToken: "tok-1", resumeType: "claude_id", allowFreshFallback: false, startupActions: [makeAction()], ...extra });
+
+    // A wrapper script that does not exec shows its shell as the foreground while Claude's UI is on screen.
+    it("types when the foreground names a shell but Claude's UI is visible (a wrapper that does not exec)", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => TUI) });
+      expect(await createOrchestrator({ tmux: t }).startNode(resumeInput(seed))).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(t.sendText).toHaveBeenCalled();
+    });
+
+    it("a settle read is not failed by the phrase while a shell-named foreground shows Claude's UI", async () => {
+      const seed = seedSession();
+      const history = `${TUI}\n> we saw: ${NATIVE_MESSAGE}`;
+      const adapter = mockAdapter({ checkReady: vi.fn().mockResolvedValueOnce({ ready: true })
+        .mockResolvedValue({ ready: false, code: "no_conversation_found", reason: "phrase" }) });
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => "zsh"), capturePaneContent: vi.fn(async () => history) });
+      expect(await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { adapter, startupActions: [] }))).toMatchObject({ ok: true });
+    });
+
+    // Unreadable foreground: never a silent pass.
+    it("an unreadable foreground at the settle read does not fail the resume but is recorded as a warning", async () => {
+      const seed = seedSession();
+      const adapter = mockAdapter({ checkReady: vi.fn().mockResolvedValueOnce({ ready: true })
+        .mockResolvedValue({ ready: false, code: "no_conversation_found", reason: "phrase" }) });
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }) });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { adapter, startupActions: [] }));
+      expect(result).toMatchObject({ ok: true, continuityOutcome: "resumed" });
+      expect(result.warnings?.join("\n")).toContain("could not be read at the settle check");
+    });
+
+    it("one unreadable foreground before typing proceeds with a warning", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }) });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect(result.warnings?.join("\n")).toContain("could not be read before typing");
+    });
+
+    it("two unreadable foreground reads in a row stop the typing: attention_required with the pane tail", async () => {
+      const seed = seedSession();
+      const t = mockTmux({ getPaneCommand: vi.fn(async () => { throw new Error("tmux gone"); }), capturePaneContent: vi.fn(async () => "last pane line") });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/second" })] }));
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("unreachable");
+      expect(result.errors.join("\n")).toContain("twice in a row");
+      expect(result.errors.join("\n")).toContain("last pane line");
+      expect(t.sendText).toHaveBeenCalledTimes(1);
+      expect(readyEvents(seed.nodeId)).toEqual([]);
+      expect(db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ startup_status: "attention_required" });
+    });
+
+    it("a readable foreground between two unreadable ones resets the count", async () => {
+      const seed = seedSession();
+      const reads = vi.fn().mockRejectedValueOnce(new Error("x")).mockResolvedValueOnce("claude").mockRejectedValueOnce(new Error("x")).mockResolvedValue("claude");
+      const t = mockTmux({ getPaneCommand: reads });
+      const result = await createOrchestrator({ tmux: t }).startNode(resumeInput(seed, { startupActions: [makeAction(), makeAction({ value: "/b" }), makeAction({ value: "/c" })] }));
+      expect(result).toMatchObject({ ok: true });
+      expect(t.sendText).toHaveBeenCalledTimes(3);
     });
 
     it("control: a FRESH launch types even while its pane still shows the shell (the launch command is typed from it)", async () => {
