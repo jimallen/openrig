@@ -524,6 +524,9 @@ export interface RestoreNodeResult {
   error?: string;
   /** The launcher's refusal code when the launch itself was refused (OF-69: `seat_cwd_unusable`), so a caller can branch on it. */
   errorCode?: string;
+  /** OF-155 (Jim, 2026-10-28, option A): the seat came back by reattaching its adopted session, which rig down had left
+   *  running (status `resumed`: nothing was started, the session never stopped). */
+  reattached?: { sessionId: string; sessionName: string };
   /** OF-32 stage 3: where a seat this restore started fresh (not an exact resume) took its startup files from, set
    *  once the seat was launched. Absent for a resumed seat, and when no adapter was available (nothing was given). */
   startupSource?: RestoreStartupSource;

@@ -107,6 +107,12 @@ interface CreateAndBindToPodOptions {
  * Creates node + binding + session record atomically.
  * No package install, no guidance merge, no hooks.
  */
+/** A discovery record can be adopted while it is active, or (OF-154) while it is `claimed` by a node that no longer exists:
+ *  removing a node sets the claim's node to NULL (migration 013), and that claim holds nothing. */
+function claimable(discovered: { status: string; claimedNodeId: string | null }): boolean {
+  return discovered.status === "active" || (discovered.status === "claimed" && discovered.claimedNodeId === null);
+}
+
 export class ClaimService {
   readonly db: Database.Database;
   private rigRepo: RigRepository;
@@ -303,7 +309,7 @@ export class ClaimService {
     if (!discovered) {
       return { ok: false, code: "not_found", error: "Discovery record not found" };
     }
-    if (discovered.status !== "active") {
+    if (!claimable(discovered)) {
       return { ok: false, code: "not_active", error: `Discovery record is ${discovered.status}, not active` };
     }
 
@@ -632,7 +638,7 @@ export class ClaimService {
     if (!discovered) {
       return { ok: false, code: "not_found", error: "Discovery record not found" };
     }
-    if (discovered.status !== "active") {
+    if (!claimable(discovered)) {
       return { ok: false, code: "not_active", error: `Discovery record is ${discovered.status}, not active` };
     }
 

@@ -309,4 +309,53 @@ describe("ClaimService", () => {
       tmuxSession: "orch-lead@host",
     });
   });
+
+  // OF-154: removing a node sets its discovery claim's node to NULL (migration 013, ON DELETE SET NULL) and left the record
+  // 'claimed', so the session could never be adopted again (bind refused not_active) and nothing released it.
+  describe("a discovery claim whose node was removed (OF-154)", () => {
+    async function claimedThenNodeRemoved() {
+      const rig = seedRig();
+      const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/myapp" });
+      const discovered = seedDiscovery({ tmuxSession: "orch-lead@host" });
+      const first = await claimService.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" });
+      expect(first.ok, JSON.stringify(first)).toBe(true);
+      rigRepo.deleteNode(node.id);
+      expect(discoveryRepo.getDiscoveredSession(discovered.id)).toMatchObject({ status: "claimed", claimedNodeId: null });
+      return { rig, discovered };
+    }
+
+    it("can be adopted again by bind", async () => {
+      const { rig, discovered } = await claimedThenNodeRemoved();
+      rigRepo.addNode(rig.id, "orch.again", { runtime: "claude-code", cwd: "/projects/myapp" });
+
+      const again = await claimService.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.again" });
+
+      expect(again.ok, JSON.stringify(again)).toBe(true);
+    });
+
+    it("can be adopted again into a new pod member", async () => {
+      const { rig, discovered } = await claimedThenNodeRemoved();
+      db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES (?, ?, ?, ?)").run("pod-dev", rig.id, "dev", "Dev");
+
+      const again = await claimService.createAndBindToPod({ discoveredId: discovered.id, rigId: rig.id, podId: "pod-dev", podNamespace: "dev", memberName: "coder" });
+
+      expect(again.ok, JSON.stringify(again)).toBe(true);
+    });
+
+    it("a rescan makes the record active again", async () => {
+      const { discovered } = await claimedThenNodeRemoved();
+      expect(seedDiscovery({ tmuxSession: "orch-lead@host" })).toMatchObject({ id: discovered.id, status: "active", claimedNodeId: null });
+    });
+
+    it("control: a claim whose node still exists stays claimed through a rescan and still refuses a second adopter", async () => {
+      const rig = seedRig();
+      const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/myapp" });
+      rigRepo.addNode(rig.id, "orch.other", { runtime: "claude-code", cwd: "/projects/myapp" });
+      const discovered = seedDiscovery({ tmuxSession: "orch-lead@host" });
+      expect((await claimService.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" })).ok).toBe(true);
+
+      expect(seedDiscovery({ tmuxSession: "orch-lead@host" })).toMatchObject({ status: "claimed", claimedNodeId: node.id });
+      expect(await claimService.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.other" })).toMatchObject({ ok: false, code: "not_active" });
+    });
+  });
 });
