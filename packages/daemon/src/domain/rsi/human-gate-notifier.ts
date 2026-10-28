@@ -141,7 +141,7 @@ export type WaitingItem = BlockedQueueRow & { kind: "rsi" | "inbox" };
 export function selectWaitingItems(rows: BlockedQueueRow[], stewardSession: string | null): WaitingItem[] {
   const out: WaitingItem[] = [];
   for (const r of rows) {
-    if (r.state === "blocked" && isHumanSeatSession(r.blockedOn) && stewardSession !== null && r.sourceSession === stewardSession && r.tags.includes(RSI_TAG)) {
+    if (r.state === "blocked" && isHumanSeatSession(r.blockedOn) && r.sourceSession === stewardSession && r.tags.includes(RSI_TAG)) {
       out.push({ ...r, kind: "rsi" });
     } else if ((r.state === "pending" && r.destinationSession === LOCAL_HUMAN_INBOX_ADDRESS) || (r.state === "blocked" && r.blockedOn === LOCAL_HUMAN_INBOX_ADDRESS)) {
       out.push({ ...r, kind: "inbox" });

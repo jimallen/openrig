@@ -641,6 +641,16 @@ describe("local human inbox: every open item addressed to human@kernel", () => {
     expect(h.calls).toHaveLength(2);
   });
 
+  it("an edit to a waiting item is not a new arrival: its episode is its creation, so a later ts_updated does not re-banner it", async () => {
+    const h = harness();
+    inboxRow(h, "q-edit");
+    expect((await h.notifier.tick()).status).toBe("sent");
+    h.db.prepare("UPDATE queue_items SET ts_updated = '2031-03-04T09:00:00.000Z' WHERE qitem_id = 'q-edit'").run();
+    h.now.ms += 30 * MIN;
+    expect(await h.notifier.tick()).toEqual({ status: "idle", waiting: 1 });
+    expect(h.calls).toHaveLength(1);
+  });
+
   it("a seat flooding the inbox spends one banner per gap and never more than the daily cap", async () => {
     const h = harness();
     for (let i = 0; i < 40; i += 1) inboxRow(h, `q-flood-${i}`, { source: `spam-${i}@rig` });
