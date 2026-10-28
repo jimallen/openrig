@@ -511,6 +511,20 @@ activityRoutes.post("/hooks", async (c) => {
     return c.json({ ok: false, code: result.code, error: result.error }, status);
   }
 
+  // OF-162: a prompt submitted by the CURRENT occupant means Claude has persisted its transcript, so a resume id kept
+  // `unproven` after an unverified first message now names a real conversation.
+  const proofEvent = result.event as { nodeId?: string; runtime?: string } | undefined;
+  const proofRuntime = proofEvent?.runtime ?? stringOrNull(body.runtime);
+  if (proofEvent?.nodeId && proofRuntime === "claude-code" && result.activity.rawEvent === "UserPromptSubmit" && result.activity.generation != null) {
+    const sessionRegistry = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+    try {
+      const row = store.db.prepare("SELECT id FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1").get(proofEvent.nodeId) as { id: string } | undefined;
+      if (row && sessionRegistry?.currentOccupantTenure(proofEvent.nodeId)?.generationUuid === result.activity.generation) {
+        sessionRegistry.confirmResumeProven(row.id);
+      }
+    } catch { /* an unreadable ledger proves nothing */ }
+  }
+
   // S19 A4 — feed the ONE oracle through the adapter seam: the recorded (store-
   // normalized) event becomes ladder evidence on the lifecycle-hooks rung. The store
   // remains the raw-event recorder (startup-proof, delivery verification); arbitration
