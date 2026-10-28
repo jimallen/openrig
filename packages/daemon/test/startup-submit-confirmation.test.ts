@@ -161,6 +161,20 @@ describe("startup prompt submission", () => {
       expect(f.submitted).toEqual(texts);
     });
 
+    // OF-169: the diagnostic evidence of an unverified submission digests the text that reached the pane, not the
+    // text before stripping (the expected digest is of the whitespace-stripped UTF-8 bytes).
+    it("OF-169: the unverified-submission evidence digests the stripped text", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line\u0003 one\u001b[31m\n\tindented\u007f line\u0085 two");
+      f.tmux.capturePaneContent.mockImplementation(async () => "no composer is drawn in this capture");
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true, submission: { status: "unverified" } });
+      const observations = (result as { submission: { diagnostics: Array<{ observations: Array<{ expected: { bytes: number; sha256: string } }> }> } }).submission.diagnostics.flatMap(d => d.observations);
+      expect(observations.length).toBeGreaterThan(0);
+      const reached = Buffer.from("Lineone[31mindentedlinetwo");
+      for (const o of observations) expect(o.expected).toEqual({ bytes: reached.length, sha256: crypto.createHash("sha256").update(reached).digest("hex") });
+    });
+
     it("keeps prelaunch delivery before harness launch and adds only the bounded check delay", async () => {
       const f = fixture(0, "claude-code", false, true);
       await f.start({ startupActions: [], resolvedStartupFiles: [file("CLAUDE.md", true, "guidance_merge"), file("role.md")] });
