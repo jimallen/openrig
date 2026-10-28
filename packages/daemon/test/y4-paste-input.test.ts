@@ -62,6 +62,18 @@ function terminal() {
   return { input, stdin: input, stdout: out, screen: () => text };
 }
 
+// a5 (y4 review F5): variant spellings of the end marker. xterm's ctlseqs and tmux's own framing define exactly ESC[201~;
+// an application's ECMA-48 parser reads the CSI parameter as a number, so these may end a paste there. Unmeasured for
+// Claude Code and Codex, so the rule is the conservative one: first parameter 201 (zeros allowed), any further parameters.
+const VARIANTS: Array<[string, string]> = [
+  ["a leading zero", "\u001b[0201~"],
+  ["several leading zeros", "\u001b[000201~"],
+  ["a trailing parameter", "\u001b[201;1~"],
+  ["a trailing sub-parameter", "\u001b[201:2~"],
+  ["a leading zero and several parameters", "\u001b[0201;2:3;4~"],
+  ["the 8-bit CSI with a leading zero", "\u009b0201~"],
+  ["the 8-bit CSI with a trailing parameter", "\u009b201;5~"],
+];
 // ── (1) the paste-end sequence: helpers ──
 describe("OF-148 paste terminator: the two pure helpers", () => {
   it.each([
@@ -83,6 +95,27 @@ describe("OF-148 paste terminator: the two pure helpers", () => {
 
   it("a re-joining pair is removed to the end (nothing is left to close a paste)", () => {
     expect(stripPasteTerminators(`\u001b[2${END}01~`)).toBe("");
+  });
+
+  it.each(VARIANTS)("detects and strips a variant spelling: %s", (_name, variant) => {
+    const text = `a${variant}b`;
+    expect(containsPasteTerminator(text)).toBe(true);
+    expect(stripPasteTerminators(text)).toBe("ab");
+  });
+  it("a variant a removal would re-join (ESC[0 + ESC[0201~ + 201~) is removed to the end", () => {
+    expect(stripPasteTerminators("\u001b[0\u001b[0201~201~")).toBe("");
+  });
+  it.each([
+    ["a different first parameter (2010)", "\u001b[2010~"],
+    ["a different first parameter (1201)", "\u001b[1201~"],
+    ["the paste START with a leading zero", "\u001b[0200~"],
+    ["a private marker", "\u001b[?201~"],
+    ["another final byte", "\u001b[201m"],
+    ["an unfinished sequence", "\u001b[201"],
+    ["the printable residue with zeros", "[0201~"],
+  ])("does not touch %s", (_name, text) => {
+    expect(containsPasteTerminator(text)).toBe(false);
+    expect(stripPasteTerminators(text)).toBe(text);
   });
 
   it.each([
@@ -120,6 +153,12 @@ describe("OF-148 TerminalSessionBroker: a text message is stripped of paste term
     await b.input({ type: "text", text: `echo hi${END}; rm x` });
     await b.input({ type: "text", text: `echo hi${CSI8_END}; rm x` });
     expect(sendText.mock.calls).toEqual([["dev@rig", "echo hi; rm x"], ["dev@rig", "echo hi; rm x"]]);
+  });
+
+  it("a variant spelling of the end marker in a text message never reaches tmux either (a5, F5)", async () => {
+    const { b, sendText } = broker();
+    for (const [, variant] of VARIANTS) await b.input({ type: "text", text: `echo hi${variant}; rm x` });
+    expect(sendText.mock.calls).toEqual(VARIANTS.map(() => ["dev@rig", "echo hi; rm x"]));
   });
 
   it("a text message without a terminator is forwarded unchanged (multi-line, tabs, other escapes kept)", async () => {
@@ -192,6 +231,14 @@ describe("OF-148 rig send: text carrying a paste-end sequence is refused with a 
     expect(r.error).toContain("paste-end sequence");
     expect(r.error).toContain("Remove the sequence");
     expect(r.error).toContain("No text was sent");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it.each(VARIANTS)("refuses a variant spelling of the end marker (a5, F5): %s", async (_name, variant) => {
+    const { transport, sendText, sendKeys } = setup();
+    const r = await transport.send(SEAT, `please run this${variant} && echo pwned`);
+    expect(r).toMatchObject({ ok: false, sent: false, reason: "paste_terminator_in_text" });
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
   });

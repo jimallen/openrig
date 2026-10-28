@@ -1,4 +1,5 @@
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
+import { inertStartupText } from "./packet-text.js";
 import type { SessionTransport } from "./session-transport.js";
 import type { ClaudeCompactionPolicy, SettingsStore } from "./user-settings/settings-store.js";
 import * as fs from "node:fs";
@@ -505,6 +506,7 @@ export class ClaudeCompactionEnforcer {
     }
     const pendingStage = this.pendingPostCompactRestore.get(input.sessionName);
     if (pendingStage === "turn_boundary") {
+      // OF-169: the boundary prompt is a constant with no operator input, so there is nothing to strip.
       const boundary = await this.sessionTransport.send(
         input.sessionName,
         buildPostCompactTurnBoundaryPrompt(),
@@ -523,7 +525,7 @@ export class ClaudeCompactionEnforcer {
       const extra = resolvePostCompactExtra(input.sessionName, this.openrigHome, policy.messageFilePath);
       const restore = await this.sessionTransport.send(
         input.sessionName,
-        buildPostCompactRestorePrompt({
+        inertStartupText(buildPostCompactRestorePrompt({
           sessionName: input.sessionName,
           openrigHome: this.openrigHome,
           transcriptPath: input.transcriptPath,
@@ -531,7 +533,7 @@ export class ClaudeCompactionEnforcer {
           postCompactInstruction: policy.messageInline,
           postCompactInstructionFilePath: extra.filePath,
           ignoredWrongSeatExtra: extra.ignoredWrongSeat,
-        }),
+        })),
         sendOpts,
       );
       if (!restore.ok || restore.outcome === "retained") {
@@ -548,7 +550,7 @@ export class ClaudeCompactionEnforcer {
     if (pendingStage === "compliance_prompt") {
       const compliance = await this.sessionTransport.send(
         input.sessionName,
-        buildPostCompactCompliancePrompt(policy.postRestoreAuditInstruction),
+        inertStartupText(buildPostCompactCompliancePrompt(policy.postRestoreAuditInstruction)),
         sendOpts,
       );
       if (!compliance.ok || compliance.outcome === "retained") {
@@ -823,10 +825,10 @@ export class ClaudeCompactionEnforcer {
     const policy = this.settingsStore.resolveClaudeCompactionPolicy();
     let prep;
     try {
-      prep = await this.sessionTransport.send(input.sessionName, buildPreCompactPrepPrompt({
+      prep = await this.sessionTransport.send(input.sessionName, inertStartupText(buildPreCompactPrepPrompt({
         usedPercentage: input.usedPercentage!, thresholdPercent: policy.thresholdPercent,
         preCompactInstruction: policy.preCompactInstruction, preparation: attempt, constructedAt: this.now(),
-      }));
+      })));
     } catch { prep = null; }
     const notSent = prep?.outcome === "retained"
       || ["target_needs_input", "session_missing", "typing_guard_enabled", "mid_work", "tmux_unavailable"].includes(prep?.reason ?? "")
@@ -855,7 +857,7 @@ export class ClaudeCompactionEnforcer {
       check();
       const policy = this.settingsStore.resolveClaudeCompactionPolicy();
       return this.sessionTransport.send(input.sessionName,
-        buildCompactCommand(policy.compactInstruction + (skipMap ? "" : ` Restore from this attempt's map: ${attempt.mapPath}.`)),
+        inertStartupText(buildCompactCommand(policy.compactInstruction + (skipMap ? "" : ` Restore from this attempt's map: ${attempt.mapPath}.`))),
         { beforeWrite: check, ...(attempt.mode === "manual" ? { waitForIdleMs: Math.max(1, Math.min(1000, attempt.deadlineAt! - this.now())) } : {}) });
     };
     let result;

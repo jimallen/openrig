@@ -369,8 +369,22 @@ describe("Claude Code runtime adapter", () => {
     };
     const result = await adapter.deliverStartup([file], makeBinding());
     expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "alphabeta\nsecond line");
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "alpha[201~beta\nsecond 201~line");
     expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
+  });
+
+  // OF-169: startup text typed into an agent loses every control except TAB/LF/CR (a bare ESC, ETX, DEL, a C1
+  // control would be read by the agent's input editor as a key). Tab, newline and carriage return are kept.
+  it("OF-169: a send_text startup file loses C0/C1 controls but keeps tab, newline and CR (direct leg)", async () => {
+    const tmux = mockTmux();
+    const fs = mockFs({ "/rig/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" });
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: fs, sleep: async () => {} });
+    const file: ResolvedStartupFile = {
+      path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
+      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
+    };
+    await adapter.deliverStartup([file], makeBinding());
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "AB[31mCDEFG\tH\nI\rJ");
   });
 
   // OPR.0.3.3.16 - a >100KB send_text startup pack must still travel through the

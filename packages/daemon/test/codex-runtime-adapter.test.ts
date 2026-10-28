@@ -422,8 +422,20 @@ describe("Codex runtime adapter", () => {
 
     expect(result.delivered).toBe(1);
     expect(result.failed).toEqual([]);
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "Read this pack.rm -rf ~\nsecond line");
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "Read this pack.[201~rm -rf ~\nsecond 201~line");
     expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
+  });
+
+  // OF-169: every control except TAB/LF/CR is removed from startup text, not only the paste-end marker.
+  it("OF-169: a send_text startup file loses C0/C1 controls but keeps tab, newline and CR", async () => {
+    const tmux = mockTmux();
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs({ "/rig/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" }), sleep: async () => {} });
+    const file: ResolvedStartupFile = {
+      path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
+      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
+    };
+    await adapter.deliverStartup([file], makeBinding());
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "AB[31mCDEFG\tH\nI\rJ");
   });
 
   // OPR.0.3.3.16 - a >100KB send_text startup pack must still travel through the

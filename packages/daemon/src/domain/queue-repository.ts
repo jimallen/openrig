@@ -12,6 +12,7 @@ import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 import { renderQueueHandoffNudge } from "./queue-nudge-text.js";
+import { inertStartupText } from "./packet-text.js";
 import { getSelfHostId } from "./hosts/fanout-contract.js";
 import { parseSessionName, isHumanSeatSessionRef } from "./session-name.js";
 import { parseReplyToChoice, formatReplyToChoice, describeReplyToFallback, REPLY_TO_CHOICE_ACTOR, type ReplyToChoice } from "./reply-to-choice.js";
@@ -33,6 +34,16 @@ import { findDamagedTagRows } from "./damaged-tag-rows.js";
 import { namedRows, nameRowsThrottled } from "./named-rows.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
 import { parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
+
+/**
+ * OF-169: a queue nudge is a system sender whose pane envelope (From/To lines, built from session names the caller
+ * supplied) is system text, so the two names lose C0/C1 controls except TAB/LF/CR. The BODY is untouched: a
+ * `bodyOverride` is the sender's own words (the resolve verb's decision text) and keeps what the person wrote, as
+ * `rig send` does; the default body is already one safe line (`boundSummary`). SessionTransport.send is unchanged.
+ */
+function wrapNudgeEnvelope(sender: string | undefined, recipient: string, body: string, meta: Parameters<typeof wrapPaneEnvelope>[3]): string {
+  return wrapPaneEnvelope(sender === undefined ? undefined : inertStartupText(sender), inertStartupText(recipient), body, meta);
+}
 
 export const QUEUE_STATES = [
   "pending",
@@ -1009,7 +1020,7 @@ export class QueueRepository {
     // recovery replay these exact bytes without re-resolving the occupant.
     const stampISO = new Date().toISOString();
     const genUuid = this.resolveOccupantGeneration?.(input.fromSession) ?? undefined;
-    const frozenEnvelope = wrapPaneEnvelope(
+    const frozenEnvelope = wrapNudgeEnvelope(
       input.fromSession,
       input.toSession,
       input.bareBody,
@@ -1462,7 +1473,7 @@ export class QueueRepository {
       const genUuid = sourceSession
         ? (this.resolveOccupantGeneration?.(sourceSession) ?? undefined)
         : undefined;
-      text = wrapPaneEnvelope(sourceSession, destinationSession, bareBody, { stampISO, genUuid });
+      text = wrapNudgeEnvelope(sourceSession, destinationSession, bareBody, { stampISO, genUuid });
     }
     const deliveryId = `guard-nudge-${qitemId}-${createHash("sha256").update(JSON.stringify([sourceSession, destinationSession, bodyOverride ?? null])).digest("hex")}`;
     const held = !committedOutboxIds ? this.outbox?.getById(deliveryId) : null;

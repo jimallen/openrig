@@ -21,6 +21,7 @@
 // proclamation event; an unreachable channel is a named failure/deferral, never a silence.
 
 import { createHash } from "node:crypto";
+import { inertStartupText } from "../packet-text.js";
 import { CANONICAL_MODEL_PINS } from "../spec-validation-advisory.js";
 
 export interface PinnedSeat {
@@ -249,7 +250,8 @@ export class ModelDivergenceMonitor {
 
   private async deliver(channel: ChannelOutcome["channel"], target: string, message: string, occurrenceId: string): Promise<ChannelOutcome> {
     try {
-      const res = await this.deps.sendToSession(target, message, `guard-model-${occurrenceId}-${target}`);
+      // OF-169: system-authored text typed into a seat; SessionTransport.send is unchanged, so strip here.
+      const res = await this.deps.sendToSession(target, inertStartupText(message), `guard-model-${occurrenceId}-${target}`);
       if (res.outcome === "retained") return { channel, target, status: "retained", detail: "Typing guard: retained, not delivered." };
       return res.ok
         ? { channel, target, status: "delivered" }

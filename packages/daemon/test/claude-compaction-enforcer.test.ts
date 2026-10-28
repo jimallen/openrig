@@ -1470,4 +1470,47 @@ describe("ClaudeCompactionEnforcer", () => {
       expect(auditIdx).toBeGreaterThan(restoreIdx); // one durable restore enqueue/delivery precedes audit advancement
     });
   });
+  // OF-169 (a5 review F1): the enforcer is a system sender; every prompt it composes from operator-set text loses C0/C1
+  // controls except TAB/LF/CR before SessionTransport.send (which is unchanged). The turn-boundary prompt is a constant.
+  describe("OF-169: operator-set compaction text reaches the seat without controls", () => {
+    const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+    const POLICY: ClaudeCompactionPolicy = {
+      enabled: true, thresholdPercent: 80,
+      preCompactInstruction: "WRITE\u0003MAP\u001b[31m now",
+      compactInstruction: "KEEP\u0004FOCUS\u007f please",
+      messageInline: "RESTORE\u0007NOTE\u0085 here",
+      messageFilePath: "",
+      postRestoreAuditInstruction: "AUDIT\u001fDEPTH\u009b now",
+    };
+    async function run() {
+      const settings = makeSettingsStore(POLICY);
+      const { transport, send } = makeSessionTransport();
+      const enforcer = new ClaudeCompactionEnforcer(settings, transport, {
+        dedupWindowMs: 60_000, postCompactRestoreCooldownMs: 0, openrigHome: "/tmp/openrig-test-home",
+        resolveOccupantGeneration: () => "gen-uuid-1",
+      });
+      let now = 1_700_000_000_000;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      await enforcer.maybeAutoCompact({ sessionName: "claude-seat@rig", runtime: "claude-code", usedPercentage: 90 });
+      now += 30_000;
+      await enforcer.maybeAutoCompact({ sessionName: "claude-seat@rig", runtime: "claude-code", usedPercentage: 95 });
+      for (let i = 0; i < 3; i++) await drainTick(enforcer);
+      return send.mock.calls.map((c) => String(c[1]));
+    }
+    const expected: Array<[string, string]> = [
+      ["pre-compact prep prompt (deliverPreparation)", "WRITEMAP[31m now"],
+      ["/compact command (sendPreparedCompact)", "KEEPFOCUS please"],
+      ["post-compact restore prompt", "RESTORENOTE here"],
+      ["post-compact compliance prompt", "AUDITDEPTH now"],
+    ];
+    it.each(expected)("%s: the operator's text arrives with controls removed", async (_label, text) => {
+      const texts = await run();
+      expect(texts.filter((t) => t.includes(text)), JSON.stringify(texts.map((t) => t.slice(0, 80)))).toHaveLength(1);
+    });
+    it("no prompt sent to the seat holds a control, and the constant turn-boundary prompt is still sent", async () => {
+      const texts = await run();
+      expect(texts).toHaveLength(5);
+      for (const t of texts) expect(t, JSON.stringify(t.slice(0, 120))).not.toMatch(CONTROL);
+    });
+  });
 });

@@ -14,7 +14,7 @@
 // increments (A5 items 5-8) — deliberately NOT here.
 
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
-import { stripPasteTerminators } from "../domain/packet-text.js";
+import { inertStartupText } from "../domain/packet-text.js";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
@@ -141,7 +141,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
             if (binding.tmuxSession) {
               // OF-160 (z5): operator-authored file content pasted bracketed — strip the
               // paste-end marker so it can never close the paste early into the stub seat.
-              const textResult = await this.tmux.sendText(binding.tmuxSession, stripPasteTerminators(content));
+              const textResult = await this.tmux.sendText(binding.tmuxSession, inertStartupText(content));
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
               const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);

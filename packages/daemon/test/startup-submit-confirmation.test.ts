@@ -138,8 +138,63 @@ describe("startup prompt submission", () => {
       const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
       expect(texts.length).toBeGreaterThan(0);
       for (const t of texts) expect(t, JSON.stringify(t)).not.toMatch(/\u001b\[201~|\u009b201~/);
-      expect(texts.some(t => t.includes("Line oneinjected\nline two"))).toBe(true);
-      expect(texts.some(t => t.includes("identity  tail"))).toBe(true);
+      expect(texts.some(t => t.includes("Line one[201~injected\nline two"))).toBe(true);
+      expect(texts.some(t => t.includes("identity 201~ tail"))).toBe(true);
+    });
+
+    // OF-169: startup text loses every C0/C1 control except TAB/LF/CR (not only the paste-end marker), in a file
+    // and in an identity action. The submission evidence compares what reached the pane: with the first Enter lost
+    // the text stays staged and the guarded retry must still recognise it as the complete prompt.
+    it("OF-169: controls are stripped from startup text and the staged-text check compares the stripped text", async () => {
+      const f = fixture(1, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line\u0003 one\u001b[31m\n\tindented\u007f line\u0085 two");
+      const result = await f.start({
+        resolvedStartupFiles: [file("role.md")],
+        startupActions: [{ type: "send_text", builtin: "session_identity", value: "id\u0007entity\u009b tail", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }],
+      });
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
+      expect(result.warnings).toBeUndefined();
+      const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
+      for (const t of texts) expect(t, JSON.stringify(t)).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+      expect(texts.some(t => t.includes("Line one[31m\n\tindented line two"))).toBe(true);
+      expect(texts.some(t => t.includes("identity tail"))).toBe(true);
+      expect(f.submitted).toEqual(texts);
+    });
+
+    // OF-169: the diagnostic evidence of an unverified submission digests the text that reached the pane, not the
+    // text before stripping (the expected digest is of the whitespace-stripped UTF-8 bytes).
+    it("OF-169: the unverified-submission evidence digests the stripped text", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line\u0003 one\u001b[31m\n\tindented\u007f line\u0085 two");
+      f.tmux.capturePaneContent.mockImplementation(async () => "no composer is drawn in this capture");
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true, submission: { status: "unverified" } });
+      const observations = (result as { submission: { diagnostics: Array<{ observations: Array<{ expected: { bytes: number; sha256: string } }> }> } }).submission.diagnostics.flatMap(d => d.observations);
+      expect(observations.length).toBeGreaterThan(0);
+      const reached = Buffer.from("Lineone[31mindentedlinetwo");
+      for (const o of observations) expect(o.expected).toEqual({ bytes: reached.length, sha256: crypto.createHash("sha256").update(reached).digest("hex") });
+    });
+
+    // OF-169: after the guarded retry the staged-text check also compares what reached the pane, so a prompt still
+    // staged is reported as staged (not as an ambiguous composer) even though its source held controls.
+    it("OF-169: a stripped prompt that stays staged after the guarded retry is reported staged", async () => {
+      const f = fixture(new Set([1, 2]), "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line\u0003 one\u001b[31m\n\tindented\u007f line\u0085 two");
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready", submission: { status: "staged" } });
+      expect(result.warnings).toEqual([expect.stringContaining("press Enter in that pane")]);
+      expect(f.composer()).toBe("Line one[31m\n\tindented line two");
+    });
+
+    // a5 review F5: the orchestrator path itself pins CR (kept) and U+009F (the last C1 control, removed), so neither
+    // is pinned only by the function's own rows and the adapters'.
+    it("OF-169: through the orchestrator, CR survives and U+009F is removed", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "first\rsecond\u009fthird\r\nfourth");
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true });
+      const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
+      expect(texts).toEqual(["first\rsecondthird\r\nfourth"]);
     });
 
     it("keeps prelaunch delivery before harness launch and adds only the bounded check delay", async () => {

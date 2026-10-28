@@ -44,6 +44,14 @@ async function createTestDaemon(
   }
 }
 
+// The begin barrier is bounded in production (250 ms) so a wedged worker cannot stall the daemon. These rows are about
+// what is DURABLE once a begin has been acknowledged, not about how fast a cold worker thread (or, in the crash row, a
+// whole tsx child process) boots. Under full-suite load that boot has taken longer than 250 ms, and the child longer
+// than 5 s ("child callback did not begin"), which timed the begin out (recorder degraded, record not yet on disk) or
+// failed the wait. The barrier returns as soon as the worker acknowledges, and the waits below resolve on events, so
+// a generous bound costs nothing when the machine is quiet and only a real hang waits it out.
+const COLD_START_BOUND_MS = 60_000;
+
 const tempDirs: string[] = [];
 
 function tempDir(): string {
@@ -79,7 +87,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
 
     const dir = tempDir();
     const logPath = path.join(dir, "slow-operations.jsonl");
-    const recorder = new mod.SlowOpRecorder({ logPath });
+    const recorder = new mod.SlowOpRecorder({ logPath, barrierTimeoutMs: COLD_START_BOUND_MS });
     const secret = "OPENRIG_TEST_SECRET_DO_NOT_RECORD";
     process.env.OPENRIG_TEST_SECRET = secret;
     try {
@@ -113,7 +121,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
 
     const dir = tempDir();
     const logPath = path.join(dir, "slow-operations.jsonl");
-    const recorder = new mod.SlowOpRecorder({ logPath });
+    const recorder = new mod.SlowOpRecorder({ logPath, barrierTimeoutMs: COLD_START_BOUND_MS });
     const span = recorder.beginSyncSpan("test.sync.wedge");
     expect(span).toBeTruthy();
     const records = await readRecords(logPath);
@@ -167,7 +175,9 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     expect(mod, "slow-op-recorder production module is missing").not.toBeNull();
     if (!mod) return;
 
-    const recorder = new mod.SlowOpRecorder({ logPath: tempDir() });
+    // The log path is a directory, so the worker acknowledges the begin as FAILED ("begin_barrier_failed"); with the
+    // default 250 ms bound a loaded machine timed the barrier out first ("begin_barrier_timeout") and the snapshot differed.
+    const recorder = new mod.SlowOpRecorder({ logPath: tempDir(), barrierTimeoutMs: COLD_START_BOUND_MS });
     recorder.setDegradedHandler(() => {
       throw new Error("stream sink failed");
     });
@@ -210,7 +220,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
       }
       syncBuiltinESMExports();
       const mod = await import(process.env.RECORDER_MODULE_URL);
-      const recorder = new mod.SlowOpRecorder({ logPath: process.env.RECORDER_LOG_PATH });
+      const recorder = new mod.SlowOpRecorder({ logPath: process.env.RECORDER_LOG_PATH, barrierTimeoutMs: Number(process.env.RECORDER_BARRIER_MS) });
       recorder.runSync("test.sync.crash", () => {
         process.stdout.write(JSON.stringify({ isMainThread, threadId }) + "\\n");
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
@@ -221,6 +231,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
         ...process.env,
         RECORDER_LOG_PATH: logPath,
         RECORDER_MODULE_URL: moduleUrl,
+        RECORDER_BARRIER_MS: String(COLD_START_BOUND_MS),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -231,7 +242,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     try {
       const callbackEvidence = await new Promise<{ isMainThread: boolean; threadId: number }>((resolve, reject) => {
         let stdout = "";
-        const timeout = setTimeout(() => reject(new Error(`child callback did not begin: ${stderr}`)), 5_000);
+        const timeout = setTimeout(() => reject(new Error(`child callback did not begin: ${stderr}`)), COLD_START_BOUND_MS);
         child.stdout!.setEncoding("utf8");
         child.stdout!.on("data", (chunk: string) => {
           stdout += chunk;
@@ -257,7 +268,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
-  }, 10_000);
+  }, COLD_START_BOUND_MS + 30_000);
 
   it("rotates at the exact cap and records the inclusive slow-request boundary", async () => {
     const mod = await loadRecorderModule();
@@ -543,7 +554,7 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
 
     const dir = tempDir();
     const logPath = path.join(dir, "slow-operations.jsonl");
-    const recorder = new mod.SlowOpRecorder({ logPath });
+    const recorder = new mod.SlowOpRecorder({ logPath, barrierTimeoutMs: COLD_START_BOUND_MS });
     const oldNoKernel = process.env.OPENRIG_NO_KERNEL;
     process.env.OPENRIG_NO_KERNEL = "1";
     const daemon = await createTestDaemon({

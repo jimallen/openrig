@@ -754,7 +754,22 @@ describe("OF-160: Pi send_text startup files never carry the paste-end marker in
     const result = await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
     expect(result.failed).toEqual([]);
     expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "alphabeta gamma");
+    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "alpha[201~beta 201~gamma");
     expect(tmux.sendKeys).toHaveBeenCalledWith(SESSION, ["Enter"]);
+  });
+});
+
+// OF-169: startup text typed into the Pi seat loses every control except TAB/LF/CR.
+describe("OF-169: Pi send_text startup files lose C0/C1 controls but keep tab, newline and CR", () => {
+  it("strips controls before the paste", async () => {
+    const tmux = mockTmux();
+    const fs = memFs({ "/work/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" });
+    const adapter = adapterWith(fs, tmux);
+    const file = {
+      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
+      deliveryHint: "send_text" as const, required: true, appliesOn: ["fresh_start"],
+    };
+    await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
+    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "AB[31mCDEFG\tH\nI\rJ");
   });
 });
