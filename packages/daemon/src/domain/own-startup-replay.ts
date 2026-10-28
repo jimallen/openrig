@@ -56,22 +56,28 @@ export interface UsableSnapshotCopy {
   kind: string;
   createdAt: string;
   context: NodeStartupSnapshot;
+  /** OF-168: ids of NEWER snapshots of this rig passed over because their saved data is not JSON (so what they hold for this seat
+   *  is unknown, not "nothing"). Absent when none were. A caller that replays this copy says so. */
+  skippedUnreadable?: string[];
 }
 
 /**
  * The newest snapshot of this rig whose copy of this seat's startup context is usable for it (found by logical id: a
  * seat removed and grown back has a new node id), or null. Newest by the order snapshot selection uses (created_at,
  * then insertion). Reads only the node list and the startup-context map of each snapshot, newest first, and stops at
- * the first usable copy; a snapshot whose data is not JSON is skipped.
+ * the first usable copy; a snapshot whose data is not JSON is skipped and NAMED (`skippedUnreadable`) when a usable copy is found past it.
  */
 export function newestUsableSnapshotCopy(db: Database.Database, rigId: string, logicalId: string, runtime: string | null): UsableSnapshotCopy | null {
   const rows = db.prepare(
     `SELECT id, kind, created_at,
+            NOT json_valid(data) AS damaged,
             CASE WHEN json_valid(data) THEN json_extract(data, '$.nodes') END AS nodes,
             CASE WHEN json_valid(data) THEN json_extract(data, '$.nodeStartupContext') END AS ctx
        FROM snapshots WHERE rig_id = ? ORDER BY created_at DESC, rowid DESC`,
-  ).iterate(rigId) as IterableIterator<{ id: string; kind: string; created_at: string; nodes: string | null; ctx: string | null }>;
+  ).iterate(rigId) as IterableIterator<{ id: string; kind: string; created_at: string; damaged: number; nodes: string | null; ctx: string | null }>;
+  const skippedUnreadable: string[] = [];
   for (const row of rows) {
+    if (row.damaged) { skippedUnreadable.push(row.id); continue; }
     if (!row.nodes || !row.ctx) continue;
     let nodes: unknown;
     let byNode: unknown;
@@ -87,7 +93,7 @@ export function newestUsableSnapshotCopy(db: Database.Database, rigId: string, l
     const copy = (byNode as Record<string, unknown>)[node.id];
     if (copy === null || copy === undefined || startupContextUnusable(copy, runtime)) continue;
     // `iterate` holds the statement open until the loop ends; leaving it with return closes it.
-    return { snapshotId: row.id, kind: row.kind, createdAt: row.created_at, context: copy as NodeStartupSnapshot };
+    return { snapshotId: row.id, kind: row.kind, createdAt: row.created_at, context: copy as NodeStartupSnapshot, ...(skippedUnreadable.length > 0 ? { skippedUnreadable } : {}) };
   }
   return null;
 }
@@ -129,8 +135,14 @@ export function seatStartupForRestore(
   if (!from) return { kind: "none_usable", why, ownRow: own.kind !== "none" };
   return {
     kind: "fallback", context: from.context, from, why,
-    warning: `Restore: ${seat.logicalId}: ${why}. This fresh start replays the copy of its startup files saved in snapshot ${from.snapshotId} (${from.kind}, ${from.createdAt}), the newest snapshot of this rig whose copy can be used; a successful launch saves it as the seat's new context.`,
+    warning: `Restore: ${seat.logicalId}: ${why}. This fresh start replays the copy of its startup files saved in snapshot ${from.snapshotId} (${from.kind}, ${from.createdAt}), the newest snapshot of this rig whose copy can be used; a successful launch saves it as the seat's new context.${skippedNote(from)}`,
   };
+}
+
+/** OF-168: the newer snapshots passed over on the way to `from` because their saved data is not JSON: what they hold for this seat is
+ *  unknown, so the operator is told rather than left to assume the newest snapshot was read. Empty when none were. */
+function skippedNote(from: UsableSnapshotCopy): string {
+  return from.skippedUnreadable?.length ? ` Newer snapshot${from.skippedUnreadable.length === 1 ? "" : "s"} ${from.skippedUnreadable.join(", ")} could not be read (saved data is not JSON) and ${from.skippedUnreadable.length === 1 ? "was" : "were"} passed over; repair or remove ${from.skippedUnreadable.length === 1 ? "it" : "them"}.` : "";
 }
 
 /** The sentence restore refuses with when no snapshot holds a usable copy. */
