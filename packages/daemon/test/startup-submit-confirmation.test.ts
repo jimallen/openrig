@@ -175,6 +175,17 @@ describe("startup prompt submission", () => {
       for (const o of observations) expect(o.expected).toEqual({ bytes: reached.length, sha256: crypto.createHash("sha256").update(reached).digest("hex") });
     });
 
+    // OF-169: after the guarded retry the staged-text check also compares what reached the pane, so a prompt still
+    // staged is reported as staged (not as an ambiguous composer) even though its source held controls.
+    it("OF-169: a stripped prompt that stays staged after the guarded retry is reported staged", async () => {
+      const f = fixture(new Set([1, 2]), "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line\u0003 one\u001b[31m\n\tindented\u007f line\u0085 two");
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready", submission: { status: "staged" } });
+      expect(result.warnings).toEqual([expect.stringContaining("press Enter in that pane")]);
+      expect(f.composer()).toBe("Line one[31m\n\tindented line two");
+    });
+
     it("keeps prelaunch delivery before harness launch and adds only the bounded check delay", async () => {
       const f = fixture(0, "claude-code", false, true);
       await f.start({ startupActions: [], resolvedStartupFiles: [file("CLAUDE.md", true, "guidance_merge"), file("role.md")] });
