@@ -183,7 +183,7 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
   });
 
   it("LOCAL HUMAN INBOX YIELDS: a registered human named 'human' or a real pane for human@kernel still wins its own class", async () => {
-    const registered = makeHarness({ entities: () => [{ ...FOUNDER_FRAGMENT, entityId: "human", address: "human@external" } as unknown as HumanFragment] });
+    const registered = makeHarness({ entities: () => [{ ...FOUNDER_FRAGMENT, entityId: "human", address: "human@external" }] });
     expect(registered.repo.classifyDestinationOf("human@kernel")).toMatchObject({ class: "gateway-routable", via: "registry-alias" });
     registered.db.close();
     h.db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES ('node-h', 'rig-1', 'human', 'terminal')").run();
