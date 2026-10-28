@@ -149,7 +149,7 @@ export interface StuckSweepFindingAction {
   kind: StuckFindingKind;
   qitemId: string;
   findingQitemId: string;
-  action: "created" | "refreshed" | "closed";
+  action: "created" | "refreshed" | "closed" | "unreadable";
 }
 
 export interface StuckSweepResult {
@@ -611,9 +611,11 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const dedupTag = findingDedupTag(c.kind, c.row.qitemId);
       const shared = findQueueRecovery(deps.db, c.row.qitemId);
       if (shared) {
-        const existingTags = readRow(shared.qitemId)?.tags ?? [];
-        for (const tag of existingTags) if (tag.startsWith("stuck-sweep:")) liveDedupTags.add(tag);
-        if (["pending", "in-progress", "blocked"].includes(shared.state)) findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: shared.qitemId, action: "refreshed" });
+        const sharedRow = readRow(shared.qitemId);
+        for (const tag of sharedRow?.tags ?? []) if (tag.startsWith("stuck-sweep:")) liveDedupTags.add(tag);
+        // OF-159: a shared recovery that cannot be read (readRow named it) was not refreshed: nothing about it was read or written.
+        // It is reported as `unreadable`, still holding the original, rather than labelled with an action that did not happen.
+        if (["pending", "in-progress", "blocked"].includes(shared.state)) findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: shared.qitemId, action: sharedRow ? "refreshed" : "unreadable" });
         continue;
       }
       liveDedupTags.add(dedupTag);
@@ -693,7 +695,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     }
 
     const outcome = findings.length > 0 ? "findings" : "clean";
-    status?.record(outcome, { findings: findings.filter((f) => f.action !== "closed").length });
+    status?.record(outcome, { findings: findings.filter((f) => f.action !== "closed" && f.action !== "unreadable").length });
     return { outcome, findings };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

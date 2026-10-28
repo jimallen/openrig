@@ -1,4 +1,5 @@
 import { findQueueRecovery, recoveryId, recoveryTag } from "./queue-recovery.js";
+import { findDamagedTagRows } from "./damaged-tag-rows.js";
 // OPR.0.4.6.WF5 FR-2 class (b): detection-time exception items for
 // STUCK/OVERDUE instances.
 //
@@ -99,6 +100,17 @@ export function makeEnsureStuckExceptionItem(deps: StuckExceptionDeps): EnsureSt
         `workflow:${exception.identity.workflowName}`,
         recoveryTag(exception.deadlineEvidence!.packetId),
       ) as { qitem_id: string; destination_session: string } | undefined;
+    // OF-159: a historical item for this occurrence whose saved tags are damaged is not "no item" (the lookup above parses tags and
+    // cannot see it): opening another beside it would duplicate the obligation on a guess. It is named, and it is the item.
+    const damagedOpen = open ? undefined : findDamagedTagRows(deps.db, {
+      tags: [`occurrence:${exception.identity.occurrenceKey}`, `instance:${exception.identity.instanceId}`, `workflow:${exception.identity.workflowName}`,
+        "workflow-exception", "exception:stuck_overdue"],
+      without: recoveryTag(exception.deadlineEvidence!.packetId),
+    })[0];
+    if (damagedOpen) {
+      log(`workflow exception: stuck_overdue item ${damagedOpen.qitemId} for instance ${exception.deadlineEvidence!.instanceId} has saved tags that are not readable JSON; not opening a second item (repair or remove the row)`);
+      return { outcome: "deduped", qitemId: damagedOpen.qitemId };
+    }
     if (open) {
       // Re-detection of the same unresolved episode: re-nudge the ONE
       // item (best-effort — the durable item is the guarantee).

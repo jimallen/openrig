@@ -210,6 +210,9 @@ export interface WorkflowBindingPayload {
   createdAt: string;
   completedAt: string | null;
   additionalInstanceIds: string[];
+  /** OF-146/OF-159: present only when the instance's saved frontier cannot be read (then `currentFrontier` is `[]` BECAUSE of it,
+   *  not because no step is live). */
+  unreadable?: string[];
 }
 
 export interface AcceptanceItem {

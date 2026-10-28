@@ -277,3 +277,18 @@ it("shows the exception selection, unavailable evidence and owning obligation wi
   expect(lines).toContain("qitem-existing · owner=prior@rig · state=pending");
   expect(lines).toContain("rig workflow revise WF01ABC");
 });
+
+// OF-159: the daemon lists an exception item whose saved tags it cannot read as `{ qitemId, unreadable, inspectCommand }` only.
+it("shows an exception obligation the daemon could not read as DAMAGED, not as an item with an undefined owner and state", () => {
+  const lines = renderInstanceShow({ ...INSTANCE,
+    exceptionObligations: [
+      { qitemId: "qitem-ok", ownerSession: "prior@rig", state: "pending", evidenceRef: "rig workflow trace WF01ABC", inspectCommand: "rig queue show qitem-ok --full --json" },
+      { qitemId: "qitem-bad", unreadable: ["tags"], inspectCommand: "rig queue show qitem-bad --full --json" },
+    ],
+  }, NOW).join("\n");
+  expect(lines).toContain("qitem-ok · owner=prior@rig · state=pending");
+  expect(lines).toContain("exception obligation: qitem-bad · ▲ DAMAGED: saved tags not readable JSON");
+  expect(lines).toContain("owner and state are UNKNOWN");
+  expect(lines).not.toContain("undefined");
+  expect(lines.match(/owner=/g) ?? []).toHaveLength(1);
+});

@@ -22,6 +22,7 @@
 // Workspace + Mission scope tab piping remains Phase 5 polish (filesystem-walk
 // dependent; P5-5 lays the data layer).
 
+import { damagedColumns, damagedExplanation } from "../../lib/damaged-row.js";
 import { useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { cn } from "../../lib/utils.js";
@@ -1210,6 +1211,15 @@ function SliceOverviewTab({ detail, remoteGated }: { detail: SliceDetail; remote
           {detail.workflowBinding && (
             <div className="text-on-surface-variant">
               Workflow: {detail.workflowBinding.workflowName} v{detail.workflowBinding.workflowVersion}
+              {damagedColumns(detail.workflowBinding).length > 0 ? (
+                <div
+                  data-testid="slice-overview-workflow-damaged"
+                  title={damagedExplanation(damagedColumns(detail.workflowBinding))}
+                  className="mt-1 text-on-surface"
+                >
+                  ▲ DAMAGED · {damagedColumns(detail.workflowBinding).join(", ")} unreadable · whether a step is live is unknown
+                </div>
+              ) : null}
             </div>
           )}
         </div>

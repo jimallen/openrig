@@ -287,7 +287,8 @@ describe("queue items: one damaged saved column names its row; the rows beside i
         expect(JSON.stringify(result), "the existing successor is not reported dangling").not.toContain(closed.qitemId);
       });
 
-      it("finding link: an existing recovery row whose tags are the wrong shape is skipped, and the stuck row is still refreshed", async () => {
+      // OF-159: this row used to expect action "refreshed", which labelled a recovery the sweep could not read as one it had refreshed.
+      it("finding link: an existing recovery row whose tags are the wrong shape is skipped and reported as unreadable, not refreshed", async () => {
         const stuck = await overdue();
         const recovery = await item("recovery for the stuck row");
         // Valid JSON of the wrong shape: the SQL link scan still finds it, the reader cannot read it.
@@ -295,7 +296,31 @@ describe("queue items: one damaged saved column names its row; the rows beside i
         const { lines, result } = await sweep();
         expect(lines.filter((l) => l.includes("SWEEP FAILED")), lines.join("\n")).toEqual([]);
         expect(lines).toContain(skipped(recovery.qitemId));
-        expect(result.findings).toContainEqual(expect.objectContaining({ qitemId: stuck.qitemId, findingQitemId: recovery.qitemId, action: "refreshed" }));
+        expect(result.findings).toContainEqual(expect.objectContaining({ qitemId: stuck.qitemId, findingQitemId: recovery.qitemId, action: "unreadable" }));
+        expect(result.findings.filter((f) => f.action === "refreshed")).toEqual([]);
+      });
+
+      it("finding link: a recovery row whose tags are not JSON at all is reported as unreadable too, and is not written", async () => {
+        const stuck = await overdue();
+        const recovery = await item("recovery for the stuck row");
+        db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(`["recovery-for:${stuck.qitemId}", "x`, recovery.qitemId);
+        const before = db.prepare("SELECT * FROM queue_items WHERE qitem_id = ?").get(recovery.qitemId);
+        const { lines, result } = await sweep();
+        expect(lines).toContain(skipped(recovery.qitemId));
+        expect(result.findings).toContainEqual(expect.objectContaining({ qitemId: stuck.qitemId, findingQitemId: recovery.qitemId, action: "unreadable" }));
+        expect(result.findings.filter((f) => f.action === "created")).toEqual([]);
+        expect(db.prepare("SELECT * FROM queue_items WHERE qitem_id = ?").get(recovery.qitemId)).toEqual(before);
+      });
+
+      it("finding link: a shared recovery the sweep could not read is not counted as a finding it routed", async () => {
+        const stuck = await overdue();
+        const recovery = await item("recovery for the stuck row");
+        db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?").run(`["recovery-for:${stuck.qitemId}", "x`, recovery.qitemId);
+        const recorded: Array<{ outcome: string; findings?: number }> = [];
+        const status = { record: (outcome: "clean" | "findings" | "failed", detail?: { error?: string; findings?: number }) => { recorded.push({ outcome, findings: detail?.findings }); } };
+        const result = await runStuckSweep({ db, queueRepo: repo, log: () => {}, now: new Date("2026-01-01T00:00:00.000Z"), resolveOrchestrator: () => null, status } as never);
+        expect(result.findings.map((f) => f.action)).toEqual(["unreadable"]);
+        expect(recorded).toEqual([{ outcome: "findings", findings: 0 }]);
       });
 
       // Same class as review F2b: a row the sweep could not read is not a row that stopped being stuck.
