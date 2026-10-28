@@ -129,6 +129,24 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
     expect(await h.tmux.hasSession(sessionName)).toBe(true);
   });
 
+  // z2 delta review G1: tmux cannot say whether the adopted session is live and the seat is listed --fresh. Restore cannot tell
+  // whether a fresh start would leave the person's session running untracked, so it fails the seat and starts nothing.
+  it("a seat listed --fresh whose adopted session tmux cannot check fails the same way, and nothing is started", async () => {
+    const { seat, rowId, sessionName } = await adoptedSeat("person-shell");
+    const { snapshotId } = await down(seat.rigId);
+    const real = vi.mocked(h.tmux.hasSession).getMockImplementation()!;
+    vi.mocked(h.tmux.hasSession).mockImplementation(async (name: string) => {
+      if (name === sessionName) throw new Error("tmux probe failed (injected)");
+      return real(name);
+    });
+
+    const node = await upExisting(seat.rigId, snapshotId!, ["dev.impl"]);
+
+    expect(node).toMatchObject({ status: "failed", errorCode: "adopted_liveness_unknown" });
+    expect(vi.mocked(h.tmux.createSession)).not.toHaveBeenCalled();
+    expect(row(rowId)).toMatchObject({ status: "detached" });
+  });
+
   it("control: a seat listed --fresh whose adopted session has ended is started fresh", async () => {
     const { seat, rowId, sessionName } = await adoptedSeat("person-shell");
     const { snapshotId } = await down(seat.rigId);

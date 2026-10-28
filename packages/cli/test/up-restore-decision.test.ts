@@ -475,6 +475,41 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(exitCode).toBe(1);
   });
 
+  // OF-163: a seat restore brought back by reattaching its adopted session (rig down left it running) says so, in the result
+  // and in the plan, instead of a bare "resumed" / "resume-original".
+  it("a reattached seat prints as reattached, naming the adopted session", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "fully_restored",
+      nodes: [{ logicalId: "dev.impl", status: "resumed", reattached: { sessionId: "s-1", sessionName: "person-shell" } }, { logicalId: "dev.qa", status: "resumed" }], warnings: [],
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    expect(logs).toContain("  dev.impl: reattached — adopted session person-shell, which rig down left running");
+    expect(logs).toContain("  dev.qa: resumed");
+  });
+
+  it("--plan names a seat it would reattach as a reattach", async () => {
+    respond = () => ({
+      status: "plan", mode: "restore", rigId: "rig-1", rigName: "myrig",
+      snapshot: { id: "snap-9", kind: "auto-pre-down", createdAt: "2026-06-11T00:00:00Z" }, wouldCaptureCurrentState: false,
+      nodes: [
+        { logicalId: "dev.impl", intendedAction: "resume-original", reattach: { sessionId: "s-1", sessionName: "person-shell" }, reason: "reattaches its adopted session person-shell", tokenState: "missing" },
+        { logicalId: "dev.qa", intendedAction: "resume-original", tokenState: "present" },
+      ],
+      mutated: false,
+    });
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing", "--plan"]);
+    });
+    const output = logs.join("\n");
+    expect(output).toContain("dev.impl: reattach — reattaches its adopted session person-shell");
+    expect(output).toContain("dev.qa: resume-original");
+    // Review F2: a reattach starts nothing, so no token line is printed under it; a resumed seat keeps its line (control).
+    expect(output).not.toContain("token: missing");
+    expect(output).toContain("token: present");
+  });
+
   // OPR.0.3.4.4 — plan-restore preview render + honest-async timeout.
   it("--plan restore preview renders per-seat intended actions and 'No changes made.'", async () => {
     respond = () => ({

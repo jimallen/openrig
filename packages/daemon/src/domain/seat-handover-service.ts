@@ -89,7 +89,7 @@ export type SeatHandoverResult =
   | { ok: true; plan: SeatHandoverPlan }
   | { ok: true; result: SeatHandoverMutationResult }
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found" | "handover_unsupported_runtime"; message: string; guidance: string }
-  | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
+  | { ok: false; code: "current_occupant_required" | "adopted_occupant" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
   | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed" | "seat_cwd_unusable"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
@@ -115,6 +115,8 @@ interface SessionRow {
   id: string;
   session_name: string;
   status: string;
+  /** `claimed` for a session OpenRig adopted rather than launched (OF-164). */
+  origin?: string | null;
 }
 
 interface BindingOwnerRow {
@@ -930,6 +932,17 @@ export class SeatHandoverService {
         guidance: "Inspect the seat with: rig seat status <seat>",
       } };
     }
+    // OF-164: every source but `discovered` respawns the successor INTO the departing occupant's pane, replacing its process.
+    // An adopted occupant is a session the person started, which OpenRig never ends (rig seat stop refuses it, rig down
+    // leaves it running): refused before anything is touched. A discovered successor leaves it running, so it may proceed.
+    if (latestSession.origin === "claimed" && source.mode !== "discovered") {
+      return { ok: false, refusal: {
+        ok: false,
+        code: "adopted_occupant",
+        message: `Seat "${seatRef}" is occupied by an adopted session, ${latestSession.session_name} (origin=claimed), which OpenRig did not start: a handover would replace its process, and OpenRig never ends a session the person started.`,
+        guidance: `Release it from the seat with: rig unclaim ${latestSession.id}, or stop it yourself; then start the seat fresh with rig seat launch, or hand over to a session you started with --source discovered:<id>.`,
+      } };
+    }
     if (source.mode !== "fork") return { ok: true, status: statusResult, node, latestSession, forkSource: null };
     const forkRef = source.ref ?? latestSession.session_name;
     const discovery = discoverResumeToken(this.db, forkRef);
@@ -993,7 +1006,7 @@ export class SeatHandoverService {
    *  from (OF-144 review F2: kept, so the departing row is always the occupant's). */
   private lookupLatestSession(nodeId: string): SessionRow | null {
     return this.db.prepare(
-      "SELECT id, session_name, status FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1"
+      "SELECT id, session_name, status, origin FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1"
     ).get(nodeId) as SessionRow | undefined ?? null;
   }
 

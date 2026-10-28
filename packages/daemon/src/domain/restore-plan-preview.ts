@@ -10,6 +10,7 @@
 // snapshot capture (the auto-rehydrate capture is itself a mutation and is
 // only reported as would-happen), no projection writes.
 
+import { reattachableAdoptedSession } from "./adopted-reattach.js";
 import type Database from "better-sqlite3";
 import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, type ActiveOccupantResolution, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
 import type { RigWithRelations, Snapshot, SnapshotData } from "./types.js";
@@ -69,6 +70,9 @@ export interface RestorePlanPreviewNode {
    *  node carries it. Restore's pre-restore snapshot refuses the whole rig on it, so the plan does not forecast a
    *  start for this seat. Absent: the row is readable. */
   savedRowDamage?: string[];
+  /** OF-163: apply would bring this seat back by reattaching its adopted session, which rig down left running
+   *  (adopted-reattach.ts, the rule restore uses): nothing is started for it. */
+  reattach?: { sessionId: string; sessionName: string };
 }
 
 export interface RestorePlanPreview {
@@ -242,6 +246,8 @@ export function buildRestorePlanPreview(
   continuity: Readonly<Record<string, string>> = {},
   /** OF-135: how the plan's advice names the rig (`rigAdviceHandle`: its name while that reaches it alone, else its id). */
   adviceRig: string = rig.rig.name,
+  /** OF-163: the live seats, by logical id, whose adopted session rig down left running (see `readPreviewReattach`). */
+  reattach: ReadonlyMap<string, { sessionId: string; sessionName: string }> = new Map(),
 ): RestorePlanPreview {
   // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own
   // when previewing a snapshot; for the live no-snapshot case, the SAME
@@ -334,6 +340,28 @@ export function buildRestorePlanPreview(
     // OF-62: restore captures a pre-restore snapshot of the LIVE rig first, and that capture refuses on a damaged saved
     // row (snapshot-capture.ts, the same predicate). Nothing is started, so the plan must not say "fresh-primed".
     const damage = savedRowDamage(node);
+    // OF-163: restore reattaches such a seat before any gate (restoreNodeUnisolated), so its plan is the reattach, not the
+    // gate or launch forecast. A seat listed --fresh is not reattached. A damaged row still refuses the whole rig (below).
+    // z2 review F4: restore refuses a seat listed --fresh while its adopted session is still live (adopted_session_live).
+    const freshOverAdopted = freshLogicalIds?.includes(node.logicalId) ? reattach.get(node.logicalId) : undefined;
+    if (freshOverAdopted && damage.length === 0) {
+      return {
+        ...forecasted,
+        wouldRefuse: `its adopted session ${freshOverAdopted.sessionName}, which rig down left running, would be left running untracked: restore refuses the fresh start while it is live (release it first with rig unclaim ${freshOverAdopted.sessionId}, end it yourself, or leave the seat out of --fresh to reattach it); once it has ended, the seat is started fresh`,
+      };
+    }
+    const adopted = freshLogicalIds?.includes(node.logicalId) ? undefined : reattach.get(node.logicalId);
+    if (adopted && damage.length === 0) {
+      const { reason: _reason, restoreStatus: _status, runtimePrompt: _prompt, ...rest } = forecasted;
+      return {
+        ...rest,
+        occupantSessionId: adopted.sessionId,
+        intendedAction: "resume-original" as const,
+        reason: `reattaches its adopted session ${adopted.sessionName}, which rig down left running; nothing is started (if that session has ended by then, restore goes the ordinary way)`,
+        freshRequired: false,
+        reattach: adopted,
+      };
+    }
     if (damage.length === 0) return forecasted;
     return {
       ...forecasted,
@@ -371,6 +399,17 @@ export function buildRestorePlanPreview(
       },
     } : {}),
   };
+}
+
+/** OF-163: the live seats whose adopted session rig down left running, by logical id: the rule restore reattaches by
+ *  (adopted-reattach.ts). Whether the session is still live is restore's question at apply time. */
+export function readPreviewReattach(db: Database.Database, rig: RigWithRelations): Map<string, { sessionId: string; sessionName: string }> {
+  const out = new Map<string, { sessionId: string; sessionName: string }>();
+  for (const node of rig.nodes) {
+    const adopted = reattachableAdoptedSession(db, node.id);
+    if (adopted) out.set(node.logicalId, adopted);
+  }
+  return out;
 }
 
 /** The `continuity_state.status` of each live seat, by node id, read where restore reads it (readContinuityRow). */

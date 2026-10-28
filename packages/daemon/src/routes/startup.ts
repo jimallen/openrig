@@ -18,7 +18,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { Node, RigWithRelations } from "../domain/types.js";
 import { defaultProbeRuntimes } from "../domain/kernel-boot.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
-import { buildRestorePlanPreview, collectPreviewSessionRows, readPreviewContinuity } from "../domain/restore-plan-preview.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows, readPreviewContinuity, readPreviewReattach } from "../domain/restore-plan-preview.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { deriveCanonicalSessionName, deriveSessionName } from "../domain/session-name.js";
 import { observeSolePane } from "../domain/pane-binding-observation.js";
@@ -131,7 +131,12 @@ startupRoutes.get("/:rigId", async (c) => {
   const rig = repo(c).getRig(c.req.param("rigId"));
   if (!rig) return c.json({ ok: false, message: "Rig is no longer available." }, 404);
   const snapshot = currentSnapshot(c, rig);
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name));
+  const observedByNode = new Map<string, Awaited<ReturnType<typeof observeSeat>>>();
+  for (const node of rig.nodes) observedByNode.set(node.id, await observeSeat(c, rig, node));
+  // OF-163 review F3: restore reattaches only a live adopted session, so a seat observed stopped gets no reattach forecast.
+  const reattach = readPreviewReattach(repo(c).db, rig);
+  for (const node of rig.nodes) if (observedByNode.get(node.id)?.state === "stopped") reattach.delete(node.logicalId);
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name), reattach);
   const auth = await defaultProbeRuntimes();
   const history = sessions(c).getSessionsForRig(rig.rig.id);
   const seats = [];
@@ -139,7 +144,7 @@ startupRoutes.get("/:rigId", async (c) => {
     const forecast = plan.nodes.find((entry) => entry.logicalId === node.logicalId)!;
     const hasHistory = history.some((session) => session.nodeId === node.id);
     const available = node.runtime === "codex" ? auth.codex === "ok" : node.runtime === "claude-code" ? auth.claudeCode === "ok" : true;
-    const observed = await observeSeat(c, rig, node);
+    const observed = observedByNode.get(node.id)!;
     seats.push({ ...forecast, hasHistory, nodeId: node.id, runtime: node.runtime, model: node.model,
       revision: startupRevision(repo(c).db, node), observed,
       contextPending: history.some((session) => session.nodeId === node.id && dep<import("../domain/startup-orchestrator.js").StartupOrchestrator>(c, "startupOrchestrator")?.canContinueFresh(node.id, session.id)),
@@ -207,6 +212,8 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
       if (!eligibility.ok) return c.json({ ok: false, code: "startup_source_unavailable", message: eligibility.blockers.join("; ") }, 409);
       snapshot = captureRehydrate(c, rig.rig.id);
     }
+    // OF-163: no reattach forecast here. This seat was just observed stopped in tmux, so restore would not reattach an
+    // adopted session for it (it reattaches only a live one); the forecast is the ordinary one.
     const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(repo(c).db, selectedRig), rigAdviceHandleIn(repo(c).db, selectedRig.rig.id, selectedRig.rig.name)).nodes[0]!;
     if (history.length > 0 && forecast.intendedAction !== "resume-original") return c.json({ ok: false, code: "resume_unavailable", freshAllowed: forecast.freshRequired,
       message: forecast.reason ?? "The prior conversation cannot be resumed under this seat's configured policy. A fresh conversation needs a separate decision." }, 409);

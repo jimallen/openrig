@@ -228,6 +228,22 @@ describe("rig start (OPR.0.3.4.1)", () => {
     expect(applyBodies.length).toBeGreaterThanOrEqual(1);
   });
 
+  // OF-163: rig start prints a seat that came back by reattaching its adopted session as reattached, naming the session.
+  it("a reattached seat prints as reattached", async () => {
+    setupCandidateRig("my-rig");
+    const planOrApply = routes["/api/rigs/:id/up"]!;
+    routes["/api/rigs/:id/up"] = (req, body) => body.plan === true ? planOrApply(req, body) : {
+      status: "restored", rigId: "rig-1", rigName: "my-rig", rigResult: "fully_restored",
+      nodes: [{ logicalId: "dev.impl", status: "resumed", reattached: { sessionId: "s-1", sessionName: "person-shell" } }, { logicalId: "dev.qa", status: "resumed" }],
+      warnings: [],
+    };
+    const { logs } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "start", "--last"]);
+    });
+    expect(logs).toContain("    dev.impl: reattached -- adopted session person-shell, which rig down left running");
+    expect(logs).toContain("    dev.qa: resumed");
+  });
+
   it("--rigs restores only the named rig", async () => {
     routes["/api/rigs/summary"] = () => [
       { id: "rig-1", name: "alpha", nodeCount: 1, lifecycleState: "recoverable" },

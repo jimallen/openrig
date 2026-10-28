@@ -969,6 +969,58 @@ describe("SeatHandoverService", () => {
     expect(durableRows()).toBe(before);
   });
 
+  // OF-164: a handover replaces the departing occupant's process in its pane (respawn in place). An adopted occupant is a
+  // session the person started, which OpenRig never ends (rig seat stop refuses it; rig down leaves it running, OF-155).
+  describe("an adopted (claimed) occupant is not handed over from (OF-164)", () => {
+    it.each([undefined, "fresh", "rebuild", "fork:dev-impl@seat-rig"])("source %s: refused before anything is touched, dry-run and real alike", async (source) => {
+      const { sessionId } = seedSeat();
+      db.prepare("UPDATE sessions SET origin = 'claimed', resume_type = 'codex_id', resume_token = 'native-abc' WHERE id = ?").run(sessionId);
+      const before = durableRows();
+
+      const dry = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source, dryRun: true });
+      const real = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source });
+
+      expect(real).toEqual({
+        ok: false, code: "adopted_occupant",
+        message: `Seat "dev-impl@seat-rig" is occupied by an adopted session, dev-impl@seat-rig (origin=claimed), which OpenRig did not start: a handover would replace its process, and OpenRig never ends a session the person started.`,
+        guidance: `Release it from the seat with: rig unclaim ${sessionId}, or stop it yourself; then start the seat fresh with rig seat launch, or hand over to a session you started with --source discovered:<id>.`,
+      });
+      expect(dry).toEqual(real);
+      expect(respawnPane).not.toHaveBeenCalled();
+      expect(launchHarness).not.toHaveBeenCalled();
+      expect(durableRows()).toBe(before);
+    });
+
+    it("control: a discovered successor leaves the adopted session running, so that handover proceeds (nothing respawned or killed)", async () => {
+      const { sessionId } = seedSeat();
+      db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(sessionId);
+      const discovered = seedDiscovery();
+
+      const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: `discovered:${discovered.id}` });
+
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(respawnPane).not.toHaveBeenCalled();
+      expect(killSession).not.toHaveBeenCalled();
+    });
+
+    it("the route answers 409 adopted_occupant", async () => {
+      const setup = createTestApp(db);
+      const rig = setup.rigRepo.createRig("seat-rig");
+      const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "codex" });
+      const session = setup.sessionRegistry.registerSession(node.id, "dev-impl@seat-rig");
+      setup.sessionRegistry.updateStatus(session.id, "running");
+      setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@seat-rig" });
+      db.prepare("UPDATE sessions SET origin = 'claimed' WHERE id = ?").run(session.id);
+
+      const res = await setup.app.request("/api/seat/handover/dev-impl%40seat-rig", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "context-wall", source: "fresh" }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ ok: false, code: "adopted_occupant" });
+    });
+  });
+
   // OF-142 (w5 engineer): `rig seat handover --dry-run` printed a plan for a seat whose real handover refuses it before the folder
   // check: no current occupant to hand over from, or a fork source with no native conversation id to carry.
   describe("the dry-run foresees the refusals the real handover gives for the departing occupant and the fork source", () => {
