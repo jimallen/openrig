@@ -34,6 +34,8 @@ describe("a seat's adopted session across rig down, rig remove and rig up --exis
       await h.tmux.createSession(sessionName);
     }
     h.db.prepare("UPDATE sessions SET origin = 'claimed', resume_type = 'claude_session_id', resume_token = 'adopted-token' WHERE id = ?").run(row.id);
+    // a2: the OpenRig marker a claim writes into the adopted session (claim-service setRiggedMetadata).
+    await h.tmux.setSessionOption(sessionName, "@rigged_node_id", seat.nodeId);
     return { seat, rowId: row.id, sessionName };
   }
   const down = (rigId: string, opts?: { delete?: boolean }) => new RigTeardownOrchestrator({

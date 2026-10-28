@@ -10,13 +10,20 @@ describe("plan routes forecast the reattach of an adopted session rig down left 
   let db: Database.Database;
   afterEach(() => db?.close());
 
-  function adoptedSeatAfterDown(tmux?: "absent" | "present") {
+  function adoptedSeatAfterDown(tmux: "absent" | "present" = "present") {
     db = createFullTestDb();
-    // observeSeat asks tmux's probeSession; the default double has none (it reads "unverified").
-    const probing = (state: "absent" | "present"): TmuxAdapter => Object.assign(mockTmuxAdapter(), { probeSession: async () => ({ state }) });
-    const setup = createTestApp(db, tmux ? { tmux: probing(tmux) } : undefined);
+    // a2 review F3: the plan asks tmux as restore does (probeAdoptedSession): the session is live and carries the OpenRig
+    // marker a claim writes (@rigged_node_id), or it is absent. observeSeat asks probeSession.
+    let markedNode = "";
+    const probing = (state: "absent" | "present"): TmuxAdapter => Object.assign(mockTmuxAdapter(), {
+      probeSession: async () => ({ state }),
+      hasSession: async () => state === "present",
+      readSessionOption: async () => ({ ok: true as const, value: markedNode }),
+    });
+    const setup = createTestApp(db, { tmux: probing(tmux) });
     const rig = setup.rigRepo.createRig("plan-adopted-rig");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { role: "worker", runtime: "claude-code" });
+    markedNode = node.id;
     const session = setup.sessionRegistry.registerSession(node.id, "dev-impl@plan-adopted-rig");
     db.prepare("UPDATE sessions SET origin = 'claimed', status = 'running' WHERE id = ?").run(session.id);
     setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@plan-adopted-rig", tmuxPane: "%3" });

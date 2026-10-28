@@ -162,6 +162,21 @@ describe("SeatHandoverService", () => {
     ])));
   }
 
+  // a2: a discovered successor is a session the person started (origin claimed); like a claimed session it carries the
+  // seat's OpenRig marker, by which rig up --existing later tells it from a session recreated under its name.
+  it("a discovered successor is given the seat's OpenRig marker (@rigged_node_id)", async () => {
+    const { node } = seedSeat();
+    const discovered = seedDiscovery();
+    const setSessionOption = vi.fn(async () => ({ ok: true as const }));
+
+    const result = await newService(Object.assign(tmux(), { setSessionOption })).handover({
+      seatRef: "dev-impl@seat-rig", reason: "mvp-proof", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(setSessionOption).toHaveBeenCalledWith("successor-session", "@rigged_node_id", node.id);
+  });
+
   it("binds an active seat to an already-created discovered successor", async () => {
     const { rig, node, sessionId } = seedSeat();
     const discovered = seedDiscovery();

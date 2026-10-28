@@ -611,6 +611,8 @@ describe("Up API route", () => {
       sessionRegistry.updateBinding(node.id, { tmuxSession: "worker@plan-adopted-rig", tmuxPane: "%3" });
       snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
       sessionRegistry.updateStatus(sess.id, "detached"); // as rig down leaves an adopted session (OF-155)
+      // a2: the plan asks tmux as restore does: the session is live and carries the seat's OpenRig marker (written at claim).
+      Object.assign(tmuxAdapter, { hasSession: async () => true, readSessionOption: async () => ({ ok: true as const, value: node.id }) });
 
       const res = await app.request("/api/up", {
         method: "POST",

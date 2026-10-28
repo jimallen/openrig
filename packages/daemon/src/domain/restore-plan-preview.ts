@@ -10,7 +10,7 @@
 // snapshot capture (the auto-rehydrate capture is itself a mutation and is
 // only reported as would-happen), no projection writes.
 
-import { reattachableAdoptedSession } from "./adopted-reattach.js";
+import { contestedAdoptedSessionReason, probeAdoptedSession, replacedAdoptedSessionReason, unknownAdoptedSessionReason, type AdoptedSessionProbe, type SessionOptionRead } from "./adopted-reattach.js";
 import type Database from "better-sqlite3";
 import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, type ActiveOccupantResolution, type ActiveSnapshotSessionResolution } from "./active-occupant.js";
 import type { RigWithRelations, Snapshot, SnapshotData } from "./types.js";
@@ -247,7 +247,7 @@ export function buildRestorePlanPreview(
   /** OF-135: how the plan's advice names the rig (`rigAdviceHandle`: its name while that reaches it alone, else its id). */
   adviceRig: string = rig.rig.name,
   /** OF-163: the live seats, by logical id, whose adopted session rig down left running (see `readPreviewReattach`). */
-  reattach: ReadonlyMap<string, { sessionId: string; sessionName: string }> = new Map(),
+  reattach: ReadonlyMap<string, AdoptedSessionProbe> = new Map(),
 ): RestorePlanPreview {
   // OPR.0.5.7.1 — the relation the resolution consumes: the snapshot's own
   // when previewing a snapshot; for the live no-snapshot case, the SAME
@@ -342,15 +342,34 @@ export function buildRestorePlanPreview(
     const damage = savedRowDamage(node);
     // OF-163: restore reattaches such a seat before any gate (restoreNodeUnisolated), so its plan is the reattach, not the
     // gate or launch forecast. A seat listed --fresh is not reattached. A damaged row still refuses the whole rig (below).
+    // z2 review F5 / a2 review F3: restore fails a seat whose adopted session another seat's live row also names
+    // (adopted_session_contested), is marked as another seat's (adopted_session_replaced) or cannot be told
+    // (adopted_liveness_unknown), whether or not it is listed --fresh; the plan reads the same probe (probeAdoptedSession).
+    const probed = reattach.get(node.logicalId);
+    const failure = probed?.kind === "contested" ? contestedAdoptedSessionReason(probed)
+      : probed?.kind === "replaced" ? replacedAdoptedSessionReason(probed, probed.marker)
+      : probed?.kind === "unknown" ? unknownAdoptedSessionReason(probed)
+      : null;
+    if (failure && damage.length === 0) {
+      const { runtimePrompt: _prompt, wouldRefuse: _refuse, ...rest } = forecasted;
+      return {
+        ...rest,
+        intendedAction: "awaiting-decision" as const,
+        restoreStatus: "failed" as const,
+        reason: `restore would fail this seat: ${failure}`,
+        freshRequired: false,
+      };
+    }
+    const live = probed?.kind === "live" ? probed : undefined;
     // z2 review F4: restore refuses a seat listed --fresh while its adopted session is still live (adopted_session_live).
-    const freshOverAdopted = freshLogicalIds?.includes(node.logicalId) ? reattach.get(node.logicalId) : undefined;
+    const freshOverAdopted = freshLogicalIds?.includes(node.logicalId) ? live : undefined;
     if (freshOverAdopted && damage.length === 0) {
       return {
         ...forecasted,
         wouldRefuse: `its adopted session ${freshOverAdopted.sessionName}, which rig down left running, would be left running untracked: restore refuses the fresh start while it is live (release it first with rig unclaim ${freshOverAdopted.sessionId}, end it yourself, or leave the seat out of --fresh to reattach it); once it has ended, the seat is started fresh`,
       };
     }
-    const adopted = freshLogicalIds?.includes(node.logicalId) ? undefined : reattach.get(node.logicalId);
+    const adopted = freshLogicalIds?.includes(node.logicalId) ? undefined : live;
     if (adopted && damage.length === 0) {
       const { reason: _reason, restoreStatus: _status, runtimePrompt: _prompt, ...rest } = forecasted;
       return {
@@ -359,7 +378,7 @@ export function buildRestorePlanPreview(
         intendedAction: "resume-original" as const,
         reason: `reattaches its adopted session ${adopted.sessionName}, which rig down left running; nothing is started (if that session has ended by then, restore goes the ordinary way)`,
         freshRequired: false,
-        reattach: adopted,
+        reattach: { sessionId: adopted.sessionId, sessionName: adopted.sessionName },
       };
     }
     if (damage.length === 0) return forecasted;
@@ -401,13 +420,18 @@ export function buildRestorePlanPreview(
   };
 }
 
-/** OF-163: the live seats whose adopted session rig down left running, by logical id: the rule restore reattaches by
- *  (adopted-reattach.ts). Whether the session is still live is restore's question at apply time. */
-export function readPreviewReattach(db: Database.Database, rig: RigWithRelations): Map<string, { sessionId: string; sessionName: string }> {
-  const out = new Map<string, { sessionId: string; sessionName: string }>();
+/** OF-163 / a2 review F3: each live seat's adopted session rig down left running, by logical id, as restore will find it:
+ *  the probe restore runs (probeAdoptedSession: the shared rule, then tmux liveness and the OpenRig marker), so the plan
+ *  never says "reattach" for a seat restore would refuse. Seats with none, or whose session has ended, are left out. */
+export async function readPreviewReattach(
+  db: Database.Database,
+  rig: RigWithRelations,
+  tmux: { hasSession(name: string): Promise<boolean>; readSessionOption(session: string, key: string): Promise<SessionOptionRead> } | null | undefined,
+): Promise<Map<string, AdoptedSessionProbe>> {
+  const out = new Map<string, AdoptedSessionProbe>();
   for (const node of rig.nodes) {
-    const adopted = reattachableAdoptedSession(db, node.id);
-    if (adopted) out.set(node.logicalId, adopted);
+    const probed = await probeAdoptedSession(db, node.id, tmux);
+    if (probed.kind !== "none" && probed.kind !== "gone") out.set(node.logicalId, probed);
   }
   return out;
 }

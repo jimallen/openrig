@@ -1,5 +1,5 @@
 import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
-import { reattachableAdoptedSession } from "./adopted-reattach.js";
+import { contestedAdoptedSessionReason, probeAdoptedSession as probeAdoptedSessionShared, replacedAdoptedSessionReason, unknownAdoptedSessionReason, type AdoptedSessionProbe } from "./adopted-reattach.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -993,21 +993,10 @@ export class RestoreOrchestrator {
     }
   }
 
-  /** OF-155: the seat's adopted session that rig down left running (adopted-reattach.ts decides which), asked of tmux:
-   *  `live`, `gone` (it ended), `unknown` (tmux cannot say), or `none` (the seat has no such session). Read-only. */
-  private async probeAdoptedSession(nodeId: string): Promise<
-    | { kind: "live" | "unknown"; sessionId: string; sessionName: string }
-    | { kind: "gone" | "none" }
-  > {
-    const adopted = reattachableAdoptedSession(this.db, nodeId);
-    if (!adopted) return { kind: "none" };
-    let alive: boolean;
-    try {
-      alive = await this.tmuxAdapter.hasSession(adopted.sessionName);
-    } catch {
-      return { kind: "unknown", ...adopted };
-    }
-    return alive ? { kind: "live", ...adopted } : { kind: "gone" };
+  /** OF-155: the seat's adopted session that rig down left running, asked of tmux by the probe its plan and forecasts run
+   *  too (adopted-reattach.ts probeAdoptedSession). Read-only. */
+  private probeAdoptedSession(nodeId: string): Promise<AdoptedSessionProbe> {
+    return probeAdoptedSessionShared(this.db, nodeId, this.tmuxAdapter);
   }
 
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
@@ -1069,6 +1058,14 @@ export class RestoreOrchestrator {
     if (liveNode) {
       const freshListed = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
       const adopted = await this.probeAdoptedSession(liveNode.id);
+      if (adopted.kind === "contested") {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_contested",
+          error: `${node.logicalId} was not restored: ${contestedAdoptedSessionReason(adopted)}. Nothing was changed for this seat.` };
+      }
+      if (adopted.kind === "replaced") {
+        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_replaced",
+          error: `${node.logicalId} was not restored: ${replacedAdoptedSessionReason(adopted, adopted.marker)}. Nothing was changed for this seat.` };
+      }
       if (adopted.kind === "live" && freshListed) {
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_live",
           error: `${node.logicalId} was not started fresh: its adopted session '${adopted.sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${adopted.sessionId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.` };
@@ -1079,7 +1076,7 @@ export class RestoreOrchestrator {
       }
       if (adopted.kind === "unknown") {
         return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_liveness_unknown",
-          error: `${node.logicalId} was not restored: its adopted session '${adopted.sessionName}', which rig down left running, could not be checked in tmux, so restore neither reattached it nor started a second session. Nothing was changed for this seat. Retry rig up --existing once tmux answers.` };
+          error: `${node.logicalId} was not restored: ${unknownAdoptedSessionReason(adopted)}. Nothing was changed for this seat.${adopted.why ? "" : " Retry rig up --existing once tmux answers."}` };
       }
     }
     // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier

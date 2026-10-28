@@ -1,3 +1,4 @@
+import { writeAdoptedMarker } from "./adopted-reattach.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { PodRepository } from "./pod-repository.js";
@@ -212,6 +213,7 @@ export class SelfAttachService {
 
     try {
       const result = attachTx();
+      if (result.attachmentType === "tmux") await writeAdoptedMarker(this.tmuxAdapter, result.sessionName, result.nodeId); // a2
       this.maybeProvisionContextCollector(opts.runtime, opts.cwd, result.sessionName, result.attachmentType);
       await this.maybeStartTranscriptCapture(rig.rig.name, result.sessionName, result.attachmentType);
       this.eventBus.notifySubscribers(result.event);
@@ -263,6 +265,8 @@ export class SelfAttachService {
     cwd?: string | null,
   ): Promise<SelfAttachResult> {
     try {
+      // a2: the session the person started carries the seat's OpenRig marker, as a claim's does (adopted-reattach.ts).
+      if (result.attachmentType === "tmux") await writeAdoptedMarker(this.tmuxAdapter, result.sessionName, result.nodeId);
       this.maybeProvisionContextCollector(runtime, cwd, result.sessionName, result.attachmentType);
       await this.maybeStartTranscriptCapture(rigName, result.sessionName, result.attachmentType);
       this.eventBus.notifySubscribers(result.event);

@@ -1563,6 +1563,24 @@ export class TmuxAdapter {
   }
 
   /** Get a session-scoped user option value. Returns null if not set or error. */
+  /** a2: a session's user option (`@name`), keeping "unset" apart from "could not be read" (getSessionOption folds both
+   *  into null). Measured on tmux 3.4 (adopted-marker-real-tmux.test.ts): `show-option -v` answers an unset user option
+   *  with "invalid option: <key>" and a missing session with "no such session"; `show-option -q` and `display-message`
+   *  both answer a missing session with exit 0 and no output, so neither can tell it from an unset option. */
+  async readSessionOption(sessionName: string, key: string): Promise<{ ok: true; value: string | null } | { ok: false; error: string }> {
+    const exact = exactTarget(sessionName, "pane");
+    try {
+      const output = await this.run(["tmux", "show-option", "-v", "-t", exact, key],
+        `tmux show-option -v -t ${shellQuote(exact)} ${shellQuote(key)}`);
+      return { ok: true, value: output.trim() || null };
+    } catch (err) {
+      const reported = tmuxReportedError(err);
+      const text = reported instanceof Error ? reported.message : String(reported);
+      if (text.includes(`invalid option: ${key}`)) return { ok: true, value: null };
+      return { ok: false, error: text.trim() };
+    }
+  }
+
   async getSessionOption(sessionName: string, key: string): Promise<string | null> {
     // set/show-option take a target-pane even when the option is session-scoped.
     const exact = exactTarget(sessionName, "pane");

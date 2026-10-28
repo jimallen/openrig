@@ -227,6 +227,17 @@ describe("LaunchRecoveryModal — plan-before-mutation + the LOCK + honesty", ()
     expect(screen.getByTestId("plan-verdict-orch.advisor").textContent).toContain("resume-original");
   });
 
+  // a2 (z6 review F4): a seat restore would bring back by reattaching its adopted session (rig down left it running) is
+  // labelled as the reattach, not as a resume; it starts nothing and does not block Restore original.
+  it("a seat that would be reattached is labelled reattach and leaves Restore original available", async () => {
+    await openWith(planWith({ logicalId: "dev.adopted", intendedAction: "resume-original", tokenState: "present", freshRequired: false, reattach: { sessionId: "s1", sessionName: "person-shell" }, reason: "reattaches its adopted session person-shell, which rig down left running; nothing is started" }));
+    expect(screen.getByTestId("plan-verdict-dev.adopted").textContent).toBe("reattach");
+    expect(screen.getByTestId("plan-verdict-orch.advisor").textContent).toContain("resume-original");
+    const execute = screen.getByTestId("launch-execute") as HTMLButtonElement;
+    expect(execute.disabled).toBe(false);
+    expect(execute.textContent).toContain("Restore original");
+  });
+
   // OF-62 (review B2): a damaged saved row makes restore refuse the WHOLE rig. The damaged seat's own status is `failed`
   // (which means "removed seat, the rest restore"), so the plan carries a rig-level restoreRefusal the modal must honour.
   const REFUSAL = { reason: "restore would refuse the whole rig and start no seat: its pre-restore snapshot cannot be taken because dev.damaged's saved row is damaged (package_refs is not JSON). Repair the row first.", seats: ["dev.damaged"] };

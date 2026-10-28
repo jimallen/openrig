@@ -104,14 +104,17 @@ export function createRestoreHarness(): RestoreHarness {
   const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
   const alive = new Set<string>();
   const panes = new Map<string, string>();
+  // a2: session options live with the session, as in tmux: a new (or recreated) session starts with none.
+  const options = new Map<string, Map<string, string>>();
   const tmux = {
     createSession: vi.fn(async (name: string) => {
       if (alive.has(name)) return { ok: false as const, code: "duplicate_session", message: "duplicate" };
       alive.add(name);
       panes.set(name, "%fresh");
+      options.set(name, new Map());
       return { ok: true as const };
     }),
-    killSession: vi.fn(async (name: string): Promise<TmuxResult> => { alive.delete(name); panes.delete(name); return { ok: true }; }),
+    killSession: vi.fn(async (name: string): Promise<TmuxResult> => { alive.delete(name); panes.delete(name); options.delete(name); return { ok: true }; }),
     probeSession: vi.fn(async (name: string) => alive.has(name) ? { state: "present" as const } : { state: "absent" as const }),
     hasSession: vi.fn(async (name: string) => alive.has(name)),
     startServer: vi.fn(async (): Promise<TmuxResult> => ({ ok: true })),
@@ -126,7 +129,13 @@ export function createRestoreHarness(): RestoreHarness {
     capturePaneContent: vi.fn(async () => ""),
     sendText: vi.fn(async () => ({ ok: true as const })),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
-    setSessionOption: vi.fn(async () => ({ ok: true as const })),
+    setSessionOption: vi.fn(async (name: string, key: string, value: string) => {
+      if (!alive.has(name)) return { ok: false as const, code: "session_not_found", message: "no session" };
+      options.get(name)!.set(key, value);
+      return { ok: true as const };
+    }),
+    readSessionOption: vi.fn(async (name: string, key: string) =>
+      alive.has(name) ? { ok: true as const, value: options.get(name)?.get(key) || null } : { ok: false as const, error: `can't find session: ${name}` }),
   } as unknown as TmuxAdapter;
   const delivered: ResolvedStartupFile[][] = [];
   const adapter: RuntimeAdapter = {

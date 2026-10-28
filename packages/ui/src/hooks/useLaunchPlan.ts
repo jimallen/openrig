@@ -20,6 +20,9 @@ export interface LaunchPlanNode {
    *  left to decide (the seat was removed, or its occupant cannot be told): restore-original goes on without it and
    *  reports it failed, so it must not block the other seats. Absent on older daemons. */
   restoreStatus?: "failed" | "awaiting-decision";
+  /** Restore would reattach this seat's adopted session, which rig down left running: nothing is started for it
+   *  (intendedAction stays resume-original). Absent on older daemons. */
+  reattach?: { sessionId: string; sessionName: string };
 }
 
 export interface LaunchPlan {

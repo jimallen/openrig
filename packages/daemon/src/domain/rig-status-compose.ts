@@ -48,6 +48,9 @@ export interface RigStatusSeat {
   lastVerified?: string | null;
   reason?: string;
   runtimePrompt?: string;
+  /** z6 review F4: restore would bring this seat back by reattaching its adopted session, which rig down left running
+   *  (the plan's `reattach`): nothing is started. Its intendedAction stays `resume-original`. */
+  reattach?: { sessionId: string; sessionName: string };
 }
 
 export interface RigStatusObject {
@@ -135,6 +138,7 @@ export function composeRigStatus(input: ComposeRigStatusInput): RigStatusObject 
       lastVerified: p?.lastVerified ?? null,
       ...(p?.reason ? { reason: p.reason } : {}),
       ...(p?.runtimePrompt ? { runtimePrompt: p.runtimePrompt } : {}),
+      ...(p?.reattach ? { reattach: p.reattach } : {}),
     };
   });
 
@@ -205,9 +209,15 @@ function lifecycleToAggregate(lifecycle: ReturnType<typeof deriveRigLifecycleSta
 }
 
 function countActions(perSeat: RigStatusSeat[]): string {
+  // z6 review F4: a reattach is counted as itself, not as a resume-original (nothing is resumed or started for it).
   const counts = { "resume-original": 0, "fresh-primed": 0, "awaiting-decision": 0 };
-  for (const s of perSeat) counts[s.intendedAction] += 1;
+  let reattach = 0;
+  for (const s of perSeat) {
+    if (s.reattach) reattach += 1;
+    else counts[s.intendedAction] += 1;
+  }
   const parts: string[] = [];
+  if (reattach) parts.push(`${reattach} reattach`);
   if (counts["resume-original"]) parts.push(`${counts["resume-original"]} resume-original`);
   if (counts["fresh-primed"]) parts.push(`${counts["fresh-primed"]} fresh-primed`);
   if (counts["awaiting-decision"]) parts.push(`${counts["awaiting-decision"]} awaiting-decision`);
