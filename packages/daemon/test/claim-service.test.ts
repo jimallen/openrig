@@ -266,6 +266,22 @@ describe("ClaimService", () => {
     expect(hint).toContain("rig whoami --json");
   });
 
+  // OF-160 (z5) invariant pin: the post-claim hint is typed into a possibly-shell pane, but every
+  // caller-supplied word in it (rig name, logicalId) is typed-word gated first (OF-108,
+  // claim-service.ts:202 — isTypedResumeWord excludes both CSI forms of the paste-end marker).
+  // A marked name yields NO hint, so the marker can never reach this sendText. No production
+  // change was needed here; this pins the guard that makes that true.
+  it("OF-160 invariant: a rig name carrying the paste-end marker yields no typed hint", async () => {
+    const rig = rigRepo.createRig("evil\u001b[201~rig");
+    rigRepo.addNode(rig.id, "adopted-sess", { runtime: "claude-code", cwd: "/tmp" });
+    const discovered = seedDiscovery({ tmuxSession: "adopted-sess" });
+
+    const result = await claimService.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "adopted-sess" });
+
+    expect(result.ok).toBe(true);
+    expect(sendTextSpy).not.toHaveBeenCalled();
+  });
+
   // T21: hint delivery failure does not fail bind
   it("bind succeeds even if hint delivery fails", async () => {
     const rig = seedRig();

@@ -3,7 +3,7 @@
 // in an error message (credential-class redaction).
 
 import { describe, it, expect } from "vitest";
-import { validateResumeToken, resumeTypeForRuntime } from "../src/domain/resume-token-validation.js";
+import { validateResumeToken, resumeTypeForRuntime, isTypedResumeWord } from "../src/domain/resume-token-validation.js";
 
 describe("resumeTypeForRuntime", () => {
   it("maps runtimes to their resume-id type", () => {
@@ -166,5 +166,18 @@ describe("validateResumeToken — pi_session_file (path-shaped, per-type)", () =
   it("keeps per-type separation: a path-shaped token is still rejected for claude/codex", () => {
     expect(validateResumeToken("claude-code", validPath).ok).toBe(false);
     expect(validateResumeToken("codex", validPath).ok).toBe(false);
+  });
+});
+
+// OF-160 (z5) invariant pin for the resume-metadata refresher's probe line: the typed probe
+// command is built from `claude --resume <word> --name=<word>` and both variable words are
+// typed-word gated before the probe runs (resume-metadata-refresher.ts:304), so neither
+// paste-terminator form can ever reach that pane. No production change was needed there; this
+// pins the gate that makes it true.
+describe("OF-160 invariant: the typed-word gate refuses the paste-end marker", () => {
+  it("rejects both CSI forms of the bracketed-paste terminator", () => {
+    expect(isTypedResumeWord("x\u001b[201~")).toBe(false);
+    expect(isTypedResumeWord("x\u009b201~")).toBe(false);
+    expect(isTypedResumeWord("plain.word-1@x")).toBe(true);
   });
 });

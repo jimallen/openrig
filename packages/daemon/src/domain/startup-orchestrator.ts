@@ -1,5 +1,6 @@
 import { nonInterruptiveNotice } from "../adapters/non-interruptive.js";
 import { readGuardedStartupFile } from "./culture-file-guard.js";
+import { stripPasteTerminators } from "./packet-text.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { SessionRegistry } from "./session-registry.js";
@@ -887,6 +888,12 @@ export class StartupOrchestrator {
   }
 
   private async sendInteractiveText(input: StartupDeliveryInput, text: string, source: StartupSubmissionDiagnostic["source"], actionIndex?: number): Promise<StartupSendFailure | null> {
+    // OF-160 (z5): every body typed here is operator- or system-authored prose (startup files,
+    // identity/challenge/preload prompts, action values) delivered INSIDE a bracketed paste. A
+    // paste-end marker in it would close the paste early and type the tail as keys. Strip it —
+    // never refuse: a refusal would strand startup on a warning, and the marker is never
+    // meaningful in prose. The evidence checks below compare the STRIPPED text, matching the pane.
+    text = stripPasteTerminators(text);
     const sendOrder = ++input.sendOrder;
     const tmuxSession = input.binding.tmuxSession!;
     input.lastSubmissionConfirmed = false;

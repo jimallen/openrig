@@ -738,3 +738,23 @@ describe("durable catch-up cursor survives launch-attempt resets", () => {
     }
   });
 });
+
+// OF-160 (z5): a Pi send_text startup file is operator-authored prose the adapter types into the
+// seat's pane inside a bracketed paste; a paste-end marker in it would close the paste early and
+// type the tail as keys. Strip both CSI forms before sendText.
+describe("OF-160: Pi send_text startup files never carry the paste-end marker into the pane", () => {
+  it("strips the paste-end marker (both CSI forms) before the paste", async () => {
+    const tmux = mockTmux();
+    const fs = memFs({ "/work/startup/pack.md": "alpha\u001b[201~beta \u009b201~gamma" });
+    const adapter = adapterWith(fs, tmux);
+    const file = {
+      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
+      deliveryHint: "send_text" as const, required: true, appliesOn: ["fresh_start"],
+    };
+    const result = await adapter.deliverStartup([file as never], { tmuxSession: SESSION, cwd: "/work" } as never);
+    expect(result.failed).toEqual([]);
+    expect(result.delivered).toBe(1);
+    expect(tmux.sendText).toHaveBeenCalledWith(SESSION, "alphabeta gamma");
+    expect(tmux.sendKeys).toHaveBeenCalledWith(SESSION, ["Enter"]);
+  });
+});

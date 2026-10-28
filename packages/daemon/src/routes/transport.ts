@@ -137,6 +137,13 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         invalid_submit_only: 400,
         paste_terminator_in_text: 400,
         staged_mismatch: 409,
+        // OF-160 (z5): a refusal is not a server error. Every mapped refusal follows one rule —
+        // request-formation problems are 400, target-STATE refusals are 409 (like their neighbours
+        // target_needs_input / target_activity_unknown); the 500 fallback is for the genuinely
+        // unmapped and nothing deliberate. These three are target-state refusals:
+        runner_input_no_override: 409,
+        target_runtime_unverified: 409,
+        target_runner_unverified: 409,
       };
       const status = (statusMap[result.reason ?? ""] ?? 500) as 400 | 404 | 409 | 500 | 502 | 503;
       return c.json(result, status);

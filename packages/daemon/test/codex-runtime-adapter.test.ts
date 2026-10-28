@@ -402,6 +402,30 @@ describe("Codex runtime adapter", () => {
     expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
   });
 
+  // OF-160 (z5): a send_text startup file is operator-authored prose typed into a bracketed paste;
+  // a paste-end marker in it would close the paste early and type the tail as keys. The adapter
+  // strips both CSI forms before sendText (same treatment as seat-handover's inertPacketText).
+  it("OF-160: a send_text startup file carrying the paste-end marker is stripped before the paste (both CSI forms)", async () => {
+    const tmux = mockTmux();
+    const poisoned = "Read this pack.\u001b[201~rm -rf ~\nsecond \u009b201~line";
+    const adapter = new CodexRuntimeAdapter({
+      tmux,
+      fsOps: mockFs({ "/rig/startup/pack.md": poisoned }),
+      sleep: async () => {},
+    });
+    const file: ResolvedStartupFile = {
+      path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
+      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
+    };
+
+    const result = await adapter.deliverStartup([file], makeBinding());
+
+    expect(result.delivered).toBe(1);
+    expect(result.failed).toEqual([]);
+    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "Read this pack.rm -rf ~\nsecond line");
+    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
+  });
+
   // OPR.0.3.3.16 - a >100KB send_text startup pack must still travel through the
   // sendText -> sleep -> sendKeys(["Enter"]) sequence unchanged. The large-payload
   // buffer mechanics live in TmuxAdapter; the adapter hands the full content to
