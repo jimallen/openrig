@@ -760,6 +760,9 @@ describe("local human inbox: rig health says when the banner cannot reach Jim", 
     const ok = await createDaemon({ dbPath: okPath });
     open.push(ok.db);
     expect((ok.deps.healthProjection!.list().coverage ?? []).map((c) => c.source)).not.toContain("human-inbox-banner");
+    // The daemon's own source reads the same durable attempt table: three failed attempts there surface in its health coverage.
+    for (let i = 0; i < BANNER_FAILURE_STREAK; i += 1) ok.db.prepare("INSERT INTO rsi_notification_banners (sent_at, item_count, ok) VALUES (?, 1, 0)").run(new Date(Date.now() - (i + 1) * MIN).toISOString());
+    expect((ok.deps.healthProjection!.list().coverage ?? []).map((c) => c.source)).toContain("human-inbox-banner");
 
     const brokenPath = join(dir, "broken.sqlite");
     const seeded = createDb(brokenPath);
