@@ -1,7 +1,7 @@
 // OPR.0.7.0.2 (cost reporting, Pi atom): Pi cost from PERSISTED session entries, counted once, with a fork's
 // inherited history kept apart from the new occupant's spend. Hermetic: Pi 1.3.0-shaped entry fixtures, a fake
 // runner IO, an in-memory database and the activity route; no Pi process, no account, no provider call.
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
@@ -156,6 +156,8 @@ const SESSION = "devpi-a@rig";
 const SESSION_FILE = "/state/pi/devpi-a@rig/sessions/2026_0197.jsonl";
 const HEADER = (parentSession?: string) => JSON.stringify({ type: "session", version: 3, id: "0197a2f0", timestamp: at(8), cwd: "/w", ...(parentSession ? { parentSession } : {}) });
 
+// Rows wait on real file reads reaching the store (see `eventually`); the 20 s default test timeout fired first on a heavily loaded host.
+vi.setConfig({ testTimeout: 120_000 });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** Retry an assertion until it holds or `ms` pass (then its last failure is thrown). */
 // Waits for an outcome (a real file read reaching the store), so a generous cap costs a quiet machine

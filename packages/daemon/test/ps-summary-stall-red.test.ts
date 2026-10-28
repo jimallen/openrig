@@ -89,7 +89,7 @@ describe("slice-04 ps/summary event-loop regression", () => {
       tap.restore();
       db.close();
     }
-  }, 60_000);
+  }, 240_000);
 
   // ---------- D3 (GREEN): membership/fields/freshness + fail-loud pin ----------
   it("D3 GREEN: archive membership + fields + request-boundary freshness + existing 500", async () => {
@@ -143,7 +143,7 @@ describe("slice-04 ps/summary event-loop regression", () => {
       if (spy) spy.mockRestore();
       db.close();
     }
-  }, 60_000);
+  }, 240_000);
 
   // ---------- D2 (regression pin): real localhost N=24 burst health budget ----------
   it("D2 regression: N=24 real-HTTP ps+summary burst keeps worst /healthz < budget", async () => {
@@ -173,7 +173,8 @@ describe("slice-04 ps/summary event-loop regression", () => {
       child = spawn(process.execPath, ["--import", "tsx", CHILD], {
         cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"],
       });
-      // whole-run watchdog: force-terminate the child if the run overruns 45s.
+      // whole-run watchdog: force-terminate the child if the run overruns 180s (hang ceiling; the run itself takes ~5 s
+      // on a quiet host, but seeding the 219,541-event DB took over 40 s on a heavily loaded one).
       watchdog = setTimeout(() => {
         try { if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); } catch { /* noop */ }
         // TRACKED escalation timer; re-checks liveness before KILL so it can never
@@ -181,7 +182,7 @@ describe("slice-04 ps/summary event-loop regression", () => {
         watchdogKill = setTimeout(() => {
           try { if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); } catch { /* noop */ }
         }, 3_000);
-      }, 45_000);
+      }, 180_000);
 
       child.stdout!.on("data", (d) => {
         if (out.length < CAP) out += String(d);
@@ -193,7 +194,7 @@ describe("slice-04 ps/summary event-loop regression", () => {
       });
 
       port = await new Promise<number>((resolve, reject) => {
-        const to = setTimeout(() => reject(new Error("no READY within 40s; stderr=" + err)), 40_000);
+        const to = setTimeout(() => reject(new Error("no READY within 150s; stderr=" + err)), 150_000);
         child!.stdout!.on("data", () => {
           const m = out.match(/READY (\d+)/);
           if (m) { clearTimeout(to); resolve(Number(m[1])); }
@@ -285,5 +286,5 @@ describe("slice-04 ps/summary event-loop regression", () => {
     // round trip measures the scheduler (375-1011 ms for the same code). Every /healthz still has to answer 200.
     expect(Number.isFinite(cpuStallMs), "the child reported its event-loop stall").toBe(true);
     expect(cpuStallMs).toBeLessThan(HEALTHZ_RESPONSIVENESS_BUDGET_MS);
-  }, 60_000);
+  }, 240_000);
 });
