@@ -1,6 +1,6 @@
 import { nonInterruptiveNotice } from "../adapters/non-interruptive.js";
 import { readGuardedStartupFile } from "./culture-file-guard.js";
-import { stripPasteTerminators } from "./packet-text.js";
+import { inertStartupText } from "./packet-text.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { SessionRegistry } from "./session-registry.js";
@@ -973,8 +973,9 @@ export class StartupOrchestrator {
     // identity/challenge/preload prompts, action values) delivered INSIDE a bracketed paste. A
     // paste-end marker in it would close the paste early and type the tail as keys. Strip it —
     // never refuse: a refusal would strand startup on a warning, and the marker is never
-    // meaningful in prose. The evidence checks below compare the STRIPPED text, matching the pane.
-    text = stripPasteTerminators(text);
+    // meaningful in prose. OF-169 widened this to every control except TAB/LF/CR (inertStartupText).
+    // The evidence checks below compare the STRIPPED text, matching the pane.
+    text = inertStartupText(text);
     const tmuxSession = input.binding.tmuxSession!;
     // OF-161: a resumed Claude that exited after the settle read must not have startup text typed into its shell.
     if (input.guardShellForeground) {

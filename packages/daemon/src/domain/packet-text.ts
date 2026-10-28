@@ -16,6 +16,21 @@ export function inertPacketText(text: string): string {
 }
 
 /**
+ * Text OpenRig itself types into an agent's pane at startup (OF-169, Jim 2026-10-28, "Strip controls, keep tab/newline"):
+ * startup files, identity / challenge / preload prompts and action values. It is operator- or system-authored prose
+ * pasted into a bracketed paste, so a control character in it is never wanted. Same class as `inertPacketText`, except
+ * TAB, LF and CR survive (a startup file is multi-line and may be indented): every other C0 control, DEL and every C1
+ * control is removed. That removes ESC and the 8-bit CSI, so it also removes every paste-end sequence (OF-160), and no
+ * removal can join two neighbours into a new control. `rig send` is deliberately not this: a person's message is
+ * refused for the paste-end marker only (`containsPasteTerminator`).
+ */
+const STARTUP_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+
+export function inertStartupText(text: string): string {
+  return text.replace(STARTUP_CONTROLS, "");
+}
+
+/**
  * The sequences that END a bracketed paste: `ESC[201~` and its 8-bit CSI form (`U+009B` then `201~`). tmux frames a
  * pasted buffer with its own `ESC[200~` ... `ESC[201~` and leaves the inside alone, so text that carries one of these
  * closes the paste early and the rest arrives as typed keys (a shell runs it on the next Enter). A message sent to a
