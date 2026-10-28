@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { NativeProcessLister, NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 const T0 = "Wed Oct 28 08:00:00 2026";
@@ -39,13 +39,13 @@ const clock = (): Clock => {
 /** The runtime is the foreground (`upCommand`, `upPane`) until `exitsAtMs`; afterwards the pane shows `afterPane` under `afterCommand`. */
 function tmuxFor(c: Clock, o: { exitsAtMs: number; upCommand: string; upPane: string; afterCommand: string; afterPane: string; panePid?: number | null }): TmuxAdapter {
   const up = () => c.elapsed < o.exitsAtMs;
-  return mockShellCommand({
+  return mockShellCommand(Object.assign(new TmuxAdapter(async () => ""), {
     sendText: vi.fn(async () => ({ ok: true as const })),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
     getPaneCommand: vi.fn(async () => up() ? o.upCommand : o.afterCommand),
     capturePaneContent: vi.fn(async () => up() ? o.upPane : o.afterPane),
     getPanePid: vi.fn(async () => o.panePid === undefined ? 100 : o.panePid),
-  } as unknown as TmuxAdapter);
+  }));
 }
 
 describe("OF-167: ClaudeResumeAdapter believes 'resumed' only if Claude is still there after the settle window", () => {

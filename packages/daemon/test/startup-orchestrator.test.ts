@@ -5,7 +5,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { StartupOrchestrator, type StartupInput } from "../src/domain/startup-orchestrator.js";
-import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile, ProjectionResult, StartupDeliveryResult, ReadinessResult } from "../src/domain/runtime-adapter.js";
+import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile, ProjectionResult, StartupDeliveryResult, ReadinessResult, HarnessLaunchResult } from "../src/domain/runtime-adapter.js";
 import { resolveConcreteHint } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -1987,7 +1987,7 @@ describe("StartupOrchestrator", () => {
       const seed = seedSession();
       // reads: two unreadable (both swallowed sends; the second records the stop), then readable for the action.
       const reads = vi.fn().mockRejectedValueOnce(new Error("x")).mockRejectedValueOnce(new Error("x")).mockResolvedValue("claude");
-      const t = mockTmux({ getPaneCommand: reads, sendText: vi.fn(async () => ({ ok: false as const, message: "fixture transport failure" })), capturePaneContent: vi.fn(async () => "pane") });
+      const t = mockTmux({ getPaneCommand: reads, sendText: vi.fn(async () => ({ ok: false as const, code: "send_failed", message: "fixture transport failure" })), capturePaneContent: vi.fn(async () => "pane") });
       const result = await createOrchestrator({ tmux: t, readFile: () => "x" }).startNode(resumeInput(seed, { adapter: swallowingAdapter(), resolvedStartupFiles: [optionalFile] }));
       expect(result).toMatchObject({ ok: false, startupStatus: "failed" });
       if (result.ok) throw new Error("unreachable");
@@ -2021,7 +2021,7 @@ describe("StartupOrchestrator", () => {
     // The adapter reports the process it launched, so the launch lists nothing: every listing counted here is a guarded send's.
     const LIVE_TREE: NativeProcessRow[] = [PANE_SHELL, LAUNCHER, CLAUDE_PROC];
     const threeActions = [makeAction(), makeAction({ value: "/b" }), makeAction({ value: "/c" })];
-    const launchedAdapter = () => mockAdapter({ launchHarness: vi.fn(async (_binding, opts) => ({ ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id",
+    const launchedAdapter = () => mockAdapter({ launchHarness: vi.fn(async (_binding, opts): Promise<HarnessLaunchResult> => ({ ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id",
       launchedProcess: { pid: 102, startedAt: T0 } })) });
     async function guardedSends(actions: StartupAction[], o: { foreground?: string; now?: () => number; lists?: (call: number) => Promise<NativeProcessRow[]>; twice?: boolean } = {}) {
       const seed = seedSession();
