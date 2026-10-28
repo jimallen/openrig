@@ -8,7 +8,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
-import { reapWhenOwnerDies, stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { reapWhenOwnerDies, stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
 
 const run = promisify(execFile);
 const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
@@ -60,6 +60,7 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
     // This test's tmux server (and the interactive shells in its sessions) outlives the runner. If the worker dies or the
     // test times out, the finally below never runs and the server ran for days after its socket directory was deleted.
     const reaper = reapWhenOwnerDies({ tmuxSockets: [socket] });
+    let serverPid: number | undefined; // recorded as soon as the server exists: a starved server cannot be looked up later
     const fake = path.join(root, "off-path-claude"), recorder = path.join(root, "record.cjs"), cli = path.join(root, "paired-rig");
     fs.writeFileSync(recorder, `const fs = require('node:fs'); const cp = require('node:child_process');
 fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2), node:process.env.OPENRIG_NODE_ID,
@@ -74,6 +75,7 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
       // new-session then races that exit and fails with "server exited unexpectedly" (seen on the Mac under a full-suite load).
       // An anchor session keeps the one server alive for all 36 cells.
       await tm(["new-session", "-d", "-s", "fixture-anchor", "sleep 600"]);
+      serverPid = await tmuxServerPid(socket, env) ?? undefined;
       for (const shape of ["executable", "alias", "function"]) for (const route of ["corrected", "fallback", "legacy"]) {
         for (const kind of ["fresh", "fork", "launch-resume", "restore-resume"]) {
           const name = `${shape}-${route}-${kind}`, dir = path.join(root, name), bin = path.join(dir, "bin");
@@ -135,10 +137,10 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
       expect(cells).toHaveLength(36);
       expect(cells.filter(cell => !cell.started || cell.exit !== 0 || cell.issues.length)).toEqual([]);
     } finally {
-      try { await stopOwnedTmuxServer(socket, env); } finally {
-        reaper.disarm();
-        fs.rmSync(root, { recursive: true, force: true });
-      }
+      // Only a verified stop lets the watchdog go and the socket directory be deleted; an unverified one throws and keeps both.
+      await stopOwnedTmuxServer(socket, env, { pid: serverPid });
+      reaper.disarm();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   }, 90_000);
 });

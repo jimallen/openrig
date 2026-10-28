@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
-import { reapWhenOwnerDies, waitGone } from "./orphan-reaper.js";
+import { pidsWithEnv, processAlive, processHasEnv, reapWhenOwnerDies, terminateOwned, waitGone } from "./orphan-reaper.js";
 
 export interface RigResult {
   stdout: string;
@@ -156,20 +156,19 @@ export async function spawnScenarioDaemon(
       );
     }
   };
-  // The daemon is detached by `rig daemon start`, so it outlives this runner. Its pid is read back from the scratch
-  // OPENRIG_HOME's own daemon.json, and a watchdog stops exactly that pid (and this scaffold's tmux server) if the runner
-  // dies or times out before `stop()` runs. Without it a daemon ran for ~28 h after its home had been deleted.
+  // The daemon is detached by `rig daemon start`, so it outlives this runner. Its identity is this scaffold's private
+  // OPENRIG_HOME, which every process it starts carries in its environment; a pid read from daemon.json is only a hint and is
+  // signalled only after the same check, so a stale file or a reused pid can never aim a signal at someone else's process.
+  // The watchdog is armed BEFORE `rig daemon start`, so a start that fails or times out after the CLI has already detached
+  // the daemon is still reaped if the runner dies; a failed start is also reaped at once, below.
+  const homeEntry = `OPENRIG_HOME=${scaffold.openrigHome}`;
   const readDaemonPid = (): number | null => {
     try {
       const pid = (JSON.parse(readFileSync(join(scaffold.openrigHome, "daemon.json"), "utf8")) as { pid?: unknown }).pid;
-      return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : null;
+      return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && processHasEnv(pid, homeEntry) ? pid : null;
     } catch { return null; }
   };
-  let reaper: { disarm: () => void } | undefined;
-  const arm = (pids: number[]) => {
-    reaper?.disarm();
-    reaper = reapWhenOwnerDies({ pids, tmuxSockets: [scaffold.tmuxSocketPath] });
-  };
+  const reaper = reapWhenOwnerDies({ environ: [homeEntry], tmuxSockets: [scaffold.tmuxSocketPath] });
   const killProc = async () => {
     // `rig daemon stop` reads daemon.json under the scratch OPENRIG_HOME and
     // SIGTERMs the daemon. Best-effort (already-down is fine), but the daemon must really be gone before the
@@ -177,18 +176,18 @@ export async function spawnScenarioDaemon(
     const pid = readDaemonPid();
     await runRig(["daemon", "stop"], scaffold.env, rigBin, timeoutMs).catch(() => {});
     if (pid !== null && !(await waitGone(pid, stopGraceMs))) {
-      try { process.kill(pid, "SIGTERM"); } catch { /* gone meanwhile */ }
-      if (!(await waitGone(pid, stopGraceMs))) {
-        try { process.kill(pid, "SIGKILL"); } catch { /* gone meanwhile */ }
-        await waitGone(pid, stopGraceMs);
-      }
+      if (processHasEnv(pid, homeEntry)) await terminateOwned([pid], stopGraceMs);
     }
-    arm([]); // the daemon is gone: keep only the tmux server protected until stop() cleans up
   };
 
-  await startProc();
-  const startedPid = readDaemonPid();
-  arm(startedPid === null ? [] : [startedPid]);
+  try { await startProc(); } catch (error) {
+    // The CLI may have detached the daemon before failing or timing out: stop whatever carries this scaffold's home.
+    // (No seat or tmux server exists yet, so nothing but the daemon and its helpers can hold it.)
+    const holders = [...new Set([...(readDaemonPid() === null ? [] : [readDaemonPid()!]), ...pidsWithEnv(homeEntry)])];
+    await terminateOwned(holders, stopGraceMs);
+    if (!holders.some(processAlive)) reaper.disarm();
+    throw error;
+  }
 
   const baseUrl = `http://127.0.0.1:${port}`;
   const readEnv: Record<string, string | undefined> = { ...scaffold.env, OPENRIG_URL: baseUrl };
@@ -201,14 +200,14 @@ export async function spawnScenarioDaemon(
     restart: async () => {
       await killProc();
       await startProc();
-      const pid = readDaemonPid();
-      arm(pid === null ? [] : [pid]);
     },
     stop: async () => {
-      try { await killProc(); } finally {
-        reaper?.disarm();
-        scaffold.cleanup();
-      }
+      await killProc();
+      const left = readDaemonPid();
+      // Delete the scaffold (and disarm the watchdog) only once the daemon is verified gone; otherwise keep both.
+      if (left !== null && processAlive(left)) throw new Error(`the scenario daemon (pid ${left}) is still alive after stop; scaffold and watchdog kept`);
+      reaper.disarm();
+      scaffold.cleanup();
     },
   };
 }

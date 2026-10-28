@@ -83,6 +83,9 @@ async function expectGone(pid: number, what: string): Promise<void> {
 // the moment it has the answers, so a generous deadline costs a quiet machine nothing. (The 4 s default
 // is production's; node start-up alone has exceeded it on a loaded host.)
 const ANSWER_DEADLINE_MS = 60_000;
+// The hang row needs its sh wrapper to have run `echo $$ > shell.pid` before the deadline kills the reader: 300 ms left a
+// reader killed before its wrapper ran (no pid file, a false failure on a starved host); a second leaves a wide margin.
+const NO_ANSWER_DEADLINE_MS = 1_000;
 
 describe("#275 codexNetworkDefaultReader (fake codex)", () => {
   it("runs the seat's executable with its PATH, HOME, CODEX_HOME and cwd, and asks only for config", async () => {
@@ -115,9 +118,9 @@ describe("#275 codexNetworkDefaultReader (fake codex)", () => {
 
   it("no answer by the deadline adds nothing, and the reader is gone", async () => {
     const f = fakeCodex({ hang: true });
-    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: 300, graceMs: 200 })(f.cwd);
-    expect(result).toMatchObject({ apply: false, reason: "codex app-server did not answer within 300 ms" });
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(300);
+    const result = await codexNetworkDefaultReader({ launchPath: f.launchPath, deadlineMs: NO_ANSWER_DEADLINE_MS, graceMs: 200 })(f.cwd);
+    expect(result).toMatchObject({ apply: false, reason: `codex app-server did not answer within ${NO_ANSWER_DEADLINE_MS} ms` });
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(NO_ANSWER_DEADLINE_MS);
     // The deadline can fire before node has started (the wrapper has already named the pid), so the pid
     // comes from the wrapper, not from the node fake's seen.json.
     await expect.poll(() => f.exists("shell.pid"), { timeout: 30_000, interval: 20, message: "the wrapper recorded its pid" }).toBe(true);

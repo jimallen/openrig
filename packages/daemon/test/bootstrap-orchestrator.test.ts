@@ -1488,9 +1488,6 @@ ${integrityYaml}
     // `podbundle-*` directory while this test runs: counting new ones there blamed this test for them.
     // Give the resolver a private TMPDIR for exactly this call, so any `podbundle-*` found is its own.
     const tmpBase = fs.mkdtempSync(path.join(tmpDir, "private-tmpdir-"));
-    const inheritedTmpdir = process.env["TMPDIR"];
-    process.env["TMPDIR"] = tmpBase;
-    expect(os.tmpdir(), "positive control: the resolver's os.tmpdir() is the private one").toBe(tmpBase);
     const preExistingDirs = new Set(fs.readdirSync(tmpBase).filter((d) => d.startsWith("podbundle-")));
 
     const podBundleResolver = new PodBundleSourceResolver();
@@ -1520,8 +1517,12 @@ ${integrityYaml}
       podInstantiator: mockPodInstantiator as any,
     });
 
+    // TMPDIR is changed only around this one call, and restored on every path (including a failed positive control).
+    const inheritedTmpdir = process.env["TMPDIR"];
+    process.env["TMPDIR"] = tmpBase;
     let result;
     try {
+      expect(os.tmpdir(), "positive control: the resolver's os.tmpdir() is the private one").toBe(tmpBase);
       result = await orch.bootstrap({ mode: "apply", sourceRef: bundlePath, sourceKind: "rig_bundle" });
     } finally {
       if (inheritedTmpdir === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = inheritedTmpdir;

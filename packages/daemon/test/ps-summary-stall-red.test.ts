@@ -165,6 +165,7 @@ describe("slice-04 ps/summary event-loop regression", () => {
     const psStatuses: number[] = [];
     const sumStatuses: number[] = [];
     const health: { ms: number; status: number }[] = [];
+    let idleWorstMs = Number.NaN; // the same /healthz round trip on the idle child: this host's own scheduling noise right now
     let cpuStallMs = Number.NaN; // the child's own longest synchronous event-loop stall, in CPU ms
     let pidGone = false;
     let portClosed = false;
@@ -210,6 +211,16 @@ describe("slice-04 ps/summary event-loop regression", () => {
       readyStatus = readyHealth.status;
       await readyHealth.text();
       expect(readyStatus).toBe(200);
+
+      const idle: number[] = [];
+      for (let i = 0; i < 10; i++) {
+        const t = performance.now();
+        const r = await fetch(base + "/healthz");
+        await r.text();
+        idle.push(performance.now() - t);
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      idleWorstMs = Math.max(...idle);
 
       // one sequential paced health-probe loop, awaited after the burst
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -264,7 +275,7 @@ describe("slice-04 ps/summary event-loop regression", () => {
       const measured = health.length > 0
         ? `${Math.max(...health.map((h) => h.ms))} ms over ${health.length} probes`
         : "no probes completed";
-      console.log(`[ps-summary D2] worst child event-loop stall ${cpuStallMs} CPU ms; worst /healthz ${measured} (budget ${HEALTHZ_RESPONSIVENESS_BUDGET_MS} ms; `
+      console.log(`[ps-summary D2] idle worst /healthz ${idleWorstMs.toFixed(1)} ms; worst child event-loop stall ${cpuStallMs} CPU ms; worst /healthz ${measured} (budget ${HEALTHZ_RESPONSIVENESS_BUDGET_MS} ms; `
         + `ps 200s ${psStatuses.filter((st) => st === 200).length}/24, summary 200s ${sumStatuses.filter((st) => st === 200).length}/24)`);
     }
 
@@ -286,5 +297,12 @@ describe("slice-04 ps/summary event-loop regression", () => {
     // round trip measures the scheduler (375-1011 ms for the same code). Every /healthz still has to answer 200.
     expect(Number.isFinite(cpuStallMs), "the child reported its event-loop stall").toBe(true);
     expect(cpuStallMs).toBeLessThan(HEALTHZ_RESPONSIVENESS_BUDGET_MS);
+    // A blocking wait (Atomics.wait, execFileSync, blocking I/O) stalls the loop without consuming CPU, so the CPU measure
+    // cannot see it. The wall-clock round trip can, but at 100+ load average it reads up to ~1 s for correct code, so only a
+    // looser guard holds under load: the worst burst round trip must stay under max(2 s, 10 x the idle child's worst round
+    // trip measured just before the burst on this same host). This catches blocking waits of about 2 s and more; shorter
+    // ones are indistinguishable from scheduler noise on a loaded host and are NOT caught here.
+    const worstWallMs = Math.max(0, ...health.map((h) => h.ms));
+    expect(worstWallMs).toBeLessThan(Math.max(2_000, 10 * idleWorstMs));
   }, 240_000);
 });
