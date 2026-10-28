@@ -30,6 +30,7 @@ import {
 import { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { RowColumnReader } from "./unreadable-row.js";
 import { findDamagedTagRows } from "./damaged-tag-rows.js";
+import { namedRows, nameRowsThrottled } from "./named-rows.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
 import { parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
 
@@ -1162,6 +1163,15 @@ export class QueueRepository {
           WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
           AND json_valid(outbox_entries.tags) AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
           ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
+        // OF-168: a pending peer of the same wake group whose saved tags are not JSON cannot say it carries the correlation, so it is
+        // not coalesced into this group (it is delivered on its own later). It is named, not silently left out of the grouping.
+        const skippedPeers = (this.db.prepare(`SELECT outbox_id FROM outbox_entries
+          WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
+          AND tags IS NOT NULL AND NOT json_valid(tags) AND instr(tags, '"' || ? || '"') > 0 ORDER BY outbox_id`)
+          .all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>).map((r) => r.outbox_id);
+        nameRowsThrottled(`wake-peers:${correlation}`, skippedPeers, (due, total) => {
+          console.error(`[queue] wake group ${JSON.stringify(correlation)}: ${namedRows(due, total)} not grouped with ${first.outboxId}: saved tags are not readable JSON (each is delivered on its own; repair or remove the row)`);
+        });
         for (const peer of peers) if (actionable(this.outbox!.getById(peer.outbox_id)!) && this.outbox!.claimForDelivery(peer.outbox_id)) intents.push(this.outbox!.getById(peer.outbox_id)!);
       }
       return intents;
@@ -3369,10 +3379,11 @@ export class QueueRepository {
       params.push(opts.tag);
       // OF-168: a row whose tags are damaged cannot say whether it carries this tag, so the listing cannot match it. Which rows match
       // is unchanged; the rows whose tag text names the tag are NAMED in the log so the listing does not read as complete.
-      const unreadable = findDamagedTagRows(this.db, { tags: [opts.tag] });
-      if (unreadable.length > 0) {
-        console.error(`[queue] list --tag ${JSON.stringify(opts.tag)}: ${unreadable.slice(0, 20).map((row) => row.qitemId).join(", ")}${unreadable.length > 20 ? ` and ${unreadable.length - 20} more` : ""} not listed: saved tags are not readable JSON, so a match on that tag is unknown (repair or remove the row)`);
-      }
+      const unreadable = findDamagedTagRows(this.db, { tags: [opts.tag] }).map((row) => row.qitemId);
+      const tag = opts.tag;
+      nameRowsThrottled(`queue-list:${tag}`, unreadable, (due, total) => {
+        console.error(`[queue] list --tag ${JSON.stringify(tag)}: ${namedRows(due, total)} not listed: saved tags are not readable JSON, so a match on that tag is unknown (repair or remove the row)`);
+      });
     }
 
     if (opts?.rig) {

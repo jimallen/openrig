@@ -1,5 +1,6 @@
 import { OUTBOX_DELIVERY_STATES, OUTBOX_ORIGIN_MANUAL_RECORD_TAG } from "../outbox-handler.js";
 import { RSI_OUTBOX_UNSETTLED } from "./detector-ids.js";
+import { namedRows } from "../named-rows.js";
 import {
   RsiFindingSource, hoursBefore, partitionText, sortedParts,
   type SourceContext, type SourceResult,
@@ -24,7 +25,7 @@ export const OUTBOX_UNSETTLED_MIN_AGE_HOURS = 24;
 export const OUTBOX_UNSETTLED_LOOKBACK_HOURS = 24 * 7;
 export const OUTBOX_UNSETTLED_MIN_ROWS = 10;
 
-interface OutboxRow { prov: string; state: string; band: string; n: number; first_id: number; last_id: number; first_seen: string; last_seen: string }
+interface OutboxRow { prov: string; state: string; band: string; n: number; first_id: number; last_id: number; first_seen: string; last_seen: string; damaged: number }
 interface Provenance { hits: number; legacyPending: number; firstId: number; lastId: number; firstSeen: string; lastSeen: string }
 
 export class OutboxUnsettledSource extends RsiFindingSource {
@@ -38,10 +39,20 @@ export class OutboxUnsettledSource extends RsiFindingSource {
     const rows = db.prepare(`SELECT coalesce(identity_provenance, '(unattributed)') AS prov,
         CASE WHEN delivery_state IN (${known}) THEN delivery_state ELSE 'other' END AS state,
         CASE WHEN ts_dispatched >= ? THEN CASE WHEN ts_dispatched < ? THEN 'window' ELSE 'young' END ELSE 'legacy' END AS band,
-        count(*) AS n, min(rowid) AS first_id, max(rowid) AS last_id, min(ts_dispatched) AS first_seen, max(ts_dispatched) AS last_seen
+        count(*) AS n, min(rowid) AS first_id, max(rowid) AS last_id, min(ts_dispatched) AS first_seen, max(ts_dispatched) AS last_seen,
+        sum(CASE WHEN tags IS NOT NULL AND NOT json_valid(tags) THEN 1 ELSE 0 END) AS damaged
       FROM outbox_entries WHERE retired_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) WHERE value = ?)
       GROUP BY prov, state, band`).all(lookback, stale, OUTBOX_ORIGIN_MANUAL_RECORD_TAG) as OutboxRow[];
+
+    // OF-168: a row whose tags are not JSON is counted above as an ordinary row (the read treats its tags as empty), though it may be a
+    // manual record that the read leaves out. The direction is an over-count; the coverage row names how many, so it is not silent.
+    // The ids are fetched only when the grouped read counted any, so a clean read stays ONE statement.
+    const damagedCount = rows.reduce((sum, row) => sum + row.damaged, 0);
+    const unreadableTags = damagedCount === 0 ? [] : (db.prepare("SELECT outbox_id FROM outbox_entries WHERE retired_at IS NULL AND tags IS NOT NULL AND NOT json_valid(tags) ORDER BY rowid").all() as Array<{ outbox_id: string }>).map((r) => r.outbox_id);
+    const note = damagedCount > 0
+      ? `${damagedCount} un-retired outbox row(s) (${namedRows(unreadableTags, damagedCount)}) have tags that are not readable JSON and were counted as ordinary rows; any that is a manual record would be left out if its tags could be read. Repair or remove the rows.`
+      : undefined;
 
     const provenances = new Map<string, Provenance>();
     const states = new Map<string, number>();
@@ -65,6 +76,7 @@ export class OutboxUnsettledSource extends RsiFindingSource {
 
     return {
       total: firing.length, unit: "identity provenances", order: "stale pending rows desc, provenance",
+      ...(note !== undefined ? { note } : {}),
       findings: firing.slice(0, limit).map(([prov, p]) => ({
         detectorId: RSI_OUTBOX_UNSETTLED, className: "outbox-pending-never-settles", subjectKey: `provenance:${prov}`,
         scope: { type: "instance", instanceId: this.deps.instanceId },

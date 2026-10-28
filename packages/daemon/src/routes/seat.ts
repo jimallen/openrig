@@ -65,7 +65,9 @@ seatRoutes.post("/retire-held-message/:seatRef/:id", async c => {
   try {
     const target = guard.target(c.req.param("seatRef"));
     const outbox = new OutboxHandler(guard.db); const id = c.req.param("id");
-    if (outbox.getById(id)?.guardBinding?.nodeId !== target.nodeId) return c.json({ error: "No held message for this node and ID" }, 404);
+    // OF-168: a held message whose binding is not JSON names no seat, so it cannot be matched to this one; it is released by id (the
+    // quota refusal names this command), and the retirement records that the binding was unreadable.
+    if (!outbox.isUnreadableHeld(id) && outbox.getById(id)?.guardBinding?.nodeId !== target.nodeId) return c.json({ error: "No held message for this node and ID" }, 404);
     return c.json({ entry: outbox.retire(id, actor, body.reason), effect: "Retired from active quota; evidence preserved. No delivery, native consumption or work closure is asserted." });
   } catch (error) { return c.json({ error: (error as Error).message }, 409); }
 });

@@ -30,6 +30,7 @@ import { stalledPickupFinding } from "./queue-pickup.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
 import { isUnreadableRowError } from "./unreadable-row.js";
+import { namedRows } from "./named-rows.js";
 
 export const STUCK_SWEEP_INTERVAL_KEY = "queue.stuck_sweep_interval_seconds";
 export const DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS = 300;
@@ -620,7 +621,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       });
       if (verificationTargets.length === 0) continue;
       const unreadableNote = unreadableSuccessors.size > 0
-        ? ` (candidate successor row${unreadableSuccessors.size === 1 ? "" : "s"} ${[...unreadableSuccessors].join(", ")} could not be read: saved chain_of_record is not JSON)`
+        ? ` (candidate successor row${unreadableSuccessors.size === 1 ? "" : "s"} ${namedRows([...unreadableSuccessors])} could not be read: saved chain_of_record is not JSON)`
         : "";
       if (unreadableNote) log(`[stuck-sweep] ${row.qitemId}: successor check inconclusive${unreadableNote}; repair or remove the row`);
       candidates.push({

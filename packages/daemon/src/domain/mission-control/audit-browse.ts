@@ -14,6 +14,7 @@ import {
   MISSION_CONTROL_VERBS,
 } from "./mission-control-action-log.js";
 import { readStoredJsonObject } from "../stored-json.js";
+import { NAMED_ROWS_LIMIT } from "../named-rows.js";
 
 export interface AuditQueryInput {
   qitemId?: string;
@@ -42,9 +43,11 @@ export interface AuditQueryResult {
   hasMore: boolean;
   nextBeforeId: string | null;
   /** OF-168: present only when a scope filter was given AND rows matching every OTHER filter have an `audit_notes_json` that is not
-   *  JSON. Such a row cannot say what scope it carries, so a scope filter cannot match it; it is named here (action ids, at most
-   *  UNREADABLE_NOTES_LIMIT) instead of the filtered browse reading as if it did not exist. Which rows match is unchanged. */
+   *  JSON. Such a row cannot say what scope it carries, so a scope filter cannot match it; it is named here (action ids, newest
+   *  first, at most NAMED_ROWS_LIMIT) instead of the filtered browse reading as if it did not exist. Which rows match is unchanged. */
   unreadableAuditNotes?: string[];
+  /** How many MORE such rows exist beyond the ones named; present only when the list was cut at NAMED_ROWS_LIMIT. */
+  unreadableAuditNotesMore?: number;
 }
 
 interface ActionRow {
@@ -65,7 +68,7 @@ interface ActionRow {
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
-const UNREADABLE_NOTES_LIMIT = 50;
+
 
 export class MissionControlAuditQueryError extends Error {
   constructor(
@@ -152,17 +155,24 @@ export class MissionControlAuditBrowse {
     const trimmed = hasMore ? rows.slice(0, limit) : rows;
     const nextBeforeId = hasMore && trimmed.length > 0 ? trimmed[trimmed.length - 1]!.action_id : null;
     const scoped = Boolean(input.scopeTier || input.scopeId || input.scopePath || input.approvalScope);
-    const unreadableAuditNotes = scoped
-      ? (this.db.prepare(`SELECT action_id FROM mission_control_actions
-          WHERE audit_notes_json IS NOT NULL AND NOT json_valid(audit_notes_json)${plain.map((c) => ` AND ${c.sql}`).join("")}
-          ORDER BY acted_at DESC, rowid DESC LIMIT ?`)
-          .all(...plain.flatMap((c) => (c.param === undefined ? [] : [c.param])), UNREADABLE_NOTES_LIMIT) as Array<{ action_id: string }>).map((r) => r.action_id)
-      : [];
+    let unreadableAuditNotes: string[] = [];
+    let unreadableAuditNotesMore = 0;
+    if (scoped) {
+      const damagedWhere = `audit_notes_json IS NOT NULL AND NOT json_valid(audit_notes_json)${plain.map((c) => ` AND ${c.sql}`).join("")}`;
+      const plainParams = plain.flatMap((c) => (c.param === undefined ? [] : [c.param]));
+      unreadableAuditNotes = (this.db.prepare(`SELECT action_id FROM mission_control_actions WHERE ${damagedWhere} ORDER BY acted_at DESC, rowid DESC LIMIT ?`)
+        .all(...plainParams, NAMED_ROWS_LIMIT) as Array<{ action_id: string }>).map((r) => r.action_id);
+      if (unreadableAuditNotes.length === NAMED_ROWS_LIMIT) {
+        const total = (this.db.prepare(`SELECT count(*) AS n FROM mission_control_actions WHERE ${damagedWhere}`).get(...plainParams) as { n: number }).n;
+        unreadableAuditNotesMore = total - NAMED_ROWS_LIMIT;
+      }
+    }
     return {
       rows: trimmed.map(rowToEntry),
       hasMore,
       nextBeforeId,
       ...(unreadableAuditNotes.length > 0 ? { unreadableAuditNotes } : {}),
+      ...(unreadableAuditNotesMore > 0 ? { unreadableAuditNotesMore } : {}),
     };
   }
 }

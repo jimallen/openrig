@@ -1059,6 +1059,24 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
       expect(lines.filter((line) => line.includes(row.qitemId) && line.includes("successor check inconclusive") && line.includes(candidate.qitemId))).toHaveLength(1);
     });
 
+    it("names at most 20 unreadable candidates and counts the rest", async () => {
+      const row = await closeToSeat();
+      const ids: string[] = [];
+      for (let i = 0; i < 22; i += 1) {
+        const candidate = await mkRow("next@r");
+        db.prepare("UPDATE queue_items SET chain_of_record = ? WHERE qitem_id = ?").run(`["${row.qitemId}"`, candidate.qitemId);
+        ids.push(candidate.qitemId);
+      }
+      const sorted = [...ids].sort();
+
+      const lines = await sweepLogged();
+
+      const body = (await findingsFor(row.qitemId))[0]!.body;
+      expect(body).toContain(`candidate successor rows ${sorted.slice(0, 20).join(", ")} and 2 more could not be read`);
+      expect(body).not.toContain(sorted[20]!);
+      expect(lines.filter((line) => line.includes("successor check inconclusive"))).toHaveLength(1);
+    });
+
     it("control: nothing unreadable, nothing named", async () => {
       const row = await closeToSeat();
 

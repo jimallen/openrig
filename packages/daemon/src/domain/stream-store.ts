@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { monotonicFactory } from "ulid";
 import type { EventBus } from "./event-bus.js";
 import { readStoredJsonStrings } from "./stored-json.js";
+import { namedRows, nameRowsThrottled } from "./named-rows.js";
 
 const ulid = monotonicFactory();
 
@@ -202,13 +203,14 @@ export class StreamStore {
     if (opts?.hintTag) {
       // OF-168: a stream item whose hint_tags are damaged cannot say whether it carries this tag, so the filter cannot match it.
       // Which items match is unchanged; the ones whose tag text names the tag (and match every other filter) are NAMED in the log.
-      const unreadable = this.db.prepare(
+      const unreadable = (this.db.prepare(
         `SELECT stream_item_id FROM stream_items WHERE hint_tags IS NOT NULL AND NOT json_valid(hint_tags) AND instr(hint_tags, '"' || ? || '"') > 0${plainConditions.map((c) => ` AND ${c}`).join("")}
-         ORDER BY ts_emitted, stream_sort_key LIMIT 20`,
-      ).all(opts.hintTag, ...plainParams) as Array<{ stream_item_id: string }>;
-      if (unreadable.length > 0) {
-        console.error(`[stream] list hintTag ${JSON.stringify(opts.hintTag)}: ${unreadable.map((row) => row.stream_item_id).join(", ")} not listed: saved hint_tags are not readable JSON, so a match on that tag is unknown (repair or remove the row)`);
-      }
+         ORDER BY ts_emitted, stream_sort_key`,
+      ).all(opts.hintTag, ...plainParams) as Array<{ stream_item_id: string }>).map((row) => row.stream_item_id);
+      const tag = opts.hintTag;
+      nameRowsThrottled(`stream-list:${tag}`, unreadable, (due, total) => {
+        console.error(`[stream] list hintTag ${JSON.stringify(tag)}: ${namedRows(due, total)} not listed: saved hint_tags are not readable JSON, so a match on that tag is unknown (repair or remove the row)`);
+      });
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

@@ -179,6 +179,20 @@ describe("own-startup-replay: a newer snapshot whose data is not JSON is named, 
     expect(choice.warning).toContain("Newer snapshots snap-bad-2, snap-bad-1 could not be read (saved data is not JSON) and were passed over");
   });
 
+  it("names at most 20 unreadable snapshots (newest first) in the warning and counts the rest; the copy lists them all", () => {
+    snapshot("snap-good", "2026-01-01 00:00:00", usable());
+    for (let i = 0; i < 25; i += 1) snapshot(`snap-bad-${String(i).padStart(2, "0")}`, `2026-02-01 00:${String(i).padStart(2, "0")}:00`, NOT_JSON);
+
+    const choice = restoreChoice();
+
+    expect(choice.kind).toBe("fallback");
+    if (choice.kind !== "fallback") return;
+    expect(choice.from.skippedUnreadable).toHaveLength(25);
+    expect(choice.warning).toContain("snap-bad-24, snap-bad-23");
+    expect(choice.warning).toContain("snap-bad-05 and 5 more could not be read");
+    expect(choice.warning).not.toContain("snap-bad-04");
+  });
+
   it("one unreadable snapshot reads in the singular", () => {
     snapshot("snap-good", "2026-01-01 00:00:00", usable());
     snapshot("snap-bad", "2026-02-01 00:00:00", NOT_JSON);
@@ -289,6 +303,84 @@ describe("outbox retention quota: a retained row whose binding is not JSON count
     hold("retired-bad", NOT_JSON, { state: "retired" });
 
     expect(refusal("n1")).toBeNull();
+  });
+
+  it("the refusal gives the exact way out for those rows: the retire command, by id, for any seat", () => {
+    fill("n1", 99);
+    hold("held-bad", NOT_JSON);
+
+    expect(refusal("n1")?.message).toContain("until retired or removed: rig seat retire-held-message <any seat> <id> --reason <text>.");
+  });
+
+  it("names at most 20 damaged rows and counts the rest", () => {
+    fill("n1", 75);
+    for (let i = 0; i < 25; i += 1) hold(`held-bad-${String(i).padStart(2, "0")}`, NOT_JSON);
+
+    const message = refusal("n1")?.message ?? "";
+
+    expect(message).toContain("25 held messages with an unreadable binding (held-bad-00, ");
+    expect(message).toContain("held-bad-19 and 5 more)");
+    expect(message).not.toContain("held-bad-20");
+  });
+
+  describe("retire() releases a damaged held message by id (the quota's only way out for it)", () => {
+    it("retires it, records that the binding was unreadable, returns it flagged, and frees the quota it counted against", () => {
+      fill("n1", 99);
+      hold("held-bad", NOT_JSON);
+      expect(refusal("n1")?.code).toBe("retained_quota_full");
+
+      const entry = outbox.retire("held-bad", "ops@rig", "operator cleared it");
+
+      expect(entry).toMatchObject({ outboxId: "held-bad", deliveryState: "retired", retiredBy: "ops@rig", retirementReason: "operator cleared it [guard_binding was not readable JSON when retired]", unreadable: ["guard_binding"] });
+      expect(db.prepare("SELECT delivery_state AS s FROM outbox_entries WHERE outbox_id = 'held-bad'").get()).toEqual({ s: "retired" });
+      expect(refusal("n1")).toBeNull();
+    });
+
+    it("enough damaged rows to lock every seat out can all be released one by one", () => {
+      for (let i = 0; i < 100; i += 1) hold(`held-bad-${String(i).padStart(3, "0")}`, NOT_JSON);
+      expect(refusal("n-any")?.code).toBe("retained_quota_full");
+
+      for (let i = 0; i < 100; i += 1) outbox.retire(`held-bad-${String(i).padStart(3, "0")}`, "ops@rig", "clear");
+
+      expect(refusal("n-any")).toBeNull();
+    });
+
+    it("retiring it again is the same answer, not a refusal", () => {
+      hold("held-bad", NOT_JSON);
+      const first = outbox.retire("held-bad", "ops@rig", "first");
+
+      const again = outbox.retire("held-bad", "ops@rig", "second");
+
+      expect(again).toMatchObject({ deliveryState: "retired", retirementReason: first.retirementReason, unreadable: ["guard_binding"] });
+    });
+
+    it("still requires an actor and a reason before it releases anything", () => {
+      hold("held-bad", NOT_JSON);
+
+      expect(() => outbox.retire("held-bad", "ops@rig", "  ")).toThrow(expect.objectContaining({ code: "retirement_reason_required" }));
+      expect(() => outbox.retire("held-bad", " ", "why")).toThrow(expect.objectContaining({ code: "retirement_reason_required" }));
+      expect(db.prepare("SELECT delivery_state AS s FROM outbox_entries WHERE outbox_id = 'held-bad'").get()).toEqual({ s: "retained" });
+    });
+
+    it("controls: a readable held message retires exactly as before (no suffix); a damaged binding on a PENDING row is still refused", () => {
+      hold("held-good", binding("n1"));
+      hold("pending-bad", NOT_JSON, { state: "pending" });
+
+      expect(outbox.retire("held-good", "ops@rig", "read it")).toMatchObject({ deliveryState: "retired", retirementReason: "read it" });
+      expect(() => outbox.retire("pending-bad", "ops@rig", "x")).toThrow(UnreadableRowError);
+      expect(db.prepare("SELECT delivery_state AS s FROM outbox_entries WHERE outbox_id = 'pending-bad'").get()).toEqual({ s: "pending" });
+    });
+
+    it("a held message with readable binding but damaged TAGS is still refused by name (not released blind)", () => {
+      hold("held-bad-tags", binding("n1"));
+      db.prepare("UPDATE outbox_entries SET tags = ? WHERE outbox_id = 'held-bad-tags'").run(NOT_JSON);
+
+      expect(() => outbox.retire("held-bad-tags", "ops@rig", "x")).toThrow(UnreadableRowError);
+    });
+
+    it("an id that does not exist is not found (nothing is created)", () => {
+      expect(() => outbox.retire("no-such-id", "ops@rig", "x")).toThrow();
+    });
   });
 
   it("the refusal of a quota that is full of READABLE rows carries no unreadable text", () => {
