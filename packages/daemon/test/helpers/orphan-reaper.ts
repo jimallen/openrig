@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -7,54 +7,105 @@ const run = promisify(execFile);
 /**
  * A test that starts a process which outlives the test runner (a tmux server, a daemon the CLI detaches) must not rely on
  * its own teardown alone: a vitest timeout, a killed worker or a swallowed stop failure never reaches it, and the process
- * then runs for days after its temp home is deleted. `reapWhenOwnerDies` starts a tiny detached watchdog that waits for
- * the OWNER (the test worker) to die and then stops exactly what it was told to:
- *   - the tmux server on each listed socket (an explicit private path), and
- *   - every process whose environment holds a listed `NAME=value` entry exactly (the test's private OPENRIG_HOME): TERM,
- *     then KILL for those still carrying it. The identity is the private path, never a pid read from a file that could be
- *     stale or reused, and never a name pattern.
- * `disarm()` removes it once the test's own teardown has run and verified the stop.
+ * then runs for days after its temp home is deleted.
+ *
+ * IDENTITY. A pid alone is not an identity (it can be stale or reused), and another process's environment cannot be read on
+ * every platform (macOS `ps -E` shows none for a same-user process). So a process the test means to stop is RECORDED when
+ * it is found: its pid, its start time and its command line (`ps -o lstart=`, `ps -o command=`: the same on Linux and macOS).
+ * Every signal is preceded by a check that all three still match; a pid that now belongs to something else is left alone.
+ * tmux servers are identified by their explicit private socket path instead.
+ *
+ * `reapWhenOwnerDies` starts a tiny detached watchdog that waits for the OWNER (the test worker) to die and then stops the
+ * recorded identities and the tmux servers on the listed sockets. `disarm()` removes it once the test's own teardown has run
+ * and VERIFIED the stop.
  */
+export interface ProcessIdentity { pid: number; started: string; command: string }
+
 export interface OrphanReaperTargets {
   /** tmux servers this test started, by explicit socket path. */
   tmuxSockets?: string[];
-  /** Exact `NAME=value` environment entries that only this test's processes carry. */
+  /** Processes recorded with `identityOf`; stopped only while pid, start time and command all still match. */
+  identities?: ProcessIdentity[];
+  /**
+   * Linux only (it reads /proc/<pid>/environ): exact `NAME=value` entries that only this test's processes carry. Covers a
+   * window in which no identity is known yet (a `rig daemon start` still running). Refused loudly where /proc is absent.
+   */
   environ?: string[];
   /** The process whose death triggers the reaping; default: this process. */
   ownerPid?: number;
 }
 
+export const hasProcFs = (): boolean => existsSync("/proc/self/environ");
+
+/** The recorded identity of a live process, or null when there is none (gone, or ps cannot say). */
+export function identityOf(pid: number): ProcessIdentity | null {
+  try {
+    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return started === "" || command === "" ? null : { pid, started, command };
+  } catch { return null; }
+}
+
+export const processAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+};
+
+/** Still the recorded process: alive, and the same start time and command (so not a reused pid). */
+export function sameProcess(id: ProcessIdentity): boolean {
+  if (!processAlive(id.pid)) return false;
+  const now = identityOf(id.pid);
+  return now !== null && now.started === id.started && now.command === id.command;
+}
+
+/** Epoch ms of a `ps lstart` string (second resolution, local time). */
+export const startedAtMs = (lstart: string): number => Date.parse(lstart);
+
+/** Pids listening on a TCP port (lsof; present on Linux and macOS). Throws if it cannot be asked: never "none" by default. */
+export function listenerPids(port: number): number[] {
+  try {
+    const out = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" });
+    return out.split("\n").filter((l) => /^\d+$/.test(l.trim())).map(Number);
+  } catch (error) {
+    const e = error as { status?: number; code?: string };
+    if (e.status === 1) return []; // lsof's own "nothing found"
+    throw new Error(`cannot discover the listener on port ${port}: ${e.code ?? `lsof exit ${e.status}`}`);
+  }
+}
+
 const WATCHDOG = `owner=$1; shift
 while kill -0 "$owner" 2>/dev/null; do sleep 1; done
+same() { [ "$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$2" ] && [ "$(ps -o command= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$3" ]; }
 holders() {
-  if [ -d /proc/self ]; then
-    for e in /proc/[0-9]*/environ; do
-      p=\${e#/proc/}; p=\${p%/environ}
-      [ "$p" = "$$" ] && continue
-      tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
-    done
-  else
-    ps -axE -o pid=,command= 2>/dev/null | grep -F -- " $1" | while read -r p rest; do [ "$p" = "$$" ] || echo "$p"; done
-  fi
+  for e in /proc/[0-9]*/environ; do
+    p=\${e#/proc/}; p=\${p%/environ}
+    [ "$p" = "$$" ] && continue
+    tr '\\0' '\\n' < "$e" 2>/dev/null | grep -qxF -- "$1" && echo "$p"
+  done
 }
-for a in "$@"; do
-  case "$a" in
-    tmux:*) tmux -S "\${a#tmux:}" kill-server 2>/dev/null ;;
-    env:*) for p in $(holders "\${a#env:}"); do kill -TERM "$p" 2>/dev/null; done ;;
-  esac
-done
+sweep() {
+  sig=$1; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      tmux) [ "$sig" = TERM ] && tmux -S "$2" kill-server 2>/dev/null; shift 2 ;;
+      env) for p in $(holders "$2"); do kill -$sig "$p" 2>/dev/null; done; shift 2 ;;
+      pid) if same "$2" "$3" "$4"; then kill -$sig "$2" 2>/dev/null; fi; shift 4 ;;
+      *) shift ;;
+    esac
+  done
+}
+sweep TERM "$@"
 sleep 3
-for a in "$@"; do
-  case "$a" in
-    env:*) for p in $(holders "\${a#env:}"); do kill -KILL "$p" 2>/dev/null; done ;;
-  esac
-done
+sweep KILL "$@"
 `;
 
 export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () => void; pid: number } {
+  if ((targets.environ?.length ?? 0) > 0 && !hasProcFs()) {
+    throw new Error("environ-based reaping needs /proc (Linux); on this platform record process identities instead");
+  }
   const args = [
-    ...(targets.tmuxSockets ?? []).map((socket) => `tmux:${socket}`),
-    ...(targets.environ ?? []).map((entry) => `env:${entry}`),
+    ...(targets.tmuxSockets ?? []).flatMap((socket) => ["tmux", socket]),
+    ...(targets.environ ?? []).flatMap((entry) => ["env", entry]),
+    ...(targets.identities ?? []).flatMap((id) => ["pid", String(id.pid), id.started, id.command]),
   ];
   const child = spawn("/bin/sh", ["-c", WATCHDOG, "reaper", String(targets.ownerPid ?? process.pid), ...args], {
     detached: true,
@@ -69,35 +120,17 @@ export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () =>
   };
 }
 
-export const processAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-};
-
-/** Every process (other than this one) whose environment holds exactly `entry` (`NAME=value`). Linux reads /proc; elsewhere `ps -E`. */
+/** Linux only: processes whose environment holds exactly `entry`. */
 export function pidsWithEnv(entry: string): number[] {
+  if (!hasProcFs()) throw new Error("pidsWithEnv needs /proc (Linux)");
   const found: number[] = [];
-  try {
-    for (const name of readdirSync("/proc")) {
-      if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
-      try {
-        if (readFileSync(`/proc/${name}/environ`, "utf8").split("\0").includes(entry)) found.push(Number(name));
-      } catch { /* gone, or not ours to read */ }
-    }
-    return found;
-  } catch { /* no /proc: macOS, below */ }
-  try {
-    for (const line of execFileSync("ps", ["-axE", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).split("\n")) {
-      const m = /^\s*(\d+)\s(.*)$/.exec(line);
-      if (m && Number(m[1]) !== process.pid && m[2]!.split(" ").includes(entry)) found.push(Number(m[1]));
-    }
-  } catch { /* no ps either */ }
+  for (const name of readdirSync("/proc")) {
+    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+    try {
+      if (readFileSync(`/proc/${name}/environ`, "utf8").split("\0").includes(entry)) found.push(Number(name));
+    } catch { /* gone, or not ours to read */ }
+  }
   return found;
-}
-
-/** Whether `pid` is a live process carrying exactly `entry` in its environment: the identity check before any signal. */
-export function processHasEnv(pid: number, entry: string): boolean {
-  try { return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(entry); } catch { /* no /proc entry: macOS, below */ }
-  try { return execFileSync("ps", ["-E", "-p", String(pid), "-o", "command="], { encoding: "utf8" }).split(" ").includes(entry); } catch { return false; }
 }
 
 export async function waitGone(pid: number, withinMs: number): Promise<boolean> {
@@ -109,13 +142,21 @@ export async function waitGone(pid: number, withinMs: number): Promise<boolean> 
   return true;
 }
 
-/** TERM, then KILL, each followed by `graceMs` of waiting, for processes this test has already identified as its own. */
-export async function terminateOwned(pids: number[], graceMs: number): Promise<void> {
-  const live = () => pids.filter(processAlive);
-  for (const pid of live()) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }
-  await Promise.all(pids.map((pid) => waitGone(pid, graceMs)));
-  for (const pid of live()) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
-  await Promise.all(pids.map((pid) => waitGone(pid, graceMs)));
+export async function waitNotSame(ids: ProcessIdentity[], withinMs: number): Promise<void> {
+  const until = Date.now() + withinMs;
+  while (ids.some(sameProcess) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+/**
+ * TERM, then KILL, each followed by `graceMs` of waiting, for recorded identities: a signal goes to a pid only while that
+ * pid is still the recorded process. Returns the identities that are STILL the recorded process afterwards (survivors).
+ */
+export async function terminateIdentified(ids: ProcessIdentity[], graceMs: number): Promise<ProcessIdentity[]> {
+  for (const id of ids) if (sameProcess(id)) { try { process.kill(id.pid, "SIGTERM"); } catch { /* gone */ } }
+  await waitNotSame(ids, graceMs);
+  for (const id of ids) if (sameProcess(id)) { try { process.kill(id.pid, "SIGKILL"); } catch { /* gone */ } }
+  await waitNotSame(ids, graceMs);
+  return ids.filter(sameProcess);
 }
 
 const NO_SERVER = /no server running|error connecting to|no such file or directory|failed to connect/i;

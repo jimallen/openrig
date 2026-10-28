@@ -17,7 +17,10 @@ import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
-import { pidsWithEnv, processAlive, processHasEnv, reapWhenOwnerDies, terminateOwned, waitGone } from "./orphan-reaper.js";
+import {
+  hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, sameProcess, startedAtMs, terminateIdentified, waitNotSame,
+  type ProcessIdentity,
+} from "./orphan-reaper.js";
 
 export interface RigResult {
   stdout: string;
@@ -156,38 +159,69 @@ export async function spawnScenarioDaemon(
       );
     }
   };
-  // The daemon is detached by `rig daemon start`, so it outlives this runner. Its identity is this scaffold's private
-  // OPENRIG_HOME, which every process it starts carries in its environment; a pid read from daemon.json is only a hint and is
-  // signalled only after the same check, so a stale file or a reused pid can never aim a signal at someone else's process.
-  // The watchdog is armed BEFORE `rig daemon start`, so a start that fails or times out after the CLI has already detached
-  // the daemon is still reaped if the runner dies; a failed start is also reaped at once, below.
+  // The daemon is detached by `rig daemon start`, so it outlives this runner. Everything that signals it goes through a
+  // RECORDED identity (pid + start time + command, verified before every signal; see orphan-reaper.ts), never through a bare
+  // pid from daemon.json and never through another process's environment (unreadable on macOS). The daemon is found by two
+  // independent routes, the pid in this scaffold's private daemon.json and the listener on the port chosen for it, each kept
+  // only if the process started after this call began. On Linux the watchdog is also armed BEFORE `rig daemon start` with the
+  // scaffold's private OPENRIG_HOME, so a worker that dies mid-start still gets its daemon reaped; on macOS that window has
+  // no identity to go on yet (reported, not hidden).
   const homeEntry = `OPENRIG_HOME=${scaffold.openrigHome}`;
-  const readDaemonPid = (): number | null => {
+  const discover = (sinceMs: number, envScan: boolean): ProcessIdentity[] => {
+    const pids = new Set<number>();
     try {
       const pid = (JSON.parse(readFileSync(join(scaffold.openrigHome, "daemon.json"), "utf8")) as { pid?: unknown }).pid;
-      return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && processHasEnv(pid, homeEntry) ? pid : null;
-    } catch { return null; }
+      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) pids.add(pid);
+    } catch { /* no state file (yet) */ }
+    for (const pid of listenerPids(port)) pids.add(pid);
+    // Only on a failed start, when no seat or tmux server exists yet to carry the home too.
+    if (envScan && hasProcFs()) for (const pid of pidsWithEnv(homeEntry)) pids.add(pid);
+    const found: ProcessIdentity[] = [];
+    for (const pid of pids) {
+      const id = identityOf(pid);
+      // ps start times have one-second resolution: compare from the start of the second in which this call began.
+      if (id !== null && startedAtMs(id.started) >= Math.floor(sinceMs / 1000) * 1000) found.push(id);
+    }
+    return found;
   };
-  const reaper = reapWhenOwnerDies({ environ: [homeEntry], tmuxSockets: [scaffold.tmuxSocketPath] });
+  let current: ProcessIdentity[] = [];
+  const armWith = (identities: ProcessIdentity[]) => reapWhenOwnerDies({
+    tmuxSockets: [scaffold.tmuxSocketPath], identities, environ: hasProcFs() ? [homeEntry] : [],
+  });
+  let reaper = armWith([]);
+  const rearm = (identities: ProcessIdentity[]) => { const old = reaper; reaper = armWith(identities); old.disarm(); };
+  const startRecorded = async () => {
+    const since = Date.now();
+    try {
+      await startProc();
+      current = discover(since, false);
+      if (current.length === 0) throw new Error(`the daemon started on port ${port} but cannot be identified (no live process in daemon.json or listening there); refusing to continue without a reapable identity`);
+    } catch (error) {
+      // The CLI may have detached the daemon before failing or timing out: stop whatever it left, then say so.
+      let holders: ProcessIdentity[] = [];
+      try { holders = discover(since, true); } catch (discoveryError) {
+        throw new Error(`${(error as Error).message}; and the leftover daemon could not be looked for: ${(discoveryError as Error).message}`);
+      }
+      const survivors = await terminateIdentified(holders, stopGraceMs);
+      // Disarm only when nothing survived; otherwise the watchdog stays armed on exactly the survivors.
+      if (survivors.length === 0) reaper.disarm(); else rearm(survivors);
+      current = [];
+      throw error;
+    }
+    rearm(current);
+  };
   const killProc = async () => {
     // `rig daemon stop` reads daemon.json under the scratch OPENRIG_HOME and
     // SIGTERMs the daemon. Best-effort (already-down is fine), but the daemon must really be gone before the
     // scaffold (and the daemon.json that names it) can be deleted: a swallowed stop failure leaked it.
-    const pid = readDaemonPid();
+    const known = [...current];
     await runRig(["daemon", "stop"], scaffold.env, rigBin, timeoutMs).catch(() => {});
-    if (pid !== null && !(await waitGone(pid, stopGraceMs))) {
-      if (processHasEnv(pid, homeEntry)) await terminateOwned([pid], stopGraceMs);
-    }
+    await waitNotSame(known, stopGraceMs);
+    await terminateIdentified(known, stopGraceMs);
   };
 
-  try { await startProc(); } catch (error) {
-    // The CLI may have detached the daemon before failing or timing out: stop whatever carries this scaffold's home.
-    // (No seat or tmux server exists yet, so nothing but the daemon and its helpers can hold it.)
-    const holders = [...new Set([...(readDaemonPid() === null ? [] : [readDaemonPid()!]), ...pidsWithEnv(homeEntry)])];
-    await terminateOwned(holders, stopGraceMs);
-    if (!holders.some(processAlive)) reaper.disarm();
-    throw error;
-  }
+  const startedAt = Date.now();
+  await startRecorded();
 
   const baseUrl = `http://127.0.0.1:${port}`;
   const readEnv: Record<string, string | undefined> = { ...scaffold.env, OPENRIG_URL: baseUrl };
@@ -199,13 +233,17 @@ export async function spawnScenarioDaemon(
     sigterm: killProc,
     restart: async () => {
       await killProc();
-      await startProc();
+      await startRecorded();
     },
     stop: async () => {
       await killProc();
-      const left = readDaemonPid();
-      // Delete the scaffold (and disarm the watchdog) only once the daemon is verified gone; otherwise keep both.
-      if (left !== null && processAlive(left)) throw new Error(`the scenario daemon (pid ${left}) is still alive after stop; scaffold and watchdog kept`);
+      // Verify against what is found NOW (daemon.json and the port, not only what was recorded at start): a daemon that is
+      // still alive keeps the scaffold and the watchdog in place.
+      const left = await terminateIdentified(discover(startedAt, false), stopGraceMs);
+      if (left.length > 0) {
+        rearm(left);
+        throw new Error(`the scenario daemon (pid ${left.map((l) => l.pid).join(", ")}) is still alive after stop; scaffold and watchdog kept`);
+      }
       reaper.disarm();
       scaffold.cleanup();
     },
