@@ -112,7 +112,9 @@ const codes = (v: WorktreeVerdict): string[] => v.reasons.map((r) => r.code);
 
 /** Repo-wide ignore rules without a commit (info/exclude applies to every linked worktree). */
 function exclude(f: Fixture, ...patterns: string[]): void {
-  fs.appendFileSync(path.join(f.repo, ".git", "info", "exclude"), patterns.join("\n") + "\n");
+  const file = path.join(f.repo, ".git", "info", "exclude");
+  fs.mkdirSync(path.dirname(file), { recursive: true }); // an empty GIT_TEMPLATE_DIR (Sparky) creates no info/
+  fs.appendFileSync(file, patterns.join("\n") + "\n");
 }
 
 /** Commit a tracked file in the worktree and fast-forward origin/main over it, so the worktree stays merged and clean. */

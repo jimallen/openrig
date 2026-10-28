@@ -416,7 +416,9 @@ async function sweepRepo(
       if (head.code !== 0) keep("head-unreadable", "HEAD does not resolve to a commit");
       else {
         const anc = await git(["merge-base", "--is-ancestor", head.stdout.trim(), target.sha], wt.path);
-        if (anc.code === 1) keep("not-merged", `HEAD is not an ancestor of ${target.ref} (squash-merged branches cannot be proven merged by git alone)`);
+        // Exit 1 is "not an ancestor" only when git was silent: git 2.43 exits 1 while printing
+        // "error: Could not read <object>" for a damaged history, which proves nothing either way.
+        if (anc.code === 1 && anc.stderr.trim() === "") keep("not-merged", `HEAD is not an ancestor of ${target.ref} (squash-merged branches cannot be proven merged by git alone)`);
         else if (anc.code !== 0) keep("merge-check-failed", anc.stderr.trim() || `git merge-base exited ${anc.code}`);
       }
     }
