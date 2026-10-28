@@ -142,6 +142,25 @@ describe("startup prompt submission", () => {
       expect(texts.some(t => t.includes("identity  tail"))).toBe(true);
     });
 
+    // OF-169: startup text loses every C0/C1 control except TAB/LF/CR (not only the paste-end marker), in a file
+    // and in an identity action. The submission evidence compares what reached the pane: with the first Enter lost
+    // the text stays staged and the guarded retry must still recognise it as the complete prompt.
+    it("OF-169: controls are stripped from startup text and the staged-text check compares the stripped text", async () => {
+      const f = fixture(1, "claude-code", false, true);
+      f.readFile.mockImplementation(() => "Line\u0003 one\u001b[31m\n\tindented\u007f line\u0085 two");
+      const result = await f.start({
+        resolvedStartupFiles: [file("role.md")],
+        startupActions: [{ type: "send_text", builtin: "session_identity", value: "id\u0007entity\u009b tail", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }],
+      });
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
+      expect(result.warnings).toBeUndefined();
+      const texts = f.tmux.sendText.mock.calls.map(c => c[1]);
+      for (const t of texts) expect(t, JSON.stringify(t)).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+      expect(texts).toContain("Line one[31m\n\tindented line two");
+      expect(texts.some(t => t.includes("identity tail"))).toBe(true);
+      expect(f.submitted).toEqual(texts);
+    });
+
     it("keeps prelaunch delivery before harness launch and adds only the bounded check delay", async () => {
       const f = fixture(0, "claude-code", false, true);
       await f.start({ startupActions: [], resolvedStartupFiles: [file("CLAUDE.md", true, "guidance_merge"), file("role.md")] });

@@ -100,3 +100,21 @@ describe("OF-160: StubRuntimeAdapter send_text startup files never carry the pas
     expect(tmux.sendKeys).toHaveBeenCalledWith("dev-impl@test-rig", ["Enter"]);
   });
 });
+
+// OF-169: the stub adapter's send_text leg loses every control except TAB/LF/CR as well.
+describe("OF-169: StubRuntimeAdapter send_text startup files lose C0/C1 controls but keep tab, newline and CR", () => {
+  it("strips controls before the paste", async () => {
+    const mod = await import(STUB_ADAPTER_MODULE) as { StubRuntimeAdapter: new (deps: unknown) => {
+      deliverStartup(files: unknown[], b: unknown): Promise<{ delivered: number; failed: unknown[] }> } };
+    const tmux = tmuxWith({ hasSession: true });
+    const adapter = new mod.StubRuntimeAdapter({
+      tmux, fsOps: memFs({ "/work/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" }), sleep: async () => {},
+    });
+    const file = {
+      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
+      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"],
+    };
+    await adapter.deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" });
+    expect(tmux.sendText).toHaveBeenCalledWith("dev-impl@test-rig", "AB[31mCDEFG\tH\nI\rJ");
+  });
+});
