@@ -625,6 +625,8 @@ describe("Up API route", () => {
         expect(seat.reason).toBe("reattaches its adopted session worker@plan-adopted-rig, which rig down left running; nothing is started (if that session has ended by then, restore goes the ordinary way)");
       } else {
         expect(seat.reattach).toBeUndefined();
+        // z2 review F4: restore refuses this fresh start while the adopted session is live, and the plan says so.
+        expect(seat.wouldRefuse).toBe(`its adopted session worker@plan-adopted-rig, which rig down left running, would be left running untracked: restore refuses the fresh start while it is live (release it first with rig unclaim ${sess.id}, end it yourself, or leave the seat out of --fresh to reattach it); once it has ended, the seat is started fresh`);
       }
     });
 

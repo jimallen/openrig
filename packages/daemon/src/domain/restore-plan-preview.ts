@@ -338,6 +338,14 @@ export function buildRestorePlanPreview(
     const damage = savedRowDamage(node);
     // OF-163: restore reattaches such a seat before any gate (restoreNodeUnisolated), so its plan is the reattach, not the
     // gate or launch forecast. A seat listed --fresh is not reattached. A damaged row still refuses the whole rig (below).
+    // z2 review F4: restore refuses a seat listed --fresh while its adopted session is still live (adopted_session_live).
+    const freshOverAdopted = freshLogicalIds?.includes(node.logicalId) ? reattach.get(node.logicalId) : undefined;
+    if (freshOverAdopted && damage.length === 0) {
+      return {
+        ...forecasted,
+        wouldRefuse: `its adopted session ${freshOverAdopted.sessionName}, which rig down left running, would be left running untracked: restore refuses the fresh start while it is live (release it first with rig unclaim ${freshOverAdopted.sessionId}, end it yourself, or leave the seat out of --fresh to reattach it); once it has ended, the seat is started fresh`,
+      };
+    }
     const adopted = freshLogicalIds?.includes(node.logicalId) ? undefined : reattach.get(node.logicalId);
     if (adopted && damage.length === 0) {
       const { reason: _reason, restoreStatus: _status, runtimePrompt: _prompt, ...rest } = forecasted;
