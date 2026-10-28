@@ -95,10 +95,11 @@ describe.skipIf(!hasTmux)("stopOwnedTmuxServer", () => {
     expect(processAlive(serverPid)).toBe(false);
   }, 60_000);
 
-  it("a pid lookup that times out on a live server throws instead of reporting it stopped", async () => {
+  it("a pid lookup that fails for any reason other than \"no server\" throws instead of reporting it stopped", async () => {
     const { socket, env, serverPid } = tmuxFixture();
-    // A 1 ms bound cannot be met by starting a tmux client at all: the timeout path, against a perfectly healthy server.
-    await expect(stopOwnedTmuxServer(socket, env, { commandTimeoutMs: 1, graceMs: 300 })).rejects.toThrow(/cannot be verified stopped/);
+    // tmux cannot even be started (empty PATH): a failure that is neither "no server running" nor a clean answer. A 1 ms
+    // timeout would test the same branch, but whether it fires before a fast tmux answers depends on the host's load.
+    await expect(stopOwnedTmuxServer(socket, { ...env, PATH: "/nonexistent-a6" }, { commandTimeoutMs: 5_000, graceMs: 300 })).rejects.toThrow(/cannot be verified stopped/);
     expect(processAlive(serverPid), "the live server was not declared stopped").toBe(true);
   }, 60_000);
 
