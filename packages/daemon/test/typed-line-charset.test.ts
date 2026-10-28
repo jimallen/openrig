@@ -372,15 +372,19 @@ describe("cmux surface lines are staged or quoted (OF-67)", () => {
       const line = `echo x${ch}y`; // no quote or bracket, so only the control can force staging
       const f = fileOps();
       const staged = await stageCmuxLine(line, f.ops);
-      expect(`${staged.line}\n`).toMatch(STAGED);
-      expect(staged.line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-      expect(f.files.get(staged.line.slice("/bin/sh ".length))).toBe(`/bin/rm -f -- ${staged.line.slice("/bin/sh ".length)}\n${line}\n`);
+      if (!staged.ok) throw new Error(staged.message);
+      const typed = staged.line;
+      expect(`${typed}\n`).toMatch(STAGED);
+      expect(typed).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(f.files.get(typed.slice("/bin/sh ".length))).toBe(`/bin/rm -f -- ${typed.slice("/bin/sh ".length)}\n${line}\n`);
     });
 
     it("controls: printable non-ASCII (the first code points past DEL/C1) and a plain line are still typed as they stand", async () => {
       const f = fileOps();
       for (const line of ["echo caf\u00e9 \u65e5\u672c \u00a0x", "echo \u00a0", "tmux attach -t dev-impl@rig-1"]) {
-        expect((await stageCmuxLine(line, f.ops)).line).toBe(line);
+        const staged = await stageCmuxLine(line, f.ops);
+        if (!staged.ok) throw new Error(staged.message);
+        expect(staged.line).toBe(line);
       }
       expect(f.files.size).toBe(0);
     });
