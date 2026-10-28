@@ -19,6 +19,7 @@ import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.j
 import { WorkflowRuntime } from "../src/domain/workflow-runtime.js";
 import { recoverGraphOperation, reviseGraph } from "../src/domain/workflow-reconciliation.js";
 import { UnreadableRowError } from "../src/domain/unreadable-row.js";
+import { OutboxHandler, OutboxHandlerError } from "../src/domain/outbox-handler.js";
 import { newestUsableSnapshotCopy, seatStartupForRestore } from "../src/domain/own-startup-replay.js";
 import { workflowRoutes } from "../src/routes/workflow.js";
 import { jsonBodyErrorHandler } from "../src/middleware/json-body-error.js";
@@ -210,5 +211,92 @@ describe("own-startup-replay: a newer snapshot whose data is not JSON is named, 
     snapshot("snap-other-seat", "2026-02-01 00:00:00", JSON.stringify({ nodes: [{ id: "n-x", logicalId: "someone.else" }], nodeStartupContext: { "n-x": COPY } }));
 
     expect("skippedUnreadable" in (newestUsableSnapshotCopy(db, "r-1", "dev.impl", "claude-code") ?? {})).toBe(false);
+  });
+});
+
+describe("outbox retention quota: a retained row whose binding is not JSON counts toward every seat's quota, and a refusal names it", () => {
+  // assertRetentionCapacity admits or refuses a NEW held message. A retained row whose guard_binding is not JSON names no node, so
+  // it may be this node's: reading it as absent admits messages past a quota it may already fill (Jim, 2026-10-28: "Count them,
+  // name the row"). Deployed entrypoint: startup.ts constructs OutboxHandler; retain() (the typing-guard hold path) calls it.
+  const NOT_JSON = "{not json";
+  const binding = (nodeId: string) => JSON.stringify({ nodeId, session: "b@rig", occupant: null, pane: null });
+  let db: Database.Database;
+  let outbox: OutboxHandler;
+  beforeEach(() => {
+    db = createDb();
+    migrate(db, ALL_MIGRATIONS);
+    outbox = new OutboxHandler(db);
+  });
+  afterEach(() => db.close());
+
+  const hold = (id: string, guardBinding: string, opts?: { state?: string; body?: string }) => {
+    outbox.record({ outboxId: id, senderSession: "a@rig", destinationSession: "b@rig", body: opts?.body ?? id });
+    db.prepare("UPDATE outbox_entries SET delivery_state = ?, guard_binding = ? WHERE outbox_id = ?").run(opts?.state ?? "retained", guardBinding, id);
+  };
+  const fill = (nodeId: string, n: number) => { for (let i = 0; i < n; i += 1) hold(`good-${nodeId}-${i}`, binding(nodeId)); };
+  const refusal = (nodeId: string, body = "body"): OutboxHandlerError | null => {
+    try { outbox.assertRetentionCapacity(nodeId, body); return null; } catch (error) { return error instanceof OutboxHandlerError ? error : null; }
+  };
+
+  it("control: 99 readable held messages and nothing damaged admit one more, with no unreadable text", () => {
+    fill("n1", 99);
+    expect(refusal("n1")).toBeNull();
+  });
+
+  it("99 readable held messages plus ONE damaged one refuse the next, naming the damaged row", () => {
+    fill("n1", 99);
+    hold("held-bad", NOT_JSON);
+
+    const refused = refusal("n1");
+
+    expect(refused?.code).toBe("retained_quota_full");
+    expect(refused?.message).toContain("1 held message with an unreadable binding (held-bad) counts toward every seat's quota");
+  });
+
+  it("the damaged row counts toward ANOTHER seat's quota too (it names no node)", () => {
+    fill("n2", 99);
+    hold("held-bad", NOT_JSON);
+
+    expect(refusal("n2")?.code).toBe("retained_quota_full");
+  });
+
+  it("a seat with NO readable held message is still refused when 100 damaged ones may be its own", () => {
+    for (let i = 0; i < 100; i += 1) hold(`held-bad-${String(i).padStart(3, "0")}`, NOT_JSON);
+
+    expect(refusal("n-none")?.code).toBe("retained_quota_full");
+  });
+
+  it("two damaged rows are both named, in the plural", () => {
+    fill("n1", 98);
+    hold("held-bad-1", NOT_JSON);
+    hold("held-bad-2", "[1,");
+
+    const refused = refusal("n1");
+
+    expect(refused?.message).toContain("2 held messages with an unreadable binding (held-bad-1, held-bad-2) count toward every seat's quota");
+  });
+
+  it("a damaged row's bytes count too: a 7.9 MB damaged hold leaves no room for a 600 KB message", () => {
+    hold("held-big-bad", NOT_JSON, { body: "x".repeat(7_900_000) });
+
+    expect(refusal("n1", "y".repeat(600_000))?.code).toBe("retained_quota_full");
+    expect(refusal("n1", "y".repeat(100_000)), "control: a small message still fits beside it").toBeNull();
+  });
+
+  it("a damaged binding on a row that is NOT retained (a pending or retired message) is not counted", () => {
+    fill("n1", 99);
+    hold("pending-bad", NOT_JSON, { state: "pending" });
+    hold("retired-bad", NOT_JSON, { state: "retired" });
+
+    expect(refusal("n1")).toBeNull();
+  });
+
+  it("the refusal of a quota that is full of READABLE rows carries no unreadable text", () => {
+    fill("n1", 100);
+
+    const refused = refusal("n1");
+
+    expect(refused?.code).toBe("retained_quota_full");
+    expect(refused?.message).not.toContain("unreadable");
   });
 });

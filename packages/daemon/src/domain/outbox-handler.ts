@@ -239,10 +239,19 @@ export class OutboxHandler {
     const usage = this.db.prepare(`SELECT count(*) AS count, coalesce(sum(length(CAST(body AS BLOB))),0) AS bytes
       FROM outbox_entries WHERE delivery_state='retained' AND json_valid(guard_binding) AND json_extract(guard_binding,'$.nodeId')=?`)
       .get(nodeId) as { count: number; bytes: number };
-    // OF-117: a retained row whose binding is not JSON names no node, so no node's quota counts it (heldForNode names it).
+    // OF-168: a retained row whose binding is not JSON names no node, so it may be THIS node's: it counts toward every node's quota
+    // (reading it as absent admitted new held messages past a quota it may already fill) and a refusal names it.
+    const damaged = this.db.prepare(`SELECT outbox_id, length(CAST(body AS BLOB)) AS bytes FROM outbox_entries
+      WHERE delivery_state='retained' AND guard_binding IS NOT NULL AND NOT json_valid(guard_binding) ORDER BY ts_dispatched,outbox_id`)
+      .all() as Array<{ outbox_id: string; bytes: number }>;
+    const count = usage.count + damaged.length;
+    const bytes = usage.bytes + damaged.reduce((sum, row) => sum + row.bytes, 0);
     const size = Buffer.byteLength(body, "utf8");
-    if (size > 1024 * 1024 || usage.count >= 100 || usage.bytes + size > 8 * 1024 * 1024) {
-      throw new OutboxHandlerError("retained_quota_full", "Held-message quota is full. Retire a specific held message to release active quota; no input was written.");
+    if (size > 1024 * 1024 || count >= 100 || bytes + size > 8 * 1024 * 1024) {
+      const named = damaged.length > 0
+        ? ` ${damaged.length} held message${damaged.length === 1 ? "" : "s"} with an unreadable binding (${damaged.map((row) => row.outbox_id).join(", ")}) count${damaged.length === 1 ? "s" : ""} toward every seat's quota until repaired or removed.`
+        : "";
+      throw new OutboxHandlerError("retained_quota_full", `Held-message quota is full. Retire a specific held message to release active quota; no input was written.${named}`);
     }
   }
 
