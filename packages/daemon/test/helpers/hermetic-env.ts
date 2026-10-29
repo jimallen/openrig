@@ -401,8 +401,12 @@ process.exit(result.status ?? 1);
   // A worker that is killed or times out never reaches cleanup(): a watchdog armed now stops the scaffold's tmux server (and,
   // on Linux, every process carrying this scaffold's private OPENRIG_HOME) once this process dies. cleanup() disarms it only
   // after the server is verified stopped and the root removed.
-  const reaper = reapWhenOwnerDies({
-    tmuxSockets: [tmuxSocketPath], environ: hasProcFs() ? [`OPENRIG_HOME=${openrigHome}`] : [], label: "hermetic-scaffold",
+  // Arming is a setup step too: a throw while arming removes the root like any other.
+  let reaper: { disarm: () => void } = { disarm: () => {} };
+  removeRootOnFailure(() => {
+    reaper = reapWhenOwnerDies({
+      tmuxSockets: [tmuxSocketPath], environ: hasProcFs() ? [`OPENRIG_HOME=${openrigHome}`] : [], label: "hermetic-scaffold",
+    });
   });
   const tmuxEnv: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) tmuxEnv[name] = value;

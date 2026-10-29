@@ -93,10 +93,11 @@ async function runOnce(d: string, records: RunRecord[], file = "s.yaml") {
     // built (scenario-daemon.ts:155 = {...scaffold.env, OPENRIG_URL}). A fake
     // that fabricates its own env would pin the fake, not the pipeline — which
     // is how the dropped clock stayed invisible.
-    daemon: (async (scaffold: { env: Record<string, string | undefined> }) => ({
+    daemon: (async (scaffold: { env: Record<string, string | undefined>; cleanup: () => void }) => ({
       readEnv: { ...scaffold.env, OPENRIG_URL: "http://127.0.0.1:1" },
       baseUrl: "http://127.0.0.1:1",
-      sigterm: async () => {}, restart: async () => {}, stop: async () => {},
+      // A real daemon's stop() removes its scaffold; the fake must too, or every run leaves the scaffold behind.
+      sigterm: async () => {}, restart: async () => {}, stop: async () => scaffold.cleanup(),
     })) as never,
     deps: {
       defaults: { withinMs: 0, pollIntervalMs: 1 },

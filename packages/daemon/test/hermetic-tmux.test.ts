@@ -3,7 +3,7 @@ import { existsSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs
 import { stageTopologyRoot } from "./helpers/scenario-stage.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
 import {
   prepareHermeticEnv,
   assertNoAmbientTmux,
@@ -163,6 +163,7 @@ describe("D5 p2 — an inherited TMUX_TMPDIR is ABSENT from the child and REPLAC
       }
     } finally {
       await stopOwnedTmuxServer(sentinelSocketPath, directEnv());
+      expect(await tmuxServerPid(sentinelSocketPath, directEnv()), "no server answers on the sentinel socket after its stop").toBeNull();
     }
   });
 });
@@ -263,6 +264,7 @@ describe("D5 p3 (integration) — an INHERITED tmux server is replaced, proven w
       }
     } finally {
       await stopOwnedTmuxServer(sentinelSocketPath, directEnv());
+      expect(await tmuxServerPid(sentinelSocketPath, directEnv()), "no server answers on the sentinel socket after its stop").toBeNull();
     }
   }, 300_000);
 });

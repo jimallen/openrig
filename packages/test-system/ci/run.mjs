@@ -75,6 +75,8 @@ try {
   process.exitCode = report.result.verdict === 'PASS' ? 0 : 1;
 } catch (error) {
   report.error = String(error?.stack ?? error);
+  // A teardown failure after a returned run (ScenarioTeardownError) still reports that run's result as evidence.
+  if (error?.result) report.result = error.result;
   process.exitCode = 2;
 } finally {
   console.log(RESULT_PREFIX + JSON.stringify(report));

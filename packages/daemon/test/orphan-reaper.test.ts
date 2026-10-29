@@ -18,7 +18,7 @@ import {
   stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, type ProcessIdentity, type TmuxStopOptions,
 } from "./helpers/orphan-reaper.js";
 import { spawnScenarioDaemon } from "./helpers/scenario-daemon.js";
-import { runScenarioFile } from "./helpers/scenario-pipeline.js";
+import { runScenarioFile, ScenarioTeardownError } from "./helpers/scenario-pipeline.js";
 import { prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 
 let hasTmux = false;
@@ -295,6 +295,7 @@ describe.skipIf(!hasTmux)("the hermetic scaffold reaps its own tmux server", () 
     cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
     expect(() => scaffold.cleanup()).toThrow(/cannot be verified stopped/);
     expect(fs.existsSync(scaffold.root), "the root (and the socket in it) is kept for the live server").toBe(true);
+    expect(watchdogsFor(scaffold.tmuxSocketPath, "hermetic-scaffold").length, "and its watchdog stays armed").toBeGreaterThan(0);
     process.kill(server.pid, "SIGCONT");
     scaffold.cleanup();
     expect(sameProcess(server)).toBe(false);
@@ -310,6 +311,7 @@ describe.skipIf(!hasTmux)("the hermetic scaffold reaps its own tmux server", () 
     cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
     expect(() => scaffold.cleanup()).toThrow(/cannot be verified stopped/);
     expect(fs.existsSync(scaffold.root), "the scaffold inside the base is kept").toBe(true);
+    expect(watchdogsFor(scaffold.tmuxSocketPath, "hermetic-scaffold").length, "and its watchdog stays armed").toBeGreaterThan(0);
     process.kill(server.pid, "SIGCONT");
     scaffold.cleanup();
     expect(sameProcess(server)).toBe(false);
@@ -356,6 +358,16 @@ describe("scenario pipeline teardown surfaces a daemon that cannot be stopped (O
     const seedRegression = async () => ({ code: 0, stdout: "armed", stderr: "" });
     await expect(runScenarioFile(scenario, { rigBin: "/not-executed", deps: { seedRegression }, daemon: async (scaffold) => stuckDaemon(scaffold) }))
       .rejects.toThrow(/scenario daemon could not be stopped.*still alive after stop/);
+  });
+
+  it("the thrown teardown error still carries the run's own result (a FAIL's step and diff reach the caller)", async () => {
+    const scenario = path.join(tempDir(), "returns.yaml");
+    fs.writeFileSync(scenario, "scenario: returns\ntopology: ./unused.yaml\nsteps:\n  - seed_regression: {class: baton-drop}\n");
+    const seedRegression = async () => ({ code: 0, stdout: "armed", stderr: "" });
+    const failure = await runScenarioFile(scenario, { rigBin: "/not-executed", deps: { seedRegression }, daemon: async (scaffold) => stuckDaemon(scaffold) })
+      .then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(ScenarioTeardownError);
+    expect(failure).toMatchObject({ result: { scenario: "returns", verdict: "PASS" } });
   });
 
   it("a scenario that failed keeps ITS error, and the stop failure is printed beside it", async () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -13,7 +13,7 @@ import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
 
 // P14 — the committed money-proof e2e for the seat-handover CUTOVER (r1's LOW-optional; guards the
 // tmux-version regression class that bit us: respawn-pane -k CLEARS scrollback, and tabs sanitize to "_"
@@ -51,10 +51,15 @@ function tmuxAvailableSync(): boolean {
 
 const seats: string[] = [];
 afterAll(async () => {
-  if (sockDir === "") return; // no tmux command ran
+  // Nothing to stop or check only when no test ran and no tmux command was sent (a skipped run). A run whose seats ran on
+  // anything but the owned socket fails the check below instead of skipping it.
+  if (seats.length === 0 && sockDir === "") return;
   for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
   // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
+  // The seats ran on this run's owned socket (a -L run never creates it), and after the stop nothing answers on it.
+  expect(existsSync(sock()), "this run's tmux server ran on its owned socket").toBe(true);
   await stopOwnedTmuxServer(sock(), cleanEnv);
+  expect(await tmuxServerPid(sock(), cleanEnv), "no server answers on the owned socket after the stop").toBeNull();
   rmSync(sockDir, { recursive: true, force: true });
 });
 

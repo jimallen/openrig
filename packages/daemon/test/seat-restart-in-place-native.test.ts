@@ -24,12 +24,9 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
 
 const pexec = promisify(execFile);
-const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-restart-native-"));
-// An owned -S socket in this run's own directory (a -L name would live in tmux's shared per-user directory).
-const socket = nodePath.join(root, "tmux.sock");
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 delete cleanEnv.TMUX;
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -49,6 +46,12 @@ function available(): boolean {
   } catch { return false; }
 }
 
+// Made only where the harness can run, so a skipped run leaves no empty folder behind.
+const runnable = available();
+const root = runnable ? fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-restart-native-")) : nodePath.join(os.tmpdir(), "openrig-restart-native-unused");
+// An owned -S socket in this run's own directory (a -L name would live in tmux's shared per-user directory).
+const socket = nodePath.join(root, "tmux.sock");
+
 const STUB_C = `
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,10 +70,14 @@ int main(int argc, char **argv) {
 const sessions: string[] = [];
 const pids = new Set<number>();
 afterAll(async () => {
+  if (!runnable) return;
   for (const name of sessions) await tmux(`kill-session -t ${q(name)}`).catch(() => {});
   for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
-  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
+  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both). The seats ran on
+  // this run's owned socket (a -L run never creates it), and after the stop nothing answers on it.
+  expect(fs.existsSync(socket), "this run's tmux server ran on its owned socket").toBe(true);
   await stopOwnedTmuxServer(socket, cleanEnv);
+  expect(await tmuxServerPid(socket, cleanEnv), "no server answers on the owned socket after the stop").toBeNull();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -85,7 +92,7 @@ function stubPids(): number[] {
   });
 }
 
-describe.runIf(available())("in-place restart, native (private tmux socket, stub codex)", () => {
+describe.runIf(runnable)("in-place restart, native (private tmux socket, stub codex)", () => {
   const bin = nodePath.join(root, "bin");
   const home = nodePath.join(root, "codex-home");
   const work = nodePath.join(root, "work");
