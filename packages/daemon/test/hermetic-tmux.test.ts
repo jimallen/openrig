@@ -3,6 +3,7 @@ import { existsSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs
 import { stageTopologyRoot } from "./helpers/scenario-stage.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 import {
   prepareHermeticEnv,
   assertNoAmbientTmux,
@@ -128,10 +129,11 @@ describe("D5 p2 — an inherited TMUX_TMPDIR is ABSENT from the child and REPLAC
       }
     };
     await at(sentinelSocketPath, ["new-session", "-d", "-s", "unrelated", "sleep 600"]);
-    const sentinelPid = Number(
-      (await at(sentinelSocketPath, ["display-message", "-p", "-t", "unrelated", "#{pid}"])).stdout.trim(),
-    );
+    // From here on the sentinel server exists: every path, a failing setup step included, ends in its verified stop.
     try {
+      const sentinelPid = Number(
+        (await at(sentinelSocketPath, ["display-message", "-p", "-t", "unrelated", "#{pid}"])).stdout.trim(),
+      );
       for (const runNumber of [1, 2]) {
         const s = prepareHermeticEnv({
           baseEnv: { ...cleanBase(), TMUX_TMPDIR: sentinelDir },
@@ -160,7 +162,7 @@ describe("D5 p2 — an inherited TMUX_TMPDIR is ABSENT from the child and REPLAC
         expect(Number(sentinelServer.stdout.trim())).toBe(sentinelPid);
       }
     } finally {
-      await at(sentinelSocketPath, ["kill-session", "-t", "unrelated"]).catch(() => {});
+      await stopOwnedTmuxServer(sentinelSocketPath, directEnv());
     }
   });
 });
@@ -211,51 +213,56 @@ describe("D5 p3 (integration) — an INHERITED tmux server is replaced, proven w
     };
 
     await at(sentinelSocketPath, ["new-session", "-d", "-s", "sentinel-only", "sleep 600"]);
-    const before = await sessionsAt(sentinelSocketPath);
-    expect(before).toBe("sentinel-only"); // the sentinel is real and reachable
-
-    // INHERIT the sentinel dir through the real helper.
-    const scaffold = prepareHermeticEnv({
-      baseEnv: { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm", TMUX_TMPDIR: sentinelDir },
-    });
-    scaffolds.push(scaffold);
-    expect(scaffold.env.TMUX_TMPDIR).toBe(scaffold.tmuxTmpDir);
-    expect(scaffold.env.TMUX_TMPDIR).not.toBe(sentinelDir);
-
-    // Guard finding 2: the earlier version ran `up` on a topology whose seats
-    // declare `cwd: .`, with no staged cwd and no --cwd — so the daemon resolved
-    // seat cwd into the SOURCE TREE and the seats wrote AGENTS.md and
-    // .openrig/stub/** into packages/daemon. A pin that proves tmux isolation
-    // while corrupting the owner tree is not a hermeticity pin. Stage per-seat
-    // scaffold cwds with the slice's OWN staging helper instead.
-    const staged = stageTopologyRoot(sourceTopology, join(scaffold.root, "topology"));
-    const managedInSource = () => [
-      join(pkgRoot, "AGENTS.md"),
-      join(pkgRoot, ".openrig"),
-    ].filter((f) => existsSync(f));
-    expect(managedInSource()).toEqual([]); // clean before
-
-    const daemon = await spawnScenarioDaemon(scaffold, { rigBin });
+    // From here on the sentinel server exists: every path, a failing setup step included, ends in its verified stop.
     try {
-      const up = await runRig(["up", staged.topologyPath, "--json", "--yes"], daemon.readEnv, rigBin, 120_000);
-      expect(up.code).toBe(0);
+      const before = await sessionsAt(sentinelSocketPath);
+      expect(before).toBe("sentinel-only"); // the sentinel is real and reachable
 
-      // WHILE THE SEATS ARE ALIVE (no `down` yet) — both directions:
-      const ownedNow = await sessionsAt(scaffold.tmuxSocketPath);
-      const sentinelNow = await sessionsAt(sentinelSocketPath);
-      expect(ownedNow).toContain("scn-baton");   // the seats are HERE...
-      expect(sentinelNow).toBe(before);          // ...and the inherited server gained nothing
-      expect(sentinelNow).not.toContain("scn-baton");
+      // INHERIT the sentinel dir through the real helper.
+      const scaffold = prepareHermeticEnv({
+        baseEnv: { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm", TMUX_TMPDIR: sentinelDir },
+      });
+      scaffolds.push(scaffold);
+      expect(scaffold.env.TMUX_TMPDIR).toBe(scaffold.tmuxTmpDir);
+      expect(scaffold.env.TMUX_TMPDIR).not.toBe(sentinelDir);
 
-      // EFFECT PIN (guard finding 2): the source/launch tree received no managed
-      // seat files — the seats' writes landed in the scaffold, where they belong.
-      expect(managedInSource()).toEqual([]);
-      const seatCwd = staged.seatCwds["dev-worker"]!;
-      expect(existsSync(join(seatCwd, ".openrig", "stub", "state.json"))).toBe(true);
+      // Guard finding 2: the earlier version ran `up` on a topology whose seats
+      // declare `cwd: .`, with no staged cwd and no --cwd — so the daemon resolved
+      // seat cwd into the SOURCE TREE and the seats wrote AGENTS.md and
+      // .openrig/stub/** into packages/daemon. A pin that proves tmux isolation
+      // while corrupting the owner tree is not a hermeticity pin. Stage per-seat
+      // scaffold cwds with the slice's OWN staging helper instead.
+      const staged = stageTopologyRoot(sourceTopology, join(scaffold.root, "topology"));
+      const managedInSource = () => [
+        join(pkgRoot, "AGENTS.md"),
+        join(pkgRoot, ".openrig"),
+      ].filter((f) => existsSync(f));
+      expect(managedInSource()).toEqual([]); // clean before
+
+      const daemon = await spawnScenarioDaemon(scaffold, { rigBin });
+      try {
+        const up = await runRig(["up", staged.topologyPath, "--json", "--yes"], daemon.readEnv, rigBin, 120_000);
+        expect(up.code).toBe(0);
+
+        // WHILE THE SEATS ARE ALIVE (no `down` yet) — both directions:
+        const ownedNow = await sessionsAt(scaffold.tmuxSocketPath);
+        const sentinelNow = await sessionsAt(sentinelSocketPath);
+        expect(ownedNow).toContain("scn-baton");   // the seats are HERE...
+        expect(sentinelNow).toBe(before);          // ...and the inherited server gained nothing
+        expect(sentinelNow).not.toContain("scn-baton");
+
+        // EFFECT PIN (guard finding 2): the source/launch tree received no managed
+        // seat files — the seats' writes landed in the scaffold, where they belong.
+        expect(managedInSource()).toEqual([]);
+        const seatCwd = staged.seatCwds["dev-worker"]!;
+        expect(existsSync(join(seatCwd, ".openrig", "stub", "state.json"))).toBe(true);
+      } finally {
+        // Best effort: daemon.stop() below verifies the daemon, and the scaffold's own server, gone (or throws, keeping them).
+        await runRig(["down", "scn-baton", "--json", "--force"], daemon.readEnv, rigBin, 60_000).catch(() => {});
+        await daemon.stop();
+      }
     } finally {
-      await runRig(["down", "scn-baton", "--json", "--force"], daemon.readEnv, rigBin, 60_000).catch(() => {});
-      await daemon.stop().catch(() => {});
-      await at(sentinelSocketPath, ["kill-session", "-t", "sentinel-only"]).catch(() => {});
+      await stopOwnedTmuxServer(sentinelSocketPath, directEnv());
     }
   }, 300_000);
 });
