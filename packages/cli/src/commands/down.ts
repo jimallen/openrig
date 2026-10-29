@@ -5,6 +5,7 @@ import { getDaemonStatus, getDaemonUrl, type LifecycleDeps , daemonStatusGuard} 
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { resolveRigHandle } from "../rig-handle.js";
+import { inferRigFromFolder } from "../rig-folder.js";
 
 interface TeardownResult {
   rigId: string;
@@ -55,33 +56,54 @@ async function showAgentsBeforeDown(rigId: string, readInventory: () => Promise<
 const LONG_RUNNING_TIMEOUT_MS = 45_000;
 
 /**
- * `rig down <rig>` - tear down a rig by name or id.
+ * `rig down [rig]` - tear down a rig by name or id; without one, the project rig whose folder holds the current folder.
  * @param depsOverride - injectable deps for testing
+ * @param currentFolder - the folder `rig down` with no <rig> looks from (injectable for testing)
  * @returns Commander command
  */
-export function downCommand(depsOverride?: StatusDeps): Command {
+export function downCommand(depsOverride?: StatusDeps, currentFolder: () => string = () => process.cwd()): Command {
   const cmd = new Command("down").description("Tear down a rig")
     .addHelpText("after", `
 rig down stops every agent in the rig: their sessions end, and any work in progress stops with them.
 Before running it, check who is working (rig ps --nodes --rig <rig>) and that the person asked for it;
 don't stop a team you didn't start unless asked. OpenRig snapshots the rig first (best-effort), and
 rig up <rig> --existing brings it back, resuming each seat's conversation where its harness allows. With
---delete the rig record is removed too, so it can't be brought back that way.`);
+--delete the rig record is removed too, so it can't be brought back that way.
+
+Without <rig>, rig down acts on the one project rig whose folder holds the current folder (a project rig's seats run in
+<project>/.workspaces/, and it is named after <project>), and says which. When no rig, or more than one, matches, it
+refuses and lists them; name the rig instead.`);
   const getDepsF = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
   cmd
-    .argument("<rig>", "Rig name or id to tear down")
+    .argument("[rig]", "Rig name or id to tear down (default: the project rig whose folder holds the current folder)")
     .option("--delete", "Delete rig record after stopping")
     .option("--force", "Kill sessions immediately")
     .option("--snapshot", "Take snapshot before teardown")
     .option("--json", "JSON output for agents")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
-    .action(async (rigHandle: string, opts: { delete?: boolean; force?: boolean; snapshot?: boolean; json?: boolean; host?: string }) => {
+    .action(async (rigArg: string | undefined, opts: { delete?: boolean; force?: boolean; snapshot?: boolean; json?: boolean; host?: string }) => {
       // OPR.0.4.6.MH1 FR-2: selected-host routing — explicit --host wins;
       // else the persisted selection feeds the SHIPPED --host path; no
       // selection = today exactly.
       opts.host = resolveEffectiveHost(opts.host);
       const deps = getDepsF();
+      const refuse = (fact: string, consequence: string, action: string, candidates?: Array<{ id: string; name: string; folder: string }>) => {
+        if (opts.json) {
+          console.log(JSON.stringify({ error: { fact, consequence, action, ...(candidates ? { candidates } : {}) } }));
+        } else {
+          console.error(`Error: ${fact}`);
+          console.error(`  ${consequence}`);
+          console.error(`  ${action}`);
+        }
+        process.exitCode = 2;
+      };
+      if (rigArg === undefined && opts.host) {
+        // The current folder is on this machine; the rigs are on another. Never infer across a machine boundary.
+        refuse(`rig down --host ${opts.host} needs the rig named.`, "Nothing was torn down.", `Re-run with: rig down <rig> --host ${opts.host}`);
+        return;
+      }
+      let rigHandle = rigArg ?? "";
 
       if (opts.host) {
         const { runRemoteHttpOp, resolveRemoteRigId } = await import("../remote-host-ops.js");
@@ -119,6 +141,30 @@ rig up <rig> --existing brings it back, resuming each seat's conversation where 
       if (!daemonStatusGuard(status)) return;
 
       const client = deps.clientFactory(getDaemonUrl(status));
+
+      // OF-173: no <rig> -> the one project rig whose folder holds the current folder, or a refusal. Never a guess.
+      if (rigArg === undefined) {
+        const inferred = await inferRigFromFolder(client, currentFolder());
+        if (inferred.kind === "unavailable") {
+          refuse(`Could not tell which rig this folder belongs to: ${inferred.error}.`, "Nothing was torn down.", "Name the rig: rig down <rig> (list rigs with: rig ps)");
+          return;
+        }
+        const listed = (rigs: Array<{ id: string; name: string; folder: string }>) =>
+          rigs.length === 0 ? "no rig records a project folder" : rigs.map((r) => `${r.name} (${r.id}) in ${r.folder}`).join("; ");
+        if (inferred.kind === "none") {
+          refuse(`No rig's project folder holds ${inferred.folder}.`, `Nothing was torn down. Rigs with a project folder: ${listed(inferred.known)}.`,
+            "Run rig down from inside a rig's project folder, or name the rig: rig down <rig>", inferred.known);
+          return;
+        }
+        if (inferred.kind === "several") {
+          refuse(`${inferred.folder} is inside ${inferred.candidates.length} rigs' project folders: ${listed(inferred.candidates)}.`,
+            "Refusing to tear down: the folder does not say which rig.",
+            `Name the rig, e.g. ${inferred.candidates.map((r) => `rig down ${r.id}`).join("  |  ")}`, inferred.candidates);
+          return;
+        }
+        console.error(`rig down: ${currentFolder()} is in ${inferred.rig.folder}, the project folder of rig ${inferred.rig.name} (${inferred.rig.id}); stopping that rig.`);
+        rigHandle = inferred.rig.id;
+      }
 
       // Resolve the handle (name OR id) to a concrete id BEFORE the teardown POST.
       // Ambiguous/not-found halt here and never reach `/api/down` - for a
