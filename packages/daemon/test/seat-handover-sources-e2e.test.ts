@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -14,11 +14,12 @@ import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
+import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
 
 // OPR.0.5.5.5 — end-to-end money proof for the two NEW executable handover
 // sources against an ISOLATED tmux server (same D15 isolation discipline as
-// seat-handover-cutover-e2e: per-run -L socket, no $TMUX, teardown BY SESSION
-// NAME, never kill-server; skips when tmux is unavailable).
+// seat-handover-cutover-e2e: per-run owned -S socket, no $TMUX, teardown by
+// session name then a verified stop of its own server; skips when tmux is unavailable).
 //
 // FORK: the real cutover runs and the resolved native id ARRIVES at the launch
 // surface (the marker adapter renders the forkSource it received into the real
@@ -28,13 +29,18 @@ import { createDb } from "../src/db/connection.js";
 // set recorded on the result.
 
 const pexec = promisify(execFile);
-const SOCK = `openrig-s05e2e-${process.pid}`;
+// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
+// in tmux's shared per-user directory, beside the fleet's server.
+let sockDir = "";
+const sock = () => {
+  if (sockDir === "") sockDir = mkdtempSync(join(tmpdir(), "openrig-s05e2e-"));
+  return join(sockDir, "tmux.sock");
+};
 const cleanEnv: any = { ...process.env };
 delete cleanEnv.TMUX;
-// Keep the caller's isolated socket root; -L still names only this test's server.
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -L ${SOCK} ${cmd.slice(5)}` : cmd;
+  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
   const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
   return stdout;
 };
@@ -48,8 +54,17 @@ function tmuxAvailableSync(): boolean {
 const seats: string[] = [];
 const tempDirs: string[] = [];
 afterAll(async () => {
-  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // BY NAME, never kill-server
   for (const d of tempDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  // Nothing to stop or check only when no test ran and no tmux command was sent (a skipped run). A run whose seats ran on
+  // anything but the owned socket fails the check below instead of skipping it.
+  if (seats.length === 0 && sockDir === "") return;
+  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
+  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
+  // The seats ran on this run's owned socket (a -L run never creates it), and after the stop nothing answers on it.
+  expect(existsSync(sock()), "this run's tmux server ran on its owned socket").toBe(true);
+  await stopOwnedTmuxServer(sock(), cleanEnv);
+  expect(await tmuxServerPid(sock(), cleanEnv), "no server answers on the owned socket after the stop").toBeNull();
+  rmSync(sockDir, { recursive: true, force: true });
 });
 
 async function seedPane(seat: string): Promise<string> {

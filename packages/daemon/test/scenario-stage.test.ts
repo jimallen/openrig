@@ -241,10 +241,11 @@ describe("D1 R4/R5 — pipeline-level fences", () => {
     );
     let staged = 0;
     let stopped = 0;
-    const containerish = async () => ({
+    const containerish = async (scaffold: { cleanup: () => void }) => ({
       readEnv: {}, baseUrl: "http://127.0.0.1:1",
       sigterm: async () => {}, restart: async () => {},
-      stop: async () => { stopped++; },
+      // A real daemon's stop() removes its scaffold; the fake must too, or every run leaves one behind.
+      stop: async () => { stopped++; scaffold.cleanup(); },
       stageTopology: async (p: string) => { staged++; return p; },
     });
     await expect(

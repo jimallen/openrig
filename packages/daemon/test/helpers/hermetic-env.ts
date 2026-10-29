@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { stopOwnedTmuxServerSync } from "./orphan-reaper.js";
+import { hasProcFs, reapWhenOwnerDies, stopOwnedTmuxServerSync } from "./orphan-reaper.js";
 
 /**
  * Inherited environment variables that redirect the CLI/daemon client at a
@@ -398,16 +398,27 @@ process.exit(result.status ?? 1);
     env.OPENRIG_TEST_CLOCK_NOW = opts.injectClockNow;
   }
 
+  // A worker that is killed or times out never reaches cleanup(): a watchdog armed now stops the scaffold's tmux server (and,
+  // on Linux, every process carrying this scaffold's private OPENRIG_HOME) once this process dies. cleanup() disarms it only
+  // after the server is verified stopped and the root removed.
+  // Arming is a setup step too: a throw while arming removes the root like any other.
+  let reaper: { disarm: () => void } = { disarm: () => {} };
+  removeRootOnFailure(() => {
+    reaper = reapWhenOwnerDies({
+      tmuxSockets: [tmuxSocketPath], environ: hasProcFs() ? [`OPENRIG_HOME=${openrigHome}`] : [], label: "hermetic-scaffold",
+    });
+  });
   const tmuxEnv: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) tmuxEnv[name] = value;
   tmuxEnv.PATH = originalPath;
   const cleanup = () => {
-    if (!existsSync(root)) return;
+    if (!existsSync(root)) { reaper.disarm(); return; }
     // The server the scaffold's daemon started here (its empty `tmux -D` at boot, then the seats) is stopped and VERIFIED
     // gone before the socket's directory goes; a failed `list-sessions` once read as "no server" deleted the directory
     // under a live server. A server that cannot be verified stopped throws and keeps the root.
     if (existsSync(tmuxSocketPath)) stopOwnedTmuxServerSync(tmuxSocketPath, tmuxEnv, { commandTimeoutMs: 10_000, graceMs: 5_000 });
     rmSync(root, { recursive: true, force: true });
+    reaper.disarm();
   };
 
   return {

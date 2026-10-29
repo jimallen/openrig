@@ -295,6 +295,14 @@ export function resolveScenarioDaemonSpawner(opts: RunScenarioFileOptions): Scen
   return opts.daemon ?? defaultHostDaemon;
 }
 
+/** A run that returned a result whose scenario daemon then could not be verified stopped: the result rides along. */
+export class ScenarioTeardownError extends Error {
+  constructor(message: string, readonly result: RunScenarioResult, cause: unknown) {
+    super(message, { cause });
+    this.name = "ScenarioTeardownError";
+  }
+}
+
 /**
  * Full e2e: load a scenario, spawn a forced-local scenario-local daemon, run the
  * validated scenario against the shipped `rig` CLI, and tear down. Throws
@@ -342,6 +350,7 @@ export async function runScenarioFile(
     throw error;
   }
   let tui: ProvisionedTui | undefined;
+  let returned: RunScenarioResult | undefined;
   try {
     // L6 STEP-0 — container-mode translates the HOST topology path to the in-container staged path
     // (host-mode has no stageTopology → the host path passes through unchanged). A stage/fence
@@ -424,11 +433,20 @@ export async function runScenarioFile(
       return res;
     };
 
-    return await runValidatedScenario(loaded.loaded.scenario, { ...baseDeps, runAction });
+    returned = await runValidatedScenario(loaded.loaded.scenario, { ...baseDeps, runAction });
+    return returned;
   } finally {
     // Teardown on EVERY path — success, assertion failure, or provisioning error.
     await tui?.stop().catch(() => {});
-    await daemon.stop().catch(() => {});
+    // A daemon that cannot be verified stopped keeps its scaffold and watchdog (stop()'s contract) and is SURFACED, never
+    // swallowed: a run that returned (PASS or FAIL) is thrown as a ScenarioTeardownError that still carries its result
+    // (a FAIL's step and diff reach the caller); when the run itself threw, that error is the one kept and this failure is
+    // printed beside it.
+    await daemon.stop().catch((stopError: unknown) => {
+      const message = `the scenario daemon could not be stopped (its watchdog stays armed): ${(stopError as Error).message}`;
+      if (returned === undefined) console.error(`scenario teardown: ${message}`);
+      else throw new ScenarioTeardownError(message, returned, stopError);
+    });
   }
 }
 

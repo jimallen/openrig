@@ -212,7 +212,7 @@ export async function spawnScenarioDaemon(
   };
   let current: ProcessIdentity[] = [];
   const armWith = (identities: ProcessIdentity[]) => reapWhenOwnerDies({
-    tmuxSockets: [scaffold.tmuxSocketPath], identities, environ: hasProcFs() ? [homeEntry] : [],
+    tmuxSockets: [scaffold.tmuxSocketPath], identities, environ: hasProcFs() ? [homeEntry] : [], label: "scenario-daemon",
   });
   let reaper = armWith([]);
   const rearm = (identities: ProcessIdentity[]) => { const old = reaper; reaper = armWith(identities); old.disarm(); };

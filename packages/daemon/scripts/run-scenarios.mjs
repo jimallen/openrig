@@ -66,7 +66,10 @@ for (const file of files) {
     if (result.verdict !== "PASS") failures++;
   } catch (err) {
     failures++;
-    console.log(`[ERROR] ${file}\n  ${(err && err.message) || err}`);
+    // A teardown failure after a returned run carries that run's result (ScenarioTeardownError): show it too.
+    const r = err && err.result;
+    const ran = r ? `\n  the run itself: ${r.verdict}${r.verdict === "FAIL" ? ` at step ${r.failedStep}: ${r.diff}` : ""}` : "";
+    console.log(`[ERROR] ${file}\n  ${(err && err.message) || err}${ran}`);
   }
 }
 console.log(`\n${files.length - failures}/${files.length} scenarios passed`);

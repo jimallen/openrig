@@ -94,4 +94,5 @@ try {
     }
   }
   console.log(JSON.stringify({ nativeTmux: true, argvAndLegacy: true, missingDetached: true, neighborPreserved: true, exactPaneListing: true }));
-} finally { db.close(); await native(["kill-server"]).catch(() => {}); }
+// The fixture's tmux server is stopped by its parent test, verified (a stop in this child could not be verified, and a timeout kills the child before its finally).
+} finally { db.close(); }
