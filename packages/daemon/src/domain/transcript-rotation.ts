@@ -70,17 +70,22 @@ interface CaptureStats {
   idle: boolean; intervalMs: number; lines: number; idleCeilingMs: number;
 }
 const captureStats = new Map<string, CaptureStats>();
-let activitySnapshots = new WeakMap<TmuxAdapter, { at: number; pending: boolean; result: Promise<Map<string, number> | null> }>();
+interface ActivityListing { activity: Map<string, number>; sessions: Set<string> | null }
+let activitySnapshots = new WeakMap<TmuxAdapter, { at: number; pending: boolean; result: Promise<ActivityListing | null> }>();
 
-async function activityHint(adapter: TmuxAdapter, session: string, cadence: number): Promise<number | undefined> {
-  if (typeof adapter.readAllSessionWindowActivity !== "function") return undefined;
+/** The session's window activity, and whether a listing that answered lacks the session (it does not exist on the server). */
+async function activityHint(adapter: TmuxAdapter, session: string, cadence: number): Promise<{ activity: number | undefined; absent: boolean }> {
+  if (typeof adapter.readAllSessionWindowActivity !== "function") return { activity: undefined, absent: false };
   let snapshot = activitySnapshots.get(adapter);
   if (!snapshot || (!snapshot.pending && Date.now() - snapshot.at >= Math.min(cadence, 1000))) {
-    const next = { at: Date.now(), pending: true, result: Promise.resolve<Map<string, number> | null>(null) };
+    const next = { at: Date.now(), pending: true, result: Promise.resolve<ActivityListing | null>(null) };
     // Hints are advisory. A stalled tmux metadata call must not block otherwise
     // functioning pane captures. Keep pending tied to the actual child, rather
     // than the deadline, so timeout fallback never starts an accumulating probe.
-    const request = Promise.resolve().then(() => adapter.readAllSessionWindowActivity())
+    // OF-176: the shared snapshot, so a listing the activity sweep made within the hint's own reuse window costs no fork.
+    const request = Promise.resolve().then((): Promise<ActivityListing | null> => (typeof adapter.readSessionWindowSnapshot === "function"
+      ? adapter.readSessionWindowSnapshot(Math.min(cadence, 1000)).then((snapshot) => snapshot && { activity: snapshot.activity, sessions: snapshot.sessions })
+      : adapter.readAllSessionWindowActivity().then((activity) => activity && { activity, sessions: null })))
       .catch(() => null).finally(() => { next.pending = false; });
     next.result = new Promise((resolve) => {
       const deadline = setTimeout(() => resolve(null), ACTIVITY_HINT_DEADLINE_MS);
@@ -90,7 +95,8 @@ async function activityHint(adapter: TmuxAdapter, session: string, cadence: numb
     snapshot = next;
     activitySnapshots.set(adapter, snapshot);
   }
-  return (await snapshot.result)?.get(session);
+  const listing = await snapshot.result;
+  return { activity: listing?.activity.get(session), absent: listing?.sessions != null && listing.sessions.size > 0 && !listing.sessions.has(session) };
 }
 
 /** Process-local capture observations, never provider readiness or per-process CPU. */
@@ -119,6 +125,7 @@ interface CaptureRequest { sessionName: string; isCurrent: () => boolean; resolv
 
 // Sessions a batch's listing lacked: a seat that exited on its own keeps rotating until teardown. They read per target,
 // one fork that fails alone, instead of failing their chunk's chain every round. One that captures again rejoins.
+// (OF-176: a session the activity hint's listing lacks no longer reaches a capture at all; see the tick.)
 let unlistedSessions = new Set<string>();
 let pendingCaptures = new Map<TmuxAdapter, Map<number, CaptureRequest[]>>();
 
@@ -253,9 +260,18 @@ export function startTranscriptRotation(
       stats.intervalMs = opts.pollIntervalMs;
       stats.lines = opts.lines;
       stats.idleCeilingMs = idleCeiling();
-      const hint = typeof tmuxAdapter.readAllSessionWindowActivity === "function"
-        ? await activityHint(tmuxAdapter, sessionName, opts.pollIntervalMs) : undefined;
+      const listed = typeof tmuxAdapter.readAllSessionWindowActivity === "function"
+        ? await activityHint(tmuxAdapter, sessionName, opts.pollIntervalMs) : { activity: undefined, absent: false };
       if (!isCurrent()) return;
+      // OF-176: a session the listing does not name is gone from the server (a seat that exited on its own keeps rotating
+      // until teardown): a failed capture, as its capture would be, without the fork.
+      if (listed.absent) {
+        stats.failures += 1;
+        stats.idle = false;
+        nextCaptureAt = tickStartedAt + opts.pollIntervalMs;
+        return;
+      }
+      const hint = listed.activity;
       const activityChanged = hint !== undefined && hint !== previousHint;
       if (activityChanged) {
         idleIntervalMs = opts.pollIntervalMs;

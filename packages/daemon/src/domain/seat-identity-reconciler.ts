@@ -304,8 +304,10 @@ export class SeatIdentityReconciler {
     }
 
     // From the sweep's one batched list-panes when the pane is in it; otherwise read per pane as before.
+    // OF-176: a seat whose session the sweep's listing lacks gets no per-pane read: it can only fail, and the verdict
+    // below (session_missing) is the one that failure gives.
     const batched = panes?.get(seat.tmux_pane) ?? null;
-    const pid = batched ? batched.pid : await this.tmux.getPanePid(seat.tmux_pane);
+    const pid = batched ? batched.pid : liveSessions.has(seat.session_name) ? await this.tmux.getPanePid(seat.tmux_pane) : null;
     if (pid === null) {
       // The registered pane no longer resolves. Distinguish "the whole tmux
       // session is gone" from "the pane within a live session is gone".

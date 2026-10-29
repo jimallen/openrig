@@ -35,7 +35,7 @@ export const DEFAULT_POLL_INTERVAL_MS = 1000;
  * ps/queue projection and never imports this service either.
  */
 export interface SeatActivityServiceDeps {
-  tmux: Pick<TmuxAdapter, "readPaneLastActivity"> & Partial<Pick<TmuxAdapter, "readAllSessionWindowActivity">>;
+  tmux: Pick<TmuxAdapter, "readPaneLastActivity"> & Partial<Pick<TmuxAdapter, "readAllSessionWindowActivity" | "readSessionWindowSnapshot">>;
   defaultWindowSeconds: number;
   eventBus?: EventBus;
   now?: () => Date;
@@ -49,7 +49,7 @@ export interface PollSeatOptions {
 }
 
 export class SeatActivityService {
-  private readonly tmux: Pick<TmuxAdapter, "readPaneLastActivity"> & Partial<Pick<TmuxAdapter, "readAllSessionWindowActivity">>;
+  private readonly tmux: Pick<TmuxAdapter, "readPaneLastActivity"> & Partial<Pick<TmuxAdapter, "readAllSessionWindowActivity" | "readSessionWindowSnapshot">>;
   private readonly defaultWindowSeconds: number;
   private readonly eventBus: EventBus | null;
   private readonly now: () => Date;
@@ -88,10 +88,13 @@ export class SeatActivityService {
   }
 
   /** pollSeat with the sweep's batched read: the seat's timestamp comes from `batch` when it has one, and
-   *  only a seat missing from it is read per target, so a sweep costs one tmux spawn instead of one per seat. */
-  private async observeSeat(paneId: string, opts: PollSeatOptions | undefined, batch: Map<string, number> | null): Promise<SeatActivity | null> {
+   *  only a seat missing from it is read per target, so a sweep costs one tmux spawn instead of one per seat. With
+   *  `listed` (the sessions the same read named), a seat whose session it lacks does not exist on the server: no
+   *  signal, without a read per tick that can only fail (OF-176: 8 such rows cost 8 tmux spawns a second). */
+  private async observeSeat(paneId: string, opts: PollSeatOptions | undefined, batch: Map<string, number> | null, listed: Set<string> | null = null): Promise<SeatActivity | null> {
     const silenceWindowSeconds = opts?.silenceWindowSeconds ?? this.defaultWindowSeconds;
     let lastActivityEpochSeconds: number | null = batch?.get(paneId) ?? null;
+    if (lastActivityEpochSeconds === null && listed !== null && listed.size > 0 && !listed.has(paneId)) return null;
     if (lastActivityEpochSeconds === null) {
       try {
         lastActivityEpochSeconds = await this.tmux.readPaneLastActivity(paneId);
@@ -230,12 +233,20 @@ export class SeatActivityService {
       // One tmux call reads every session's window activity for this tick; a seat missing from it (or no
       // batch at all) falls back to its own read, exactly as before.
       let batch: Map<string, number> | null = null;
-      if (tmuxRows.length > 0 && this.tmux.readAllSessionWindowActivity) {
+      let listed: Set<string> | null = null;
+      if (tmuxRows.length > 0 && this.tmux.readSessionWindowSnapshot) {
+        // A fresh read; it is also the snapshot the other poll loops reuse this tick (OF-176).
+        try {
+          const snapshot = await this.tmux.readSessionWindowSnapshot(0);
+          batch = snapshot?.activity ?? null;
+          listed = snapshot?.sessions ?? null;
+        } catch { batch = null; listed = null; }
+      } else if (tmuxRows.length > 0 && this.tmux.readAllSessionWindowActivity) {
         try { batch = await this.tmux.readAllSessionWindowActivity(); } catch { batch = null; }
       }
       // Best-effort: a single seat's failure does not crash the loop.
       await Promise.all(tmuxRows.map(async (r) => {
-        try { await this.observeSeat(r.session_name, undefined, batch); } catch { /* swallow */ }
+        try { await this.observeSeat(r.session_name, undefined, batch, listed); } catch { /* swallow */ }
       }));
     } finally {
       this.sweeping = false;

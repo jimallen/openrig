@@ -19,7 +19,7 @@ function fakeExec() {
   const calls: string[] = [];
   const exec = vi.fn(async (cmd: string) => {
     calls.push(cmd);
-    if (cmd.startsWith("tmux list-windows -a")) return WINDOWS.map(([s, a, t]) => `${a}|${t}|${s}`).join("\n") + "\n";
+    if (cmd.startsWith("tmux list-windows -a")) return WINDOWS.map(([s, a, t], i) => `${a}|${t}|@${i}%${i}|${s}`).join("\n") + "\n";
     if (cmd.startsWith("tmux list-panes -a")) return PANES.map(([p, pid, c]) => `${p}|${pid}|${c}`).join("\n") + "\n";
     const m = cmd.match(/^tmux display-message -p -t (\S+) ["']#\{(\w+)\}["']$/);
     if (!m) throw new Error(`unexpected: ${cmd}`);
@@ -76,7 +76,8 @@ const NOW = () => new Date(1790000102 * 1000);
 describe("batched tmux reads: the separator inside a session name or a command", () => {
   it("keeps a session name and a pane command that contain the field separator intact", async () => {
     const exec = vi.fn(async (cmd: string) => {
-      if (cmd.startsWith("tmux list-windows -a")) return "1|1790000100|odd|name@rig\n0|1790000200|odd|name@rig\n";
+      // OF-176: the listing carries the current window and pane as its third field; the session name stays last.
+      if (cmd.startsWith("tmux list-windows -a")) return "1|1790000100|@1%1|odd|name@rig\n0|1790000200|@2%2|odd|name@rig\n";
       if (cmd.startsWith("tmux list-panes -a")) return "%9|4242|a|b\n";
       throw new Error(`unexpected: ${cmd}`);
     });
