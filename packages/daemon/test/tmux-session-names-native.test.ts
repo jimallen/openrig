@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { TmuxDiscoveryScanner } from "../src/domain/tmux-discovery-scanner.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
@@ -36,7 +37,7 @@ async function withServer(mode: "shell" | "argv", names: string[], check: (adapt
     }
     await check(adapter);
   } finally {
-    await tmux(["kill-server"]).catch(() => {});
+    await stopOwnedTmuxServer(socket, env);
     fs.rmSync(home, { recursive: true, force: true });
   }
 }

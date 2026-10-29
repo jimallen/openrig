@@ -11,6 +11,7 @@ import { PiRuntimeAdapter } from "../src/adapters/pi-runtime-adapter.js";
 import { PiResumeAdapter } from "../src/adapters/pi-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
 import { buildPiRunnerCommand, piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const exec = promisify(execCallback);
 const run = promisify(execFile);
@@ -169,7 +170,7 @@ setInterval(() => {}, 1000);
       }
       expect(await readiness.checkReady(binding)).toMatchObject({ ready: false, code: "runner_exited" });
     } finally {
-      await run("tmux", ["-S", socket, "kill-server"]).catch(() => {});
+      await stopOwnedTmuxServer(socket, process.env);
       if (routeServer?.listening) await new Promise<void>(resolve => routeServer.close(() => resolve()));
       fs.rmSync(temp, { recursive: true, force: true });
     }

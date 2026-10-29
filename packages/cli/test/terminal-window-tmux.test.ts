@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -6,21 +6,31 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonClient } from "../src/client.js";
 import { openTerminalWindow, type WindowDeps } from "../src/terminal-window.js";
+import { stopOwnedTmuxServerSync } from "../../daemon/test/helpers/orphan-reaper.js";
 import { composeView } from "../../daemon/src/domain/terminal/view-composer.js";
 
 // Real isolated tmux servers; the desktop launcher alone is inert.
 const sockets: string[] = [];
 const dirs: string[] = [];
+// Owned -S sockets in this file's own directory (a -L name lives in tmux's shared per-user directory, with every other
+// run's servers); short names keep the paths inside the macOS Unix-socket limit.
+const socketDir = mkdtempSync(path.join(tmpdir(), "tw-"));
+const sock = (name: string) => path.join(socketDir, name);
+let keepSocketDir = false;
 const env = { ...process.env }; delete env["TMUX"];
 function tmux(socket: string, args: string[]): string {
-  return execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8", env, timeout: 5000 });
+  return execFileSync("tmux", ["-S", sock(socket), "-f", "/dev/null", ...args], { encoding: "utf8", env, timeout: 5000 });
 }
 afterEach(() => {
+  // Each server is stopped and verified gone; one that cannot be fails the test and keeps the socket directory.
+  const failures: unknown[] = [];
   for (const socket of sockets.splice(0)) {
-    try { tmux(socket, ["kill-server"]); } catch { /* Already exited after a failing setup. */ }
+    try { stopOwnedTmuxServerSync(sock(socket), env); } catch (error) { failures.push(error); }
   }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  if (failures.length > 0) { keepSocketDir = true; throw failures[0]; }
 });
+afterAll(() => { if (!keepSocketDir) rmSync(socketDir, { recursive: true, force: true }); });
 
 it.each([
   ["shared", "80x24"], ["shared", "120x40"], ["separate", "120x40"],
@@ -32,7 +42,7 @@ it.each([
   const dir = mkdtempSync(path.join(tmpdir(), "window-test-"));
   dirs.push(dir);
   const wrapper = path.join(dir, "tmux");
-  writeFileSync(wrapper, `#!/bin/sh\nexec tmux -L ${source} -f /dev/null "$@"\n`, { mode: 0o755 });
+  writeFileSync(wrapper, `#!/bin/sh\nexec tmux -S ${sock(source)} -f /dev/null "$@"\n`, { mode: 0o755 });
   const names = Array.from({ length: 19 }, (_, index) => `source${index}`);
   for (const name of names) tmux(source, ["new-session", "-d", "-s", name, "sleep 120"]);
   if (viewer !== source) tmux(viewer, ["new-session", "-d", "-s", "viewer-fixture", "sleep 120"]);
@@ -83,7 +93,7 @@ it.each([false, true])("opens real viewer panes and preserves source processes (
   const names = paged ? ["operator", "tui", "advisor"] : ["tui", "advisor", "operator"];
   for (const name of names) tmux(source, ["new-session", "-d", "-s", name, "sleep 60"]);
   const original = tmux(source, ["list-panes", "-a", "-F", "#{session_name} #{pane_id} #{pane_pid}"]);
-  const panes = names.map(seat => ({ seat, label: seat, paneCommand: `tmux -L ${source} attach-session -t '=${seat}'` }));
+  const panes = names.map(seat => ({ seat, label: seat, paneCommand: `tmux -S ${sock(source)} attach-session -t '=${seat}'` }));
   const client = { baseUrl: "http://localhost:7433", get: async () => ({ status: 200, data: { planId: "fixture", status: {}, composed: { opened: panes, pages: paged ? panes.map(pane => [pane]) : [panes], columns: paged ? 1 : 3, absent: [], degraded: [] } } }) } as unknown as DaemonClient;
   const desktop = vi.fn(async () => "window");
   const deps: WindowDeps = {
@@ -121,7 +131,7 @@ it.each([80, 119, 120, 174])("opens the measured %i-column welcome in an owned v
   for (const name of names) tmux(source, ["new-session", "-d", "-s", name, "sleep 60"]);
   const snapshot = () => tmux(source, ["list-panes", "-a", "-F", "#{session_name}|#{pane_id}|#{pane_pid}"]);
   const original = snapshot();
-  const panes = names.map(seat => ({ seat, label: seat, paneCommand: `tmux -L ${source} attach-session -t '=${seat}'` }));
+  const panes = names.map(seat => ({ seat, label: seat, paneCommand: `tmux -S ${sock(source)} attach-session -t '=${seat}'` }));
   const get = vi.fn(async (url: string) => {
     const width = Number(new URL(url, "http://fixture").searchParams.get("viewportColumns"));
     const pages = width >= 120 ? [[panes[1]!, panes[0]!], [panes[2]!]] : panes.map(pane => [pane]);

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
@@ -31,7 +32,7 @@ describe.skipIf(process.platform === "win32")("native tmux pane paths", () => {
       expect(panes[0]!.id).toMatch(/^%\d+$/);
     } finally {
       // This socket belongs to this test, never the user's terminal server.
-      await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
+      await stopOwnedTmuxServer(socket, env);
       fs.rmSync(temp, { recursive: true, force: true });
     }
   });

@@ -18,8 +18,8 @@ import net from "node:net";
 import { join } from "node:path";
 import { assertNoForeignDaemon, type HermeticScaffold } from "./hermetic-env.js";
 import {
-  hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, sameProcess, startedAtMs, terminateIdentified, waitNotSame,
-  type ProcessIdentity,
+  hasEnvEntry, hasProcFs, identityOf, listenerPids, pidsWithEnv, reapWhenOwnerDies, startedAtMs, stopOwnedTmuxServer, terminateIdentified,
+  waitNotSame, type ProcessIdentity,
 } from "./orphan-reaper.js";
 
 export interface RigResult {
@@ -144,15 +144,29 @@ export async function spawnScenarioDaemon(
   const port = opts.port ?? (await findFreePort());
   const db = join(scaffold.stateDir, "scenario.db");
 
+  // Every `rig daemon start|stop` this helper runs is recorded as a time window: the daemon (or a replacement it brings up)
+  // can only have been started inside one of them, so a process found later that started outside every window is not ours,
+  // whatever daemon.json or the port says (a stale daemon.json naming a reused pid; another process on the port).
+  const windows: Array<{ from: number; to: number }> = [];
+  const cli = async (args: string[]): Promise<RigResult> => {
+    const window = { from: Date.now(), to: Number.POSITIVE_INFINITY };
+    windows.push(window);
+    try { return await runRig(args, scaffold.env, rigBin, timeoutMs); } finally { window.to = Date.now(); }
+  };
+  // Listeners found on the port BEFORE a start are someone else's: refused and never signalled.
+  const foreign = new Set<number>();
+
   // The single start path — reused by initial spawn AND by restart, so a restart
   // re-spawns through EXACTLY the same forced-local/scratch/fail-closed guarantees.
   const startProc = async () => {
-    const start = await runRig(
-      ["daemon", "start", "--port", String(port), "--db", db, "--no-kernel"],
-      scaffold.env,
-      rigBin,
-      timeoutMs,
-    );
+    const occupied = listenerPids(port);
+    if (occupied.length > 0) {
+      for (const pid of occupied) foreign.add(pid);
+      throw new Error(
+        `port ${port} already has a listener this helper did not start (pid ${occupied.join(", ")}); refusing to start the scenario daemon there (that process is never signalled)`,
+      );
+    }
+    const start = await cli(["daemon", "start", "--port", String(port), "--db", db, "--no-kernel"]);
     if (start.code !== 0) {
       throw new Error(
         `scenario-local daemon failed to start (exit ${start.code}) on port ${port}: ${start.stderr || start.stdout}`,
@@ -163,24 +177,36 @@ export async function spawnScenarioDaemon(
   // RECORDED identity (pid + start time + command, verified before every signal; see orphan-reaper.ts), never through a bare
   // pid from daemon.json and never through another process's environment (unreadable on macOS). The daemon is found by two
   // independent routes, the pid in this scaffold's private daemon.json and the listener on the port chosen for it, each kept
-  // only if the process started after this call began. On Linux the watchdog is also armed BEFORE `rig daemon start` with the
-  // scaffold's private OPENRIG_HOME, so a worker that dies mid-start still gets its daemon reaped; on macOS that window has
-  // no identity to go on yet (reported, not hidden).
+  // only if the process started inside one of this helper's own `rig daemon` calls (`windows`), was not on the port before
+  // a start (`foreign`), and, when the port is its only witness, carries this scaffold's OPENRIG_HOME (Linux, where that can
+  // be read). On Linux the watchdog is also armed BEFORE `rig daemon start` with the scaffold's private OPENRIG_HOME, so a
+  // worker that dies mid-start still gets its daemon reaped; on macOS that window has no identity to go on yet, and a
+  // process that binds the port during one of the helper's own calls is not told apart from the daemon (both reported, not
+  // hidden).
   const homeEntry = `OPENRIG_HOME=${scaffold.openrigHome}`;
-  const discover = (sinceMs: number, envScan: boolean): ProcessIdentity[] => {
-    const pids = new Set<number>();
+  // Bounds for stopping the scaffold's tmux server: each tmux command gets at least 5 s, so a loaded host is not read as a starved one.
+  const tmuxStop = { commandTimeoutMs: Math.max(5_000, 2 * stopGraceMs), graceMs: stopGraceMs };
+  const inWindow = (id: ProcessIdentity) => {
+    // ps start times have one-second resolution: a window opens at the start of the second in which its call began.
+    const startedMs = startedAtMs(id.started);
+    return windows.some((w) => startedMs >= Math.floor(w.from / 1000) * 1000 && startedMs <= w.to);
+  };
+  const discover = (envScan: boolean): ProcessIdentity[] => {
+    const named = new Set<number>(), carrying = new Set<number>();
     try {
       const pid = (JSON.parse(readFileSync(join(scaffold.openrigHome, "daemon.json"), "utf8")) as { pid?: unknown }).pid;
-      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) pids.add(pid);
+      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) named.add(pid);
     } catch { /* no state file (yet) */ }
-    for (const pid of listenerPids(port)) pids.add(pid);
+    const listening = listenerPids(port);
     // Only on a failed start, when no seat or tmux server exists yet to carry the home too.
-    if (envScan && hasProcFs()) for (const pid of pidsWithEnv(homeEntry)) pids.add(pid);
+    if (envScan && hasProcFs()) for (const pid of pidsWithEnv(homeEntry)) carrying.add(pid);
     const found: ProcessIdentity[] = [];
-    for (const pid of pids) {
+    for (const pid of new Set([...named, ...listening, ...carrying])) {
+      if (foreign.has(pid)) continue;
+      // A port is the weakest witness: another process can bind the port the helper picked and released.
+      if (!named.has(pid) && !carrying.has(pid) && hasProcFs() && !hasEnvEntry(pid, homeEntry)) continue;
       const id = identityOf(pid);
-      // ps start times have one-second resolution: compare from the start of the second in which this call began.
-      if (id !== null && startedAtMs(id.started) >= Math.floor(sinceMs / 1000) * 1000) found.push(id);
+      if (id !== null && inWindow(id)) found.push(id);
     }
     return found;
   };
@@ -191,21 +217,27 @@ export async function spawnScenarioDaemon(
   let reaper = armWith([]);
   const rearm = (identities: ProcessIdentity[]) => { const old = reaper; reaper = armWith(identities); old.disarm(); };
   const startRecorded = async () => {
-    const since = Date.now();
     try {
       await startProc();
-      current = discover(since, false);
+      current = discover(false);
       if (current.length === 0) throw new Error(`the daemon started on port ${port} but cannot be identified (no live process in daemon.json or listening there); refusing to continue without a reapable identity`);
     } catch (error) {
       // The CLI may have detached the daemon before failing or timing out: stop whatever it left, then say so.
       let holders: ProcessIdentity[] = [];
-      try { holders = discover(since, true); } catch (discoveryError) {
+      try { holders = discover(true); } catch (discoveryError) {
         throw new Error(`${(error as Error).message}; and the leftover daemon could not be looked for: ${(discoveryError as Error).message}`);
       }
       const survivors = await terminateIdentified(holders, stopGraceMs);
-      // Disarm only when nothing survived; otherwise the watchdog stays armed on exactly the survivors.
-      if (survivors.length === 0) reaper.disarm(); else rearm(survivors);
       current = [];
+      // The daemon starts the scaffold's tmux server at boot (an empty `tmux -D`), so a start that failed after that has
+      // left one: stop it too. Disarm only when nothing survived and that server is verified gone; otherwise the watchdog
+      // stays armed on the survivors and the socket.
+      let tmuxLeft = "";
+      try { await stopOwnedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv, tmuxStop); } catch (tmuxError) {
+        tmuxLeft = `; and the scaffold's tmux server could not be verified stopped: ${(tmuxError as Error).message}`;
+      }
+      if (survivors.length === 0 && tmuxLeft === "") reaper.disarm(); else rearm(survivors);
+      if (tmuxLeft !== "") throw new Error(`${(error as Error).message}${tmuxLeft}`);
       throw error;
     }
     rearm(current);
@@ -215,12 +247,11 @@ export async function spawnScenarioDaemon(
     // SIGTERMs the daemon. Best-effort (already-down is fine), but the daemon must really be gone before the
     // scaffold (and the daemon.json that names it) can be deleted: a swallowed stop failure leaked it.
     const known = [...current];
-    await runRig(["daemon", "stop"], scaffold.env, rigBin, timeoutMs).catch(() => {});
+    await cli(["daemon", "stop"]);
     await waitNotSame(known, stopGraceMs);
     await terminateIdentified(known, stopGraceMs);
   };
 
-  const startedAt = Date.now();
   await startRecorded();
 
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -237,13 +268,16 @@ export async function spawnScenarioDaemon(
     },
     stop: async () => {
       await killProc();
-      // Verify against what is found NOW (daemon.json and the port, not only what was recorded at start): a daemon that is
-      // still alive keeps the scaffold and the watchdog in place.
-      const left = await terminateIdentified(discover(startedAt, false), stopGraceMs);
+      // Verify against what is found NOW (daemon.json and the port, not only what was recorded at start, but only processes
+      // started inside one of this helper's own calls): a daemon that is still alive keeps the scaffold and the watchdog.
+      const left = await terminateIdentified(discover(false), stopGraceMs);
       if (left.length > 0) {
         rearm(left);
         throw new Error(`the scenario daemon (pid ${left.map((l) => l.pid).join(", ")}) is still alive after stop; scaffold and watchdog kept`);
       }
+      // The daemon's tmux server (seats, and the empty `tmux -D` it starts at boot) is verified gone BEFORE the watchdog is
+      // disarmed: a server that cannot be verified stopped keeps the watchdog and the scaffold.
+      await stopOwnedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv, tmuxStop);
       reaper.disarm();
       scaffold.cleanup();
     },

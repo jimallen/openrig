@@ -4,7 +4,7 @@
 // localhost, the TUI and CLI daemon clients, and the window opener's plain-tmux fallback on an isolated tmux server.
 // Stubbed: the provider adapters' status and liveness, the Herdr binary probe, and the macOS desktop launcher
 // (osascript), which records its command instead of opening a window.
-import { afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -14,6 +14,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { DaemonClient as CliClient } from "../src/client.js";
 import { openTerminalWindow, type WindowDeps } from "../src/terminal-window.js";
+import { stopOwnedTmuxServerSync } from "../../daemon/test/helpers/orphan-reaper.js";
 import { DaemonClient as TuiClient } from "../../tui/src/daemon-client.js";
 import { terminalRoutes } from "../../daemon/src/routes/terminal.js";
 import { TerminalService } from "../../daemon/src/domain/terminal/terminal-service.js";
@@ -23,15 +24,26 @@ import type { TerminalProvider } from "../../daemon/src/domain/terminal/terminal
 const env = { ...process.env }; delete env["TMUX"];
 const sockets: string[] = [];
 const dirs: string[] = [];
+// Owned -S sockets in this file's own directory (a -L name lives in tmux's shared per-user directory, with every other
+// run's servers); short names keep the paths inside the macOS Unix-socket limit.
+const socketDir = mkdtempSync(path.join(tmpdir(), "tw-"));
+const sock = (name: string) => path.join(socketDir, name);
+let keepSocketDir = false;
 const servers: Array<{ close(): void }> = [];
 function tmux(socket: string, args: string[]): string {
-  return execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8", env, timeout: 5000 });
+  return execFileSync("tmux", ["-S", sock(socket), "-f", "/dev/null", ...args], { encoding: "utf8", env, timeout: 5000 });
 }
 afterEach(() => {
   for (const server of servers.splice(0)) server.close();
-  for (const socket of sockets.splice(0)) { try { tmux(socket, ["kill-server"]); } catch { /* already gone */ } }
+  // Each server is stopped and verified gone; one that cannot be fails the test and keeps the socket directory.
+  const failures: unknown[] = [];
+  for (const socket of sockets.splice(0)) {
+    try { stopOwnedTmuxServerSync(sock(socket), env); } catch (error) { failures.push(error); }
+  }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  if (failures.length > 0) { keepSocketDir = true; throw failures[0]; }
 });
+afterAll(() => { if (!keepSocketDir) rmSync(socketDir, { recursive: true, force: true }); });
 
 async function fixture(herdrAvailable: boolean) {
   const id = randomUUID().slice(0, 12);
@@ -40,7 +52,7 @@ async function fixture(herdrAvailable: boolean) {
   const dir = mkdtempSync(path.join(tmpdir(), "tui-window-"));
   dirs.push(dir);
   const wrapper = path.join(dir, "tmux");
-  writeFileSync(wrapper, `#!/bin/sh\nexec tmux -L ${source} -f /dev/null "$@"\n`, { mode: 0o755 });
+  writeFileSync(wrapper, `#!/bin/sh\nexec tmux -S ${sock(source)} -f /dev/null "$@"\n`, { mode: 0o755 });
   const seats = ["seat0", "seat1"];
   for (const seat of seats) tmux(source, ["new-session", "-d", "-s", seat, "sleep 120"]);
   tmux(viewer, ["new-session", "-d", "-s", "viewer-fixture", "sleep 120"]);

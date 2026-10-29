@@ -16,7 +16,6 @@
  * a hard error NAMING the target. Never a degrade, never a fabrication.
  */
 
-import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -26,6 +25,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { stopOwnedTmuxServerSync } from "./orphan-reaper.js";
 
 /**
  * Inherited environment variables that redirect the CLI/daemon client at a
@@ -268,13 +268,21 @@ export interface HermeticScaffold {
   /** Explicit private tmux socket used by every scaffold child invocation. */
   tmuxSocketPath: string;
   /**
+   * The environment for running the REAL tmux against `tmuxSocketPath` (the scaffold env with its original PATH, not the
+   * `-S`-adding wrapper): what a verified stop of the scaffold's tmux server uses.
+   */
+  tmuxEnv: NodeJS.ProcessEnv;
+  /**
    * A CLEAN environment for child processes (the scenario-local daemon + `rig`
    * CLI invocations): the caller's env with daemon-target + credential vars
    * scrubbed and the scratch paths set. A distinct object — never the caller's
    * env nor `process.env`.
    */
   env: Record<string, string | undefined>;
-  /** Remove the scaffold root. Idempotent. */
+  /**
+   * Stop the scaffold's own tmux server (the scenario daemon starts one on `tmuxSocketPath`) and VERIFY it is gone, then
+   * remove the scaffold root. Idempotent. Throws, keeping the root, when the server cannot be verified stopped.
+   */
   cleanup(): void;
 }
 
@@ -326,14 +334,20 @@ export function prepareHermeticEnv(opts: PrepareHermeticEnvOptions = {}): Hermet
   const tmuxSocketPath = join(root, "tmux.sock");
   const tmuxWrapperDir = join(root, "bin");
   const tmuxWrapperPath = join(tmuxWrapperDir, "tmux");
-  for (const dir of [home, openrigHome, stateDir, tmuxTmpDir, tmuxWrapperDir]) {
-    mkdirSync(dir, { recursive: true });
-  }
+  // Setup that fails half-way removes what it made: nothing has started yet, so the directory is all there is.
+  const removeRootOnFailure = (step: () => void) => {
+    try { step(); } catch (error) { rmSync(root, { recursive: true, force: true }); throw error; }
+  };
+  removeRootOnFailure(() => {
+    for (const dir of [home, openrigHome, stateDir, tmuxTmpDir, tmuxWrapperDir]) {
+      mkdirSync(dir, { recursive: true });
+    }
+  });
 
   // Test-only command seam: every child `tmux` call gets one explicit private
   // socket. TMUX_TMPDIR remains for compatibility, but is never the selector.
   const originalPath = baseEnv.PATH ?? process.env.PATH ?? "";
-  writeFileSync(
+  removeRootOnFailure(() => writeFileSync(
     tmuxWrapperPath,
     `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
@@ -348,7 +362,7 @@ if (result.error) {
 process.exit(result.status ?? 1);
 `,
     { mode: 0o755 },
-  );
+  ));
 
   // Clean child env: copy, scrub every redirect/credential var, then set scratch paths.
   const env: Record<string, string | undefined> = { ...baseEnv };
@@ -364,7 +378,7 @@ process.exit(result.status ?? 1);
   env.SHELL = "/bin/bash";
   // Ubuntu's /etc/bash.bashrc prints a sudo hint on stdout of interactive bash for a
   // sudo-group user whose HOME has no .hushlogin; seat panes run `bash -i`.
-  writeFileSync(join(home, ".hushlogin"), "");
+  removeRootOnFailure(() => writeFileSync(join(home, ".hushlogin"), ""));
   env.XDG_CONFIG_HOME = join(home, ".config");
   env.XDG_STATE_HOME = join(home, ".local", "state");
   env.XDG_DATA_HOME = join(home, ".local", "share");
@@ -384,26 +398,15 @@ process.exit(result.status ?? 1);
     env.OPENRIG_TEST_CLOCK_NOW = opts.injectClockNow;
   }
 
+  const tmuxEnv: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) tmuxEnv[name] = value;
+  tmuxEnv.PATH = originalPath;
   const cleanup = () => {
     if (!existsSync(root)) return;
-    if (existsSync(tmuxSocketPath)) {
-      let privateServerRunning = true;
-      try {
-        execFileSync("tmux", ["-S", tmuxSocketPath, "list-sessions"], {
-          env: { ...env, PATH: originalPath } as NodeJS.ProcessEnv,
-          stdio: "ignore",
-        });
-      } catch (error) {
-        if (typeof (error as { status?: unknown }).status !== "number") throw error;
-        privateServerRunning = false;
-      }
-      if (privateServerRunning) {
-        execFileSync("tmux", ["-S", tmuxSocketPath, "kill-server"], {
-          env: { ...env, PATH: originalPath } as NodeJS.ProcessEnv,
-          stdio: "ignore",
-        });
-      }
-    }
+    // The server the scaffold's daemon started here (its empty `tmux -D` at boot, then the seats) is stopped and VERIFIED
+    // gone before the socket's directory goes; a failed `list-sessions` once read as "no server" deleted the directory
+    // under a live server. A server that cannot be verified stopped throws and keeps the root.
+    if (existsSync(tmuxSocketPath)) stopOwnedTmuxServerSync(tmuxSocketPath, tmuxEnv, { commandTimeoutMs: 10_000, graceMs: 5_000 });
     rmSync(root, { recursive: true, force: true });
   };
 
@@ -414,6 +417,7 @@ process.exit(result.status ?? 1);
     stateDir,
     tmuxTmpDir,
     tmuxSocketPath,
+    tmuxEnv,
     env,
     cleanup,
   };

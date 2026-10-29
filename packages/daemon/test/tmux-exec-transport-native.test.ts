@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { execArgvCommand, execCommand, resolveOnPath } from "../src/adapters/tmux-exec.js";
+import { ownedDefaultSocket, stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 // The production exec functions against a real tmux. Neither takes a server flag: both must reach the server
 // named by the inherited TMUX_TMPDIR, so the test points it at a private directory and unsets TMUX.
@@ -91,7 +92,7 @@ async function scenario(mode: "shell" | "argv") {
     return { result, files, calls, root: fs.realpathSync(root) };
   } finally {
     vi.unstubAllEnvs();
-    await runFile("tmux", ["kill-server"], { env: anchorEnv }).catch(() => {});
+    await stopOwnedTmuxServer(ownedDefaultSocket(serverDir), anchorEnv);
   }
 }
 

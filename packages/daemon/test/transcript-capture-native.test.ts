@@ -7,15 +7,16 @@ import { tmpdir } from "node:os";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
 
 it.skipIf(!nativeAvailable)("preserves the exact native trailing buffer and recovers idle panes on output", async () => {
   const root = mkdtempSync(join(tmpdir(), "capture-native-"));
-  const socket = `openrig-capture-test-${process.pid}-${Date.now()}`;
+  const socket = join(root, "tmux.sock"); // an owned -S socket: a -L name lives in the shared per-user directory
   const exec = promisify(execFile);
-  const run = async (...args: string[]) => (await exec("tmux", ["-L", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
+  const run = async (...args: string[]) => (await exec("tmux", ["-S", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   let captures = 0;
   const adapter = new TmuxAdapter(async () => { throw new Error("expected argv transport"); }, undefined, async (argv) => {
@@ -42,16 +43,16 @@ it.skipIf(!nativeAvailable)("preserves the exact native trailing buffer and reco
     expect(expected).toContain("new output γδ");
   } finally {
     stopTranscriptRotation("seat");
-    await run("kill-server").catch(() => {});
+    await stopOwnedTmuxServer(socket, process.env);
     rmSync(root, { recursive: true, force: true });
   }
 }, 20_000);
 
 it.skipIf(!nativeAvailable)("retains active native output before a normal stop despite capture latency", async () => {
   const root = mkdtempSync(join(tmpdir(), "capture-cadence-native-"));
-  const socket = `openrig-cadence-test-${process.pid}-${Date.now()}`;
+  const socket = join(root, "tmux.sock"); // an owned -S socket: a -L name lives in the shared per-user directory
   const exec = promisify(execFile);
-  const run = async (...args: string[]) => (await exec("tmux", ["-L", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
+  const run = async (...args: string[]) => (await exec("tmux", ["-S", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   const adapter = new TmuxAdapter(async () => { throw new Error("expected argv transport"); }, undefined, async (argv) => {
     const result = await run(...argv.slice(1));
@@ -72,7 +73,7 @@ it.skipIf(!nativeAvailable)("retains active native output before a normal stop d
     expect(readFileSync(file, "utf8")).toContain("final active output αβ");
   } finally {
     stopTranscriptRotation("seat");
-    await run("kill-server").catch(() => {});
+    await stopOwnedTmuxServer(socket, process.env);
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
@@ -80,9 +81,9 @@ it.skipIf(!nativeAvailable)("retains active native output before a normal stop d
 
 it.skipIf(!nativeAvailable)("keeps real idle transcript health fresh across a variable 4.2s capture", async () => {
   const root = mkdtempSync(join(tmpdir(), "capture-fresh-native-"));
-  const socket = `openrig-fresh-test-${process.pid}-${Date.now()}`;
+  const socket = join(root, "tmux.sock"); // an owned -S socket: a -L name lives in the shared per-user directory
   const exec = promisify(execFile);
-  const run = async (...args: string[]) => (await exec("tmux", ["-L", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
+  const run = async (...args: string[]) => (await exec("tmux", ["-S", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   let captures = 0;
   let slowCompleted = false;
@@ -119,7 +120,7 @@ it.skipIf(!nativeAvailable)("keeps real idle transcript health fresh across a va
     expect(readFileSync(file, "utf8")).toBe(await run("capture-pane", "-p", "-t", "seat", "-S", "-1000"));
   } finally {
     stopTranscriptRotation("seat");
-    await run("kill-server").catch(() => {});
+    await stopOwnedTmuxServer(socket, process.env);
     rmSync(root, { recursive: true, force: true });
   }
 }, 45_000);

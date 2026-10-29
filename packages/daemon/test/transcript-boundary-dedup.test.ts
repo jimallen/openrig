@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
@@ -50,7 +51,7 @@ describe.skipIf(process.platform === "win32")("native transcript boundary replay
       expect(lines).toContain("stable terminal output");
     } finally {
       stopTranscriptRotation(sessionName);
-      await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
+      await stopOwnedTmuxServer(socket, env);
       fs.rmSync(temp, { recursive: true, force: true });
       fs.rmSync(socketDir, { recursive: true, force: true });
     }

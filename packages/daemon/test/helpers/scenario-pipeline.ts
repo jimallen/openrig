@@ -329,8 +329,18 @@ export async function runScenarioFile(
   // Seats launch with cwd under the scaffold so their managed writes (AGENTS.md,
   // the stub sidecar) stay in scratch and never pollute the launch cwd.
   const seatCwd = join(scaffold.root, "seat-cwd");
-  mkdirSync(seatCwd, { recursive: true });
-  const daemon = await resolveScenarioDaemonSpawner(opts)(scaffold, opts);
+  let daemon: ScenarioDaemon;
+  try {
+    mkdirSync(seatCwd, { recursive: true });
+    daemon = await resolveScenarioDaemonSpawner(opts)(scaffold, opts);
+  } catch (error) {
+    // Setup failed half-way: there is no daemon handle whose stop() would tear the scaffold down, so it goes here (its tmux
+    // server verified stopped first). A scaffold that cannot be removed is reported with the failure, never swallowed.
+    try { scaffold.cleanup(); } catch (cleanupError) {
+      throw new Error(`${(error as Error).message}; and the scaffold could not be removed: ${(cleanupError as Error).message}`);
+    }
+    throw error;
+  }
   let tui: ProvisionedTui | undefined;
   try {
     // L6 STEP-0 — container-mode translates the HOST topology path to the in-container staged path
