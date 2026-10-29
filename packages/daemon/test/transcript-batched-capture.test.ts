@@ -30,7 +30,12 @@ function fakeTmux() {
       if (fail.serverAfterListing) fail.server = true;
       return [...sessions.keys()].join("\n") + "\n";
     }
-    if (argv[1] === "list-windows") return [...sessions].map(([n, s]) => `1|${s.activity}|${n}`).join("\n") + "\n";
+    if (argv[1] === "list-windows") {
+      // OF-176: the shared window listing is also the listing a batch keeps beside its chain.
+      const out = [...sessions].map(([n, s]) => `1|${s.activity}|${n}`).join("\n") + "\n";
+      if (fail.serverAfterListing) fail.server = true;
+      return out;
+    }
     const cmds: string[][] = [[]];
     for (const a of argv.slice(1)) {
       if (a === ";") cmds.push([]);
@@ -283,24 +288,26 @@ describe("batched transcript capture (#161)", () => {
     expect(getTranscriptCaptureStats().failures).toBe(0);
   });
 
-  it("a session gone from tmux: the listing drops it from the chain, then it reads per target until it captures again", async () => {
+  // OF-176 (was: "the listing drops it from the chain, then it reads per target until it captures again"): a session the
+  // shared window listing lacks no longer reaches a capture, so it costs no fork at all (it used to fail a chain once and
+  // then cost one per-target capture-pane every round, forever, for a seat that exited on its own).
+  it("a session gone from tmux costs no fork: the shared listing leaves it out until it is listed again", async () => {
     const t = fakeTmux(); const all = names(5);
     await startAll(t, all);
     t.sessions.delete(all[1]!);
     for (const n of all.filter((n) => n !== all[1])) t.write(n, `${n} after\n`);
     let before = t.calls.length;
     await advance(2000);
-    expect(t.calls.slice(before).filter((a) => a[1] !== "list-windows").map((a) => a[1]))
-      .toEqual(["list-sessions", "display-message", "display-message"]);
+    expect(t.calls.slice(before).filter((a) => a[1] !== "list-windows").map((a) => a[1])).toEqual(["display-message"]);
     for (const n of all.filter((n) => n !== all[1])) expect(fs.readFileSync(file(n), "utf8")).toBe(`${n} after\n`);
     for (const n of all.filter((n) => n !== all[1])) t.write(n, `${n} later\n`);
     before = t.calls.length;
     await advance(2000);
     const round = t.calls.slice(before).filter((a) => a[1] !== "list-windows");
-    expect(round.map((a) => a[1]).sort()).toEqual(["capture-pane", "display-message", "list-sessions"]);
-    expect(round.find((a) => a[1] === "capture-pane")).toContain(`=${all[1]}:`);
+    expect(round.map((a) => a[1])).toEqual(["display-message"]);
+    expect(round[0]).not.toContain(`=${all[1]}:`);
     for (const n of all.filter((n) => n !== all[1])) expect(fs.readFileSync(file(n), "utf8")).toBe(`${n} later\n`);
-    // Back in tmux: its per-target read captures, so it rejoins the chain.
+    // Back in tmux: listed again, it is captured with the others.
     t.add(all[1]!, `${all[1]} back\n`);
     await advance(2000);
     expect(fs.readFileSync(file(all[1]!), "utf8")).toBe(`${all[1]} back\n`);
@@ -359,11 +366,15 @@ describe("batched transcript capture (#161)", () => {
   it("the server dies right after the listing: no split, no per-target retries, one failure per session", async () => {
     const t = fakeTmux(); const all = names(24);
     await startAll(t, all);
-    t.fail.serverAfterListing = true;
     for (const n of all) t.write(n, `${n} gone\n`);
+    // OF-176: the batch's listing is the capture round's shared window listing (its list-windows), not a list-sessions
+    // of its own. Hints read every second and captures run every 2 s, so the read between rounds passes first, with
+    // the server up; the server then dies right after the capture round's listing.
+    await advance(1000);
+    t.fail.serverAfterListing = true;
     const before = t.calls.length;
-    await advance(2000);
-    expect(t.calls.slice(before).filter((a) => a[1] !== "list-windows").map((a) => a[1])).toEqual(["list-sessions", "display-message"]);
+    await advance(1000);
+    expect(t.calls.slice(before).filter((a) => a[1] !== "list-windows").map((a) => a[1])).toEqual(["display-message"]);
     expect(getTranscriptCaptureStats().failures).toBe(24);
   });
 

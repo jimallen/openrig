@@ -137,12 +137,33 @@ export interface TmuxClient {
  * not be reached and session existence was NOT determined — the two are never
  * interchangeable.
  */
+/** One `list-windows -a` read (OF-176): every session the server has, and each one's current-window activity. */
+export interface SessionWindowSnapshot {
+  /** Epoch ms when the read started. */
+  at: number;
+  /** Every session the listing named. A session absent from it does not exist on the server at that moment. */
+  sessions: Set<string>;
+  /** Each session's current-window `#{window_activity}` (epoch seconds), when well formed. */
+  activity: Map<string, number>;
+}
+
+/**
+ * Whether a snapshot shows `session` absent from the server. Only a listing that names at least one session is taken as
+ * an answer: an empty one (a server with no sessions, or a reply this parser did not recognise) never makes every
+ * running seat look gone at once, as the identity reconciler treats zero live sessions as a blip.
+ */
+export function snapshotLacks(snapshot: SessionWindowSnapshot | null | undefined, session: string): boolean {
+  return snapshot != null && snapshot.sessions.size > 0 && !snapshot.sessions.has(session);
+}
+
 export type SessionProbe =
   | { state: "present" }
   | { state: "absent" }
   | { state: "transport_unavailable"; cause: string };
 
 const TMUX_FIELD_SEPARATOR = "|";
+/** How old a shared window snapshot a batched capture accepts as its listing (OF-176): one poll tick. */
+export const CAPTURE_LISTING_MAX_AGE_MS = 1000;
 const SESSION_FORMAT = [
   "#{session_name}",
   "#{session_windows}",
@@ -361,6 +382,8 @@ function parseLines<T>(output: string, parser: (line: string) => T | null): T[] 
 
 export class TmuxAdapter {
   deliveryGuard?: SeatDeliveryGuard;
+  /** The latest window listing, shared by the poll loops (OF-176): a read in flight is joined, a recent one reused. */
+  private windowSnapshot: { at: number; settled: boolean; value: SessionWindowSnapshot | null; result: Promise<SessionWindowSnapshot | null> } | null = null;
   private readonly freshProbes = new Map<string, string>();
   private readonly freshManaged = new Map<string, {nodeId: string; pane: string}>();
 
@@ -1368,8 +1391,12 @@ export class TmuxAdapter {
    * chunk can't make an earlier capture look fresh.
    */
   async capturePanesContent(targets: string[], lines: number = 20, now: () => Date = () => new Date()): Promise<Map<string, PaneCapture> | null> {
-    const listing = this.run(["tmux", "list-sessions", "-F", "#{session_name}"], "tmux list-sessions -F '#{session_name}'")
-      .then((output) => new Set(output.split(/\r?\n/).filter(Boolean)), () => null);
+    // OF-176: when the poll loops' shared window snapshot answered within CAPTURE_LISTING_MAX_AGE_MS, it is the listing
+    // (no fork); otherwise a `list-sessions` of its own runs beside the chain, as before.
+    const shared = this.peekSessionWindowSnapshot(CAPTURE_LISTING_MAX_AGE_MS);
+    const listing = shared && shared.sessions.size > 0 ? Promise.resolve(shared.sessions)
+      : this.run(["tmux", "list-sessions", "-F", "#{session_name}"], "tmux list-sessions -F '#{session_name}'")
+        .then((output) => new Set(output.split(/\r?\n/).filter(Boolean)), () => null);
     const out = new Map<string, PaneCapture>();
     let unlisted = false;
     /** Capture one chunk with a single chained tmux call into `out`; on failure, retry it without the unlisted targets
@@ -1617,21 +1644,55 @@ export class TmuxAdapter {
   /** Every session's current-window `#{window_activity}` in ONE tmux call, keyed by session name: the same value
    *  `readPaneLastActivity(<session name>)` reads (display-message -t <session> resolves to the session's current
    *  window). Only well-formed timestamps are included, so a missing key means "read it the per-target way". Null when
-   *  tmux can't be read at all. The session name is the LAST field, so a separator inside it stays intact. */
+   *  tmux can't be read at all. The session name is the LAST field, so a separator inside it stays intact. A fresh read
+   *  (a read already in flight is joined); it also becomes the shared snapshot. */
   async readAllSessionWindowActivity(): Promise<Map<string, number> | null> {
+    return (await this.readSessionWindowSnapshot(0))?.activity ?? null;
+  }
+
+  /**
+   * OF-176: the poll loops share one `list-windows -a` per tick instead of each listing (and then reading each seat) on
+   * its own. Returns the latest read when it started less than `maxAgeMs` ago, joins a read in flight, and otherwise
+   * reads now. A failed read is not kept, so the next caller reads again. Null when tmux can't be read at all.
+   */
+  async readSessionWindowSnapshot(maxAgeMs = 0): Promise<SessionWindowSnapshot | null> {
+    const now = Date.now();
+    const current = this.windowSnapshot;
+    if (current && (!current.settled || now - current.at < maxAgeMs)) return current.result;
+    const entry: { at: number; settled: boolean; value: SessionWindowSnapshot | null; result: Promise<SessionWindowSnapshot | null> } =
+      { at: now, settled: false, value: null, result: this.readWindowListing(now) };
+    this.windowSnapshot = entry;
+    void entry.result.then((snapshot) => {
+      entry.settled = true;
+      entry.value = snapshot;
+      if (snapshot === null && this.windowSnapshot === entry) this.windowSnapshot = null;
+    });
+    return entry.result;
+  }
+
+  /** The shared snapshot when one has already answered and started less than `maxAgeMs` ago; otherwise null. Never reads. */
+  peekSessionWindowSnapshot(maxAgeMs: number): SessionWindowSnapshot | null {
+    const current = this.windowSnapshot;
+    return current && current.settled && Date.now() - current.at < maxAgeMs ? current.value : null;
+  }
+
+  private async readWindowListing(at: number): Promise<SessionWindowSnapshot | null> {
     try {
       const format = ["#{window_active}", "#{window_activity}", "#{session_name}"].join(TMUX_FIELD_SEPARATOR);
       const output = await this.run(["tmux", "list-windows", "-a", "-F", format], `tmux list-windows -a -F '${format}'`);
-      const out = new Map<string, number>();
+      const sessions = new Set<string>();
+      const activity = new Map<string, number>();
       for (const line of output.split("\n")) {
         const first = line.indexOf(TMUX_FIELD_SEPARATOR), second = line.indexOf(TMUX_FIELD_SEPARATOR, first + 1);
         if (first < 0 || second < 0) continue;
-        const active = line.slice(0, first), activity = line.slice(first + 1, second).trim(), session = line.slice(second + 1);
-        if (!session || active !== "1" || !/^\d+$/.test(activity)) continue;
-        const n = Number(activity);
-        if (Number.isFinite(n) && n > 0) out.set(session, n);
+        const active = line.slice(0, first), stamp = line.slice(first + 1, second).trim(), session = line.slice(second + 1);
+        if (!session) continue;
+        sessions.add(session);
+        if (active !== "1" || !/^\d+$/.test(stamp)) continue;
+        const n = Number(stamp);
+        if (Number.isFinite(n) && n > 0) activity.set(session, n);
       }
-      return out;
+      return { at, sessions, activity };
     } catch {
       return null;
     }

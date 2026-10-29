@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { PaneCapture, TmuxAdapter } from "../adapters/tmux.js";
+import { snapshotLacks, type PaneCapture, type TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneActivity, detectBackgroundJobs, type BackgroundJobs, type PaneActivityClassification } from "./session-transport.js";
 import { detectCodexLimitBanner, type CodexLimitBanner } from "./provider/codex-limit-banner.js";
 
@@ -23,6 +23,8 @@ export const DEFAULT_STRUCTURAL_POLL_INTERVAL_MS = 1000;
 // tolerates a few missed ticks; a persistently failing/stuck poller ages the row out and the ACTIVITY
 // projection falls back to the honest hook/unknown state.
 export const DEFAULT_STRUCTURAL_STALE_MS = 5000;
+/** How old a shared window snapshot the structural sweep accepts (OF-176): the activity sweep's read of the same tick. */
+export const STRUCTURAL_SNAPSHOT_MAX_AGE_MS = 500;
 
 /**
  * 5b82324b — the STRUCTURAL activity cache. Sibling of SeatActivityService (which reads ONLY the tmux
@@ -45,6 +47,8 @@ export const DEFAULT_STRUCTURAL_STALE_MS = 5000;
  */
 export class SeatStructuralActivityService {
   private readonly latestBySession = new Map<string, StructuralObservation>();
+  /** When each cached observation's pane text was captured (epoch ms), for the idle skip (OF-176). */
+  private readonly capturedAtBySession = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private sweeping = false; // single-flight guard: one whole-fleet sweep at a time (MUST-FIX 2)
   private bannerEmitter:
@@ -52,7 +56,7 @@ export class SeatStructuralActivityService {
     | null = null;
 
   constructor(
-    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent"> & Partial<Pick<TmuxAdapter, "capturePanesContent">>,
+    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent"> & Partial<Pick<TmuxAdapter, "capturePanesContent" | "readSessionWindowSnapshot">>,
     private readonly now: () => Date = () => new Date(),
     private readonly captureLines: number = 20,
     private readonly staleAfterMs: number = DEFAULT_STRUCTURAL_STALE_MS,
@@ -107,6 +111,7 @@ export class SeatStructuralActivityService {
     }
     const c = classifyPaneActivity(content);
     const at = observedAt ?? this.now();
+    this.capturedAtBySession.set(sessionName, at.getTime());
     const obs: StructuralObservation = {
       state: c.state,
       reason: c.reason,
@@ -151,12 +156,38 @@ export class SeatStructuralActivityService {
       for (const s of Array.from(this.latestBySession.keys())) {
         if (!live.has(s)) this.latestBySession.delete(s); // release memory + never serve a stale read
       }
+      for (const s of Array.from(this.capturedAtBySession.keys())) {
+        if (!this.latestBySession.has(s)) this.capturedAtBySession.delete(s);
+      }
+      // OF-176: a seat whose window shows no output since its pane text was last captured keeps that capture's
+      // observation, re-observed now (its text has not changed: tmux bumps #{window_activity} on any pane output), so
+      // an idle fleet costs no capture at all. The window listing is the poll loops' shared snapshot. The stamp has
+      // one-second resolution, so output in the capture's own second still captures again.
+      const snapshot = typeof this.tmuxAdapter.readSessionWindowSnapshot === "function"
+        ? await this.tmuxAdapter.readSessionWindowSnapshot(STRUCTURAL_SNAPSHOT_MAX_AGE_MS).catch(() => null)
+        : null;
+      const reobservedAt = this.now().toISOString();
+      const due = rows.filter((r) => {
+        // A session the snapshot does not name does not exist on the server: no signal, and no capture that can only
+        // fail (its chunk's chain with it, then a retry without it).
+        if (snapshotLacks(snapshot, r.session_name)) {
+          this.latestBySession.delete(r.session_name);
+          return false;
+        }
+        const previous = this.latestBySession.get(r.session_name);
+        const capturedAt = this.capturedAtBySession.get(r.session_name);
+        const activity = snapshot?.activity.get(r.session_name);
+        if (!previous || capturedAt === undefined || activity === undefined) return true;
+        if (activity >= Math.floor(capturedAt / 1000)) return true;
+        this.latestBySession.set(r.session_name, { ...previous, observedAt: reobservedAt });
+        return false;
+      });
       // #308: one batched capture for the whole fleet (a few tmux calls) instead of a fork per seat; anything the batch
       // didn't cover (no listing, a failed chunk) is read per seat inside pollSeat, as before.
-      const prefetched = this.tmuxAdapter.capturePanesContent
-        ? await this.tmuxAdapter.capturePanesContent(rows.map((r) => r.session_name), this.captureLines, this.now).catch(() => null)
+      const prefetched = this.tmuxAdapter.capturePanesContent && due.length > 0
+        ? await this.tmuxAdapter.capturePanesContent(due.map((r) => r.session_name), this.captureLines, this.now).catch(() => null)
         : null;
-      await Promise.all(rows.map(async (r) => {
+      await Promise.all(due.map(async (r) => {
         try { await this.pollSeat(r.session_name, prefetched, runtimeBySession.get(r.session_name) ?? null); } catch { /* isolate: one seat's failure never crashes the sweep */ }
       }));
     } finally {
