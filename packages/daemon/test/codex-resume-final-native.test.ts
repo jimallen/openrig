@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
-import { reapWhenOwnerDies, stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
+import { ownedTmuxServer, reapWhenOwnerDies, stopOwnedTmuxServer, type ProcessIdentity } from "./helpers/orphan-reaper.js";
 
 // Each row drives a real tmux pane and polls it for output that arrives on its own; the polls resolve the
 // moment the text is there. The ceilings only bound a genuine hang (10 s / 30 s were overrun on a heavily
@@ -40,10 +40,10 @@ async function finalObservation(output: string) {
   const tmux = async (args: string[]) => (await runFile("tmux", ["-S", socket, ...args], { env })).stdout;
   // The server outlives the runner: reap it if this worker dies or the test times out before the finally below.
   const reaper = reapWhenOwnerDies({ tmuxSockets: [socket] });
-  let serverPid: number | undefined; // recorded as soon as the server exists: a starved server cannot be looked up later
+  let server: ProcessIdentity | undefined; // recorded as soon as the server exists: a starved server cannot be looked up later
   try {
     await tmux(["-f", "/dev/null", "new-session", "-d", "-s", "fixture", "-x", "160", "-y", "40", "/bin/bash --noprofile --norc -i"]);
-    serverPid = await tmuxServerPid(socket, env) ?? undefined;
+    server = await ownedTmuxServer(socket, env) ?? undefined;
     const adapter = new TmuxAdapter(async cmd => {
       expect(cmd).toMatch(/^tmux /);
       return (await run(`tmux -S ${shellQuote(socket)} ${cmd.slice(5)}`, { env })).stdout;
@@ -75,7 +75,7 @@ async function finalObservation(output: string) {
     return result;
   } finally {
     // Only a verified stop lets the watchdog go and the home be deleted; an unverified one throws and keeps both.
-    await stopOwnedTmuxServer(socket, env, { pid: serverPid });
+    await stopOwnedTmuxServer(socket, env, { server });
     reaper.disarm();
     fs.rmSync(home, { recursive: true, force: true });
   }

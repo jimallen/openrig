@@ -12,11 +12,14 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareHermeticEnv } from "./helpers/hermetic-env.js";
+import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import {
-  hasProcFs, identityOf, processAlive, reapWhenOwnerDies, sameProcess, stopOwnedTmuxServer, terminateIdentified, tmuxServerPid, waitGone,
+  hasProcFs, identityOf, ownedDefaultSocket, ownedTmuxServer, processAlive, reapWhenOwnerDies, sameProcess, stopOwnedTmuxServer,
+  stopOwnedTmuxServerSync, terminateIdentified, tmuxServerPid, waitGone, type ProcessIdentity, type TmuxStopOptions,
 } from "./helpers/orphan-reaper.js";
 import { spawnScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { runScenarioFile } from "./helpers/scenario-pipeline.js";
+import { prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 
 let hasTmux = false;
 try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); hasTmux = true; } catch { /* optional dependency */ }
@@ -25,6 +28,7 @@ const cleanups: Array<() => void> = [];
 afterEach(() => { while (cleanups.length) { try { cleanups.pop()!(); } catch { /* best effort */ } } });
 
 let counter = 0;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function longSleeper(extraEnv: Record<string, string> = {}): number {
   const child = spawn("/bin/sh", ["-c", "sleep 600"], { detached: true, stdio: "ignore", env: { ...process.env, ...extraEnv } });
   child.unref();
@@ -45,8 +49,22 @@ function tmuxFixture() {
   cleanups.push(() => { try { execFileSync("tmux", ["-S", socket, "kill-server"], { env, stdio: "ignore", timeout: 5000 }); } catch { /* gone */ } });
   execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "a", "sleep 600"], { env });
   const serverPid = Number(execFileSync("tmux", ["-S", socket, "display-message", "-p", "#{pid}"], { env, encoding: "utf8" }).trim());
-  cleanups.push(() => { try { process.kill(serverPid, "SIGKILL"); } catch { /* gone */ } });
-  return { dir, socket, env, serverPid };
+  const server = identity(serverPid);
+  cleanups.push(() => { if (sameProcess(server)) { try { process.kill(serverPid, "SIGKILL"); } catch { /* gone */ } } });
+  return { dir, socket, env, serverPid, server };
+}
+/** A `tmux -D` server started through the scaffold's wrapper, detached, as the daemon's startServer does at boot. */
+async function startScaffoldTmuxServer(scaffold: HermeticScaffold): Promise<ProcessIdentity> {
+  spawn("/bin/sh", ["-c", "tmux -D </dev/null >/dev/null 2>&1 &"], { env: scaffold.env, stdio: "ignore" });
+  for (let i = 0; i < 400; i++) {
+    const server = fs.existsSync(scaffold.tmuxSocketPath) ? await ownedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv) : null;
+    if (server !== null) {
+      cleanups.push(() => { if (sameProcess(server)) { try { process.kill(server.pid, "SIGKILL"); } catch { /* gone */ } } });
+      return server;
+    }
+    await sleep(25);
+  }
+  throw new Error("the scaffold's tmux -D server never answered");
 }
 /** Pids of watchdogs mentioning `needle` (their argument list carries it); null when pgrep finds none. */
 function watchdogsFor(needle: string): number[] {
@@ -72,6 +90,57 @@ describe("recorded process identity", () => {
     expect(await waitGone(real, 10_000), "the recorded process was stopped (and reaped by its parent)").toBe(true);
     expect(processAlive(reused), "a pid whose start time no longer matches was not signalled").toBe(true);
   }, 30_000);
+});
+
+describe("owned tmux sockets", () => {
+  // A stand-in `tmux` that records every call and says there is no server: if a guard below were missing, nothing would
+  // reach a real server (and the record shows the call).
+  function fakeTmuxEnv(): { env: NodeJS.ProcessEnv; log: string } {
+    const dir = tempDir(), log = path.join(dir, "calls.log");
+    fs.writeFileSync(path.join(dir, "tmux"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\necho "no server running on $2" >&2\nexit 1\n`, { mode: 0o755 });
+    return { env: { ...process.env, PATH: dir }, log };
+  }
+  const calls = (log: string) => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "");
+
+  it("refuse a -L name, a relative path and tmux's shared per-user directory before any tmux command", async () => {
+    const { env, log } = fakeTmuxEnv();
+    const shared = path.join(fs.realpathSync("/tmp"), `tmux-${process.getuid?.() ?? 0}`, "default");
+    for (const socket of ["openrig-of172-name", "relative/tmux.sock"]) {
+      await expect(stopOwnedTmuxServer(socket, env), socket).rejects.toThrow(/not an absolute -S path/);
+      expect(() => stopOwnedTmuxServerSync(socket, env), socket).toThrow(/not an absolute -S path/);
+    }
+    await expect(stopOwnedTmuxServer(shared, env)).rejects.toThrow(/shared per-user socket directory/);
+    expect(() => stopOwnedTmuxServerSync(shared, env)).toThrow(/shared per-user socket directory/);
+    await expect(ownedTmuxServer(shared, env)).rejects.toThrow(/shared per-user socket directory/);
+    expect(calls(log), "no tmux command was sent").toBe("");
+    const owner = longSleeper();
+    let armed: { disarm: () => void } | undefined;
+    try { armed = reapWhenOwnerDies({ ownerPid: owner, tmuxSockets: ["openrig-of172-name"] }); } catch (error) {
+      expect((error as Error).message).toMatch(/not an absolute -S path/);
+    }
+    armed?.disarm();
+    expect(armed, "the watchdog refuses a -L name too").toBeUndefined();
+  });
+
+  it("positive control: an owned socket in a test directory is accepted and asked about", async () => {
+    const { env, log } = fakeTmuxEnv();
+    const socket = path.join(tempDir(), "tmux.sock");
+    await stopOwnedTmuxServer(socket, env);
+    expect(calls(log)).toContain(`-S ${socket} display-message -p #{pid}`);
+  });
+
+  it.skipIf(!hasTmux)("ownedDefaultSocket follows tmux's own rule for a server started with TMUX_TMPDIR, and that server stops", async () => {
+    const dir = tempDir();
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, TMUX_TMPDIR: dir };
+    delete env.TMUX;
+    execFileSync("tmux", ["-f", "/dev/null", "new-session", "-d", "-s", "a", "sleep 600"], { env });
+    const reported = execFileSync("tmux", ["display-message", "-p", "#{socket_path}"], { env, encoding: "utf8" }).trim();
+    const server = identity(Number(execFileSync("tmux", ["display-message", "-p", "#{pid}"], { env, encoding: "utf8" }).trim()));
+    cleanups.push(() => { if (sameProcess(server)) { try { process.kill(server.pid, "SIGKILL"); } catch { /* gone */ } } });
+    expect(ownedDefaultSocket(dir)).toBe(reported);
+    await stopOwnedTmuxServer(ownedDefaultSocket(dir), env);
+    expect(sameProcess(server)).toBe(false);
+  }, 60_000);
 });
 
 describe("reapWhenOwnerDies", () => {
@@ -106,6 +175,18 @@ describe("reapWhenOwnerDies", () => {
     expect(await waitGone(serverPid, 30_000), "tmux server stopped after the owner died").toBe(true);
   }, 60_000);
 
+  it.skipIf(!hasTmux)("a starved tmux server does not stall the watchdog: the targets after it are still stopped and no tmux client is left", async () => {
+    const { socket, serverPid } = tmuxFixture(), owner = longSleeper(), victim = longSleeper();
+    process.kill(serverPid, "SIGSTOP");
+    const reaper = reapWhenOwnerDies({ ownerPid: owner, tmuxSockets: [socket], identities: [identity(victim)] });
+    cleanups.push(() => reaper.disarm());
+    process.kill(owner, "SIGKILL");
+    expect(await waitGone(victim, 30_000), "the target listed after the starved server was stopped").toBe(true);
+    const leftover = () => watchdogsFor(socket).filter((pid) => pid !== serverPid);
+    for (let i = 0; i < 100 && leftover().length > 0; i++) await sleep(100);
+    expect(leftover(), "neither the watchdog nor a tmux client waiting on the starved server is left").toEqual([]);
+  }, 60_000);
+
   it.skipIf(!hasProcFs())("Linux: stops processes carrying the listed environment entry, and only those", async () => {
     const entry = `A6_REAPER_FIXTURE=${process.pid}-${Date.now()}-${++counter}`;
     const [name, value] = entry.split("=") as [string, string];
@@ -118,40 +199,125 @@ describe("reapWhenOwnerDies", () => {
   }, 60_000);
 });
 
+const stopVariants: Array<[string, (socket: string, env: NodeJS.ProcessEnv, options?: TmuxStopOptions) => Promise<void>]> = [
+  ["async", stopOwnedTmuxServer],
+  ["sync", async (socket, env, options) => stopOwnedTmuxServerSync(socket, env, options)],
+];
+
 describe.skipIf(!hasTmux)("stopOwnedTmuxServer", () => {
-  it("leaves no server and no session shell behind, and treats a positively absent server as nothing to stop", async () => {
-    const { socket, env, serverPid } = tmuxFixture();
-    expect(processAlive(serverPid), "positive control").toBe(true);
-    await stopOwnedTmuxServer(socket, env, { pid: serverPid });
-    expect(processAlive(serverPid)).toBe(false);
-    expect(await tmuxServerPid(socket, env), "tmux itself says there is no server").toBeNull();
-    await stopOwnedTmuxServer(socket, env); // idempotent
+  for (const [variant, stop] of stopVariants) {
+    describe(variant, () => {
+      it("leaves no server and no session shell behind, and treats a positively absent server as nothing to stop", async () => {
+        const { socket, env, serverPid, server } = tmuxFixture();
+        expect(processAlive(serverPid), "positive control").toBe(true);
+        await stop(socket, env, { server });
+        expect(processAlive(serverPid)).toBe(false);
+        expect(await tmuxServerPid(socket, env), "tmux itself says there is no server").toBeNull();
+        await stop(socket, env); // idempotent
+      }, 60_000);
+
+      it("a starved (SIGSTOPped) server is still stopped, by its recorded identity, when kill-server cannot answer", async () => {
+        const { socket, env, serverPid, server } = tmuxFixture();
+        process.kill(serverPid, "SIGSTOP");
+        await stop(socket, env, { server, commandTimeoutMs: 500, graceMs: 500 });
+        expect(processAlive(serverPid)).toBe(false);
+      }, 60_000);
+
+      it("a pid lookup that fails for any reason other than \"no server\" throws instead of reporting it stopped", async () => {
+        const { socket, env, serverPid } = tmuxFixture();
+        // tmux cannot even be started (empty PATH): a failure that is neither "no server running" nor a clean answer. A 1 ms
+        // timeout would test the same branch, but whether it fires before a fast tmux answers depends on the host's load.
+        await expect(stop(socket, { ...env, PATH: "/nonexistent-a6" }, { commandTimeoutMs: 5_000, graceMs: 300 })).rejects.toThrow(/cannot be verified stopped/);
+        expect(processAlive(serverPid), "the live server was not declared stopped").toBe(true);
+      }, 60_000);
+
+      it("a pid lookup that cannot get an answer from a starved server throws instead of reporting it stopped", async () => {
+        const { socket, env, serverPid, server } = tmuxFixture();
+        process.kill(serverPid, "SIGSTOP");
+        await expect(stop(socket, env, { commandTimeoutMs: 300, graceMs: 300 })).rejects.toThrow(/cannot be verified stopped/);
+        expect(processAlive(serverPid), "the unverified server was not declared stopped (the caller keeps its watchdog and directory)").toBe(true);
+        process.kill(serverPid, "SIGCONT");
+        await stop(socket, env, { server }); // once it answers again, the verified stop works
+        expect(processAlive(serverPid)).toBe(false);
+      }, 60_000);
+
+      it("never signals a recorded server whose pid now belongs to another process (a reused pid)", async () => {
+        const socket = path.join(tempDir(), "tmux"); // no server was ever started here
+        const env: NodeJS.ProcessEnv = { ...process.env };
+        delete env.TMUX;
+        const bystander = longSleeper();
+        const reused = { ...identity(bystander), started: "Thu Jan  1 00:00:00 1970" };
+        await stop(socket, env, { server: reused, commandTimeoutMs: 5_000, graceMs: 300 });
+        expect(processAlive(bystander), "the pid is right, the process is not the recorded server").toBe(true);
+      }, 60_000);
+
+      it("is done only when tmux says no server answers: a server started on the socket after the recorded one is stopped too", async () => {
+        const { socket, env, serverPid, server } = tmuxFixture();
+        execFileSync("tmux", ["-S", socket, "kill-server"], { env });
+        expect(await waitGone(serverPid, 10_000)).toBe(true);
+        execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "b", "sleep 600"], { env });
+        const second = identity(Number(execFileSync("tmux", ["-S", socket, "display-message", "-p", "#{pid}"], { env, encoding: "utf8" }).trim()));
+        cleanups.push(() => { if (sameProcess(second)) { try { process.kill(second.pid, "SIGKILL"); } catch { /* gone */ } } });
+        await stop(socket, env, { server });
+        expect(sameProcess(second), "the server that answers on the socket now is stopped too").toBe(false);
+      }, 60_000);
+    });
+  }
+});
+
+describe.skipIf(!hasTmux)("the hermetic scaffold reaps its own tmux server", () => {
+  it("cleanup stops an EMPTY tmux -D server (what the daemon starts at boot), verified, then removes the root", async () => {
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const server = await startScaffoldTmuxServer(scaffold);
+    expect(sameProcess(server), "positive control: the scaffold's server runs").toBe(true);
+    scaffold.cleanup();
+    expect(sameProcess(server), "the server is gone").toBe(false);
+    expect(fs.existsSync(scaffold.root), "the root is removed").toBe(false);
   }, 60_000);
 
-  it("a starved (SIGSTOPped) server is still stopped, by pid, when kill-server cannot answer", async () => {
-    const { socket, env, serverPid } = tmuxFixture();
-    process.kill(serverPid, "SIGSTOP");
-    await stopOwnedTmuxServer(socket, env, { pid: serverPid, commandTimeoutMs: 500, graceMs: 500 });
-    expect(processAlive(serverPid)).toBe(false);
-  }, 60_000);
+  it("cleanup throws and KEEPS the root when the server cannot be verified stopped (a starved server)", async () => {
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const server = await startScaffoldTmuxServer(scaffold);
+    process.kill(server.pid, "SIGSTOP");
+    cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
+    expect(() => scaffold.cleanup()).toThrow(/cannot be verified stopped/);
+    expect(fs.existsSync(scaffold.root), "the root (and the socket in it) is kept for the live server").toBe(true);
+    process.kill(server.pid, "SIGCONT");
+    scaffold.cleanup();
+    expect(sameProcess(server)).toBe(false);
+    expect(fs.existsSync(scaffold.root)).toBe(false);
+  }, 90_000);
 
-  it("a pid lookup that fails for any reason other than \"no server\" throws instead of reporting it stopped", async () => {
-    const { socket, env, serverPid } = tmuxFixture();
-    // tmux cannot even be started (empty PATH): a failure that is neither "no server running" nor a clean answer. A 1 ms
-    // timeout would test the same branch, but whether it fires before a fast tmux answers depends on the host's load.
-    await expect(stopOwnedTmuxServer(socket, { ...env, PATH: "/nonexistent-a6" }, { commandTimeoutMs: 5_000, graceMs: 300 })).rejects.toThrow(/cannot be verified stopped/);
-    expect(processAlive(serverPid), "the live server was not declared stopped").toBe(true);
-  }, 60_000);
+  it("the trusted scaffold (under the real home) keeps its base too when the server cannot be verified stopped", async () => {
+    const scaffold = prepareTrustedHermeticEnv();
+    const base = path.dirname(scaffold.root);
+    cleanups.push(() => scaffold.cleanup());
+    const server = await startScaffoldTmuxServer(scaffold);
+    process.kill(server.pid, "SIGSTOP");
+    cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
+    expect(() => scaffold.cleanup()).toThrow(/cannot be verified stopped/);
+    expect(fs.existsSync(scaffold.root), "the scaffold inside the base is kept").toBe(true);
+    process.kill(server.pid, "SIGCONT");
+    scaffold.cleanup();
+    expect(sameProcess(server)).toBe(false);
+    expect(fs.existsSync(base), "and both go once the server is verified stopped").toBe(false);
+  }, 90_000);
+});
 
-  it("a pid lookup that cannot get an answer from a starved server throws instead of reporting it stopped", async () => {
-    const { socket, env, serverPid } = tmuxFixture();
-    process.kill(serverPid, "SIGSTOP");
-    await expect(stopOwnedTmuxServer(socket, env, { commandTimeoutMs: 300, graceMs: 300 })).rejects.toThrow(/cannot be verified stopped/);
-    expect(processAlive(serverPid), "the unverified server was not declared stopped (the caller keeps its watchdog and directory)").toBe(true);
-    process.kill(serverPid, "SIGCONT");
-    await stopOwnedTmuxServer(socket, env, { pid: serverPid }); // once it answers again, the verified stop works
-    expect(processAlive(serverPid)).toBe(false);
-  }, 60_000);
+describe("setup that fails half-way", () => {
+  it("a scenario whose daemon fails to start leaves no scaffold behind", async () => {
+    const scenario = path.join(tempDir(), "halfway.yaml");
+    fs.writeFileSync(scenario, "scenario: halfway\ntopology: ./unused.yaml\nsteps:\n  - seed_regression: {class: baton-drop}\n");
+    let root = "";
+    await expect(runScenarioFile(scenario, {
+      rigBin: "/not-executed",
+      daemon: async (scaffold) => { root = scaffold.root; throw new Error("the fixture daemon failed to start"); },
+    })).rejects.toThrow(/fixture daemon failed to start/);
+    expect(root, "positive control: the scaffold was made").not.toBe("");
+    expect(fs.existsSync(root), "and removed again").toBe(false);
+  });
 });
 
 describe("scenario daemon stop", () => {
@@ -159,7 +325,14 @@ describe("scenario daemon stop", () => {
   // daemon does) and optionally records it in the scratch home's daemon.json the way the real CLI does, listens on the
   // `--port` it was given, leaves a zombie to record, and/or exits 1; `daemon stop` succeeds without stopping anything
   // (the swallowed-failure case).
-  interface Mode { ignoreTerm?: boolean; failStart?: boolean; writeState?: boolean; statePid?: number; listen?: boolean; zombie?: boolean; respawnOnStop?: boolean }
+  // foreignListener: a process WITHOUT the scaffold's home also binds the `--port` during the start (another process taking
+  // the port the helper picked). tmuxServer: the start also brings up the scaffold's tmux server the way the daemon does
+  // (`tmux -D` through the scaffold's wrapper), without the scaffold's home in its environment, as on macOS, where no
+  // environment can be read.
+  interface Mode {
+    ignoreTerm?: boolean; failStart?: boolean; writeState?: boolean; statePid?: number; listen?: boolean; zombie?: boolean; respawnOnStop?: boolean;
+    foreignListener?: boolean; tmuxServer?: boolean;
+  }
   function fakeRig(dir: string, mode: Mode): { bin: string; pidFile: string } {
     const bin = path.join(dir, "fake-rig.cjs"), pidFile = path.join(dir, "victim.pid");
     const script = mode.listen ? "require('net').createServer().listen(Number(process.env.A6_PORT), '127.0.0.1'); setInterval(() => {}, 1000)"
@@ -174,12 +347,19 @@ if (a === "daemon" && b === "start") {
     : `spawn("/bin/sh", ["-c", ${JSON.stringify(script)}], { detached: true, stdio: "ignore" })`};
   child.unref();
   fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+  const withoutHome = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "OPENRIG_HOME"));
+  ${mode.foreignListener ? `const foreign = spawn(process.execPath, ["-e", "require('net').createServer().listen(Number(process.env.A6_PORT), '127.0.0.1'); setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", env: { ...withoutHome, A6_PORT: port } });
+  foreign.unref();
+  fs.writeFileSync(${JSON.stringify(pidFile + ".foreign")}, String(foreign.pid));` : ""}
+  ${mode.tmuxServer ? `spawn("/bin/sh", ["-c", "tmux -D </dev/null >/dev/null 2>&1 &"], { stdio: "ignore", env: withoutHome });` : ""}
   const finish = () => {
     const pid = ${mode.zombie ? `Number(fs.readFileSync(${JSON.stringify(pidFile + ".z")}, "utf8"))` : mode.statePid ? String(mode.statePid) : "child.pid"};
     ${mode.writeState === false ? "" : `fs.writeFileSync(path.join(process.env.OPENRIG_HOME, "daemon.json"), JSON.stringify({ pid, port: 1 }));`}
     ${mode.failStart ? "process.exit(1);" : ""}
   };
-  setTimeout(finish, ${mode.zombie ? 700 : mode.listen ? 600 : 0});
+  ${mode.tmuxServer ? `const sock = path.join(path.dirname(process.env.OPENRIG_HOME), "tmux.sock");
+  const up = setInterval(() => { if (fs.existsSync(sock)) { clearInterval(up); setTimeout(finish, 100); } }, 20);`
+    : `setTimeout(finish, ${mode.zombie ? 700 : mode.listen || mode.foreignListener ? 600 : 0});`}
   fs.writeFileSync(${JSON.stringify(pidFile + ".port")}, port);
 }
 ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
@@ -332,4 +512,101 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     killGroup(Number(fs.readFileSync(path.join(dir, "victim.pid"), "utf8")));
     expect(processAlive(bystander), "the unrelated process named by daemon.json is untouched").toBe(true);
   }, 60_000);
+
+  it("stop() never signals a process that daemon.json names but that started outside the helper's own rig daemon calls (a pid reused mid-test)", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, {});
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const daemon = await spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 500 });
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    killGroup(pid);
+    process.kill(-pid, "SIGKILL"); // the daemon dies mid-test
+    expect(await waitGone(pid, 10_000)).toBe(true);
+    await sleep(1200); // a later second than the start call's last
+    const bystander = longSleeper();
+    await sleep(1200); // an earlier second than stop()'s first
+    // Its pid recycled into the stale state file.
+    fs.writeFileSync(path.join(scaffold.openrigHome, "daemon.json"), JSON.stringify({ pid: bystander, port: 1 }));
+    expect(processAlive(bystander), "positive control").toBe(true);
+    await daemon.stop();
+    expect(processAlive(bystander), "a process started outside every rig daemon call is not the daemon").toBe(true);
+  }, 60_000);
+
+  it("refuses to start on a port that already has a listener, starts nothing and never signals that listener", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, {});
+    const listener = spawn(process.execPath, ["-e", "const s = require('net').createServer().listen(0, '127.0.0.1', () => console.log(s.address().port)); setInterval(() => {}, 1000)"],
+      { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    listener.unref();
+    killGroup(listener.pid!);
+    const port = await new Promise<number>((resolve) => listener.stdout!.once("data", (d: Buffer) => resolve(Number(d.toString().trim()))));
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const started = spawnScenarioDaemon(scaffold, { rigBin: bin, port, timeoutMs: 30_000, stopGraceMs: 500 });
+    started.then((d) => cleanups.push(() => { void d.stop(); }), () => {});
+    await expect(started).rejects.toThrow(/already has a listener/);
+    if (fs.existsSync(pidFile)) killGroup(Number(fs.readFileSync(pidFile, "utf8")));
+    expect(fs.existsSync(pidFile), "rig daemon start was never run").toBe(false);
+    expect(processAlive(listener.pid!), "the listener that was there first is untouched").toBe(true);
+    expect(watchdogsFor(scaffold.tmuxSocketPath), "nothing was started, so no watchdog stays").toEqual([]);
+  }, 60_000);
+
+  it.skipIf(!hasProcFs())("Linux: a failed start never signals a process that only listens on the port and lacks the scaffold's home", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, { failStart: true, writeState: false, foreignListener: true });
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    await expect(spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 500 })).rejects.toThrow(/failed to start/);
+    const daemonPid = Number(fs.readFileSync(pidFile, "utf8")), foreign = Number(fs.readFileSync(pidFile + ".foreign", "utf8"));
+    killGroup(daemonPid);
+    killGroup(foreign);
+    expect(processAlive(daemonPid), "the daemon the failed start detached (it carries the home) is stopped").toBe(false);
+    expect(processAlive(foreign), "the foreign listener is untouched").toBe(true);
+  }, 60_000);
+
+  it.skipIf(!hasTmux)("a failed start stops the tmux server the daemon brought up, verified, before it disarms", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, { failStart: true, tmuxServer: true });
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    await expect(spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 500 })).rejects.toThrow(/failed to start/);
+    killGroup(Number(fs.readFileSync(pidFile, "utf8")));
+    expect(fs.existsSync(scaffold.tmuxSocketPath), "positive control: the fixture's tmux server was started").toBe(true);
+    expect(await tmuxServerPid(scaffold.tmuxSocketPath, scaffold.tmuxEnv), "no tmux server answers on the scaffold's socket").toBeNull();
+    expect(watchdogsFor(scaffold.tmuxSocketPath), "everything was stopped, so the watchdog is disarmed").toEqual([]);
+  }, 60_000);
+
+  it.skipIf(!hasTmux)("stop() stops the daemon's tmux server, verified, before it disarms and removes the scaffold", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, { tmuxServer: true });
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const daemon = await spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 500 });
+    killGroup(Number(fs.readFileSync(pidFile, "utf8")));
+    const server = await ownedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv);
+    expect(server, "positive control: the daemon's tmux server runs").not.toBeNull();
+    cleanups.push(() => { if (server !== null && sameProcess(server)) { try { process.kill(server.pid, "SIGKILL"); } catch { /* gone */ } } });
+    await daemon.stop();
+    expect(server !== null && sameProcess(server), "the tmux server is gone").toBe(false);
+    expect(fs.existsSync(scaffold.root)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!hasTmux)("stop() throws and keeps the watchdog and the scaffold when the daemon's tmux server cannot be verified stopped", async () => {
+    const dir = tempDir();
+    const { bin, pidFile } = fakeRig(dir, { tmuxServer: true });
+    const scaffold = prepareHermeticEnv();
+    cleanups.push(() => scaffold.cleanup());
+    const daemon = await spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 500 });
+    killGroup(Number(fs.readFileSync(pidFile, "utf8")));
+    const server = await ownedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv);
+    if (server === null) throw new Error("positive control: the daemon's tmux server runs");
+    process.kill(server.pid, "SIGSTOP");
+    cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
+    await expect(daemon.stop()).rejects.toThrow(/cannot be verified stopped/);
+    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath).filter((pid) => pid !== server.pid);
+    cleanups.push(() => { for (const w of watchdogs) { try { process.kill(-w, "SIGKILL"); } catch { /* gone */ } } });
+    expect(watchdogs.length, "the watchdog stays armed").toBeGreaterThan(0);
+    expect(fs.existsSync(scaffold.root), "the scaffold was not deleted").toBe(true);
+  }, 90_000);
 });

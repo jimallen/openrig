@@ -26,7 +26,8 @@ export function prepareTrustedHermeticEnv(opts: PrepareHermeticEnvOptions = {}):
   // The folders on the spec's chain must not be group- or other-writable whatever the umask.
   for (const dir of [scaffold.root, scaffold.home, scaffold.openrigHome]) chmodSync(dir, 0o755);
   const inner = scaffold.cleanup;
-  scaffold.cleanup = () => { try { inner(); } finally { rmSync(base, { recursive: true, force: true }); } };
+  // The scaffold lives inside `base`: when its cleanup throws (its tmux server could not be verified stopped), both are kept.
+  scaffold.cleanup = () => { inner(); rmSync(base, { recursive: true, force: true }); };
   return scaffold;
 }
 
