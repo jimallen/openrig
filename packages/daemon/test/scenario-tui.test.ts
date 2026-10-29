@@ -174,9 +174,10 @@ describe("D7 — provisioning is wired THROUGH runScenarioFile (opt-in, torn dow
     let spawnedWith: Record<string, string | undefined> | undefined;
     const proc = fakeProc();
     const upEnv: Record<string, string | undefined> = { PATH: process.env.PATH };
-    const fakeDaemon = async () => ({
+    const fakeDaemon = async (scaffold: { cleanup: () => void }) => ({
       readEnv: upEnv, baseUrl: "http://127.0.0.1:1",
-      sigterm: async () => {}, restart: async () => {}, stop: async () => {},
+      // A real daemon's stop() removes its scaffold; the fake must too, or every run leaves one behind.
+      sigterm: async () => {}, restart: async () => {}, stop: async () => scaffold.cleanup(),
     });
     // a rig bin that succeeds for `up` so provisioning is reached
     const fakeRig = join(d, "rig.mjs");
@@ -219,9 +220,10 @@ describe("D7 — provisioning is wired THROUGH runScenarioFile (opt-in, torn dow
     await runScenarioFile(scenarioPath, {
       rigBin: fakeRig,
       baseEnv: { HOME: d, PATH: process.env.PATH, TERM: "xterm" },
-      daemon: (async () => ({
+      daemon: (async (scaffold: { cleanup: () => void }) => ({
         readEnv: { PATH: process.env.PATH }, baseUrl: "http://127.0.0.1:1",
-        sigterm: async () => {}, restart: async () => {}, stop: async () => {},
+        // A real daemon's stop() removes its scaffold; the fake must too, or every run leaves one behind.
+        sigterm: async () => {}, restart: async () => {}, stop: async () => scaffold.cleanup(),
       })) as never,
       spawnTui: () => { spawned = true; return fakeProc(); },
     });
@@ -256,11 +258,12 @@ describe("D7 — the FAILURE matrix crosses runScenarioFile (named outcome + tea
     daemonStops.push(0);
     const idx = daemonStops.length - 1;
     return {
-      spawn: (async (scaffold: { env: Record<string, string | undefined> }) => ({
+      spawn: (async (scaffold: { env: Record<string, string | undefined>; cleanup: () => void }) => ({
         readEnv: { ...scaffold.env, OPENRIG_URL: "http://127.0.0.1:1" },
         baseUrl: "http://127.0.0.1:1",
         sigterm: async () => {}, restart: async () => {},
-        stop: async () => { stops++; daemonStops[idx] = stops; },
+        // A real daemon's stop() removes its scaffold; the fake must too, or every run leaves one behind.
+        stop: async () => { stops++; daemonStops[idx] = stops; scaffold.cleanup(); },
       })) as never,
       stopped: () => daemonStops[idx],
     };

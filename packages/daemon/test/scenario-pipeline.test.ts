@@ -211,10 +211,11 @@ describe("D3 — env.scope_mission survives the WHOLE path into the shipped argv
         "",
       ].join("\n"));
 
-      const fakeDaemon = async () => ({
+      const fakeDaemon = async (scaffold: { cleanup: () => void }) => ({
         // a real ScenarioDaemon's readEnv carries the scaffold env (PATH included)
         readEnv: { PATH: process.env.PATH }, baseUrl: "http://127.0.0.1:1",
-        sigterm: async () => {}, restart: async () => {}, stop: async () => {},
+        // A real daemon's stop() removes its scaffold; the fake must too, or every run leaves one behind.
+        sigterm: async () => {}, restart: async () => {}, stop: async () => scaffold.cleanup(),
       });
       await runScenarioFile(scenarioPath, {
         rigBin: fakeRig,
