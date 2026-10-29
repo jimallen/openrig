@@ -248,7 +248,8 @@ describe.skipIf(!hasTmux)("stopOwnedTmuxServer", () => {
         const bystander = longSleeper();
         const reused = { ...identity(bystander), started: "Thu Jan  1 00:00:00 1970" };
         await stop(socket, env, { server: reused, commandTimeoutMs: 5_000, graceMs: 300 });
-        expect(processAlive(bystander), "the pid is right, the process is not the recorded server").toBe(true);
+        // Waited on, not read at once: a SIGKILLed child stays a zombie (alive to kill(0)) until the event loop reaps it.
+        expect(await waitGone(bystander, 1_000), "the pid is right, the process is not the recorded server").toBe(false);
       }, 60_000);
 
       it("is done only when tmux says no server answers: a server started on the socket after the recorded one is stopped too", async () => {
