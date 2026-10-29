@@ -11,7 +11,7 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import {
   hasProcFs, identityOf, ownedDefaultSocket, ownedTmuxServer, processAlive, reapWhenOwnerDies, sameProcess, stopOwnedTmuxServer,
@@ -66,9 +66,17 @@ async function startScaffoldTmuxServer(scaffold: HermeticScaffold): Promise<Proc
   }
   throw new Error("the scaffold's tmux -D server never answered");
 }
-/** Pids of watchdogs mentioning `needle` (their argument list carries it); null when pgrep finds none. */
-function watchdogsFor(needle: string): number[] {
-  try { return execFileSync("pgrep", ["-f", needle], { encoding: "utf8" }).split("\n").filter(Boolean).map(Number); } catch { return []; }
+/**
+ * Pids of processes whose argument list carries `needle`; with `label`, only the watchdogs armed under that label
+ * (`reaper:<label>`), so the scenario daemon's watchdog is told apart from the one its scaffold arms on the same socket.
+ */
+function watchdogsFor(needle: string, label?: string): number[] {
+  let pids: number[];
+  try { pids = execFileSync("pgrep", ["-f", needle], { encoding: "utf8" }).split("\n").filter(Boolean).map(Number); } catch { return []; }
+  if (label === undefined) return pids;
+  return pids.filter((pid) => {
+    try { return execFileSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" }).includes(`reaper:${label} `); } catch { return false; }
+  });
 }
 
 describe("recorded process identity", () => {
@@ -272,9 +280,11 @@ describe.skipIf(!hasTmux)("the hermetic scaffold reaps its own tmux server", () 
     cleanups.push(() => scaffold.cleanup());
     const server = await startScaffoldTmuxServer(scaffold);
     expect(sameProcess(server), "positive control: the scaffold's server runs").toBe(true);
+    expect(watchdogsFor(scaffold.tmuxSocketPath, "hermetic-scaffold").length, "positive control: the scaffold's watchdog is armed").toBe(1);
     scaffold.cleanup();
     expect(sameProcess(server), "the server is gone").toBe(false);
     expect(fs.existsSync(scaffold.root), "the root is removed").toBe(false);
+    expect(watchdogsFor(scaffold.tmuxSocketPath, "hermetic-scaffold"), "and its watchdog is disarmed").toEqual([]);
   }, 60_000);
 
   it("cleanup throws and KEEPS the root when the server cannot be verified stopped (a starved server)", async () => {
@@ -305,6 +315,63 @@ describe.skipIf(!hasTmux)("the hermetic scaffold reaps its own tmux server", () 
     expect(sameProcess(server)).toBe(false);
     expect(fs.existsSync(base), "and both go once the server is verified stopped").toBe(false);
   }, 90_000);
+});
+
+describe.skipIf(!hasTmux)("a bare hermetic scaffold arms its own watchdog (OF-175)", () => {
+  it("a killed worker leaves no scaffold tmux server, nor (Linux) a process carrying the scaffold's home", async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./fixtures/hermetic-scaffold-orphan-child.ts", import.meta.url))],
+      { stdio: ["ignore", "pipe", "inherit"] });
+    cleanups.push(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
+    const [root, serverPid, carrierPid] = await new Promise<[string, number, number]>((resolve, reject) => {
+      let out = "";
+      child.stdout!.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+        const m = /READY (\S+) (\d+) (\d+)/.exec(out);
+        if (m) resolve([m[1]!, Number(m[2]), Number(m[3])]);
+      });
+      child.once("exit", (code) => reject(new Error(`fixture exited ${code} before READY`)));
+    });
+    cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const server = identity(serverPid);
+    cleanups.push(() => { if (sameProcess(server)) { try { process.kill(server.pid, "SIGKILL"); } catch { /* gone */ } } });
+    const carrier = carrierPid > 0 ? identity(carrierPid) : null;
+    cleanups.push(() => { if (carrier !== null && sameProcess(carrier)) { try { process.kill(carrier.pid, "SIGKILL"); } catch { /* gone */ } } });
+    expect(sameProcess(server), "positive control: the scaffold's tmux server runs while its worker lives").toBe(true);
+    child.kill("SIGKILL");
+    expect(await waitGone(server.pid, 30_000), "the scaffold's tmux server is stopped after its worker was killed").toBe(true);
+    if (carrier !== null) expect(await waitGone(carrier.pid, 30_000), "a process carrying the scaffold's home is stopped too").toBe(true);
+  }, 90_000);
+});
+
+describe("scenario pipeline teardown surfaces a daemon that cannot be stopped (OF-175)", () => {
+  const stuckDaemon = (scaffold: HermeticScaffold) => ({
+    port: 9, baseUrl: "http://127.0.0.1:9", readEnv: scaffold.env,
+    sigterm: async () => {}, restart: async () => {},
+    stop: async () => { scaffold.cleanup(); throw new Error("the fixture daemon is still alive after stop"); },
+  });
+
+  it("a scenario that passed fails when its daemon cannot be stopped", async () => {
+    const scenario = path.join(tempDir(), "passes.yaml");
+    fs.writeFileSync(scenario, "scenario: passes\ntopology: ./unused.yaml\nsteps:\n  - seed_regression: {class: baton-drop}\n");
+    const seedRegression = async () => ({ code: 0, stdout: "armed", stderr: "" });
+    await expect(runScenarioFile(scenario, { rigBin: "/not-executed", deps: { seedRegression }, daemon: async (scaffold) => stuckDaemon(scaffold) }))
+      .rejects.toThrow(/scenario daemon could not be stopped.*still alive after stop/);
+  });
+
+  it("a scenario that failed keeps ITS error, and the stop failure is printed beside it", async () => {
+    const scenario = path.join(tempDir(), "fails.yaml");
+    fs.writeFileSync(scenario, "scenario: fails\ntopology: ./unused.yaml\nsteps:\n  - seed_regression: {class: baton-drop}\n");
+    const seedRegression = async (): Promise<never> => { throw new Error("the fixture step failed"); };
+    const printed: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { printed.push(args.join(" ")); });
+    try {
+      await expect(runScenarioFile(scenario, { rigBin: "/not-executed", deps: { seedRegression }, daemon: async (scaffold) => stuckDaemon(scaffold) }))
+        .rejects.toThrow(/fixture step failed/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(printed.join("\n")).toMatch(/scenario daemon could not be stopped.*still alive after stop/);
+  });
 });
 
 describe("setup that fails half-way", () => {
@@ -418,7 +485,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
       await daemon.stop();
       expect(processAlive(pid)).toBe(false);
       expect(fs.existsSync(scaffold.root), "the scaffold is still removed").toBe(false);
-      expect(watchdogsFor(scaffold.tmuxSocketPath), "the watchdog is disarmed after a verified stop").toEqual([]);
+      expect(watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon"), "the watchdog is disarmed after a verified stop").toEqual([]);
     }, 60_000);
   }
 
@@ -460,7 +527,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     const daemon = await spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 300 });
     killGroup(Number(fs.readFileSync(pidFile, "utf8")));
     await expect(daemon.stop()).rejects.toThrow(/still alive after stop/);
-    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath);
+    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon");
     cleanups.push(() => { for (const w of watchdogs) { try { process.kill(-w, "SIGKILL"); } catch { /* gone */ } } });
     expect(fs.existsSync(scaffold.root), "the scaffold was not deleted").toBe(true);
     expect(watchdogs.length, "the watchdog stays armed").toBeGreaterThan(0);
@@ -483,7 +550,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
       const pid = Number(fs.readFileSync(pidFile, "utf8"));
       killGroup(pid);
       expect(processAlive(pid), "the daemon detached by the failed start is stopped").toBe(false);
-      expect(watchdogsFor(scaffold.tmuxSocketPath), "everything was stopped, so the watchdog is disarmed").toEqual([]);
+      expect(watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon"), "everything was stopped, so the watchdog is disarmed").toEqual([]);
     }, 60_000);
   }
 
@@ -495,7 +562,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     cleanups.push(() => scaffold.cleanup());
     await expect(spawnScenarioDaemon(scaffold, { rigBin: bin, timeoutMs: 30_000, stopGraceMs: 300 })).rejects.toThrow(/failed to start/);
     killGroup(Number(fs.readFileSync(pidFile, "utf8")));
-    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath);
+    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon");
     cleanups.push(() => { for (const w of watchdogs) { try { process.kill(-w, "SIGKILL"); } catch { /* gone */ } } });
     expect(watchdogs.length, "a survivor keeps a watchdog armed").toBeGreaterThan(0);
   }, 60_000);
@@ -550,7 +617,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     if (fs.existsSync(pidFile)) killGroup(Number(fs.readFileSync(pidFile, "utf8")));
     expect(fs.existsSync(pidFile), "rig daemon start was never run").toBe(false);
     expect(processAlive(listener.pid!), "the listener that was there first is untouched").toBe(true);
-    expect(watchdogsFor(scaffold.tmuxSocketPath), "nothing was started, so no watchdog stays").toEqual([]);
+    expect(watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon"), "nothing was started, so no watchdog stays").toEqual([]);
   }, 60_000);
 
   it.skipIf(!hasProcFs())("Linux: a failed start never signals a process that only listens on the port and lacks the scaffold's home", async () => {
@@ -575,7 +642,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     killGroup(Number(fs.readFileSync(pidFile, "utf8")));
     expect(fs.existsSync(scaffold.tmuxSocketPath), "positive control: the fixture's tmux server was started").toBe(true);
     expect(await tmuxServerPid(scaffold.tmuxSocketPath, scaffold.tmuxEnv), "no tmux server answers on the scaffold's socket").toBeNull();
-    expect(watchdogsFor(scaffold.tmuxSocketPath), "everything was stopped, so the watchdog is disarmed").toEqual([]);
+    expect(watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon"), "everything was stopped, so the watchdog is disarmed").toEqual([]);
   }, 60_000);
 
   it.skipIf(!hasTmux)("stop() stops the daemon's tmux server, verified, before it disarms and removes the scaffold", async () => {
@@ -607,7 +674,7 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     process.kill(server.pid, "SIGSTOP");
     cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
     await expect(daemon.stop()).rejects.toThrow(/cannot be verified stopped/);
-    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath).filter((pid) => pid !== server.pid);
+    const watchdogs = watchdogsFor(scaffold.tmuxSocketPath, "scenario-daemon").filter((pid) => pid !== server.pid);
     cleanups.push(() => { for (const w of watchdogs) { try { process.kill(-w, "SIGKILL"); } catch { /* gone */ } } });
     expect(watchdogs.length, "the watchdog stays armed").toBeGreaterThan(0);
     expect(fs.existsSync(scaffold.root), "the scaffold was not deleted").toBe(true);

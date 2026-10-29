@@ -342,6 +342,7 @@ export async function runScenarioFile(
     throw error;
   }
   let tui: ProvisionedTui | undefined;
+  let runFailed = true;
   try {
     // L6 STEP-0 — container-mode translates the HOST topology path to the in-container staged path
     // (host-mode has no stageTopology → the host path passes through unchanged). A stage/fence
@@ -424,11 +425,20 @@ export async function runScenarioFile(
       return res;
     };
 
-    return await runValidatedScenario(loaded.loaded.scenario, { ...baseDeps, runAction });
+    const result = await runValidatedScenario(loaded.loaded.scenario, { ...baseDeps, runAction });
+    runFailed = false;
+    return result;
   } finally {
     // Teardown on EVERY path — success, assertion failure, or provisioning error.
     await tui?.stop().catch(() => {});
-    await daemon.stop().catch(() => {});
+    // A daemon that cannot be verified stopped keeps its scaffold and watchdog (stop()'s contract) and is SURFACED, never
+    // swallowed: it fails a run that otherwise passed; when the run failed too, that failure is the one thrown (the
+    // `throw` here replaces it) and this one is printed beside it.
+    await daemon.stop().catch((stopError: unknown) => {
+      const message = `the scenario daemon could not be stopped (its watchdog stays armed): ${(stopError as Error).message}`;
+      if (runFailed) console.error(`scenario teardown: ${message}`);
+      else throw new Error(message);
+    });
   }
 }
 

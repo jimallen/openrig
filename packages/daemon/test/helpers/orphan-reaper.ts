@@ -33,6 +33,8 @@ export interface OrphanReaperTargets {
   environ?: string[];
   /** The process whose death triggers the reaping; default: this process. */
   ownerPid?: number;
+  /** Names the watchdog in its argument list (`reaper:<label>`), so a test can tell one helper's watchdog from another's. */
+  label?: string;
 }
 
 export const hasProcFs = (): boolean => existsSync("/proc/self/environ");
@@ -112,7 +114,7 @@ export function reapWhenOwnerDies(targets: OrphanReaperTargets): { disarm: () =>
     ...(targets.environ ?? []).flatMap((entry) => ["env", entry]),
     ...(targets.identities ?? []).flatMap((id) => ["pid", String(id.pid), id.started, id.command]),
   ];
-  const child = spawn("/bin/sh", ["-c", WATCHDOG, "reaper", String(targets.ownerPid ?? process.pid), ...args], {
+  const child = spawn("/bin/sh", ["-c", WATCHDOG, `reaper:${targets.label ?? "test"}`, String(targets.ownerPid ?? process.pid), ...args], {
     detached: true,
     stdio: "ignore",
   });
