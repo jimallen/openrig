@@ -145,6 +145,8 @@ export interface SessionWindowSnapshot {
   sessions: Set<string>;
   /** Each session's current-window `#{window_activity}` (epoch seconds), when well formed. */
   activity: Map<string, number>;
+  /** Each session's current window and that window's active pane (`@<window>%<pane>`): what `=<session>:` resolves to. */
+  targets: Map<string, string>;
 }
 
 /**
@@ -1678,21 +1680,26 @@ export class TmuxAdapter {
 
   private async readWindowListing(at: number): Promise<SessionWindowSnapshot | null> {
     try {
-      const format = ["#{window_active}", "#{window_activity}", "#{session_name}"].join(TMUX_FIELD_SEPARATOR);
+      const format = ["#{window_active}", "#{window_activity}", "#{window_id}#{pane_id}", "#{session_name}"].join(TMUX_FIELD_SEPARATOR);
       const output = await this.run(["tmux", "list-windows", "-a", "-F", format], `tmux list-windows -a -F '${format}'`);
       const sessions = new Set<string>();
       const activity = new Map<string, number>();
+      const targets = new Map<string, string>();
       for (const line of output.split("\n")) {
         const first = line.indexOf(TMUX_FIELD_SEPARATOR), second = line.indexOf(TMUX_FIELD_SEPARATOR, first + 1);
-        if (first < 0 || second < 0) continue;
-        const active = line.slice(0, first), stamp = line.slice(first + 1, second).trim(), session = line.slice(second + 1);
+        const third = second < 0 ? -1 : line.indexOf(TMUX_FIELD_SEPARATOR, second + 1);
+        if (first < 0 || second < 0 || third < 0) continue;
+        const active = line.slice(0, first), stamp = line.slice(first + 1, second).trim();
+        const target = line.slice(second + 1, third), session = line.slice(third + 1);
         if (!session) continue;
         sessions.add(session);
-        if (active !== "1" || !/^\d+$/.test(stamp)) continue;
+        if (active !== "1") continue;
+        if (target) targets.set(session, target);
+        if (!/^\d+$/.test(stamp)) continue;
         const n = Number(stamp);
         if (Number.isFinite(n) && n > 0) activity.set(session, n);
       }
-      return { at, sessions, activity };
+      return { at, sessions, activity, targets };
     } catch {
       return null;
     }

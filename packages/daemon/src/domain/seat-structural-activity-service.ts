@@ -47,8 +47,9 @@ export const STRUCTURAL_SNAPSHOT_MAX_AGE_MS = 500;
  */
 export class SeatStructuralActivityService {
   private readonly latestBySession = new Map<string, StructuralObservation>();
-  /** When each cached observation's pane text was captured (epoch ms), for the idle skip (OF-176). */
-  private readonly capturedAtBySession = new Map<string, number>();
+  /** For the idle skip (OF-176), per cached observation: when its capture was ISSUED (epoch ms; the pane was read no
+   *  earlier, so output after this instant cannot be older than it), and which window/pane `=<session>:` resolved to. */
+  private readonly capturedAtBySession = new Map<string, { issuedAt: number; target: string | undefined }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private sweeping = false; // single-flight guard: one whole-fleet sweep at a time (MUST-FIX 2)
   private bannerEmitter:
@@ -90,9 +91,14 @@ export class SeatStructuralActivityService {
    *  null or failed capture INVALIDATES the prior row (never leaves a stale positive verdict) and
    *  returns null (MUST-FIX 1). `prefetched` (#308) is the sweep's batched capture: a session it holds (null = gone or
    *  empty) is used as is; one it lacks is captured here, per seat. */
-  async pollSeat(sessionName: string, prefetched?: Map<string, PaneCapture> | null, runtime?: string | null): Promise<StructuralObservation | null> {
+  async pollSeat(
+    sessionName: string, prefetched?: Map<string, PaneCapture> | null, runtime?: string | null,
+    issued?: { at: Date; target: string | undefined },
+  ): Promise<StructuralObservation | null> {
     let content: string | null;
     let observedAt: Date | null = null;
+    // The instant before any read of this seat's pane is issued (the sweep's, or this per-seat read's).
+    const issuedAt = issued?.at ?? this.now();
     if (prefetched?.has(sessionName)) {
       const capture = prefetched.get(sessionName)!;
       content = capture.text;
@@ -111,7 +117,7 @@ export class SeatStructuralActivityService {
     }
     const c = classifyPaneActivity(content);
     const at = observedAt ?? this.now();
-    this.capturedAtBySession.set(sessionName, at.getTime());
+    this.capturedAtBySession.set(sessionName, { issuedAt: issuedAt.getTime(), target: issued?.target });
     const obs: StructuralObservation = {
       state: c.state,
       reason: c.reason,
@@ -175,20 +181,29 @@ export class SeatStructuralActivityService {
           return false;
         }
         const previous = this.latestBySession.get(r.session_name);
-        const capturedAt = this.capturedAtBySession.get(r.session_name);
+        const captured = this.capturedAtBySession.get(r.session_name);
         const activity = snapshot?.activity.get(r.session_name);
-        if (!previous || capturedAt === undefined || activity === undefined) return true;
-        if (activity >= Math.floor(capturedAt / 1000)) return true;
+        const target = snapshot?.targets.get(r.session_name);
+        if (!previous || captured === undefined || activity === undefined) return true;
+        // Another window or pane is what the capture would read now (a select-window or select-pane writes no output).
+        if (target === undefined || captured.target !== target) return true;
+        if (activity >= Math.floor(captured.issuedAt / 1000)) return true;
         this.latestBySession.set(r.session_name, { ...previous, observedAt: reobservedAt });
         return false;
       });
       // #308: one batched capture for the whole fleet (a few tmux calls) instead of a fork per seat; anything the batch
-      // didn't cover (no listing, a failed chunk) is read per seat inside pollSeat, as before.
+      // didn't cover (no listing, a failed chunk) is read per seat inside pollSeat, as before. The skip above compares
+      // with the instant the capture is ISSUED: the capture's own time is stamped when tmux returns, which can fall a
+      // second later than the pane read, and output in between would then be skipped for good (OF-176 review F1).
+      const issuedAt = this.now();
       const prefetched = this.tmuxAdapter.capturePanesContent && due.length > 0
         ? await this.tmuxAdapter.capturePanesContent(due.map((r) => r.session_name), this.captureLines, this.now).catch(() => null)
         : null;
       await Promise.all(due.map(async (r) => {
-        try { await this.pollSeat(r.session_name, prefetched, runtimeBySession.get(r.session_name) ?? null); } catch { /* isolate: one seat's failure never crashes the sweep */ }
+        try {
+          await this.pollSeat(r.session_name, prefetched, runtimeBySession.get(r.session_name) ?? null,
+            { at: issuedAt, target: snapshot?.targets.get(r.session_name) });
+        } catch { /* isolate: one seat's failure never crashes the sweep */ }
       }));
     } finally {
       this.sweeping = false;

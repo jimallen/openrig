@@ -2,7 +2,10 @@
 // no per-seat read, and an idle pane costs no structural capture. A live 15-seat laptop daemon started ~21 tmux processes
 // a second; 8 seats of an archived rig whose sessions no longer existed cost two thirds of them, read one by one every tick.
 // Every row runs the real TmuxAdapter over a fake tmux that records each argv.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { snapshotLacks, TmuxAdapter, type SessionWindowSnapshot } from "../src/adapters/tmux.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -11,8 +14,9 @@ import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { SeatStructuralActivityService } from "../src/domain/seat-structural-activity-service.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
+import { clearAllTranscriptRotationsForTest, startTranscriptRotation } from "../src/domain/transcript-rotation.js";
 
-interface Window { session: string; active: boolean; stamp: string }
+interface Window { session: string; active: boolean; stamp: string; target?: string }
 
 /** A fake tmux: `windows` answers list-windows -a, list-sessions names their sessions, a chain captures each listed pane. */
 function fakeTmux(windows: Window[], opts: { failListing?: () => boolean; gate?: () => Promise<void> } = {}) {
@@ -22,7 +26,7 @@ function fakeTmux(windows: Window[], opts: { failListing?: () => boolean; gate?:
     if (argv[1] === "list-windows") {
       if (opts.gate) await opts.gate();
       if (opts.failListing?.()) throw new Error("lost server reply");
-      return windows.map((w) => `${w.active ? 1 : 0}|${w.stamp}|${w.session}`).join("\n") + "\n";
+      return windows.map((w) => `${w.active ? 1 : 0}|${w.stamp}|${w.target ?? "@1%1"}|${w.session}`).join("\n") + "\n";
     }
     if (argv[1] === "list-sessions") return [...new Set(windows.map((w) => w.session))].join("\n") + "\n";
     let out = "";
@@ -92,10 +96,12 @@ describe("the shared window snapshot (TmuxAdapter)", () => {
     const s = (await t.adapter.readSessionWindowSnapshot(0))!;
     expect([...s.sessions].sort()).toEqual(["a@r", "b@r", "c@r", "with|bar@r"]);
     expect([...s.activity].sort()).toEqual([["a@r", 100], ["with|bar@r", 300]]);
+    expect(s.targets.get("a@r"), "the current window and its active pane").toBe("@1%1");
+    expect(s.targets.has("b@r"), "only the current window's").toBe(false);
   });
 
   it("only a listing that names a session answers absence: an empty one never makes every seat look gone", () => {
-    const snapshot = (names: string[]): SessionWindowSnapshot => ({ at: 0, sessions: new Set(names), activity: new Map() });
+    const snapshot = (names: string[]): SessionWindowSnapshot => ({ at: 0, sessions: new Set(names), activity: new Map(), targets: new Map() });
     expect(snapshotLacks(snapshot(["a@r"]), "gone@r")).toBe(true);
     expect(snapshotLacks(snapshot(["a@r"]), "a@r")).toBe(false);
     expect(snapshotLacks(snapshot([]), "gone@r")).toBe(false);
@@ -148,22 +154,28 @@ describe("SeatStructuralActivityService sweep: idle panes cost no capture", () =
   function harness(names: string[]) {
     const { db } = dbWithRunningSeats(names);
     let clock = 1_000_500;
+    /** How long a capture takes: the batch's own capturedAt is stamped when tmux returns, this much later. */
+    let captureMs = 0;
     const stamps = new Map<string, number>();
+    const targets = new Map<string, string>();
     const windows = () => [...stamps].map(([session, s]) => ({ session, active: true, stamp: String(s) }));
     const captured: string[][] = [];
     const tmux = {
       readSessionWindowSnapshot: async (): Promise<SessionWindowSnapshot> => ({
         at: clock, sessions: new Set(windows().map((w) => w.session)), activity: new Map(windows().map((w) => [w.session, Number(w.stamp)])),
+        targets: new Map(windows().map((w) => [w.session, targets.get(w.session) ?? "@1%1"])),
       }),
-      capturePanesContent: async (targets: string[]) => {
-        captured.push(targets);
-        return new Map(targets.map((n) => [n, { text: `${n} out\n❯ `, capturedAt: new Date(clock) }]));
+      capturePanesContent: async (names: string[]) => {
+        captured.push(names);
+        clock += captureMs; // the read happened at the old clock; tmux returns later
+        return new Map(names.map((n) => [n, { text: `${n} out\n❯ `, capturedAt: new Date(clock) }]));
       },
       capturePaneContent: async (): Promise<string | null> => { throw new Error("no per-seat capture expected"); },
     };
     const svc = new SeatStructuralActivityService(tmux, () => new Date(clock));
     return {
-      svc, stamps, captured,
+      svc, stamps, captured, targets,
+      slowCapture: (ms: number) => { captureMs = ms; },
       sweep: async (atMs: number) => { clock = atMs; captured.length = 0; await svc.pollAllRunningTmuxSeats(db); return captured.flat(); },
       at: (ms: number) => { clock = ms; },
     };
@@ -195,6 +207,28 @@ describe("SeatStructuralActivityService sweep: idle panes cost no capture", () =
     expect(await h.sweep(1_002_000)).toEqual(["a@r"]);
   });
 
+  it("output between the pane read and tmux's return, across a second boundary: captured again (review F1)", async () => {
+    const h = harness(["a"]);
+    h.stamps.set("a@r", 999);
+    h.slowCapture(30);
+    // Issued at 1000.98 s: the pane is read then, tmux returns at 1001.01 s (the batch's capturedAt).
+    expect(await h.sweep(1_000_980)).toEqual(["a@r"]);
+    h.slowCapture(0);
+    h.stamps.set("a@r", 1000); // output at 1000.99 s, after the read: the cached text predates it
+    expect(await h.sweep(1_002_000)).toEqual(["a@r"]);
+  });
+
+  it("another window or pane is current (a select-window or select-pane writes no output): captured again (review F3)", async () => {
+    const h = harness(["a", "b"]);
+    h.stamps.set("a@r", 999);
+    h.stamps.set("b@r", 999);
+    await h.sweep(1_000_500);
+    h.targets.set("a@r", "@2%2"); // a@r now shows another window
+    h.targets.set("b@r", "@1%5"); // b@r: same window, another pane
+    expect((await h.sweep(1_002_000)).sort()).toEqual(["a@r", "b@r"]);
+    expect(await h.sweep(1_003_000), "same target again, no output: skipped").toEqual([]);
+  });
+
   it("a seat whose session the listing lacks: not captured, and its cached observation is dropped", async () => {
     const h = harness(["a", "b"]);
     h.stamps.set("a@r", 999);
@@ -220,5 +254,26 @@ describe("SeatIdentityReconciler sweep", () => {
     await new SeatIdentityReconciler({ db, tmux }).reconcileAll();
     expect(pidReads).toEqual([]);
     expect(new SeatIdentityStore(db).getForNode(nodeIds.gone!)).toMatchObject({ verdict: "pane_missing", reason: "session_missing" });
+  });
+});
+
+describe("transcript rotation's activity hint (review F2)", () => {
+  afterEach(() => clearAllTranscriptRotationsForTest());
+
+  it("an empty listing answers nothing: the session is still captured, never recorded as gone", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "of176-hint-"));
+    try {
+      const file = path.join(dir, "a@r");
+      const adapter = new TmuxAdapter(async () => { throw new Error("shell path unused"); }, undefined, async (argv) => {
+        if (argv[1] === "list-windows") return "\n"; // a server with no session it would name
+        if (argv[1] === "capture-pane") return "a@r text\n";
+        throw new Error(`unexpected tmux ${argv[1]}`);
+      });
+      startTranscriptRotation(adapter, "a@r", file, { lines: 20, pollIntervalMs: 500 });
+      for (let i = 0; i < 60 && !fs.existsSync(file); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null).toBe("a@r text\n");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

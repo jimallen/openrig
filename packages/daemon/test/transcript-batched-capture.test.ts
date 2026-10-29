@@ -32,7 +32,7 @@ function fakeTmux() {
     }
     if (argv[1] === "list-windows") {
       // OF-176: the shared window listing is also the listing a batch keeps beside its chain.
-      const out = [...sessions].map(([n, s]) => `1|${s.activity}|${n}`).join("\n") + "\n";
+      const out = [...sessions].map(([n, s]) => `1|${s.activity}|@1%1|${n}`).join("\n") + "\n";
       if (fail.serverAfterListing) fail.server = true;
       return out;
     }
