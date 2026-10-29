@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
+import { stopOwnedTmuxServerSync } from "./helpers/orphan-reaper.js";
 
 it("preserves native terminal UTF-8 output split across pipe polls for live and late viewers", () => {
   const home = mkdtempSync(join(tmpdir(), "openrig-terminal-utf8-"));
@@ -14,5 +15,9 @@ it("preserves native terminal UTF-8 output split across pipe polls for live and 
     expect(result.error, result.stderr).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout.trim())).toEqual({ nativeTmux: true, splitFourByteCharacter: true, liveAndLateSubscribers: true });
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally {
+    // The fixture's own teardown does not run when the timeout kills it: stop its server here, verified, before its home goes.
+    stopOwnedTmuxServerSync(join(home, "tmux.sock"), { ...process.env, HOME: home });
+    rmSync(home, { recursive: true, force: true });
+  }
 }, 20000);

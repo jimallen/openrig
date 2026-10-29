@@ -10,6 +10,7 @@ import path from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { TMUX_MAX_BUFFER } from "../src/adapters/tmux-exec.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { ownedDefaultSocket, stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
@@ -94,7 +95,7 @@ describe.skipIf(!nativeAvailable)("native batched transcript capture (#161)", ()
       expect(fs.readFileSync(file(killed), "utf8")).toBe(before);
     } finally {
       clearAllTranscriptRotationsForTest();
-      await tmux("kill-server").catch(() => {});
+      await stopOwnedTmuxServer(ownedDefaultSocket(home), env);
       fs.rmSync(home, { recursive: true, force: true });
     }
   }, 90_000);

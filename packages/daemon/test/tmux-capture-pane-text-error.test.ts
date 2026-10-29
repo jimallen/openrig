@@ -9,6 +9,7 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { execArgvCommand } from "../src/adapters/tmux-exec.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
@@ -80,7 +81,7 @@ describe.skipIf(!nativeAvailable)("chained capture error classification, real tm
   delete env.TMUX;
   const tmux = async (...args: string[]) => (await exec("tmux", ["-f", "/dev/null", "-S", sock, ...args], { env, timeout: 10_000 })).stdout;
   afterAll(async () => {
-    await tmux("kill-server").catch(() => {});
+    await stopOwnedTmuxServer(sock, env);
     fs.rmSync(home, { recursive: true, force: true });
   });
   /** The production argv transport against this test's private server; `tail` extends every chain, never a single capture. */

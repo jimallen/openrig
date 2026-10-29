@@ -11,6 +11,7 @@ import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 import fs from "node:fs";
 import os from "node:os";
@@ -71,7 +72,7 @@ describe.skipIf(process.platform === "win32")("native failed-kill transcript con
       }
     } finally {
       stopTranscriptRotation(sessionName);
-      await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
+      await stopOwnedTmuxServer(socket, env);
       db.close(); fs.rmSync(temp, { recursive: true, force: true }); fs.rmSync(socketDir, { recursive: true, force: true });
     }
   });

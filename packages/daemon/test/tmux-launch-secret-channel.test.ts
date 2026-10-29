@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter, defaultTmuxFileOps, type TmuxFileOps } from "../src/adapters/tmux.js";
 import { ARGV_SAFE_LAUNCH_ENV_KEYS, partitionLaunchEnv, renderSecretEnvScript } from "../src/adapters/tmux-launch-env-channel.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 // OF-46. The activity-hook token (and every provider key) is a credential. A tmux
 // command line is readable by every local user through `ps`, and the server that
@@ -550,7 +551,8 @@ async function withShim(check: (ctx: { adapters: Array<[string, TmuxAdapter]>; h
   try {
     await check({ adapters: [["shell", shell], ["argv", argv]], home, credDir, tmux, argvLog: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "") });
   } finally {
-    await tmux(["kill-server"]).catch(() => {});
+    // The real tmux, not the recording shim (which adds its own -S): the stop's own commands stay out of the argv log.
+    await stopOwnedTmuxServer(socket, { ...env, PATH: process.env.PATH });
     fs.rmSync(home, { recursive: true, force: true });
   }
 }

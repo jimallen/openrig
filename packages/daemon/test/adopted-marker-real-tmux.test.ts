@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { checkAdoptedIdentity } from "../src/domain/adopted-reattach.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
@@ -54,7 +55,7 @@ describe.skipIf(process.platform === "win32")("the adopted-session marker throug
         why: "it carries no OpenRig marker (@rigged_node_id): it may have been recreated since rig down, or the marker was never written",
       });
     } finally {
-      for (const socket of [first, fresh]) await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
+      for (const socket of [first, fresh]) await stopOwnedTmuxServer(socket, env);
       fs.rmSync(socketDir, { recursive: true, force: true });
     }
   });

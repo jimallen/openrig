@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { TmuxAdapter, type TmuxFileOps } from "../src/adapters/tmux.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -47,7 +48,7 @@ describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widg
     const zshPath = execFileSync("sh", ["-c", "command -v zsh"], { encoding: "utf8" }).trim();
     await tm(["new-session", "-d", "-s", "pane", "-x", "200", "-y", "50", `${q(zshPath)} -d -i`]);
     await until(() => fs.existsSync(started), "zsh startup");
-    return { root, marker, ready, tm, adapter, close: async () => { await tm(["kill-server"]).catch(() => {}); fs.rmSync(root, { recursive: true, force: true }); } };
+    return { root, marker, ready, tm, adapter, close: async () => { await stopOwnedTmuxServer(socket, env); fs.rmSync(root, { recursive: true, force: true }); } };
   }
 
   it("control: the widget does break the old typed form `( . 'file' )`", async () => {

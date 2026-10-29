@@ -6,6 +6,7 @@ import {promisify} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {describe,it,expect} from 'vitest';
 import {TmuxAdapter,type TmuxFileOps} from '../src/adapters/tmux.js';
+import {stopOwnedTmuxServer} from './helpers/orphan-reaper.js';
 const run=promisify(execFile);
 const q=(v:string)=>"'"+v.replaceAll("'","'\"'\"'")+"'";
 // A marker file counts as written only once it has content. PROMPT_COMMAND's `echo "$?" > status` and the rc's
@@ -64,7 +65,9 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
   const h=fs.readFileSync(history,'utf8');expect(h).toContain('prior-history-sentinel');expect(h).toContain(payload.content);expect(h).not.toContain('FIXTURE_MUTATION=child');expect(h).not.toContain('child-home');
   console.log('CLAUDE_ISOLATION='+JSON.stringify({kind,exit,sameShellPid:true,environmentUnchanged:true,cwdUnchanged:true,optionsUnchanged:true,historyPathUnchanged:true,ordinaryHistoryFlush:ordinaryFlush,priorHistoryPreserved:true,scriptBodyNotInParentHistory:true,scriptBytes:Buffer.byteLength(script.content),typedBytes:Buffer.byteLength(payload.content),scriptMode:script.mode,scriptUid:script.uid,consumedFilesRemoved:true}));
  } catch(e) {failed=true;failure=e;}
- await tm(['kill-server']).catch(()=>{});
+ // The server is stopped and verified gone; one that cannot be is reported, and its directory is kept rather than removed under it.
+ let stopFailed=false;let stopError:unknown;
+ try{await stopOwnedTmuxServer(socket,env);}catch(e){stopFailed=true;stopError=e;}
  // The pane's Bash writes its history file into root as it exits on the server's hangup, and can recreate it after
  // rmSync unlinked it (ENOTEMPTY). Wait, bounded, for that shell to exit before removing the directory. The pid is
  // the one the rc recorded ($$), not #{pane_pid}, which can be a wrapper shell that exits first. Removal is
@@ -73,8 +76,9 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
  for(let i=0;shellPid>0&&alive()&&i<200;i++)await new Promise(r=>setTimeout(r,25));
  const stuck=shellPid>0&&alive();
  let rmFailed=false;let rmError:unknown;
- try{fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:50});}catch(e){rmFailed=true;rmError=e;}
+ if(!stopFailed){try{fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:50});}catch(e){rmFailed=true;rmError=e;}}
  if(failed)throw failure;
+ if(stopFailed)throw stopError;
  if(stuck)throw new Error('pane shell did not exit within 5 s');
  if(rmFailed)throw rmError;
 },30000);

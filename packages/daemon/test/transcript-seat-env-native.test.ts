@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 const run = promisify(exec);
 const runFile = promisify(execFile);
 const keys = ["OPENRIG_TRANSCRIPTS_LINES", "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS"];
@@ -52,7 +53,7 @@ describe.skipIf(process.platform === "win32")("native transcript seat environmen
       for (const [index, key] of keys.entries()) {
         if (prior[index] === undefined) delete process.env[key]; else process.env[key] = prior[index];
       }
-      await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
+      await stopOwnedTmuxServer(socket, env);
       fs.rmSync(temp, { recursive: true, force: true });
       fs.rmSync(socketDir, { recursive: true, force: true });
     }

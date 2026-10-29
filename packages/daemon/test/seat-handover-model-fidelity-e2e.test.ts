@@ -14,6 +14,7 @@ import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 // 0.5.2-07 — THE MONEY PROOF (the EFFECT leg, PM gate). Boot a codex seat PINNED to a CHEAP model,
 // HAND IT OVER through the REAL SeatHandoverService + the REAL CodexRuntimeAdapter, then read the
@@ -29,13 +30,19 @@ import { createDb } from "../src/db/connection.js";
 // Opt-in: skips unless OPENRIG_E2E_REAL_CODEX=1, and when tmux/codex/auth are absent.
 
 const pexec = promisify(execFile);
-const SOCK = `openrig-mf-e2e-${process.pid}`;
+// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
+// in tmux's shared per-user directory, beside the fleet's server.
+let sockDir = "";
+const sock = () => {
+  if (sockDir === "") sockDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-mf-e2e-"));
+  return nodePath.join(sockDir, "tmux.sock");
+};
 const cleanEnv: any = { ...process.env };
 delete cleanEnv.TMUX;
 delete cleanEnv.TMUX_TMPDIR;
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -L ${SOCK} ${cmd.slice(5)}` : cmd;
+  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
   const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
   return stdout;
 };
@@ -79,10 +86,11 @@ function realFsOps() {
 const seats: string[] = [];
 afterAll(async () => {
   if (!REAL_CODEX_OPT_IN) return; // a skipped run starts no tmux at all
+  if (sockDir === "") return; // no tmux command ran
   for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
-  // Then end this run's private server. SOCK is unique to this process (-L), so
-  // kill-server here can never reach the fleet's tmux server.
-  await tmux("kill-server").catch(() => {});
+  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
+  await stopOwnedTmuxServer(sock(), cleanEnv);
+  fs.rmSync(sockDir, { recursive: true, force: true });
 });
 
 describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)", () => {

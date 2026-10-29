@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
+import { stopOwnedTmuxServerSync } from "../../daemon/test/helpers/orphan-reaper.js";
 import { runFrontDoor, resolveTuiPath, probeFrontDoor, type FrontDoorIo } from "../src/front-door.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
 
@@ -441,7 +442,7 @@ describe("PUBLIC bin ownership (guard finding 1 — the wrapper is the real fron
       expect(text, `${diagnostic(pane)} pane=${pane.stdout}`).toMatch(/EXPLORER|mission control could not start/);
       expect(text).not.toMatch(/Usage: rig \[options\] \[command\]/);
     } finally {
-      tmux(["kill-server"]); // Only this test's private server.
+      stopOwnedTmuxServerSync(socket, process.env); // Only this test's private server, verified gone before its directory.
       rmSync(home, { recursive: true, force: true });
     }
   });

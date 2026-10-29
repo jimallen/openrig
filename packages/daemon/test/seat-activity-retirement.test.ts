@@ -9,6 +9,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
 import { readWaitingView } from "../src/domain/queue-waiting.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
@@ -31,8 +32,9 @@ async function fixture() {
   const svc = new SeatActivityService({ tmux: adapter, defaultWindowSeconds: 3,
     now: () => new Date(Date.now() + 10_000) });
   cleanups.push(async () => {
-    await tmux("kill-server").catch(() => {});
-    db.close(); rmSync(scratch, { recursive: true, force: true });
+    db.close();
+    await stopOwnedTmuxServer(socket, process.env);
+    rmSync(scratch, { recursive: true, force: true });
   });
   async function add(id: number, node: string, session: string) {
     db.prepare("INSERT OR IGNORE INTO nodes VALUES (?, NULL)").run(node);

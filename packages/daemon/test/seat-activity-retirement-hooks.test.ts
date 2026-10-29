@@ -17,6 +17,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { ClaimService } from "../src/domain/claim-service.js";
 import { discoveryRoutes } from "../src/routes/discovery.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -68,7 +69,7 @@ describe("retired hook evidence through the real HTTP route", () => {
     const exec = promisify(execFile);
     const tmux = async (...args: string[]) => (await exec("tmux", ["-S", socket, ...args])).stdout;
     cleanups.push(async () => {
-      await tmux("kill-server").catch(() => {});
+      await stopOwnedTmuxServer(socket, process.env);
       rmSync(scratch, { recursive: true, force: true });
     });
     const adapter = new TmuxAdapter(async () => { throw new Error("unexpected shell path"); }, undefined,
