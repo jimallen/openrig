@@ -70,6 +70,7 @@ export function makeRealStagingDocker(opts: RealStagingDockerOptions = {}): Stag
       let producerClosed = false;
       let producerKilledEarly = false;
       let killProducer: (() => void) | null = null;
+      let producerFinishedWriting = () => false;
       try {
         // Consumer side. Without a producer its stdin is IGNORED (closed at spawn): a child that
         // reads stdin sees EOF immediately — the exact hole the inline invoker left open.
@@ -97,6 +98,7 @@ export function makeRealStagingDocker(opts: RealStagingDockerOptions = {}): Stag
           // own SIGPIPE death is the loud signal, reported through the dual-exit check below.
           consumer.stdin!.on("error", () => {});
           producer.stdout!.pipe(consumer.stdin!); // pipe() forwards EOF when the producer exits
+          producerFinishedWriting = () => producer.stdout!.readableEnded;
           producerDone = waitExit(producer).then((exit) => {
             producerClosed = true;
             untrackGroup(producer, groups);
@@ -121,7 +123,12 @@ export function makeRealStagingDocker(opts: RealStagingDockerOptions = {}): Stag
       // pipe nobody drains, so it would block FOREVER (measured — this invoker's own first cut
       // hung here). Kill it and report the anomaly: a consumer that exited before its feed
       // finished did not stage what the feed carried, whatever its exit code said.
-      if (producerDone && !producerClosed) {
+      // "Still runs" is read from the producer's stdout, not from its close event: under load both
+      // sides' exits are reaped in one pass and the consumer's is handled first (measured on Sparky,
+      // one shared core: 235 of 300 DUAL-EXIT rows took this branch for a producer that had exited
+      // 3). An ended stdout means the producer finished writing, which is what let the consumer see
+      // EOF, so its exit is awaited (still under the step timeout) instead of killed.
+      if (producerDone && !producerClosed && !producerFinishedWriting()) {
         producerKilledEarly = true;
         killProducer!();
       }
