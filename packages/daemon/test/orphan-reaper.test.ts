@@ -602,6 +602,8 @@ ${mode.respawnOnStop ? `if (a === "daemon" && b === "stop") {
     killGroup(Number(fs.readFileSync(pidFile, "utf8")));
     const server = await ownedTmuxServer(scaffold.tmuxSocketPath, scaffold.tmuxEnv);
     if (server === null) throw new Error("positive control: the daemon's tmux server runs");
+    // Runs last: whatever the code under test did, this row's server does not outlive it.
+    cleanups.push(() => { if (sameProcess(server)) { try { process.kill(server.pid, "SIGKILL"); } catch { /* gone */ } } });
     process.kill(server.pid, "SIGSTOP");
     cleanups.push(() => { try { process.kill(server.pid, "SIGCONT"); } catch { /* gone */ } });
     await expect(daemon.stop()).rejects.toThrow(/cannot be verified stopped/);
