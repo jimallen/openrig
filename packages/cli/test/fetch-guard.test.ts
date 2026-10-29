@@ -13,6 +13,20 @@ import http from "node:http";
 import { allowFetchTarget, resetFetchAllowlist } from "./fetch-guard.js";
 
 // The guard is installed by the shared setup (hermetic-env.setup.ts) for every file.
+
+/** Listen on a free loopback port BELOW the ephemeral range (so it is not permitted by shape), retrying on a taken port. */
+async function listenOnLowPort(server: http.Server): Promise<number> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const port = 20000 + Math.floor(Math.random() * 12000); // 20000-31999, under the guard's 32768 floor
+    const bound = await new Promise<boolean>((resolve) => {
+      const taken = () => resolve(false);
+      server.once("error", taken);
+      server.listen(port, "127.0.0.1", () => { server.off("error", taken); resolve(true); });
+    });
+    if (bound) return port;
+  }
+  throw new Error("no free loopback port below 32768 in 50 tries");
+}
 describe("fetch guard — allowlist by shape, fail-closed, three-sided", () => {
   afterEach(() => resetFetchAllowlist());
 
@@ -42,11 +56,21 @@ describe("fetch guard — allowlist by shape, fail-closed, three-sided", () => {
     await expect(fetch("http://127.0.0.1:8080/anything")).rejects.toThrow(/FETCH GUARD/i);
   });
 
-  it("ESCAPE HATCH: allowFetchTarget PERMITS a fixed low-port fixture (the guard delegates; a real ECONNREFUSED is NOT the guard)", async () => {
-    allowFetchTarget("http://127.0.0.1:8123");
-    const err = await fetch("http://127.0.0.1:8123/x").then(() => null).catch((e) => e as Error);
-    expect(err).not.toBeNull();
-    expect(String(err?.message ?? "")).not.toMatch(/FETCH GUARD/); // permitted → real fetch's connection error, not the guard
+  it("ESCAPE HATCH: allowFetchTarget PERMITS a fixed low-port fixture (the guard delegates to the real fetch)", async () => {
+    // The fixture binds its own low (non-ephemeral) port, so the row does not depend on what the host runs: a fixed port
+    // (8123) once assumed nothing listened there, and on a host running Home Assistant the request was answered.
+    const server = http.createServer((_req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"fixture":true}'); });
+    const port = await listenOnLowPort(server);
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      await expect(fetch(`${origin}/x`), "control: unregistered, the low port is refused").rejects.toThrow(/FETCH GUARD/);
+      allowFetchTarget(origin);
+      const res = await fetch(`${origin}/x`); // registered → the real fetch, answered by this fixture
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ fixture: true });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("a registered / loopback-ephemeral fixture does NOT widen the allowlist to the daemon", async () => {
