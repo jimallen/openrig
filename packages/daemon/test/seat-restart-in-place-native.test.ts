@@ -1,9 +1,9 @@
-// OPR.0.7.0.5 — native harness for the in-place restart: a REAL tmux server on a private -L socket, a
+// OPR.0.7.0.5 — native harness for the in-place restart: a REAL tmux server on a private -S socket, a
 // compiled stub `codex` (no real Codex, no account, no credentials), the REAL CodexRuntimeAdapter, and the
 // production route factory with its default process and /proc readers. Both pane shapes.
 //
-// Isolation (as seat-handover-cutover-e2e): a per-run -L socket on every tmux command, $TMUX removed,
-// teardown by SESSION NAME, never kill-server; stub processes are killed by pid at the end. Skips without
+// Isolation (as seat-handover-cutover-e2e): a per-run owned -S socket on every tmux command, $TMUX removed,
+// teardown by session name then a verified stop of its own server; stub processes are killed by pid at the end. Skips without
 // tmux, a C compiler, or Linux /proc.
 //
 // The real Codex must be unreachable (an earlier version of this harness let a login shell's profile put
@@ -24,14 +24,17 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const pexec = promisify(execFile);
-const SOCK = `openrig-restart-${process.pid}`;
+const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-restart-native-"));
+// An owned -S socket in this run's own directory (a -L name would live in tmux's shared per-user directory).
+const socket = nodePath.join(root, "tmux.sock");
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 delete cleanEnv.TMUX;
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -L ${SOCK} ${cmd.slice(5)}` : cmd;
+  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(socket)} ${cmd.slice(5)}` : cmd;
   const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
   return stdout;
 };
@@ -61,15 +64,13 @@ int main(int argc, char **argv) {
 }
 `;
 
-const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-restart-native-"));
 const sessions: string[] = [];
 const pids = new Set<number>();
 afterAll(async () => {
   for (const name of sessions) await tmux(`kill-session -t ${q(name)}`).catch(() => {});
   for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
-  // The server exits with its last session; remove its socket file only once nothing answers on it.
-  const socket = nodePath.join(`/tmp/tmux-${process.getuid?.() ?? ""}`, SOCK);
-  if (!(await tmux("ls").then(() => true, () => false))) fs.rmSync(socket, { force: true });
+  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
+  await stopOwnedTmuxServer(socket, cleanEnv);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

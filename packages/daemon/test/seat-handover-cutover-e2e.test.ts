@@ -1,6 +1,9 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -10,6 +13,7 @@ import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
+import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 // P14 — the committed money-proof e2e for the seat-handover CUTOVER (r1's LOW-optional; guards the
 // tmux-version regression class that bit us: respawn-pane -k CLEARS scrollback, and tabs sanitize to "_"
@@ -18,18 +22,23 @@ import { createDb } from "../src/db/connection.js";
 // graceful and forced retiree-exit paths.
 //
 // D15 isolation ([[real-run-e2e-daemon-isolation-doctrine]], [[tmux-kill-server-from-seat-reaps-fleet]]):
-// a per-run `-L` socket on EVERY tmux command (overrides $TMUX), full env MINUS $TMUX (env -i strips the
-// locale and breaks tab-delimited formats), verify-isolation-first, and teardown by SESSION NAME — NEVER
-// kill-server. Guarded: skips when tmux is unavailable.
+// a per-run owned `-S` socket in this run's own directory on EVERY tmux command (overrides $TMUX), full env MINUS
+// $TMUX (env -i strips the locale and breaks tab-delimited formats), verify-isolation-first, and teardown by session
+// name, then a verified stop of this run's own server (never a shared socket). Guarded: skips when tmux is unavailable.
 
 const pexec = promisify(execFile);
-const SOCK = `openrig-e2e-${process.pid}`;
+// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
+// in tmux's shared per-user directory, beside the fleet's server.
+let sockDir = "";
+const sock = () => {
+  if (sockDir === "") sockDir = mkdtempSync(join(tmpdir(), "openrig-e2e-"));
+  return join(sockDir, "tmux.sock");
+};
 const cleanEnv: any = { ...process.env };
 delete cleanEnv.TMUX;
-// Keep the caller's isolated socket root; -L still names only this test's server.
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -L ${SOCK} ${cmd.slice(5)}` : cmd;
+  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
   const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
   return stdout;
 };
@@ -42,14 +51,18 @@ function tmuxAvailableSync(): boolean {
 
 const seats: string[] = [];
 afterAll(async () => {
-  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // BY NAME, never kill-server
+  if (sockDir === "") return; // no tmux command ran
+  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
+  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
+  await stopOwnedTmuxServer(sock(), cleanEnv);
+  rmSync(sockDir, { recursive: true, force: true });
 });
 
 describe("seat-handover cutover money-proof (isolated tmux, both retiree-exit paths)", () => {
   it.runIf(tmuxAvailableSync())(
     "predecessor scrollback SURVIVES in the SAME pane on graceful + forced paths",
     async () => {
-      // Verify isolation FIRST: the -L socket must never show fleet seats.
+      // Verify isolation FIRST: the owned socket must never show fleet seats.
       const sessions = await tmux("list-sessions -F '#{session_name}'").catch(() => "");
       expect(sessions).not.toMatch(/dev-guard@|dev-planner@|orch-|review-/);
 
