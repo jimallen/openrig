@@ -15,7 +15,7 @@ import type { StatusDeps } from "../src/commands/status.js";
 import { projectRigSlug as cliSlug } from "../src/rig-folder.js";
 import { projectRigSlug as daemonSlug } from "../../daemon/src/domain/project-rig.js";
 
-interface FakeRig { id: string; name: string; archivedAt?: string | null; seats: Array<string | null> | "unreadable" }
+interface FakeRig { id: string; name: string; archivedAt?: string | null; seats: Array<string | null> | "unreadable" | "dropped" }
 
 let root: string;
 let server: http.Server;
@@ -35,6 +35,7 @@ beforeAll(async () => {
     if (nodes) {
       const rig = rigs.find((r) => r.id === decodeURIComponent(nodes[1]!));
       if (!rig || rig.seats === "unreadable") return reply(500, { error: "unreadable" });
+      if (rig.seats === "dropped") { req.socket.destroy(); return; } // the connection drops: the client's read throws
       return reply(200, rig.seats.map((cwd, i) => ({ logicalId: `seat${i}`, nodeKind: "agent", sessionStatus: "running", cwd })));
     }
     if (url === "/api/down" && req.method === "POST") {
@@ -191,6 +192,57 @@ describe("rig down with no <rig>: the rig of the current folder", () => {
     expect(r.exitCode).toBe(2);
     expect(downBodies).toEqual([]);
     expect(r.out).toMatch(/could not be read/);
+  });
+
+  it("a seats read that throws (the connection drops) makes the answer unknown: refuses rather than guess", async () => {
+    const ez = project("Code/eztrack");
+    rigs = [{ id: "rig-ez", name: "eztrack", seats: ez.seats }, { id: "rig-x", name: "x", seats: "dropped" }];
+    const r = await down(ez.folder);
+    expect(r.exitCode).toBe(2);
+    expect(downBodies).toEqual([]);
+    expect(r.out).toMatch(/could not be read/);
+  });
+
+  it("a rig whose seats sit in two different projects (both named eztrack) has no known folder", async () => {
+    const one = project("Code/eztrack", ["build-impl"]), two = project("Work/eztrack", ["exec-cos"]);
+    rigs = [{ id: "rig-split", name: "eztrack", seats: [...one.seats, ...two.seats] }];
+    for (const folder of [one.folder, two.folder]) expect((await down(folder)).exitCode, folder).toBe(2);
+    expect(downBodies).toEqual([]);
+  });
+
+  it("a rig with a seat that records no folder has no known folder", async () => {
+    const ez = project("Code/eztrack");
+    rigs = [{ id: "rig-ez", name: "eztrack", seats: [...ez.seats, null] }];
+    const r = await down(ez.folder);
+    expect(r.exitCode).toBe(2);
+    expect(downBodies).toEqual([]);
+  });
+
+  // The daemon names a project rig from the --cwd it was given (path.resolve, symlinks kept) and records the seats under
+  // that path. A project launched through a link named differently from the real folder is still that rig's folder.
+  it("a project launched through a symlink named differently is found from the link and from the real folder", async () => {
+    const real = project("real/Eztrack-Checkout");
+    const link = path.join(root, "links", "eztrack");
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(real.folder, link);
+    const recorded = ["build-impl", "exec-cos"].map((s) => path.join(link, ".workspaces", s));
+    rigs = [{ id: "rig-ez", name: "eztrack", seats: recorded }];
+    fs.mkdirSync(path.join(real.folder, "src"));
+    await down(path.join(link, "src"));
+    await down(real.folder);
+    expect(downBodies.map((b) => b["rigId"])).toEqual(["rig-ez", "rig-ez"]);
+  });
+
+  it("a seat whose folder was deleted does not hide the rig's folder (project launched through a symlink)", async () => {
+    const real = project("real/tracker", ["build-impl", "exec-cos"]);
+    const link = path.join(root, "links2", "tracker");
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(real.folder, link);
+    fs.rmSync(path.join(real.folder, ".workspaces", "exec-cos"), { recursive: true });
+    const recorded = ["build-impl", "exec-cos"].map((s) => path.join(link, ".workspaces", s));
+    rigs = [{ id: "rig-tr", name: "tracker", seats: recorded }];
+    await down(real.folder);
+    expect(downBodies.map((b) => b["rigId"])).toEqual(["rig-tr"]);
   });
 
   it("with --host and no <rig> it refuses: the current folder is on this machine, the rigs on another", async () => {

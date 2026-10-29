@@ -13,6 +13,10 @@ import type { DaemonClient } from "./client.js";
  * ~/Code/<project>/.workspaces/; the kernel's 7 seats are under ~/.workspaces/<seat>, whose <P> would be the home
  * folder, but "kernel" is not that folder's slug, so the kernel has no folder here (it never matches a folder).
  * A rig with no seats, or a seat with no folder, has no known folder either.
+ *
+ * The name is judged on the seat folders AS RECORDED, because the daemon names the rig from the --cwd it was given
+ * (path.resolve, symlinks kept) and records the seats under that same path; folders are compared by REAL path, so a
+ * project launched through a symlink is found from the link and from the real folder alike, whatever either is called.
  */
 export interface FolderRig { id: string; name: string; folder: string }
 
@@ -30,19 +34,20 @@ export function realFolder(p: string): string {
   }
 }
 
-/** The project folder of a rig from its seats' folders, or null when it is not known (see above). */
+/** The project folder of a rig (its real path) from its seats' recorded folders, or null when it is not known (see above). */
 export function rigProjectFolder(name: string, seatFolders: ReadonlyArray<string | null>): string | null {
   if (seatFolders.length === 0) return null;
   let root: string | null = null;
   for (const seat of seatFolders) {
     if (!seat) return null;
-    const workspaces = nodePath.dirname(realFolder(seat));
-    if (nodePath.basename(workspaces) !== ".workspaces") return null;
-    const project = nodePath.dirname(workspaces);
+    const recorded = nodePath.dirname(nodePath.resolve(seat));
+    if (nodePath.basename(recorded) !== ".workspaces") return null;
+    if (projectRigSlug(nodePath.dirname(recorded)) !== name) return null;
+    const project = realFolder(nodePath.dirname(recorded));
     if (root !== null && project !== root) return null;
     root = project;
   }
-  return root !== null && projectRigSlug(root) === name ? root : null;
+  return root;
 }
 
 export type FolderInference =
