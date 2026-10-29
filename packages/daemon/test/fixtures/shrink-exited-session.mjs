@@ -77,7 +77,7 @@ try {
   }
   assert.equal((await tmux.probeSession(seats.get("sibling").name)).state, "present");
   console.log(JSON.stringify({ shrink: "ok", stoppedRemoved: true, sessionsKilled: 2, siblingPreserved: true, namespaceReusable: true }));
+// The fixture's tmux server is stopped by its parent test, verified (a stop in this child could not be verified, and a timeout kills the child before its finally).
 } finally {
-  await native(["kill-server"]).catch(() => {});
   db.close();
 }

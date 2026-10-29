@@ -44,4 +44,5 @@ try {
   await broker.attach({ send: data => late.push(data), close: () => {} });
   assert.equal(late[0], expected, "late subscriber history is also intact");
   console.log(JSON.stringify({ nativeTmux: true, splitFourByteCharacter: true, liveAndLateSubscribers: true }));
-} finally { broker?.dispose(); await native(["kill-server"]).catch(() => {}); }
+// The fixture's tmux server is stopped by its parent test, verified (a stop in this child could not be verified, and a timeout kills the child before its finally).
+} finally { broker?.dispose(); }
