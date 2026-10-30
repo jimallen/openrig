@@ -159,7 +159,9 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     // never the relay). A null-actor send has no derived sender to attribute (no fabricated row). The
     // send is already committed, so a rare audit-write failure is LOGGED, never a false-negative on a
     // delivered send.
-    if (derivedActor && !body.submitOnly) { // submitOnly types no text — nothing to outbox-record
+    // Native comms step 3: a native send created and claimed its own row before the write; it is settled by the seat's
+    // ack or the deadline sweeper, never here.
+    if (derivedActor && !body.submitOnly && result.path !== "native") { // submitOnly types no text — nothing to outbox-record
       const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
       if (outbox) {
         try {
@@ -311,7 +313,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
       if (outbox) {
         for (const r of result.results) {
-          if (!r.sessionName || r.outcome === "retained") continue;
+          if (!r.sessionName || r.outcome === "retained" || r.path === "native") continue;
           try {
             const entry = outbox.record({
               senderSession: derivedActor,

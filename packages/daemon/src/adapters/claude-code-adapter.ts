@@ -61,6 +61,12 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   private stateDir: string | null;
   private collectorAssetPath: string | null;
   private autoDriveProviderPrompts: boolean;
+  private nativeInboxEnabled: () => boolean;
+
+  /** The launch choice with native comms step 3's inbox setting decided now. */
+  private launchChoice(binding: NodeBinding): NodeBinding & { nativeInbox: boolean } {
+    return { ...binding, nativeInbox: this.nativeInboxEnabled() };
+  }
   private listProcesses?: NativeProcessLister;
   private autoLaunches = new Map<string, { binding: NodeBinding; token: string; executable?: string; fingerprint?: string; process?: ClaudeLaunchedProcess }>();
   readonly claudeManagedLaunch?: ClaudeManagedLaunch;
@@ -79,6 +85,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     stateDir?: string;
     collectorAssetPath?: string;
     autoDriveProviderPrompts?: boolean;
+    /** Native comms step 3: `transport.native_claude`, read at each launch. */
+    nativeInboxEnabled?: () => boolean;
     listProcesses?: NativeProcessLister;
     claudeManagedLaunch?: ClaudeManagedLaunch;
     /** DI source of the activity-relay.cjs asset (parity with the Codex adapter). */
@@ -98,6 +106,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.stateDir = deps.stateDir ?? null;
     this.collectorAssetPath = deps.collectorAssetPath ?? null;
     this.autoDriveProviderPrompts = deps.autoDriveProviderPrompts ?? false;
+    this.nativeInboxEnabled = deps.nativeInboxEnabled ?? (() => false);
     this.listProcesses = deps.listProcesses;
     this.claudeManagedLaunch = deps.claudeManagedLaunch;
     this.activityRelayPath = deps.activityRelayPath ?? null;
@@ -274,7 +283,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
     const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
     const appliedLaunch = observeClaudePermission(posture);
-    const permissionMode = posture + operationalLaunchArg(this.runtime, binding);
+    const permissionMode = posture + operationalLaunchArg(this.runtime, this.launchChoice(binding));
     // OPR.0.5.3.1: classic-renderer env prefix (default on) → native scrollback for every
     // managed launch path (fresh/resume/fork). "" when overridden off → byte-identical command.
     const rendererPrefix = claudeClassicRendererEnvPrefix(process.env);
@@ -311,7 +320,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         return { ok: false, error: "claude-code fork: forkSource.value is required (parent native_id)" };
       }
       const forkSessionId = this.sessionIdFactory();
-      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
+      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, this.launchChoice(binding)), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
         "--resume", parentId, "--fork-session", "--session-id", forkSessionId, `--name=${opts.name}`])
         // The non-managed command text is parsed by the pane shell, so the
         // parent id needs the same quoting as --model/--effort above (and as
@@ -331,7 +340,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
 
     const generatedSessionId = opts.resumeToken ? null : this.sessionIdFactory();
-    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
+    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, this.launchChoice(binding)), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...remoteControlArgv,
       ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), `--name=${opts.name}`],
       opts.resumeToken ? claudeResumeLaunchEnv(opts.resumeToken) : undefined) : opts.resumeToken
       ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${remoteControlArg} --resume ${shellQuote(opts.resumeToken)} --name=${shellWord(opts.name)}`

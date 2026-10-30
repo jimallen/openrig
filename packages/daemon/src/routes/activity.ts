@@ -252,6 +252,58 @@ activityRoutes.get("/pda-usage", (c) => {
   return c.json({ ok: true, sessionName: seat.sessionName, cost: pdaSeatCosts(sessionRegistry.db, seat.sessionName)[0] ?? null });
 });
 
+// Native comms step 3: the routes the activity relay posts a Claude seat's inbox endpoint (SessionStart) and the native
+// markers of a submitted prompt (UserPromptSubmit) to. Same token as /hooks. The seat is resolved from the body and must
+// match the store's current session for that name; nothing here writes to a seat.
+type NativeAuth = { ok: true; store: AgentActivityStore; inbox: import("../domain/claude-native-inbox.js").ClaudeNativeInbox; body: Record<string, unknown> } | { ok: false; response: Response };
+async function nativeRequest(c: import("hono").Context): Promise<NativeAuth> {
+  const store = c.get("agentActivityStore" as never) as AgentActivityStore | undefined;
+  const expectedToken = c.get("activityHookToken" as never) as string | undefined;
+  const inbox = c.get("claudeNativeInbox" as never) as import("../domain/claude-native-inbox.js").ClaudeNativeInbox | undefined;
+  if (!store || !expectedToken || !inbox) {
+    return { ok: false, response: c.json({ ok: false, code: "native_inbox_unconfigured", error: "Native inbox ingestion is not configured for this daemon." }, 503) };
+  }
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : null;
+  if (bearerToken !== expectedToken && (c.req.header("x-openrig-activity-token") ?? null) !== expectedToken) {
+    return { ok: false, response: c.json({ ok: false, code: "activity_hook_unauthorized", error: "Native inbox ingestion requires the configured local hook token." }, 401) };
+  }
+  const read = await readCappedJson(c, "native inbox", ACTIVITY_HOOK_MAX_BODY_BYTES, "hook_body_too_large");
+  if ("error" in read) return { ok: false, response: read.error };
+  return { ok: true, store, inbox, body: read.value as Record<string, unknown> };
+}
+
+activityRoutes.post("/native-endpoint", async (c) => {
+  const req = await nativeRequest(c);
+  if (!req.ok) return req.response;
+  const { store, inbox, body } = req;
+  const seat = store.resolveSession({ sessionName: stringOrNull(body.sessionName), nodeId: stringOrNull(body.nodeId) });
+  const socketPath = stringOrNull(body.socketPath);
+  if (!seat || !socketPath || seat.runtime !== "claude-code") {
+    return c.json({ ok: false, code: "native_endpoint_refused", error: "No running Claude seat matches this endpoint." }, 404);
+  }
+  const claudePid = typeof body.claudePid === "number" && Number.isInteger(body.claudePid) && body.claudePid > 0 ? body.claudePid : null;
+  const row = await inbox.registerEndpoint({
+    nodeId: seat.nodeId, sessionName: seat.sessionName, generation: stringOrNull(body.generation), socketPath,
+    transcriptPath: stringOrNull(body.transcriptPath), claudePid, execPath: stringOrNull(body.execPath),
+  });
+  return c.json({ ok: !!row, probe: row?.probe_result ?? null, version: row?.claude_version ?? null });
+});
+
+activityRoutes.post("/native-ack", async (c) => {
+  const req = await nativeRequest(c);
+  if (!req.ok) return req.response;
+  const { store, inbox, body } = req;
+  const seat = store.resolveSession({ sessionName: stringOrNull(body.sessionName), nodeId: stringOrNull(body.nodeId) });
+  if (!seat) return c.json({ ok: false, code: "session_not_found", block: false }, 404);
+  const markers = Array.isArray(body.markers)
+    ? body.markers.flatMap((m) => (m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string" && typeof (m as { nonce?: unknown }).nonce === "string"
+      ? [{ id: (m as { id: string }).id, nonce: (m as { nonce: string }).nonce }] : [])).slice(0, 64)
+    : [];
+  const result = inbox.ack({ nodeId: seat.nodeId, sessionName: seat.sessionName, markers });
+  return c.json({ ok: true, acked: result.acked, block: result.block });
+});
+
 activityRoutes.post("/hooks", async (c) => {
   const store = c.get("agentActivityStore" as never) as AgentActivityStore | undefined;
   const expectedToken = c.get("activityHookToken" as never) as string | undefined;

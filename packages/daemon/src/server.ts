@@ -355,6 +355,8 @@ export interface AppDeps {
   occupantInvalidator?: import("./domain/occupant-invalidator.js").OccupantInvalidator;
   nodeCmuxService?: import("./domain/node-cmux-service.js").NodeCmuxService;
   agentActivityStore?: AgentActivityStore;
+  /** Native comms step 3: inbox endpoint registration and marker acks (routes/activity.ts). */
+  claudeNativeInbox?: import("./domain/claude-native-inbox.js").ClaudeNativeInbox;
   seatAttentionReconciler?: import("./domain/seat-attention-reconciler.js").SeatAttentionReconciler;
   activityHookToken?: string;
   serviceOrchestrator?: import("./domain/service-orchestrator.js").ServiceOrchestrator;
@@ -621,6 +623,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("occupantInvalidator" as never, deps.occupantInvalidator);
     c.set("nodeCmuxService" as never, deps.nodeCmuxService);
     c.set("agentActivityStore" as never, deps.agentActivityStore);
+    c.set("claudeNativeInbox" as never, deps.claudeNativeInbox);
     c.set("seatAttentionReconciler" as never, deps.seatAttentionReconciler);
     // Slice 15 — wire seatActivityService into request context so the
     // /api/rigs/:id/nodes route can enrich entries with terminalActive +

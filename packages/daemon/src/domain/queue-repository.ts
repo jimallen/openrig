@@ -293,7 +293,7 @@ export interface QueueNudgeTransport {
     // measure the wait for a handoff nudge too (the real impl is SessionTransport, which accepts it).
     text: string,
     opts?: { verify?: boolean; stampISO?: string; actorSession?: string; committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string }
-  ): Promise<{ ok: boolean; verified?: boolean; error?: string; reason?: string; outcome?: string }>;
+  ): Promise<{ ok: boolean; verified?: boolean; error?: string; reason?: string; outcome?: string; path?: "native" }>;
 }
 
 export interface QueueCreateInput {
@@ -1203,7 +1203,8 @@ export class QueueRepository {
     const outcome = await this.performWakeSend(
       qitemId, intent.destinationSession, intent.senderSession, undefined, group.map(entry => entry.body).join("\n"), group.map(entry => entry.outboxId),
     );
-    const finalState = outcome.classified === "verified" ? "delivered" : outcome.classified;
+    const finalState = outcome.classified === "verified" ? "delivered" : outcome.classified === "native-pending" ? "indeterminate" : outcome.classified;
+    const settleHere = outcome.classified !== "native-pending";
     for (const member of group) {
       const intent = member;
       const qitemId = intent.auditPointer!;
@@ -1214,7 +1215,7 @@ export class QueueRepository {
         : undefined;
       const wakeEvent = this.db.transaction(() => {
         this.recordNudgeAttempt(qitemId, outcome.nudgeResult);
-        this.outbox!.finalizeDelivery(intent.outboxId, finalState, outcome.label);
+        if (settleHere) this.outbox!.finalizeDelivery(intent.outboxId, finalState, outcome.label);
         if (!blockerRef) return null;
 
         const item = this.getByIdOrThrow(qitemId);
@@ -1414,7 +1415,7 @@ export class QueueRepository {
     bodyOverride?: string,
     prebuiltText?: string,
     committedOutboxIds?: string[],
-  ): Promise<{ classified: "verified" | "indeterminate" | "failed" | "retained"; nudgeResult: string; label: OutboxOutcomeLabel }> {
+  ): Promise<{ classified: "verified" | "indeterminate" | "failed" | "retained" | "native-pending"; nudgeResult: string; label: OutboxOutcomeLabel }> {
     // DEFECT FIX qitem-20260827065907-b9ae334c (S1-class, 3 live specimens): a virtual
     // @external destination has NO pane — the queue row ITSELF is the gateway
     // subsystem's input (the Slack connector polls human-destined rows and its own
@@ -1495,6 +1496,13 @@ export class QueueRepository {
       // already consumed the positive literal.
       // OF-179 F4: one mapping from SendResult to a label (labelForTmuxSend), shared with the send routes. A result that
       // says it failed is classified as a failure even when `ok` is set, so the row's state and its label agree.
+      // Native comms step 3: a native wake is settled by the seat's ack (already done when `verified`) or by the deadline
+      // sweeper; its rows are not finalized here.
+      if (res.path === "native") {
+        return res.verified
+          ? { classified: "verified", nudgeResult: "verified-native", label: { path: "native", evidence: "native_hook_delivered" } }
+          : { classified: "native-pending", nudgeResult: "native-ack-pending", label: { path: "native", evidence: "native_written" } };
+      }
       const label = labelForTmuxSend(res);
       if (res.outcome === "retained") return { classified: "retained", nudgeResult: "retained:typing_guard", label };
       if (res.ok && label.evidence !== "send_failed") {

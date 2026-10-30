@@ -72,6 +72,9 @@ export type OutboxDeliveryPath = (typeof OUTBOX_DELIVERY_PATHS)[number];
 export const OUTBOX_ACK_EVIDENCE = [
   "render_verified", "render_unconfirmed", "send_ok", "send_timeout", "send_failed", "retained",
   "gateway_owned", "local_inbox", "unroutable", "no_qitem", "superseded", "crash_reconciled",
+  // Native comms step 3: written to the seat's inbox socket, awaiting its UserPromptSubmit ack; acked by that hook;
+  // found in the seat's transcript after the ack was lost; not taken (or not confirmable) by the deadline.
+  "native_written", "native_hook_delivered", "native_transcript", "native_unconfirmed",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 
@@ -114,6 +117,9 @@ export interface OutboxEntry {
   deliveryPath?: OutboxDeliveryPath | null;
   ackEvidence?: OutboxAckEvidence | null;
   ackDetail?: string | null;
+  /** Native comms step 3 (migration 118). The nonce is internal: routes must not return it. */
+  nativeNonce?: string | null;
+  nativeWrittenAt?: string | null;
 }
 
 interface OutboxEntryRow {
@@ -134,6 +140,8 @@ interface OutboxEntryRow {
   delivery_path?: string | null;
   ack_evidence?: string | null;
   ack_detail?: string | null;
+  native_nonce?: string | null;
+  native_written_at?: string | null;
 }
 
 /**
@@ -373,6 +381,88 @@ export class OutboxHandler {
     return this.getByIdOrThrow(outboxId);
   }
 
+  // ── Native comms step 3 (migration 118): a native row is claimed (`sending`, native / native_written, with its nonce
+  // and claim time) BEFORE the socket write, settled by the receiver's ack or by the deadline sweeper, and never moved
+  // by the drain's finalize or by startup reconciliation (both act on non-native rows only).
+
+  /** Claims a pending row, or a wake row the drain already moved to `sending`, for a native write. False when the row
+   *  is in any other state, already native, or the database lacks migration 118. */
+  claimNative(outboxId: string, nonce: string, writtenAt: string): boolean {
+    if (!this.hasNativeColumns()) return false;
+    return this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'sending', delivery_path = 'native', ack_evidence = 'native_written',
+        ack_detail = NULL, native_nonce = ?, native_written_at = ?
+      WHERE outbox_id = ? AND delivery_state IN ('pending', 'sending') AND delivery_path IS NOT 'native'`).run(nonce, writtenAt, outboxId).changes === 1;
+  }
+
+  /** Nothing was written: a row this send created is removed (the tmux path records its own); an adopted row returns
+   *  to `sending`, unlabelled, for the caller's tmux path. */
+  releaseNativeClaim(outboxId: string, created: boolean): void {
+    if (created) {
+      this.db.prepare(`DELETE FROM outbox_entries WHERE outbox_id = ? AND delivery_state = 'sending' AND ack_evidence = 'native_written'`).run(outboxId);
+      return;
+    }
+    this.db.prepare(`UPDATE outbox_entries SET delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, native_nonce = NULL, native_written_at = NULL
+      WHERE outbox_id = ? AND delivery_state = 'sending' AND ack_evidence = 'native_written'`).run(outboxId);
+  }
+
+  /** The receiver's UserPromptSubmit echoed the row's marker. Acks only a native row still awaiting it, whose nonce
+   *  matches and whose destination is the hooking seat. `already_delivered`: the row was settled delivered (or
+   *  indeterminate) by another path, so this copy is a late duplicate. */
+  ackNative(outboxId: string, nonce: string, destinationSession: string): "acked" | "already_delivered" | "no_match" {
+    if (!this.hasNativeColumns()) return "no_match";
+    const row = this.db.prepare(`SELECT delivery_state AS state, delivery_path AS path, ack_evidence AS evidence, native_nonce AS nonce,
+        destination_session AS dest FROM outbox_entries WHERE outbox_id = ?`).get(outboxId) as
+      { state: string; path: string | null; evidence: string | null; nonce: string | null; dest: string } | undefined;
+    if (!row || row.nonce !== nonce || row.dest !== destinationSession) return "no_match";
+    if (row.state === "sending" && row.path === "native" && row.evidence === "native_written") {
+      const changed = this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'delivered', delivered_at = ?, ack_evidence = 'native_hook_delivered', ack_detail = NULL
+        WHERE outbox_id = ? AND delivery_state = 'sending' AND ack_evidence = 'native_written'`).run(new Date().toISOString(), outboxId).changes;
+      return changed === 1 ? "acked" : "no_match";
+    }
+    // A row the deadline sweeper failed over: its tmux copy did not land, so this late native copy IS the delivery.
+    if (row.state === "failed" && row.evidence !== "native_unconfirmed") {
+      this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'delivered', delivered_at = ?, delivery_path = 'native', ack_evidence = 'native_hook_delivered',
+          ack_detail = 'late, after a failed fallback' WHERE outbox_id = ? AND delivery_state = 'failed'`).run(new Date().toISOString(), outboxId);
+      return "acked";
+    }
+    // Settled by another path, or failed over and its tmux copy in flight: this copy is a late duplicate. (Blocking it
+    // while the fallback is in flight trades a duplicate for a visible `failed` row should that tmux copy not land.)
+    if (row.state === "delivered" || row.state === "indeterminate" || (row.state === "failed" && row.evidence === "native_unconfirmed")) return "already_delivered";
+    return "no_match";
+  }
+
+  /** Settles a native row the sweeper or a partial write decided; only a row still awaiting its ack moves. */
+  settleNative(outboxId: string, state: "delivered" | "failed" | "indeterminate", label: OutboxOutcomeLabel): boolean {
+    if (!this.hasNativeColumns()) return false;
+    return this.db.prepare(`UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?, delivery_path = ?, ack_evidence = ?, ack_detail = ?
+      WHERE outbox_id = ? AND delivery_state = 'sending' AND ack_evidence = 'native_written'`)
+      .run(state, state === "delivered" ? new Date().toISOString() : null, label.path, label.evidence, label.detail ?? null, outboxId).changes === 1;
+  }
+
+  /** Records the tmux fallback's own outcome on a native row the sweeper failed over (native / native_unconfirmed). */
+  settleFallback(outboxId: string, state: "delivered" | "failed" | "indeterminate" | "retained", label: OutboxOutcomeLabel): boolean {
+    if (!this.hasNativeColumns()) return false;
+    return this.db.prepare(`UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?, delivery_path = ?, ack_evidence = ?, ack_detail = ?
+      WHERE outbox_id = ? AND delivery_state = 'failed' AND ack_evidence = 'native_unconfirmed'`)
+      .run(state, state === "delivered" ? new Date().toISOString() : null, label.path, label.evidence, label.detail ?? null, outboxId).changes === 1;
+  }
+
+  /** Native rows still awaiting their ack, oldest first. */
+  listNativePending(): OutboxEntry[] {
+    if (!this.hasNativeColumns()) return [];
+    const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE delivery_state = 'sending' AND delivery_path = 'native'
+      AND ack_evidence = 'native_written' ORDER BY native_written_at, outbox_id`).all() as OutboxEntryRow[];
+    return rows.map((r) => this.rowToEntry(r, "mark"));
+  }
+
+  private hasNativeColumns(): boolean {
+    if (this.nativeColumns === undefined) {
+      this.nativeColumns = (this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "native_nonce");
+    }
+    return this.nativeColumns;
+  }
+  private nativeColumns: boolean | undefined;
+
   /** Labels a row another writer has just settled (the queue's superseded wake). No-op before migration 117. */
   labelOutcome(outboxId: string, label: OutboxOutcomeLabel): void {
     const set = this.labelSet(label);
@@ -450,7 +540,7 @@ export class OutboxHandler {
     const result = this.db
       .prepare(
         `UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?${set.sql}
-          WHERE outbox_id = ? AND delivery_state = 'sending'`
+          WHERE outbox_id = ? AND delivery_state = 'sending'${this.hasOutcomeLabelColumns ? " AND ack_evidence IS NOT 'native_written'" : ""}`
       )
       .run(state, deliveredAt, ...set.values, outboxId);
     if (result.changes === 0) {
@@ -517,7 +607,7 @@ export class OutboxHandler {
     const result = this.db
       .prepare(
         `UPDATE outbox_entries SET delivery_state = 'indeterminate'${set.sql}
-          WHERE delivery_state = 'sending' AND substr(outbox_id, 1, ?) = ?`
+          WHERE delivery_state = 'sending' AND substr(outbox_id, 1, ?) = ?${this.hasOutcomeLabelColumns ? " AND delivery_path IS NOT 'native'" : ""}`
       )
       .run(...set.values, idPrefix.length, idPrefix);
     return result.changes;
@@ -566,6 +656,7 @@ export class OutboxHandler {
         retirementReason: row.retirement_reason ?? null,
       } : {}),
       ...(row.ack_evidence !== undefined ? { deliveryPath, ackEvidence, ackDetail: row.ack_detail ?? null } : {}),
+      ...(row.native_nonce !== undefined ? { nativeNonce: row.native_nonce ?? null, nativeWrittenAt: row.native_written_at ?? null } : {}),
       ...(unreadable.length > 0 ? { unreadable } : {}),
     };
   }
