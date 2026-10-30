@@ -149,6 +149,73 @@ async function postHookPayload(payload, env = process.env) {
   }
 }
 
+// Native comms step 3: posts to a native route and returns the parsed JSON reply, or null on any failure (the daemon
+// unreachable, a timeout, a non-JSON reply). A null reply never blocks the agent.
+async function postNativeJson(route, payload, env = process.env, timeoutMs = 1500) {
+  const { baseUrl, token } = resolveEndpoint(env);
+  if (!baseUrl || !token || !payload || typeof fetch !== "function") return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(new URL(route, baseUrl).toString(), {
+      method: "POST",
+      headers: { "content-type": "application/json", "authorization": `Bearer ${token}` },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function hookEventOf(providerPayload) {
+  return firstString(providerPayload.hookEvent, providerPayload.hookEventName, providerPayload.hook_event_name, providerPayload.event, providerPayload.eventName);
+}
+
+// Native comms step 3, SessionStart of a Claude seat: the seat's inbox socket, transcript, claude pid and binary, from
+// what Claude Code puts in the hook's environment and payload (measured on 2.1.311/2.1.314: CLAUDE_CODE_MESSAGING_SOCKET,
+// CLAUDE_PID, CLAUDE_CODE_EXECPATH, transcript_path). The messaging token is never read or sent: it restricts nothing.
+function buildNativeEndpointPayload(providerPayload, env = process.env) {
+  if (hookEventOf(providerPayload) !== "SessionStart") return null;
+  const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
+  const socketPath = firstString(env.CLAUDE_CODE_MESSAGING_SOCKET);
+  if (runtime !== "claude-code" || !socketPath) return null;
+  const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
+  const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
+  if (!sessionName && !nodeId) return null;
+  const pid = Number(firstString(env.CLAUDE_PID));
+  return {
+    sessionName, nodeId, runtime,
+    generation: firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION),
+    socketPath,
+    transcriptPath: firstString(providerPayload.transcript_path),
+    claudePid: Number.isInteger(pid) && pid > 0 ? pid : null,
+    execPath: firstString(env.CLAUDE_CODE_EXECPATH),
+  };
+}
+
+const NATIVE_MARKER_RE = /\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]/g;
+
+// Native comms step 3, UserPromptSubmit of a Claude seat: the markers of native messages in the prompt.
+function buildNativeAckPayload(providerPayload, env = process.env) {
+  if (hookEventOf(providerPayload) !== "UserPromptSubmit") return null;
+  const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
+  if (runtime !== "claude-code" || typeof providerPayload.prompt !== "string") return null;
+  const markers = [...providerPayload.prompt.matchAll(NATIVE_MARKER_RE)].map((m) => ({ id: m[1], nonce: m[2] }));
+  if (markers.length === 0) return null;
+  return {
+    sessionName: firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME),
+    nodeId: firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID),
+    generation: firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION),
+    // The same prompt's hook running twice is one delivery: the daemon acks a repeat with the same prompt id.
+    promptId: firstString(providerPayload.prompt_id),
+    markers,
+  };
+}
+
 function buildSessionIdentityPayload(providerPayload, env = process.env, now = () => new Date()) {
   if (!providerPayload || typeof providerPayload !== "object") return null;
   const hookEvent = firstString(
@@ -220,6 +287,17 @@ async function main() {
   if (identityPayload) {
     await postHookPayload(identityPayload);
   }
+  const endpoint = buildNativeEndpointPayload(providerPayload);
+  if (endpoint) await postNativeJson("/api/activity/native-endpoint", endpoint);
+  const ack = buildNativeAckPayload(providerPayload);
+  if (ack) {
+    // A late duplicate of a message already delivered another way is suppressed (measured: a UserPromptSubmit block
+    // stops a socket-injected copy cleanly). No reply, or any doubt, lets the prompt through.
+    const reply = await postNativeJson("/api/activity/native-ack", ack);
+    if (reply && reply.block === true) {
+      process.stdout.write(JSON.stringify({ decision: "block", reason: "OpenRig: this message was already delivered; duplicate suppressed." }) + "\n");
+    }
+  }
 }
 
 if (require.main === module) {
@@ -227,6 +305,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildNativeEndpointPayload,
+  buildNativeAckPayload,
   buildOpenRigPayload,
   claimFirstLaunchHook,
   buildSessionIdentityPayload,

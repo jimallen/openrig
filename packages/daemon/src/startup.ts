@@ -114,7 +114,10 @@ import { RequestPhaseObserver } from "./domain/request-phase-observer.js";
 import { QueueRepository, isBlockerLive } from "./domain/queue-repository.js";
 import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guard.js";
 import { InboxHandler } from "./domain/inbox-handler.js";
-import { OutboxHandler } from "./domain/outbox-handler.js";
+import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
+import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
+import { createNativeSettlementHandler, nativeFallbackOutcome, recordNativeFallback } from "./domain/native-inbox-settlement.js";
+import { fileIncludes, listProcesses as listProcessesForNative, probeClaudeBinary, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
 import { ClassificationAttemptLedger } from "./domain/classification-attempts.js";
@@ -643,7 +646,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const claudeManagedLaunch = new ClaudeManagedLaunch(db, { ...launchSessionEnv, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }, {
     OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN: process.env.OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN,
   });
-  const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment });
+  // Native comms step 3: `transport.native_claude`, read at every launch and every send decision (a changed setting
+  // reaches the next launch and the next send; seats need a relaunch to carry the inbox setting).
+  const nativeClaudeEnabled = (): boolean => {
+    try { return new ContextPackSettingsStore().resolveOne("transport.native_claude").value === true; } catch { return false; }
+  };
+  const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled });
   // #275: one reader for both Codex launch adapters, with the PATH, HOME and CODEX_HOME a seat session gets.
   const readCodexNetworkDefault = codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome });
   // Per-seat Codex MCP servers: the server NAMES the other Codex config layers define for a launch (the shared
@@ -854,7 +862,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
   const runtimeSettings = new ContextPackSettingsStore().resolveConfig();
-  const claudeAdapter = new ClaudeCodeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, claudeManagedLaunch, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: replaceFile, listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, readdir: (dir: string) => fs.readdirSync(dir), statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: os.homedir() }, stateDir: OPENRIG_HOME, collectorAssetPath: nodePath.resolve(import.meta.dirname, "../assets/claude-statusline-context.cjs"), autoDriveProviderPrompts: runtimeSettings.recoveryAutoDriveProviderPrompts, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"), claudeHooksManifestPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json"), recordProjection: (targetPath: string, content: string) => projectionManifestStore.record({ targetPath, lastHash: hashContent(content), writtenAt: new Date().toISOString() }) });
+  const claudeAdapter = new ClaudeCodeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, claudeManagedLaunch, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: replaceFile, listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, readdir: (dir: string) => fs.readdirSync(dir), statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: os.homedir() }, stateDir: OPENRIG_HOME, collectorAssetPath: nodePath.resolve(import.meta.dirname, "../assets/claude-statusline-context.cjs"), autoDriveProviderPrompts: runtimeSettings.recoveryAutoDriveProviderPrompts, nativeInboxEnabled: nativeClaudeEnabled, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"), claudeHooksManifestPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json"), recordProjection: (targetPath: string, content: string) => projectionManifestStore.record({ targetPath, lastHash: hashContent(content), writtenAt: new Date().toISOString() }) });
   const codexAdapter = new CodexRuntimeAdapter({ prepareTeamWorkspace, tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; /** Collect relative file paths recursively. */ function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), readNetworkDefault: readCodexNetworkDefault, readSeatMcpServers: (nodeId: string) => readSeatMcpServers(db, nodeId), existingMcpServerNames, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
   // OPR.0.4.6.PI1 — the RPC-first Pi adapter (runner-in-a-pane). Same fsOps
   // shape as the Codex adapter; seat isolation roots under piStateRoot.
@@ -1315,6 +1323,30 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (pda, pi and omp), so a
   // mis-wired source can never touch another runtime's send.
   const runtimeAdapterMap: Record<string, RuntimeAdapter> = { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() };
+  // Native comms step 3 (review R3/F3): the queue write-back and the sender notice (domain/native-inbox-settlement.ts).
+  // The notice goes through tmux once the transport exists (bound below).
+  const nativeNotice: { send?: (to: string, text: string) => Promise<unknown> } = {};
+  const nativeSettlementDeps = {
+    recordNudgeAttempt: (qitemId: string, result: string) => queueRepoInstance.recordNudgeAttempt(qitemId, result),
+    sendNotice: (to: string, text: string) => nativeNotice.send?.(to, text) ?? Promise.resolve(undefined),
+    isAgentSeat: (sender: string) => !/@system$/.test(sender) && sender !== "daemon@kernel" && claudeNativeInbox.isNativeSender(sender),
+  };
+  const claudeNativeInbox: ClaudeNativeInbox = new ClaudeNativeInbox({
+    db,
+    onSettled: createNativeSettlementHandler(nativeSettlementDeps),
+    outbox: outboxHandlerInstance,
+    enabled: nativeClaudeEnabled,
+    panePid: async (session) => {
+      const pane = (await tmuxAdapter.listPanes(session))[0];
+      return pane ? tmuxAdapter.getPanePid(pane.id) : null;
+    },
+    listProcesses: listProcessesForNative,
+    socketExists,
+    write: (path, lines) => writeSocketLines(path, lines),
+    fileIncludes: (path, needle) => fileIncludes(path, needle),
+    probeBinary: probeClaudeBinary,
+    liveGeneration: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.generationUuid ?? null,
+  });
   const deps: AppDeps = {
     rigRepo,
     sessionRegistry,
@@ -1407,6 +1439,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         eventBus,
         slowOpRecorder,
         activityEndpointFile: () => readActivityEndpointFile(OPENRIG_HOME),
+        nativeInbox: claudeNativeInbox,
         captureObserver: shadow.capture?.observer,
         runnerSendReadiness: runnerSendReadinessFromAdapters(runtimeAdapterMap),
       });
@@ -1484,6 +1517,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     whoamiService,
     nodeCmuxService,
     agentActivityStore,
+    claudeNativeInbox,
     seatAttentionReconciler,
     activityHookToken: resolvedActivityHookToken,
     contextUsageStore,
@@ -2103,6 +2137,32 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const sessionTransport = deps.sessionTransport;
   if (sessionTransport) {
+    // Native comms step 3: the deadline sweeper (§8.1 R3). It reads the database, so rows a restart left `sending` are
+    // settled too: delivered when the marker is in the seat's transcript, failed over to tmux after a proven non-take,
+    // indeterminate (never re-sent) when no boundary came by the hard deadline. One sweep at a time.
+    let nativeSweepRunning = false;
+    const nativeSweep = async () => {
+      if (nativeSweepRunning) return;
+      nativeSweepRunning = true;
+      try {
+        const { fallbacks } = claudeNativeInbox.sweep();
+        for (const f of fallbacks) {
+          const res = await sessionTransport.send(f.sessionName, f.body, { forceTmux: true, verify: true, actorSession: f.senderSession, auditPointer: f.auditPointer ?? undefined });
+          const outcome = nativeFallbackOutcome(res, labelForTmuxSend(res));
+          outboxHandlerInstance.settleFallback(f.outboxId, outcome.state, outcome.label);
+          const entry = outboxHandlerInstance.getById(f.outboxId);
+          if (entry) await recordNativeFallback(nativeSettlementDeps, entry, res, outcome);
+        }
+      } catch (err) {
+        console.warn(`[native-inbox] sweep failed: ${(err as Error).message}`);
+      } finally {
+        nativeSweepRunning = false;
+      }
+    };
+    nativeNotice.send = (to, text) => sessionTransport.send(to, text, { forceTmux: true, actorSession: "daemon@kernel" }).catch(() => undefined);
+    void nativeSweep();
+    const nativeSweepTimer = setInterval(() => { void nativeSweep(); }, 15_000);
+    nativeSweepTimer.unref?.();
     queueRepoInstance.attachActivityReader((session) => {
       const nodeId = resolveSessionNodeId(db, session);
       return nodeId ? seatActivityService.getSeatState(nodeId) : null;

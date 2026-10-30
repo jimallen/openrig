@@ -116,7 +116,9 @@ describe("config routes (User Settings v0)", () => {
     // + 1 usage.pi_openrouter_charge (slice 02 K4 OpenRouter charge beside the Pi estimate; default off).
     // + 1 rsi.steward_session (RSI B1; default "" = nothing armed).
     // + 1 usage.pda_cost_facts (pda L0, review D2; default off).
-    expect(Object.keys(body.settings).length).toBe(80);
+    // + 1 transport.native_claude (native comms step 3; default off).
+    expect(Object.keys(body.settings).length).toBe(81);
+    expect(body.settings["transport.native_claude"]?.value).toBe(false);
     expect(body.settings["rsi.steward_session"]).toMatchObject({ value: "", source: "default" });
     expect(body.settings["launch.non_interruptive"]).toMatchObject({ value: false, source: "default" });
     expect(body.settings["runtime.readiness_timeout_seconds"]).toMatchObject({ value: 30, source: "default" });

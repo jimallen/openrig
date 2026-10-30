@@ -375,6 +375,8 @@ function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
   if (lastNudgeResult.startsWith("retained:")) return "failed";
   if (
     lastNudgeResult === "delivered-ack-pending" ||
+    // Native comms step 3 (review F3): a native wake awaiting its ack is unconfirmed, like a tmux one.
+    lastNudgeResult === "native-ack-pending" ||
     lastNudgeResult.startsWith("indeterminate:") ||
     lastNudgeResult.startsWith("gateway-owned:")
   )

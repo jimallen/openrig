@@ -38,7 +38,22 @@ export const TEAM_CLAUDE_ASK = [
   "seat clean", "seat handover", "seat switch-client", "seat set-permissions", "seat set-model", "seat set-effort", "seat set-mcp",
 ].map(command => `Bash(rig ${command}:*)`);
 
-type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode">;
+type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode">
+  & { /** Native comms step 3: the daemon's `transport.native_claude` at launch time. */ nativeInbox?: boolean };
+
+/** The setting a Claude seat needs so its inbox delivers a daemon or agent message instead of holding it behind a picker
+ *  (measured: a bypass seat holds it otherwise; only launch-flag scope is honoured, a local settings file is ignored). */
+export const NATIVE_INBOX_SETTINGS = { crossSessionInbound: "accept" } as const;
+
+/** Native comms step 3: the inbox setting merged into the ONE `--settings` JSON a Claude launch already carries, or a
+ *  `--settings` with only that key. Nothing else in the JSON changes. Two `--settings` flags were never measured, so
+ *  this never adds a second one. */
+export function withNativeInboxSettings(args: string[]): string[] {
+  const at = args.indexOf("--settings");
+  if (at === -1) return [...args, "--settings", JSON.stringify(NATIVE_INBOX_SETTINGS)];
+  const merged = { ...(JSON.parse(args[at + 1]!) as Record<string, unknown>), ...NATIVE_INBOX_SETTINGS };
+  return [...args.slice(0, at + 1), JSON.stringify(merged), ...args.slice(at + 2)];
+}
 
 function claudeCommandSettings(allow: string[], ask: string[] = []): string[] {
   const permissions = { allow, ...(ask.length ? { ask } : {}) };
@@ -54,6 +69,11 @@ function claudeCommandSettings(allow: string[], ask: string[] = []): string[] {
 
 /** Session flags only; never writes a personal/project permission file. */
 export function operationalLaunchArgs(runtime: string, choice: LaunchChoice): string[] {
+  const args = baseOperationalLaunchArgs(runtime, choice);
+  return runtime === "claude-code" && choice.nativeInbox ? withNativeInboxSettings(args) : args;
+}
+
+function baseOperationalLaunchArgs(runtime: string, choice: LaunchChoice): string[] {
   if (runtime === "codex") {
     // Managed seats leave Codex upgrades to the operator. This is launch-local;
     // it does not write config or accept a rate-limit model switch.

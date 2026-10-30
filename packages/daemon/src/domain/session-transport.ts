@@ -1,4 +1,5 @@
 import { CODEX_TURN_STATUS_PATTERN } from "./codex-pane-patterns.js";
+import type { ClaudeNativeInbox } from "./claude-native-inbox.js";
 import { randomUUID } from "node:crypto";
 import { inspectStartupStagedText, startupSubmissionEvidence, type StartupSubmissionEvidence } from "./startup-submission-evidence.js";
 import {
@@ -1015,6 +1016,8 @@ export interface SendOpts {
   // send. `actorSession` is the caller identity recorded in that audit. (`--raw` is purely a CLI-side
   // envelope concern — the daemon guard behaves identically for raw and wrapped text.)
   dangerouslyInteract?: boolean;
+  /** Internal (native comms step 3): the deadline sweeper's fallback, which must take the tmux path. Never client-supplied. */
+  forceTmux?: boolean;
   reason?: string;
   actorSession?: string | null;
   // GHOST-STAGE (h): the envelope's compose stamp (ISO), threaded to send() so the WRITE-moment
@@ -1052,6 +1055,8 @@ export interface BroadcastOpts extends SendOpts {
 
 export interface SendResult {
   ok: boolean;
+  /** Native comms step 3: `native` when the text went to the seat's inbox socket (absent: the tmux path). */
+  path?: "native";
   sessionName: string;
   verified?: boolean;
   /** Audited prompt answer: consumers must never automatically retry Enter.
@@ -1109,6 +1114,8 @@ interface SessionTransportDeps {
   sessionRegistry: SessionRegistry;
   tmuxAdapter: TmuxAdapter;
   agentActivityStore?: AgentActivityStore;
+  /** Native comms step 3: when present, eligible daemon/agent messages to Claude seats go to the seat's inbox socket. */
+  nativeInbox?: ClaudeNativeInbox;
   // OPR.0.4.1.10 — required only for the --dangerously-interact audit path. When absent, a dangerous
   // override fails closed (refuses) rather than sending unaudited. Non-danger sends never need it.
   eventBus?: EventBus;
@@ -1198,6 +1205,7 @@ export class SessionTransport {
   private sessionRegistry: SessionRegistry;
   private tmuxAdapter: TmuxAdapter;
   private agentActivityStore?: AgentActivityStore;
+  private nativeInbox?: ClaudeNativeInbox;
   private eventBus?: EventBus;
   private now: () => Date;
   private sleep: (ms: number) => Promise<void>;
@@ -1215,6 +1223,7 @@ export class SessionTransport {
     this.sessionRegistry = deps.sessionRegistry;
     this.tmuxAdapter = deps.tmuxAdapter;
     this.agentActivityStore = deps.agentActivityStore;
+    this.nativeInbox = deps.nativeInbox;
     this.eventBus = deps.eventBus;
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? delay;
@@ -1537,6 +1546,13 @@ export class SessionTransport {
     // OF-148: before any wait, hold or retention. `--dangerously-interact` is exempt here only because it may turn out to
     // send unbracketed key input; sendUnguarded refuses again at the bracketed delivery if it did not.
     if (!opts?.dangerouslyInteract && containsPasteTerminator(text)) return pasteTerminatorRefusal(sessionName);
+    // Native comms step 3: a daemon or agent message to an eligible Claude seat goes to its inbox socket. It types nothing
+    // into the pane, so the typing guard and the prompt refusal do not apply (a queued message cannot approve a prompt and
+    // waits for it, measured). Any doubt, or nothing written, falls through to the tmux path below.
+    if (this.nativeInbox && !opts?.forceTmux && !opts?.dangerouslyInteract && !opts?.submitOnly) {
+      const native = await this.sendNative(sessionName, text, opts);
+      if (native) return native;
+    }
     const guard = this.tmuxAdapter.deliveryGuard;
     if (!guard) return this.sendUnguarded(sessionName, text, opts);
     const outbox = new OutboxHandler(this.db);
@@ -1763,6 +1779,33 @@ export class SessionTransport {
       } };
     }
     return { ok: true, evidence: { activity: preWait.activity, waitedMs: preWait.waitedMs, attempts: preWait.attempts, deadlineAt }, bound };
+  }
+
+  /** Native comms step 3: the native attempt, or null to use tmux. */
+  private async sendNative(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult | null> {
+    const inbox = this.nativeInbox!;
+    const eligible = await inbox.eligibility(sessionName, opts?.actorSession).catch(() => ({ ok: false as const, reason: "eligibility_error" }));
+    if (!eligible.ok) return null;
+    let delivered;
+    try {
+      delivered = await inbox.deliver({ sessionName, senderSession: opts!.actorSession!, text, endpoint: eligible.endpoint,
+        committedOutboxIds: opts?.committedOutboxIds, deliveryId: opts?.deliveryId, auditPointer: opts?.auditPointer ?? null, identityProvenance: "transport:v1" });
+    } catch {
+      return null; // a row that cannot be claimed (held, retired, already settled) keeps today's path
+    }
+    if (delivered.kind === "fallback") return null;
+    if (delivered.kind === "pending") {
+      // Review F2: the same id is already a native write awaiting its ack; this repeat is coalesced onto it.
+      return { ok: true, sessionName, sent: false, path: "native", outboxIds: delivered.outboxIds, verified: false, outcome: "rendered-unconfirmed",
+        warning: "Already written to the seat's inbox under this delivery id and awaiting its confirmation; not sent again." };
+    }
+    return {
+      ok: true, sessionName, sent: true, path: "native", outboxIds: delivered.outboxIds,
+      verified: delivered.acked, outcome: delivered.acked ? "delivered" : "rendered-unconfirmed",
+      ...(delivered.acked ? {} : { warning: delivered.write === "partial"
+        ? "Native delivery may not have reached the seat (the socket write did not complete); it will not be re-sent."
+        : "Native delivery written to the seat's inbox; awaiting the seat's confirmation." }),
+    };
   }
 
   private async sendUnguarded(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {

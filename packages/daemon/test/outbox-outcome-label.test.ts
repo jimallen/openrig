@@ -33,7 +33,8 @@ describe("migration 117: the label columns", () => {
     const db = fullDb();
     const cols = (db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toEqual(expect.arrayContaining(["delivery_path", "ack_evidence", "ack_detail"]));
-    expect(ALL_MIGRATIONS.at(-1)?.name).toBe("117_outbox_outcome_label.sql");
+    const names = ALL_MIGRATIONS.map((m) => m.name);
+    expect(names.indexOf("117_outbox_outcome_label.sql")).toBe(names.indexOf("116_pda_usage_entries.sql") + 1);
   });
 });
 
