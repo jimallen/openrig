@@ -92,15 +92,6 @@ export function labelForTmuxSend(res: { ok: boolean; verified?: boolean; outcome
   return { path: "tmux", evidence: "send_ok" };
 }
 
-function parseClosed<T extends string>(column: string, values: readonly T[], raw: string | null | undefined): T | null {
-  if (raw === null || raw === undefined) return null;
-  if ((values as readonly string[]).includes(raw)) return raw as T;
-  throw new OutboxHandlerError(
-    "invalid_outcome_label",
-    `outbox row has unknown ${column} ${JSON.stringify(raw)} (expected one of ${values.join(", ")})`,
-  );
-}
-
 export interface OutboxEntry {
   outboxId: string;
   senderSession: string;
@@ -284,9 +275,12 @@ export class OutboxHandler {
       }
       if (!precommitted) this.assertRetentionCapacity(binding.nodeId, input.body);
       if (!existing) this.record(input);
-      this.db.prepare(`UPDATE outbox_entries SET delivery_state='retained', guard_binding=?, delivered_at=NULL
+      // OF-179 F1/F2: a hold is labelled here, where the row moves, so a wake the typing guard retains is labelled even
+      // though the drain's later finalize finds the row no longer `sending`. Nothing was typed; the guard is the tmux path's.
+      const set = this.labelSet({ path: "tmux", evidence: "retained" });
+      this.db.prepare(`UPDATE outbox_entries SET delivery_state='retained', guard_binding=?, delivered_at=NULL${set.sql}
         WHERE outbox_id=? AND delivery_state IN ('pending','sending')`)
-        .run(JSON.stringify(binding), input.outboxId);
+        .run(JSON.stringify(binding), ...set.values, input.outboxId);
       return this.getByIdOrThrow(input.outboxId);
     })();
   }
@@ -323,6 +317,8 @@ export class OutboxHandler {
     return this.db.prepare(`SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND delivery_state = ? AND guard_binding IS NOT NULL AND NOT json_valid(guard_binding)`).get(outboxId, state) !== undefined;
   }
 
+  /** OF-179 F2: retiring leaves the outcome label as retain() wrote it (tmux / retained): the label records the delivery
+   *  attempt, and the retired_* columns record the operator's act. Nothing is sent, so there is no new path to record. */
   retire(outboxId: string, actor: string, reason: string): OutboxEntry {
     if (!actor.trim() || !reason.trim()) throw new OutboxHandlerError("retirement_reason_required", "Actor and reason are required.");
     // OF-168: a retained row whose binding is not JSON is released by this explicit act by id. It is the only way out of the quota it
@@ -409,14 +405,15 @@ export class OutboxHandler {
    * indeterminate row is terminal-by-CAS: it is never silently promoted to
    * delivered nor demoted to failed by the drain.
    */
-  markIndeterminate(outboxId: string): OutboxEntry {
+  markIndeterminate(outboxId: string, label?: OutboxOutcomeLabel): OutboxEntry {
+    const set = this.labelSet(label);
     const result = this.db
       .prepare(
         `UPDATE outbox_entries
-           SET delivery_state = 'indeterminate'
+           SET delivery_state = 'indeterminate'${set.sql}
          WHERE outbox_id = ? AND delivery_state = 'pending'`
       )
-      .run(outboxId);
+      .run(...set.values, outboxId);
     if (result.changes === 0) {
       const entry = this.getById(outboxId);
       if (!entry) throw new OutboxHandlerError("outbox_not_found", `outbox ${outboxId} not found`);
@@ -545,6 +542,12 @@ export class OutboxHandler {
     const tags = columns.strings("tags", row.tags);
     const guardBinding = row.guard_binding !== undefined ? columns.json<NonNullable<OutboxEntry["guardBinding"]>>("guard_binding", row.guard_binding) : null;
     if (damage === "refuse") columns.refuseIfDamaged();
+    // OF-179 F5: an outcome label is a record, not something a decision rests on, so a value outside the vocabulary (a
+    // newer daemon's, or damage) reads as null and is flagged in `unreadable`, but never refuses the row.
+    const labels = new RowColumnReader("outbox_entries", row.outbox_id);
+    const deliveryPath = labels.oneOf("delivery_path", OUTBOX_DELIVERY_PATHS, row.delivery_path);
+    const ackEvidence = labels.oneOf("ack_evidence", OUTBOX_ACK_EVIDENCE, row.ack_evidence);
+    const unreadable = [...columns.unreadable, ...labels.unreadable];
     return {
       outboxId: row.outbox_id,
       senderSession: row.sender_session,
@@ -562,12 +565,8 @@ export class OutboxHandler {
         retiredBy: row.retired_by ?? null,
         retirementReason: row.retirement_reason ?? null,
       } : {}),
-      ...(row.ack_evidence !== undefined ? {
-        deliveryPath: parseClosed("delivery_path", OUTBOX_DELIVERY_PATHS, row.delivery_path),
-        ackEvidence: parseClosed("ack_evidence", OUTBOX_ACK_EVIDENCE, row.ack_evidence),
-        ackDetail: row.ack_detail ?? null,
-      } : {}),
-      ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
+      ...(row.ack_evidence !== undefined ? { deliveryPath, ackEvidence, ackDetail: row.ack_detail ?? null } : {}),
+      ...(unreadable.length > 0 ? { unreadable } : {}),
     };
   }
 }
