@@ -1,6 +1,8 @@
 // OF-182: after a restore that RESUMED a seat's conversation, tell the seat it was restarted. A resumed seat comes back
-// idle with its old context, but every background task, shell loop and timer of the previous process was killed, and
-// nothing says so (rig ps shows it ready). eztrack lost about 40 minutes to this on 2026-10-30.
+// idle with its old context, but what ran inside its previous session (background tasks, timers, its own wake-up timer)
+// stopped with it, and nothing says so (rig ps shows it ready). eztrack lost about 40 minutes to this on 2026-10-30.
+// A process started detached (nohup) survives `rig down` (measured on Sparky, design §OF-182), so the prompt asks the
+// seat to check what is running before it restarts anything.
 //
 // One prompt per resumed seat per restore, through the normal send path (native where eligible, tmux otherwise; the
 // outbox row is the record). Who gets it:
@@ -66,9 +68,10 @@ export function postRestartDeliveryId(restoreSeq: number, nodeId: string): strin
 export function postRestartText(input: { rigName: string; restartedAt: string }): string {
   return inertStartupText(
     `OpenRig: this seat was restarted at ${input.restartedAt} (rig ${input.rigName} was restored and your conversation resumed). `
-    + "Every background task, shell loop and timer you had running before the restart was killed and is not running now, "
-    + "including any wake-up timer you set yourself. Check your handover and notes and any runs you had in flight, "
-    + "then resume or restart what is still needed. Nothing else changed.",
+    + "Anything that ran inside your previous session stopped with it: background tasks, timers and any wake-up timer "
+    + "you set yourself. A process started detached (nohup, setsid, disown) may still be running. Check your handover "
+    + "and notes and any runs you had in flight, see what is actually running, and resume or restart only what is "
+    + "still needed, so nothing runs twice.",
   );
 }
 

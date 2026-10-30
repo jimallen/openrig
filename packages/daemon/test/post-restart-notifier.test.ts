@@ -82,9 +82,10 @@ describe("who gets the prompt", () => {
 });
 
 describe("the prompt", () => {
-  it("says the seat was restarted and when, that background work was killed, and to check notes and in-flight runs", () => {
+  it("says the seat was restarted and when, what stopped, that a detached process may survive, and to check before restarting", () => {
     const text = postRestartText({ rigName: "eztrack", restartedAt: "2026-10-30T18:00:20.000Z" });
-    for (const phrase of ["restarted at 2026-10-30T18:00:20.000Z", "rig eztrack", "was killed and is not running now", "wake-up timer", "handover and notes", "resume or restart"]) {
+    for (const phrase of ["restarted at 2026-10-30T18:00:20.000Z", "rig eztrack", "stopped with it", "wake-up timer",
+      "may still be running", "handover and notes", "see what is actually running", "so nothing runs twice"]) {
       expect(text).toContain(phrase);
     }
   });
