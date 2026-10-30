@@ -68,6 +68,15 @@ export class RowColumnReader {
     return null;
   }
 
+  /** A column holding one value of a closed vocabulary (null/undefined -> `null`). A value outside it is recorded as
+   *  damage and reads as `null`, as a damaged JSON column does (OF-179 F5). */
+  oneOf<T extends string>(column: string, values: readonly T[], raw: string | null | undefined): T | null {
+    if (raw === null || raw === undefined) return null;
+    if ((values as readonly string[]).includes(raw)) return raw as T;
+    this.damaged.push(column);
+    return null;
+  }
+
   /** The columns found damaged so far, in the order read. */
   get unreadable(): string[] {
     return [...this.damaged];

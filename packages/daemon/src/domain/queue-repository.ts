@@ -7,7 +7,7 @@ import { loadHumanRegistry, resolveRegisteredHumanAddress, type LoadResult } fro
 import { resolveExternal } from "./gateway/external-admission.js";
 import type { PersistedEvent } from "./types.js";
 import { QueueTransitionLog, type OwnerNotificationLevel, type QueueTransition, type RecentQueueTransitionScope } from "./queue-transition-log.js";
-import { WAKE_INTENT_PREFIX, type OutboxHandler, type OutboxOutcomeLabel } from "./outbox-handler.js";
+import { WAKE_INTENT_PREFIX, labelForTmuxSend, type OutboxHandler, type OutboxOutcomeLabel } from "./outbox-handler.js";
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
@@ -1493,13 +1493,14 @@ export class QueueRepository {
       // "delivered-ack-pending" reads as healthy. The old "verified"
       // case is unchanged for backward-compat with any tooling that
       // already consumed the positive literal.
-      if (res.outcome === "retained") {
-        return { classified: "retained", nudgeResult: "retained:typing_guard", label: { path: "tmux", evidence: "retained", detail: res.reason ?? null } };
-      }
-      if (res.ok) {
+      // OF-179 F4: one mapping from SendResult to a label (labelForTmuxSend), shared with the send routes. A result that
+      // says it failed is classified as a failure even when `ok` is set, so the row's state and its label agree.
+      const label = labelForTmuxSend(res);
+      if (res.outcome === "retained") return { classified: "retained", nudgeResult: "retained:typing_guard", label };
+      if (res.ok && label.evidence !== "send_failed") {
         return res.verified
-          ? { classified: "verified", nudgeResult: "verified", label: { path: "tmux", evidence: "render_verified" } }
-          : { classified: "indeterminate", nudgeResult: "delivered-ack-pending", label: { path: "tmux", evidence: "render_unconfirmed" } };
+          ? { classified: "verified", nudgeResult: "verified", label }
+          : { classified: "indeterminate", nudgeResult: "delivered-ack-pending", label };
       }
       // MF6: a TIMEOUT is ambiguous — the send may have landed but the ack window
       // expired — so it records `indeterminate` (never silently delivered, never a
