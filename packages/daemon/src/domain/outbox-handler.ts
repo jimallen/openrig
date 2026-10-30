@@ -443,6 +443,9 @@ export class OutboxHandler {
     if (row.state === "indeterminate" && row.evidence === "native_unconfirmed") {
       return settle("indeterminate", `late, after indeterminate (${row.detail ?? "unconfirmed"})`) ? "acked" : "no_match";
     }
+    // ncomms-3b G1: an indeterminate row that is NOT native_unconfirmed is a tmux fallback that pasted without a confirmed
+    // render, or timed out: the paste may have landed, so a late native copy is a duplicate.
+    if (row.state === "indeterminate") return "already_delivered";
     if (row.state === "failed" && row.evidence === "native_unconfirmed") return "already_delivered"; // its tmux copy is in flight
     if (row.state === "failed" || row.state === "retained") return settle(row.state, "late, after a fallback that did not land") ? "acked" : "no_match";
     return "no_match";

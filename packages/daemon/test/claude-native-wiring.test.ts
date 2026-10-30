@@ -19,6 +19,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { OutboxHandler, WAKE_INTENT_PREFIX, type OutboxEntry } from "../src/domain/outbox-handler.js";
 import { createNativeSettlementHandler, nativeFallbackOutcome, recordNativeFallback } from "../src/domain/native-inbox-settlement.js";
+import { presentedNudgeResult } from "../src/domain/queue-repository.js";
 import { ClaudeNativeInbox, ACCEPT_SETTING_ARGV_FRAGMENT, type ProcessRow } from "../src/domain/claude-native-inbox.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
@@ -368,7 +369,8 @@ describe("settlement: the queue write-back and the sender notice (review F3, R3)
     expect(x.recorded).toEqual([["qitem-1", "indeterminate:native_unconfirmed:no_boundary_by_hard_deadline"]]);
     expect(x.notices).toHaveLength(1);
     expect(x.notices[0]![0]).toBe(SENDER);
-    expect(x.notices[0]![1]).toMatch(/UNCONFIRMED \(no_boundary_by_hard_deadline\).*not re-sent.*rig capture dev-impl@rig1/);
+    expect(x.notices[0]![1]).toMatch(/UNCONFIRMED \(no_boundary_by_hard_deadline\).*not re-sent.*It may still arrive\. Before resending, check the seat \(rig capture dev-impl@rig1\), so it is not sent twice\./);
+    expect(x.notices[0]![1]).not.toMatch(/send it again/);
   });
 
   it("the notice is stripped like any system text (OF-169): a control character in a reason never reaches the pane", () => {
@@ -390,7 +392,8 @@ describe("settlement: the queue write-back and the sender notice (review F3, R3)
     await recordNativeFallback(x.d, row({ auditPointer: "qitem-2" }), { ok: false, reason: "target_needs_input" }, failed);
     expect(failed.state).toBe("failed");
     expect(x.recorded).toEqual([["qitem-2", "failed:target_needs_input"]]);
-    expect(x.notices[0]![1]).toMatch(/could NOT be delivered.*target_needs_input/);
+    expect(x.notices[0]![1]).toMatch(/was not confirmed delivered.*target_needs_input/);
+    expect(x.notices[0]![1]).toMatch(/It may still arrive\. Before resending, check the seat \(rig capture dev-impl@rig1\)/);
     const held = nativeFallbackOutcome({ ok: true, outcome: "retained", outboxIds: ["guard-send-x"] }, { path: "tmux", evidence: "retained" });
     expect([held.state, held.label.detail, held.nudgeResult, held.undelivered]).toEqual(["failed", "fallback held by the typing guard as guard-send-x", "retained:typing_guard", false]);
   });
@@ -430,5 +433,66 @@ describe("relay process: the block answer reaches Claude's stdout", () => {
   it("control: block: false → nothing on stdout", async () => {
     const r = await runRelay({ ok: true, acked: ["outbox-1"], block: false });
     expect(r.stdout).toBe("");
+  });
+});
+
+describe("ncomms-3b: fallback outcomes that may have landed, and the gaps the re-check named", () => {
+  const row = (over: Partial<OutboxEntry>): OutboxEntry => ({ outboxId: "o1", senderSession: SENDER, destinationSession: SEAT, body: "b", tags: null,
+    urgency: "routine", tsDispatched: "t", deliveryState: "sending", deliveredAt: null, auditPointer: null, nativeWrittenAt: "2026-10-30T12:00:00.000Z", ...over });
+  function deps() {
+    const recorded: Array<[string, string]> = []; const notices: Array<[string, string]> = [];
+    return { recorded, notices, d: { recordNudgeAttempt: (q: string, r: string) => { recorded.push([q, r]); }, sendNotice: async (to: string, text: string) => { notices.push([to, text]); },
+      isAgentSeat: (s: string) => s === SENDER } };
+  }
+
+  it("G1's twin: a fallback that TIMED OUT settles indeterminate / send_timeout (it may have landed), the qitem records indeterminate:, the sender is told UNCONFIRMED", async () => {
+    const x = deps();
+    const o = nativeFallbackOutcome({ ok: false, reason: "verify timeout waiting for render ack" }, { path: "tmux", evidence: "send_failed" });
+    expect([o.state, o.label.evidence, o.nudgeResult, o.undelivered, o.unconfirmed]).toEqual(["indeterminate", "send_timeout", "indeterminate:verify timeout waiting for render ack", false, true]);
+    await recordNativeFallback(x.d, row({ auditPointer: "qitem-3" }), { ok: false, reason: "verify timeout waiting for render ack" }, o);
+    expect(x.recorded).toEqual([["qitem-3", "indeterminate:verify timeout waiting for render ack"]]);
+    expect(x.notices[0]![1]).toMatch(/UNCONFIRMED: the tmux fallback timed out/);
+  });
+
+  it("D16: a fallback the typing guard HELD sends no notice and is not counted undelivered", async () => {
+    const x = deps();
+    const held = nativeFallbackOutcome({ ok: true, outcome: "retained", outboxIds: ["guard-send-x"] }, { path: "tmux", evidence: "retained" });
+    await recordNativeFallback(x.d, row({ auditPointer: "qitem-4" }), { ok: true }, held);
+    expect([x.recorded, x.notices]).toEqual([[["qitem-4", "retained:typing_guard"]], []]);
+  });
+
+  it("D18: a claimed row presents native-ack-pending as claimed; unclaimed it stays native-ack-pending", () => {
+    expect(presentedNudgeResult("native-ack-pending", "2026-10-30T12:00:00.000Z")).toBe("claimed");
+    expect(presentedNudgeResult("native-ack-pending", null)).toBe("native-ack-pending");
+  });
+});
+
+describe("ncomms-3b G1: a late native copy after a tmux fallback that may have landed is blocked", () => {
+  async function failedOver() {
+    const d = db();
+    const { inbox, outbox } = inboxFor(d);
+    await registered(d, inbox);
+    const e = await inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const sent = await inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hi", endpoint: e.endpoint });
+    const id = sent.outboxIds[0]!;
+    const nonce = (d.prepare("SELECT native_nonce AS n FROM outbox_entries WHERE outbox_id = ?").get(id) as { n: string }).n;
+    outbox.settleNative(id, "failed", { path: "native", evidence: "native_unconfirmed" });
+    return { inbox, outbox, id, nonce };
+  }
+
+  it.each([
+    ["pasted, render unconfirmed", "indeterminate", { path: "tmux", evidence: "render_unconfirmed" }],
+    ["timed out", "indeterminate", { path: "tmux", evidence: "send_timeout" }],
+    ["delivered (control: blocked before too)", "delivered", { path: "tmux", evidence: "render_verified" }],
+  ] as const)("fallback %s → the late native copy is blocked", async (_label, state, label) => {
+    const { inbox, outbox, id, nonce } = await failedOver();
+    outbox.settleFallback(id, state, label);
+    expect(inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }] })).toEqual({ acked: [], block: true });
+  });
+
+  it("control: a fallback that FAILED outright (nothing landed) → the late native copy is the delivery", async () => {
+    const { inbox, outbox, id, nonce } = await failedOver();
+    outbox.settleFallback(id, "failed", { path: "tmux", evidence: "send_failed", detail: "target_needs_input" });
+    expect(inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }] })).toEqual({ acked: [id], block: false });
   });
 });

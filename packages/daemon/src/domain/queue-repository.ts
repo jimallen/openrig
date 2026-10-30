@@ -739,7 +739,7 @@ function destinationValidationError(
  * send may have landed) rather than a definite failure? Used to classify a wake
  * delivery as `indeterminate` vs `failed`.
  */
-function isWakeTimeoutSignal(s: string | undefined): boolean {
+export function isWakeTimeoutSignal(s: string | undefined): boolean {
   return !!s && /timeout|timed\s*out|etimedout/i.test(s);
 }
 

@@ -428,6 +428,10 @@ describe("review F2 at the inbox: a repeated delivery id", () => {
     const again = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
     expect([again.kind, again.outboxIds, f.writes.length]).toEqual(["written", ["guard-watchdog-job1.r1"], 2]);
     expect(row(f.db, "guard-watchdog-job1.r1")).toMatchObject({ state: "sending", path: "native", evidence: "native_written" });
+    // D4: a second repeat after .r1 settled is .r2, not .r1 again
+    f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id: "guard-watchdog-job1.r1", nonce: row(f.db, "guard-watchdog-job1.r1")!.nonce! }] });
+    const third = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
+    expect([third.kind, third.outboxIds, f.writes.length]).toEqual(["written", ["guard-watchdog-job1.r2"], 3]);
   });
 });
 
@@ -479,5 +483,15 @@ describe("settlement notifications (review F3 and the R3 notice)", () => {
       { id: b.id, kind: "unconfirmed", detail: "no_boundary_by_hard_deadline" },
       { id: c.id, kind: "failing_over", detail: "boundary_without_ack" },
     ]);
+  });
+
+  it("D12: a partial write is reported unconfirmed (write_partial), once", async () => {
+    const f = make(); await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    f.writeResult = "partial";
+    const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
+    f.clock.t += 3_600_000;
+    f.inbox.sweep();
+    expect(f.settled).toEqual([{ id: res.outboxIds[0], kind: "unconfirmed", detail: "write_partial" }]);
   });
 });
