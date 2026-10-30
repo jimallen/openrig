@@ -90,6 +90,8 @@ export interface RiggedConfig {
   recovery: {
     autoDriveProviderPrompts: boolean;
     providerAuthEnvAllowlist: string;
+    // OF-182: the post-restart prompt to a seat whose conversation a restore resumed (default on).
+    postRestartPrompt: boolean;
   };
   // Native comms step 3: inbox-socket delivery to Claude seats (default off).
   transport: {
@@ -283,6 +285,7 @@ const DEFAULTS = {
   recovery: {
     autoDriveProviderPrompts: false,
     providerAuthEnvAllowlist: "",
+    postRestartPrompt: true,
   },
   transport: {
     nativeClaude: false,
@@ -438,6 +441,7 @@ export const VALID_KEYS = [
   "ui.enabled",
   "recovery.auto_drive_provider_prompts",
   "recovery.provider_auth_env_allowlist",
+  "recovery.post_restart_prompt",
   "transport.native_claude",
   // V1 Phase 4 SC-29 exception — allowlist-only additions.
   "agents.advisor_session",
@@ -555,6 +559,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "ui.preview.default_lines": { primary: "OPENRIG_UI_PREVIEW_DEFAULT_LINES" },
   "recovery.auto_drive_provider_prompts": { primary: "OPENRIG_RECOVERY_AUTO_DRIVE_PROVIDER_PROMPTS" },
   "recovery.provider_auth_env_allowlist": { primary: "OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST" },
+  "recovery.post_restart_prompt": { primary: "OPENRIG_RECOVERY_POST_RESTART_PROMPT" },
   "transport.native_claude": { primary: "OPENRIG_TRANSPORT_NATIVE_CLAUDE" },
   "agents.advisor_session": { primary: "OPENRIG_AGENTS_ADVISOR_SESSION" },
   "agents.operator_session": { primary: "OPENRIG_AGENTS_OPERATOR_SESSION" },
@@ -647,6 +652,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "ui.preview.default_lines": ["ui", "preview", "defaultLines"],
   "recovery.auto_drive_provider_prompts": ["recovery", "autoDriveProviderPrompts"],
   "recovery.provider_auth_env_allowlist": ["recovery", "providerAuthEnvAllowlist"],
+  "recovery.post_restart_prompt": ["recovery", "postRestartPrompt"],
   "transport.native_claude": ["transport", "nativeClaude"],
   "agents.advisor_session": ["agents", "advisorSession"],
   "agents.operator_session": ["agents", "operatorSession"],
@@ -1167,6 +1173,7 @@ export class ConfigStore {
       recovery: {
         autoDriveProviderPrompts: v("recovery.auto_drive_provider_prompts") as boolean,
         providerAuthEnvAllowlist: v("recovery.provider_auth_env_allowlist") as string,
+        postRestartPrompt: v("recovery.post_restart_prompt") as boolean,
       },
       transport: {
         nativeClaude: v("transport.native_claude") as boolean,

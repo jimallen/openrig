@@ -122,6 +122,8 @@ export const SETTINGS_VALID_KEYS = [
   "ui.terminal.max_live_terminals",
   "recovery.auto_drive_provider_prompts",
   "recovery.provider_auth_env_allowlist",
+  // OF-182: tell a seat whose conversation a restore resumed that it was restarted and its background work killed (default on).
+  "recovery.post_restart_prompt",
   // Native comms step 3: deliver daemon and agent messages to Claude seats through the seat's inbox socket (default off).
   "transport.native_claude",
   // V1 attempt-3 Phase 4 - Advisor / Operator rail icon V1 placeholders
@@ -268,6 +270,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "ui.terminal.max_live_terminals": { primary: "OPENRIG_UI_TERMINAL_MAX_LIVE_TERMINALS" },
   "recovery.auto_drive_provider_prompts": { primary: "OPENRIG_RECOVERY_AUTO_DRIVE_PROVIDER_PROMPTS" },
   "recovery.provider_auth_env_allowlist": { primary: "OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST" },
+  "recovery.post_restart_prompt": { primary: "OPENRIG_RECOVERY_POST_RESTART_PROMPT" },
   "transport.native_claude": { primary: "OPENRIG_TRANSPORT_NATIVE_CLAUDE" },
   "agents.advisor_session": { primary: "OPENRIG_AGENTS_ADVISOR_SESSION" },
   "host.selected": { primary: "OPENRIG_HOST_SELECTED" },
@@ -361,6 +364,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "ui.terminal.max_live_terminals": ["ui", "terminal", "maxLiveTerminals"],
   "recovery.auto_drive_provider_prompts": ["recovery", "autoDriveProviderPrompts"],
   "recovery.provider_auth_env_allowlist": ["recovery", "providerAuthEnvAllowlist"],
+  "recovery.post_restart_prompt": ["recovery", "postRestartPrompt"],
   "transport.native_claude": ["transport", "nativeClaude"],
   "agents.advisor_session": ["agents", "advisorSession"],
   "host.selected": ["host", "selected"],
@@ -627,6 +631,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "ui.enabled": return false;
     case "recovery.auto_drive_provider_prompts": return false;
     case "recovery.provider_auth_env_allowlist": return "";
+    case "recovery.post_restart_prompt": return true;
     case "transport.native_claude": return false;
     // V1 Phase 4 — Advisor default per universal-shell.md L83;
     // Operator default empty per L84 ("not configured").
