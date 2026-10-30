@@ -62,6 +62,45 @@ export function parseDeliveryState(raw: string): OutboxDeliveryState {
   );
 }
 
+/** Native comms step 1: the last hop that carried (or would have carried) a settled row's text. `native` has no writer
+ *  yet; `none` means nothing was sent (see migration 117). */
+export const OUTBOX_DELIVERY_PATHS = ["tmux", "native", "gateway", "none"] as const;
+export type OutboxDeliveryPath = (typeof OUTBOX_DELIVERY_PATHS)[number];
+
+/** What a settled row's outcome rests on. The tmux values mirror SendResult's outcome vocabulary and the wake drain's
+ *  classification; `crash_reconciled` is a `sending` claim a restarted daemon found (it may or may not have landed). */
+export const OUTBOX_ACK_EVIDENCE = [
+  "render_verified", "render_unconfirmed", "send_ok", "send_timeout", "send_failed", "retained",
+  "gateway_owned", "local_inbox", "unroutable", "no_qitem", "superseded", "crash_reconciled",
+] as const;
+export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
+
+/** How a row was settled. `detail` is the transport's own reason code, when it gave one. */
+export interface OutboxOutcomeLabel {
+  path: OutboxDeliveryPath;
+  evidence: OutboxAckEvidence;
+  detail?: string | null;
+}
+
+/** The label for a tmux send's result, from SendResult's own vocabulary (structural, so this module does not import the
+ *  transport). An ok send that reports neither `outcome` nor `verified` is `send_ok`: it landed, with no render claim. */
+export function labelForTmuxSend(res: { ok: boolean; verified?: boolean; outcome?: string; reason?: string }): OutboxOutcomeLabel {
+  if (res.outcome === "retained") return { path: "tmux", evidence: "retained", detail: res.reason ?? null };
+  if (!res.ok || res.outcome === "failed") return { path: "tmux", evidence: "send_failed", detail: res.reason ?? null };
+  if (res.outcome === "delivered" || res.verified === true) return { path: "tmux", evidence: "render_verified" };
+  if (res.outcome === "rendered-unconfirmed" || res.verified === false) return { path: "tmux", evidence: "render_unconfirmed" };
+  return { path: "tmux", evidence: "send_ok" };
+}
+
+function parseClosed<T extends string>(column: string, values: readonly T[], raw: string | null | undefined): T | null {
+  if (raw === null || raw === undefined) return null;
+  if ((values as readonly string[]).includes(raw)) return raw as T;
+  throw new OutboxHandlerError(
+    "invalid_outcome_label",
+    `outbox row has unknown ${column} ${JSON.stringify(raw)} (expected one of ${values.join(", ")})`,
+  );
+}
+
 export interface OutboxEntry {
   outboxId: string;
   senderSession: string;
@@ -80,6 +119,10 @@ export interface OutboxEntry {
   retiredAt?: string | null;
   retiredBy?: string | null;
   retirementReason?: string | null;
+  /** Native comms step 1 (migration 117): present only on a database that has the columns; null = settled unlabelled. */
+  deliveryPath?: OutboxDeliveryPath | null;
+  ackEvidence?: OutboxAckEvidence | null;
+  ackDetail?: string | null;
 }
 
 interface OutboxEntryRow {
@@ -97,6 +140,9 @@ interface OutboxEntryRow {
   retired_at?: string | null;
   retired_by?: string | null;
   retirement_reason?: string | null;
+  delivery_path?: string | null;
+  ack_evidence?: string | null;
+  ack_detail?: string | null;
 }
 
 /**
@@ -149,12 +195,23 @@ export class OutboxHandler {
   /** P21 §4: detected once — a curated-migration test DB (or a pre-067 daemon) may lack the
    *  era-stamp column, so the writer degrades (omits it) instead of throwing. */
   private readonly hasIdentityProvenanceColumn: boolean;
+  private readonly hasOutcomeLabelColumns: boolean;
 
   constructor(db: Database.Database) {
     this.db = db;
     this.hasIdentityProvenanceColumn = (
       this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>
     ).some((col) => col.name === "identity_provenance");
+    this.hasOutcomeLabelColumns = (
+      this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>
+    ).some((col) => col.name === "ack_evidence");
+  }
+
+  /** The SET fragment and its values for an outcome label; empty when the database predates migration 117 or no label
+   *  was given (the row then settles unlabelled, as before). */
+  private labelSet(label: OutboxOutcomeLabel | undefined): { sql: string; values: Array<string | null> } {
+    if (!label || !this.hasOutcomeLabelColumns) return { sql: "", values: [] };
+    return { sql: ", delivery_path = ?, ack_evidence = ?, ack_detail = ?", values: [label.path, label.evidence, label.detail ?? null] };
   }
 
   record(input: OutboxRecordInput): OutboxEntry {
@@ -302,15 +359,16 @@ export class OutboxHandler {
     return { items: rows.map(r => this.rowToEntry(r, "mark")), total, limit, offset, truncated: offset + rows.length < total, unreadableHeld };
   }
 
-  markDelivered(outboxId: string): OutboxEntry {
+  markDelivered(outboxId: string, label?: OutboxOutcomeLabel): OutboxEntry {
     const ts = new Date().toISOString();
+    const set = this.labelSet(label);
     const result = this.db
       .prepare(
         `UPDATE outbox_entries
-           SET delivery_state = 'delivered', delivered_at = ?
+           SET delivery_state = 'delivered', delivered_at = ?${set.sql}
          WHERE outbox_id = ? AND delivery_state = 'pending'`
       )
-      .run(ts, outboxId);
+      .run(ts, ...set.values, outboxId);
     if (result.changes === 0) {
       const entry = this.getById(outboxId);
       if (!entry) throw new OutboxHandlerError("outbox_not_found", `outbox ${outboxId} not found`);
@@ -319,14 +377,22 @@ export class OutboxHandler {
     return this.getByIdOrThrow(outboxId);
   }
 
-  markFailed(outboxId: string): OutboxEntry {
+  /** Labels a row another writer has just settled (the queue's superseded wake). No-op before migration 117. */
+  labelOutcome(outboxId: string, label: OutboxOutcomeLabel): void {
+    const set = this.labelSet(label);
+    if (!set.sql) return;
+    this.db.prepare(`UPDATE outbox_entries SET ${set.sql.slice(2)} WHERE outbox_id = ?`).run(...set.values, outboxId);
+  }
+
+  markFailed(outboxId: string, label?: OutboxOutcomeLabel): OutboxEntry {
+    const set = this.labelSet(label);
     const result = this.db
       .prepare(
         `UPDATE outbox_entries
-           SET delivery_state = 'failed'
+           SET delivery_state = 'failed'${set.sql}
          WHERE outbox_id = ? AND delivery_state = 'pending'`
       )
-      .run(outboxId);
+      .run(...set.values, outboxId);
     if (result.changes === 0) {
       const entry = this.getById(outboxId);
       if (!entry) throw new OutboxHandlerError("outbox_not_found", `outbox ${outboxId} not found`);
@@ -381,14 +447,15 @@ export class OutboxHandler {
    * finalizes a row this drainer claimed. `delivered_at` is stamped only for a
    * confirmed delivery.
    */
-  finalizeDelivery(outboxId: string, state: "delivered" | "indeterminate" | "failed" | "retained"): OutboxEntry {
+  finalizeDelivery(outboxId: string, state: "delivered" | "indeterminate" | "failed" | "retained", label?: OutboxOutcomeLabel): OutboxEntry {
     const deliveredAt = state === "delivered" ? new Date().toISOString() : null;
+    const set = this.labelSet(label);
     const result = this.db
       .prepare(
-        `UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?
+        `UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?${set.sql}
           WHERE outbox_id = ? AND delivery_state = 'sending'`
       )
-      .run(state, deliveredAt, outboxId);
+      .run(state, deliveredAt, ...set.values, outboxId);
     if (result.changes === 0) {
       const entry = this.getById(outboxId);
       if (!entry) throw new OutboxHandlerError("outbox_not_found", `outbox ${outboxId} not found`);
@@ -448,12 +515,14 @@ export class OutboxHandler {
    * count reconciled.
    */
   reconcileAbandonedSending(idPrefix: string): number {
+    // Every claimed wake intent is sent through tmux today, so an abandoned claim is labelled with that path.
+    const set = this.labelSet({ path: "tmux", evidence: "crash_reconciled" });
     const result = this.db
       .prepare(
-        `UPDATE outbox_entries SET delivery_state = 'indeterminate'
+        `UPDATE outbox_entries SET delivery_state = 'indeterminate'${set.sql}
           WHERE delivery_state = 'sending' AND substr(outbox_id, 1, ?) = ?`
       )
-      .run(idPrefix.length, idPrefix);
+      .run(...set.values, idPrefix.length, idPrefix);
     return result.changes;
   }
 
@@ -492,6 +561,11 @@ export class OutboxHandler {
         retiredAt: row.retired_at ?? null,
         retiredBy: row.retired_by ?? null,
         retirementReason: row.retirement_reason ?? null,
+      } : {}),
+      ...(row.ack_evidence !== undefined ? {
+        deliveryPath: parseClosed("delivery_path", OUTBOX_DELIVERY_PATHS, row.delivery_path),
+        ackEvidence: parseClosed("ack_evidence", OUTBOX_ACK_EVIDENCE, row.ack_evidence),
+        ackDetail: row.ack_detail ?? null,
       } : {}),
       ...(columns.unreadable.length > 0 ? { unreadable: columns.unreadable } : {}),
     };

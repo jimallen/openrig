@@ -24,8 +24,9 @@ import type { AgentActivity } from "../src/domain/types.js";
 import type { RunnerSendReadinessSource } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { transportRoutes } from "../src/routes/transport.js";
-import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { OutboxHandler, labelForTmuxSend } from "../src/domain/outbox-handler.js";
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
+import { outboxOutcomeLabelSchema } from "../src/db/migrations/117_outbox_outcome_label.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 
 function setupDb(): Database.Database {
@@ -178,6 +179,37 @@ describe("transport routes", () => {
     expect(rows[0]!["delivery_state"]).toBe("delivered"); // not left `pending`
     expect(typeof rows[0]!["delivered_at"]).toBe("string");
     expect(Number.isNaN(Date.parse(String(rows[0]!["delivered_at"])))).toBe(false);
+  });
+
+  // Native comms step 1: the settled row carries the path and the send's own render evidence, read from the same
+  // result the route returned (so the label cannot claim a render the transport did not report).
+  it("native comms step 1 — a derived single send labels its row with path tmux and the send's render evidence", async () => {
+    seedRig();
+    sendApp(); // migrates 027 and the 067 column, as the neighbouring tests do
+    migrate(db, [outboxOutcomeLabelSchema]);
+    const appWithLabels = createApp({ sessionTransport: new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: mockTmux() }), outboxHandler: new OutboxHandler(db) });
+    const res = await appWithLabels.request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "label me" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; verified?: boolean; outcome?: string; reason?: string };
+    const rows = outboxRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!["delivery_path"]).toBe("tmux");
+    expect(rows[0]!["ack_evidence"]).toBe(labelForTmuxSend(body).evidence);
+    // no `verify` requested: the result makes no render claim, so the label says only that the send landed
+    expect(body.outcome).toBeUndefined();
+    expect(rows[0]!["ack_evidence"]).toBe("send_ok");
+    // with verify, the mock pane never shows the text, so the transport reports an unconfirmed render, and the label follows it
+    const verified = await appWithLabels.request("/api/transport/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ session: "dev-impl@my-rig", text: "label me too", verify: true }),
+    });
+    const vbody = (await verified.json()) as { outcome?: string };
+    expect([verified.status, vbody.outcome, outboxRows()[1]!["ack_evidence"]]).toEqual([200, "rendered-unconfirmed", "render_unconfirmed"]);
   });
 
   it("OF-74 — N successful single sends leave ZERO pending rows (the live-DB symptom: pending rows accruing per send)", async () => {
@@ -381,6 +413,32 @@ describe("transport routes", () => {
     const byDest = Object.fromEntries(outboxRows().map((r) => [r["destination_session"], r["delivery_state"]]));
     expect(byDest["dev-impl@my-rig"]).toBe("delivered");
     expect(byDest["dev-qa@my-rig"]).toBe("failed"); // per-recipient truth, not a lossy aggregate
+  });
+
+  it("native comms step 1 — a partial fan-out labels each row: the landed one send_ok, the failed one send_failed with its reason", async () => {
+    seedRig();
+    const transport = new SessionTransport({
+      db, rigRepo, sessionRegistry,
+      tmuxAdapter: mockTmux({ hasSession: async (name: string) => name !== "dev-qa@my-rig" }),
+    });
+    migrate(db, [outboxEntriesSchema]);
+    if (!(db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "identity_provenance")) {
+      db.exec("ALTER TABLE outbox_entries ADD COLUMN identity_provenance TEXT");
+    }
+    migrate(db, [outboxOutcomeLabelSchema]);
+    const app = createApp({ sessionTransport: transport, outboxHandler: new OutboxHandler(db) });
+    const res = await app.request("/api/transport/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenRig-Session": "orch@my-rig" },
+      body: JSON.stringify({ rig: "my-rig", text: "team update" }),
+    });
+    expect(res.status).toBe(200);
+    const results = ((await res.json()) as { results: Array<{ sessionName: string; reason?: string }> }).results;
+    const qaReason = results.find((r) => r.sessionName === "dev-qa@my-rig")?.reason;
+    expect(qaReason).toBeTruthy(); // positive control: the failed recipient reported a reason code to carry
+    const byDest = Object.fromEntries(outboxRows().map((r) => [r["destination_session"], [r["delivery_path"], r["ack_evidence"], r["ack_detail"]]]));
+    expect(byDest["dev-impl@my-rig"]).toEqual(["tmux", "send_ok", null]);
+    expect(byDest["dev-qa@my-rig"]).toEqual(["tmux", "send_failed", qaReason]);
   });
 
   // Same conversion on the fan-out path (the second deleted guard, transport.ts:223).
