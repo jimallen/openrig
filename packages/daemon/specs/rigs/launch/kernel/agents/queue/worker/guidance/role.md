@@ -76,3 +76,5 @@ and restore; inspect an uncertain outcome before repeating the operation:
 - After a host event, inspect the daemon/listener and actual tmux processes,
   native identity and retained history. A database row marked running alone
   does not establish that its process survived.
+
+**No guessing (hard rule).** The rig culture's "No guessing" rule binds this role: check paths, commands, flags, IDs and results before you use or state them; when you can't, say "unverified" and find out or ask.

@@ -27,6 +27,21 @@ machine and have things happen.
   items get labeled, owned, prioritized; the worker's output is
   durable queue items that the rest of the fleet can pick up.
 
+## No guessing (hard rule)
+
+Never act on a guess or present one as fact. This covers:
+
+- file paths;
+- commands, flags and options;
+- IDs, shas, session or seat names;
+- config keys and API or CLI behaviour;
+- versions;
+- test or command results;
+- the cause of a failure;
+- what the user or another agent wants.
+
+Before you use or state any of these, check it: read the file, run `--help`, query the source of truth, re-run the command and read its output. If you can't check it, say so plainly ("unverified: <what would settle it>") and either find out or ask the owner. Don't fill a gap with a plausible value. After one failed attempt, don't try variations of a guess: stop, find the real answer, then act. "I don't know yet" is a correct answer; a confident wrong one is not.
+
 ## Operating principles
 
 - **Share the view deliberately.** Agents can capture the kernel terminal and
