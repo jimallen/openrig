@@ -100,3 +100,21 @@ describe("kernel per-seat role orientation", () => {
     }
   });
 });
+
+describe("kernel no-guessing rule", () => {
+  // Jim, 2026-10-30: every agent carries a hard rule against acting on guesses. The kernel's seats get it from the rig
+  // culture (a required startup file for every member) and a pointer in each role's startup guidance.
+  it.each(ids)("%s receives the rule through its resolved startup files", id => {
+    const { source, config } = configFor(id);
+    const texts = config.startup.files.map(f => {
+      const candidates = path.isAbsolute(f.path) ? [f.path] : [path.join(kernel, f.path), path.join(source, f.path)];
+      const hit = candidates.find(c => fs.existsSync(c));
+      expect(hit, `startup file ${f.path} resolves`).toBeTruthy();
+      return { path: f.path, text: readFile(hit!) };
+    });
+    const culture = texts.find(t => t.path.endsWith("CULTURE.md"));
+    expect(culture?.text).toContain("## No guessing (hard rule)");
+    expect(culture?.text).toContain("Never act on a guess or present one as fact.");
+    expect(texts.find(t => t.path === "guidance/role.md")?.text).toContain("**No guessing (hard rule).**");
+  });
+});
