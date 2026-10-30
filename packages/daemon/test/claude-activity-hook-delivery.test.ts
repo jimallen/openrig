@@ -205,6 +205,19 @@ describe("Claude activity-hook delivery — ENABLE (entry present, source + mani
     expect(JSON.stringify(settings.hooks)).not.toContain("CLAUDE_PLUGIN_ROOT");
   });
 
+  // Native comms step 2: an event whose manifest relay is `async: true` (PostToolUse, which fires on every tool call) is
+  // written with async: true, so the seat does not wait for the relay; the other events stay blocking as before.
+  it("writes async: true only for the events whose manifest relay declares it", async () => {
+    const manifest = JSON.parse(CANONICAL_MANIFEST) as { hooks: Record<string, unknown[]> };
+    manifest.hooks["PostToolUse"] = [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/activity-relay.cjs"', timeout: 5, async: true }] }];
+    const fs = mockFs({ [RELAY_SRC]: "// relay", [MANIFEST_SRC]: JSON.stringify(manifest) }, { [RELAY_SRC]: 0o755 });
+    await makeAdapter(fs).project(plan([activityEntry()]), binding());
+    const owned = (ev: string) => (readSettings(fs).hooks?.[ev] ?? []).flatMap((g: { hooks?: Array<{ command?: string; async?: boolean; timeout?: number }> }) => g.hooks ?? [])
+      .filter((h: { command?: string }) => h.command === OWNED_CMD);
+    expect(owned("PostToolUse")).toEqual([{ type: "command", command: OWNED_CMD, timeout: 5, async: true }]);
+    for (const ev of EVENTS) expect(owned(ev)).toEqual([{ type: "command", command: OWNED_CMD, timeout: 5 }]);
+  });
+
   it("injects NO compaction hooks (PreCompact/PostCompact/compaction-restore-bridge)", async () => {
     const fs = enableFs();
     await makeAdapter(fs).project(plan([activityEntry()]), binding());

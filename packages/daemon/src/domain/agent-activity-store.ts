@@ -331,6 +331,11 @@ export class AgentActivityStore {
  *  holds for a pda runner's held-message report (OF-89): `Notification/<held code>` is needs_input on a pda seat only. */
 export function hookEventState(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") return "running";
+  // Native comms step 2 (design-native-comms-20261030 §7 F1): a tool finished, so any permission prompt it raised was
+  // answered yes and the turn goes on. Measured on Claude Code 2.1.314: an approved prompt is followed by PostToolUse,
+  // then Stop; a DENIED one fires no hook at all (not PermissionDenied, not Stop, no idle_prompt within 95 s), so a
+  // denial still leaves the seat's latest hook at permission_prompt until its next input.
+  if (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") return "running";
   // OPR.0.4.1.10 — Codex's official approval hook (openai/codex PR #17563). A PermissionRequest
   // means the agent is BLOCKED waiting on a command / patch / network approval = needs_input. This is
   // the HOOK-PRIMARY signal for Codex, which emits no Claude-style Notification; classifySendReadiness

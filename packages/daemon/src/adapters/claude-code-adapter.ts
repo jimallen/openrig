@@ -919,10 +919,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         this.fs.copyFile(this.activityRelayPath!, relayDest);
       }
       this.preserveMode(this.activityRelayPath!, relayDest);
-      for (const { event, timeout } of derivedEvents) {
+      for (const { event, timeout, async: background } of derivedEvents) {
         const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
         const hook: Record<string, unknown> = { type: "command", command: ownedCmd };
         if (typeof timeout === "number") hook["timeout"] = timeout;
+        if (background) hook["async"] = true;
         groups.push({ hooks: [hook] });
         hooks[event] = groups;
         changed = true;
