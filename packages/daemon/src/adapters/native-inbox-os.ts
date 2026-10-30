@@ -136,5 +136,11 @@ export async function resolveClaudeExecPath(pid: number): Promise<string | null>
       path = parseLsofTxtPath(stdout);
     } catch { path = null; }
   }
+  return execPathIfFile(path);
+}
+
+/** ncomms-3c: a candidate executable path only if it is a file now (a replaced binary on macOS shows as `/claude`,
+ *  measured, which does not exist). */
+export function execPathIfFile(path: string | null): string | null {
   try { return path && statSync(path).isFile() ? path : null; } catch { return null; }
 }
