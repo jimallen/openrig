@@ -162,6 +162,7 @@ export const migrationsForFullTestDbExclusions: Record<string, string> = {
   "087_seat_delivery_guard.sql": "extends outbox_entries (027 is excluded); delivery-guard suites use ALL_MIGRATIONS. Revisit if a core-fixture consumer uses retained delivery.",
   "117_outbox_outcome_label.sql": "extends outbox_entries (027 is excluded); outbox-label suites use ALL_MIGRATIONS.",
   "118_native_inbox.sql": "extends outbox_entries (027 is excluded) and adds the native endpoint table; native-inbox suites use ALL_MIGRATIONS.",
+  "119_native_name_envelope.sql": "extends the native endpoint table (118 is excluded); native-inbox suites use ALL_MIGRATIONS.",
   "089_classification_identity_provenance.sql": "extends project_classifications (028 is excluded); classifier fixtures migrate it inline.",
   "030_views_custom.sql": "custom-views subsystem table — views suites migrate it inline.",
   "032_watchdog_history.sql": "watchdog history table — watchdog suites migrate it inline (watchdog_jobs is the only watchdog base the core edge carries).",
