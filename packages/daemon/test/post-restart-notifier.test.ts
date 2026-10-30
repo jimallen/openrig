@@ -94,6 +94,14 @@ describe("the prompt", () => {
     expect(postRestartText({ rigName: "ez\u001b[201~track", restartedAt: "t" })).toContain("rig ez[201~track");
   });
 
+  it("the text handed to the transport carries no C0/C1 control (OF-169), whatever the rig name holds", async () => {
+    const f = make({ over: { rigNameOf: () => "ez\u001b[201~\u0007\u009b2Jtrack\u0000" } });
+    await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]) });
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]!.text).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+    expect(f.sent[0]!.text).toContain("rig ez[201~2Jtrack was restored");
+  });
+
   it("goes out after the first delay, with an idle wait, as restore@system", async () => {
     const f = make();
     await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]) });
