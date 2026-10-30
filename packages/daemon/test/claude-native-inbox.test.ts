@@ -24,7 +24,7 @@ interface Fake {
   enabled: boolean; panePid: number | null; procs: ProcessRow[]; sockets: Set<string>;
   writes: Array<{ path: string; lines: unknown[] }>; writeResult: "none" | "all" | "partial"; onWrite?: () => void;
   files: Map<string, string>; liveGen: string | null; clock: { t: number };
-  probe: { version: string | null; literal: boolean; replacedSinceStart: boolean };
+  probe: { version: string | null; literal: boolean; replacedSinceStart: boolean; nameEnvelope?: boolean };
   settled: Array<{ id: string; kind: string; detail: string | null }>;
 }
 
@@ -128,6 +128,59 @@ describe("registerEndpoint: the launch probe of the seat's claude binary (criter
     const f = make({ resolveExecPath: async () => null });
     expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
     expect((await register(f, { claudePid: null }))?.probe_result).toBe("fail:no_claude_pid");
+  });
+});
+
+describe("ncomms-3d: the sender-name envelope", () => {
+  it.each([
+    ["the probe passes and finds the parser", { version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: true }, 1],
+    ["the parser literal is absent", { version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: false }, 0],
+    ["an older probe result without the field", { version: "2.1.314", literal: true, replacedSinceStart: false }, 0],
+    ["the parser is present but the probe fails", { version: "2.1.314", literal: false, replacedSinceStart: false, nameEnvelope: true }, 0],
+  ] as const)("register: %s → name_envelope %s", async (_label, probe, expected) => {
+    const f = make();
+    f.probe = { ...probe };
+    expect((await register(f))?.name_envelope).toBe(expected);
+    expect(f.inbox.endpointFor("node-a")?.name_envelope).toBe(expected);
+  });
+
+  it("a re-registration takes the new probe's answer (a seat relaunched on a binary without the parser)", async () => {
+    const f = make();
+    f.probe = { version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: true };
+    await register(f);
+    f.probe = { version: "2.1.320", literal: true, replacedSinceStart: false, nameEnvelope: false };
+    await register(f, { generation: "gen-2" });
+    expect(f.inbox.endpointFor("node-a")?.name_envelope).toBe(0);
+  });
+
+  async function deliverWith(probe: Fake["probe"], text: string) {
+    const f = make();
+    f.probe = probe;
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER);
+    if (!e.ok) throw new Error(e.reason);
+    const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text, endpoint: e.endpoint });
+    const id = res.outboxIds[0]!;
+    return { f, id, content: contentOf(f.writes[0]!), marker: nativeMarker(id, row(f.db, id)!.nonce!) };
+  }
+
+  it("an endpoint that parses it: the content is wrapped with the sender's seat name; the marker is inside and is acked", async () => {
+    const { f, id, content, marker } = await deliverWith({ version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: true }, "hello");
+    expect(content).toBe(`<cross-session-message from-name="${SENDER}">\nhello\n\n${marker}\n</cross-session-message>`);
+    const nonce = row(f.db, id)!.nonce!;
+    expect(parseNativeMarkers(content)).toEqual([{ id, nonce }]);
+    expect(f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: parseNativeMarkers(content) }).acked).toEqual([id]);
+  });
+
+  it("an endpoint that does not parse it: plain content, as before", async () => {
+    const { content, marker } = await deliverWith({ version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: false }, "hello");
+    expect(content).toBe(`hello\n\n${marker}`);
+  });
+
+  it("a body holding a closing-tag lookalike goes out plain even to an endpoint that parses the envelope", async () => {
+    const text = "see </cross-session-message> here";
+    const { content, marker } = await deliverWith({ version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: true }, text);
+    expect(content).toBe(`${text}\n\n${marker}`);
   });
 });
 
