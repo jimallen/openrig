@@ -65,6 +65,10 @@ export interface NativeInboxDeps {
   /** Probe a claude binary: version and whether its inject-format literal is present, plus whether the file changed
    *  after the process started (then the running version is unknown). */
   probeBinary: (execPath: string, pid: number) => Promise<{ version: string | null; literal: boolean; replacedSinceStart: boolean }>;
+  /** ncomms-3c: the executable a running claude was started from, found from its pid (null when it cannot be found, or
+   *  the file was replaced since: then the running version is unknown). A hook's environment carries CLAUDE_PID but
+   *  not CLAUDE_CODE_EXECPATH (measured on claude 2.1.314, Linux and macOS), so the relay cannot report the binary. */
+  resolveExecPath?: (pid: number) => Promise<string | null>;
   /** The node's live occupant generation, or null when unknown. */
   liveGeneration: (nodeId: string) => string | null;
   now?: () => Date;
@@ -125,15 +129,20 @@ export class ClaudeNativeInbox {
     return this.deps.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='seat_native_endpoints'").get() !== undefined;
   }
 
-  /** SessionStart: the relay reports the seat's socket, transcript, claude pid and binary. The binary is probed here,
-   *  at the launch of the process (criterion 2), and the result recorded with the version. */
+  /** SessionStart: the relay reports the seat's socket, transcript and claude pid. The binary is found from the pid and
+   *  probed here, at the launch of the process (criterion 2); the result is recorded with the version. A binary the
+   *  relay reports is used only when the pid gives none (no current Claude Code puts it in a hook's environment). */
   async registerEndpoint(input: { nodeId: string; sessionName: string; generation: string | null; socketPath: string; transcriptPath: string | null; claudePid: number | null; execPath: string | null }): Promise<NativeEndpointRow | null> {
     if (!this.hasTables()) return null;
     let version: string | null = null;
-    let probe = "fail:no_exec_path";
-    if (input.execPath && input.claudePid) {
+    let probe = input.claudePid ? "fail:exec_path_unresolved" : "fail:no_claude_pid";
+    let execPath: string | null = null;
+    if (input.claudePid) {
+      try { execPath = (await this.deps.resolveExecPath?.(input.claudePid)) ?? input.execPath; } catch { execPath = input.execPath; }
+    }
+    if (execPath && input.claudePid) {
       try {
-        const p = await this.deps.probeBinary(input.execPath, input.claudePid);
+        const p = await this.deps.probeBinary(execPath, input.claudePid);
         version = p.version;
         probe = !p.version ? "fail:version_unknown" : p.replacedSinceStart ? "fail:binary_replaced_since_start"
           : !p.literal ? "fail:inject_format_absent" : "pass";
@@ -143,7 +152,7 @@ export class ClaudeNativeInbox {
     }
     const row: NativeEndpointRow = {
       node_id: input.nodeId, session_name: input.sessionName, generation: input.generation, socket_path: input.socketPath,
-      transcript_path: input.transcriptPath, claude_pid: input.claudePid, exec_path: input.execPath, claude_version: version,
+      transcript_path: input.transcriptPath, claude_pid: input.claudePid, exec_path: execPath, claude_version: version,
       probe_result: probe, registered_at: this.now().toISOString(),
     };
     this.deps.db.prepare(`INSERT INTO seat_native_endpoints (node_id, session_name, generation, socket_path, transcript_path, claude_pid, exec_path, claude_version, probe_result, registered_at)

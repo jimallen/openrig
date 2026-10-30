@@ -114,9 +114,20 @@ describe("registerEndpoint: the launch probe of the seat's claude binary (criter
     expect([r?.probe_result, r?.claude_version]).toEqual([expected, probe.version]);
   });
 
-  it("no exec path → fail:no_exec_path, recorded", async () => {
-    const f = make();
-    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:no_exec_path");
+  // ncomms-3c: a hook's environment has CLAUDE_PID but not CLAUDE_CODE_EXECPATH (measured, 2.1.314 Linux and macOS), so
+  // the binary is found from the pid; the relay's value is a fallback only.
+  it("the binary is resolved from the claude pid when the relay reports none, and that path is probed and recorded", async () => {
+    const probed: string[] = [];
+    const f = make({ resolveExecPath: async (pid) => (pid === 4242 ? "/opt/claude/versions/2.1.314" : null),
+      probeBinary: async (p) => { probed.push(p); return { version: "2.1.314", literal: true, replacedSinceStart: false }; } });
+    const r = await register(f, { execPath: null });
+    expect([r?.probe_result, r?.exec_path, probed]).toEqual(["pass", "/opt/claude/versions/2.1.314", ["/opt/claude/versions/2.1.314"]]);
+  });
+
+  it("an unresolvable binary (none from the pid, none from the relay) → fail:exec_path_unresolved; no pid → fail:no_claude_pid", async () => {
+    const f = make({ resolveExecPath: async () => null });
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+    expect((await register(f, { claudePid: null }))?.probe_result).toBe("fail:no_claude_pid");
   });
 });
 

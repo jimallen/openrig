@@ -1,7 +1,7 @@
 // Native comms step 3: the operating-system side of ClaudeNativeInbox (domain/claude-native-inbox.ts), kept apart so the
 // domain logic is tested with fakes and nothing in a test reaches a live seat, socket or process.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readlinkSync, readSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import { INJECT_FORMAT_LITERAL, type ProcessRow } from "../domain/claude-native-inbox.js";
@@ -100,4 +100,31 @@ export async function probeClaudeBinary(execPath: string, pid: number): Promise<
 
 export function socketExists(path: string): boolean {
   try { return statSync(path).isSocket(); } catch { return false; }
+}
+
+/** ncomms-3c: the first `n` (name) line of `lsof -a -p <pid> -d txt -Fn`: on macOS the process's own executable (measured
+ *  on claude 2.1.314: n/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe). */
+export function parseLsofTxtPath(output: string): string | null {
+  const line = output.split("\n").find((l) => l.startsWith("n"));
+  const path = line?.slice(1).trim();
+  return path && path.startsWith("/") ? path : null;
+}
+
+/** ncomms-3c: the executable a running process was started from. Linux: /proc/<pid>/exe (a " (deleted)" target means the
+ *  file was replaced or removed since: null). macOS: the txt entry lsof reports. Null when it cannot be found or does
+ *  not exist as a file now (a replaced binary on macOS shows a bare name, measured). */
+export async function resolveClaudeExecPath(pid: number): Promise<string | null> {
+  let path: string | null = null;
+  if (process.platform === "linux") {
+    try {
+      const target = readlinkSync(`/proc/${pid}/exe`);
+      path = target.endsWith(" (deleted)") ? null : target;
+    } catch { path = null; }
+  } else {
+    try {
+      const { stdout } = await execFileAsync("lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: 10_000 });
+      path = parseLsofTxtPath(stdout);
+    } catch { path = null; }
+  }
+  try { return path && statSync(path).isFile() ? path : null; } catch { return null; }
 }

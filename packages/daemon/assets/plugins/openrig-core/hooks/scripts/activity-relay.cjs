@@ -175,9 +175,10 @@ function hookEventOf(providerPayload) {
   return firstString(providerPayload.hookEvent, providerPayload.hookEventName, providerPayload.hook_event_name, providerPayload.event, providerPayload.eventName);
 }
 
-// Native comms step 3, SessionStart of a Claude seat: the seat's inbox socket, transcript, claude pid and binary, from
-// what Claude Code puts in the hook's environment and payload (measured on 2.1.311/2.1.314: CLAUDE_CODE_MESSAGING_SOCKET,
-// CLAUDE_PID, CLAUDE_CODE_EXECPATH, transcript_path). The messaging token is never read or sent: it restricts nothing.
+// Native comms step 3, SessionStart of a Claude seat: the seat's inbox socket, transcript and claude pid, from what
+// Claude Code puts in the hook's environment and payload (measured on 2.1.314, Linux and macOS: CLAUDE_CODE_MESSAGING_SOCKET
+// and CLAUDE_PID are there; CLAUDE_CODE_EXECPATH is NOT, so the daemon finds the binary from the pid: ncomms-3c). The
+// messaging token is never read or sent: it restricts nothing.
 function buildNativeEndpointPayload(providerPayload, env = process.env) {
   if (hookEventOf(providerPayload) !== "SessionStart") return null;
   const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
