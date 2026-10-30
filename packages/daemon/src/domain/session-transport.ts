@@ -1794,6 +1794,11 @@ export class SessionTransport {
       return null; // a row that cannot be claimed (held, retired, already settled) keeps today's path
     }
     if (delivered.kind === "fallback") return null;
+    if (delivered.kind === "pending") {
+      // Review F2: the same id is already a native write awaiting its ack; this repeat is coalesced onto it.
+      return { ok: true, sessionName, sent: false, path: "native", outboxIds: delivered.outboxIds, verified: false, outcome: "rendered-unconfirmed",
+        warning: "Already written to the seat's inbox under this delivery id and awaiting its confirmation; not sent again." };
+    }
     return {
       ok: true, sessionName, sent: true, path: "native", outboxIds: delivered.outboxIds,
       verified: delivered.acked, outcome: delivered.acked ? "delivered" : "rendered-unconfirmed",

@@ -300,7 +300,7 @@ activityRoutes.post("/native-ack", async (c) => {
     ? body.markers.flatMap((m) => (m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string" && typeof (m as { nonce?: unknown }).nonce === "string"
       ? [{ id: (m as { id: string }).id, nonce: (m as { nonce: string }).nonce }] : [])).slice(0, 64)
     : [];
-  const result = inbox.ack({ nodeId: seat.nodeId, sessionName: seat.sessionName, markers });
+  const result = inbox.ack({ nodeId: seat.nodeId, sessionName: seat.sessionName, markers, promptId: stringOrNull(body.promptId) });
   return c.json({ ok: true, acked: result.acked, block: result.block });
 });
 

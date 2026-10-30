@@ -120,7 +120,7 @@ export function isTypedGateBlocker(value: unknown): boolean {
  */
 export function presentedNudgeResult(wireResult: string | null, claimedAt: string | null): string | null {
   if (!claimedAt || wireResult === null) return wireResult;
-  if (wireResult === "delivered-ack-pending" || wireResult.startsWith("indeterminate:")) return "claimed";
+  if (wireResult === "delivered-ack-pending" || wireResult === "native-ack-pending" || wireResult.startsWith("indeterminate:")) return "claimed";
   return wireResult;
 }
 
@@ -1500,7 +1500,7 @@ export class QueueRepository {
       // sweeper; its rows are not finalized here.
       if (res.path === "native") {
         return res.verified
-          ? { classified: "verified", nudgeResult: "verified-native", label: { path: "native", evidence: "native_hook_delivered" } }
+          ? { classified: "verified", nudgeResult: "verified", label: { path: "native", evidence: "native_hook_delivered" } }
           : { classified: "native-pending", nudgeResult: "native-ack-pending", label: { path: "native", evidence: "native_written" } };
       }
       const label = labelForTmuxSend(res);

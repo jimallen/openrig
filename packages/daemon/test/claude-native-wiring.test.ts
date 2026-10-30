@@ -5,6 +5,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { Hono } from "hono";
 import { createServer, type Server } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +17,8 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { OutboxHandler, WAKE_INTENT_PREFIX } from "../src/domain/outbox-handler.js";
+import { OutboxHandler, WAKE_INTENT_PREFIX, type OutboxEntry } from "../src/domain/outbox-handler.js";
+import { createNativeSettlementHandler, nativeFallbackOutcome, recordNativeFallback } from "../src/domain/native-inbox-settlement.js";
 import { ClaudeNativeInbox, ACCEPT_SETTING_ARGV_FRAGMENT, type ProcessRow } from "../src/domain/claude-native-inbox.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
@@ -168,6 +172,21 @@ describe("routes: /api/activity/native-endpoint and /native-ack", () => {
     expect(outbox.getById(sent.outboxIds[0]!)?.deliveryState).toBe("delivered");
     expect(await (await post(a, "native-ack", { sessionName: SEAT, markers })).json()).toEqual({ ok: true, acked: [], block: true });
   });
+
+  it("native-ack passes the prompt id: the same prompt's hook running twice is acked twice, never blocked", async () => {
+    const d = db();
+    let content = "";
+    const { inbox } = inboxFor(d, { onWrite: (c) => { content = c; } });
+    await registered(d, inbox);
+    const e = await inbox.eligibility(SEAT, SENDER);
+    if (!e.ok) throw new Error(e.reason);
+    const sent = await inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hi", endpoint: e.endpoint });
+    const markers = relay.buildNativeAckPayload({ hook_event_name: "UserPromptSubmit", prompt: content }, { OPENRIG_RUNTIME: "claude-code", OPENRIG_SESSION_NAME: SEAT })!.markers;
+    const a = app(d, inbox);
+    for (let i = 0; i < 2; i++) {
+      expect(await (await post(a, "native-ack", { sessionName: SEAT, markers, promptId: "prompt-7" })).json()).toEqual({ ok: true, acked: sent.outboxIds, block: false });
+    }
+  });
 });
 
 describe("relay: the native payloads", () => {
@@ -305,5 +324,111 @@ describe("OS adapters", () => {
     for (let chunk = 3; chunk <= 30; chunk++) expect(fileIncludes(p, "NEEDLE", chunk)).toBe(true);
     expect(fileIncludes(p, "ABSENT", 4)).toBe(false);
     expect(fileIncludes(join(dir, "missing"), "NEEDLE")).toBe(false);
+  });
+});
+
+// Review F2, driven through the real SessionTransport: a repeat of a fixed delivery id while the first native write
+// awaits its ack is coalesced: one socket write, nothing typed into the pane.
+describe("review F2 through SessionTransport: a repeated delivery id while pending", () => {
+  it("the second send returns the pending native row, writes nothing, types nothing", async () => {
+    const d = db();
+    let writes = 0;
+    const { inbox } = inboxFor(d, { onWrite: () => { writes++; } });
+    await registered(d, inbox);
+    const commands: string[] = [];
+    const tmux = new TmuxAdapter(async (cmd: string) => { commands.push(cmd); return ""; });
+    const t = new SessionTransport({ db: d, rigRepo: new RigRepository(d), sessionRegistry: new SessionRegistry(d), tmuxAdapter: tmux, nativeInbox: inbox });
+    const first = await t.send(SEAT, "wake", { actorSession: "watchdog@system", deliveryId: "guard-watchdog-occ1" });
+    const second = await t.send(SEAT, "wake", { actorSession: "watchdog@system", deliveryId: "guard-watchdog-occ1" });
+    expect(first).toMatchObject({ ok: true, path: "native", outboxIds: ["guard-watchdog-occ1"] });
+    expect(second).toMatchObject({ ok: true, path: "native", sent: false, outboxIds: ["guard-watchdog-occ1"] });
+    expect(writes).toBe(1);
+    expect(commands.filter((c) => /send-keys|paste-buffer|load-buffer|set-buffer/.test(c))).toEqual([]);
+  });
+});
+
+describe("settlement: the queue write-back and the sender notice (review F3, R3)", () => {
+  const row = (over: Partial<OutboxEntry>): OutboxEntry => ({ outboxId: "o1", senderSession: SENDER, destinationSession: SEAT, body: "b", tags: null,
+    urgency: "routine", tsDispatched: "t", deliveryState: "sending", deliveredAt: null, auditPointer: null, nativeWrittenAt: "2026-10-30T12:00:00.000Z", ...over });
+  function deps() {
+    const recorded: Array<[string, string]> = []; const notices: Array<[string, string]> = [];
+    return { recorded, notices, d: { recordNudgeAttempt: (q: string, r: string) => { recorded.push([q, r]); }, sendNotice: async (to: string, text: string) => { notices.push([to, text]); },
+      isAgentSeat: (s: string) => s === SENDER } };
+  }
+
+  it("delivered: the qitem records verified; no notice", () => {
+    const x = deps();
+    createNativeSettlementHandler(x.d)(row({ auditPointer: "qitem-1" }), { kind: "delivered", evidence: "native_hook_delivered", detail: null });
+    expect([x.recorded, x.notices]).toEqual([[["qitem-1", "verified"]], []]);
+  });
+
+  it("unconfirmed: the qitem records an indeterminate: result the ladder escalates, and an agent sender is told", () => {
+    const x = deps();
+    createNativeSettlementHandler(x.d)(row({ auditPointer: "qitem-1" }), { kind: "unconfirmed", evidence: "native_unconfirmed", detail: "no_boundary_by_hard_deadline" });
+    expect(x.recorded).toEqual([["qitem-1", "indeterminate:native_unconfirmed:no_boundary_by_hard_deadline"]]);
+    expect(x.notices).toHaveLength(1);
+    expect(x.notices[0]![0]).toBe(SENDER);
+    expect(x.notices[0]![1]).toMatch(/UNCONFIRMED \(no_boundary_by_hard_deadline\).*not re-sent.*rig capture dev-impl@rig1/);
+  });
+
+  it("the notice is stripped like any system text (OF-169): a control character in a reason never reaches the pane", () => {
+    const x = deps();
+    createNativeSettlementHandler(x.d)(row({}), { kind: "unconfirmed", evidence: "native_unconfirmed", detail: "bad\u001b[201~reason\u0007" });
+    expect(x.notices[0]![1]).toContain("bad[201~reason");
+    expect(x.notices[0]![1]).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
+  });
+
+  it("unconfirmed from the daemon's own identity: recorded on the qitem, no pane notice", () => {
+    const x = deps();
+    createNativeSettlementHandler(x.d)(row({ senderSession: "queue@system", auditPointer: "qitem-1" }), { kind: "unconfirmed", evidence: "native_unconfirmed", detail: "write_partial" });
+    expect([x.recorded.length, x.notices.length]).toEqual([1, 0]);
+  });
+
+  it("a failed fallback: the qitem records failed:, the sender is told it was NOT delivered; a held fallback names its held row", async () => {
+    const x = deps();
+    const failed = nativeFallbackOutcome({ ok: false, reason: "target_needs_input" }, { path: "tmux", evidence: "send_failed", detail: "target_needs_input" });
+    await recordNativeFallback(x.d, row({ auditPointer: "qitem-2" }), { ok: false, reason: "target_needs_input" }, failed);
+    expect(failed.state).toBe("failed");
+    expect(x.recorded).toEqual([["qitem-2", "failed:target_needs_input"]]);
+    expect(x.notices[0]![1]).toMatch(/could NOT be delivered.*target_needs_input/);
+    const held = nativeFallbackOutcome({ ok: true, outcome: "retained", outboxIds: ["guard-send-x"] }, { path: "tmux", evidence: "retained" });
+    expect([held.state, held.label.detail, held.nudgeResult, held.undelivered]).toEqual(["failed", "fallback held by the typing guard as guard-send-x", "retained:typing_guard", false]);
+  });
+});
+
+// Review M21: the relay process itself prints `decision: block` when the daemon answers block, and nothing otherwise.
+describe("relay process: the block answer reaches Claude's stdout", () => {
+  const RELAY = fileURLToPath(new URL("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs", import.meta.url));
+  async function runRelay(reply: unknown): Promise<{ stdout: string; acks: unknown[] }> {
+    const acks: unknown[] = [];
+    const server = createHttpServer((req, res) => {
+      let body = ""; req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        if (req.url === "/api/activity/native-ack") acks.push(JSON.parse(body));
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(req.url === "/api/activity/native-ack" ? reply : { ok: true }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const home = mkdtempSync(join(tmpdir(), "nc3-relay-"));
+    cleanups.push(() => { server.close(); rmSync(home, { recursive: true, force: true }); });
+    const child = spawn(process.execPath, [RELAY], { env: { PATH: process.env.PATH ?? "", HOME: home, OPENRIG_HOME: home, OPENRIG_URL: `http://127.0.0.1:${port}`,
+      OPENRIG_ACTIVITY_HOOK_TOKEN: "tok", OPENRIG_RUNTIME: "claude-code", OPENRIG_SESSION_NAME: SEAT }, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = ""; child.stdout.on("data", (c) => { stdout += c; });
+    child.stdin.end(JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt_id: "p-9", prompt: "hi\n\n[openrig-msg outbox-1:0123456789abcdef01234567]" }));
+    await new Promise((r) => child.on("close", r));
+    return { stdout, acks };
+  }
+
+  it("block: true → one JSON object with decision block on stdout; the ack carried the marker and the prompt id", async () => {
+    const r = await runRelay({ ok: true, acked: [], block: true });
+    expect(JSON.parse(r.stdout.trim())).toMatchObject({ decision: "block" });
+    expect(r.acks).toEqual([expect.objectContaining({ promptId: "p-9", markers: [{ id: "outbox-1", nonce: "0123456789abcdef01234567" }] })]);
+  });
+
+  it("control: block: false → nothing on stdout", async () => {
+    const r = await runRelay({ ok: true, acked: ["outbox-1"], block: false });
+    expect(r.stdout).toBe("");
   });
 });

@@ -16,7 +16,7 @@
 // non-take (a later boundary, no ack, no marker in the transcript). See `sweep`.
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { OutboxHandler } from "./outbox-handler.js";
+import type { OutboxEntry, OutboxHandler } from "./outbox-handler.js";
 
 /** The marker line appended to a native message. `<id>` is the outbox row, `<nonce>` a per-row secret the sender never sees. */
 export const NATIVE_MARKER_RE = /\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]/g;
@@ -75,15 +75,23 @@ export interface NativeInboxDeps {
   deadlineMs?: number;
   /** Past this age a row with no boundary since its write is dead-lettered (indeterminate), never re-sent. */
   hardDeadlineMs?: number;
+  /** Called after a native row settles (review F3 and the R3 sender notice): the queue records the outcome on the
+   *  row's qitem, and the sender is told when the outcome is not a delivery. Errors are the callback's own. */
+  onSettled?: (row: OutboxEntry, outcome: NativeSettlement) => void;
 }
+
+/** How a native row settled: `delivered` (hook ack or transcript), `unconfirmed` (indeterminate: hard deadline or a
+ *  partial write; never re-sent), or `failing_over` (no take proven; the tmux fallback follows). */
+export interface NativeSettlement { kind: "delivered" | "unconfirmed" | "failing_over"; evidence: string; detail: string | null }
 
 export type NativeEligibility =
   | { ok: true; nodeId: string; endpoint: NativeEndpointRow }
   | { ok: false; reason: string };
 
 export interface NativeDeliverResult {
-  /** `fallback`: nothing was written, use tmux. `written`: the rows are native, acked or pending. */
-  kind: "fallback" | "written";
+  /** `fallback`: nothing was written, use tmux. `written`: the rows are native, acked or pending. `pending`: the id is
+   *  already a native write awaiting its ack, so nothing was written again (review F2: a repeat coalesces). */
+  kind: "fallback" | "written" | "pending";
   reason?: string;
   outboxIds: string[];
   acked: boolean;
@@ -183,6 +191,9 @@ export class ClaudeNativeInbox {
     const live = this.deps.liveGeneration(seat.nodeId);
     if (live !== null && endpoint.generation !== null && live !== endpoint.generation) return { ok: false, reason: "endpoint_generation_stale" };
     if (!this.deps.socketExists(endpoint.socket_path)) return { ok: false, reason: "socket_missing" };
+    // Review N5: Claude names its inbox `<pid>.sock` (measured: /tmp/cc-socks/<pid>.sock, /run/user/<uid>/cc-socks/<pid>.sock).
+    const socketPid = /(?:^|\/)(\d+)\.sock$/.exec(endpoint.socket_path)?.[1];
+    if (socketPid !== undefined && Number(socketPid) !== endpoint.claude_pid) return { ok: false, reason: "socket_pid_mismatch" };
     const panePid = await this.deps.panePid(sessionName);
     if (!panePid) return { ok: false, reason: "pane_pid_unknown" };
     const procs = await this.deps.listProcesses();
@@ -207,19 +218,37 @@ export class ClaudeNativeInbox {
     committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string | null; identityProvenance?: string | null;
   }): Promise<NativeDeliverResult> {
     const writtenAt = this.now().toISOString();
+    const transcript = input.endpoint.transcript_path ?? null;
+    // Review F2: a caller's fixed id (a queue nudge, a watchdog occurrence) repeated while its native write still awaits
+    // its ack coalesces onto it: nothing is written again and nothing goes through tmux.
+    if (!input.committedOutboxIds && input.deliveryId && this.deps.outbox.isNativePending(input.deliveryId)) {
+      return { kind: "pending", outboxIds: [input.deliveryId], acked: false };
+    }
     const claimed: Array<{ id: string; nonce: string; created: boolean }> = [];
     this.deps.db.transaction(() => {
       const ids = input.committedOutboxIds ?? [input.deliveryId ?? null];
       for (const given of ids) {
         const nonce = newNonce();
         if (given && this.deps.outbox.getById(given)) {
-          if (!this.deps.outbox.claimNative(given, nonce, writtenAt)) throw new Error(`native: row ${given} is not claimable`);
-          claimed.push({ id: given, nonce, created: false });
+          if (this.deps.outbox.claimNative(given, nonce, writtenAt, transcript)) {
+            claimed.push({ id: given, nonce, created: false });
+            continue;
+          }
+          // A committed wake row must be claimable: the drain claimed it for this send. A held (retained) or retired id
+          // keeps today's path, whose readback answers "retained" without sending.
+          const prior = this.deps.outbox.getById(given)!.deliveryState;
+          if (input.committedOutboxIds || !["delivered", "failed", "indeterminate"].includes(prior)) throw new Error(`native: row ${given} is not claimable`);
+          // Review F2: a repeat of an id that already settled is a new attempt, with its own row.
+          const attempt = this.deps.outbox.nextAttemptId(given);
+          const entry = this.deps.outbox.record({ outboxId: attempt, senderSession: input.senderSession, destinationSession: input.sessionName,
+            body: input.text, auditPointer: input.auditPointer ?? undefined, identityProvenance: input.identityProvenance ?? null });
+          if (!this.deps.outbox.claimNative(entry.outboxId, nonce, writtenAt, transcript)) throw new Error(`native: new row ${entry.outboxId} not claimable`);
+          claimed.push({ id: entry.outboxId, nonce, created: true });
         } else {
           const entry = this.deps.outbox.record({ ...(given ? { outboxId: given } : {}), senderSession: input.senderSession,
             destinationSession: input.sessionName, body: input.text, auditPointer: input.auditPointer ?? undefined,
             identityProvenance: input.identityProvenance ?? null });
-          if (!this.deps.outbox.claimNative(entry.outboxId, nonce, writtenAt)) throw new Error(`native: new row ${entry.outboxId} not claimable`);
+          if (!this.deps.outbox.claimNative(entry.outboxId, nonce, writtenAt, transcript)) throw new Error(`native: new row ${entry.outboxId} not claimable`);
           claimed.push({ id: entry.outboxId, nonce, created: true });
         }
       }
@@ -236,7 +265,9 @@ export class ClaudeNativeInbox {
     if (written === "partial") {
       for (const c of claimed) {
         this.waiters.delete(c.id);
-        this.deps.outbox.settleNative(c.id, "indeterminate", { path: "native", evidence: "native_unconfirmed", detail: "write_partial" });
+        if (this.deps.outbox.settleNative(c.id, "indeterminate", { path: "native", evidence: "native_unconfirmed", detail: "write_partial" })) {
+          this.notify(c.id, { kind: "unconfirmed", evidence: "native_unconfirmed", detail: "write_partial" });
+        }
       }
       return { kind: "written", write: "partial", outboxIds: claimed.map((c) => c.id), acked: false };
     }
@@ -249,14 +280,16 @@ export class ClaudeNativeInbox {
   /** UserPromptSubmit with markers (R2, R4): each marker whose id and nonce match a native row in `sending`, addressed
    *  to the hooking seat, settles it delivered. `block` is true only when the prompt carries markers and EVERY one names
    *  a row already settled delivered by other means: then the copy is a late duplicate. */
-  ack(input: { nodeId: string; sessionName: string; markers: Array<{ id: string; nonce: string }> }): { acked: string[]; block: boolean } {
+  ack(input: { nodeId: string; sessionName: string; markers: Array<{ id: string; nonce: string }>; promptId?: string | null }): { acked: string[]; block: boolean } {
     const acked: string[] = [];
     let duplicates = 0;
     for (const m of input.markers) {
-      const r = this.deps.outbox.ackNative(m.id, m.nonce, input.sessionName);
+      const wasPending = this.deps.outbox.getById(m.id)?.deliveryState;
+      const r = this.deps.outbox.ackNative(m.id, m.nonce, input.sessionName, input.promptId ?? null);
       if (r === "acked") {
         acked.push(m.id);
         this.waiters.get(m.id)?.();
+        if (wasPending !== "delivered") this.notify(m.id, { kind: "delivered", evidence: "native_hook_delivered", detail: null });
       } else if (r === "already_delivered") {
         duplicates++;
       }
@@ -281,23 +314,37 @@ export class ClaudeNativeInbox {
       const boundary = seat ? this.boundarySince(seat.nodeId, row.nativeWrittenAt!) : false;
       if (boundary) {
         const marker = row.nativeNonce ? nativeMarker(row.outboxId, row.nativeNonce) : null;
-        if (marker && endpoint?.transcript_path && this.deps.fileIncludes(endpoint.transcript_path, marker)) {
-          this.deps.outbox.settleNative(row.outboxId, "delivered", { path: "native", evidence: "native_transcript" });
+        // Review N3: the transcript at write time, and the current one (a /clear moves the seat to a new file).
+        const transcripts = [...new Set([row.nativeTranscriptPath, endpoint?.transcript_path].filter((p): p is string => !!p))];
+        if (marker && transcripts.some((p) => this.deps.fileIncludes(p, marker))) {
+          if (this.deps.outbox.settleNative(row.outboxId, "delivered", { path: "native", evidence: "native_transcript" })) {
+            this.notify(row.outboxId, { kind: "delivered", evidence: "native_transcript", detail: null });
+          }
           settled.push({ outboxId: row.outboxId, state: "delivered", evidence: "native_transcript" });
           continue;
         }
         this.deps.outbox.settleNative(row.outboxId, "failed", { path: "native", evidence: "native_unconfirmed", detail: "boundary_without_ack" });
+        this.notify(row.outboxId, { kind: "failing_over", evidence: "native_unconfirmed", detail: "boundary_without_ack" });
         settled.push({ outboxId: row.outboxId, state: "failed", evidence: "native_unconfirmed" });
         fallbacks.push({ outboxId: row.outboxId, sessionName: row.destinationSession, senderSession: row.senderSession, body: row.body,
           auditPointer: row.auditPointer, wake: row.outboxId.startsWith("wake-intent-") });
         continue;
       }
       if (now - writtenAt >= this.hardDeadlineMs) {
-        this.deps.outbox.settleNative(row.outboxId, "indeterminate", { path: "native", evidence: "native_unconfirmed", detail: "no_boundary_by_hard_deadline" });
+        if (this.deps.outbox.settleNative(row.outboxId, "indeterminate", { path: "native", evidence: "native_unconfirmed", detail: "no_boundary_by_hard_deadline" })) {
+          this.notify(row.outboxId, { kind: "unconfirmed", evidence: "native_unconfirmed", detail: "no_boundary_by_hard_deadline" });
+        }
         settled.push({ outboxId: row.outboxId, state: "indeterminate", evidence: "native_unconfirmed" });
       }
     }
     return { fallbacks, settled };
+  }
+
+  private notify(outboxId: string, outcome: NativeSettlement): void {
+    if (!this.deps.onSettled) return;
+    const row = this.deps.outbox.getById(outboxId);
+    if (!row) return;
+    try { this.deps.onSettled(row, outcome); } catch { /* a notice that fails never undoes a settlement */ }
   }
 
   /** A Stop or a UserPromptSubmit recorded for the node with an eventAt after `since`. */

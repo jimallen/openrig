@@ -116,6 +116,7 @@ import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guar
 import { InboxHandler } from "./domain/inbox-handler.js";
 import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
 import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
+import { createNativeSettlementHandler, nativeFallbackOutcome, recordNativeFallback } from "./domain/native-inbox-settlement.js";
 import { fileIncludes, listProcesses as listProcessesForNative, probeClaudeBinary, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
@@ -1322,8 +1323,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // runnerSendReadinessFromAdapters asks only a runtime whose adapter declares sendReadiness (pda, pi and omp), so a
   // mis-wired source can never touch another runtime's send.
   const runtimeAdapterMap: Record<string, RuntimeAdapter> = { "claude-code": claudeAdapter, "codex": codexAdapter, "pi": piAdapter, "omp": ompAdapter, "pda": pdaAdapter, "stub": stubAdapter, "terminal": new (await import("./adapters/terminal-adapter.js")).TerminalAdapter() };
-  const claudeNativeInbox = new ClaudeNativeInbox({
+  // Native comms step 3 (review R3/F3): the queue write-back and the sender notice (domain/native-inbox-settlement.ts).
+  // The notice goes through tmux once the transport exists (bound below).
+  const nativeNotice: { send?: (to: string, text: string) => Promise<unknown> } = {};
+  const nativeSettlementDeps = {
+    recordNudgeAttempt: (qitemId: string, result: string) => queueRepoInstance.recordNudgeAttempt(qitemId, result),
+    sendNotice: (to: string, text: string) => nativeNotice.send?.(to, text) ?? Promise.resolve(undefined),
+    isAgentSeat: (sender: string) => !/@system$/.test(sender) && sender !== "daemon@kernel" && claudeNativeInbox.isNativeSender(sender),
+  };
+  const claudeNativeInbox: ClaudeNativeInbox = new ClaudeNativeInbox({
     db,
+    onSettled: createNativeSettlementHandler(nativeSettlementDeps),
     outbox: outboxHandlerInstance,
     enabled: nativeClaudeEnabled,
     panePid: async (session) => {
@@ -2138,8 +2148,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         const { fallbacks } = claudeNativeInbox.sweep();
         for (const f of fallbacks) {
           const res = await sessionTransport.send(f.sessionName, f.body, { forceTmux: true, verify: true, actorSession: f.senderSession, auditPointer: f.auditPointer ?? undefined });
-          const state = res.outcome === "retained" ? "retained" : !res.ok ? "failed" : res.verified ? "delivered" : "indeterminate";
-          outboxHandlerInstance.settleFallback(f.outboxId, state, { ...labelForTmuxSend(res), detail: `fallback after native_unconfirmed${res.reason ? `; ${res.reason}` : ""}` });
+          const outcome = nativeFallbackOutcome(res, labelForTmuxSend(res));
+          outboxHandlerInstance.settleFallback(f.outboxId, outcome.state, outcome.label);
+          const entry = outboxHandlerInstance.getById(f.outboxId);
+          if (entry) await recordNativeFallback(nativeSettlementDeps, entry, res, outcome);
         }
       } catch (err) {
         console.warn(`[native-inbox] sweep failed: ${(err as Error).message}`);
@@ -2147,6 +2159,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         nativeSweepRunning = false;
       }
     };
+    nativeNotice.send = (to, text) => sessionTransport.send(to, text, { forceTmux: true, actorSession: "daemon@kernel" }).catch(() => undefined);
     void nativeSweep();
     const nativeSweepTimer = setInterval(() => { void nativeSweep(); }, 15_000);
     nativeSweepTimer.unref?.();

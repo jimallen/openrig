@@ -264,6 +264,19 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     expect(markersOf(baton.qitemId, LADDER_RUNG_PREFIX)).toHaveLength(0);
   });
 
+  // Native comms step 3 (review F3): a native wake awaiting its ack, and one the sweeper settled indeterminate at the
+  // hard deadline, are unconfirmed like a tmux one: no re-send to the destination, escalation past the window.
+  it.each(["native-ack-pending", "indeterminate:native_unconfirmed:no_boundary_by_hard_deadline"])(
+    "NATIVE UNCONFIRMED (%s) + NO PICKUP ESCALATES without any re-send", async (result) => {
+      const baton = await mkBaton();
+      setNudgeResult(baton.qitemId, result, 45);
+      ageCreated(baton.qitemId, 45);
+      await tick();
+      expect(markersOf(baton.qitemId, LADDER_ATTEMPT_PREFIX)).toHaveLength(0);
+      expect(markersOf(baton.qitemId, LADDER_RUNG_PREFIX)).toHaveLength(1);
+      expect(calls.some((c) => c.target === "worker@r")).toBe(false);
+    });
+
   it("INDETERMINATE OUTCOMES RIDE THE SAME CONFIRMATION PATH: an indeterminate: baton with no pickup escalates without any re-send", async () => {
     const baton = await mkBaton();
     setNudgeResult(baton.qitemId, "indeterminate:wake send timed out", 45);

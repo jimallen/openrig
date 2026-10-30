@@ -31,7 +31,7 @@ const CLASSIFIED: Record<string, Row> = {
   "domain/session-transport.ts": { sendText: 3, send: 0, cls: "impl" },
   "domain/startup-orchestrator.ts": { sendText: 1, send: 1, cls: "stripped (typed text) + constant (guarded retry sends no text)" },
   "routes/transport.ts": { sendText: 0, send: 1, cls: "person" },
-  "startup.ts": { sendText: 0, send: 4, cls: "stripped (watchdog, model monitor) + constant (attention probe) + replay (native comms step 3: the sweeper's tmux fallback re-sends a native message's accepted text through the same transport, so it keeps that message's class)" },
+  "startup.ts": { sendText: 0, send: 5, cls: "stripped (watchdog, model monitor, native comms step 3's delivery notice via nativeNoticeText) + constant (attention probe) + replay (native comms step 3: the sweeper's tmux fallback re-sends a native message's accepted text through the same transport, so it keeps that message's class)" },
   "terminal/TerminalSessionBroker.ts": { sendText: 1, send: 0, cls: "person" },
 };
 

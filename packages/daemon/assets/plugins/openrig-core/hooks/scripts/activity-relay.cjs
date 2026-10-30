@@ -210,6 +210,8 @@ function buildNativeAckPayload(providerPayload, env = process.env) {
     sessionName: firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME),
     nodeId: firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID),
     generation: firstString(env.OPENRIG_OCCUPANT_GENERATION, env.RIGGED_OCCUPANT_GENERATION),
+    // The same prompt's hook running twice is one delivery: the daemon acks a repeat with the same prompt id.
+    promptId: firstString(providerPayload.prompt_id),
     markers,
   };
 }

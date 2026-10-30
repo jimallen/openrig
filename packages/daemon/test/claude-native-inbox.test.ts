@@ -25,6 +25,7 @@ interface Fake {
   writes: Array<{ path: string; lines: unknown[] }>; writeResult: "none" | "all" | "partial"; onWrite?: () => void;
   files: Map<string, string>; liveGen: string | null; clock: { t: number };
   probe: { version: string | null; literal: boolean; replacedSinceStart: boolean };
+  settled: Array<{ id: string; kind: string; detail: string | null }>;
 }
 
 function seed(db: Database.Database) {
@@ -47,6 +48,7 @@ function make(over?: Partial<NativeInboxDeps>): Fake {
     sockets: new Set([SOCK]), writes: [] as Array<{ path: string; lines: unknown[] }>, writeResult: "all" as "none" | "all" | "partial",
     files: new Map<string, string>(), liveGen: "gen-1", clock: { t: Date.parse("2026-10-30T12:00:00.000Z") },
     probe: { version: "2.1.314", literal: true, replacedSinceStart: false },
+    settled: [] as Array<{ id: string; kind: string; detail: string | null }>,
   } as Fake;
   f.inbox = new ClaudeNativeInbox({
     db, outbox: f.outbox,
@@ -63,6 +65,7 @@ function make(over?: Partial<NativeInboxDeps>): Fake {
     ackWindowMs: 50,
     deadlineMs: 120_000,
     hardDeadlineMs: 1_800_000,
+    onSettled: (row, outcome) => { f.settled.push({ id: row.outboxId, kind: outcome.kind, detail: outcome.detail }); },
     ...over,
   });
   return f;
@@ -233,11 +236,13 @@ describe("deliver: the row first, then the write (R1)", () => {
     expect(row(f2.db, ids2[0]!)).toMatchObject({ state: "sending", path: null, evidence: null, nonce: null });
   });
 
-  it("a row that cannot be claimed (already settled) is refused, so the caller keeps today's path", async () => {
+  it("a held (retained) or retired id is refused, so the caller keeps today's path (its readback sends nothing)", async () => {
     const f = make();
     const endpoint = await eligible(f);
-    const id = f.outbox.record({ outboxId: "guard-watchdog-1", senderSession: "watchdog@system", destinationSession: SEAT, body: "x" }).outboxId;
-    f.outbox.markDelivered(id);
+    const binding = { nodeId: "node-a", session: SEAT, occupant: null, pane: null };
+    const id = f.outbox.retain({ outboxId: "guard-watchdog-1", senderSession: "watchdog@system", destinationSession: SEAT, body: "x" }, binding).outboxId;
+    await expect(f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "x", endpoint, deliveryId: id })).rejects.toThrow(/not claimable/);
+    f.outbox.retire(id, "operator@rig1", "done");
     await expect(f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "x", endpoint, deliveryId: id })).rejects.toThrow(/not claimable/);
     expect(f.writes).toHaveLength(0);
   });
@@ -362,5 +367,117 @@ describe("sweep: the deadline rule (R3)", () => {
       listProcesses: async () => f.procs, socketExists: () => true, write: async () => "all", fileIncludes: () => false,
       probeBinary: async () => f.probe, liveGeneration: () => "gen-1", now: () => new Date(f.clock.t) });
     expect(restarted.sweep().fallbacks.map((x) => x.outboxId)).toEqual([id]);
+  });
+});
+
+// Review F1 (blocking): a late native copy of an `indeterminate` row is the delivery, never a duplicate to block.
+describe("review F1: a late copy of an indeterminate row is acked, not blocked", () => {
+  async function written(f: Fake, write: "all" | "partial" = "all") {
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER);
+    if (!e.ok) throw new Error(e.reason);
+    f.writeResult = write;
+    const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
+    return { id: res.outboxIds[0]!, nonce: row(f.db, res.outboxIds[0]!)!.nonce! };
+  }
+
+  it("indeterminate after the hard deadline (the seat parked at a prompt > 30 min), then taken: acked, delivered (late)", async () => {
+    const f = make(); const { id, nonce } = await written(f);
+    f.clock.t += 1_800_000;
+    f.inbox.sweep();
+    expect(row(f.db, id)?.state).toBe("indeterminate"); // positive control: the cause happened
+    expect(f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }] })).toEqual({ acked: [id], block: false });
+    expect(row(f.db, id)).toMatchObject({ state: "delivered", evidence: "native_hook_delivered", detail: "late, after indeterminate (no_boundary_by_hard_deadline)" });
+  });
+
+  it("indeterminate after a partial write, then taken: acked, delivered (late)", async () => {
+    const f = make(); const { id, nonce } = await written(f, "partial");
+    expect(row(f.db, id)?.state).toBe("indeterminate");
+    expect(f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }] })).toEqual({ acked: [id], block: false });
+    expect(row(f.db, id)?.state).toBe("delivered");
+  });
+
+  it("the same prompt's hook running twice is one delivery (not a self-block); another prompt with it is a duplicate", async () => {
+    const f = make(); const { id, nonce } = await written(f);
+    expect(f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }], promptId: "p-1" })).toEqual({ acked: [id], block: false });
+    expect(f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }], promptId: "p-1" })).toEqual({ acked: [id], block: false });
+    expect(f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id, nonce }], promptId: "p-2" })).toEqual({ acked: [], block: true });
+  });
+});
+
+describe("review F2 at the inbox: a repeated delivery id", () => {
+  async function endpoint(f: Fake) {
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, "watchdog@system");
+    if (!e.ok) throw new Error(e.reason);
+    return e.endpoint;
+  }
+
+  it("while the first native write awaits its ack, a repeat coalesces: nothing is written again", async () => {
+    const f = make(); const ep = await endpoint(f);
+    const first = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
+    const again = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
+    expect([first.kind, again.kind, again.outboxIds, f.writes.length]).toEqual(["written", "pending", ["guard-watchdog-job1"], 1]);
+  });
+
+  it("after the first settled, a repeat is a new attempt with its own row (<id>.r1) and is written natively", async () => {
+    const f = make(); const ep = await endpoint(f);
+    await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
+    const first = row(f.db, "guard-watchdog-job1")!;
+    f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id: "guard-watchdog-job1", nonce: first.nonce! }] });
+    const again = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
+    expect([again.kind, again.outboxIds, f.writes.length]).toEqual(["written", ["guard-watchdog-job1.r1"], 2]);
+    expect(row(f.db, "guard-watchdog-job1.r1")).toMatchObject({ state: "sending", path: "native", evidence: "native_written" });
+  });
+});
+
+describe("review N3 and N5", () => {
+  it("N3: after a /clear moved the seat to a new transcript, the marker is still found in the transcript of the write", async () => {
+    const f = make(); await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
+    const id = res.outboxIds[0]!;
+    f.files.set(TRANSCRIPT, `...${nativeMarker(id, row(f.db, id)!.nonce!)}...`);
+    await f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: SOCK, transcriptPath: "/fake/after-clear.jsonl", claudePid: 4242, execPath: "/bin/claude" });
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 5_000).toISOString());
+    f.clock.t += 130_000;
+    expect(f.inbox.sweep().fallbacks).toEqual([]);
+    expect(row(f.db, id)).toMatchObject({ state: "delivered", evidence: "native_transcript" });
+  });
+
+  it("N5: a socket named for another pid than the endpoint's claude → tmux", async () => {
+    const f = make();
+    await f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: "/tmp/cc-socks/9999.sock", transcriptPath: TRANSCRIPT, claudePid: 4242, execPath: "/bin/claude" });
+    f.sockets.add("/tmp/cc-socks/9999.sock");
+    expect(await f.inbox.eligibility(SEAT, SENDER)).toEqual({ ok: false, reason: "socket_pid_mismatch" });
+  });
+});
+
+describe("settlement notifications (review F3 and the R3 notice)", () => {
+  async function pending(f: Fake) {
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
+    return { id: res.outboxIds[0]!, nonce: row(f.db, res.outboxIds[0]!)!.nonce! };
+  }
+
+  it("each settlement is reported once, with its kind", async () => {
+    const f = make();
+    const a = await pending(f);
+    f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [a] });
+    f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [a] }); // duplicate: no second report
+    const b = await pending(f);
+    f.clock.t += 1_800_000;
+    f.inbox.sweep();
+    f.inbox.sweep();
+    const c = await pending(f);
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 1_000).toISOString());
+    f.clock.t += 130_000;
+    f.inbox.sweep();
+    expect(f.settled).toEqual([
+      { id: a.id, kind: "delivered", detail: null },
+      { id: b.id, kind: "unconfirmed", detail: "no_boundary_by_hard_deadline" },
+      { id: c.id, kind: "failing_over", detail: "boundary_without_ack" },
+    ]);
   });
 });
