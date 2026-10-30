@@ -26,6 +26,9 @@ export interface ActivityHookFsRead {
 export interface ActivityRelayEvent {
   event: string;
   timeout?: number;
+  /** Claude Code's documented `async: true`: the hook "runs in the background without blocking". Set for events that
+   *  fire on every tool call (PostToolUse), where a blocking relay (~135 ms per run, measured) would slow each call. */
+  async?: boolean;
 }
 
 export interface ActivityHookDelivery {
@@ -75,7 +78,8 @@ export function deriveRelayEvents(fs: ActivityHookFsRead, manifestPath: string |
       });
       if (relay) {
         const t = isPlainObject(relay) ? relay["timeout"] : undefined;
-        out.push({ event, timeout: typeof t === "number" ? t : undefined });
+        const background = isPlainObject(relay) && relay["async"] === true;
+        out.push({ event, timeout: typeof t === "number" ? t : undefined, ...(background ? { async: true } : {}) });
         seen.add(event);
         break;
       }
