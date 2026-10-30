@@ -5,6 +5,7 @@ import { closeSync, existsSync, openSync, readlinkSync, readSync, statSync } fro
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import { INJECT_FORMAT_LITERAL, type ProcessRow } from "../domain/claude-native-inbox.js";
+import { NAME_ENVELOPE_PARSER_LITERAL } from "../domain/native-name-envelope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -88,19 +89,21 @@ async function processStart(pid: number): Promise<Date | null> {
 }
 
 /** The launch probe of a claude binary: `<exec> --version`, the inject-format literal in the file, and whether the
- *  file was modified after the process started (an auto-update: the running version is then unknown). */
-export async function probeClaudeBinary(execPath: string, pid: number): Promise<{ version: string | null; literal: boolean; replacedSinceStart: boolean }> {
-  if (!existsSync(execPath)) return { version: null, literal: false, replacedSinceStart: false };
+ *  file was modified after the process started (an auto-update: the running version is then unknown). ncomms-3d: the
+ *  sender-name envelope parser's literal (`nameEnvelope`). */
+export async function probeClaudeBinary(execPath: string, pid: number): Promise<{ version: string | null; literal: boolean; replacedSinceStart: boolean; nameEnvelope: boolean }> {
+  if (!existsSync(execPath)) return { version: null, literal: false, replacedSinceStart: false, nameEnvelope: false };
   let version: string | null = null;
   try {
     const { stdout } = await execFileAsync(execPath, ["--version"], { timeout: 10_000 });
     version = /(\d+\.\d+\.\d+)/.exec(stdout)?.[1] ?? null;
   } catch { version = null; }
   const literal = fileIncludes(execPath, INJECT_FORMAT_LITERAL, 16 * 1024 * 1024);
+  const nameEnvelope = fileIncludes(execPath, NAME_ENVELOPE_PARSER_LITERAL, 16 * 1024 * 1024);
   const started = await processStart(pid);
   let replacedSinceStart = true; // unknown start time reads as unknown version
   try { if (started) replacedSinceStart = statSync(execPath).mtimeMs > started.getTime() + 1_000; } catch { replacedSinceStart = true; }
-  return { version, literal, replacedSinceStart };
+  return { version, literal, replacedSinceStart, nameEnvelope };
 }
 
 export function socketExists(path: string): boolean {

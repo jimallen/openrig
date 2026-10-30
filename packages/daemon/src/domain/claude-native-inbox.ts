@@ -17,6 +17,7 @@
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { OutboxEntry, OutboxHandler } from "./outbox-handler.js";
+import { nameEnvelope } from "./native-name-envelope.js";
 
 /** The marker line appended to a native message. `<id>` is the outbox row, `<nonce>` a per-row secret the sender never sees. */
 export const NATIVE_MARKER_RE = /\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]/g;
@@ -43,6 +44,8 @@ export interface NativeEndpointRow {
   exec_path: string | null;
   claude_version: string | null;
   probe_result: string | null;
+  /** ncomms-3d: 1 when the binary parses the sender-name envelope (the launch probe found its parser literal). */
+  name_envelope?: number | null;
   registered_at: string;
 }
 
@@ -63,8 +66,9 @@ export interface NativeInboxDeps {
   /** Whether the file contains `needle` (a plain substring search; false when unreadable). */
   fileIncludes: (path: string, needle: string) => boolean;
   /** Probe a claude binary: version and whether its inject-format literal is present, plus whether the file changed
-   *  after the process started (then the running version is unknown). */
-  probeBinary: (execPath: string, pid: number) => Promise<{ version: string | null; literal: boolean; replacedSinceStart: boolean }>;
+   *  after the process started (then the running version is unknown). ncomms-3d: `nameEnvelope`, whether its
+   *  sender-name envelope parser is present (absent: plain content). */
+  probeBinary: (execPath: string, pid: number) => Promise<{ version: string | null; literal: boolean; replacedSinceStart: boolean; nameEnvelope?: boolean }>;
   /** ncomms-3c: the executable a running claude was started from, found from its pid (null when it cannot be found, or
    *  the file was replaced since: then the running version is unknown). A hook's environment carries CLAUDE_PID but
    *  not CLAUDE_CODE_EXECPATH (measured on claude 2.1.314, Linux and macOS), so the relay cannot report the binary. */
@@ -139,6 +143,7 @@ export class ClaudeNativeInbox {
     let version: string | null = null;
     let probe = input.claudePid ? "fail:exec_path_unresolved" : "fail:no_claude_pid";
     let execPath: string | null = null;
+    let envelope = false;
     if (input.claudePid) {
       try { execPath = (await this.deps.resolveExecPath?.(input.claudePid)) ?? input.execPath; } catch { execPath = input.execPath; }
     }
@@ -148,6 +153,7 @@ export class ClaudeNativeInbox {
         version = p.version;
         probe = !p.version ? "fail:version_unknown" : p.replacedSinceStart ? "fail:binary_replaced_since_start"
           : !p.literal ? "fail:inject_format_absent" : "pass";
+        envelope = probe === "pass" && p.nameEnvelope === true;
       } catch {
         probe = "fail:probe_error";
       }
@@ -155,13 +161,13 @@ export class ClaudeNativeInbox {
     const row: NativeEndpointRow = {
       node_id: input.nodeId, session_name: input.sessionName, generation: input.generation, socket_path: input.socketPath,
       transcript_path: input.transcriptPath, claude_pid: input.claudePid, exec_path: execPath, claude_version: version,
-      probe_result: probe, registered_at: this.now().toISOString(),
+      probe_result: probe, name_envelope: envelope ? 1 : 0, registered_at: this.now().toISOString(),
     };
-    this.deps.db.prepare(`INSERT INTO seat_native_endpoints (node_id, session_name, generation, socket_path, transcript_path, claude_pid, exec_path, claude_version, probe_result, registered_at)
-      VALUES (@node_id, @session_name, @generation, @socket_path, @transcript_path, @claude_pid, @exec_path, @claude_version, @probe_result, @registered_at)
+    this.deps.db.prepare(`INSERT INTO seat_native_endpoints (node_id, session_name, generation, socket_path, transcript_path, claude_pid, exec_path, claude_version, probe_result, name_envelope, registered_at)
+      VALUES (@node_id, @session_name, @generation, @socket_path, @transcript_path, @claude_pid, @exec_path, @claude_version, @probe_result, @name_envelope, @registered_at)
       ON CONFLICT(node_id) DO UPDATE SET session_name=excluded.session_name, generation=excluded.generation, socket_path=excluded.socket_path,
         transcript_path=excluded.transcript_path, claude_pid=excluded.claude_pid, exec_path=excluded.exec_path, claude_version=excluded.claude_version,
-        probe_result=excluded.probe_result, registered_at=excluded.registered_at`).run(row);
+        probe_result=excluded.probe_result, name_envelope=excluded.name_envelope, registered_at=excluded.registered_at`).run(row);
     return row;
   }
 
@@ -265,7 +271,9 @@ export class ClaudeNativeInbox {
       }
     })();
     const markers = claimed.map((c) => nativeMarker(c.id, c.nonce)).join("\n");
-    const content = `${input.text}\n\n${markers}`;
+    const plain = `${input.text}\n\n${markers}`;
+    // ncomms-3d: the sender's seat name, so Claude Code labels the message with it instead of "unknown".
+    const content = (input.endpoint.name_envelope === 1 ? nameEnvelope(input.senderSession, plain) : null) ?? plain;
     const acks = claimed.map((c) => new Promise<void>((resolve) => this.waiters.set(c.id, resolve)));
     const written = await this.deps.write(input.endpoint.socket_path!, [{ type: "user", message: { role: "user", content } }]);
     if (written === "none") {
