@@ -73,7 +73,7 @@ export interface NativeInboxDeps {
   liveGeneration: (nodeId: string) => string | null;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
-  /** How long a send waits for the ack before returning unconfirmed (an idle seat acked in 48 ms, measured). */
+  /** How long a send waits for the ack before returning unconfirmed (default 1.5 s; an idle seat acked in 48 ms, measured). */
   ackWindowMs?: number;
   /** Past this age an unacked row is checked for a proven non-take. */
   deadlineMs?: number;
@@ -120,7 +120,9 @@ export class ClaudeNativeInbox {
   constructor(private readonly deps: NativeInboxDeps) {
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    this.ackWindowMs = deps.ackWindowMs ?? 3_000;
+    // ncomms-3c: 1.5 s (an idle seat acked in about 50 ms, measured end to end), so a native send stays well inside the
+    // CLI's 5 s request timeout together with the eligibility checks.
+    this.ackWindowMs = deps.ackWindowMs ?? 1_500;
     this.deadlineMs = deps.deadlineMs ?? 120_000;
     this.hardDeadlineMs = deps.hardDeadlineMs ?? 30 * 60_000;
   }

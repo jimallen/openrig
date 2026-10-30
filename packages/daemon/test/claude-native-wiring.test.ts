@@ -25,7 +25,7 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
 import { transportRoutes } from "../src/routes/transport.js";
 import { operationalLaunchArgs, withNativeInboxSettings } from "../src/adapters/kernel-authority.js";
-import { fileIncludes, parseLsofTxtPath, resolveClaudeExecPath, writeSocketLines } from "../src/adapters/native-inbox-os.js";
+import { fileIncludes, linuxExecFromProcLink, parseLsofTxtPath, resolveClaudeExecPath, writeSocketLines } from "../src/adapters/native-inbox-os.js";
 import { QueueRepository, type QueueNudgeTransport } from "../src/domain/queue-repository.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -311,6 +311,18 @@ describe("OS adapters", () => {
     expect(JSON.parse(got.trim())).toEqual({ type: "user", message: { role: "user", content: "hi\n\n[openrig-msg x:0123456789abcdef01234567]" } });
   });
 
+  it("ncomms-3c: a receiver that accepts but never reads or closes (a hung claude) does not hold the write: all, at once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nc3-hung-"));
+    const path = join(dir, "inbox.sock");
+    const held: import("node:net").Socket[] = [];
+    const server = createServer((c) => { c.pause(); held.push(c); }); // never reads, never closes
+    cleanups.push(() => { for (const c of held) c.destroy(); server.close(); rmSync(dir, { recursive: true, force: true }); });
+    await new Promise<void>((r) => server.listen(path, () => r()));
+    const t0 = Date.now();
+    expect(await writeSocketLines(path, [{ type: "user", message: { role: "user", content: "hi" } }])).toBe("all");
+    expect(Date.now() - t0).toBeLessThan(1_000);
+  });
+
   it("writeSocketLines reports none when no socket answers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "nc3-nosock-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -509,6 +521,11 @@ describe("ncomms-3c: the executable of a running process, from its pid", () => {
     const p = await resolveClaudeExecPath(process.pid);
     expect(p).not.toBeNull();
     expect(statSync(p!).isFile()).toBe(true);
+  });
+
+  it("Linux: a /proc exe target marked (deleted) (the binary was replaced since start) is no path", () => {
+    expect(linuxExecFromProcLink("/home/u/.local/share/claude/versions/2.1.314")).toBe("/home/u/.local/share/claude/versions/2.1.314");
+    expect(linuxExecFromProcLink("/home/u/.local/share/claude/versions/2.1.311 (deleted)")).toBeNull();
   });
 
   it("a pid that does not exist resolves to null", async () => {

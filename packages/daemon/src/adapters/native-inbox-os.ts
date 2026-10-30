@@ -25,7 +25,12 @@ export function writeSocketLines(socketPath: string, lines: unknown[], timeoutMs
       socket.write(payload, (err) => {
         if (err) { socket.destroy(); finish("partial"); return; }
         flushed = true;
+        // ncomms-3c (found by the end-to-end run): the bytes are in the socket, so report `all` now. Waiting for the
+        // peer to close held a send for the whole timeout when the receiver was hung (a frozen claude), past the CLI's
+        // own 5 s request timeout. Half-close, and drop the socket if the peer never closes it.
         socket.end();
+        finish("all");
+        setTimeout(() => socket.destroy(), 2_000).unref();
       });
     });
     socket.on("error", () => finish(connected ? (flushed ? "all" : "partial") : "none"));
@@ -110,6 +115,12 @@ export function parseLsofTxtPath(output: string): string | null {
   return path && path.startsWith("/") ? path : null;
 }
 
+/** ncomms-3c: a /proc/<pid>/exe target as an executable path; " (deleted)" means the file was replaced or removed after the
+ *  process started, so the running version is unknown: null. */
+export function linuxExecFromProcLink(target: string): string | null {
+  return target.endsWith(" (deleted)") ? null : target;
+}
+
 /** ncomms-3c: the executable a running process was started from. Linux: /proc/<pid>/exe (a " (deleted)" target means the
  *  file was replaced or removed since: null). macOS: the txt entry lsof reports. Null when it cannot be found or does
  *  not exist as a file now (a replaced binary on macOS shows a bare name, measured). */
@@ -117,8 +128,7 @@ export async function resolveClaudeExecPath(pid: number): Promise<string | null>
   let path: string | null = null;
   if (process.platform === "linux") {
     try {
-      const target = readlinkSync(`/proc/${pid}/exe`);
-      path = target.endsWith(" (deleted)") ? null : target;
+      path = linuxExecFromProcLink(readlinkSync(`/proc/${pid}/exe`));
     } catch { path = null; }
   } else {
     try {
