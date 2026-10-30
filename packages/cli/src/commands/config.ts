@@ -77,7 +77,8 @@ Keys:
   ui.timezone            TUI IANA timezone (default America/Los_Angeles; reopen TUI after changing)
   ui.enabled             serve the web UI and its terminal WebSocket (default off; restart the daemon)
   ui.preview.*           refresh_interval_seconds, max_pins, default_lines
-  recovery.*             auto_drive_provider_prompts, provider_auth_env_allowlist
+  recovery.*             auto_drive_provider_prompts, provider_auth_env_allowlist,
+                         post_restart_prompt (tell a seat a restore resumed that it was restarted and its background work killed; default on)
   transport.native_claude  deliver daemon and agent messages to Claude seats through their inbox socket, tmux as fallback (default off; seats launched after enabling)
   agents.*               advisor_session, operator_session
   rsi.steward_session    the improvement steward's <member>@<rig>; the daemon arms its hourly finding wake, daily report and human-gate banners at boot (default unset; unset or invalid disarms all three at the next boot; restart the daemon to apply)

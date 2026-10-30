@@ -138,6 +138,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "ui.enabled",
       "recovery.auto_drive_provider_prompts",
       "recovery.provider_auth_env_allowlist",
+      "recovery.post_restart_prompt",
       // Native comms step 3: inbox-socket delivery to Claude seats (default off).
       "transport.native_claude",
       // V1 attempt-3 Phase 4 — Advisor/Operator placeholders.

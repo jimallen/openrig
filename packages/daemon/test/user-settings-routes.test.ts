@@ -117,7 +117,9 @@ describe("config routes (User Settings v0)", () => {
     // + 1 rsi.steward_session (RSI B1; default "" = nothing armed).
     // + 1 usage.pda_cost_facts (pda L0, review D2; default off).
     // + 1 transport.native_claude (native comms step 3; default off).
-    expect(Object.keys(body.settings).length).toBe(81);
+    // + 1 recovery.post_restart_prompt (OF-182; default on).
+    expect(Object.keys(body.settings).length).toBe(82);
+    expect(body.settings["recovery.post_restart_prompt"]).toMatchObject({ value: true, source: "default" });
     expect(body.settings["transport.native_claude"]?.value).toBe(false);
     expect(body.settings["rsi.steward_session"]).toMatchObject({ value: "", source: "default" });
     expect(body.settings["launch.non_interruptive"]).toMatchObject({ value: false, source: "default" });
