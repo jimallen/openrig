@@ -18,6 +18,7 @@ import { OutboxHandler, WAKE_INTENT_PREFIX } from "../src/domain/outbox-handler.
 import { ClaudeNativeInbox, ACCEPT_SETTING_ARGV_FRAGMENT, type ProcessRow } from "../src/domain/claude-native-inbox.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { activityRoutes } from "../src/routes/activity.js";
+import { transportRoutes } from "../src/routes/transport.js";
 import { operationalLaunchArgs, withNativeInboxSettings } from "../src/adapters/kernel-authority.js";
 import { fileIncludes, writeSocketLines } from "../src/adapters/native-inbox-os.js";
 import { QueueRepository, type QueueNudgeTransport } from "../src/domain/queue-repository.js";
@@ -230,6 +231,23 @@ describe("transport: the native branch", () => {
     const { t } = transport(d, inbox);
     const r = await t.send(SEAT, "hello", { actorSession: SENDER });
     expect(r.path).toBeUndefined();
+  });
+});
+
+describe("send route: a native send keeps its one row", () => {
+  it("the route does not record a second outbox row for a native send (the native row was claimed before the write)", async () => {
+    const d = db(); const { inbox } = inboxFor(d); await registered(d, inbox);
+    const exec = async (_cmd: string): Promise<string> => "";
+    const t = new SessionTransport({ db: d, rigRepo: new RigRepository(d), sessionRegistry: new SessionRegistry(d), tmuxAdapter: new TmuxAdapter(exec), nativeInbox: inbox });
+    const app = new Hono();
+    app.use("*", async (c, next) => { c.set("sessionTransport" as never, t as never); c.set("outboxHandler" as never, new OutboxHandler(d) as never); await next(); });
+    app.route("/api/transport", transportRoutes());
+    const res = await app.request("/api/transport/send", { method: "POST", headers: { "content-type": "application/json", "x-openrig-session": SENDER },
+      body: JSON.stringify({ session: SEAT, text: "hello" }) });
+    const body = (await res.json()) as { path?: string; outboxIds?: string[] };
+    expect(body.path).toBe("native"); // positive control: the native branch was taken
+    const rows = d.prepare("SELECT outbox_id AS id, delivery_path AS path FROM outbox_entries").all();
+    expect(rows).toEqual([{ id: body.outboxIds![0], path: "native" }]);
   });
 });
 
