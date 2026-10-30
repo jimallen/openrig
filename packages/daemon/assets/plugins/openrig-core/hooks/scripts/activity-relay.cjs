@@ -60,6 +60,10 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   );
 
   if ((!sessionName && !nodeId) || !runtime || !hookEvent) return null;
+  // Native comms step 2 (review F1): a subagent's tool call says nothing about the main turn, which may be waiting on a
+  // prompt while the subagent works (measured on Claude Code 2.1.314: subagent PreToolUse/PostToolUse carry agent_id and
+  // agent_type; the main agent's carry neither). Its PostToolUse must not tell the daemon the seat moved on.
+  if ((hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") && firstString(providerPayload.agent_id)) return null;
 
   const subtype = firstString(
     providerPayload.subtype,

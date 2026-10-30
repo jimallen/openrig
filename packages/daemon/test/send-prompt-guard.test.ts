@@ -405,6 +405,44 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(sendKeys).not.toHaveBeenCalled();
   });
 
+  // Native comms step 2 (design-native-comms-20261030 §7 F1): a prompt answered YES is followed by PostToolUse
+  // (measured on Claude Code 2.1.314), so the guard no longer holds the seat at the prompt.
+  it.each([
+    ["2 s", 2_000],
+    ["30 s", 30_000],
+  ])("a permission_prompt hook followed by PostToolUse %s ago + an unrecognized pane is NOT refused as an interactive prompt", async (_label, postAgeMs) => {
+    const fixedNow = new Date("2026-10-08T06:47:16.000Z");
+    seedPersonWaitingHook(fixedNow, 36_000);
+    agentActivityStore.recordHookEvent({
+      runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent: "PostToolUse", subtype: "Bash",
+      occurredAt: new Date(fixedNow.getTime() - postAgeMs).toISOString(),
+    });
+    const { sendText, sendKeys } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => UNRECOGNIZED_PANE, sendText, sendKeys }), { now: () => fixedNow });
+    const r = await t.send("dev-impl@my-rig", "You are parked while holding 1 open obligation");
+    expect(r.ok).toBe(true);
+    expect(r.reason).not.toBe("target_needs_input");
+    expect(sendText).toHaveBeenCalled();
+  });
+
+  // Step-2 review F1: PostToolUse is relayed async, so it can ARRIVE after a newer prompt. The prompt at -30 s is the seat's
+  // state; a PostToolUse that arrives later but happened at -34 s must not clear it.
+  it("a PostToolUse that arrives after a newer permission_prompt (its eventAt older) does not clear it: refused, nothing typed", async () => {
+    const fixedNow = new Date("2026-10-08T06:47:16.000Z");
+    seedPersonWaitingHook(fixedNow, 30_000);
+    agentActivityStore.recordHookEvent({
+      runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent: "PostToolUse", subtype: "Bash",
+      occurredAt: new Date(fixedNow.getTime() - 34_000).toISOString(),
+    });
+    const { sendText, sendKeys } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => UNRECOGNIZED_PANE, sendText, sendKeys }), { now: () => fixedNow });
+    const r = await t.send("dev-impl@my-rig", "You are parked while holding 1 open obligation");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_needs_input");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
   it("a stale permission_prompt hook + an EMPTY pane refuses and names what was observed (empty_capture), not an unrecognized pane", async () => {
     const fixedNow = new Date("2026-10-08T06:47:16.000Z");
     seedPersonWaitingHook(fixedNow, 36_000);

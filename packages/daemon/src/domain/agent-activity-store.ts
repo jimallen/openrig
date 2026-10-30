@@ -133,12 +133,12 @@ export class AgentActivityStore {
     const nodeId = input.nodeId ?? (input.sessionName ? this._resolveSession({ sessionName: input.sessionName })?.node_id : null);
     if (!nodeId) return null;
 
-    const row = this.db.prepare(
-      "SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT 1"
-    ).get(nodeId) as EventPayloadRow | undefined;
-    if (!row) return null;
+    const rows = this.db.prepare(
+      `SELECT payload FROM events WHERE node_id = ? AND type = 'agent.activity' ORDER BY seq DESC LIMIT ${LATEST_SCAN_ROWS}`
+    ).all(nodeId) as EventPayloadRow[];
+    if (rows.length === 0) return null;
 
-    const payload = parseActivityPayload(row.payload);
+    const payload = pickLatestByOrdering(rows.map((r) => parseActivityPayload(r.payload)));
     if (!payload?.activity) return null;
 
     const activity = payload.activity;
@@ -325,12 +325,43 @@ export class AgentActivityStore {
   }
 }
 
+/** Hook events Claude Code delivers in the background (`async: true`, native comms step 2): they can arrive after a newer
+ *  synchronous hook, so arrival order (seq) does not order them. */
+const ASYNC_RELAYED_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
+/** How many of a node's newest activity rows the latest-hook read looks through to order async events by eventAt. */
+const LATEST_SCAN_ROWS = 20;
+
+/** The latest activity among a node's newest rows (newest first by seq). Synchronous hooks keep arrival order. An async
+ *  event (PostToolUse/PostToolUseFailure) is the latest only when its own eventAt is strictly newer than the newest
+ *  synchronous event's: an async PostToolUse that arrives after a newer permission_prompt must not clear it (step-2
+ *  review F1). With no synchronous row in the window, the async row with the newest eventAt is the latest. */
+export function pickLatestByOrdering<T extends { activity?: Pick<AgentActivity, "rawEvent" | "eventAt"> } | null>(newestFirst: T[]): T | null {
+  const time = (p: T) => (p?.activity?.eventAt ? Date.parse(p.activity.eventAt) : NaN);
+  const isAsync = (p: T) => ASYNC_RELAYED_EVENTS.has(p?.activity?.rawEvent ?? "");
+  const baseIndex = newestFirst.findIndex((p) => p?.activity && !isAsync(p));
+  const asyncCandidates = (baseIndex === -1 ? newestFirst : newestFirst.slice(0, baseIndex)).filter((p) => p?.activity && isAsync(p));
+  const base = baseIndex === -1 ? null : newestFirst[baseIndex]!;
+  let best: T | null = base;
+  for (const candidate of asyncCandidates) {
+    const t = time(candidate);
+    if (!Number.isFinite(t)) continue;
+    const bestTime = best ? time(best) : -Infinity;
+    if (best === null || t > (Number.isFinite(bestTime) ? bestTime : Infinity)) best = candidate;
+  }
+  return best ?? newestFirst[0] ?? null;
+}
+
 /** The activity a runtime hook event means, before freshness or generation checks. The one mapping behind
  *  ingest, the send gate and the wake ladder. `seatRuntime` is the managed seat's runtime: runtime_error is
  *  an OMP runner signal, and a hook claiming OMP on another runtime's seat must not escalate it. The same
  *  holds for a pda runner's held-message report (OF-89): `Notification/<held code>` is needs_input on a pda seat only. */
 export function hookEventState(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null): AgentActivity["state"] {
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") return "running";
+  // Native comms step 2 (design-native-comms-20261030 §7 F1): a tool finished, so any permission prompt it raised was
+  // answered yes and the turn goes on. Measured on Claude Code 2.1.314: an approved prompt is followed by PostToolUse,
+  // then Stop; a DENIED one fires no hook at all (not PermissionDenied, not Stop, no idle_prompt within 95 s), so a
+  // denial still leaves the seat's latest hook at permission_prompt until its next input.
+  if (rawEvent === "PostToolUse" || rawEvent === "PostToolUseFailure") return "running";
   // OPR.0.4.1.10 — Codex's official approval hook (openai/codex PR #17563). A PermissionRequest
   // means the agent is BLOCKED waiting on a command / patch / network approval = needs_input. This is
   // the HOOK-PRIMARY signal for Codex, which emits no Claude-style Notification; classifySendReadiness
