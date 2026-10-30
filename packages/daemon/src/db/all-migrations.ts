@@ -118,6 +118,7 @@ import { rsiWakeStateSchema } from "./migrations/113_rsi_wake_state.js";
 import { eventsAndUsageSamplesIndexesSchema } from "./migrations/114_events_and_usage_samples_indexes.js";
 import { nodePdaBindingSchema } from "./migrations/115_node_pda_binding.js";
 import { pdaUsageEntriesSchema } from "./migrations/116_pda_usage_entries.js";
+import { outboxOutcomeLabelSchema } from "./migrations/117_outbox_outcome_label.js";
 
 /** Numbers held for changes that have not landed, with the exact name each must land under. pda L0
  *  (pda-runtime-design-9l Rev 2): L2b added 115 (`nodes.pda_binding`) and L2c added 116
@@ -244,4 +245,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   eventsAndUsageSamplesIndexesSchema,
   nodePdaBindingSchema,
   pdaUsageEntriesSchema,
+  outboxOutcomeLabelSchema,
 ];

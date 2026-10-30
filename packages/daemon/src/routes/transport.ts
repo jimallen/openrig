@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
-import type { OutboxHandler } from "../domain/outbox-handler.js";
+import { labelForTmuxSend, type OutboxHandler } from "../domain/outbox-handler.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
 // S2 (OPR.0.5.4.3) — the sender-side half of two-ended honesty: appended to any
@@ -172,7 +172,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
           // OF-74: settle the row exactly as /broadcast does for a landed recipient. This point is
           // reached only for result.ok (failures and retained sends returned above), so the send
           // is delivered; leaving the row `pending` stranded one row per send forever.
-          outbox.markDelivered(entry.outboxId);
+          outbox.markDelivered(entry.outboxId, labelForTmuxSend(result));
         } catch (err) {
           console.warn(`[transport/send] outbox auto-record failed (send already delivered): ${(err as Error).message}`);
         }
@@ -319,8 +319,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
               body: body.text,
               identityProvenance: "transport:v1",
             });
-            if (r.ok) outbox.markDelivered(entry.outboxId);
-            else outbox.markFailed(entry.outboxId);
+            if (r.ok) outbox.markDelivered(entry.outboxId, labelForTmuxSend(r));
+            else outbox.markFailed(entry.outboxId, labelForTmuxSend(r));
           } catch (err) {
             console.warn(`[transport/broadcast] outbox auto-record failed for ${r.sessionName} (fan-out already dispatched): ${(err as Error).message}`);
           }

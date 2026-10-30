@@ -180,6 +180,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     const obsolete = new OutboxHandler(db).getById(`wake-intent-${returned.created.qitemId}`)!;
     expect(obsolete.deliveryState).toBe("failed");
     expect(obsolete.tags).toContain("queue:wake-superseded");
+    expect([obsolete.deliveryPath, obsolete.ackEvidence]).toEqual(["none", "superseded"]); // native comms step 1: nothing was sent
     expect(obsolete.deliveredAt).toBeNull();
     expect(queue["getByIdOrThrow"](returned.created.qitemId).lastNudgeAttempt).toBeNull();
   });

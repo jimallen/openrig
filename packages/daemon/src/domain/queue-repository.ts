@@ -7,7 +7,7 @@ import { loadHumanRegistry, resolveRegisteredHumanAddress, type LoadResult } fro
 import { resolveExternal } from "./gateway/external-admission.js";
 import type { PersistedEvent } from "./types.js";
 import { QueueTransitionLog, type OwnerNotificationLevel, type QueueTransition, type RecentQueueTransitionScope } from "./queue-transition-log.js";
-import { WAKE_INTENT_PREFIX, type OutboxHandler } from "./outbox-handler.js";
+import { WAKE_INTENT_PREFIX, type OutboxHandler, type OutboxOutcomeLabel } from "./outbox-handler.js";
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
@@ -1158,6 +1158,7 @@ export class QueueRepository {
         // Do not stamp last_nudge_result or delivered_at: neither happened.
         const changed = this.db.prepare("UPDATE outbox_entries SET delivery_state = 'failed', tags = ? WHERE outbox_id = ? AND delivery_state = 'pending'")
           .run(JSON.stringify([...(entry.tags ?? []), "queue:wake-superseded"]), entry.outboxId);
+        if (changed.changes > 0) this.outbox!.labelOutcome(entry.outboxId, { path: "none", evidence: "superseded" });
         superseded ||= changed.changes > 0;
       }
       return current;
@@ -1194,7 +1195,7 @@ export class QueueRepository {
     // no longer refuses those), or a successor already swept — is finalized
     // `failed`, never sent as a real wake.
     if (!intent.auditPointer || !this.getById(intent.auditPointer)) {
-      this.outbox.finalizeDelivery(outboxId, "failed");
+      this.outbox.finalizeDelivery(outboxId, "failed", { path: "none", evidence: "no_qitem" });
       return "failed";
     }
     const qitemId = intent.auditPointer ?? outboxId;
@@ -1213,7 +1214,7 @@ export class QueueRepository {
         : undefined;
       const wakeEvent = this.db.transaction(() => {
         this.recordNudgeAttempt(qitemId, outcome.nudgeResult);
-        this.outbox!.finalizeDelivery(intent.outboxId, finalState);
+        this.outbox!.finalizeDelivery(intent.outboxId, finalState, outcome.label);
         if (!blockerRef) return null;
 
         const item = this.getByIdOrThrow(qitemId);
@@ -1413,7 +1414,7 @@ export class QueueRepository {
     bodyOverride?: string,
     prebuiltText?: string,
     committedOutboxIds?: string[],
-  ): Promise<{ classified: "verified" | "indeterminate" | "failed" | "retained"; nudgeResult: string }> {
+  ): Promise<{ classified: "verified" | "indeterminate" | "failed" | "retained"; nudgeResult: string; label: OutboxOutcomeLabel }> {
     // DEFECT FIX qitem-20260827065907-b9ae334c (S1-class, 3 live specimens): a virtual
     // @external destination has NO pane — the queue row ITSELF is the gateway
     // subsystem's input (the Slack connector polls human-destined rows and its own
@@ -1437,6 +1438,7 @@ export class QueueRepository {
         : "";
       return {
         classified: "indeterminate",
+        label: { path: "gateway", evidence: "gateway_owned" },
         nudgeResult:
           `gateway-owned: '${destinationSession}' is a virtual ${destClass.via === "registry-alias" ? "paneless human" : "@external"} destination${resolvedNote} — delivery rides the gateway subsystem (Slack connector), whose own ledger is the delivery record; tmux was not consulted (it can never hold this address class)`,
       };
@@ -1448,11 +1450,12 @@ export class QueueRepository {
       // vocabulary (queue-wake-ladder classifyWakeResult, findUndelivered), so no ladder, no finding.
       return {
         classified: "verified",
+        label: { path: "none", evidence: "local_inbox" },
         nudgeResult: `held-local-inbox: '${destinationSession}' is the operator's local inbox — the queue row is the delivery; the macOS banner notifies the operator; no nudge was sent`,
       };
     }
     if (destClass.class === "unroutable") {
-      return { classified: "failed", nudgeResult: destClass.teaching };
+      return { classified: "failed", nudgeResult: destClass.teaching, label: { path: "none", evidence: "unroutable" } };
     }
     const stampISO = new Date().toISOString();
     let text: string;
@@ -1490,11 +1493,13 @@ export class QueueRepository {
       // "delivered-ack-pending" reads as healthy. The old "verified"
       // case is unchanged for backward-compat with any tooling that
       // already consumed the positive literal.
-      if (res.outcome === "retained") return { classified: "retained", nudgeResult: "retained:typing_guard" };
+      if (res.outcome === "retained") {
+        return { classified: "retained", nudgeResult: "retained:typing_guard", label: { path: "tmux", evidence: "retained", detail: res.reason ?? null } };
+      }
       if (res.ok) {
         return res.verified
-          ? { classified: "verified", nudgeResult: "verified" }
-          : { classified: "indeterminate", nudgeResult: "delivered-ack-pending" };
+          ? { classified: "verified", nudgeResult: "verified", label: { path: "tmux", evidence: "render_verified" } }
+          : { classified: "indeterminate", nudgeResult: "delivered-ack-pending", label: { path: "tmux", evidence: "render_unconfirmed" } };
       }
       // MF6: a TIMEOUT is ambiguous — the send may have landed but the ack window
       // expired — so it records `indeterminate` (never silently delivered, never a
@@ -1502,16 +1507,16 @@ export class QueueRepository {
       // session) stays `failed`.
       const detail = res.error ?? res.reason ?? "unknown";
       if (isWakeTimeoutSignal(res.reason) || isWakeTimeoutSignal(res.error)) {
-        return { classified: "indeterminate", nudgeResult: `indeterminate:${detail}` };
+        return { classified: "indeterminate", nudgeResult: `indeterminate:${detail}`, label: { path: "tmux", evidence: "send_timeout", detail: res.reason ?? null } };
       }
-      return { classified: "failed", nudgeResult: `failed:${detail}` };
+      return { classified: "failed", nudgeResult: `failed:${detail}`, label: { path: "tmux", evidence: "send_failed", detail: res.reason ?? null } };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // A thrown timeout is equally ambiguous (see above).
       if (isWakeTimeoutSignal(msg)) {
-        return { classified: "indeterminate", nudgeResult: `indeterminate:${msg}` };
+        return { classified: "indeterminate", nudgeResult: `indeterminate:${msg}`, label: { path: "tmux", evidence: "send_timeout", detail: "thrown" } };
       }
-      return { classified: "failed", nudgeResult: `failed:${msg}` };
+      return { classified: "failed", nudgeResult: `failed:${msg}`, label: { path: "tmux", evidence: "send_failed", detail: "thrown" } };
     }
   }
 
