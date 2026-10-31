@@ -23,6 +23,8 @@ import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
+import type { HcDeliveryOutcome, HcPendingSend } from "../adapters/hc-delivery.js";
+import type { DialogInput } from "../adapters/hc-dialog-input.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
@@ -996,6 +998,9 @@ export interface SendOpts {
   verify?: boolean;
   force?: boolean;
   waitForIdleMs?: number;
+  /** Internal, hc seats only: a string the delivered text carries and nothing else does. Found on the screen it proves a
+   *  landing (see HcDelivery), so a send whose reply was lost can be settled without a resend. Never client-supplied. */
+  deliveryToken?: string;
   /** Internal #1084 seam: a lease-free idle wait already completed in send()
    *  before the serial lease; sendUnguarded consumes this evidence instead of
    *  waiting again, then re-checks readiness just before typing. Never
@@ -1055,8 +1060,12 @@ export interface BroadcastOpts extends SendOpts {
 
 export interface SendResult {
   ok: boolean;
-  /** Native comms step 3: `native` when the text went to the seat's inbox socket (absent: the tmux path). */
-  path?: "native";
+  /** Native comms step 3: `native` when the text went to the seat's inbox socket (absent: the tmux path). `hc`: the
+   *  seat is on herdr-core. */
+  path?: "native" | "hc";
+  /** hc seats: set with `delivery_outcome_unknown` and `waiting_on_person`, which mean the text may still arrive (or
+   *  already has): never resend, verify with this record. Stored on the outbox row by the label. */
+  hcPending?: HcPendingSend;
   sessionName: string;
   verified?: boolean;
   /** Audited prompt answer: consumers must never automatically retry Enter.
@@ -1134,6 +1143,15 @@ interface SessionTransportDeps {
    *  The transport asks only a runtime the source declares, and believes an answer only while the pane's
    *  foreground is observed and is not a shell. */
   runnerSendReadiness?: RunnerSendReadinessSource;
+  /** hc cutover: delivery to seats whose binding is `hc`. Absent = the tmux-shaped calls, as before the switch; tmux
+   *  seats never use it. */
+  hcDelivery?: HcSeatDelivery;
+}
+
+/** What the transport needs to write to an hc seat: HcDelivery. One call is paste and submit as one `terminal.send`,
+ *  and its outcome says whether a retry could double the text. */
+export interface HcSeatDelivery {
+  deliver(seat: string, text: string, options?: { token?: string; beforeInput?: () => void }): Promise<HcDeliveryOutcome>;
 }
 
 /** Runner-sourced unknowns that mean the seam could not confirm its authority (the runner's answer threw,
@@ -1192,6 +1210,31 @@ function needsInputRefusal(sessionName: string, readiness: AgentActivity): strin
   return `Refused: '${sessionName}' is at an interactive prompt (${readiness.reason}). A message must not select or approve it. To deliberately drive the prompt: rig send ${sessionName} "<text>" --dangerously-interact --reason "<why>". No text was sent.`;
 }
 
+/** The result for an hc delivery that did not land, or null when it did. A send the core may still deliver is not a
+ *  failure: it is `waiting_on_person` or `delivery_outcome_unknown`, both `ok: false` only because nothing is confirmed,
+ *  both carrying the pending record, and both worded so that no reader resends. Reasons reuse the tmux vocabulary where
+ *  the meaning is the same, so the route's status map and the callers' branches keep working. */
+function hcRefusal(sessionName: string, outcome: HcDeliveryOutcome, evidence: Pick<SendResult, "activity" | "waitedMs" | "attempts">): SendResult | null {
+  if (outcome.state === "delivered") return null;
+  const base = { ok: false, sessionName, path: "hc" as const, ...evidence };
+  if (outcome.state === "waiting") {
+    return { ...base, reason: "waiting_on_person", error: `Not failed: ${outcome.message}`, hcPending: outcome.pending };
+  }
+  if (outcome.state === "unknown") {
+    return { ...base, reason: "delivery_outcome_unknown", error: `Delivery to '${sessionName}' is not confirmed: ${outcome.message}`, hcPending: outcome.pending };
+  }
+  const reason = ((): string => {
+    switch (outcome.reason) {
+      case "not_found": case "finished": return "session_missing";
+      case "blocked": return "target_needs_input";
+      case "core_unreachable": return "tmux_unavailable";
+      case "guard_refused": return outcome.code;
+      default: return "send_failed";
+    }
+  })();
+  return { ...base, sent: false, reason, outcome: "failed", error: outcome.message };
+}
+
 interface SessionRow { node_id: string; session_name: string; }
 interface NodeRow { rig_id: string; logical_id: string; }
 interface SessionMetaRow { runtime: string | null; attachment_type: string | null; node_id: string | null; binding_session: string | null; pane: string | null; occupant: string | null; resume_token: string | null;
@@ -1216,6 +1259,7 @@ export class SessionTransport {
   private captureObserver?: CaptureObserverSink;
   private listProcesses?: NativeProcessLister;
   private runnerSendReadiness?: SessionTransportDeps["runnerSendReadiness"];
+  private hcDelivery?: HcSeatDelivery;
 
   constructor(deps: SessionTransportDeps) {
     this.db = deps.db;
@@ -1234,6 +1278,7 @@ export class SessionTransport {
     this.captureObserver = deps.captureObserver;
     this.listProcesses = deps.listProcesses;
     this.runnerSendReadiness = deps.runnerSendReadiness;
+    this.hcDelivery = deps.hcDelivery;
   }
 
   /** Freeze the registration and binding before asking tmux about this name. */
@@ -2257,62 +2302,89 @@ export class SessionTransport {
     // the entry of send(), at the one place that decides bracketed or not.
     if (!promptOverride && containsPasteTerminator(text)) return observe(pasteTerminatorRefusal(sessionName));
 
-    // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
-    if (observed) observed.sentHash = hashSentText(text);
-    const textResult = await this.runStage(
-      "session_transport.send_text",
-      () => {
-        opts?.beforeWrite?.();
-        if (promptOverride) return this.tmuxAdapter.sendText(sessionName, text, opts?.beforeWrite, { bracketed: false });
-        return opts?.beforeWrite ? this.tmuxAdapter.sendText(sessionName, text, opts.beforeWrite) : this.tmuxAdapter.sendText(sessionName, text);
-      },
-      (result) => result.ok ? "ok" : "failed",
-    );
-    if (!textResult.ok) {
-      return observe({
-        ok: false,
-        sessionName,
-        reason: "send_failed",
-        outcome: "failed",
-        error: `Failed to send text to '${sessionName}': ${textResult.message}`,
-        ...(waitMode ? { sent: false, ...waitEvidence } : {}),
-      });
+    // hc cutover: an ordinary message to an hc seat is ONE `terminal.send` (paste, the core's own pause, Enter), so there
+    // is no 200 ms sleep and no separate Enter, and no half-sent state to repair. Its silence is `delivery_outcome_unknown`:
+    // never retried from here (see HcDelivery). An audited prompt answer is the exception: it must reach a dialog that
+    // `terminal.send` refuses, so it keeps the staged text, the check and the Enter, each with `blocked: "allow"`.
+    // Until a daemon wires HcDelivery the adapter in hand is tmux's, so an hc-labelled row keeps the tmux-shaped calls.
+    const hcSeat = sessionMeta.attachmentType === "hc" && this.hcDelivery !== undefined;
+    const viaHc = hcSeat && !promptOverride;
+    const hcPath = hcSeat ? { path: "hc" as const } : {};
+    let hcVerified = false;
+    if (viaHc) {
+      if (observed) observed.sentHash = hashSentText(text);
+      const hcOutcome = await this.runStage(
+        "session_transport.hc_submit",
+        () => { opts?.beforeWrite?.(); return this.hcDelivery!.deliver(sessionName, text, { ...(opts?.deliveryToken ? { token: opts.deliveryToken } : {}), ...(opts?.beforeWrite ? { beforeInput: opts.beforeWrite } : {}) }); },
+        (result) => result.state === "delivered" ? "ok" : "failed",
+      );
+      const refused = hcRefusal(sessionName, hcOutcome, waitMode ? waitEvidence : {});
+      if (refused) return observe(refused);
+      hcVerified = hcOutcome.state === "delivered" && hcOutcome.verified;
     }
 
-    // 4. Wait 200ms (spike-proven delay)
-    await this.sleep(200);
-
-    if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
-
-    if (promptOverride) {
-      const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
-        () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
-      if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
-      if (!promptAnswerStaged(pane, text, runtime)) {
-        return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
-          warning: "prompt-override: answer sent as unbracketed input; submission unverified. No trailing Enter: the complete answer is not visibly staged (it may have been consumed, the prompt changed, or observation is unavailable)." });
+    if (!viaHc) {
+      // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
+      if (observed) observed.sentHash = hashSentText(text);
+      const textResult = await this.runStage(
+        "session_transport.send_text",
+        () => {
+          opts?.beforeWrite?.();
+          if (promptOverride) return this.blockedAwareInput().sendText(sessionName, text, opts?.beforeWrite, { bracketed: false, blocked: "allow" });
+          return opts?.beforeWrite ? this.tmuxAdapter.sendText(sessionName, text, opts.beforeWrite) : this.tmuxAdapter.sendText(sessionName, text);
+        },
+        (result) => result.ok ? "ok" : "failed",
+      );
+      if (!textResult.ok) {
+        return observe({
+          ok: false,
+          sessionName,
+          reason: "send_failed",
+          outcome: "failed",
+          error: `Failed to send text to '${sessionName}': ${textResult.message}`,
+          ...(waitMode ? { sent: false, ...waitEvidence } : {}),
+        });
       }
-      sendAdvisory = "prompt-override: answer sent as unbracketed input; Enter submitted the complete still-staged answer.";
-    }
 
-    // 5. Submit (Enter)
-    const submitResult = await this.runStage(
-      "session_transport.submit",
-      () => { opts?.beforeWrite?.(); return opts?.beforeWrite ? this.tmuxAdapter.sendKeys(sessionName, ["Enter"], opts.beforeWrite) : this.tmuxAdapter.sendKeys(sessionName, ["Enter"]); },
-      (result) => result.ok ? "ok" : "failed",
-    );
-    if (!submitResult.ok) {
-      return observe({
-        ok: false,
-        sessionName,
-        reason: "submit_failed",
-        outcome: "failed",
-        error: `Text is visible in '${sessionName}' but was not submitted (Enter failed). The agent may need manual attention.`,
-        ...(waitMode ? { sent: true, ...waitEvidence } : {}),
-      });
+      // 4. Wait 200ms (spike-proven delay)
+      await this.sleep(200);
+
+      if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
+
+      if (promptOverride) {
+        const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
+          () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+        if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
+        if (!promptAnswerStaged(pane, text, runtime)) {
+          return observe({ ok: true, sessionName, ...hcPath, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
+            warning: "prompt-override: answer sent as unbracketed input; submission unverified. No trailing Enter: the complete answer is not visibly staged (it may have been consumed, the prompt changed, or observation is unavailable)." });
+        }
+        sendAdvisory = "prompt-override: answer sent as unbracketed input; Enter submitted the complete still-staged answer.";
+      }
+
+      // 5. Submit (Enter)
+      const submitResult = await this.runStage(
+        "session_transport.submit",
+        () => { opts?.beforeWrite?.(); return promptOverride ? this.blockedAwareInput().sendKeys(sessionName, ["Enter"], opts?.beforeWrite, { blocked: "allow" })
+          : opts?.beforeWrite ? this.tmuxAdapter.sendKeys(sessionName, ["Enter"], opts.beforeWrite) : this.tmuxAdapter.sendKeys(sessionName, ["Enter"]); },
+        (result) => result.ok ? "ok" : "failed",
+      );
+      if (!submitResult.ok) {
+        return observe({
+          ok: false,
+          sessionName,
+          reason: "submit_failed",
+          outcome: "failed",
+          error: `Text is visible in '${sessionName}' but was not submitted (Enter failed). The agent may need manual attention.`,
+          ...(waitMode ? { sent: true, ...waitEvidence } : {}),
+        });
+      }
     }
 
     const interaction = promptOverride ? { promptInteraction: "enter-sent" as const } : {};
+
+    // The core's `started` is a positive acknowledgement (the program went working on the text); it needs no second look.
+    if (hcVerified) return observe({ ok: true, sessionName, ...hcPath, verified: true, outcome: "delivered", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
 
     // 6. Verify if requested. At this point text + Enter BOTH succeeded, so the
     // message LANDED; the capture only re-confirms the render. Not re-confirming
@@ -2341,16 +2413,21 @@ export class SessionTransport {
         const preCount = count(transcript(preVerifyContent), snippet);
         const postCount = count(transcript(content), snippet);
         const verified = postCount > preCount;
-        return observe({ ok: true, sessionName, ...interaction, verified, outcome: verified ? "delivered" : "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+        return observe({ ok: true, sessionName, ...hcPath, ...interaction, verified, outcome: verified ? "delivered" : "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
       } catch {
         if (observed && observed.post.state === "not_reached") {
           observed.post = { state: "unavailable", cause: "capture_error", capturedAt: this.now().toISOString(), captureSeq };
         }
-        return observe({ ok: true, sessionName, ...interaction, verified: false, outcome: "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+        return observe({ ok: true, sessionName, ...hcPath, ...interaction, verified: false, outcome: "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
       }
     }
 
-    return observe({ ok: true, sessionName, ...interaction, ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+    return observe({ ok: true, sessionName, ...hcPath, ...interaction, ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+  }
+
+  /** The tmux adapter as the callers that answer a dialog use it (see DialogInput): `blocked: "allow"` is for them. */
+  private blockedAwareInput(): DialogInput {
+    return this.tmuxAdapter;
   }
 
   private runStage<T>(

@@ -276,7 +276,7 @@ describe("OF-192: a crash between the tmux send and the outbox record resends th
       enabled: () => true, sessionOf: () => ({ name: "dev-a@rig1", startedAt: SEAT_START }), rigNameOf: () => "rig1",
       send: async (sessionName, text, o) => { f.sent.push({ sessionName, text, ...o }); return { ok: true, verified: true }; },
       outbox: {
-        getById: (id) => f.outbox.getById(id), markDelivered: (id, l) => f.outbox.markDelivered(id, l), markFailed: (id, l) => f.outbox.markFailed(id, l),
+        getById: (id) => f.outbox.getById(id), markDelivered: (id, l) => f.outbox.markDelivered(id, l), markFailed: (id, l) => f.outbox.markFailed(id, l), markIndeterminate: (id, l) => f.outbox.markIndeterminate(id, l),
         record: () => { throw new Error("process died before the record"); },
       },
       now: () => new Date(f.clock.t), sleep: async (ms) => { f.clock.t += ms; },

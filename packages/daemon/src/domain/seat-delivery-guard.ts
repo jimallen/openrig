@@ -135,6 +135,16 @@ export class SeatDeliveryGuard {
     });
   }
 
+  /** Who holds the input lease on this seat in the current async context: a person typing in the viewer (`human`), an
+   *  automatic send (`automatic`), or nobody. A transport that must decide whether a dialog may be answered reads it:
+   *  only a person's keystrokes may (see defaultBlockedPolicy). Null for a seat with no lease here, and for an unresolved name. */
+  leaseOrigin(name: string): "automatic" | "human" | null {
+    const target = this.maybeTarget(name);
+    if (!target) return null;
+    const lease = this.scope.getStore()?.get(target.nodeId);
+    return lease?.active ? lease.origin : null;
+  }
+
   ownsLifecycle(nodeId: string): boolean {
     const lease = this.scope.getStore()?.get(nodeId);
     if (!lease?.active || !lease.lifecycle) return false;
@@ -214,6 +224,16 @@ export class SeatDeliveryGuard {
   }
 }
 
+/** hc cutover: whether `bindings` has the terminal address (migration 121). A curated-migration database may not. */
+const addressColumns = new WeakSet<Database.Database>();
+function hasTerminalAddressColumn(db: Database.Database): boolean {
+  // Only a yes is remembered: a database that gains the column later (a migration run after the first look) is seen.
+  if (addressColumns.has(db)) return true;
+  const found = (db.prepare("PRAGMA table_info(bindings)").all() as Array<{ name: string }>).some((column) => column.name === "terminal_address");
+  if (found) addressColumns.add(db);
+  return found;
+}
+
 /** Current binding, never a latest historical session-name guess. Unbound seats
  * resolve by node/canonical address for preferences and lifecycle preflight.
  *
@@ -229,19 +249,22 @@ export class SeatDeliveryGuard {
  * DIFFERENT rigs (history stacking), resolve to the binding whose session is
  * running — never to the dead row. */
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
+  // An hc seat has no pane (migration 121 clears `tmux_pane`): its terminal address stands in as the pane, so the lease
+  // still names exactly one terminal and a seat relaunched under a new address is a changed target, as a recycled pane is.
+  const hc = hasTerminalAddressColumn(db);
   const rows = db.prepare(`SELECT n.id AS nodeId, n.rig_id AS rigId,
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
-      b.tmux_pane AS pane,
+      ${hc ? "coalesce(b.tmux_pane, b.terminal_address)" : "b.tmux_pane"} AS pane,
       s.id AS liveSessionId,
       (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant,
       r.archived_at AS archivedAt
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
     LEFT JOIN sessions s ON s.node_id=n.id AND s.status='running'
-    WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
+    WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=?${hc ? " OR b.terminal_address=?" : ""} OR n.logical_id=?
       OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)
     ORDER BY (CASE WHEN b.tmux_session = ? AND s.id IS NOT NULL THEN 0 ELSE 1 END),
              (b.tmux_session IS NOT NULL) DESC, r.created_at DESC`)
-    .all(name, name, name, name, name, name) as Array<GuardTarget & { rigId: string; liveSessionId: string | null; archivedAt: string | null }>;
+    .all(...(hc ? [name, name, name, name, name, name, name] : [name, name, name, name, name, name])) as Array<GuardTarget & { rigId: string; liveSessionId: string | null; archivedAt: string | null }>;
   const strip = (row: (typeof rows)[number]): GuardTarget => {
     const { archivedAt: _archivedAt, liveSessionId: _liveSessionId, rigId: _rigId, ...target } = row;
     return target;

@@ -650,7 +650,7 @@ describe("Codex runtime adapter", () => {
     const sendKeys = tmux.sendKeys as ReturnType<typeof vi.fn>;
     expect(sendKeys.mock.calls).toEqual([
       ["r01-qa", ["Enter"]],
-      ["r01-qa", ["3"]],
+      ["r01-qa", ["3"], undefined, { blocked: "allow" }],
     ]);
   });
 
@@ -738,7 +738,7 @@ describe("Codex runtime adapter", () => {
     expect(sendText.mock.calls).toEqual([
       ["r01-qa", expectedFreshLaunchCommand()],
     ]);
-    expect(tmux.sendKeys).toHaveBeenLastCalledWith("r01-qa", ["3"]);
+    expect(tmux.sendKeys).toHaveBeenLastCalledWith("r01-qa", ["3"], undefined, { blocked: "allow" });
   });
 
   it("uses the visible conversation rather than dismissed loading/review scrollback", async () => {
@@ -1071,7 +1071,7 @@ describe("Codex runtime adapter", () => {
     const sendKeys = tmux.sendKeys as ReturnType<typeof vi.fn>;
     expect(sendKeys.mock.calls).toEqual([
       ["r01-qa", ["Enter"]],
-      ["r01-qa", ["3"]],
+      ["r01-qa", ["3"], undefined, { blocked: "allow" }],
     ]);
   });
 

@@ -63,8 +63,10 @@ export function parseDeliveryState(raw: string): OutboxDeliveryState {
 }
 
 /** Native comms step 1: the last hop that carried (or would have carried) a settled row's text. `native` has no writer
- *  yet; `none` means nothing was sent (see migration 117). */
-export const OUTBOX_DELIVERY_PATHS = ["tmux", "native", "gateway", "none"] as const;
+ *  yet; `none` means nothing was sent (see migration 117). `hc` (hc cutover): a seat on herdr-core. Rows settled before
+ *  the cutover keep `tmux`, which stays true of them; a daemon that predates `hc` reads the new value as an unreadable
+ *  label (null, flagged) and never refuses the row. */
+export const OUTBOX_DELIVERY_PATHS = ["tmux", "native", "gateway", "none", "hc"] as const;
 export type OutboxDeliveryPath = (typeof OUTBOX_DELIVERY_PATHS)[number];
 
 /** What a settled row's outcome rests on. The tmux values mirror SendResult's outcome vocabulary and the wake drain's
@@ -75,6 +77,10 @@ export const OUTBOX_ACK_EVIDENCE = [
   // Native comms step 3: written to the seat's inbox socket, awaiting its UserPromptSubmit ack; acked by that hook;
   // found in the seat's transcript after the ack was lost; not taken (or not confirmable) by the deadline.
   "native_written", "native_hook_delivered", "native_transcript", "native_unconfirmed",
+  // hc cutover: the core accepted the send and a person is typing, or the reply was lost; neither is a failure. Both rows
+  // are `indeterminate` and hold the pending record in `ack_detail`; a sweep settles them (`verified_after_wait` when the
+  // evidence arrived). Never resent from here.
+  "waiting_on_person", "outcome_unknown", "verified_after_wait",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 
@@ -87,12 +93,27 @@ export interface OutboxOutcomeLabel {
 
 /** The label for a tmux send's result, from SendResult's own vocabulary (structural, so this module does not import the
  *  transport). An ok send that reports neither `outcome` nor `verified` is `send_ok`: it landed, with no render claim. */
-export function labelForTmuxSend(res: { ok: boolean; verified?: boolean; outcome?: string; reason?: string }): OutboxOutcomeLabel {
+export function labelForTmuxSend(res: { ok: boolean; verified?: boolean; outcome?: string; reason?: string; path?: string; hcPending?: unknown }): OutboxOutcomeLabel {
+  if (res.path === "hc") return labelForHcSend(res);
   if (res.outcome === "retained") return { path: "tmux", evidence: "retained", detail: res.reason ?? null };
   if (!res.ok || res.outcome === "failed") return { path: "tmux", evidence: "send_failed", detail: res.reason ?? null };
   if (res.outcome === "delivered" || res.verified === true) return { path: "tmux", evidence: "render_verified" };
   if (res.outcome === "rendered-unconfirmed" || res.verified === false) return { path: "tmux", evidence: "render_unconfirmed" };
   return { path: "tmux", evidence: "send_ok" };
+}
+
+/** The label for a send to a seat on hc. A send the core may still deliver is neither delivered nor failed: it is labelled
+ *  with its pending record, which a later check needs to settle it. Anything else is labelled as a tmux send is, on the
+ *  `hc` path. */
+function labelForHcSend(res: { ok: boolean; verified?: boolean; outcome?: string; reason?: string; hcPending?: unknown }): OutboxOutcomeLabel {
+  if (!res.ok && (res.reason === "waiting_on_person" || res.reason === "delivery_outcome_unknown")) {
+    return {
+      path: "hc", evidence: res.reason === "waiting_on_person" ? "waiting_on_person" : "outcome_unknown",
+      detail: res.hcPending === undefined ? res.reason : JSON.stringify(res.hcPending),
+    };
+  }
+  const { path: _path, ...label } = labelForTmuxSend({ ...res, path: undefined });
+  return { path: "hc", ...label };
 }
 
 export interface OutboxEntry {
@@ -494,6 +515,24 @@ export class OutboxHandler {
     return this.nativeColumns;
   }
   private nativeColumns: boolean | undefined;
+
+  /** hc cutover: rows left `indeterminate` because the core may still deliver them (`waiting_on_person`) or the reply was
+   *  lost (`outcome_unknown`), oldest first. Their `ackDetail` is the pending record. Empty before migration 117. */
+  listHcUnsettled(limit = 200): OutboxEntry[] {
+    if (!this.hasOutcomeLabelColumns) return [];
+    const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE delivery_state = 'indeterminate' AND delivery_path = 'hc'
+      AND ack_evidence IN ('waiting_on_person', 'outcome_unknown') ORDER BY ts_dispatched, rowid LIMIT ?`).all(limit) as OutboxEntryRow[];
+    return rows.map((r) => this.rowToEntry(r, "mark"));
+  }
+
+  /** Settles one of those rows once the evidence is in: delivered, or failed because the send is proved gone (the only
+   *  state a retry may follow). Only a row still waiting moves; a second settle finds nothing. */
+  settleHcUnsettled(outboxId: string, state: "delivered" | "failed", label: OutboxOutcomeLabel): boolean {
+    if (!this.hasOutcomeLabelColumns) return false;
+    return this.db.prepare(`UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?, delivery_path = ?, ack_evidence = ?, ack_detail = ?
+      WHERE outbox_id = ? AND delivery_state = 'indeterminate' AND delivery_path = 'hc' AND ack_evidence IN ('waiting_on_person', 'outcome_unknown')`)
+      .run(state, state === "delivered" ? new Date().toISOString() : null, label.path, label.evidence, label.detail ?? null, outboxId).changes === 1;
+  }
 
   /** Labels a row another writer has just settled (the queue's superseded wake). No-op before migration 117. */
   labelOutcome(outboxId: string, label: OutboxOutcomeLabel): void {
