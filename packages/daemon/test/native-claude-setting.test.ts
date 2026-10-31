@@ -78,6 +78,17 @@ describe("settingsFileSignature: the inode term", () => {
     expect(sign(100n)).toBe(first);
     expect(sign(101n)).not.toBe(first);
   });
+  // The size term, in the same fabricated seam: stats identical in every field but the size. Production consequence: an
+  // edit that lands on the same inode, mtime and ctime but a different length would keep serving the old flag value.
+  it("two stats that differ only in the size give two signatures", () => {
+    const sign = (size: bigint) => {
+      fabricated.stat = { ino: 100n, size, mtimeNs: 5n, ctimeNs: 9n };
+      try { return settingsFileSignature("/fabricated/config.json"); } finally { fabricated.stat = undefined; }
+    };
+    const first = sign(7n);
+    expect(sign(7n)).toBe(first);
+    expect(sign(8n)).not.toBe(first);
+  });
 });
 
 describe("the wired flag: a real SettingsStore, a real file", () => {

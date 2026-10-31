@@ -122,7 +122,7 @@ export interface NativeFallback { outboxId: string; outboxIds: string[]; session
  *  a process already proven. `fail:inject_format_absent` and `fail:no_claude_pid` are not among them and always stand. */
 const REINSPECTION_FAILURES = new Set(["fail:exec_path_unresolved", "fail:version_unknown", "fail:binary_replaced_since_start", "fail:probe_error"]);
 
-const AGENT_RUNTIMES =new Set(["claude-code", "codex", "pi", "pda", "omp", "stub"]);
+const AGENT_RUNTIMES = new Set(["claude-code", "codex", "pi", "pda", "omp", "stub"]);
 
 function newNonce(): string { return randomBytes(12).toString("hex"); }
 
