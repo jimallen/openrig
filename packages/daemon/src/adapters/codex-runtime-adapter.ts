@@ -1,3 +1,4 @@
+import { answerDialogKeys } from "./hc-dialog-input.js";
 import { operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import { inertStartupText } from "../domain/packet-text.js";
@@ -658,7 +659,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         // (including its version-cache write). An Enter would hit the next
         // screen. Consume the attempt before sending, even if delivery fails.
         updatePrompt.handled = true;
-        const result = await this.tmux.sendKeys(tmuxSession, ["3"]);
+        const result = await answerDialogKeys(this.tmux, tmuxSession, ["3"]);
         if (!result.ok) {
           updatePrompt.failure = {
             ok: false, recovery: "attention_required",

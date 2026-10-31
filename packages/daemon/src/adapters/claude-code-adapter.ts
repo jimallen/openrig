@@ -1,3 +1,4 @@
+import { answerDialogKeys } from "./hc-dialog-input.js";
 import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
 import { inertStartupText } from "../domain/packet-text.js";
@@ -475,7 +476,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
 
       if (this.autoDriveProviderPrompts && probe.code === "trust_gate") {
-        const enterResult = await this.tmux.sendKeys(tmuxSession, ["Enter"]);
+        const enterResult = await answerDialogKeys(this.tmux, tmuxSession, ["Enter"]);
         if (!enterResult.ok) {
           return { ok: false, error: `Claude trust prompt auto-drive failed: ${enterResult.message}` };
         }

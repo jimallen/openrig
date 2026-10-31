@@ -722,7 +722,7 @@ describe("Claude Code runtime adapter", () => {
       appliedLaunch: { runtime: "claude-code", axis: "permission", state: "observed", value: "acceptEdits", reason: "emitted_launch_arguments" },
     });
     expect(tmux.sendKeys).toHaveBeenCalledTimes(2);
-    expect(tmux.sendKeys).toHaveBeenNthCalledWith(2, "r01-impl", ["Enter"]);
+    expect(tmux.sendKeys).toHaveBeenNthCalledWith(2, "r01-impl", ["Enter"], undefined, { blocked: "allow" });
   });
 
   it("launchHarness treats a live Claude TUI as success even when tmux reports a version-string foreground command", async () => {

@@ -270,7 +270,7 @@ describe("OF-148 rig send: text carrying a paste-end sequence is refused with a 
     const { transport, sendText } = setup(PICKER);
     const r = await transport.send(SEAT, `1${END}`, { dangerouslyInteract: true, reason: "unblock the release prompt", actorSession: "orch@my-rig" });
     expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(sendText).toHaveBeenCalledWith(SEAT, `1${END}`, undefined, { bracketed: false });
+    expect(sendText).toHaveBeenCalledWith(SEAT, `1${END}`, undefined, { bracketed: false, blocked: "allow" });
   });
 
   it("controls: the printable residue, the paste START sequence and plain text are delivered (the rule is not broader than the two sequences)", async () => {

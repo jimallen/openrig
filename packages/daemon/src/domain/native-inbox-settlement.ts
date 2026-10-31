@@ -51,7 +51,8 @@ export function nativeFallbackOutcome(res: { ok: boolean; verified?: boolean; ou
   const state = held || (!res.ok && !timedOut) ? "failed" : timedOut ? "indeterminate" : res.verified ? "delivered" : "indeterminate";
   return {
     state,
-    label: timedOut ? { path: "tmux", evidence: "send_timeout", detail: `fallback after native_unconfirmed; ${why}` }
+    // A fallback to an hc seat that may still land keeps its own label: the pending record in it is what a sweep settles by.
+    label: timedOut ? (label.path === "hc" ? label : { path: "tmux", evidence: "send_timeout", detail: `fallback after native_unconfirmed; ${why}` })
       : { ...label, detail: held ? `fallback held by the typing guard as ${res.outboxIds?.[0] ?? "a new row"}` : `fallback after native_unconfirmed${res.reason ? `; ${res.reason}` : ""}` },
     nudgeResult: held ? "retained:typing_guard" : timedOut ? `indeterminate:${why}` : !res.ok ? `failed:${why}` : res.verified ? "verified" : "delivered-ack-pending",
     undelivered: !res.ok && !held && !timedOut,

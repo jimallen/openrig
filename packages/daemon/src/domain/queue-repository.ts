@@ -293,7 +293,7 @@ export interface QueueNudgeTransport {
     // measure the wait for a handoff nudge too (the real impl is SessionTransport, which accepts it).
     text: string,
     opts?: { verify?: boolean; stampISO?: string; actorSession?: string; committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string }
-  ): Promise<{ ok: boolean; verified?: boolean; error?: string; reason?: string; outcome?: string; path?: "native" }>;
+  ): Promise<{ ok: boolean; verified?: boolean; error?: string; reason?: string; outcome?: string; path?: "native" | "hc"; hcPending?: unknown }>;
 }
 
 export interface QueueCreateInput {
@@ -738,9 +738,16 @@ function destinationValidationError(
  * MF6: does a transport error/reason string denote a TIMEOUT (ambiguous — the
  * send may have landed) rather than a definite failure? Used to classify a wake
  * delivery as `indeterminate` vs `failed`.
+ *
+ * hc cutover: a send to a seat on herdr-core whose reply never came is the same
+ * class. The core queues the text and a queued send outlives its client, so
+ * `failed` would invite the ladder to retry a message that may be delivered
+ * (twice) or is waiting for a person to stop typing. `delivery_outcome_unknown`
+ * and `waiting_on_person` are the transport's reasons for that; they are matched
+ * as whole words so no other reason text can pass for them.
  */
 export function isWakeTimeoutSignal(s: string | undefined): boolean {
-  return !!s && /timeout|timed\s*out|etimedout/i.test(s);
+  return !!s && /timeout|timed\s*out|etimedout|\b(?:delivery_outcome_unknown|waiting_on_person)\b/i.test(s);
 }
 
 export interface QueueDestinationAdvisory {
@@ -1519,9 +1526,13 @@ export class QueueRepository {
       // session) stays `failed`.
       const detail = res.error ?? res.reason ?? "unknown";
       if (isWakeTimeoutSignal(res.reason) || isWakeTimeoutSignal(res.error)) {
-        return { classified: "indeterminate", nudgeResult: `indeterminate:${detail}`, label: { path: "tmux", evidence: "send_timeout", detail: res.reason ?? null } };
+        // A send to an hc seat that may still land keeps its pending record on the row (labelForTmuxSend, path "hc"), so a
+        // sweep can settle it; a tmux timeout has nothing to verify and stays a plain send_timeout.
+        const unconfirmedHc = res.path === "hc" && (res.reason === "waiting_on_person" || res.reason === "delivery_outcome_unknown");
+        const timeoutLabel = unconfirmedHc ? labelForTmuxSend(res) : { path: res.path === "hc" ? "hc" as const : "tmux" as const, evidence: "send_timeout" as const, detail: res.reason ?? null };
+        return { classified: "indeterminate", nudgeResult: `indeterminate:${detail}`, label: timeoutLabel };
       }
-      return { classified: "failed", nudgeResult: `failed:${detail}`, label: { path: "tmux", evidence: "send_failed", detail: res.reason ?? null } };
+      return { classified: "failed", nudgeResult: `failed:${detail}`, label: res.path === "hc" ? labelForTmuxSend(res) : { path: "tmux", evidence: "send_failed", detail: res.reason ?? null } };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // A thrown timeout is equally ambiguous (see above).

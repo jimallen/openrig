@@ -29,7 +29,9 @@ export interface PostRestartSession {
 
 export interface PostRestartSendResult {
   ok: boolean;
-  path?: "native";
+  path?: "native" | "hc";
+  /** hc seats: the record a sweep settles an unconfirmed send by (see HcDelivery). */
+  hcPending?: unknown;
   outcome?: string;
   verified?: boolean;
   reason?: string;
@@ -49,6 +51,7 @@ export interface PostRestartDeps {
     record: (input: OutboxRecordInput) => OutboxEntry;
     markDelivered: (outboxId: string, label?: OutboxOutcomeLabel) => OutboxEntry;
     markFailed: (outboxId: string, label?: OutboxOutcomeLabel) => OutboxEntry;
+    markIndeterminate: (outboxId: string, label?: OutboxOutcomeLabel) => OutboxEntry;
   };
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
@@ -64,7 +67,7 @@ export interface PostRestartDeps {
 }
 
 export type PostRestartOutcome =
-  | { nodeId: string; sessionName: string | null; outcome: "delivered" | "native_written" | "retained" | "already_sent" | "no_session" | "undelivered" | "replaced"; attempts: number; detail?: string };
+  | { nodeId: string; sessionName: string | null; outcome: "delivered" | "native_written" | "retained" | "already_sent" | "no_session" | "undelivered" | "replaced" | "unconfirmed"; attempts: number; detail?: string };
 
 /** Who gets the prompt (see the header). */
 export function needsPostRestartPrompt(node: RestoreNodeResult): boolean {
@@ -155,6 +158,16 @@ export class PostRestartNotifier {
               auditPointer: deliveryId, identityProvenance: "transport:v1" });
             this.deps.outbox.markDelivered(deliveryId, labelForTmuxSend(last));
             return { nodeId, sessionName, outcome: "delivered", attempts };
+          }
+          // An hc seat whose reply never came, or whose text the core still holds for a person typing: the text may be
+          // delivered, or already is. The retry loop below would put it in twice, so it stops here, and the row says why
+          // (indeterminate, with the pending record a sweep settles by).
+          if (last.path === "hc" && (last.reason === "waiting_on_person" || last.reason === "delivery_outcome_unknown")) {
+            this.deps.outbox.record({ outboxId: deliveryId, senderSession: POST_RESTART_SENDER, destinationSession: session.name, body: text,
+              auditPointer: deliveryId, identityProvenance: "transport:v1" });
+            this.deps.outbox.markIndeterminate(deliveryId, labelForTmuxSend(last));
+            this.deps.log?.(`[post-restart] ${sessionName}: ${last.reason}; not retried (it may still arrive)`);
+            return { nodeId, sessionName, outcome: "unconfirmed", attempts, detail: last.reason };
           }
           // One line per distinct reason, not one per attempt: a busy seat is retried for up to the whole window.
           const why = last.reason ?? last.error ?? "unknown";
