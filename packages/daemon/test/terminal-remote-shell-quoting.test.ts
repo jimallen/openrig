@@ -1,9 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { composeView } from "../src/domain/terminal/view-composer.js";
+
+/** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
+const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
+
 
 // The composed pane command is a shell string. Run it through a real /bin/sh with a stand-in `hc` that records its argv,
 // so quoting is proved by the shell and not by a string compare. No hc core, machine link or terminal provider is claimed.
@@ -24,7 +29,7 @@ it("keeps terminal names intact through the shell, locally and through an hc mac
             env: { PATH: `${bin}:/usr/bin:/bin`, OPR_ARGS: argsFile },
           });
           expect(readFileSync(argsFile, "utf8").trimEnd().split("\n")).toEqual([
-            "attach", ...(readOnly ? ["--observe"] : []), "--", host ? `${host}/${session}` : session,
+            "attach", ...(readOnly ? ["--observe"] : []), "--", host ? `${host}/${hcName(session)}` : hcName(session),
           ]);
         }
       }

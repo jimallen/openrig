@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
+import { hasTerminalAddress } from "./binding-pane.js";
 import { monotonicFactory } from "ulid";
 import { randomUUID } from "node:crypto";
 
@@ -35,6 +36,7 @@ interface BindingFields {
   tmuxSession?: string;
   tmuxWindow?: string;
   tmuxPane?: string;
+  terminalAddress?: string;
   externalSessionName?: string;
   cmuxWorkspace?: string;
   cmuxSurface?: string;
@@ -801,6 +803,8 @@ export class SessionRegistry {
   }
 
   updateBinding(nodeId: string, fields: BindingFields): Binding {
+    // Fixtures that stop before migration 121 have no terminal_address column; production always has it.
+    const withAddress = hasTerminalAddress(this.db);
     // Atomic upsert: entire read-modify-write is inside a transaction
     const upsert = this.db.transaction(() => {
       const existing = this.db
@@ -816,6 +820,7 @@ export class SessionRegistry {
               tmux_session = ?,
               tmux_window = ?,
               tmux_pane = ?,
+              ${withAddress ? "terminal_address = ?," : ""}
               external_session_name = ?,
               cmux_workspace = ?,
               cmux_surface = ?,
@@ -827,6 +832,7 @@ export class SessionRegistry {
             fields.tmuxSession ?? existing.tmux_session,
             fields.tmuxWindow ?? existing.tmux_window,
             fields.tmuxPane ?? existing.tmux_pane,
+            ...(withAddress ? [fields.terminalAddress ?? existing.terminal_address ?? null] : []),
             fields.externalSessionName ?? existing.external_session_name,
             fields.cmuxWorkspace ?? existing.cmux_workspace,
             fields.cmuxSurface ?? existing.cmux_surface,
@@ -836,8 +842,8 @@ export class SessionRegistry {
         const id = ulid();
         this.db
           .prepare(
-            `INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_window, tmux_pane, external_session_name, cmux_workspace, cmux_surface)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_window, tmux_pane, ${withAddress ? "terminal_address, " : ""}external_session_name, cmux_workspace, cmux_surface)
+             VALUES (?, ?, ?, ?, ?, ?, ${withAddress ? "?, " : ""}?, ?, ?)`
           )
           .run(
             id,
@@ -846,6 +852,7 @@ export class SessionRegistry {
             fields.tmuxSession ?? null,
             fields.tmuxWindow ?? null,
             fields.tmuxPane ?? null,
+            ...(withAddress ? [fields.terminalAddress ?? null] : []),
             fields.externalSessionName ?? null,
             fields.cmuxWorkspace ?? null,
             fields.cmuxSurface ?? null
@@ -894,6 +901,7 @@ export class SessionRegistry {
       tmuxSession: row.tmux_session,
       tmuxWindow: row.tmux_window,
       tmuxPane: row.tmux_pane,
+      terminalAddress: row.terminal_address ?? null,
       externalSessionName: row.external_session_name ?? null,
       cmuxWorkspace: row.cmux_workspace,
       cmuxSurface: row.cmux_surface,
@@ -931,6 +939,8 @@ interface BindingRow {
   tmux_session: string | null;
   tmux_window: string | null;
   tmux_pane: string | null;
+  /** Absent on a database that stops before migration 121. */
+  terminal_address?: string | null;
   external_session_name: string | null;
   cmux_workspace: string | null;
   cmux_surface: string | null;

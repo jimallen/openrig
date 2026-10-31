@@ -271,6 +271,20 @@ describe("OPR.0.5.6.14 — one destination resolver, no fall-through", () => {
     expect(h.repo.getById(item.qitemId)!.lastNudgeResult).toMatch(/^failed:/);
   });
 
+  it("A SEAT BOUND TO AN HC TERMINAL IS PANE-BOUND: a registered human in an hc terminal rides terminal transport, not the gateway", async () => {
+    h.db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES ('node-hc', 'rig-1', 'human.founder', 'terminal')").run();
+    h.db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES ('sess-hc', 'node-hc', 'human-founder@rig1')").run();
+    h.db.prepare("INSERT INTO bindings (id, node_id, attachment_type, tmux_session) VALUES ('binding-hc', 'node-hc', 'hc', 'human-founder@rig1')").run();
+    const item = await h.repo.create({
+      sourceSession: "orch-lead@v-openrig-build",
+      destinationSession: "human-founder@rig1",
+      body: "hc-backed founder seat",
+    });
+    await vi.waitFor(() => expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toBeNull());
+    expect(h.sends.map((send) => send.session)).toEqual(["human-founder@rig1"]);
+    expect(h.repo.getById(item.qitemId)!.lastNudgeResult).not.toMatch(/^gateway-owned/);
+  });
+
   it("PANELLESS TOPOLOGY IS NOT A TERMINAL: an external_cli-bound registered human stays gateway-routable", async () => {
     h.db.prepare("INSERT INTO nodes (id, rig_id, logical_id, runtime) VALUES ('node-external', 'rig-1', 'human.founder', 'external')").run();
     h.db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES ('sess-external', 'node-external', 'human-founder@kernel')").run();

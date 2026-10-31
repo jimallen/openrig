@@ -255,6 +255,7 @@ interface LatestSessionRow {
 /** OF-32: where a fresh launch took its startup policy from (defined with the source decision, seat-startup-source.ts). */
 import type { FreshStartupSource } from "./seat-startup-source.js";
 import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd-resolution.js";
+import { registeredPaneOf } from "./binding-pane.js";
 export type { FreshStartupSource };
 
 type ParsedStartupContext = FreshStartupContext;
@@ -506,7 +507,7 @@ export class SeatLifecycleService {
     let observed: EffortReport["observed"];
     const session = this.latestSession(seat.nodeId);
     const binding = this.sessionRegistry.getBindingForNode(seat.nodeId);
-    const target = binding?.tmuxPane ?? binding?.tmuxSession ?? null;
+    const target = registeredPaneOf(binding) ?? binding?.tmuxSession ?? null;
     if (!session || TERMINAL_SESSION_STATUSES.has(session.status) || !target) {
       emitted = { state: "unknown", detail: "The seat has no running session, so no launch to read." };
       observed = { state: "not_verified", detail: "The seat has no running session." };
@@ -931,7 +932,7 @@ export class SeatLifecycleService {
       return { ok: false as const, code: "continuation_unavailable", message: "No verified pending fresh-context delivery exists for this occupant. Refresh to inspect its actual state." };
     }
     const pane = await observeSolePane(this.tmuxAdapter, binding.tmuxSession);
-    if (!pane.ok || pane.pane !== binding.tmuxPane) return { ok: false as const, code: "binding_changed", message: "The managed terminal binding changed; context was not delivered." };
+    if (!pane.ok || pane.pane !== registeredPaneOf(binding)) return { ok: false as const, code: "binding_changed", message: "The managed terminal binding changed; context was not delivered." };
     const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
     if (!adapter) return { ok: false as const, code: "runtime_adapter_missing", message: "The configured runtime adapter is unavailable." };
     const ready = await adapter.checkReady({ ...binding, cwd: node.cwd ?? "." });
@@ -941,7 +942,7 @@ export class SeatLifecycleService {
     if (startup.context.runtime !== node.runtime) return { ok: false as const, code: "startup_context_runtime_mismatch", message: "The saved startup context belongs to a different runtime." };
     // Recheck after the asynchronous native observation; startNode immediately
     // records pending before its first await, consuming the retained permission.
-    if (this.latestSession(node.id)?.id !== session.id || this.sessionRegistry.getBindingForNode(node.id)?.tmuxPane !== pane.pane
+    if (this.latestSession(node.id)?.id !== session.id || registeredPaneOf(this.sessionRegistry.getBindingForNode(node.id)) !== pane.pane
       || !this.startupOrchestrator.canContinueFresh(node.id, session.id)) return { ok: false as const, code: "continuation_unavailable", message: "Startup changed during the readiness check. Refresh." };
     const result = await this.startupOrchestrator.startNode({
       rigId: seat.rigId, nodeId: node.id, sessionId: session.id,
@@ -1053,7 +1054,7 @@ export class SeatLifecycleService {
         message: `${observedPane.detail}; fresh launch refuses rather than kill without live occupant identity.`,
       };
     }
-    if (!observedPane.ok || observedPane.pane !== currentBinding?.tmuxPane) {
+    if (!observedPane.ok || observedPane.pane !== registeredPaneOf(currentBinding)) {
       return {
         ok: false,
         code: "unmanaged_session_collision",
@@ -1597,7 +1598,7 @@ export class SeatLifecycleService {
       return { ok: false, code: "session_not_live", message: `Session "${session.session_name}" is absent in tmux; there is nothing to restart in place.` };
     }
     const binding = this.sessionRegistry.getBindingForNode(node.id);
-    if (!binding?.tmuxSession || binding.tmuxSession !== session.session_name || !binding.tmuxPane) {
+    if (!binding?.tmuxSession || binding.tmuxSession !== session.session_name || !registeredPaneOf(binding)) {
       return { ok: false, code: "session_not_live", message: `Seat "${seatRef}" has no bound tmux pane for session "${session.session_name}".` };
     }
     let permissionOverride: ReturnType<NativePermissionStore["launchOverride"]>;

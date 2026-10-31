@@ -20,6 +20,9 @@ import type {
 } from "../src/domain/terminal/terminal-provider.js";
 import type { LiveSeatRow, SavedView } from "../src/domain/terminal/terminal-views-store.js";
 
+/** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
+const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
+
 /** A provider that records the composed view it was handed and reports success. */
 class RecordingProvider implements TerminalProvider {
   readonly name: string;
@@ -513,7 +516,7 @@ describe("default saved kernel conversations", () => {
     expect("composed" in preview && preview.composed.opened.map(member => member.seat)).toEqual(expected);
     expect(herdr.lastView).toBeNull();
     expect((await service.openView({ view: "saved:kernel" })).opened).toEqual(expected);
-    expect(herdr.lastView?.opened[1]?.paneCommand).toContain("'actual-tui'");
+    expect(herdr.lastView?.opened[1]?.paneCommand).toContain(`'${hcName("actual-tui")}'`);
     expect(herdr.lastView?.opened[2]?.runtime).toBe(advisorRuntime);
     expect(saved).toEqual([]);
   });

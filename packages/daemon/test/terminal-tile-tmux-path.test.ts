@@ -2,6 +2,7 @@
 // exits at once must not be reported as opened. The shell parsing below is real; no terminal
 // provider, hc core or machine link is claimed, and the herdr replies are fakes.
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,9 @@ import { TerminalService, type TerminalServiceDeps } from "../src/domain/termina
 import { HerdrAdapter, HERDR_PANE_EXITED_REASON, HERDR_PANES_UNCONFIRMED_NOTE } from "../src/domain/terminal/herdr-adapter.js";
 import type { HerdrResult, HerdrTransport } from "../src/domain/terminal/herdr-transport.js";
 import type { ComposedPane, ComposedView, OpenViewResult, TerminalProvider } from "../src/domain/terminal/terminal-provider.js";
+
+/** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
+const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
 
 const local = (seat: string, readOnly = false): ViewMemberInput => ({ seat, label: seat, tmuxSession: seat, host: null, readOnly, alive: true });
 
@@ -33,7 +37,7 @@ describe("#707 local tiles run the hc the daemon resolves", () => {
 
         const resolved = composeView("v", [local("seat'a", readOnly)], { resolveHost: () => null, localHc: hc });
         execFileSync("/bin/sh", ["-c", resolved.opened[0]!.paneCommand], { env });
-        expect(readFileSync(argsFile, "utf8").trimEnd().split("\n")).toEqual(["attach", ...(readOnly ? ["--observe"] : []), "--", "seat'a"]);
+        expect(readFileSync(argsFile, "utf8").trimEnd().split("\n")).toEqual(["attach", ...(readOnly ? ["--observe"] : []), "--", hcName("seat'a")]);
         expect(resolved.opened[0]!.readOnly).toBe(readOnly);
       }
     } finally {
@@ -45,14 +49,14 @@ describe("#707 local tiles run the hc the daemon resolves", () => {
     const remote: ViewMemberInput = { seat: "r", label: "r", tmuxSession: "t", host: "edge", readOnly: true, alive: true };
     const resolveHost = () => ({ id: "edge", transport: "ssh" as const, target: "fixture" });
     const withPath = composeView("v", [remote], { resolveHost, localHc: "/opt/homebrew/bin/hc" });
-    expect(withPath.opened[0]!.paneCommand).toBe("'/opt/homebrew/bin/hc' attach --observe -- 'edge/t'");
+    expect(withPath.opened[0]!.paneCommand).toBe(`'/opt/homebrew/bin/hc' attach --observe -- 'edge/${hcName("t")}'`);
   });
 
   it("without a resolved path the composed view uses the bare hc token", () => {
     const members = [local("a"), local("b", true)];
     const before = composeView("v", members, { resolveHost: () => null });
     expect(JSON.stringify(composeView("v", members, { resolveHost: () => null, localHc: undefined }))).toBe(JSON.stringify(before));
-    expect(before.opened.map((p) => p.paneCommand)).toEqual(["hc attach -- 'a'", "hc attach --observe -- 'b'"]);
+    expect(before.opened.map((p) => p.paneCommand)).toEqual([`hc attach -- '${hcName("a")}'`, `hc attach --observe -- '${hcName("b")}'`]);
   });
 
   it("the removed tmux context fields change nothing: a path and server flags still compose a bare hc", () => {
@@ -77,7 +81,7 @@ class RecordingHerdr implements TerminalProvider {
 
 function service(resolveLocalHc?: TerminalServiceDeps["resolveLocalHc"], resolveLocalTmux?: TerminalServiceDeps["resolveLocalTmux"]): { svc: TerminalService; herdr: RecordingHerdr } {
   const herdr = new RecordingHerdr();
-  const rows = [{ canonicalSessionName: "a@r", attachmentType: "tmux" as const, tmuxSession: "a@r", rigName: "r", logicalId: "pod.a" }];
+  const rows = [{ canonicalSessionName: "a@r", attachmentType: "hc" as const, tmuxSession: "a@r", rigName: "r", logicalId: "pod.a" }];
   const deps = {
     resolveProvider: (n: string) => (n === "herdr" ? herdr : null),
     viewsStore: { get: () => null, list: () => [] },
@@ -97,12 +101,12 @@ function service(resolveLocalHc?: TerminalServiceDeps["resolveLocalHc"], resolve
 // the attach (#707). Only an absolute path is used; the old tmux resolver is never read.
 describe("#707 the service passes the resolved hc to the composer", () => {
   const cases: Array<[string, TerminalServiceDeps["resolveLocalHc"] | undefined, string]> = [
-    ["an absolute path", () => "/usr/local/bin/hc", "'/usr/local/bin/hc' attach -- 'a@r'"],
-    ["an absolute path from an async probe", async () => "/opt/homebrew/bin/hc", "'/opt/homebrew/bin/hc' attach -- 'a@r'"],
-    ["a bare name", () => "hc", "hc attach -- 'a@r'"],
-    ["nothing found", async () => null, "hc attach -- 'a@r'"],
-    ["a failed probe", () => { throw new Error("probe failed"); }, "hc attach -- 'a@r'"],
-    ["no resolver", undefined, "hc attach -- 'a@r'"],
+    ["an absolute path", () => "/usr/local/bin/hc", `'/usr/local/bin/hc' attach -- '${hcName("a@r")}'`],
+    ["an absolute path from an async probe", async () => "/opt/homebrew/bin/hc", `'/opt/homebrew/bin/hc' attach -- '${hcName("a@r")}'`],
+    ["a bare name", () => "hc", `hc attach -- '${hcName("a@r")}'`],
+    ["nothing found", async () => null, `hc attach -- '${hcName("a@r")}'`],
+    ["a failed probe", () => { throw new Error("probe failed"); }, `hc attach -- '${hcName("a@r")}'`],
+    ["no resolver", undefined, `hc attach -- '${hcName("a@r")}'`],
   ];
   it.each(cases)("%s", async (_name, resolver, expected) => {
     const { svc, herdr } = service(resolver);
@@ -116,7 +120,7 @@ describe("#707 the service passes the resolved hc to the composer", () => {
     const { svc, herdr } = service(undefined, () => { tmuxCalls++; return "/usr/local/bin/tmux"; });
     const res = await svc.openView({ view: "rig:r" });
     expect(res.ok).toBe(true);
-    expect(herdr.last!.opened[0]!.paneCommand).toBe("hc attach -- 'a@r'");
+    expect(herdr.last!.opened[0]!.paneCommand).toBe(`hc attach -- '${hcName("a@r")}'`);
     expect(tmuxCalls).toBe(0);
   });
 
@@ -128,7 +132,7 @@ describe("#707 the service passes the resolved hc to the composer", () => {
     expect(res.code).toBeUndefined();
     expect(res.ok).toBe(true);
     expect(herdr.last).not.toBeNull();
-    expect(herdr.last!.opened[0]!.paneCommand).toBe("'/usr/local/bin/hc' attach -- 'a@r'");
+    expect(herdr.last!.opened[0]!.paneCommand).toBe(`'/usr/local/bin/hc' attach -- '${hcName("a@r")}'`);
     expect(calls).toBe(1);
   });
 });

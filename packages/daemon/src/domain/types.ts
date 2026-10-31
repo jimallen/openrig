@@ -94,6 +94,8 @@ export interface Binding {
   tmuxSession: string | null;
   tmuxWindow: string | null;
   tmuxPane: string | null;
+  /** The address of the seat's hc terminal (`t7`) once it is bound under hc; NULL on a tmux row and on an hc row not yet launched. */
+  terminalAddress?: string | null;
   externalSessionName?: string | null;
   cmuxWorkspace: string | null;
   cmuxSurface: string | null;

@@ -2,11 +2,16 @@
 // and a person's new terminal reaches the default one. Every printed attach command must name the
 // daemon's server then, and keep today's form on the default server.
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDaemonTmuxServer, tmuxAttachCommand, tmuxServerArgs } from "../src/adapters/tmux-server.js";
 import { composeView, type ViewMemberInput } from "../src/domain/terminal/view-composer.js";
+
+/** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
+const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
+
 
 describe("the daemon's tmux server", () => {
   let base: string;
@@ -60,13 +65,13 @@ describe("the daemon's tmux server", () => {
     const resolveHost = () => ({ id: "box", transport: "ssh" as const, target: "box.example" });
     const plain = composeView("v", [local, remote], { resolveHost });
     expect(plain.opened.map((p) => p.paneCommand)).toEqual([
-      "hc attach -- 'dev-review@starter'",
-      "hc attach -- 'box/dev-build@starter'",
+      `hc attach -- '${hcName("dev-review@starter")}'`,
+      `hc attach -- 'box/${hcName("dev-build@starter")}'`,
     ]);
     const onServer = composeView("v", [local, remote], { resolveHost, localHc: "/usr/bin/hc", localTmux: "/usr/bin/tmux", localTmuxServer: ["-L", "person"] });
     expect(onServer.opened.map((p) => p.paneCommand)).toEqual([
-      "'/usr/bin/hc' attach -- 'dev-review@starter'",
-      "'/usr/bin/hc' attach -- 'box/dev-build@starter'",
+      `'/usr/bin/hc' attach -- '${hcName("dev-review@starter")}'`,
+      `'/usr/bin/hc' attach -- 'box/${hcName("dev-build@starter")}'`,
     ]);
     expect(JSON.stringify(onServer)).not.toMatch(/tmux|-L|person/);
   });

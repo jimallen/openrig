@@ -356,7 +356,7 @@ export class RigTeardownOrchestrator {
     `);
     for (const row of eligible.all(rigId) as Array<{ id: string; node_id: string; session_name: string }>) {
       const binding = this.deps.sessionRegistry.getBindingForNode(row.node_id);
-      if (binding && (binding.attachmentType !== "tmux" || binding.tmuxSession !== row.session_name)) continue;
+      if (binding && ((binding.attachmentType !== "tmux" && binding.attachmentType !== "hc") || binding.tmuxSession !== row.session_name)) continue;
       try {
         if ((await probe.call(this.deps.tmuxAdapter, row.session_name)).state !== "absent") continue;
       } catch {

@@ -26,6 +26,7 @@ import { isFilesystemRoot } from "../domain/cwd-resolution.js";
 import { observeClaudePermission } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
+import { registeredPaneOf } from "../domain/binding-pane.js";
 import { contextUsageDirectory, providerUsageDirectory } from "../domain/telemetry-state-paths.js";
 
 export interface ClaudeAdapterFsOps {
@@ -278,7 +279,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       try {
         if (!this.claudeManagedLaunch) await unresolvedClaudePermissionModes();
         managed = await this.claudeManagedLaunch!.prepare({ nodeId: binding.nodeId, cwd: binding.cwd,
-          session: binding.tmuxSession, pane: binding.tmuxPane, generation: binding.launchGeneration }, binding.permissionMode);
+          session: binding.tmuxSession, pane: registeredPaneOf(binding), generation: binding.launchGeneration }, binding.permissionMode);
       } catch (error) { return { ok: false, error: (error as Error).message }; }
     }
     const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
@@ -410,14 +411,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       claudeAutoIdentityVerified: true, claudeResumeIdentityVerified: true });
     if (probe.status === "resumed" || verifiedProbe.status !== "resumed") return probe;
     const launch = this.autoLaunches.get(binding.nodeId);
-    if (!launch || !binding.tmuxPane || !binding.tmuxSession
-      || launch.binding.id !== binding.id || launch.binding.tmuxPane !== binding.tmuxPane
+    const boundPane = registeredPaneOf(binding);
+    if (!launch || !boundPane || !binding.tmuxSession
+      || launch.binding.id !== binding.id || registeredPaneOf(launch.binding) !== boundPane
       || launch.binding.tmuxSession !== binding.tmuxSession
       || launch.binding.launchGeneration !== binding.launchGeneration) return probe;
     try {
       const panes = await this.tmux.listPanes(binding.tmuxSession);
-      if (panes.length !== 1 || panes[0]?.id !== binding.tmuxPane) return probe;
-      const observation = { target: binding.tmuxPane, tmux: this.tmux,
+      if (panes.length !== 1 || panes[0]?.id !== boundPane) return probe;
+      const observation = { target: boundPane, tmux: this.tmux,
         listProcesses: this.listProcesses, expectedToken: launch.token, selectedExecutable: launch.executable };
       const first = await observeClaudePaneProcess(observation);
       if (!first) return probe;
@@ -432,7 +434,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       if (native?.fingerprint !== launch.fingerprint) return probe;
       const currentPanes = await this.tmux.listPanes(binding.tmuxSession);
       if (this.autoLaunches.get(binding.nodeId) !== launch || currentPanes.length !== 1
-        || currentPanes[0]?.id !== binding.tmuxPane
+        || currentPanes[0]?.id !== boundPane
         || await this.tmux.getPanePid(binding.tmuxSession) !== native.panePid) return probe;
       return verifiedProbe;
     } catch { return probe; }

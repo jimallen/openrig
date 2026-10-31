@@ -201,7 +201,8 @@ export class SeatActivityService {
         WHERE s.status = 'running'
           AND s.session_name IS NOT NULL
       `).all() as Array<{ session_name: string; node_id: string; runtime: string | null; attachment_type: string }>;
-      const tmuxRows = rows.filter((r) => r.attachment_type === "tmux");
+      // A seat in an hc terminal is sampled like one in a tmux pane: the adapter answers for both.
+      const tmuxRows = rows.filter((r) => r.attachment_type === "tmux" || r.attachment_type === "hc");
       const liveTmux = new Set(tmuxRows.map((r) => r.session_name));
       for (const pane of this.latestByPaneId.keys()) {
         if (!liveTmux.has(pane)) this.latestByPaneId.delete(pane);

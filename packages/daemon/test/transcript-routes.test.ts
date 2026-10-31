@@ -225,6 +225,33 @@ describe("transcript routes", () => {
     clearAllTranscriptRotationsForTest();
   });
 
+  it("GET /tail lazy-starts capture for a seat bound to an hc terminal, and not for one attached through an external CLI", async () => {
+    const { getActiveRotationCount, clearAllTranscriptRotationsForTest } = await import("../src/domain/transcript-rotation.js");
+    clearAllTranscriptRotationsForTest();
+    const rig = rigRepo.createRig("my-rig");
+    for (const [logical, session, attachmentType] of [["dev-hc", "dev-hc@my-rig", "hc"], ["dev-ex", "dev-ex@my-rig", "external_cli"]] as const) {
+      const node = rigRepo.addNode(rig.id, logical, { role: "worker", runtime: "claude-code" });
+      sessionRegistry.registerSession(node.id, session);
+      sessionRegistry.updateBinding(node.id, { attachmentType, tmuxSession: session });
+    }
+    const store = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
+    vi.spyOn(store, "ensureTranscriptDir").mockReturnValue(true);
+    const capturePaneSpy = vi.fn(async () => "READY\n");
+    const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store, tmuxAdapter: { capturePaneContent: capturePaneSpy } as unknown as TmuxAdapter });
+
+    const hc = await app.request("/api/transcripts/dev-hc@my-rig/tail");
+    expect(hc.status).toBe(200);
+    expect((await hc.json()).content).toBe("READY\n");
+    expect(capturePaneSpy).toHaveBeenCalledWith("dev-hc@my-rig", expect.any(Number));
+    expect(getActiveRotationCount()).toBeGreaterThan(0);
+
+    capturePaneSpy.mockClear();
+    const external = await app.request("/api/transcripts/dev-ex@my-rig/tail");
+    expect(external.status).not.toBe(200);
+    expect(capturePaneSpy).not.toHaveBeenCalled();
+    clearAllTranscriptRotationsForTest();
+  });
+
   it("GET /tail with non-positive lines normalizes to default", async () => {
     const { store } = seedRigWithTranscript("line1\nline2\nline3\n");
     const app = createApp({ db, rigRepo, sessionRegistry, transcriptStore: store });

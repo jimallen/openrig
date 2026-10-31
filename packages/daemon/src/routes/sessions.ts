@@ -41,6 +41,7 @@ import { SeatIdentityStore } from "../domain/seat-identity-store.js";
 import { parseSqliteUtcMs } from "../domain/sqlite-time.js";
 import { requestPdaRelease } from "../domain/pda-release.js";
 import { transportSenderSession } from "./require-sender-identity.js";
+import { registeredPaneOf } from "../domain/binding-pane.js";
 
 const generationCensus = new ProcessCensus({ freshnessMs: 0 }); // coalesce concurrent receipts; recheck each later read
 const generationThreadIds = new CodexThreadIdResolver({ codexHome: process.env.CODEX_HOME || undefined });
@@ -721,18 +722,19 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
   if (runtime === "codex") {
     const binding = registry.getBindingForNode(context!.nodeId);
     const identity = new SeatIdentityStore(registry.db).getForNode(context!.nodeId);
-    if (!occupant || !binding?.tmuxPane || binding.tmuxSession !== sessionName
+    const boundPane = registeredPaneOf(binding);
+    if (!occupant || !binding || !boundPane || binding.tmuxSession !== sessionName
       || identity?.verdict !== "verified" || identity.sessionName !== sessionName
-      || identity.evidence.registeredPane !== binding.tmuxPane
+      || identity.evidence.registeredPane !== boundPane
       || !(Date.parse(identity.observedAt) >= parseSqliteUtcMs(occupant.bootAt))) {
       return c.json({ error: "record_identity_unverified", message: `No verified current occupant/pane binding for '${sessionName}'.` }, 409);
     }
     try {
-      const pid = await tmuxAdapter?.getPanePid?.(binding.tmuxPane);
+      const pid = await tmuxAdapter?.getPanePid?.(boundPane);
       if (!pid || pid !== identity.evidence.observedPid) {
         return c.json({ error: "record_identity_unverified", message: `The bound pane for '${sessionName}' no longer matches its verified occupant.` }, 409);
       }
-      const live = await resolveLiveCodexThreadId(binding.tmuxPane, {
+      const live = await resolveLiveCodexThreadId(boundPane, {
         getPanePid: async () => pid,
         listProcesses: () => generationCensus.list(),
         readThreadIdByPid: (nativePid, startedAt) => startedAt
@@ -742,8 +744,8 @@ sessionAdminRoutes.get("/:sessionName/generation-record", terminalAuthGuard(), a
       sessionId = live.id;
       transcriptPath = store.readCodexTranscriptPath(sessionId);
       if (registry.currentOccupantTenure(context!.nodeId)?.generationUuid !== occupant.generationUuid
-        || registry.getBindingForNode(context!.nodeId)?.tmuxPane !== binding.tmuxPane
-        || await tmuxAdapter.getPanePid?.(binding.tmuxPane) !== pid) {
+        || registeredPaneOf(registry.getBindingForNode(context!.nodeId)) !== boundPane
+        || await tmuxAdapter.getPanePid?.(boundPane) !== pid) {
         return c.json({ error: "record_identity_unverified", message: `The occupant binding changed while resolving '${sessionName}'.` }, 409);
       }
     } catch (err) {

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type Database from "better-sqlite3";
+import { registeredPaneSql } from "./binding-pane.js";
 
 /** A binding is captured before waiting. Never rebind an old operation to a new occupant. */
 export interface GuardTarget {
@@ -231,13 +232,13 @@ export class SeatDeliveryGuard {
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
   const rows = db.prepare(`SELECT n.id AS nodeId, n.rig_id AS rigId,
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
-      b.tmux_pane AS pane,
+      ${registeredPaneSql(db)} AS pane,
       s.id AS liveSessionId,
       (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant,
       r.archived_at AS archivedAt
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
     LEFT JOIN sessions s ON s.node_id=n.id AND s.status='running'
-    WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
+    WHERE n.id=? OR b.tmux_session=? OR ${registeredPaneSql(db)}=? OR n.logical_id=?
       OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)
     ORDER BY (CASE WHEN b.tmux_session = ? AND s.id IS NOT NULL THEN 0 ELSE 1 END),
              (b.tmux_session IS NOT NULL) DESC, r.created_at DESC`)

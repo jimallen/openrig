@@ -22,6 +22,7 @@ import { emittedEffortFromArgv } from "./seat-effort.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { getSeatCwdFault, seatCwdFaultReason, seatCwdFixAdvice, type SeatCwdFault } from "./cwd-resolution.js";
+import { registeredPaneSql } from "./binding-pane.js";
 
 /**
  * OPR.0.7.0.5 — restart ONE Codex seat in place so it reads its Codex home's current account: the same
@@ -679,7 +680,7 @@ export class CodexInPlaceRestart {
 
   private async peers(nodeId: string, codexHome: string): Promise<PeerReport[]> {
     const rows = this.deps.db.prepare(`
-      SELECT n.id, n.logical_id, b.tmux_session, b.tmux_pane FROM nodes n
+      SELECT n.id, n.logical_id, b.tmux_session, ${registeredPaneSql(this.deps.db)} AS tmux_pane FROM nodes n
       LEFT JOIN bindings b ON b.node_id = n.id
       WHERE n.runtime = 'codex' AND n.id != ? ORDER BY n.logical_id`).all(nodeId) as
       Array<{ id: string; logical_id: string; tmux_session: string | null; tmux_pane: string | null }>;

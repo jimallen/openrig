@@ -210,6 +210,35 @@ describe("RigTeardownOrchestrator", () => {
     expect(tmux.killSession).not.toHaveBeenCalled();
   });
 
+  it("records explicit down of a detached seat bound to an hc terminal once its absence is confirmed, and clears the binding", async () => {
+    const { rigId, nodeId, sessionId } = seedRig();
+    sessionRegistry.updateStatus(sessionId, "detached");
+    sessionRegistry.updateBinding(nodeId, { attachmentType: "hc", tmuxSession: "r01-dev", terminalAddress: "t7" });
+    const tmux = mockTmux();
+    tmux.probeSession = vi.fn(async (_name: string) => ({ state: "absent" as const }));
+
+    await buildTeardown(tmux).teardown(rigId);
+
+    expect(tmux.probeSession).toHaveBeenCalledWith("r01-dev");
+    expect(db.prepare("SELECT status, intentionally_stopped FROM sessions WHERE id = ?").get(sessionId))
+      .toEqual({ status: "exited", intentionally_stopped: 1 });
+    expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
+  });
+
+  it("leaves a detached seat bound to an external CLI alone: no probe, no stop intent", async () => {
+    const { rigId, nodeId, sessionId } = seedRig();
+    sessionRegistry.updateStatus(sessionId, "detached");
+    sessionRegistry.updateBinding(nodeId, { attachmentType: "external_cli", tmuxSession: "r01-dev" });
+    const tmux = mockTmux();
+    tmux.probeSession = vi.fn(async (_name: string) => ({ state: "absent" as const }));
+
+    await buildTeardown(tmux).teardown(rigId);
+
+    expect(tmux.probeSession).not.toHaveBeenCalledWith("r01-dev");
+    expect(db.prepare("SELECT status, intentionally_stopped FROM sessions WHERE id = ?").get(sessionId))
+      .toEqual({ status: "detached", intentionally_stopped: 0 });
+  });
+
   it.each(["present", "transport_unavailable", "throw", "no-probe"])("keeps an unconfirmed detached seat unchanged: %s", async state => {
     const { rigId, sessionId } = seedRig();
     sessionRegistry.updateStatus(sessionId, "detached");

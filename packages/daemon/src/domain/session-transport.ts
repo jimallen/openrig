@@ -37,6 +37,7 @@ import { containsPasteTerminator } from "./packet-text.js";
 import { observeClaudeDelivery, verifyCodexPaneProcess, type ClaudeDeliveryObservation, type ClaudeResumeRotation, type NativeProcessLister } from "./native-process-lineage.js";
 import type { SlowOperationInstrumentation } from "./slow-op-recorder.js";
 import { hashSentText, type CaptureObserverSink, type CaptureSlot, type ObservationInput, type ObservedBinding } from "./capture-observer.js";
+import { registeredPaneSql } from "./binding-pane.js";
 
 // OPR.0.4.1.10 — send-readiness freshness. The runtime-hook store keeps a 5min freshness for activity
 // DISPLAY, but "safe to send NOW" needs a tight window: a stale "idle" read must not authorize a send
@@ -1243,7 +1244,7 @@ export class SessionTransport {
     if (!answering) return undefined;
     return this.db
       .prepare(`
-        SELECT s.id AS session_id, n.id AS node_id, s.session_name AS session_name, b.tmux_pane AS tmux_pane
+        SELECT s.id AS session_id, n.id AS node_id, s.session_name AS session_name, ${registeredPaneSql(this.db)} AS tmux_pane
         FROM nodes n
         JOIN sessions s ON s.node_id = n.id
           AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
@@ -1286,7 +1287,7 @@ export class SessionTransport {
         b.attachment_type AS attachment_type,
         n.id AS node_id,
         b.tmux_session AS binding_session,
-        b.tmux_pane AS pane,
+        ${registeredPaneSql(this.db)} AS pane,
         s.resume_token AS resume_token,
         s.resume_provenance AS resume_provenance,
         s.resume_rotated_from AS resume_rotated_from,

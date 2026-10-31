@@ -3772,7 +3772,7 @@ export class QueueRepository {
 
   /** OPR.0.5.6.14 — terminal transport is a CAPABILITY, not topology presence.
    *  An exact session or composed canonical seat is pane-bound only when its
-   *  node carries an explicit tmux binding. external_cli is paneless and must
+   *  node carries an explicit tmux or hc binding. external_cli is paneless and must
    *  continue to the human-registry/gateway leg. FAIL-OPEN only where the DB
    *  cannot carry classification evidence (empty/partial bootstrap schemas). */
   private hasTerminalTransport(dest: string): boolean {
@@ -3799,7 +3799,7 @@ export class QueueRepository {
       const hasTmux = this.db.prepare(
         `SELECT 1 FROM bindings b
           WHERE b.node_id = ?
-            AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+            AND COALESCE(b.attachment_type, 'tmux') IN ('tmux', 'hc')
             AND b.tmux_session IS NOT NULL LIMIT 1`,
       );
       if (deciding.some((c) => hasTmux.get(c.nodeId))) return true;

@@ -155,7 +155,7 @@ export class SeatStructuralActivityService {
         LEFT JOIN bindings b ON b.node_id = n.id
         WHERE s.status = 'running'
           AND s.session_name IS NOT NULL
-          AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+          AND COALESCE(b.attachment_type, 'tmux') IN ('tmux', 'hc')
       `).all() as Array<{ session_name: string; runtime: string | null }>;
       const live = new Set(rows.map((r) => r.session_name));
       const runtimeBySession = new Map(rows.map((r) => [r.session_name, r.runtime] as const));
