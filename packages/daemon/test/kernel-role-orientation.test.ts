@@ -101,7 +101,7 @@ describe("kernel per-seat role orientation", () => {
   });
 });
 
-describe("kernel hard rules (no guessing; questions in a modal)", () => {
+describe("kernel hard rules (no guessing; questions as queue items)", () => {
   // Jim, 2026-10-30: every agent carries a hard rule against acting on guesses. The kernel's seats get it from the rig
   // culture (a required startup file for every member) and a pointer in each role's startup guidance.
   it.each(ids)("%s receives the rule through its resolved startup files", id => {
@@ -116,9 +116,10 @@ describe("kernel hard rules (no guessing; questions in a modal)", () => {
     expect(culture?.text).toContain("## No guessing (hard rule)");
     expect(culture?.text).toContain("Never act on a guess or present one as fact.");
     expect(texts.find(t => t.path === "guidance/role.md")?.text).toContain("**No guessing (hard rule).**");
-    // Jim, 2026-10-31: the rig with a question asks it itself, in a modal; nobody relays another rig's question.
+    // Jim, 2026-10-31: the kernel stays closed, so its seats file questions to human@kernel; nobody relays another rig's question.
     expect(culture?.text).toContain("## Questions to the human (hard rule)");
-    expect(culture?.text).toContain("Ask in a modal: AskUserQuestion");
+    expect(culture?.text).toContain("Kernel seats do NOT ask in a modal");
+    expect(culture?.text).not.toContain("AskUserQuestion");
     expect(texts.find(t => t.path === "guidance/role.md")?.text).toContain("**Questions to the human (hard rule).**");
   });
 });
