@@ -524,6 +524,16 @@ describe("a stream host: per-subscriber scroll-back", () => {
     expect(sub.received.at(-1)).toBe("live-again");
   });
 
+  it("takes a negative offset as live and a fractional one as whole lines", async () => {
+    const { host, b, sub } = await scrolling();
+    host.history = capture(20);
+    await b.scroll(sub, -3);
+    expect(host.histories).toEqual([]);
+    expect(host.views[0]!.repaints).toBe(0);
+    await b.scroll(sub, 3.9);
+    expect(host.histories).toEqual([["dev@rig", 8]]);
+  });
+
   it("does not repaint a subscriber that is already live", async () => {
     const { host, b, sub } = await scrolling();
     await b.scroll(sub, 0);

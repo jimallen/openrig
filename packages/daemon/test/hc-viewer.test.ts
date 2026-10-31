@@ -489,6 +489,26 @@ describe("HcViewer.view", () => {
       expect(opener.asked).toHaveLength(5);
     });
 
+    it("says nothing more once closed, even when a reconnect attempt was in flight", async () => {
+      const opener = new FakeOpener();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const open = opener.open.bind(opener);
+      let attempts = 0;
+      opener.open = async (params, handlers) => { if (++attempts === 2) await gate; return open(params, handlers); };
+      const viewer = new HcViewer({ opener, sizes: new FakeSizes(), client: {} as HcClient, reconnectDelaysMs: [10] });
+      const { log, handlers } = recorder();
+      const opened = await viewer.view("dev@rig", handlers);
+      if (!opened.ok) throw new Error("not open");
+      opener.queue.push({ reject: new HcError("nf", "not_found", -32000) });
+      opener.attachments[0]!.end({ reason: "core_lost" });
+      await expect.poll(() => attempts).toBe(2);
+      await opened.view.close();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(log.ends).toEqual([]);
+    });
+
     it("recovers when the core comes back inside the delays", async () => {
       const { opener, viewer, slept } = rig({ delays: [10, 20, 30] });
       const { log, handlers } = recorder();
@@ -583,7 +603,7 @@ describe("HcViewer.view", () => {
       if (!opened.ok) throw new Error("not open");
       opener.attachments[0]!.push("\x1b[?1049h\x1b[?1000h");
       expect(opened.view.modes()).toEqual({ altScreen: true, mouse: true });
-      opener.fallback = { early: [bytes("\x1b[!p\x1b[?1049h")] };
+      opener.fallback = { early: [bytes("\x1b[?1049h")] };  // no soft reset in it: the old attach's mouse mode must not carry over
       await opened.view.repaint();
       expect(opened.view.modes()).toEqual({ altScreen: true, mouse: false });
     });
