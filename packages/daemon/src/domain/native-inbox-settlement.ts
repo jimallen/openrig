@@ -3,7 +3,7 @@
 // vocabulary (so an unconfirmed outcome is retried and escalated like a tmux one); an agent sender is told in its pane
 // when its message ended unconfirmed or undelivered. Kept apart from startup so it is tested without a daemon.
 import type { OutboxEntry, OutboxOutcomeLabel } from "./outbox-handler.js";
-import type { NativeSettlement } from "./claude-native-inbox.js";
+import type { NativeFallback, NativeSettlement } from "./claude-native-inbox.js";
 import { inertStartupText } from "./packet-text.js";
 import { isWakeTimeoutSignal } from "./queue-repository.js";
 
@@ -68,5 +68,27 @@ export async function recordNativeFallback(deps: NativeSettlementDeps, row: Outb
   } else if (outcome.unconfirmed && deps.isAgentSeat(row.senderSession)) {
     await deps.sendNotice(row.senderSession, nativeNoticeText(row,
       `is UNCONFIRMED: the tmux fallback timed out (${res.reason ?? res.error ?? "unknown"}), so it may or may not have landed; it was not re-sent.`));
+  }
+}
+
+/** What the deadline sweeper's tmux resend needs from the daemon. */
+export interface NativeFailoverIo {
+  send: (fallback: NativeFallback) => Promise<{ ok: boolean; verified?: boolean; outcome?: string; reason?: string; error?: string; outboxIds?: string[] }>;
+  labelFor: (res: { ok: boolean; verified?: boolean; outcome?: string; reason?: string }) => OutboxOutcomeLabel;
+  settleFallback: (outboxId: string, state: "delivered" | "failed" | "indeterminate" | "retained", label: OutboxOutcomeLabel) => unknown;
+  getById: (outboxId: string) => OutboxEntry | null | undefined;
+}
+
+/** OF-180 N7: each fallback is sent ONCE (a wake group is one text), and every row it stands for settles on that one
+ *  result and is reported to its own qitem and sender. */
+export async function failOverToTmux(deps: NativeSettlementDeps, io: NativeFailoverIo, fallbacks: NativeFallback[]): Promise<void> {
+  for (const f of fallbacks) {
+    const res = await io.send(f);
+    const outcome = nativeFallbackOutcome(res, io.labelFor(res));
+    for (const id of f.outboxIds) {
+      io.settleFallback(id, outcome.state, outcome.label);
+      const entry = io.getById(id);
+      if (entry) await recordNativeFallback(deps, entry, res, outcome);
+    }
   }
 }

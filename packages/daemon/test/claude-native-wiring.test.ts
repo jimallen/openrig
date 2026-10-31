@@ -18,7 +18,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { OutboxHandler, WAKE_INTENT_PREFIX, type OutboxEntry } from "../src/domain/outbox-handler.js";
-import { createNativeSettlementHandler, nativeFallbackOutcome, recordNativeFallback } from "../src/domain/native-inbox-settlement.js";
+import { createNativeSettlementHandler, failOverToTmux, nativeFallbackOutcome, recordNativeFallback } from "../src/domain/native-inbox-settlement.js";
 import { presentedNudgeResult } from "../src/domain/queue-repository.js";
 import { ClaudeNativeInbox, ACCEPT_SETTING_ARGV_FRAGMENT, type ProcessRow } from "../src/domain/claude-native-inbox.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
@@ -323,6 +323,44 @@ describe("OS adapters", () => {
     expect(Date.now() - t0).toBeLessThan(1_000);
   });
 
+  // OF-181 N1: a hung receiver whose socket buffer the message fills never flushes: the answer is `partial` at the
+  // default timeout, which is under the CLI's 5 s request timeout (packages/cli/src/client.ts, default 5_000).
+  it("OF-181 N1: a hung receiver and a message too big for the socket buffer → partial, inside the CLI's 5 s", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nc3-big-"));
+    const path = join(dir, "inbox.sock");
+    const held: import("node:net").Socket[] = [];
+    const server = createServer((c) => { c.pause(); held.push(c); });
+    cleanups.push(() => { for (const c of held) c.destroy(); server.close(); rmSync(dir, { recursive: true, force: true }); });
+    await new Promise<void>((r) => server.listen(path, () => r()));
+    const t0 = Date.now();
+    const result = await writeSocketLines(path, [{ type: "user", message: { role: "user", content: "x".repeat(32 * 1024 * 1024) } }]);
+    expect(result).toBe("partial");
+    expect(Date.now() - t0).toBeLessThan(4_500);
+  }, 15_000);
+
+  // OF-181 N3: after the half-close the writer drops the socket on a timer, so a peer that never closes does not
+  // leave one open descriptor per send.
+  it("OF-181 N3: a peer that reads everything but never closes finds the writer's end gone once the grace has passed", async () => {
+    // The server cannot see a destroyed client directly (it holds its half open), so it writes to it 3.0 s and 3.3 s
+    // after connecting, past the 2 s grace: a write to a client that is gone fails (EPIPE or a reset); to one still open it does not.
+    const dir = mkdtempSync(join(tmpdir(), "nc3-grace-"));
+    const path = join(dir, "inbox.sock");
+    let got = "";
+    let writeFailed = false;
+    const timers: NodeJS.Timeout[] = [];
+    const server = createServer({ allowHalfOpen: true }, (c) => {
+      c.on("data", (b) => { got += b.toString(); });
+      c.on("error", () => { writeFailed = true; });
+      for (const ms of [3_000, 3_300]) timers.push(setTimeout(() => { c.write("probe\n", (err) => { if (err) writeFailed = true; }); }, ms));
+    });
+    cleanups.push(() => { for (const t of timers) clearTimeout(t); server.close(); rmSync(dir, { recursive: true, force: true }); });
+    await new Promise<void>((r) => server.listen(path, () => r()));
+    expect(await writeSocketLines(path, [{ type: "user", message: { role: "user", content: "hi" } }])).toBe("all");
+    await new Promise((r) => setTimeout(r, 3_800));
+    expect(writeFailed).toBe(true);
+    expect(JSON.parse(got.trim())).toEqual({ type: "user", message: { role: "user", content: "hi" } }); // the flushed bytes arrived
+  }, 15_000);
+
   it("writeSocketLines reports none when no socket answers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "nc3-nosock-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -439,6 +477,8 @@ describe("relay process: the block answer reaches Claude's stdout", () => {
   it("block: true → one JSON object with decision block on stdout; the ack carried the marker and the prompt id", async () => {
     const r = await runRelay({ ok: true, acked: [], block: true });
     expect(JSON.parse(r.stdout.trim())).toMatchObject({ decision: "block" });
+    // OF-180 N6: a person who pasted the marker sees how to send the text anyway
+    expect(JSON.parse(r.stdout.trim()).reason).toContain("If you pasted it on purpose, delete the [openrig-msg ...] line and send it again.");
     expect(r.acks).toEqual([expect.objectContaining({ promptId: "p-9", markers: [{ id: "outbox-1", nonce: "0123456789abcdef01234567" }] })]);
   });
 
@@ -536,5 +576,28 @@ describe("ncomms-3c: the executable of a running process, from its pid", () => {
 
   it("a pid that does not exist resolves to null", async () => {
     expect(await resolveClaudeExecPath(2 ** 22 + 12345)).toBeNull();
+  });
+});
+
+// OF-180 N7: the sweeper's tmux resend (the function startup wires), driven with a fake send.
+describe("OF-180 N7: failOverToTmux sends a wake group once and settles every row of it", () => {
+  const entry = (id: string, auditPointer: string): OutboxEntry => ({ outboxId: id, senderSession: "queue@system", destinationSession: SEAT, body: id, tags: null,
+    urgency: "routine", tsDispatched: "t", deliveryState: "failed", deliveredAt: null, auditPointer, nativeWrittenAt: "2026-10-30T12:00:00.000Z" });
+  function io(sendResult: { ok: boolean; verified?: boolean; reason?: string }) {
+    const sent: Array<{ body: string; ids: string[] }> = []; const settled: Array<[string, string]> = []; const recorded: Array<[string, string]> = [];
+    const rows = new Map([["wake-intent-a", entry("wake-intent-a", "qitem-a")], ["wake-intent-b", entry("wake-intent-b", "qitem-b")]]);
+    return { sent, settled, recorded,
+      deps: { recordNudgeAttempt: (q: string, r: string) => { recorded.push([q, r]); }, sendNotice: async () => undefined, isAgentSeat: () => false },
+      io: { send: async (f: { body: string; outboxIds: string[] }) => { sent.push({ body: f.body, ids: f.outboxIds }); return sendResult; },
+        labelFor: () => ({ path: "tmux" as const, evidence: "render_verified" as const }),
+        settleFallback: (id: string, state: string) => { settled.push([id, state]); },
+        getById: (id: string) => rows.get(id) } };
+  }
+  it("one send for the group, every row settled on its result and reported to its own qitem", async () => {
+    const x = io({ ok: true, verified: true });
+    await failOverToTmux(x.deps, x.io as never, [{ outboxId: "wake-intent-a", outboxIds: ["wake-intent-a", "wake-intent-b"], sessionName: SEAT, senderSession: "queue@system", body: "a\nb", auditPointer: "qitem-a", wake: true }]);
+    expect(x.sent).toEqual([{ body: "a\nb", ids: ["wake-intent-a", "wake-intent-b"] }]);
+    expect(x.settled).toEqual([["wake-intent-a", "delivered"], ["wake-intent-b", "delivered"]]);
+    expect(x.recorded).toEqual([["qitem-a", "verified"], ["qitem-b", "verified"]]);
   });
 });
