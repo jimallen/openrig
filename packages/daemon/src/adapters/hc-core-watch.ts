@@ -384,7 +384,7 @@ function openStream(socketPath: string, params: Record<string, unknown>, helloTi
 export interface HcCoreWatchOptions {
   socketPath: string;
   onNotice?: (notice: HcNotice) => void;
-  /** Starts a core when the socket is stale (see startCoreWithCli). Without it a killed core stays down and the watch
+  /** Starts a core when the socket is stale or gone (see startCoreWithCli). Without it a killed core stays down and the watch
    *  keeps retrying and reporting. */
   startCore?: () => Promise<void>;
   pin?: Pick<HcCorePin, "versions">;
@@ -485,13 +485,14 @@ export class HcCoreWatch {
     }
   }
 
-  /** One connection: find the core (starting it only when its socket is stale), verify it, subscribe. Resolves with a
+  /** One connection: find the core (starting it when its socket is stale or gone, as after a reboot, and never when one may
+   *  be alive and slow), verify it, subscribe. Resolves with a
    *  promise of why the stream ended, inside an object so it is not awaited. */
   private async connectOnce(): Promise<{ closed: Promise<string> }> {
     const { socketPath } = this.options;
     const helloTimeoutMs = this.options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
     let presence = await probeCore(socketPath, { helloTimeoutMs });
-    if (presence.state === "stale_socket" && this.options.startCore) {
+    if ((presence.state === "stale_socket" || presence.state === "absent") && this.options.startCore) {
       await this.options.startCore();
       this.notify({ kind: "core_started" });
       const settleMs = this.options.startSettleMs ?? 5_000;

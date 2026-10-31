@@ -310,18 +310,22 @@ describe("HcCoreWatch against a scripted core", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-  it("never starts a core for a socket that is merely absent or unresponsive", async () => {
+  it("starts a core when its socket is gone, as after a reboot", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hcw-"));
     let starts = 0;
-    const watch = new HcCoreWatch({ socketPath: join(dir, "none.sock"), reconnectDelaysMs: [20], startCore: async () => { starts++; } });
+    const watch = new HcCoreWatch({ socketPath: join(dir, "none.sock"), reconnectDelaysMs: [20], startSettleMs: 20, startCore: async () => { starts++; } });
     watches.push(watch);
     await watch.start();
+    expect(starts).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  it("never starts a core when one may be alive and slow", async () => {
+    let starts = 0;
     const { core, watch: hung } = await setup({ startCore: async () => { starts++; } });
     core.silent = true;
     await hung.start();
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(starts).toBe(0);
-    rmSync(dir, { recursive: true, force: true });
   });
   it("re-reads a terminal an event could not update, and drops one that is no longer there", async () => {
     const { core, watch } = await setup();
