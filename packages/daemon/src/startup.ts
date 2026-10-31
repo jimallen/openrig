@@ -630,8 +630,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { SeatLaunchEnvironment } = await import("./domain/seat-launch-environment.js");
   const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome);
   // OF-183: only the host's installed daemon may change the shared ~/.codex/config.toml (see codex-config-write-policy.ts).
-  const { processCodexConfigWritePolicy } = await import("./domain/codex-config-write-policy.js");
-  const codexConfigWritePolicy = processCodexConfigWritePolicy(nodePath.resolve(import.meta.dirname, ".."), OPENRIG_HOME);
+  const { startupCodexConfigWritePolicy } = await import("./domain/codex-config-write-policy.js");
+  const codexConfigWritePolicy = startupCodexConfigWritePolicy(import.meta.dirname, OPENRIG_HOME);
   const nodeLauncher = new NodeLauncher({
     db,
     rigRepo,

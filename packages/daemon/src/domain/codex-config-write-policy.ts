@@ -49,6 +49,8 @@ export interface CodexConfigWritePolicyFacts {
   readPackageName: (dir: string) => string | undefined;
   /** Canonicalize `p`; the nearest existing ancestor is resolved when `p` does not exist yet. */
   canonicalize: (p: string) => string;
+  /** The raw target of `p` when `p` itself is a symbolic link (even a dangling one), undefined when it is not one. */
+  symlinkTarget?: (p: string) => string | undefined;
 }
 
 const isWithin = (child: string, parent: string): boolean => {
@@ -110,12 +112,40 @@ export function judgeInstalled(facts: CodexConfigWritePolicyFacts): { installed:
   return { installed: true, reason: `installed daemon at ${root} on the host's default OPENRIG_HOME` };
 }
 
+function readSymlinkTargetFromDisk(p: string): string | undefined {
+  try {
+    return fs.lstatSync(p).isSymbolicLink() ? fs.readlinkSync(p) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Where a write to the config FILE `configPath` lands: its directory canonicalized, then the file's own symbolic
+ * link (if it is one, dangling or not) followed to its end. null when the chain loops or is implausibly long.
+ */
+function resolveConfigFile(facts: CodexConfigWritePolicyFacts, configPath: string): string | null {
+  const linkTarget = facts.symlinkTarget ?? (() => undefined);
+  let p = path.join(facts.canonicalize(path.dirname(configPath)), path.basename(configPath));
+  for (let hops = 0; hops < 40; hops++) {
+    const target = linkTarget(p);
+    if (target === undefined) return p;
+    const next = facts.canonicalize(path.resolve(path.dirname(p), target));
+    if (next === p) return null;
+    p = next;
+  }
+  return null;
+}
+
 export function createCodexConfigWritePolicy(facts: CodexConfigWritePolicyFacts): CodexConfigWritePolicy {
   const judged = judgeInstalled(facts);
   return {
     decide(configPath: string): CodexConfigWriteDecision {
       if (judged.installed) return { allowed: true, reason: judged.reason };
-      const target = facts.canonicalize(path.dirname(configPath));
+      // The FILE is resolved too: a config.toml that is a symlink into the host-wide home is written through.
+      const resolvedFile = resolveConfigFile(facts, configPath);
+      if (resolvedFile === null) return refuse("its config.toml is a symbolic link that cannot be resolved");
+      const target = path.dirname(resolvedFile);
       const refuse = (why: string): CodexConfigWriteDecision => ({
         allowed: false,
         reason: `${why}; this daemon is not the host's installed OpenRig (${judged.reason}), so it leaves ${configPath} unchanged`,
@@ -137,14 +167,27 @@ export function createCodexConfigWritePolicy(facts: CodexConfigWritePolicyFacts)
   };
 }
 
-/** The policy for the running process, from its real code location and environment. */
-export function processCodexConfigWritePolicy(codeRoot: string, openrigHome: string): CodexConfigWritePolicy {
-  return createCodexConfigWritePolicy({
+/**
+ * The policy for the daemon's start-up, and the one line saying what it judged and why, so a misjudged install shows
+ * at start-up rather than at the first refused write. `moduleDir` is the directory of the start-up module (`dist/`
+ * in a build); the code root is its parent.
+ */
+export function startupCodexConfigWritePolicy(
+  moduleDir: string,
+  openrigHome: string,
+  log: (line: string) => void = (line) => console.log(line),
+): CodexConfigWritePolicy {
+  const codeRoot = path.resolve(moduleDir, "..");
+  const facts: CodexConfigWritePolicyFacts = {
     codeRoot,
     openrigHome,
     hostHome: passwdHome(),
     processHome: os.homedir(),
     readPackageName: readPackageNameFromDisk,
     canonicalize: canonicalizeBestEffort,
-  });
+    symlinkTarget: readSymlinkTargetFromDisk,
+  };
+  const judged = judgeInstalled(facts);
+  log(`[openrig] codex config write policy: ${judged.installed ? "installed daemon" : "not the installed daemon"} (${judged.reason}); code root ${codeRoot}, OPENRIG_HOME ${openrigHome}, account home ${facts.hostHome ?? "unreadable"}`);
+  return createCodexConfigWritePolicy(facts);
 }
