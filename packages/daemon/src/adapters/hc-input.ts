@@ -1,6 +1,6 @@
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
 import { HcAttach, type HcAttachEnd, type HcAttachOpener, type HcAttachment } from "./hc-attach.js";
-import { hcTerminalName } from "./hc-host.js";
+import { hcTerminalName } from "./hc-seat.js";
 import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import { shellQuote } from "./shell-quote.js";
 import { defaultTmuxFileOps, isTypedLineWidgetSafe, type TmuxFileOps, type TmuxResult } from "./tmux.js";
