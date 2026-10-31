@@ -440,3 +440,19 @@ describe("HcInput.sendShellCommand", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("paneShellOf", () => {
+  it("takes the foreground once hc reports one", async () => {
+    const { paneShellOf } = await import("../src/adapters/hc-input.js");
+    expect(paneShellOf({ argv: ["env", "/bin/zsh", "-l"], foreground: { pid: 1, name: "-bash", argv: [], cwd: "/" } })).toBe("bash");
+  });
+  it("falls back to the launch argv before it does, and while env is the program", async () => {
+    const { paneShellOf } = await import("../src/adapters/hc-input.js");
+    expect(paneShellOf({ argv: ["env", "-u", "X", "/bin/zsh", "-l"], foreground: null })).toBe("zsh");
+    expect(paneShellOf({ argv: ["env", "-u", "X", "/bin/bash", "-l"], foreground: { pid: 1, name: "env", argv: [], cwd: "/" } })).toBe("bash");
+  });
+  it("reads a program launched with no login flag from its first word", async () => {
+    const { paneShellOf } = await import("../src/adapters/hc-input.js");
+    expect(paneShellOf({ argv: ["/usr/bin/fish"], foreground: null })).toBe("fish");
+  });
+});

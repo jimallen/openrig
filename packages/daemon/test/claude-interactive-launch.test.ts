@@ -77,7 +77,7 @@ describe.skipIf(!findHc() || !fs.existsSync("/bin/bash"))("classic Claude intera
   // pane's rc is "not found" (exit 127) where tmux, which knew `pane_current_command` at once, sourced it. The 36 cells below wait
   // for the foreground to be reported, which is the only reason they pass. Delete `it.fails` when the decision stops depending on it
   // (for instance a fallback to the terminal's own argv[0]).
-  it.fails("sources the launch in the pane shell even when sent before hc reports a foreground process (DEFECT: race on terminal.foreground)", async (ctx) => {
+  it("sources the launch in the pane shell even when sent before hc reports a foreground process (DEFECT: race on terminal.foreground)", async (ctx) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-early-"));
     const rc = path.join(root, "bashrc"), status = path.join(root, "status");
     fs.writeFileSync(rc, `alias claude='echo ALIAS-RAN > ${quote(path.join(root, "ran"))}'\nPS1='FIXTURE> '\nPROMPT_COMMAND='printf "%s\\n" "$?" > ${status}'\n`);

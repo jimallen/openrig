@@ -92,7 +92,7 @@ process.stdout.write(Buffer.concat([bytes.subarray(2),Buffer.from(' café 中文
   // an HcAdapter at runtime. The broker takes the stream path only for a host with `view`, which HcViewer has and HcAdapter does not
   // forward, so the production broker would fall back to pipe-pane, which hc refuses ("unsupported"). Delete `it.fails` when HcAdapter
   // (or terminal-ws) hands the registry the viewer.
-  it.fails("the seat host the daemon builds the broker from is a stream host (DEFECT: HcAdapter does not forward view())", () => {
+  it("the seat host the daemon builds the broker from is a stream host (DEFECT: HcAdapter does not forward view())", () => {
     expect(isStreamHost(new HcAdapter(scratch.client()))).toBe(true);
   });
 });

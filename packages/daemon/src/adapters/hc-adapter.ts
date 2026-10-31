@@ -20,14 +20,12 @@ export class HcAdapter extends TmuxAdapter {
   override readonly hostKind = "hc" as const;
   private readonly identity: HcIdentity;
   private readonly capture: HcCapture;
-  private readonly viewer: HcViewer;
-  private wired?: { guard: SeatDeliveryGuard | undefined; host: HcHost; input: HcInput; lifecycle: HcLifecycle };
+  private wired?: { guard: SeatDeliveryGuard | undefined; host: HcHost; input: HcInput; lifecycle: HcLifecycle; viewer: HcViewer };
 
   constructor(readonly client: HcClient = new HcClient()) {
     super(async (cmd) => refuseTmux(cmd), undefined, async (argv) => refuseTmux(argv.join(" ")));
     this.identity = new HcIdentity(client);
     this.capture = new HcCapture(client);
-    this.viewer = new HcViewer({ client });
   }
 
   /** startup sets deliveryGuard after construction, as it does on the tmux adapter, so the guarded parts follow it. */
@@ -35,24 +33,39 @@ export class HcAdapter extends TmuxAdapter {
     const guard = this.deliveryGuard;
     if (!this.wired || this.wired.guard !== guard) {
       const client = this.client;
+      // The same core as every other call: a default attach would resolve the socket from the env on its own.
+      const opener = new HcAttach(client.socketPath);
+      const input = new HcInput(client, opener, guard ? { guard } : {});
       this.wired = {
         guard,
         host: new HcHost(client, guard ? { ownsLifecycle: (nodeId) => guard.ownsLifecycle(nodeId) } : {}),
-        // The same core as every other call: a default attach would resolve the socket from the env on its own.
-        input: new HcInput(client, new HcAttach(client.socketPath), guard ? { guard } : {}),
+        input,
         lifecycle: new HcLifecycle(client, guard ? { isManagedSeat: (name) => !!guard.maybeTarget(name) } : {}),
+        // A person at a view may answer a dialog, which a delivery refuses by default.
+        viewer: new HcViewer({
+          client, opener,
+          input: {
+            keys: (name, keys) => input.sendKeys(name, keys, undefined, { blocked: "allow" }),
+            paste: (name, text) => input.sendText(name, text, undefined, { blocked: "allow" }),
+            ...(guard ? { humanInput: <T>(name: string, fn: () => Promise<T>) => guard.humanInput(name, fn) } : {}),
+          },
+        }),
       };
     }
     return this.wired;
   }
 
-  // Viewers
-  override getPaneCursorPosition(...a: Parameters<HcViewer["getPaneCursorPosition"]>) { return this.viewer.getPaneCursorPosition(...a); }
-  override startPipePane(...a: Parameters<HcViewer["startPipePane"]>) { return this.viewer.startPipePane(...a); }
-  override stopPipePane(...a: Parameters<HcViewer["stopPipePane"]>) { return this.viewer.stopPipePane(...a); }
-  override resizeWindow(...a: Parameters<HcViewer["resizeWindow"]>) { return this.viewer.resizeWindow(...a); }
-  override listClients() { return this.viewer.listClients(); }
-  override switchClient(...a: Parameters<HcViewer["switchClient"]>) { return this.viewer.switchClient(...a); }
+  // Viewers. `view` makes this a stream host: without it a broker built from the adapter falls back to pipe-pane, which hc refuses.
+  view(...a: Parameters<HcViewer["view"]>) { return this.parts().viewer.view(...a); }
+  readHistory(...a: Parameters<HcViewer["readHistory"]>) { return this.parts().viewer.readHistory(...a); }
+  pressKeys(...a: Parameters<HcViewer["pressKeys"]>) { return this.parts().viewer.pressKeys(...a); }
+  pasteText(...a: Parameters<HcViewer["pasteText"]>) { return this.parts().viewer.pasteText(...a); }
+  override getPaneCursorPosition(...a: Parameters<HcViewer["getPaneCursorPosition"]>) { return this.parts().viewer.getPaneCursorPosition(...a); }
+  override startPipePane(...a: Parameters<HcViewer["startPipePane"]>) { return this.parts().viewer.startPipePane(...a); }
+  override stopPipePane(...a: Parameters<HcViewer["stopPipePane"]>) { return this.parts().viewer.stopPipePane(...a); }
+  override resizeWindow(...a: Parameters<HcViewer["resizeWindow"]>) { return this.parts().viewer.resizeWindow(...a); }
+  override listClients() { return this.parts().viewer.listClients(); }
+  override switchClient(...a: Parameters<HcViewer["switchClient"]>) { return this.parts().viewer.switchClient(...a); }
 
   // Launch and presence
   override probeSession(...a: Parameters<HcHost["probeSession"]>): ReturnType<HcHost["probeSession"]> { return this.parts().host.probeSession(...a) as ReturnType<HcHost["probeSession"]>; }

@@ -113,6 +113,17 @@ export function bracketedPasteOn(painted: string): boolean {
 
 /** The paste, text and submit calls of the tmux adapter on hc, behind the same method names and `TmuxResult`.
  *  A seat is addressed by its canonical name; its terminal is hcTerminalName(seat). */
+/** The shell at a seat's prompt. hc reports the foreground about 365 ms after a start, and until then (or while `env` is still
+ *  the program) the launch argv says: `env -u ... <shell> -l`. Without this a launch sent early is typed as `/bin/sh <file>`, and
+ *  a `claude` that is an rc alias or function fails with 127. */
+export function paneShellOf(terminal: Pick<HcTerminal, "foreground" | "argv">): string {
+  const name = (terminal.foreground?.name ?? "").replace(/^-/, "");
+  if (name !== "" && name !== "env") return name;
+  const argv = terminal.argv;
+  const shell = argv[argv.length - 1] === "-l" ? argv[argv.length - 2] : argv[0];
+  return (shell ?? "").split("/").pop() ?? "";
+}
+
 export class HcInput {
   private readonly fileOps: TmuxFileOps;
   private readonly timing: Required<Pick<HcInputOptions, "deliveryTimeoutMs" | "paintSettleMs" | "paintMaxMs" | "paintFirstMs">>;
@@ -169,7 +180,7 @@ export class HcInput {
       if (options.sourceInPane) {
         const terminal = await this.read(target);
         if ("ok" in terminal) return terminal;
-        paneShell = (terminal.foreground?.name ?? "").replace(/^-/, "");
+        paneShell = paneShellOf(terminal);
       }
       const sourceInPane = POSIX_SHELLS.includes(paneShell);
       const typedDirect = !!options.stageIfLong && commandBytes <= MAX_TYPED_BYTES && isTypedLineWidgetSafe(command) && !CONTROL_CHARACTER.test(command);
