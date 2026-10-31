@@ -114,7 +114,7 @@ import { scopesRoutes } from "./routes/scopes.js";
 import { telemetryRoutes } from "./routes/telemetry.js";
 import { proofRoutes } from "./routes/proof.js";
 import { scopeApproveRoutes } from "./routes/scope-approve.js";
-import { registerTerminalAuthOnly, registerTerminalWs } from "./routes/terminal-ws.js";
+import { registerTerminalAuthOnly, registerTerminalWs, type HcTerminalDeps } from "./routes/terminal-ws.js";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { steeringRoutes } from "./routes/steering.js";
 import { healthSummaryRoutes } from "./routes/health-summary.js";
@@ -291,6 +291,8 @@ export interface AppDeps {
    */
   missionControlBearerToken?: string | null;
   terminalBearerToken?: string | null;
+  /** The seat host's core, for the terminal WebSocket. Absent only in tests of the tmux path. */
+  hcTerminal?: HcTerminalDeps;
   enableNodeWebSocket?: boolean;
   /** `ui.enabled`: serve the web UI pages and its terminal WebSocket. Off unless true; /api routes are unaffected. */
   webUiEnabled?: boolean;
@@ -764,7 +766,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     const ws = createNodeWebSocket({ app });
     injectWebSocket = ws.injectWebSocket as never;
     _lastInjectWebSocket = injectWebSocket;
-    registerTerminalWs(app, ws.upgradeWebSocket as never, { bearerToken: deps.terminalBearerToken ?? null });
+    registerTerminalWs(app, ws.upgradeWebSocket as never, { bearerToken: deps.terminalBearerToken ?? null, ...(deps.hcTerminal ? { hc: deps.hcTerminal } : {}) });
   } else if (deps.enableNodeWebSocket) {
     registerTerminalAuthOnly(app, { bearerToken: deps.terminalBearerToken ?? null });
   }
