@@ -473,17 +473,17 @@ export class OutboxHandler {
   listNativePending(): OutboxEntry[] {
     if (!this.hasNativeColumns()) return [];
     const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE delivery_state = 'sending' AND delivery_path = 'native'
-      AND ack_evidence = 'native_written' ORDER BY native_written_at, ts_dispatched, rowid`).all() as OutboxEntryRow[];
+      AND ack_evidence = 'native_written' ORDER BY native_written_at, rowid`).all() as OutboxEntryRow[];
     return rows.map((r) => this.rowToEntry(r, "mark"));
   }
 
-  /** OF-190: the entries in the order they were staged (dispatch time, then insertion), the one order a wake group is
+  /** OF-190: the entries in the order they were staged (insertion order, the table's rowid), the one order a wake group is
    *  written in and can be rebuilt in. */
   inStagingOrder(entries: OutboxEntry[]): OutboxEntry[] {
     const rank = this.db.prepare("SELECT rowid AS n FROM outbox_entries WHERE outbox_id = ?");
     return entries
       .map((entry) => ({ entry, n: (rank.get(entry.outboxId) as { n: number } | undefined)?.n ?? Number.MAX_SAFE_INTEGER }))
-      .sort((a, b) => (a.entry.tsDispatched < b.entry.tsDispatched ? -1 : a.entry.tsDispatched > b.entry.tsDispatched ? 1 : a.n - b.n))
+      .sort((a, b) => a.n - b.n)
       .map((x) => x.entry);
   }
 
