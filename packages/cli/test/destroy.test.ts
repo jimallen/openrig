@@ -47,6 +47,8 @@ function makeDestroyDeps(overrides?: Partial<DestroyDeps>): DestroyDeps {
     mkdirp: vi.fn(),
     listManagedTmuxSessions: vi.fn(() => []),
     killTmuxSession: vi.fn(() => true),
+    listManagedHcSeats: vi.fn(() => []),
+    killHcSeat: vi.fn(async () => "killed" as const),
     sleep: vi.fn(async () => {}),
     now: vi.fn(() => new Date("2026-04-10T08:10:11Z")),
     ...overrides,
@@ -267,6 +269,7 @@ describe("destroy helpers", () => {
       daemonHost: "127.0.0.1",
       daemonPort: 7433,
       managedTmuxSessions: [],
+      managedHcSeats: [],
       targets: [{ path: stateRoot, kind: "state_root" }],
       warnings: [],
     }, deps);
@@ -295,6 +298,7 @@ describe("destroy helpers", () => {
       daemonHost: "127.0.0.1",
       daemonPort: 7433,
       managedTmuxSessions: [],
+      managedHcSeats: [],
       targets: [{ path: join(tmpDir, ".openrig-http"), kind: "state_root" }],
       warnings: [],
     }, deps);
@@ -342,6 +346,7 @@ describe("destroy helpers", () => {
       daemonHost: "10.0.0.5",
       daemonPort: 7433,
       managedTmuxSessions: [],
+      managedHcSeats: [],
       targets: [],
       warnings: [],
     }, deps);

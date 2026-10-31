@@ -10,7 +10,9 @@ import {
   buildDestroyPlan,
   executeDestroy,
   findListeningPidWithLsof,
+  killHcSeatWithCore,
   killTmuxSessionWithCli,
+  listManagedHcSeatsFromDb,
   listManagedTmuxSessionsFromDb,
   type DestroyDeps,
   type ListenerInspection,
@@ -117,6 +119,8 @@ function realDestroyDeps(): DestroyDeps {
     mkdirp: (targetPath: string) => mkdirSync(targetPath, { recursive: true }),
     listManagedTmuxSessions: listManagedTmuxSessionsFromDb,
     killTmuxSession: killTmuxSessionWithCli,
+    listManagedHcSeats: listManagedHcSeatsFromDb,
+    killHcSeat: killHcSeatWithCore,
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => new Date(),
   };
@@ -127,6 +131,7 @@ function printPlan(
   backup: boolean,
   runtimeConfig: DestroyRuntimeConfig,
   managedTmuxSessions: string[],
+  managedHcSeats: string[],
   warnings: string[]
 ): void {
   console.log("DESTROY PLAN");
@@ -135,6 +140,7 @@ function printPlan(
   console.log(`  daemon: http://${formatDaemonHostForUrl(runtimeConfig.daemonHost)}:${runtimeConfig.daemonPort}`);
   console.log(`  backup: ${backup ? "enabled" : "disabled"}`);
   console.log(`  tmux cleanup: ${scope === "all" ? `enabled (${managedTmuxSessions.length} managed session${managedTmuxSessions.length === 1 ? "" : "s"})` : "disabled"}`);
+  console.log(`  hc cleanup: ${scope === "all" ? `enabled (${managedHcSeats.length} managed seat${managedHcSeats.length === 1 ? "" : "s"})` : "disabled"}`);
   for (const warning of warnings) {
     console.log(`  warning: ${warning}`);
   }
@@ -150,6 +156,12 @@ function printResult(result: Awaited<ReturnType<typeof executeDestroy>>): void {
     if (result.tmuxMissing > 0) {
       console.log(`  tmux sessions missing/already gone: ${result.tmuxMissing}`);
     }
+  }
+  if (result.scope === "all") {
+    console.log(`  hc seats ended: ${result.hcKilled}`);
+    if (result.hcMissing > 0) console.log(`  hc seats missing/already gone: ${result.hcMissing}`);
+    if (result.hcRefused.length > 0) console.log(`  hc seats left untouched (foreign label): ${result.hcRefused.length}`);
+    if (result.hcUnconfirmed.length > 0) console.log(`  hc seats NOT confirmed ended: ${result.hcUnconfirmed.length}`);
   }
   if (result.backupPaths.length > 0) {
     for (const backupPath of result.backupPaths) {
@@ -198,11 +210,11 @@ export function destroyCommand(depsOverride?: DestroyCommandDeps): Command {
 
       const { runtimeConfig, warnings } = resolveRuntimeConfig(deps.configStore);
       const plan = buildDestroyPlan(selectedScopes[0]!, Boolean(opts.backup), runtimeConfig, deps.destroyDeps);
-      printPlan(plan.scope, plan.backup, runtimeConfig, plan.managedTmuxSessions, [...warnings, ...plan.warnings]);
+      printPlan(plan.scope, plan.backup, runtimeConfig, plan.managedTmuxSessions, plan.managedHcSeats, [...warnings, ...plan.warnings]);
       plan.warnings = [...warnings, ...plan.warnings];
       const result = await executeDestroy(plan, deps.destroyDeps);
       printResult(result);
-      if (!result.portCleared) {
+      if (!result.portCleared || result.hcUnconfirmed.length > 0) {
         process.exitCode = 1;
       }
     });
