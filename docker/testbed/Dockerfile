@@ -39,6 +39,19 @@ RUN set -eux; \
     rm -f /tmp/node.tar.xz; \
     node --version; npm --version
 
+# --- layer 2b: herdr-core (hc), pinned, beside tmux (hc cutover W8; tmux stays while tmux code remains in src) ---
+# The installer script is pinned by sha256 and verifies the release tarball against that version's manifest checksum itself.
+# Into /usr/local/bin (root, before USER openrig) so the non-root user finds `hc` on PATH. Bumping hc is a deliberate edit of
+# both ARGs here (and of the same two values in .github/workflows/tests.yml).
+ARG HC_VERSION=0.1.15
+ARG HC_INSTALLER_SHA256=4d052d135b76140a6e1ea998985fe9a92b639a8551a8f6d970fcf2226de09f90
+RUN set -eux; \
+    curl -fsSLo /tmp/hc-install.sh https://releases.herdr.dev/core/install.sh; \
+    echo "${HC_INSTALLER_SHA256}  /tmp/hc-install.sh" | sha256sum -c -; \
+    HC_VERSION="${HC_VERSION}" HC_INSTALL_DIR=/usr/local/bin sh /tmp/hc-install.sh; \
+    rm -f /tmp/hc-install.sh; \
+    test "$(hc --version)" = "hc ${HC_VERSION}"
+
 # --- layer 3: the OpenRig package from the LOCAL pack tarball, never the npm registry ---
 ARG OPENRIG_TARBALL
 COPY ${OPENRIG_TARBALL} /tmp/openrig.tgz
