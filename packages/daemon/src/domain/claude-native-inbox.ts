@@ -197,7 +197,7 @@ export class ClaudeNativeInbox {
       }
     }
     const kept = REINSPECTION_FAILURES.has(probe) ? await this.provenSameProcess(input) : null;
-    if (kept) { execPath = kept.exec_path; version = kept.claude_version; probe = kept.probe_result; envelope = kept.name_envelope === 1; }
+    if (kept) { execPath = kept.exec_path; version = kept.claude_version; probe = "pass"; envelope = kept.name_envelope === 1; }
     const row: NativeEndpointRow = {
       node_id: input.nodeId, session_name: input.sessionName, generation: input.generation, socket_path: input.socketPath,
       transcript_path: input.transcriptPath, claude_pid: input.claudePid, exec_path: execPath, claude_version: version,

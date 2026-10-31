@@ -250,6 +250,18 @@ describe("OF-191: a re-registration of the process that already passed keeps its
     expect(r?.probe_result).toBe("fail:exec_path_unresolved");
   });
 
+  it.each([
+    ["inject_format_absent", { version: "2.1.316", literal: false, replacedSinceStart: false }, "fail:inject_format_absent"],
+    ["binary_replaced_since_start", { version: "2.1.316", literal: true, replacedSinceStart: true }, "fail:binary_replaced_since_start"],
+  ] as const)("an earlier %s (version and path known) is never turned into a pass by a later unreadable binary", async (_label, probe, earlier) => {
+    let resolves: string | null = "/opt/claude/bin/claude.exe";
+    const f = make({ resolveExecPath: async () => resolves, probeBinary: async () => probe, processStartedAt: async () => new Date(f.clock.t - HOUR) });
+    expect((await register(f, { execPath: null }))?.probe_result).toBe(earlier);
+    f.clock.t += HOUR;
+    resolves = null;
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+
   it("an earlier failure is never turned into a pass by a later failure", async () => {
     const f = make({ resolveExecPath: async () => null, processStartedAt: async () => new Date(f.clock.t - HOUR) });
     expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
