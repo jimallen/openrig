@@ -34,17 +34,20 @@ function fakeClient(answers: Record<string, unknown | (() => unknown)>): { clien
 interface Attached { opened: HcAttachParams[]; written: Buffer[]; detached: number; events: string[] }
 
 /** An opener whose attachment paints `paint` on open, records writes, and ends as `detach` says. */
-function fakeAttach(paint: string | null, options: { detach?: HcAttachEnd; failOpen?: Error; endAfterPaint?: HcAttachEnd } = {}): { opener: HcAttachOpener; seen: Attached } {
+function fakeAttach(paint: string | string[] | null, options: { detach?: HcAttachEnd; failOpen?: Error; endAfterPaint?: HcAttachEnd; streamEveryMs?: number } = {}): { opener: HcAttachOpener; seen: Attached } {
   const seen: Attached = { opened: [], written: [], detached: 0, events: [] };
   const opener: HcAttachOpener = {
     async open(params: HcAttachParams, handlers: HcAttachHandlers): Promise<HcAttachment> {
       if (options.failOpen) throw options.failOpen;
       seen.opened.push(params);
       seen.events.push("open");
-      setTimeout(() => {
-        if (paint !== null) handlers.onData(Buffer.from(paint, "latin1"));
-        if (options.endAfterPaint) handlers.onEnd(options.endAfterPaint);
-      }, 0);
+      const chunks = paint === null ? [] : typeof paint === "string" ? [paint] : paint;
+      chunks.forEach((chunk, i) => setTimeout(() => handlers.onData(Buffer.from(chunk, "latin1")), i * 12));
+      // A program that never stops painting: output every few ms until the write goes in.
+      if (options.streamEveryMs) {
+        const timer = setInterval(() => { if (seen.written.length > 0) clearInterval(timer); else handlers.onData(Buffer.from(".")); }, options.streamEveryMs);
+      }
+      if (options.endAfterPaint) setTimeout(() => handlers.onEnd(options.endAfterPaint!), 0);
       return {
         terminal: terminal(), observe: false,
         write: (data) => { seen.events.push("write"); seen.written.push(typeof data === "string" ? Buffer.from(data) : data); },
@@ -99,6 +102,18 @@ describe("HcInput.sendText", () => {
     expect(seen.opened).toEqual([{ terminal: "t4", cols: 120, rows: 40 }]);
     expect(seen.written.map((b) => b.toString())).toEqual(["\x1b[200~hello\x1b[201~"]);
     expect(seen.events.slice(0, 3)).toEqual(["open", "write", "detach"]);
+  });
+
+  it("waits out a first paint that comes in pieces, so a mode stated in a later piece still counts", async () => {
+    const { opener, seen } = fakeAttach(["\x1b[!p\x1b[?2004l\x1b[H", "READY\x1b[?2004h"]);
+    await new HcInput(fakeClient(live).client, opener, { paintSettleMs: 40, paintMaxMs: 400, paintFirstMs: 200 }).sendText(SEAT, "x");
+    expect(seen.written.map((b) => b.toString())).toEqual(["\x1b[200~x\x1b[201~"]);
+  });
+
+  it("stops waiting for the paint of a program that never stops writing, after paintMaxMs", async () => {
+    const { opener, seen } = fakeAttach(["\x1b[?2004h"], { streamEveryMs: 3 });
+    await new HcInput(fakeClient(live).client, opener, { paintSettleMs: 30, paintMaxMs: 90, paintFirstMs: 200 }).sendText(SEAT, "x");
+    expect(seen.written.map((b) => b.toString())).toEqual(["\x1b[200~x\x1b[201~"]);
   });
 
   it("writes the text as it stands to a program that did not turn bracketed paste on", async () => {
@@ -293,6 +308,12 @@ describe("HcInput.submitText", () => {
     const { client, calls } = fakeClient({ "terminal.send": sent });
     await expect(new HcInput(client, fakeAttach(null).opener, { deliveryTimeoutMs: 777 }).submitText(SEAT, "hi")).resolves.toEqual({ ok: true, started: true, status: "idle", turn: 3 });
     expect(calls).toEqual([{ method: "terminal.send", params: { terminal: ADDRESS, text: "hi" }, timeoutMs: 777 }]);
+  });
+
+  it("takes a deadline of its own over the default", async () => {
+    const { client, calls } = fakeClient({ "terminal.send": sent });
+    await new HcInput(client, fakeAttach(null).opener, { deliveryTimeoutMs: 777 }).submitText(SEAT, "hi", { timeoutMs: 55 });
+    expect(calls[0]!.timeoutMs).toBe(55);
   });
 
   it("passes force, if and wait through, and lets the wait's own timeout extend the call's deadline", async () => {

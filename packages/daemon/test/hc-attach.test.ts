@@ -27,7 +27,7 @@ function track(dir: string, server: Server): void {
 }
 
 interface Wire { socket: Socket; frames: Array<{ channel: number; kind: number; payload: Buffer }> }
-interface Core { path: string; wires: Wire[] }
+interface Core { path: string; wires: Wire[]; hellos: unknown[] }
 
 /** A fake framed core on a private socket. `onFrames` decides what each batch of client frames gets back. */
 async function fakeCore(options: {
@@ -38,6 +38,7 @@ async function fakeCore(options: {
   const dir = mkdtempSync(join(tmpdir(), "hc-attach-"));
   const path = join(dir, "c.sock");
   const wires: Wire[] = [];
+  const hellos: unknown[] = [];
   const server = createServer((socket) => {
     const wire: Wire = { socket, frames: [] };
     wires.push(wire);
@@ -50,7 +51,8 @@ async function fakeCore(options: {
         line = Buffer.concat([line, chunk]);
         const end = line.indexOf(0x0a);
         if (end < 0) return;
-        const hello = JSON.parse(line.subarray(0, end).toString()) as { id: number };
+        const hello = JSON.parse(line.subarray(0, end).toString()) as { id: number; method: string; params: unknown };
+        hellos.push({ method: hello.method, params: hello.params });
         socket.write(JSON.stringify({ jsonrpc: "2.0", id: hello.id, result: { generation: HC_GENERATION, version: "0.1.15", core: { id: "c", name: "n" }, framed: true, methods: [], features: [], ...options.hello } }) + "\n");
         framed = true;
         chunk = line.subarray(end + 1);
@@ -69,7 +71,7 @@ async function fakeCore(options: {
   });
   await new Promise<void>((resolve) => server.listen(path, resolve));
   track(dir, server);
-  return { path, wires };
+  return { path, wires, hellos };
 }
 
 const attachedReply = (id: number, channel = 7) => frame(0, 0, JSON.stringify({ jsonrpc: "2.0", id, result: { channel, terminal: TERMINAL } }));
@@ -112,6 +114,13 @@ describe("HcAttach", () => {
     const core = await fakeCore({ attach: (wire, id) => wire.socket.write(Buffer.concat([attachedReply(id), frame(7, 0, "12345"), frame(7, 0, "ab")])) });
     await new HcAttach(core.path).open({ terminal: "t1", cols: 1, rows: 1 }, { onData: () => {}, onEnd: () => {} });
     await expect.poll(() => core.wires[0]!.frames.filter((f) => f.kind === 1).map((f) => [f.channel, f.payload.readUInt32LE(0)])).toEqual([[7, 5], [7, 2]]);
+  });
+
+  it("asks for framed mode at the generation this build speaks, before anything else", async () => {
+    const core = await fakeCore({ attach: (wire, id) => wire.socket.write(attachedReply(id)) });
+    const a = await new HcAttach(core.path).open({ terminal: "t1", cols: 1, rows: 1 }, { onData: () => {}, onEnd: () => {} });
+    expect(core.hellos).toEqual([{ method: "hello", params: { generation: 1, framed: true } }]);
+    await a.detach(50);
   });
 
   it("sends the attach parameters the core reads", async () => {

@@ -123,6 +123,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       a.resize(70, 20);
       await expect.poll(() => size(stub.address)).toBe("70x20");
       await expect(a.detach()).resolves.toEqual({ reason: "detached" });
+      await expect.poll(() => stub.stdin().toString("latin1").length).toBe(3 + big.length);
       expect(stub.stdin().toString("latin1")).toBe(`hi\r${big.toString("latin1")}`);
       await expect.poll(() => stub.winches()).toContain("70x20");
     });
@@ -173,10 +174,12 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const stub = await launch("bp");
       const person = await attach.open({ terminal: stub.address, cols: 120, rows: 40 }, { onData: () => {}, onEnd: () => {} });
       expect(await size(stub.address)).toBe("120x40");
-      const before = stub.winches();
+      await expect.poll(() => stub.winches()).toEqual(["120x40"]);
       await input.sendText(stub.seat, "x");
+      await expect.poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~x\x1b[201~");
+      await wait(300);
       expect(await size(stub.address)).toBe("120x40");
-      expect(stub.winches()).toEqual(before);
+      expect(stub.winches()).toEqual(["120x40"]);
       await person.detach();
     });
 
