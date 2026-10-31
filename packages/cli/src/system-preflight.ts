@@ -4,7 +4,7 @@ import { accessSync, mkdirSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import type { ConfigStore, RiggedConfig } from "./config-store.js";
 import type { DaemonStatus } from "./daemon-lifecycle.js";
-import { buildTmuxControlFailure, probeTmuxControlAsync } from "./tmux-health.js";
+import { buildHcHostFailure, probeHcHostAsync, type HcHelloOutcome } from "./tmux-health.js";
 import { classifyNodeVersion } from "./node-support.js";
 
 export interface PreflightCheck {
@@ -23,15 +23,16 @@ export interface PreflightResult {
 }
 
 /** Run a preflight probe with its stderr captured, not echoed. Without `stdio`, `execSync` also copies the child's
- *  stderr to the terminal, so a first `rig daemon start` printed tmux's "error connecting to … (No such file or
- *  directory)" for the ordinary no-server case. The text still reaches the probe in the thrown error, so a real tmux
- *  failure is still classified and reported. */
+ *  stderr to the terminal, so a probe's error text was copied there as well. The text still reaches the probe in the
+ *  thrown error, so a real failure is still classified and reported. */
 export async function quietPreflightExec(cmd: string): Promise<string> {
   return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
 }
 
 interface PreflightDeps {
   exec: (cmd: string) => Promise<string>;
+  /** One `hello` to the hc core's socket (default: the real socket). Never starts a core. */
+  readHcHello?: () => Promise<HcHelloOutcome>;
   configStore: ConfigStore;
   getDaemonStatus: () => Promise<DaemonStatus>;
   openrigHome?: string;
@@ -143,22 +144,22 @@ export class SystemPreflight {
       });
     }
 
-    // 2. tmux availability
-    const tmuxProbe = await probeTmuxControlAsync(this.deps.exec);
-    if (tmuxProbe.code === "not_installed") {
+    // 2. hc: the seat host. Installed, the pinned version, and a core (if one runs) on this build's generation.
+    const hcProbe = await probeHcHostAsync(this.deps.exec, this.deps.readHcHello);
+    if (hcProbe.code === "not_installed") {
       checks.push({
-        name: "tmux",
+        name: "hc",
         ok: false,
-        error: "tmux was not found in PATH.",
-        reason: "OpenRig uses tmux to create and control agent sessions.",
-        fix: "Install tmux (brew install tmux on macOS, apt install tmux on Debian/Ubuntu).",
+        error: "hc was not found in PATH.",
+        reason: "OpenRig runs agent seats in hc terminals.",
+        fix: "Install hc (herdr-core) at the pinned version.",
       });
-    } else if (tmuxProbe.available) {
-      checks.push({ name: "tmux", ok: true });
+    } else if (hcProbe.available) {
+      checks.push({ name: "hc", ok: true });
     } else {
-      const failure = buildTmuxControlFailure(tmuxProbe.detail ?? "unknown tmux control failure");
+      const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");
       checks.push({
-        name: "tmux",
+        name: "hc",
         ok: false,
         error: failure.message,
         reason: failure.reason,

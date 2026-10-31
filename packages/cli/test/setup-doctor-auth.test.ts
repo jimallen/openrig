@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { runSetup, type SetupDeps } from "../src/commands/setup.js";
+import { HC_PINNED_VERSION } from "../src/tmux-health.js";
 
 const originalExitCode = process.exitCode;
 afterEach(() => {
@@ -23,7 +24,7 @@ function fixture(options: {
       throw new Error("CLI unavailable");
     }
     if (options.missingLogin?.includes(command)) throw new Error("Not logged in");
-    if (command === "tmux -V") return "tmux 3.4";
+    if (command === "hc --version") return `hc ${HC_PINNED_VERSION}`;
     if (command === "cmux capabilities --json") return '{"capabilities":[]}';
     return "available";
   };
@@ -35,6 +36,7 @@ function fixture(options: {
       ...common, baseDir: "/fixture/cli/dist", checkPort: async () => true,
       configStore: { resolve: () => ({ daemon: { host: "127.0.0.1", port: 7433 }, db: { path: "/fixture/openrig.sqlite" }, transcripts: { enabled: true, path: "/fixture/transcripts" } }) },
       mkdirp: vi.fn(), checkWritable: vi.fn(), fetch: async () => ({ ok: false }),
+      readHcHello: async () => ({ kind: "no_core" as const, detail: "fixture: no core" }),
     },
   };
 }

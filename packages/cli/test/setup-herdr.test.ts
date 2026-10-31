@@ -9,7 +9,7 @@ function fixture(installed = false) {
       return "herdr 0.9.3";
     }
     if (cmd === "curl -fsSL https://herdr.dev/install.sh | sh") { present = true; return "installed"; }
-    if (cmd === "tmux -V") return "tmux 3.4";
+    if (cmd === "hc --version") return "hc 0.1.15";
     return "available";
   });
   const deps: SetupDeps = { platform: "darwin", env: { HOME: "/fixture" }, exec, exists: () => false, readFile: () => null, writeFile: vi.fn(), mkdirp: vi.fn() };

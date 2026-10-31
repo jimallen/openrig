@@ -4,13 +4,14 @@ import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
 import { setupCommand, runSetup, goldenPathNextSteps, permissionPolicyMenuLines, parseSetupProviders, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
 import type { DoctorDeps } from "../src/commands/doctor.js";
+import { HC_PINNED_VERSION } from "../src/tmux-health.js";
 
 function makeDeps(overrides?: Partial<SetupDeps>): SetupDeps {
   return {
     exec: (cmd: string) => {
       if (cmd === "herdr --version") return "herdr 0.9.3\n";
       if (cmd === "brew --version") return "Homebrew 4.0\n";
-      if (cmd === "tmux -V") return "tmux 3.4\n";
+      if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
       if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
       if (cmd === "cmux --help") return "cmux help\n";
       if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
@@ -98,13 +99,14 @@ describe("rig setup", () => {
     expect(result.platform).toBe("darwin");
     const stepIds = result.steps.map((s) => s.id);
     expect(stepIds).toContain("brew");
-    expect(stepIds).toContain("tmux_install");
+    expect(stepIds).toContain("hc_install");
     expect(stepIds).toContain("herdr_install");
     expect(stepIds).toContain("claude_install");
     expect(stepIds).toContain("claude_auth");
     expect(stepIds).toContain("codex_install");
     expect(stepIds).toContain("codex_auth");
-    expect(stepIds).toContain("tmux_config");
+    expect(stepIds).not.toContain("tmux_install");
+    expect(stepIds).not.toContain("tmux_config");
     expect(stepIds).toContain("verify");
     // No full-profile extras
     expect(stepIds).not.toContain("jq_install");
@@ -128,13 +130,14 @@ describe("rig setup", () => {
     const stepIds = result.steps.map((s) => s.id);
     // Core steps still present
     expect(stepIds).toContain("brew");
-    expect(stepIds).toContain("tmux_install");
+    expect(stepIds).toContain("hc_install");
     expect(stepIds).toContain("herdr_install");
     expect(stepIds).toContain("claude_install");
     expect(stepIds).toContain("claude_auth");
     expect(stepIds).toContain("codex_install");
     expect(stepIds).toContain("codex_auth");
-    expect(stepIds).toContain("tmux_config");
+    expect(stepIds).not.toContain("tmux_install");
+    expect(stepIds).not.toContain("tmux_config");
     expect(stepIds).toContain("verify");
     // Full extras added
     expect(stepIds).toContain("jq_install");
@@ -163,7 +166,7 @@ describe("rig setup", () => {
   it("--dry-run on linux reports the macOS-only steps as skipped with the real run's reasons", async () => {
     const dry = await runSetup(makeDeps({ platform: "linux" }), { dryRun: true });
     const real = await runSetup(makeDeps({ platform: "linux", exec: (cmd: string) => {
-      if (cmd === "tmux -V") return "tmux 3.4\n";
+      if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
       throw new Error(`not found: ${cmd}`);
     } }), {});
 
@@ -173,7 +176,7 @@ describe("rig setup", () => {
       expect(dryStep?.message).toBe(real.steps.find((s) => s.id === id)?.message);
     }
     expect(dry.steps.find((s) => s.id === "brew")?.message).toBe("Skipped: Homebrew setup path is only used on macOS.");
-    expect(dry.steps.find((s) => s.id === "tmux_install")?.message).toBe("Dry run: tmux_install would be attempted.");
+    expect(dry.steps.find((s) => s.id === "hc_install")?.message).toBe("Dry run: hc_install would be attempted.");
   });
 
   it("--dry-run on darwin still reports brew and herdr_install as would be attempted", async () => {
@@ -193,8 +196,9 @@ describe("rig setup", () => {
     const brew = result.steps.find((s) => s.id === "brew");
     expect(brew?.status).toBe("pass");
 
-    const tmux = result.steps.find((s) => s.id === "tmux_install");
-    expect(tmux?.status).toBe("pass");
+    const hc = result.steps.find((s) => s.id === "hc_install");
+    expect(hc?.status).toBe("pass");
+    expect(hc?.message).toContain(HC_PINNED_VERSION);
 
     const herdr = result.steps.find((s) => s.id === "herdr_install");
     expect(herdr?.status).toBe("pass");
@@ -211,8 +215,9 @@ describe("rig setup", () => {
     const codexAuth = result.steps.find((s) => s.id === "codex_auth");
     expect(codexAuth?.status).toBe("pass");
 
-    const tmuxConfig = result.steps.find((s) => s.id === "tmux_config");
-    expect(tmuxConfig?.status).toBe("applied");
+    // tmux is not set up: no step, and no ~/.tmux.conf written.
+    expect(result.steps.some((s) => /tmux/.test(s.id))).toBe(false);
+    expect(writeSpy.mock.calls.some(([file]) => String(file).includes("tmux"))).toBe(false);
 
     const verify = result.steps.find((s) => s.id === "verify");
     expect(verify?.status).toBe("pass");
@@ -264,31 +269,45 @@ describe("rig setup", () => {
     expect(out).not.toContain("rig workflow list");
   });
 
-  it("fails setup honestly when tmux is installed but the default control socket is unhealthy", async () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "herdr --version") return "herdr 0.9.3\n";
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") throw new Error("server exited unexpectedly");
-        if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
-        if (cmd === "claude auth status") return "Authenticated\n";
-        if (cmd === "codex --version") return "codex-cli 0.118.0\n";
-        if (cmd === "codex login status") return "Logged in\n";
-        return "";
-      },
-    });
+  it.each([
+    ["another version than the pin", () => "hc 0.1.14\n", "not the pinned version", "0.1.14"],
+    ["a version it cannot read", () => "usage: hc\n", "not healthy", "unparseable"],
+  ])("fails setup honestly when hc is installed with %s", async (_label, output, message, reason) => {
+    const base = makeDeps();
+    const result = await runSetup(makeDeps({ exec: (cmd: string) => cmd === "hc --version" ? output() : base.exec(cmd) }), {});
 
-    const result = await runSetup(deps, {});
-
-    const tmux = result.steps.find((s) => s.id === "tmux_install");
-    expect(tmux?.status).toBe("fail");
-    expect(tmux?.message).toContain("control socket");
-    expect(tmux?.reason).toContain("server exited unexpectedly");
-    expect(tmux?.fixHint).toContain("restart the default tmux server");
+    const hc = result.steps.find((s) => s.id === "hc_install");
+    expect(hc?.status).toBe("fail");
+    expect(hc?.message).toContain(message);
+    expect(hc?.reason).toContain(reason);
+    expect(hc?.fixHint).toBeTruthy();
     expect(result.ready).toBe(false);
+  });
+
+  it("fails setup when hc is missing, with no install attempted and no tmux command run", async () => {
+    const seen: string[] = [];
+    const base = makeDeps();
+    const result = await runSetup(makeDeps({ exec: (cmd: string) => {
+      seen.push(cmd);
+      if (cmd === "hc --version") throw new Error("command not found: hc");
+      return base.exec(cmd);
+    } }), {});
+
+    const hc = result.steps.find((s) => s.id === "hc_install");
+    expect(hc?.status).toBe("fail");
+    expect(hc?.message).toBe("hc not found.");
+    expect(hc?.fixHint).toContain(HC_PINNED_VERSION);
+    expect(result.ready).toBe(false);
+    expect(seen.some((cmd) => /install hc|brew install/.test(cmd))).toBe(false);
+    expect(seen.some((cmd) => cmd.startsWith("tmux"))).toBe(false);
+  });
+
+  it("setup runs no hc command that starts a core", async () => {
+    const seen: string[] = [];
+    const base = makeDeps();
+    await runSetup(makeDeps({ exec: (cmd: string) => { seen.push(cmd); return base.exec(cmd); } }), {});
+    const hcCommands = seen.filter((cmd) => cmd === "hc" || cmd.startsWith("hc "));
+    expect(hcCommands).toEqual(["hc --version"]);
   });
 
   it("full profile extends core with jq_install and gh_install", async () => {
@@ -299,7 +318,7 @@ describe("rig setup", () => {
     const stepIds = result.steps.map((s) => s.id);
     // Core steps present
     expect(stepIds).toContain("brew");
-    expect(stepIds).toContain("tmux_install");
+    expect(stepIds).toContain("hc_install");
     // Full extras present
     expect(stepIds).toContain("jq_install");
     expect(stepIds).toContain("gh_install");
@@ -316,7 +335,7 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
         if (cmd === "claude --version") {
           if (claudeInstalled) return "2.1.101 (Claude Code)\n";
@@ -347,7 +366,7 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
         if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
         if (cmd === "claude auth status") return "Authenticated\n";
@@ -369,8 +388,7 @@ describe("rig setup", () => {
       platform: "linux",
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") return "";
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") throw new Error("not found");
         if (cmd === "cmux --help") throw new Error("not found");
         if (cmd === "claude --version") return "2.1.101 (Claude Code)\n";
@@ -393,8 +411,7 @@ describe("rig setup", () => {
       exec: (cmd: string) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") throw new Error("command not found: brew");
-        if (cmd === "tmux -V") throw new Error("command not found: tmux");
-        if (cmd === "tmux list-sessions") throw new Error("command not found: tmux");
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") throw new Error("not found");
         if (cmd === "cmux --help") throw new Error("not found");
         throw new Error(`unexpected: ${cmd}`);
@@ -407,8 +424,9 @@ describe("rig setup", () => {
     const brew = result.steps.find((s) => s.id === "brew");
     expect(brew?.status).toBe("fail");
 
-    const tmux = result.steps.find((s) => s.id === "tmux_install");
-    expect(tmux?.status).toBe("skipped");
+    // hc needs no Homebrew: a machine without it still passes the hc step.
+    const hc = result.steps.find((s) => s.id === "hc_install");
+    expect(hc?.status).toBe("pass");
 
     const herdr = result.steps.find((s) => s.id === "herdr_install");
     expect(herdr?.status).toBe("pass");
@@ -424,7 +442,7 @@ describe("rig setup", () => {
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
         if (cmd === "cmux --help") return "cmux help\n";
         return "";
@@ -436,6 +454,7 @@ describe("rig setup", () => {
       mkdirp: () => {},
       checkWritable: () => {},
       fetch: async () => { throw new Error("ECONNREFUSED"); },
+      readHcHello: async () => ({ kind: "no_core", detail: "fixture: no core" }),
     };
 
     const result = await runSetup(deps, { doctorDeps });
@@ -447,7 +466,9 @@ describe("rig setup", () => {
     const checkNames = result.verification!.checks.map((c) => c.name);
     // Must include real doctor check names
     expect(checkNames).toContain("node_version");
-    expect(checkNames).toContain("tmux");
+    expect(checkNames).toContain("hc");
+    expect(checkNames).toContain("hc_core");
+    expect(checkNames).not.toContain("tmux");
     expect(checkNames).toContain("cmux_shell");
     // Must include async doctor check (cmux_daemon resolved)
     expect(checkNames).toContain("cmux_daemon");
@@ -476,7 +497,7 @@ describe("rig setup", () => {
       exists: () => true,
       baseDir: "/install/cli/dist",
       exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
         if (cmd === "cmux --help") return "cmux help\n";
         return "";
@@ -506,21 +527,14 @@ describe("rig setup", () => {
     expect(result.ready).toBe(true);
   });
 
-  it("tmux install failure returns structured fail, does not crash setup", async () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "herdr --version") return "herdr 0.9.3\n";
-        if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") throw new Error("not found");
-        if (cmd === "brew install tmux") throw new Error("brew install failed");
-        if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
-        return "";
-      },
-    });
-    const result = await runSetup(deps, {});
+  it("a failed hc step returns structured fail, does not crash setup, and later steps still run", async () => {
+    const base = makeDeps();
+    const result = await runSetup(makeDeps({ exec: (cmd: string) => {
+      if (cmd === "hc --version") throw new Error("not found");
+      return base.exec(cmd);
+    } }), {});
 
-    const tmux = result.steps.find((s) => s.id === "tmux_install");
-    expect(tmux?.status).toBe("fail");
+    expect(result.steps.find((s) => s.id === "hc_install")?.status).toBe("fail");
     expect(result.ready).toBe(false);
 
     // Other steps still attempted
@@ -537,8 +551,7 @@ describe("rig setup", () => {
       exec: (cmd: string, opts?: { timeoutMs?: number }) => {
         if (cmd === "herdr --version") return "herdr 0.9.3\n";
         if (cmd === "brew --version") return "Homebrew 4.0\n";
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") return "";
+        if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}\n`;
         if (cmd === "cmux capabilities --json") return '{"capabilities":[]}\n';
         if (cmd === "claude --version") {
           if (claudeInstalled) return "2.1.101 (Claude Code)\n";

@@ -13,7 +13,7 @@ import {
   readCmuxSocketControlModeFromText,
   resolveCmuxSettingsPath,
 } from "../cmux-config.js";
-import { buildTmuxControlFailure, probeTmuxControl } from "../tmux-health.js";
+import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
 import { compareSpecToLive, topologyFromRigSpec, topologyFromLiveLogicalIds } from "@openrig/daemon/spec-conformance";
 import { classifyNodeVersion } from "../node-support.js";
@@ -51,6 +51,8 @@ export interface DoctorDeps {
   specPath?: string;
   /** Live seat ids (`<pod>.<member>`) for the spec's rig; null when the topology cannot be read. */
   fetchLiveLogicalIds?: (rigName: string) => Promise<string[] | null>;
+  /** One `hello` to the hc core's socket (default: the real socket). Never starts a core. */
+  readHcHello?: () => Promise<HcHelloOutcome>;
 }
 
 const DEFAULT_PORT = 7433;
@@ -115,40 +117,23 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     });
   }
 
-  // 4. tmux
-  const tmuxProbe = probeTmuxControl((cmd) => deps.exec(cmd));
-  if (tmuxProbe.code === "not_installed") {
+  // 4. hc: the seat host. Installed and the pinned version here; the running core's generation is an async check
+  // below. Neither starts a core.
+  const hcProbe = probeHcInstall((cmd) => deps.exec(cmd));
+  if (hcProbe.code === "not_installed") {
     checks.push({
-      name: "tmux",
+      name: "hc",
       status: "fail",
-      message: "tmux not found.",
-      reason: "OpenRig uses tmux to manage agent sessions.",
-      fix: "Install tmux: brew install tmux (macOS), apt install tmux (Linux).",
+      message: "hc not found.",
+      reason: "OpenRig runs agent seats in hc terminals.",
+      fix: "Install hc (herdr-core) at the pinned version, then rerun 'rig doctor'.",
     });
-  } else if (tmuxProbe.available && tmuxProbe.version) {
-    checks.push({ name: "tmux", status: "pass", message: tmuxProbe.version });
-    if (platform === "darwin") {
-      const mouseMode = readTmuxMouseMode(deps);
-      if (mouseMode === "on") {
-        checks.push({
-          name: "tmux_mouse",
-          status: "pass",
-          message: "tmux mouse mode enabled.",
-        });
-      } else if (mouseMode === "off") {
-        checks.push({
-          name: "tmux_mouse",
-          status: "warn",
-          message: "tmux mouse mode appears disabled.",
-          reason: "On macOS, scrolling and text selection inside tmux panes is much smoother with mouse mode enabled.",
-          fix: "Run `tmux set -g mouse on` for the current tmux server. To keep it enabled, add `set -g mouse on` to `~/.tmux.conf` and reload with `tmux source-file ~/.tmux.conf`.",
-        });
-      }
-    }
+  } else if (hcProbe.available && hcProbe.version) {
+    checks.push({ name: "hc", status: "pass", message: `hc ${hcProbe.version}` });
   } else {
-    const failure = buildTmuxControlFailure(tmuxProbe.detail ?? "unknown tmux control failure");
+    const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");
     checks.push({
-      name: "tmux",
+      name: "hc",
       status: "fail",
       message: failure.message,
       reason: failure.reason,
@@ -267,9 +252,25 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     asyncChecks.push(daemonCmuxCheck);
   }
 
+  if (hcProbe.available) asyncChecks.push(buildHcCoreCheck(deps));
   asyncChecks.push(buildSpecConformanceCheck(deps));
 
   return { checks, portCheck, asyncChecks };
+}
+
+/** The running core's side of seat-host health: its protocol generation and version. It reads the core's socket and
+ *  never starts one, so a machine with no core yet passes with a note. */
+async function buildHcCoreCheck(deps: DoctorDeps): Promise<DoctorCheck> {
+  const outcome = await (deps.readHcHello ?? (() => readHcHello()))();
+  const core = classifyHcCore(outcome);
+  if (core.code === "available") {
+    return { name: "hc_core", status: "pass", message: `hc core ${core.version}, protocol generation ${HC_GENERATION}.` };
+  }
+  if (core.code === "no_core") {
+    return { name: "hc_core", status: "pass", message: "No hc core running; one starts with the first seat.", reason: core.detail ?? undefined };
+  }
+  const failure = buildHcHostFailure(core.code, core.detail ?? "unknown hc core failure");
+  return { name: "hc_core", status: "fail", message: failure.message, reason: failure.reason, fix: failure.fix };
 }
 
 /**
@@ -376,16 +377,6 @@ function buildCmuxDaemonWarning(deps: DoctorDeps, platform: NodeJS.Platform): Do
     reason: "The daemon inherited a terminal/session environment that broke cmux adapter initialization.",
     fix: "Restart the daemon with `rig daemon start` after setup. If it still fails, inspect the daemon log with `rig daemon logs`.",
   };
-}
-
-function readTmuxMouseMode(deps: DoctorDeps): "on" | "off" | null {
-  try {
-    const mode = deps.exec("tmux show-options -gqv mouse").trim().toLowerCase();
-    if (mode === "on" || mode === "off") return mode;
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 export function doctorCommand(depsOverride?: DoctorDeps): Command {
