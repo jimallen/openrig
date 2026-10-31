@@ -214,6 +214,16 @@ describe("the sweep of rows the core may still deliver", () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
+  it("ignores an hc row that is indeterminate for another reason: only the two waiting words are the sweep's", async () => {
+    h.next.result = { ok: true, path: "hc", outcome: "rendered-unconfirmed" };
+    const { outboxId } = await h.handoff();
+    h.db.prepare("UPDATE outbox_entries SET delivery_state = 'indeterminate', ack_detail = ? WHERE outbox_id = ?").run(JSON.stringify(PENDING), outboxId);
+    expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: "render_unconfirmed" });
+    const verify = vi.fn(async () => delivered);
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [] });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   it("ignores tmux timeouts and every other indeterminate row", async () => {
     h.next.result = { ok: false, reason: "verify timeout waiting for render ack" };
     await h.handoff();

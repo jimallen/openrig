@@ -284,6 +284,17 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting" });
   });
 
+  it("counts a turn only for a program the core says reports, whatever status word it shows", async () => {
+    // An inconsistent answer (a status word, but `reported: false`) is not something the core sends today; the guard is the
+    // rule itself, kept apart from the status word, so a change in how the core fills either field cannot start counting turns.
+    const core = new FakeCore();
+    core.reported = false;
+    const { delivery } = build(core, "silent");
+    const first = await delivery.deliver(SEAT, "hello");
+    core.turn += 1;
+    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting" });
+  });
+
   it("settles by the token alone for a program that reports no status", async () => {
     const core = new FakeCore();
     core.reported = false;

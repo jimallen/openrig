@@ -152,12 +152,14 @@ describe.skipIf(!HC)("HcDelivery against a private hc core: exactly once", () =>
     const host = new HcHost(core.client, { daemonEnv: { PATH: process.env.PATH, HOME: core.env.HOME, SHELL: "/bin/sh" } });
     await host.createSession("native@rig", core.root);
     const input = new HcInput(core.client, attach, { deliveryTimeoutMs: 10_000 });
-    await input.sendShellCommand("native@rig", "sleep 600");
+    // The host is shared: a stand-in named by the run, so no other run's `sleep` can be mistaken for this agent.
+    const standIn = `sleep 600.${process.pid}${Date.now() % 100000}`;
+    await input.sendShellCommand("native@rig", standIn);
     const pane = await hcPanePid(core.client, "native@rig");
     expect(pane).not.toBeNull();
     const table = () => spawnSync("ps", ["-axo", "pid=,ppid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m): m is RegExpMatchArray => m !== null)
       .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), args: m[3]! }));
-    const child = await until(() => table().find((p) => p.args === "sleep 600" && p.pid !== pane), (p) => p !== undefined, "the agent stand-in");
+    const child = await until(() => table().find((p) => p.args === standIn && p.pid !== pane), (p) => p !== undefined, "the agent stand-in");
     const byPid = new Map(table().map((p) => [p.pid, p]));
     // The walk the native inbox makes (claude-native-inbox.ts eligibility): from the agent up the ppid chain to the pane pid.
     let cursor = child;

@@ -96,9 +96,12 @@ describe("SeatDeliveryGuard.leaseOrigin", () => {
   it("is null once the lease has ended, even for a task that outlives it", async () => {
     const { db, guard } = fixture();
     const seat = "hc-worker@fixture";
-    let later!: () => string | null;
-    await guard.humanInput(seat, async () => { later = () => guard.leaseOrigin(seat); });
-    expect(later()).toBeNull();
+    // The task keeps the lease's async context (a timer started inside the operation) and looks after the lease has ended.
+    let later!: Promise<string | null>;
+    await guard.humanInput(seat, async () => {
+      later = new Promise((resolve) => setTimeout(() => resolve(guard.leaseOrigin(seat)), 20));
+    });
+    expect(await later).toBeNull();
     db.close();
   });
 });
