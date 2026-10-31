@@ -123,6 +123,7 @@ describe("rig health — daemon-backed read-only projection", () => {
   let empty = false;
   let partial = false;
   let unavailable = false;
+  let waiting = false;
 
   beforeAll(async () => {
     server = http.createServer((request, response) => {
@@ -141,7 +142,7 @@ describe("rig health — daemon-backed read-only projection", () => {
       } else if (healthStatus === 404) {
         response.end(JSON.stringify({ error: "not_found", path: "/api/health" }));
       } else {
-        response.end(JSON.stringify(unavailable ? { ...LIST, coverage: [{ source: "passive-ceremony", status: "unavailable", partial: true, reason: "health_passive_queue_window_truncated" }] } : empty ? { ...LIST, total: 0, records: [] } : partial ? { ...LIST, total: 0, records: [], coverage: [{
+        response.end(JSON.stringify(waiting ? { ...LIST, coverage: [{ source: "human-inbox-waiting", evaluatedAt: LIST.evaluatedAt, status: "notice", partial: false, reason: "2 item(s) addressed to human@kernel have waited over 24 h (oldest q-old, 50 h); open the inbox panel or run rig queue show q-old" }] } : unavailable ? { ...LIST, coverage: [{ source: "passive-ceremony", status: "unavailable", partial: true, reason: "health_passive_queue_window_truncated" }] } : empty ? { ...LIST, total: 0, records: [] } : partial ? { ...LIST, total: 0, records: [], coverage: [{
           source: "passive-ceremony", evaluatedAt: LIST.evaluatedAt, unit: "handoff families", limit: 200, total: 634,
           evaluated: 200, omitted: 434, partial: true, order: "most queue transitions in the observation window, then lineage ID" }] } : LIST));
       }
@@ -214,6 +215,17 @@ describe("rig health — daemon-backed read-only projection", () => {
     expect(text).toContain("health_passive_queue_window_truncated");
     expect(text).toContain(RECORD.id);
     expect(text).not.toMatch(/undefined|0 of 0/);
+  });
+
+  it("prints a waiting-inbox notice as a plain line naming the item, its age and how to open it, not as a failed source", async () => {
+    waiting = true;
+    const { logs, exitCode } = await run(["--instance"], runningDeps(port));
+    waiting = false;
+    const text = logs.join("\n");
+    expect(exitCode).toBeUndefined();
+    expect(text).toContain("WAITING: 2 item(s) addressed to human@kernel have waited over 24 h (oldest q-old, 50 h); open the inbox panel or run rig queue show q-old.");
+    expect(text).not.toMatch(/UNAVAILABLE|not assessed|PARTIAL/);
+    expect(text).toContain(RECORD.id);
   });
 
   it("says a partial evaluation is partial and that omitted families are not healthy", async () => {

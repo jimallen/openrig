@@ -556,7 +556,7 @@ describe("rig queue CLI", () => {
     });
 
     it("a held-local-inbox wake says the item is held in the operator's local inbox, not 'receipt unconfirmed'", async () => {
-      const wakeResult = "held-local-inbox: 'human@kernel' is the operator's local inbox — the queue row is the delivery; the macOS banner notifies the operator; no nudge was sent";
+      const wakeResult = "held-local-inbox: 'human@kernel' is the operator's local inbox — the queue row is the delivery; the operator reads it in the inbox panel; no nudge was sent";
       const { result, reads } = await verify([{ lastNudgeResult: wakeResult }], { destinationSession: "human@kernel" });
       expect(reads).toBe(1);
       expect(result).toMatchObject({ receiptSource: "terminal", destinationKind: "human", outcome: "held-local-inbox", wakeResult, nextAction: "rig queue show qitem-t --json" });
