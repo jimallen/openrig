@@ -4,6 +4,9 @@ import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { TmuxResult, TmuxCursorPosition } from "../adapters/tmux.js";
 import { stripPasteTerminators } from "../domain/packet-text.js";
+import { HcStreamSession, isStreamHost, type BrokerStreamHost } from "./HcStreamSession.js";
+
+export type { BrokerStreamHost } from "./HcStreamSession.js";
 
 // OPR.0.4.0.38 - real-terminal session broker.
 //
@@ -50,6 +53,13 @@ export const CANONICAL_ROWS = 27;
 export interface TerminalSubscriber {
   send(data: string): void;
   close(code: number, reason: string): void;
+  /**
+   * The terminal's size in cells, told before the first byte of a stream host's paint and whenever it changes. A stream host
+   * (herdr-core) has no fixed geometry: the viewer is an observer and follows the size of the terminal, because a reader that
+   * is not an observer would resize the person's program (spike 3). A subscriber that ignores this draws a paint made for another
+   * size; the tmux host never calls it, as it pins CANONICAL_COLS x CANONICAL_ROWS.
+   */
+  size?(cols: number, rows: number): void;
 }
 
 /**
@@ -148,11 +158,14 @@ export function isSafeHistoryReplay(data: string): boolean {
 }
 
 /**
- * One broker per live tmux session. Owns a single pipe-pane and fans its output
- * out to every attached subscriber.
+ * One broker per live session. On tmux it owns a single pipe-pane and fans its output out to every attached subscriber. On a
+ * stream host (herdr-core, `BrokerStreamHost`) it is HcStreamSession: one observer attach per subscriber, no pipe, no ring.
+ * The tmux half goes when tmux does.
  */
 export class TerminalSessionBroker {
   readonly sessionName: string;
+  /** Set when the host is herdr-core: every public method below then delegates to it and the tmux fields stay idle. */
+  private readonly stream: HcStreamSession | null;
   private readonly tmux: BrokerTmux;
   private readonly pollMs: number;
   private readonly livenessMs: number;
@@ -191,9 +204,10 @@ export class TerminalSessionBroker {
   // teardown path so a late/racing attach never goes silently live.
   private lastClose: { code: number; reason: string } | null = null;
 
-  constructor(sessionName: string, tmux: BrokerTmux, opts: BrokerOptions = {}) {
+  constructor(sessionName: string, host: BrokerTmux | BrokerStreamHost, opts: BrokerOptions = {}) {
     this.sessionName = sessionName;
-    this.tmux = tmux;
+    this.stream = isStreamHost(host) ? new HcStreamSession(sessionName, host, opts.onEmpty) : null;
+    this.tmux = host as BrokerTmux;  // read only when `stream` is null
     this.pollMs = opts.pollMs ?? PIPE_PANE_POLL_MS;
     this.livenessMs = opts.livenessMs ?? DEFAULT_LIVENESS_MS;
     this.cols = opts.cols ?? CANONICAL_COLS;
@@ -203,10 +217,10 @@ export class TerminalSessionBroker {
   }
 
   get subscriberCount(): number {
-    return this.subscribers.size;
+    return this.stream ? this.stream.subscriberCount : this.subscribers.size;
   }
 
-  /** Current size of the broker-owned history ring in bytes (bounded). */
+  /** Current size of the broker-owned history ring in bytes (bounded). A stream host keeps none: the paint is the seed. */
   get historyByteLength(): number {
     return this.historyBytes;
   }
@@ -223,6 +237,7 @@ export class TerminalSessionBroker {
    * it sees coherent state immediately and does not depend on a resize message.
    */
   async attach(sub: TerminalSubscriber): Promise<void> {
+    if (this.stream) return this.stream.attach(sub);
     if (this.torndown) {
       this.closeTorndown(sub);
       return;
@@ -284,6 +299,7 @@ export class TerminalSessionBroker {
 
   /** Forward client input to tmux, serialized so rapid input keeps order (FR-3). */
   async input(msg: TerminalInputMessage): Promise<void> {
+    if (this.stream) return this.stream.input(msg);
     if (this.torndown) return;
     await this.enqueueInput(async () => {
       const write = async () => {
@@ -305,6 +321,7 @@ export class TerminalSessionBroker {
    * and the subscriber rejoins the live fanout.
    */
   async scroll(sub: TerminalSubscriber, offset: number): Promise<void> {
+    if (this.stream) return this.stream.scroll(sub, offset);
     if (this.torndown || !this.subscribers.has(sub)) return;
     const clamped = Math.max(0, Math.floor(offset));
     if (clamped === 0) {
@@ -355,6 +372,7 @@ export class TerminalSessionBroker {
    * (FR-6); the LAST detach tears the pipe down and deletes the temp file.
    */
   detach(sub: TerminalSubscriber): void {
+    if (this.stream) { this.stream.detach(sub); return; }
     if (!this.subscribers.delete(sub)) return;
     this.scrollOffsets.delete(sub);
     if (this.subscribers.size === 0) {
@@ -364,6 +382,7 @@ export class TerminalSessionBroker {
 
   /** Force teardown (used by the registry/route on shutdown and by tests). */
   dispose(): void {
+    if (this.stream) { this.stream.dispose(); return; }
     if (this.torndown) return;
     this.lastClose = { code: 1011, reason: "terminal broker unavailable" };
     this.torndown = true;
@@ -596,7 +615,7 @@ export class TerminalSessionBroker {
 export class TerminalBrokerRegistry {
   private readonly brokers = new Map<string, TerminalSessionBroker>();
 
-  constructor(private readonly tmux: BrokerTmux, private readonly opts: BrokerOptions = {}) {}
+  constructor(private readonly tmux: BrokerTmux | BrokerStreamHost, private readonly opts: BrokerOptions = {}) {}
 
   get size(): number {
     return this.brokers.size;
