@@ -13,6 +13,7 @@ import { bindingsSessionsSchema } from "../src/db/migrations/002_bindings_sessio
 import { eventsSchema } from "../src/db/migrations/003_events.js";
 import { nodeSpecFieldsSchema } from "../src/db/migrations/007_node_spec_fields.js";
 import { checkpointsSchema } from "../src/db/migrations/005_checkpoints.js";
+import { rigArchiveSchema } from "../src/db/migrations/042_rig_archive.js";
 import { agentspecRebootSchema } from "../src/db/migrations/014_agentspec_reboot.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -61,6 +62,27 @@ function seedDbWithStaleSessions(dbPath: string, rigs: { rigName: string; logica
   }
 
   db.close();
+}
+
+/** OF-177: one ARCHIVED rig whose seat's row still reads `running` (the cel-track shape), plus one live rig. */
+function seedArchivedZombie(dbPath: string) {
+  const db = createDb(dbPath);
+  migrate(db, [coreSchema, bindingsSessionsSchema, eventsSchema, nodeSpecFieldsSchema, checkpointsSchema, agentspecRebootSchema, rigArchiveSchema]);
+  const rigRepo = new RigRepository(db);
+  const sessionRegistry = new SessionRegistry(db);
+  for (const [rigName, sessionName] of [["cel-track", "exec-cos@cel-track"], ["live-rig", "dev@live-rig"]] as const) {
+    const rig = rigRepo.createRig(rigName);
+    const node = rigRepo.addNode(rig.id, "seat");
+    const session = sessionRegistry.registerSession(node.id, sessionName);
+    db.prepare("UPDATE sessions SET status = 'running', last_seen_at = datetime('now') WHERE id = ?").run(session.id);
+    if (rigName === "cel-track") rigRepo.archiveRig(rig.id);
+  }
+  db.close();
+}
+
+function statusesBySession(db: { prepare: (sql: string) => { all: () => unknown[] } }): Record<string, string> {
+  const rows = db.prepare("SELECT session_name AS n, status AS s FROM sessions").all() as { n: string; s: string }[];
+  return Object.fromEntries(rows.map((r) => [r.n, r.s]));
 }
 
 describe("createDaemon startup composition", () => {
@@ -952,6 +974,67 @@ describe("createDaemon startup composition", () => {
 
     db.close();
     fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  // OF-177: the boot reconcile iterated listRigs(), which hides archived rigs, so a rig archived with a
+  // `running` row kept it for ever (it showed as a running seat and was polled for cost).
+  it("OF-177 startup ends the running row of an ARCHIVED rig whose tmux session is gone, and counts it in the summary", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
+    const dbPath = path.join(tmpDir, "test.sqlite");
+    seedArchivedZombie(dbPath);
+    const tmuxExec: ExecFn = async (cmd: string) => {
+      if (cmd.includes("has-session")) throw new Error("can't find session: gone");
+      return "";
+    };
+    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      expect(statusesBySession(db)).toEqual({ "exec-cos@cel-track": "detached", "dev@live-rig": "detached" });
+      const summary = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).find((l) => l.startsWith("startup reconcile:"));
+      expect(summary).toMatch(/detached=2\b/);
+      db.close();
+    } finally {
+      logSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("OF-177 startup leaves every running row alone when tmux reads fail with something other than absence", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
+    const dbPath = path.join(tmpDir, "test.sqlite");
+    seedArchivedZombie(dbPath);
+    const tmuxExec: ExecFn = async (cmd: string) => {
+      if (cmd.includes("has-session")) throw new Error("tmux: unexpected failure");
+      return "";
+    };
+    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
+    try {
+      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      expect(statusesBySession(db)).toEqual({ "exec-cos@cel-track": "running", "dev@live-rig": "running" });
+      db.close();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it("OF-177 startup leaves an archived rig's row running while the terminal server is unreachable", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rigged-test-"));
+    const dbPath = path.join(tmpDir, "test.sqlite");
+    seedArchivedZombie(dbPath);
+    const tmuxExec: ExecFn = async (cmd: string) => {
+      if (cmd.includes("has-session")) throw new Error("error connecting to /private/tmp/tmux-501/default (No such file or directory)");
+      return "";
+    };
+    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
+    try {
+      const { db } = await createDaemon({ dbPath, tmuxExec, cmuxExec });
+      // The live rig keeps the long-standing boot choice (transport absence is detachable); the archived rig does not.
+      expect(statusesBySession(db)).toEqual({ "exec-cos@cel-track": "running", "dev@live-rig": "detached" });
+      db.close();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
   });
 
   it("startup reconcile with empty DB runs without error", async () => {
