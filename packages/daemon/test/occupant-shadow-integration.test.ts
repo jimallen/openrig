@@ -12,6 +12,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { projectsRoutes } from "../src/routes/projects.js";
 import { StreamClassificationWorker, type WorkerOptions, type ClassificationDecision } from "../src/domain/stream-classification-worker.js";
 import type { Observation } from "../src/domain/capture-observer.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 const config:ShadowConfig={destination:"/unused/private/shadow.jsonl",maxRecords:10,maxBytes:100_000,capacity:10,maxQueuedBytes:100_000,maxObservationBytes:10_000};
 function terminal(capture?:ShadowCapture) {
@@ -123,7 +124,7 @@ describe("disabled-by-default production observer ports",()=>{
     expect(await(await disabled.request("/shadow")).json()).toEqual({enabled:false,error:null});
   });
   it("private sink writes only synthetic observations and refuses existing or nonprivate destinations",async()=>{
-    const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),"shadow-private-")));
+    const dir=fs.realpathSync(mkTemp(path.join(os.tmpdir(),"shadow-private-")));
     const destination=path.join(dir,"new.jsonl");
     const capture=new ShadowCapture({...config,destination,maxRecords:1});
     await terminal(capture).transport.send("seat@rig","hello world",{verify:true});await capture.drain();

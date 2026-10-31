@@ -15,6 +15,7 @@ import { CodexUsageWindows } from "../src/domain/provider/codex-usage-windows.js
 import type { UsageReadOutcome } from "../src/domain/provider/usage-windows.js";
 import { CLAUDE_AUTH, CLAUDE_LOGGED_OUT, makeFakeClaude } from "./helpers/fake-claude-usage.js";
 import { ACCOUNT_ANSWER, rateLimitsAnswer } from "./helpers/fake-codex-usage.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 const NOW = "2026-10-12T12:00:00.000Z";
 const at = (minutes: number) => new Date(Date.parse(NOW) + minutes * 60_000).toISOString();
@@ -185,7 +186,7 @@ describe("LOW-4: a row a later read superseded ages to stale", () => {
 });
 
 describe("claudeAuthStatusReader against a fake claude", () => {
-  const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "claude-reader-home-"));
+  const home = () => mkTemp(path.join(os.tmpdir(), "claude-reader-home-"));
   const reader = (fake: ReturnType<typeof makeFakeClaude>, extra: { timeoutMs?: number; launchPath?: string; graceMs?: number } = {}) =>
     claudeAuthStatusReader({ launchPath: extra.launchPath ?? `${fake.binDir}${path.delimiter}${process.env.PATH}`, home: home(), claudeConfigDir: fake.configDir,
       timeoutMs: extra.timeoutMs ?? 5_000, graceMs: extra.graceMs ?? 500 });
@@ -223,7 +224,7 @@ describe("claudeAuthStatusReader against a fake claude", () => {
     const fake = makeFakeClaude();
     fake.setPlan({ auth: [{ ...CLAUDE_AUTH, authMethod: "api_key" }] });
     expect(await reader(fake)()).toMatchObject({ ok: false, reason: "not_subscription_login" });
-    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "claude-reader-nobin-"));
+    const empty = mkTemp(path.join(os.tmpdir(), "claude-reader-nobin-"));
     expect(await reader(fake, { launchPath: empty })()).toMatchObject({ ok: false, reason: "binary_not_found", detail: "no claude executable on the daemon's PATH" });
     fake.setPlan({ auth: ["hang"] });
     const started = performance.now();

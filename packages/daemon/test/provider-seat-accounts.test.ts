@@ -20,6 +20,7 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { ACCOUNT_ANSWER, makeFakeCodex, rateLimitsAnswer } from "./helpers/fake-codex-usage.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 const ASOF = "2026-10-13T15:00:00.000Z";
 
@@ -210,7 +211,7 @@ describe("seatAccounts through the provider service", () => {
   function setup(enabled: boolean) {
     const fake = makeFakeCodex();
     fake.setPlan({ mode: "ok", account: ACCOUNT_ANSWER, rateLimits: rateLimitsAnswer({ secondaryUsed: 10 }) });
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "seat-accounts-home-"));
+    const home = mkTemp(path.join(os.tmpdir(), "seat-accounts-home-"));
     // Registry metadata and a saved profile. The profile can't be opened (mode 000): only its name may be read.
     fs.mkdirSync(path.join(fake.codexHome, "auth-profiles"), { recursive: true });
     fs.writeFileSync(path.join(fake.codexHome, "auth-profiles", "work-a.json"), "{\"tokens\":\"never read\"}", { mode: 0o000 });
@@ -274,8 +275,8 @@ describe("seatAccounts on the production path (samples, registry reads, config d
     const db = createDb();
     migrate(db, ALL_MIGRATIONS);
     seedSeats(db, opts.seats);
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "seat-accounts-prod-home-"));
-    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "seat-accounts-prod-codex-"));
+    const home = mkTemp(path.join(os.tmpdir(), "seat-accounts-prod-home-"));
+    const codexHome = mkTemp(path.join(os.tmpdir(), "seat-accounts-prod-codex-"));
     if (opts.registry) fs.writeFileSync(path.join(codexHome, "auth-seat-registry.tsv"), opts.registry.body, { mode: opts.registry.mode });
     const profileDir = path.join(codexHome, "auth-profiles");
     if (opts.profiles) {

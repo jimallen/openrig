@@ -5,13 +5,14 @@ import path from "node:path";
 import { Command } from "commander";
 import { projectCommand, type ProjectDeps } from "../src/commands/project.js";
 import { JevRun, JEV_MODEL, JEV_ENDPOINT, CAPTURE_QUESTIONS, classifyCapture, readExperiment, setExperiment, validateJev } from "../src/commands/project-jev.js";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", () => ({getDaemonStatus: async () => ({running:true}), daemonStatusGuard: () => true, getDaemonUrl: () => "http://offline.invalid"}));
 vi.mock("../src/commands/daemon.js", () => ({realDeps: () => { throw Error("real lifecycle forbidden"); }}));
 afterEach(() => { vi.restoreAllMocks(); process.exitCode = 0; });
 
 function fixture(maxRequests = 3, timeoutMs = 1000) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "jev-experiment-")));
+  const dir = fs.realpathSync(mkTemp(path.join(os.tmpdir(), "jev-experiment-")));
   const config = path.join(dir, "experiment.json"); setExperiment(config, true, {maxRequests, timeoutMs});
   return {dir, config};
 }

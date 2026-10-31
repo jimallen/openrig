@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { Hono } from "hono";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -15,9 +15,10 @@ import { attentionRoutes } from "../src/routes/attention.js";
 import type { AttentionRead } from "../src/attention-surface.js";
 import { WorkflowInstanceStore } from "../src/domain/workflow-instance-store.js";
 import { WorkflowStepTrailLog } from "../src/domain/workflow-step-trail-log.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function fixture(extraHealth: (health: HealthDetectorObservation) => HealthObservationSource[] = () => []) {
-  const root = mkdtempSync(join(tmpdir(), "attention-test-"));
+  const root = mkTemp(join(tmpdir(), "attention-test-"));
   const write = (file: string, body: object | string) => { mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, typeof body === "string" ? body : YAML.stringify(body)); };
   write(join(root, "workspace.yaml"), { projects: ["a", "b"].map(id => ({ id, root: `./${id}` })) });
   for (const id of ["a", "b"]) {

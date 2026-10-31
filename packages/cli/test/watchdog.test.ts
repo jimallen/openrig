@@ -1,9 +1,10 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { WatchdogDeps } from "../src/commands/watchdog.js";
 import { createProgram } from "../src/index.js";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../src/daemon-lifecycle.js");
@@ -101,7 +102,7 @@ describe("rig watchdog CLI (PL-004 Phase C)", () => {
         },
       },
     });
-    const tmp = mkdtempSync(join(tmpdir(), "wd-cli-"));
+    const tmp = mkTemp(join(tmpdir(), "wd-cli-"));
     const spec = join(tmp, "spec.yaml");
     const yaml =
       "policy: periodic-reminder\ntarget: alice@rig\ninterval_seconds: 60\ncontext:\n  target:\n    session: alice@rig\n  message: ping\n";
@@ -147,7 +148,7 @@ describe("rig watchdog CLI (PL-004 Phase C)", () => {
         },
       },
     });
-    const tmp = mkdtempSync(join(tmpdir(), "wd-cli-"));
+    const tmp = mkTemp(join(tmpdir(), "wd-cli-"));
     const spec = join(tmp, "spec.yaml");
     writeFileSync(
       spec,
@@ -192,7 +193,7 @@ describe("rig watchdog CLI (PL-004 Phase C)", () => {
 
   it("registers a context threshold without a spec file", async () => {
     const { deps, calls } = makeDeps();
-    const tmp = mkdtempSync(join(tmpdir(), "wd-cli-context-"));
+    const tmp = mkTemp(join(tmpdir(), "wd-cli-context-"));
     const transcript = join(tmp, "session.jsonl");
     writeFileSync(transcript, "1234");
     const program = createProgram({ watchdogDeps: deps });

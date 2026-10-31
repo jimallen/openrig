@@ -12,6 +12,7 @@ import {
   usageLevel,
 } from "../src/domain/provider/codex-usage-windows.js";
 import { ACCOUNT_ANSWER, makeFakeCodex, rateLimitsAnswer } from "./helpers/fake-codex-usage.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 const T0 = "2026-10-12T20:00:00.000Z";
 const at = (minutes: number) => new Date(Date.parse(T0) + minutes * 60_000).toISOString();
@@ -241,7 +242,7 @@ describe("CodexUsageWindows: rows, failed refresh, identity, coalescing", () => 
 });
 
 describe("codexUsageReader against a fake codex app-server", () => {
-  const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "usage-reader-home-"));
+  const home = () => mkTemp(path.join(os.tmpdir(), "usage-reader-home-"));
   const reader = (fake: ReturnType<typeof makeFakeCodex>, deadlineMs = 5_000) =>
     codexUsageReader({ launchPath: `${fake.binDir}${path.delimiter}${process.env.PATH}`, home: home(), codexHome: fake.codexHome, deadlineMs, graceMs: 200 });
 
@@ -266,7 +267,7 @@ describe("codexUsageReader against a fake codex app-server", () => {
   });
 
   it("no codex binary on PATH is its own reason", async () => {
-    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "usage-reader-nobin-"));
+    const empty = mkTemp(path.join(os.tmpdir(), "usage-reader-nobin-"));
     const r = await codexUsageReader({ launchPath: empty, home: home(), codexHome: empty, deadlineMs: 2_000 })();
     expect(r).toMatchObject({ ok: false, reason: "binary_not_found", detail: "no codex executable on the daemon's PATH" });
   });

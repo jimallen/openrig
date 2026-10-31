@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 import { PluginVendorService, type PluginVendorFs } from "../src/domain/plugin-vendor-service.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function realVendorFs(): PluginVendorFs {
   return {
@@ -82,7 +83,7 @@ function seedAssets(root: string) {
 
 describe("PluginVendorService preserves executable mode during vendor staging (QA NOT-CLEAR, 2nd hop)", () => {
   it("ensureVendored stages the exec helper as 0755, non-exec neighbor as 0644", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "vendor-execmode-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "vendor-execmode-"));
     const assets = nodePath.join(base, "assets", "plugins");
     const rel = seedAssets(assets);
     const userPlugins = nodePath.join(base, "home", "plugins");
@@ -98,7 +99,7 @@ describe("PluginVendorService preserves executable mode during vendor staging (Q
   });
 
   it("re-vendor repairs a previously-staged 0644 exec helper even when content is byte-identical (hash-skip path)", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "vendor-execmode-idem-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "vendor-execmode-idem-"));
     const assets = nodePath.join(base, "assets", "plugins");
     const rel = seedAssets(assets);
     const userPlugins = nodePath.join(base, "home", "plugins");
@@ -119,7 +120,7 @@ describe("PluginVendorService preserves executable mode during vendor staging (Q
   });
 
   it("leaves a symlinked unversioned global canon byte-for-byte unchanged", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "vendor-global-authority-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "vendor-global-authority-"));
     const assets = nodePath.join(base, "assets", "plugins");
     seedAssets(assets);
     const userPlugins = nodePath.join(base, "home", "plugins");
@@ -149,7 +150,7 @@ describe("PluginVendorService preserves executable mode during vendor staging (Q
   });
 
   it("updates a real marked global projection only when its source version is newer", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "vendor-global-upgrade-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "vendor-global-upgrade-"));
     const assets = nodePath.join(base, "assets", "plugins");
     seedAssets(assets);
     const userPlugins = nodePath.join(base, "home", "plugins");
@@ -175,7 +176,7 @@ describe("PluginVendorService preserves executable mode during vendor staging (Q
 
 describe("PluginVendorService release-version authority", () => {
   it("replaces the actual 835b700fc refocus hook when the bundled release is newer", async () => {
-    const base = fs.mkdtempSync(
+    const base = mkTemp(
       nodePath.join(os.tmpdir(), "vendor-release-upgrade-"),
     );
     const assets = nodePath.resolve(import.meta.dirname, "../assets/plugins");

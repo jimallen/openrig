@@ -6,11 +6,12 @@ import * as os from "node:os";
 import * as nodePath from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { ProviderServiceImpl } from "../src/domain/provider/provider-service-impl.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 const ASOF = "2026-08-04T00:00:00.000Z";
 
 function emptyCodexHomeEnv(): NodeJS.ProcessEnv {
-  const home = fs.mkdtempSync(nodePath.join(os.tmpdir(), "provider-impl-codex-"));
+  const home = mkTemp(nodePath.join(os.tmpdir(), "provider-impl-codex-"));
   return { CODEX_HOME: home } as NodeJS.ProcessEnv;
 }
 
