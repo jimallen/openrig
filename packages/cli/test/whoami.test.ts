@@ -215,6 +215,13 @@ describe("Whoami CLI", () => {
       expect(labels).toHaveBeenCalledExactlyOnceWith("t42");
     });
 
+    it("an id padded with whitespace is asked for by its address alone", () => {
+      process.env["HC_TERMINAL_ID"] = " t42\n";
+      const labels = vi.fn((_id: string): Record<string, string> => ({ [HC_SEAT_LABEL]: "dev-impl@my-rig" }));
+      expect(resolveIdentitySource({}, labels)).toEqual({ sessionName: "dev-impl@my-rig" });
+      expect(labels).toHaveBeenCalledExactlyOnceWith("t42");
+    });
+
     it("the label key is the one the daemon's HcHost writes", () => {
       const daemon = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../daemon/src/adapters/hc-host.ts"), "utf8");
       expect(daemon).toMatch(/export const SEAT_LABEL = "openrig\.seat";/);
