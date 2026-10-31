@@ -15,6 +15,7 @@ describe("OF-190: a coalesced wake group is sent in staging order", () => {
   let repo: QueueRepository;
   let outbox: OutboxHandler;
   let texts: string[];
+  let actors: Array<string | undefined>;
   beforeEach(() => {
     db = createDb();
     migrate(db, ALL_MIGRATIONS);
@@ -22,7 +23,8 @@ describe("OF-190: a coalesced wake group is sent in staging order", () => {
     repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
     repo.attachOutbox(outbox);
     texts = [];
-    const transport: QueueNudgeTransport = { async send(_session, text) { texts.push(text); return { ok: true, verified: true }; } };
+    actors = [];
+    const transport: QueueNudgeTransport = { async send(_session, text, opts) { texts.push(text); actors.push(opts?.actorSession); return { ok: true, verified: true }; } };
     repo.attachTransport(transport);
   });
   afterEach(() => db.close());
@@ -41,8 +43,11 @@ describe("OF-190: a coalesced wake group is sent in staging order", () => {
 
   it("a direct delivery that starts from a later-staged row still writes the whole group in staging order", async () => {
     await stage(["k2", "k3", "k10"]);
+    // The earliest row has another sender: the delivery is still addressed as the row that started it (k3's sender).
+    db.prepare("UPDATE outbox_entries SET sender_session = 'earlier@rig' WHERE outbox_id = 'wake-intent-k2'").run();
     const deliver = (repo as unknown as { deliverWakeIntent(id: string): Promise<string> }).deliverWakeIntent.bind(repo);
     await deliver("wake-intent-k3");
     expect(texts).toEqual(["k2\nk3\nk10"]);
+    expect(actors).toEqual(["planner@rig"]);
   });
 });
