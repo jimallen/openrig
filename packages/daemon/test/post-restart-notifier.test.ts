@@ -263,3 +263,34 @@ describe("idempotent per restore; an off switch", () => {
     expect(f.sent).toHaveLength(0);
   });
 });
+
+// OF-192: on the tmux path the row is recorded AFTER the send (the path records nothing itself). A crash between the two
+// leaves no row, so the next boot sends the prompt again. That is a deliberate trade-off, pinned here so a change to it is a
+// decision: recording BEFORE the send would turn the same crash into a LOST prompt (a row under the id means "done"), and a
+// lost prompt is the costly error (eztrack, ~40 minutes) while a duplicate is one harmless advisory line. The native path
+// records before it writes, so it has no such window.
+describe("OF-192: a crash between the tmux send and the outbox record resends the prompt once on the next boot", () => {
+  it("the record never happened, the restart re-derives, the prompt is sent a second time, then settles", async () => {
+    const f = make();
+    const crashing = new PostRestartNotifier({
+      enabled: () => true, sessionOf: () => ({ name: "dev-a@rig1", startedAt: SEAT_START }), rigNameOf: () => "rig1",
+      send: async (sessionName, text, o) => { f.sent.push({ sessionName, text, ...o }); return { ok: true, verified: true }; },
+      outbox: {
+        getById: (id) => f.outbox.getById(id), markDelivered: (id, l) => f.outbox.markDelivered(id, l), markFailed: (id, l) => f.outbox.markFailed(id, l),
+        record: () => { throw new Error("process died before the record"); },
+      },
+      now: () => new Date(f.clock.t), sleep: async (ms) => { f.clock.t += ms; },
+    });
+    const ev = { seq: 77, rigId: "rig-1", result: result([node("node-a", "resumed")]) };
+    await expect(crashing.onRestoreCompleted(ev)).rejects.toThrow("process died");
+    expect(f.sent).toHaveLength(1);
+    expect(f.outbox.getById("post-restart-77-node-a")).toBeNull(); // the premise: the send happened, no row
+
+    const boot = await f.notifier.onRestoreCompleted(ev); // the next boot's re-derive (a fresh notifier over the same outbox)
+    expect(boot).toEqual([{ nodeId: "node-a", sessionName: "dev-a@rig1", outcome: "delivered", attempts: 1 }]);
+    expect(f.sent.map((s) => s.deliveryId)).toEqual(["post-restart-77-node-a", "post-restart-77-node-a"]); // the duplicate
+    const third = await f.notifier.onRestoreCompleted(ev);
+    expect(third[0]!.outcome).toBe("already_sent");
+    expect(f.sent).toHaveLength(2);
+  });
+});
