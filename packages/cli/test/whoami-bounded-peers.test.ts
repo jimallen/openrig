@@ -102,7 +102,7 @@ describe("rig whoami --json: bounded peers (output.compact, output.whoami_peers)
     status = 200;
     vi.stubEnv("OPENRIG_NODE_ID", "");
     vi.stubEnv("OPENRIG_SESSION_NAME", "");
-    vi.stubEnv("TMUX_PANE", "");
+    vi.stubEnv("HC_TERMINAL_ID", "");
   });
   afterEach(() => { vi.unstubAllEnvs(); });
 

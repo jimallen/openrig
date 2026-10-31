@@ -107,7 +107,7 @@ beforeAll(async () => {
 afterAll(() => { remoteD.server.close(); localD.server.close(); });
 beforeEach(() => {
   remoteD.asked.length = 0; localD.asked.length = 0; remoteEnv = {}; remoteOverride = null; sshCalls = [];
-  for (const k of ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "TMUX_PANE", "OPENRIG_HOST_SELECTED"]) vi.stubEnv(k, "");
+  for (const k of ["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "HC_TERMINAL_ID", "OPENRIG_HOST_SELECTED"]) vi.stubEnv(k, "");
   vi.stubEnv("OPENRIG_OUTPUT_COMPACT", "1"); // compact output on, default bound 8 (on both sides of this one process)
 });
 afterEach(() => { vi.unstubAllEnvs(); });
