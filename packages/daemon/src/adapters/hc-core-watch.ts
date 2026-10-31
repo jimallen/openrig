@@ -578,3 +578,36 @@ export class HcCoreWatch {
     }
   }
 }
+
+export interface ConnectHcCoreOptions {
+  socketPath: string;
+  log?: (message: string) => void;
+  /** Test runs set OPENRIG_HC_NO_START_CORE=1: a suite must never start a core under a scratch HOME and leave it. */
+  env?: NodeJS.ProcessEnv;
+  startCore?: () => Promise<void>;
+  pin?: Pick<HcCorePin, "versions">;
+  firstAttemptMs?: number;
+}
+
+/** The daemon's link to the seat host: pins the core's generation and version at startup and keeps watching. A refused core
+ *  stops the daemon's start, here, before any seat is touched. A core that is simply down is not refused: the watch keeps
+ *  trying, seats read transport_unavailable, and nothing is archived (OF-177). */
+export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCoreWatch> {
+  const env = options.env ?? process.env;
+  const log = options.log ?? ((message: string) => console.warn(`[hc] ${message}`));
+  const startCore = env.OPENRIG_HC_NO_START_CORE === "1" ? undefined : options.startCore ?? startCoreWithCli({ env });
+  const watch = new HcCoreWatch({
+    socketPath: options.socketPath,
+    ...(startCore ? { startCore } : {}),
+    ...(options.pin ? { pin: options.pin } : {}),
+    onNotice: (notice) => log(JSON.stringify(notice)),
+  });
+  let timer: NodeJS.Timeout | undefined;
+  const firstAttemptOver = new Promise<void>((resolve) => { timer = setTimeout(resolve, options.firstAttemptMs ?? 15_000); });
+  try {
+    await Promise.race([watch.start(), firstAttemptOver]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return watch;
+}

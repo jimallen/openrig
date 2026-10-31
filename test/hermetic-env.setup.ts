@@ -57,6 +57,8 @@ for (const key of [
 // predicate, not a list: a selector added by a later hc release is covered too). A test that needs a core gets a private
 // one from packages/daemon/test/helpers/hc-scratch.ts, whose env is built, not copied. The core socket also follows
 // XDG_RUNTIME_DIR before any state dir (hc-client.ts resolveHcSocket), so that is dropped below with the other XDG paths.
+// An in-process daemon must never start a core under a test's scratch HOME and leave it behind.
+process.env["OPENRIG_HC_NO_START_CORE"] = "1";
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("HC_")) delete process.env[key];
 }

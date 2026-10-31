@@ -33,6 +33,7 @@ import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
+import { connectHcCore } from "./adapters/hc-core-watch.js";
 import { HcDelivery } from "./adapters/hc-delivery.js";
 import { TmuxAdapter } from "./adapters/tmux.js";
 import { setDaemonTmuxServer, tmuxServerArgs } from "./adapters/tmux-server.js";
@@ -515,6 +516,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // passes one, so there is no dual host.
   const hcClient = opts?.tmuxExec || opts?.argvExec ? undefined : new HcClient();
   const hcAdapter = hcClient ? new HcAdapter(hcClient) : undefined;
+  // A wrong generation or version throws here: the daemon must not start against a core it can't speak to.
+  if (hcClient) await connectHcCore({ socketPath: hcClient.socketPath });
   const hcDelivery = hcAdapter ? new HcDelivery(hcAdapter.client, hcAdapter) : undefined;
   const tmuxAdapter: TmuxAdapter = hcAdapter ?? new TmuxAdapter(opts?.tmuxExec ?? execCommand, undefined, argvExec);
   // The real tmux runs with this process's environment, so its server is the one $TMUX names.
