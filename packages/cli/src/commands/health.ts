@@ -256,6 +256,10 @@ function renderList(projection: HealthListProjection): void {
   const evaluated = projection.evaluatedAt ?? "unavailable";
   console.log(`Fleet health — evaluated=${evaluated} findings=${projection.total} limit=${projection.limit}`);
   for (const c of projection.coverage ?? []) {
+    if (c.status === "notice") {
+      console.log(`WAITING: ${c.reason}.`);
+      continue;
+    }
     if (!c.partial) continue;
     if (c.status === "unavailable") {
       console.log(`UNAVAILABLE: ${c.source}: ${c.reason}. This source was not assessed; the result is partial.`);

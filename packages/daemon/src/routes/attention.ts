@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { AttentionRead, AttentionItem } from "../attention-surface.js";
 import type { QueueRepository } from "../domain/queue-repository.js";
 import { isHumanSeatSessionRef } from "../domain/session-name.js";
-import type { HealthProjectionService } from "../domain/health-detectors.js";
+import type { HealthProjectionService, HealthSourceCoverage } from "../domain/health-detectors.js";
 import type { OperatingPostureService } from "../domain/rig-mode/operating-posture.js";
 import { listProjects, insideProject, projectMission, type ProjectRead } from "../domain/workspace/project-read.js";
 import { readMissionReadiness } from "../domain/proof/judgments.js";
@@ -109,7 +109,8 @@ export function attentionRoutes(): Hono {
       const records = service.records().filter(r => r.severity !== "info" && (!r.ceremony || r.ceremony.stage === "confirmed" || r.ceremony.stage === "cleared"));
       const coverage = service.coverage();
       const unavailableSource = coverage.some(s => s.status === "unavailable");
-      const partial = coverage.filter(s => s.partial);
+      // A "notice" row (assessed, nothing missing) is neither unavailable nor partial: it never reaches this list.
+      const partial = coverage.filter((s): s is Exclude<HealthSourceCoverage, { status: "notice" }> => s.partial);
       result.sources.push({ source: "health", state: unavailableSource ? "unavailable" : records.length > 200 || partial.length ? "partial" : "available",
         detail: ["Material canonical episodes (including retained clears), at most 200. Source retention bounds apply; absence is not proof of recovery.",
           ...partial.map(s => s.status === "unavailable" ? `${s.source}: unavailable — ${s.reason}`

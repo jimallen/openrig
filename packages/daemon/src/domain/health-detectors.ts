@@ -105,6 +105,14 @@ export type HealthSourceCoverage = {
   partial: true;
   reason: string;
 } | {
+  /** The source assessed its input and has something to tell the operator that is not a finding (the RSI pipeline never
+   * sees it). Not a failed source and not partial: readers that look for `unavailable` or `partial` rows skip it. */
+  status: "notice";
+  source: string;
+  evaluatedAt: string;
+  partial: false;
+  reason: string;
+} | {
   status?: "available";
   source: string;
   evaluatedAt: string;

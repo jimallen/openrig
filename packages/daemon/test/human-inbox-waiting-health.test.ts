@@ -82,7 +82,7 @@ describe("rig health says when an item to Jim has waited over 24 hours", () => {
     expect(sourceOver(db, T0 + 1).coverage()).toHaveLength(1);
   });
 
-  it("emits one unavailable coverage row naming the count, the oldest item and its age, and reads no findings", () => {
+  it("emits one notice coverage row naming the count, the oldest item and its age, and reads no findings", () => {
     const db = freshDb();
     insert(db, "q-b", { state: "pending", created: iso(T0 - 30 * HOUR) });
     insert(db, "q-a", { state: "blocked", blockedOn: "human@kernel", destination: "dev-a@some-rig", created: iso(T0 - 100 * HOUR), updated: iso(T0 - 50.5 * HOUR) });
@@ -91,7 +91,7 @@ describe("rig health says when an item to Jim has waited over 24 hours", () => {
     expect(source.read()).toEqual([]);
     const rows = source.coverage();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ source: "human-inbox-waiting", status: "unavailable", partial: true, evaluatedAt: iso(T0) });
+    expect(rows[0]).toMatchObject({ source: "human-inbox-waiting", status: "notice", partial: false, evaluatedAt: iso(T0) });
     const reason = (rows[0] as { reason: string }).reason;
     expect(reason).toContain("2 item(s) addressed to human@kernel have waited over 24 h");
     expect(reason).toContain("oldest q-a, 50 h");
@@ -144,7 +144,9 @@ describe("daemon wiring", () => {
     open.push(daemon.db);
     const coverage = daemon.deps.healthProjection!.list().coverage ?? [];
     const row = coverage.find((c) => c.source === "human-inbox-waiting");
-    expect(row).toMatchObject({ status: "unavailable", partial: true });
+    expect(row).toMatchObject({ status: "notice", partial: false });
+    // Not a failed or partial source for any reader that looks for those rows (Attention, the finding wake, the CLI/TUI partial list).
+    expect(coverage.filter((c) => c.status === "unavailable" || c.partial)).toEqual([]);
     expect(JSON.stringify(row)).toContain("1 item(s) addressed to human@kernel have waited over 24 h");
     expect(JSON.stringify(row)).toContain("oldest q-ancient");
     // The retired notifier's tables stay in the schema (no destructive migration) and nothing writes them.

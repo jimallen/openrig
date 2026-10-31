@@ -83,7 +83,7 @@ export class BudgetedRsiSource implements HealthObservationSource {
     this.lastCoverage = coverage.length === 0
       ? [{ source: this.name ?? "rsi-source", evaluatedAt: this.now().toISOString(), unit: "reads", limit: 1, total: 1, evaluated: 1,
         omitted: 0, partial: false, order: "single read", note }]
-      : coverage.map((row) => row.status === "unavailable" ? row : { ...row, note: row.note === undefined ? note : `${row.note}; ${note}` });
+      : coverage.map((row) => row.status === "unavailable" || row.status === "notice" ? row : { ...row, note: row.note === undefined ? note : `${row.note}; ${note}` });
     return observations;
   }
 }

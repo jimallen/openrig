@@ -8,8 +8,8 @@ import { parseSqliteUtcMs } from "../sqlite-time.js";
  * through the inbox panel; nothing posts a banner any more. This source only says, in `rig health`, that open items
  * have waited too long. It reads queue state (SELECT only), writes nothing, and never pages, posts or spawns.
  *
- * Shape: coverage-only, like the banner health source it replaces. It reads no findings; it reports one "unavailable"
- * coverage row while any item has waited longer than HUMAN_INBOX_WAIT_THRESHOLD_MS, and is silent otherwise.
+ * Shape: coverage-only, like the banner health source it replaces. It reads no findings; it reports one "notice"
+ * coverage row (assessed, not a failed or partial source) while any item has waited longer than HUMAN_INBOX_WAIT_THRESHOLD_MS, and is silent otherwise.
  * An item waits when it is `pending` and addressed to the inbox (age from ts_created), or `blocked` on the inbox
  * (age from ts_updated, which only understates a long park, so it never over-flags).
  */
@@ -39,8 +39,8 @@ export class HumanInboxWaitingHealthSource implements HealthObservationSource {
     return [{
       source: this.name,
       evaluatedAt: now.toISOString(),
-      status: "unavailable",
-      partial: true,
+      status: "notice",
+      partial: false,
       reason: `${overdue.length} item(s) addressed to ${LOCAL_HUMAN_INBOX_ADDRESS} have waited over 24 h (oldest ${oldest.qitemId}, ${hours} h); open the inbox panel or run rig queue show ${oldest.qitemId}`,
     }];
   }
