@@ -5,7 +5,7 @@ import { launchCommand } from "../src/commands/launch.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function mockClient(responses: Record<string, { status: number; data: unknown }>) {
   return {

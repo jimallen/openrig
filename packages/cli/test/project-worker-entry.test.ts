@@ -13,7 +13,7 @@ import { ClassifierLeaseError, type ClassifierLease } from "../../daemon/src/dom
 import { ClassificationAttemptError } from "../../daemon/src/domain/classification-attempts.js";
 import { classifierOccupant, sourceHash } from "../../daemon/src/domain/classification-sources.js";
 import { JEV_MODEL, setExperiment } from "../src/commands/project-jev.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", () => ({ getDaemonStatus: async () => ({running: true}), daemonStatusGuard: () => true, getDaemonUrl: () => "http://offline.invalid" }));
 vi.mock("../src/commands/daemon.js", () => ({ realDeps: () => { throw Error("real lifecycle forbidden"); } }));

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { policyCommand } from "../src/commands/policy.js";
 import { seatCommand } from "../src/commands/seat.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 afterEach(() => vi.restoreAllMocks());
 async function capture(command: Command, args: string[]) {

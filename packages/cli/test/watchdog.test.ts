@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { WatchdogDeps } from "../src/commands/watchdog.js";
 import { createProgram } from "../src/index.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../src/daemon-lifecycle.js");

@@ -9,6 +9,7 @@
 // documenting in compliance with banked SC-29 verbatim-declaration rule."
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import { Hono } from "hono";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ interface TestEnv {
 }
 
 function setup(): TestEnv {
-  const root = mkdtempSync(join(tmpdir(), "plugins-routes-"));
+  const root = mkTemp(join(tmpdir(), "plugins-routes-"));
   const openrigPluginsDir = join(root, "openrig-plugins");
   const claudeCacheDir = join(root, "claude-cache");
   const codexCacheDir = join(root, "codex-cache");
