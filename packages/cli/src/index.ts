@@ -74,6 +74,7 @@ import { agentImageCommand } from "./commands/agent-image.js";
 import { forkCommand } from "./commands/fork.js";
 import { workspaceCommand, type WorkspaceDeps } from "./commands/workspace.js";
 import { humanCommand } from "./commands/human.js";
+import { rsiCommand } from "./commands/rsi.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import { unclaimCommand } from "./commands/unclaim.js";
 import { releaseCommand } from "./commands/release.js";
@@ -238,6 +239,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(policyCommand());
   program.addCommand(whoamiCommand(depsOverride?.whoamiDeps));
   program.addCommand(humanCommand());
+  program.addCommand(rsiCommand());
   program.addCommand(configCommand(depsOverride?.configPath));
   program.addCommand(fileCommand());
   program.addCommand(preflightCommand());
