@@ -835,6 +835,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
     ["remote_control", "yes", "remoteControl", true],
     ["session_source", "str", "sessionSource", { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } }],
     ["starter_ref", "st", "starterRef", { name: "st-ok" }],
+    ["env_passthrough", "DOCKER_HOST", "envPassthrough", ["DOCKER_HOST"]],
   ];
 
   // Census derived from the schema's own MEMBER_KEYS: every member key `rig up` accepts is classified
@@ -844,7 +845,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
   it("census: every MEMBER_KEYS entry is classified, and each dual-spelling field has a shadow row", () => {
     const dual = [...new Set(rows.map((r) => r[0]))].sort();
     expect([...SINGLE_SPELLING, ...dual].sort()).toEqual([...MEMBER_KEYS].sort());
-    expect(dual).toHaveLength(8);
+    expect(dual).toHaveLength(9);
   });
 
   // Snake_case-only non-string / empty values: rig up rejects each; the old string-only read erased
@@ -882,11 +883,13 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
         { id: "ss", runtime: "claude-code", profile: "default", cwd: ".", agentRef: "local:agents/impl",
           sessionSource: { mode: "fork", ref: { kind: "native_id", value: "sess-abc" } } },
         { id: "cx", runtime: "codex", profile: "default", cwd: ".", agentRef: "local:agents/impl", codexConfigProfile: "fast" },
+        { id: "px", runtime: "pi", profile: "default", cwd: ".", agentRef: "local:agents/impl", envPassthrough: ["DOCKER_HOST"] },
       ], edges: [] } }),
     });
     expect(res.status, JSON.stringify(await res.clone().json())).not.toBe(400);
     const spec = spy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
-    const [cc, ss, cx] = spec.pods[0]!.members;
+    const [cc, ss, cx, px] = spec.pods[0]!.members;
+    expect(px).toMatchObject({ env_passthrough: ["DOCKER_HOST"] });
     expect(cc).toMatchObject({
       agent_ref: "local:agents/impl",
       permission_policy: "builtin:yolo",
@@ -902,7 +905,7 @@ describe("POST /api/rigs/:rigId/expand - both spellings: an invalid snake_case v
 
   it.each(rows)("%s=%j shadowed by valid %s: expand rejects with the same errors as rig up on the snake_case value", async (snake, badSnake, camel, goodCamel) => {
     // codex_config_profile is only legal on a codex seat, so its camelCase twin is valid only there.
-    const runtime = snake === "codex_config_profile" ? "codex" : "claude-code";
+    const runtime = snake === "codex_config_profile" ? "codex" : snake === "env_passthrough" ? "pi" : "claude-code";
     const upMember = { id: "seat", ...base, runtime, [snake]: badSnake };
     await expectRejectsLikeUp({ ...upMember, [camel]: goodCamel }, upMember);
   });

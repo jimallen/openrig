@@ -178,6 +178,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
       const startup = readMemberSpelling(m, "startup", "startup");
       const mcpServers = readMemberSpelling(m, "mcp_servers", "mcp_servers");
       const pda = readMemberSpelling(m, "pda", "pda");
+      const envPassthrough = readMemberSpelling(m, "env_passthrough", "envPassthrough");
       return {
         id: typeof m["id"] === "string" ? m["id"] : "",
         runtime: typeof m["runtime"] === "string" ? m["runtime"] : "",
@@ -200,6 +201,9 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
         // RigSpec validator owns the boolean / claude-code-only check.
         ...(remoteControl.present ? { remoteControl: remoteControl.value } : {}),
         ...(restorePolicy.present ? { restorePolicy: restorePolicy.value } : {}),
+        // env_passthrough: PRESENCE-preserving RAW carry like remote_control; the canonical validator owns the
+        // pi-only, list and name checks, so a present-invalid value rejects exactly as it does for `rig up`.
+        ...(envPassthrough.present ? { envPassthrough: envPassthrough.value } : {}),
         label: typeof m["label"] === "string" ? m["label"] : undefined,
         // role / starter_ref: PRESENCE-preserving like permission_policy/remote_control above. A
         // present-invalid value (role "", 7, null; starter_ref {}, {name:""}, a string, null, []) must
