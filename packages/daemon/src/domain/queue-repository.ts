@@ -1174,7 +1174,7 @@ export class QueueRepository {
         const peers = this.db.prepare(`SELECT outbox_id FROM outbox_entries
           WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
           AND json_valid(outbox_entries.tags) AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
-          ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
+          ORDER BY ts_dispatched, rowid`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
         // OF-168: a pending peer of the same wake group whose saved tags are not JSON cannot say it carries the correlation, so it is
         // not coalesced into this group (it is delivered on its own later). It is named, not silently left out of the grouping.
         const skippedPeers = (this.db.prepare(`SELECT outbox_id FROM outbox_entries
@@ -1186,9 +1186,12 @@ export class QueueRepository {
         });
         for (const peer of peers) if (actionable(this.outbox!.getById(peer.outbox_id)!) && this.outbox!.claimForDelivery(peer.outbox_id)) intents.push(this.outbox!.getById(peer.outbox_id)!);
       }
-      return intents;
+      // OF-190: one text, written in staging order whichever row started the delivery; the tmux resend of a failed-over
+      // native write is rebuilt from the rows in the same order (nothing else of the order is stored).
+      return this.outbox!.inStagingOrder(intents);
     })();
-    const intent = group[0];
+    // The row that started this delivery names the destination, sender and qitem, as before; only the text order is staging order.
+    const intent = group.find((entry) => entry.outboxId === outboxId) ?? group[0];
     if (!intent) return superseded ? "failed" : "skipped";
     // Only deliver a wake for a qitem that actually exists. A wake intent whose
     // target qitem is missing — a caller-recorded id under this prefix (the route
