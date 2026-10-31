@@ -11,6 +11,8 @@ import { HcInput } from "../src/adapters/hc-input.js";
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const SECRET = `sv-${process.pid}-needle`;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** A poll that survives a loaded host: the stub reads its stdin and handles SIGWINCH on its own schedule. */
+function poll<T>(fn: () => T | Promise<T>) { return expect.poll(fn, { timeout: 8_000 }); }
 
 /** A stub program on a pty. It logs every chunk of stdin as hex and every SIGWINCH, can switch bracketed paste on,
  *  and can report a status over OSC 7501. Everything below is measured against a private hc core, never a fake. */
@@ -81,8 +83,8 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
     writeFileSync(stdinLog, "");
     writeFileSync(winchLog, "");
     await client.call("terminal.run", { argv: ["python3", "-I", stubPath, mode, stdinLog, winchLog], name: address, labels: { "openrig.seat": seat }, no_parent: true, no_notify: true, outlive_parent: true });
-    await expect.poll(async () => (await client.call<{ text: string }>("terminal.read", { terminal: address })).text).toContain("READY");
-    if (mode.includes("blocked")) await expect.poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: address })).status?.state).toBe("blocked");
+    await poll(async () => (await client.call<{ text: string }>("terminal.read", { terminal: address })).text).toContain("READY");
+    if (mode.includes("blocked")) await poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: address })).status?.state).toBe("blocked");
     return {
       seat, address,
       stdin: () => Buffer.concat(readFileSync(stdinLog, "utf8").split("\n").filter(Boolean).map((hex) => Buffer.from(hex, "hex"))),
@@ -98,7 +100,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const chunks: Buffer[] = [];
       const ends: HcAttachEnd[] = [];
       const a = await attach.open({ terminal: stub.address, cols: 100, rows: 30, observe: true }, { onData: (b) => chunks.push(b), onEnd: (e) => ends.push(e) });
-      await expect.poll(() => Buffer.concat(chunks).toString("latin1")).toContain("READY");
+      await poll(() => Buffer.concat(chunks).toString("latin1")).toContain("READY");
       expect(a.terminal.name).toBe(stub.address);
       await expect(a.detach()).resolves.toEqual({ reason: "detached" });
       expect(ends).toEqual([{ reason: "detached" }]);
@@ -121,11 +123,11 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       a.write("hi\r");
       a.write(big);
       a.resize(70, 20);
-      await expect.poll(() => size(stub.address)).toBe("70x20");
+      await poll(() => size(stub.address)).toBe("70x20");
       await expect(a.detach()).resolves.toEqual({ reason: "detached" });
-      await expect.poll(() => stub.stdin().toString("latin1").length).toBe(3 + big.length);
+      await poll(() => stub.stdin().toString("latin1").length).toBe(3 + big.length);
       expect(stub.stdin().toString("latin1")).toBe(`hi\r${big.toString("latin1")}`);
-      await expect.poll(() => stub.winches()).toContain("70x20");
+      await poll(() => stub.winches()).toContain("70x20");
     });
 
     it("reports the program's finish with its reason, and an attach to a missing terminal as not_found", async () => {
@@ -133,7 +135,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const ends: HcAttachEnd[] = [];
       const a = await attach.open({ terminal: stub.address, cols: 100, rows: 30, observe: true }, { onData: () => {}, onEnd: (e) => ends.push(e) });
       await client.call("terminal.kill", { terminal: stub.address });
-      await expect.poll(() => ends.length).toBe(1);
+      await poll(() => ends.length).toBe(1);
       expect(ends[0]).toMatchObject({ reason: "program_ended", endReason: "killed" });
       await a.detach();
       await expect(attach.open({ terminal: "t9999", cols: 80, rows: 24 }, { onData: () => {}, onEnd: () => {} })).rejects.toMatchObject({ kind: "not_found" });
@@ -144,7 +146,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
     it("brackets the paste for a program that turned bracketed paste on, and presses no Enter", async () => {
       const stub = await launch("bp");
       await expect(input.sendText(stub.seat, "staged text")).resolves.toEqual({ ok: true });
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~staged text\x1b[201~");
+      await poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~staged text\x1b[201~");
       await wait(400);
       expect(stub.stdin().toString("latin1")).toBe("\x1b[200~staged text\x1b[201~");
     });
@@ -152,13 +154,13 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
     it("sends the bytes as they are to a program that did not, newlines included", async () => {
       const stub = await launch("plain");
       await input.sendText(stub.seat, "one\ntwo");
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("one\ntwo");
+      await poll(() => stub.stdin().toString("latin1")).toBe("one\ntwo");
     });
 
     it("sends key input with no brackets for bracketed: false, even to a bracketed program", async () => {
       const stub = await launch("bp");
       await input.sendText(stub.seat, "3", undefined, { bracketed: false });
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("3");
+      await poll(() => stub.stdin().toString("latin1")).toBe("3");
     });
 
     it("delivers 100 KB whole, in order", async () => {
@@ -166,7 +168,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const text = Array.from({ length: 2_000 }, (_, i) => `line ${String(i).padStart(5, "0")} ${"y".repeat(40)}`).join("\n");
       expect(text.length).toBeGreaterThan(100_000);
       await expect(input.sendText(stub.seat, text)).resolves.toEqual({ ok: true });
-      await expect.poll(() => stub.stdin().toString("latin1").length).toBe(text.length + 12);
+      await poll(() => stub.stdin().toString("latin1").length).toBe(text.length + 12);
       expect(stub.stdin().toString("latin1")).toBe(`\x1b[200~${text}\x1b[201~`);
     });
 
@@ -174,9 +176,9 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const stub = await launch("bp");
       const person = await attach.open({ terminal: stub.address, cols: 120, rows: 40 }, { onData: () => {}, onEnd: () => {} });
       expect(await size(stub.address)).toBe("120x40");
-      await expect.poll(() => stub.winches()).toEqual(["120x40"]);
+      await poll(() => stub.winches()).toEqual(["120x40"]);
       await input.sendText(stub.seat, "x");
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~x\x1b[201~");
+      await poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~x\x1b[201~");
       await wait(300);
       expect(await size(stub.address)).toBe("120x40");
       expect(stub.winches()).toEqual(["120x40"]);
@@ -196,13 +198,13 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       await wait(200);
       expect(stub.stdin().length).toBe(0);
       await expect(input.sendText(stub.seat, "1", undefined, { bracketed: false, blocked: "allow" })).resolves.toEqual({ ok: true });
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("1");
+      await poll(() => stub.stdin().toString("latin1")).toBe("1");
     });
 
     it("reports a finished or missing seat as session_not_found, nothing written", async () => {
       const stub = await launch("plain");
       await client.call("terminal.kill", { terminal: stub.address });
-      await expect.poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: stub.address })).state).toBe("finished");
+      await poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: stub.address })).state).toBe("finished");
       await expect(input.sendText(stub.seat, "x")).resolves.toMatchObject({ ok: false, code: "session_not_found" });
       await expect(input.sendText("never@rig", "x")).resolves.toMatchObject({ ok: false, code: "session_not_found" });
     });
@@ -220,13 +222,13 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
     it.each(table)("presses tmux's %s as bytes %s", async (key, hex) => {
       const stub = await launch("plain");
       await expect(input.sendKeys(stub.seat, [key])).resolves.toEqual({ ok: true });
-      await expect.poll(() => stub.stdin().toString("hex")).toBe(hex);
+      await poll(() => stub.stdin().toString("hex")).toBe(hex);
     });
 
     it("presses several keys in order, and nothing for the empty strings of the redraw nudge", async () => {
       const stub = await launch("plain");
       await input.sendKeys(stub.seat, ["", "", "a", "Enter"]);
-      await expect.poll(() => stub.stdin().toString("hex")).toBe("610d");
+      await poll(() => stub.stdin().toString("hex")).toBe("610d");
       await expect(input.sendKeys(stub.seat, ["", ""])).resolves.toEqual({ ok: true });
     });
 
@@ -244,13 +246,13 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       await wait(200);
       expect(stub.stdin().length).toBe(0);
       await expect(input.sendKeys(stub.seat, ["Enter"], undefined, { blocked: "allow" })).resolves.toEqual({ ok: true });
-      await expect.poll(() => stub.stdin().toString("hex")).toBe("0d");
+      await poll(() => stub.stdin().toString("hex")).toBe("0d");
     });
 
     it("reports a finished seat as session_not_found", async () => {
       const stub = await launch("plain");
       await client.call("terminal.kill", { terminal: stub.address });
-      await expect.poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: stub.address })).state).toBe("finished");
+      await poll(async () => (await client.call<HcTerminal>("terminal.get", { terminal: stub.address })).state).toBe("finished");
       await expect(input.sendKeys(stub.seat, ["Enter"], undefined, { blocked: "allow" })).resolves.toMatchObject({ ok: false, code: "session_not_found" });
     });
   });
@@ -263,7 +265,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const stub = await launch("bp,idle");
       const sent = await slow().submitText(stub.seat, "hello agent");
       expect(sent).toMatchObject({ ok: true, status: "idle", turn: 0 });
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~hello agent\x1b[201~\r");
+      await poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~hello agent\x1b[201~\r");
     });
 
     it("lets hc refuse a blocked program, types nothing, and types when forced", async () => {
@@ -272,7 +274,7 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       await wait(300);
       expect(stub.stdin().length).toBe(0);
       await expect(slow().submitText(stub.seat, "yes", { force: true })).resolves.toMatchObject({ ok: true });
-      await expect.poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~yes\x1b[201~\r");
+      await poll(() => stub.stdin().toString("latin1")).toBe("\x1b[200~yes\x1b[201~\r");
     });
 
     it("refuses on a status mismatch with nothing typed", async () => {
@@ -301,11 +303,11 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       const out = join(root, "shell-out.txt");
       const before = new Set(readdirSync(tmpdir()).filter((f) => f.startsWith("openrig-tmux-send-")));
       await expect(input.sendShellCommand("shell@rig", `API_KEY=${SECRET}; echo "$API_KEY" > ${out}`)).resolves.toEqual({ ok: true });
-      await expect.poll(() => { try { return readFileSync(out, "utf8"); } catch { return ""; } }).toContain(SECRET);
+      await poll(() => { try { return readFileSync(out, "utf8"); } catch { return ""; } }).toContain(SECRET);
       const pane = (await client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName("shell@rig"), lines: 50 })).text;
       expect(pane).not.toContain(SECRET);
       expect(spawnSync("ps", ["-axww", "-o", "args"], { encoding: "utf8" }).stdout).not.toContain(SECRET);
-      await expect.poll(() => readdirSync(tmpdir()).filter((f) => f.startsWith("openrig-tmux-send-") && !before.has(f))).toEqual([]);
+      await poll(() => readdirSync(tmpdir()).filter((f) => f.startsWith("openrig-tmux-send-") && !before.has(f))).toEqual([]);
     });
 
     it("sources the script in a POSIX pane shell for sourceInPane, so a shell function stays, and not otherwise", async () => {
@@ -314,10 +316,10 @@ describe.skipIf(!HC)("HcAttach and HcInput against a private hc core", () => {
       await client.call("terminal.send", { terminal: address, text: "myfn() { echo fn-ran > " + join(root, "fn-out.txt") + "; }" });
       await wait(500);
       await input.sendShellCommand("src@rig", "myfn", undefined, { sourceInPane: true });
-      await expect.poll(() => existsSync(join(root, "fn-out.txt"))).toBe(true);
+      await poll(() => existsSync(join(root, "fn-out.txt"))).toBe(true);
       rmSync(join(root, "fn-out.txt"));
       await input.sendShellCommand("src@rig", "myfn || echo nofn > " + join(root, "nofn-out.txt"));
-      await expect.poll(() => existsSync(join(root, "nofn-out.txt"))).toBe(true);
+      await poll(() => existsSync(join(root, "nofn-out.txt"))).toBe(true);
       expect(existsSync(join(root, "fn-out.txt"))).toBe(false);
     });
   });
