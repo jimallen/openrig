@@ -4,24 +4,31 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
 
-describe("bootstrap a portable archive", () => {
+// The scenario daemon's seat host is a private hc core (helpers/hc-scratch.ts): the daemon's HcClient finds it through HC_SOCKET, the
+// scaffold env the daemon and every `rig` call inherit. Nothing here can reach the host's own core.
+describe.skipIf(!findHc())("bootstrap a portable archive", () => {
   let scaffold: HermeticScaffold | undefined;
+  let scratch: HcScratch | undefined;
   let daemon: ScenarioDaemon | undefined;
   const rigName = "bootstrap-bundle-stub";
 
   beforeAll(async () => {
     scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color" } });
-    daemon = await spawnScenarioDaemon(scaffold, { rigBin });
+    scratch = startHcScratch();
+    daemon = await spawnScenarioDaemon({ ...scaffold, env: { ...scaffold.env, HC_SOCKET: scratch.socketPath } }, { rigBin });
   }, 60_000);
 
   afterAll(async () => {
-    if (!daemon) { scaffold?.cleanup(); return; }
-    try { await runRig(["down", rigName, "--json", "--force"], daemon.readEnv, rigBin); }
-    finally { await daemon.stop(); }
+    try {
+      if (!daemon) { scaffold?.cleanup(); return; }
+      try { await runRig(["down", rigName, "--json", "--force"], daemon.readEnv, rigBin); }
+      finally { await daemon.stop(); }
+    } finally { scratch?.cleanup(); }
   }, 60_000);
 
   it("previews a library copy without launching, then installs one team from its archive", async () => {

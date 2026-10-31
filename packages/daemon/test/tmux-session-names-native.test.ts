@@ -1,81 +1,71 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { exec, execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
-import { shellQuote } from "../src/adapters/shell-quote.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { afterEach, beforeAll, afterAll, describe, expect, it } from "vitest";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-const run = promisify(exec);
-const runFile = promisify(execFile);
+// Seat names are free text to the daemon: they hold the metadata separator of a listing format, leading and trailing spaces, and
+// each other as prefixes. tmux needed a listing format and quoting that survived all of that; hc keeps the name in a label, and
+// finds the terminal by the digest of the whole name, so none of it can be mistaken for structure.
+describe.skipIf(!findHc())("hc literal seat names", () => {
+  let scratch: HcScratch;
+  let adapter: HcAdapter;
+  let names: string[] = [];
+  beforeAll(() => { scratch = startHcScratch(); adapter = new HcAdapter(scratch.client()); }, 60_000);
+  afterAll(() => scratch?.cleanup());
+  afterEach(async () => { for (const name of names) await adapter.killSession(name).catch(() => undefined); names = []; });
 
-async function withServer(mode: "shell" | "argv", names: string[], check: (adapter: TmuxAdapter) => Promise<void>) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tmux-names-"));
-  const socket = path.join(home, "owned.sock");
-  const env = { ...process.env, HOME: home };
-  delete env.TMUX;
-  delete env.TMUX_TMPDIR;
-  const tmux = async (args: string[]) => (await runFile("tmux", ["-S", socket, ...args], { env })).stdout;
-  try {
-    for (const name of names) {
-      await tmux(["-f", "/dev/null", "new-session", "-d", "-s", name, "-c", home, "printf 'native-session-fixture\\n'; sleep 60"]);
+  async function withSeats(seats: string[], check: () => Promise<void>) {
+    names = seats;
+    for (const name of seats) {
+      await scratch.client().call("terminal.run", {
+        argv: ["sh", "-c", "printf 'native-session-fixture\\n'; sleep 60"], name: hcTerminalName(name), labels: { [SEAT_LABEL]: name },
+        cwd: scratch.root, no_parent: true, no_notify: true, outlive_parent: true,
+      });
     }
-    const shellExec = async (cmd: string) => {
-      expect(cmd).toMatch(/^tmux /);
-      return (await run(`tmux -S ${shellQuote(socket)} ${cmd.slice(5)}`, { env })).stdout;
-    };
-    const adapter = new TmuxAdapter(shellExec, undefined, mode === "argv" ? async args => {
-      expect(args[0]).toBe("tmux");
-      return tmux(args.slice(1));
-    } : undefined);
-    // Synchronize with output instead of assuming the newly started pane is ready.
-    for (const name of names) {
-      await expect.poll(() => adapter.capturePaneContent(name), { timeout: 5000 }).toContain("native-session-fixture");
+    // Synchronize with output instead of assuming the newly started program is ready.
+    for (const name of seats) {
+      await expect.poll(() => adapter.capturePaneContent(name), { timeout: 10_000 }).toContain("native-session-fixture");
     }
-    await check(adapter);
-  } finally {
-    await stopOwnedTmuxServer(socket, env);
-    fs.rmSync(home, { recursive: true, force: true });
+    await check();
   }
-}
 
-describe.skipIf(process.platform === "win32")("native tmux literal session names", () => {
-  for (const mode of ["shell", "argv"] as const) {
-    it(`${mode}: discovers names containing the metadata separator`, async () => {
-      const names = ["agent|notes", "agent|12"];
-      await withServer(mode, names, async adapter => {
-        const sessions = await adapter.listSessions();
-        expect(sessions.map(s => s.name).sort()).toEqual([...names].sort());
-        for (const session of sessions) {
-          expect(session.windows).toBe(1);
-          expect(session.created).toMatch(/^\d+$/);
-          expect(session.attached).toBe(false);
-        }
-      });
+  it("discovers names containing the metadata separator", async () => {
+    const seats = ["agent|notes", "agent|12"];
+    await withSeats(seats, async () => {
+      const sessions = await adapter.listSessions();
+      expect(sessions.map((s) => s.name).sort()).toEqual([...seats].sort());
+      for (const session of sessions) {
+        expect(session.windows).toBe(1);
+        expect(session.created).toMatch(/^\d+$/);
+        expect(session.attached).toBe(false);
+      }
+      for (const name of seats) {
+        const panes = await adapter.listPanes(name);
+        expect(panes, name).toHaveLength(1);
+        expect(panes[0]!.id).toMatch(/^t\d+$/);
+      }
     });
+  });
 
-    it(`${mode}: batched capture preserves leading and trailing spaces`, async () => {
-      const names = [" agent ", "agent", "agent|notes"];
-      await withServer(mode, names, async adapter => {
-        const batch = await adapter.capturePanesContent([...names, "missing"]);
-        expect(batch).not.toBeNull();
-        for (const name of names) {
-          const single = await adapter.capturePaneContent(name);
-          expect(single).toContain("native-session-fixture");
-          expect(batch!.get(name)?.text).toBe(single);
-        }
-        expect(batch!.get("missing")?.text).toBeNull();
-      });
+  it("batched capture preserves leading and trailing spaces", async () => {
+    const seats = [" agent ", "agent", "agent|notes"];
+    await withSeats(seats, async () => {
+      const batch = await adapter.capturePanesContent([...seats, "missing"]);
+      expect(batch).not.toBeNull();
+      for (const name of seats) {
+        const single = await adapter.capturePaneContent(name);
+        expect(single).toContain("native-session-fixture");
+        expect(batch!.get(name)?.text).toBe(single);
+      }
+      expect(batch!.get("missing")?.text).toBeNull();
     });
+  });
 
-    it(`${mode}: ordinary session discovery and capture remain unchanged`, async () => {
-      await withServer(mode, ["plain"], async adapter => {
-        expect(await adapter.listSessions()).toEqual([expect.objectContaining({ name: "plain", windows: 1, attached: false })]);
-        const batch = await adapter.capturePanesContent(["plain"]);
-        expect(batch!.get("plain")?.text).toBe(await adapter.capturePaneContent("plain"));
-      });
+  it("ordinary session discovery and capture remain unchanged", async () => {
+    await withSeats(["plain"], async () => {
+      expect(await adapter.listSessions()).toEqual([expect.objectContaining({ name: "plain", windows: 1, attached: false })]);
+      const batch = await adapter.capturePanesContent(["plain"]);
+      expect(batch!.get("plain")?.text).toBe(await adapter.capturePaneContent("plain"));
     });
-  }
+  });
 });

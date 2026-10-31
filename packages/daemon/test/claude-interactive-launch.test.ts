@@ -1,19 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
+import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
-import { ownedTmuxServer, reapWhenOwnerDies, stopOwnedTmuxServer, type ProcessIdentity } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 const run = promisify(execFile);
 const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
-let hasTmux = false;
-try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); hasTmux = true; } catch { /* optional dependency */ }
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 200; i++) {
     if (predicate()) return;
@@ -22,10 +22,14 @@ async function until(predicate: () => boolean) {
   throw new Error("Fixture did not return to its shell prompt");
 }
 
-// The real adapters and tmux deliver to an interactive Bash with an rc-defined
+// The real adapters and an hc terminal deliver to an interactive Bash with an rc-defined
 // command. Claude is an offline recorder, never a provider executable. These
 // controls prove command resolution/arguments, not native readiness or history.
-describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude interactive launch", () => {
+describe.skipIf(!findHc() || !fs.existsSync("/bin/bash"))("classic Claude interactive launch", () => {
+  let scratch: HcScratch;
+  beforeAll(() => { scratch = startHcScratch(); }, 60_000);
+  afterAll(() => scratch?.cleanup());
+
   it("checks assignment, subshell/export and sourced-file alias/function effects", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-shell-forms-"));
     const rc = path.join(root, "bashrc"), script = path.join(root, "launch");
@@ -52,15 +56,49 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
+  /** True once `f` holds, false if it still does not after 5 s. */
+  async function settles(f: () => boolean): Promise<boolean> {
+    for (let i = 0; i < 200; i++) { if (f()) return true; await new Promise(resolve => setTimeout(resolve, 25)); }
+    return false;
+  }
+
+  async function foregroundReported(name: string): Promise<void> {
+    for (let i = 0; i < 400; i++) {
+      const terminal = await scratch.client().call<{ foreground?: { name?: string } | null }>("terminal.get", { terminal: hcTerminalName(name) });
+      if (terminal.foreground?.name) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error(`hc never reported a foreground process for ${name}`);
+  }
+
+  // Found by this conversion. HcInput.sendShellCommand reads the pane shell from `terminal.foreground`, which hc fills in about
+  // 0.4 s after the terminal starts (measured on Sparky, hc 0.1.15: absent at 0, 26 and 52 ms, present at 365 ms, three runs). Before
+  // that the launch is typed as `/bin/sh <script>` instead of sourced in the pane, so a `claude` that is an alias or a function of the
+  // pane's rc is "not found" (exit 127) where tmux, which knew `pane_current_command` at once, sourced it. The 36 cells below wait
+  // for the foreground to be reported, which is the only reason they pass. Delete `it.fails` when the decision stops depending on it
+  // (for instance a fallback to the terminal's own argv[0]).
+  it.fails("sources the launch in the pane shell even when sent before hc reports a foreground process (DEFECT: race on terminal.foreground)", async (ctx) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-early-"));
+    const rc = path.join(root, "bashrc"), status = path.join(root, "status");
+    fs.writeFileSync(rc, `alias claude='echo ALIAS-RAN > ${quote(path.join(root, "ran"))}'\nPS1='FIXTURE> '\nPROMPT_COMMAND='printf "%s\\n" "$?" > ${status}'\n`);
+    const hc = new HcAdapter(scratch.client());
+    try {
+      await scratch.client().call("terminal.run", {
+        argv: ["/bin/bash", "--noprofile", "--rcfile", rc, "-i"], env: { HOME: root }, name: hcTerminalName("early"), labels: { [SEAT_LABEL]: "early" },
+        cwd: root, no_parent: true, no_notify: true, outlive_parent: true,
+      });
+      expect(await settles(() => fs.existsSync(status)), "the rc reached its first prompt").toBe(true);
+      const before = await scratch.client().call<{ foreground?: unknown }>("terminal.get", { terminal: hcTerminalName("early") });
+      if (before.foreground) ctx.skip();  // this host reported it first: the race was not entered
+      expect(await hc.sendShellCommand("early", "claude", undefined, { sourceInPane: true })).toEqual({ ok: true });
+      expect(await settles(() => fs.existsSync(path.join(root, "ran"))), "the launch ran the pane's alias").toBe(true);
+    } finally { await hc.killSession("early"); fs.rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+
   it("starts all 36 executable/alias/function, corrected/fallback/legacy, fresh/fork/resume/restore cells", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-interactive-"));
-    const socket = path.join(root, "tmux");
-    const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color" };
-    const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 5000 })).stdout;
-    // This test's tmux server (and the interactive shells in its sessions) outlives the runner. If the worker dies or the
-    // test times out, the finally below never runs and the server ran for days after its socket directory was deleted.
-    const reaper = reapWhenOwnerDies({ tmuxSockets: [socket] });
-    let server: ProcessIdentity | undefined; // recorded as soon as the server exists: a starved server cannot be looked up later
+    // The scratch core (and the interactive shells in its terminals) is armed against an owner that dies; see helpers/hc-scratch.ts.
+    const transport = new HcAdapter(scratch.client());
     const fake = path.join(root, "off-path-claude"), recorder = path.join(root, "record.cjs"), cli = path.join(root, "paired-rig");
     fs.writeFileSync(recorder, `const fs = require('node:fs'); const cp = require('node:child_process');
 fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2), node:process.env.OPENRIG_NODE_ID,
@@ -71,11 +109,6 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
     fs.writeFileSync(cli, "#!/bin/sh\nprintf 'paired-rig'\n", { mode: 0o755 });
     const cells: Array<{ shape: string; route: string; kind: string; started: boolean; exit: number; issues: string[] }> = [];
     try {
-      // Every cell ends with kill-session of the server's only session, and a tmux server with no session exits. The next cell's
-      // new-session then races that exit and fails with "server exited unexpectedly" (seen on the Mac under a full-suite load).
-      // An anchor session keeps the one server alive for all 36 cells.
-      await tm(["new-session", "-d", "-s", "fixture-anchor", "sleep 600"]);
-      server = await ownedTmuxServer(socket, env) ?? undefined;
       for (const shape of ["executable", "alias", "function"]) for (const route of ["corrected", "fallback", "legacy"]) {
         for (const kind of ["fresh", "fork", "launch-resume", "restore-resume"]) {
           const name = `${shape}-${route}-${kind}`, dir = path.join(root, name), bin = path.join(dir, "bin");
@@ -86,14 +119,16 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
             + `export OPENRIG_NODE_ID='rc-node' OPENRIG_HOME='rc-home' CLAUDE_CONFIG_DIR='rc-config' OPENRIG_ACTIVITY_HOOK_TOKEN='fixture-token'\nPS1='FIXTURE> '\n`
             + (shape === "alias" ? `alias claude=${quote(fake)}\n` : shape === "function" ? `claude() { ${quote(fake)} "$@"; }\n` : "")
             + `PROMPT_COMMAND='printf "%s\\n" "$?" > ${status}'\n`);
-          await tm(["new-session", "-d", "-s", name, "/bin/bash --noprofile --rcfile " + quote(rc) + " -i"]);
-          await until(() => fs.existsSync(status)); fs.unlinkSync(status);
-          await tm(["set-environment", "-t", name, "OPENRIG_SESSION_NAME", name]);
-          if (route === "corrected") await tm(["set-environment", "-t", name, "OPENRIG_NODE_ID", name]);
-          const transport = new TmuxAdapter(async command => {
-            if (!command.startsWith("tmux ")) throw new Error("Unexpected fixture command");
-            return (await run("/bin/sh", ["-c", command.replace(/^tmux /, `tmux -S ${quote(socket)} -f /dev/null `)], { env, timeout: 5000 })).stdout;
+          // The launch environment the seat recorded (hc: labels written at launch, read back by getSessionEnv).
+          await scratch.client().call("terminal.run", {
+            argv: ["/bin/bash", "--noprofile", "--rcfile", rc, "-i"], env: { HOME: root, TMPDIR: root }, name: hcTerminalName(name),
+            labels: { [SEAT_LABEL]: name, ...sessionEnvLabels({ OPENRIG_SESSION_NAME: name, ...(route === "corrected" ? { OPENRIG_NODE_ID: name } : {}) }) },
+            cwd: dir, no_parent: true, no_notify: true, outlive_parent: true,
           });
+          await until(() => fs.existsSync(status)); fs.unlinkSync(status);
+          // hc reports a terminal's foreground process on its next sweep (about 0.4 s after the start), and sendShellCommand decides to
+          // source the launch in the pane shell from it; see the it.fails below for what a launch sent before that does.
+          await foregroundReported(name);
           const helper = route === "legacy" ? undefined : new SeatLaunchEnvironment(transport, {
             OPENRIG_HOME: path.join(dir, "rig-home"), HOME: "must-not-override", CLAUDE_CONFIG_DIR: "must-not-override",
             OPENRIG_ACTIVITY_HOOK_TOKEN: "must-not-type",
@@ -130,16 +165,13 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
             } else if (got.node !== "rc-node" || got.home !== "rc-home") issues.push("fallback/legacy environment changed");
           }
           cells.push({ shape, route, kind, started, exit: Number(fs.readFileSync(status, "utf8").trim()), issues });
-          await tm(["kill-session", "-t", name]);
+          expect(await transport.killSession(name)).toEqual({ ok: true });
         }
       }
       console.log("CLAUDE_INTERACTIVE_CELLS", JSON.stringify(cells));
       expect(cells).toHaveLength(36);
       expect(cells.filter(cell => !cell.started || cell.exit !== 0 || cell.issues.length)).toEqual([]);
     } finally {
-      // Only a verified stop lets the watchdog go and the socket directory be deleted; an unverified one throws and keeps both.
-      await stopOwnedTmuxServer(socket, env, { server });
-      reaper.disarm();
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 90_000);

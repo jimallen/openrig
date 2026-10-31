@@ -1,111 +1,69 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync, type ChildProcess } from "node:child_process";
-import diagnostics from "node:diagnostics_channel";
-import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
-import { execArgvCommand, execCommand, resolveOnPath } from "../src/adapters/tmux-exec.js";
-import { ownedDefaultSocket, stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { HcClient } from "../src/adapters/hc-client.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-// The production exec functions against a real tmux. Neither takes a server flag: both must reach the server
-// named by the inherited TMUX_TMPDIR, so the test points it at a private directory and unsets TMUX.
-
-let nativeAvailable = process.platform !== "win32";
-try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
-
-const runFile = promisify(execFile);
-const roots: string[] = [];
-afterAll(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
-
-/** The file node spawns for each child started while `fn` runs. */
-async function spawnedFiles(fn: () => Promise<void>): Promise<string[]> {
-  const children: ChildProcess[] = [];
-  const onChild = (message: unknown) => { children.push((message as { process: ChildProcess }).process); };
-  diagnostics.subscribe("child_process", onChild);
-  try { await fn(); } finally { diagnostics.unsubscribe("child_process", onChild); }
-  return children.map((child) => child.spawnfile);
-}
-
-async function scenario(mode: "shell" | "argv") {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-exec-"));
-  roots.push(root);
-  const serverDir = path.join(root, "server");
-  const emptyDir = path.join(root, "empty");
-  fs.mkdirSync(serverDir);
-  fs.mkdirSync(emptyDir);
-  const anchorEnv: NodeJS.ProcessEnv = { ...process.env, TMUX_TMPDIR: serverDir, HOME: root, SHELL: "/bin/sh" };
-  delete anchorEnv.TMUX;
-  delete anchorEnv.ENV;
-  // The anchor starts the server without the user's config; later clients only connect to it.
-  await runFile("tmux", ["-f", "/dev/null", "new-session", "-d", "-s", "anchor", "sleep 600"], { env: anchorEnv });
-  vi.stubEnv("TMUX", undefined);
-  vi.stubEnv("TMUX_TMPDIR", serverDir);
-  let calls = 0;
-  const counted = <A,>(fn: (arg: A) => Promise<string>) => (arg: A) => { calls++; return fn(arg); };
-  const adapter = new TmuxAdapter(counted(execCommand), undefined, mode === "argv" ? counted(execArgvCommand) : undefined);
-  try {
-    let result: Record<string, unknown> = {};
-    const files = await spawnedFiles(async () => {
-      const created = await adapter.createSession("seat a", root);
-      const duplicate = await adapter.createSession("seat a", root);
-      // Type only once the pane's shell has drawn its prompt. Text typed earlier is echoed by the tty ahead of the prompt and the
-      // command's output then shares the prompt's line ("$ openrig-native"), so no line equals the marker: `captured` came back
-      // empty in 5 of 180 runs at the base commit with 60 copies of this file running at once (a standalone replay of new-session, send-keys, capture reproduces the shared-line pane).
-      for (let i = 0; i < 300 && !/[$#%>] ?$/.test((await adapter.capturePaneContent("seat a", 50) ?? "").trimEnd()); i++) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const typed = await adapter.sendText("seat a", "echo 'openrig-'native", undefined, { bracketed: false });
-      const entered = await adapter.sendKeys("seat a", ["Enter"]);
-      // The quotes keep the typed line from matching: only the command's output contains the marker.
-      let single: string | null = null;
-      for (let i = 0; i < 100 && !single?.includes("openrig-native"); i++) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        single = await adapter.capturePaneContent("seat a", 50);
-      }
-      const batch = await adapter.capturePanesContent(["seat a", "missing"], 50);
-      const activity = await adapter.readAllSessionWindowActivity();
-      result = {
-        created,
-        duplicate: duplicate.ok ? duplicate : duplicate.code,
-        typed,
-        entered,
-        captured: single!.split("\n").filter((line) => line === "openrig-native"),
-        batchMatchesSingle: batch?.get("seat a")?.text === single,
-        batchMissing: batch?.get("missing")?.text,
-        sessions: (await adapter.listSessions()).map((s) => [s.name, s.windows, s.attached]).sort(),
-        activitySessions: [...(activity?.keys() ?? [])].sort(),
-        activityIsEpoch: [...(activity?.values() ?? [])].every((n) => n > 1_700_000_000),
-        missingProbe: await adapter.probeSession("missing"),
-        missingKill: await adapter.killSession("missing"),
-        missingKeys: await adapter.sendKeys("missing", ["Enter"]),
-        killed: await adapter.killSession("seat a"),
-        afterKill: (await adapter.listSessions()).map((s) => s.name),
-      };
-      vi.stubEnv("TMUX_TMPDIR", emptyDir);
-      const probe = await adapter.probeSession("seat a");
-      result.noServerProbe = probe.state;
-      result.noServerCause = probe.state === "transport_unavailable" ? probe.cause : null;
-      result.noServerSessions = await adapter.listSessions();
-    });
-    return { result, files, calls, root: fs.realpathSync(root) };
-  } finally {
-    vi.unstubAllEnvs();
-    await stopOwnedTmuxServer(ownedDefaultSocket(serverDir), anchorEnv);
-  }
-}
-
-describe.skipIf(!nativeAvailable)("tmux shell and argv transports against a real server", () => {
-  let shell: Awaited<ReturnType<typeof scenario>>;
-  let argv: Awaited<ReturnType<typeof scenario>>;
+// The production adapter against a real core. tmux had two transports (a shell string and an argv) that had to observe and change the
+// same isolated server identically, and a second test counting the processes each started; hc has one transport, the socket, so this
+// is the one scenario, run once, with the same observations.
+describe.skipIf(!findHc())("hc adapter against a real core", () => {
+  let scratch: HcScratch;
+  let root: string;
+  let result: Record<string, unknown>;
   beforeAll(async () => {
-    shell = await scenario("shell");
-    argv = await scenario("argv");
-  }, 300000);
+    scratch = startHcScratch();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-exec-"));
+    vi.stubEnv("SHELL", "/bin/sh");
+    const adapter = new HcAdapter(scratch.client());
+    // An unrelated seat on the same core: the listings below must show it and the operations must leave it alone.
+    await adapter.createSession("anchor", root);
+    const created = await adapter.createSession("seat a", root);
+    const duplicate = await adapter.createSession("seat a", root);
+    // Type only once the pane's shell has drawn its prompt. Text typed earlier is echoed by the tty ahead of the prompt and the
+    // command's output then shares the prompt's line ("$ openrig-native"), so no line equals the marker.
+    for (let i = 0; i < 300 && !/[$#%>] ?$/.test((await adapter.capturePaneContent("seat a", 50) ?? "").trimEnd()); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const typed = await adapter.sendText("seat a", "echo 'openrig-'native", undefined, { bracketed: false });
+    const entered = await adapter.sendKeys("seat a", ["Enter"]);
+    // The quotes keep the typed line from matching: only the command's output contains the marker.
+    let single: string | null = null;
+    for (let i = 0; i < 100 && !single?.includes("openrig-native"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      single = await adapter.capturePaneContent("seat a", 50);
+    }
+    const batch = await adapter.capturePanesContent(["seat a", "missing"], 50);
+    const activity = await adapter.readAllSessionWindowActivity();
+    result = {
+      created,
+      duplicate: duplicate.ok ? duplicate : duplicate.code,
+      typed,
+      entered,
+      captured: single!.split("\n").filter((line) => line === "openrig-native"),
+      batchMatchesSingle: batch?.get("seat a")?.text === single,
+      batchMissing: batch?.get("missing")?.text,
+      sessions: (await adapter.listSessions()).map((s) => [s.name, s.windows, s.attached]).sort(),
+      activity: activity === null ? null : [...activity.keys()],
+      missingProbe: await adapter.probeSession("missing"),
+      missingKill: await adapter.killSession("missing"),
+      missingKeys: await adapter.sendKeys("missing", ["Enter"]),
+      killed: await adapter.killSession("seat a"),
+    };
+    await vi.waitFor(async () => expect((await adapter.probeSession("seat a")).state).toBe("absent"), { timeout: 10_000 });
+    result.afterKill = (await adapter.listSessions()).map((s) => s.name);
+    // The core is gone (nothing listens at this socket): the seat's state is unknown, not absent.
+    const unreachable = new HcAdapter(new HcClient(path.join(root, "no-core.sock")));
+    const probe = await unreachable.probeSession("seat a");
+    result.noCoreProbe = probe.state;
+    result.noCoreSessions = await unreachable.listSessions().then(() => "listed", (err: Error) => err.message);
+  }, 120_000);
+  afterAll(() => { vi.unstubAllEnvs(); scratch?.cleanup(); if (root) fs.rmSync(root, { recursive: true, force: true }); });
 
-  it("both transports observe and change the isolated server identically", () => {
-    expect(shell.result).toMatchObject({
+  it("creates, refuses a duplicate, types, captures, lists, probes, kills and reads an unreachable core", () => {
+    expect(result).toMatchObject({
       created: { ok: true },
       duplicate: "duplicate_session",
       typed: { ok: true },
@@ -113,41 +71,17 @@ describe.skipIf(!nativeAvailable)("tmux shell and argv transports against a real
       batchMatchesSingle: true,
       batchMissing: null,
       sessions: [["anchor", 1, false], ["seat a", 1, false]],
-      activitySessions: ["anchor", "seat a"],
-      activityIsEpoch: true,
       missingProbe: { state: "absent" },
       missingKill: { ok: false, code: "session_not_found" },
+      missingKeys: { ok: false, code: "session_not_found" },
+      // No activity clock on hc (hc-identity.ts): the listing is empty, which readers take as "no signal", never as idle.
+      activity: [],
       killed: { ok: true },
       afterKill: ["anchor"],
-      noServerProbe: "transport_unavailable",
-      noServerSessions: [],
+      noCoreProbe: "transport_unavailable",
     });
-    expect(shell.result.captured).toEqual(["openrig-native"]);
-    // The first line names the command, which each transport renders its own way; the tmux stderr after it,
-    // which every error classifier reads, is the same apart from each run's private directory.
-    const stderr = ({ result: r, root }: typeof shell) => {
-      const tail = (message: string) => message.split("\n").slice(1).join("\n").replaceAll(root, "<root>").trim();
-      return {
-        missingKill: tail((r.missingKill as { message: string }).message),
-        missingKeys: `${(r.missingKeys as { code: string }).code}: ${tail((r.missingKeys as { message: string }).message)}`,
-        noServerCause: tail(r.noServerCause as string),
-      };
-    };
-    expect(stderr(argv)).toEqual(stderr(shell));
-    expect(stderr(shell).missingKill).toBe("can't find session: missing");
-    expect(stderr(shell).noServerCause).toMatch(/^(no server running on|error connecting to) /);
-    const comparable = (r: Record<string, unknown>) => {
-      const { missingKill: _k, missingKeys: _s, noServerCause: _c, ...rest } = r;
-      return rest;
-    };
-    expect(comparable(argv.result)).toEqual(comparable(shell.result));
-  });
-
-  it("the shell transport starts /bin/sh for every call, the argv transport starts tmux by its path, or /bin/sh when PATH leaves it to the shell", () => {
-    const tmux = resolveOnPath("tmux", process.env.PATH);
-    if (tmux) expect(tmux).toMatch(/^\/.*\/tmux$/);
-    expect(shell.calls).toBeGreaterThan(15);
-    expect(shell.files).toEqual(Array(shell.calls).fill("/bin/sh"));
-    expect(argv.files).toEqual(Array(argv.calls).fill(tmux ?? "/bin/sh"));
+    // A listing the core could not give is a failure, never the empty list tmux gave for a server that was not running.
+    expect(result.noCoreSessions).toMatch(/^hc core not reachable at /);
+    expect(result.captured).toEqual(["openrig-native"]);
   });
 });
