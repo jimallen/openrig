@@ -381,6 +381,9 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
       expect(fake.entries("research")).toHaveLength(entriesBefore);
 
       forge(new Date(Date.now() - 10 * 60_000).toISOString()); // the same file, 10 minutes old: the runner's word has expired
+      // Still-forged check: the stale half passes for the right reason only if the forged head is really on disk, with the
+      // expired age, when the send is made. A runner tick that erased it would let the send through for another reason.
+      expect(sidecar(), "the stale forgery must still be the sidecar's content: a runner tick overwrote it").toMatchObject({ held: { requestId: FORGED } });
       const stale = await cli(["send", PDA_SEAT, "STALE-PROBE-OLD", "--json"]);
       expect(stale.code, JSON.stringify(stale)).toBe(0);
       await until("the stale-probe message to reach pda", () => fake.entries("research").length === entriesBefore + 1);
@@ -569,8 +572,10 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
     expect(receipt.verified).toBe(true);
     expect((await captureText(STUB_SEAT)).replace(/\n/g, "")).toContain(marker);
     expect(await captureText(PDA_SEAT)).not.toContain(marker);
-    expect(fake.postBodies).toHaveLength(posts); // the stub send never touched pda
-
+    // The stub send never touched pda. Asserted on this send's own marker, not on a bare post count: under heavy host
+    // starvation a post of an EARLIER row (a late retry or release) can land inside this window and move the count
+    // without the stub send having reached pda at all. A post carrying this marker is the only way it could.
+    expect(fake.postBodies.slice(posts).filter((b) => b.includes(marker))).toEqual([]);
   }, 120_000);
 
   it("row 10: the token canary is in the token file and pda saw it, and nowhere else: tmux env, process argv and env, capture, sidecar, outbox, logs", async () => {

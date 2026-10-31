@@ -220,6 +220,16 @@ describe("OF-191: a re-registration of the process that already passed keeps its
     expect((await register(s.f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
   });
 
+  // OF-191 nit: the rule is "start time NOT AFTER the earlier registration". A process that started in the very
+  // millisecond of its registration is the same process (kept); one millisecond later is a recycled pid (not kept).
+  it.each([["the same millisecond as the earlier registration", 0, "pass"], ["one millisecond after it", 1, "fail:exec_path_unresolved"]] as const)(
+    "a process started %s → %s", async (_label, afterMs, expected) => {
+      const s = await passedThen();
+      s.unreadable();
+      s.startedIs(new Date(Date.parse(s.first!.registered_at) + afterMs));
+      expect((await register(s.f, { execPath: null }))?.probe_result).toBe(expected);
+    });
+
   it.each([["unknown start time", null], ["start time lookup failed", "throw"]] as const)("%s → nothing is kept", async (_label, started) => {
     const s = await passedThen();
     s.unreadable();
