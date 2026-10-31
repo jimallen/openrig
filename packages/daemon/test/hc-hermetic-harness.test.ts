@@ -108,7 +108,7 @@ describe("hc scratch tripwire: attribution (unit)", () => {
   it("a root whose session is held by a live guard owned OUTSIDE this run's tree is foreign, not a leak", () => {
     const base = make(["hcs-abc123", "hcs-def456"]);
     try {
-      const guard = `/bin/sh -c while kill -0 ... reaper:hc-scratch 4242 env HC_SESSION=${sessionOfRoot("hcs-abc123")}`;
+      const guard = `/bin/sh -c while kill -0 ... reaper:hc-scratch 4242 env HC_SESSION=sabc123`;
       const found = findLeakedHcScratch(input(base, processes(guard, [[4242, 1]]), [4242]));
       expect(found.foreign).toEqual([join(base, "hcs-abc123")]);
       expect(found.leaked).toEqual([join(base, "hcs-def456")]);
@@ -118,7 +118,7 @@ describe("hc scratch tripwire: attribution (unit)", () => {
   it("a guard whose owner is a descendant of the main process is this run's: its root is a leak", () => {
     const base = make(["hcs-abc123"]);
     try {
-      const guard = `reaper:hc-scratch 4242 env HC_SESSION=${sessionOfRoot("hcs-abc123")}`;
+      const guard = `reaper:hc-scratch 4242 env HC_SESSION=sabc123`;
       const found = findLeakedHcScratch(input(base, processes(guard, [[4242, 2000], [2000, MAIN]]), [4242]));
       expect(found.leaked).toEqual([join(base, "hcs-abc123")]);
       expect(found.foreign).toEqual([]);
@@ -128,7 +128,7 @@ describe("hc scratch tripwire: attribution (unit)", () => {
   it("a guard whose owner is dead does not make its root foreign", () => {
     const base = make(["hcs-abc123"]);
     try {
-      const guard = `reaper:hc-scratch 4242 env HC_SESSION=${sessionOfRoot("hcs-abc123")}`;
+      const guard = `reaper:hc-scratch 4242 env HC_SESSION=sabc123`;
       expect(findLeakedHcScratch(input(base, processes(guard, [[4242, 1]]), [])).leaked).toEqual([join(base, "hcs-abc123")]);
     } finally { rmSync(base, { recursive: true, force: true }); }
   });

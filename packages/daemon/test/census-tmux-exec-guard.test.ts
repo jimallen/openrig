@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listSourceFiles, scanTmuxExecs, scanTree, type TmuxExecRule } from "./helpers/tmux-exec-scanner.js";
@@ -71,11 +72,24 @@ describe("tmux exec scanner: it would catch one (self-test)", () => {
     expect(found).toEqual([{ rule: "exec-call", file: "src/a.ts", line: 3, text: `spawnSync("tmux", ["-V"])` }]);
   });
 
-  it("test files are not scanned: the tree listing leaves them out and finds real source", () => {
+  it("test files and build output are not scanned: a scratch tree with one of each lists only the source files", () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-scan-tree-"));
+    try {
+      const put = (rel: string) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), "export {};\n"); };
+      for (const rel of [
+        "packages/a/src/keep.ts", "packages/a/src/deep/keep.tsx", "packages/b/src/keep.mjs",
+        "packages/a/src/x.test.ts", "packages/a/src/y.spec.ts", "packages/a/src/__tests__/z.ts", "packages/a/src/test/w.ts",
+        "packages/a/src/types.d.ts", "packages/a/src/node_modules/m/i.ts", "packages/a/src/dist/o.js", "packages/a/src/notes.md",
+        "packages/c/lib/not-src.ts", "other/src/not-a-package.ts",
+      ]) put(rel);
+      expect(listSourceFiles(root)).toEqual(["packages/a/src/deep/keep.tsx", "packages/a/src/keep.ts", "packages/b/src/keep.mjs"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("the tree listing finds the real source of every package", () => {
     const files = listSourceFiles(REPO_ROOT);
     expect(files.length).toBeGreaterThan(100);
     expect(files.every((f) => /^packages\/[^/]+\/src\//.test(f))).toBe(true);
-    expect(files.some((f) => /\.test\.[a-z]+$/.test(f) || /\/test\//.test(f))).toBe(false);
   });
 });
 
