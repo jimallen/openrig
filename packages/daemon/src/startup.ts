@@ -119,7 +119,7 @@ import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
 import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
 import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
 import { createNativeSettlementHandler, failOverToTmux } from "./domain/native-inbox-settlement.js";
-import { fileIncludes, listProcesses as listProcessesForNative, probeClaudeBinary, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
+import { fileIncludes, listProcesses as listProcessesForNative, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
 import { ClassificationAttemptLedger } from "./domain/classification-attempts.js";
@@ -1377,6 +1377,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     fileIncludes: (path, needle) => fileIncludes(path, needle),
     probeBinary: probeClaudeBinary,
     resolveExecPath: resolveClaudeExecPath,
+    processStartedAt: processStart,
     liveGeneration: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.generationUuid ?? null,
   });
   const deps: AppDeps = {

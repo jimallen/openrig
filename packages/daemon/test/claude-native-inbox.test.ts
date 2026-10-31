@@ -131,6 +131,125 @@ describe("registerEndpoint: the launch probe of the seat's claude binary (criter
   });
 });
 
+// OF-191: every SessionStart (a /compact, /clear, /resume) re-posts the endpoint of the SAME claude process. The probe
+// reads the binary file, so once the file was replaced or the host was too loaded for lsof/--version to answer, the
+// re-registration downgraded a seat whose process had already passed, and its messages fell back to tmux for the rest
+// of its life. Measured 2026-10-31: three seats re-registered as fail:exec_path_unresolved under their original pids.
+describe("OF-191: a re-registration of the process that already passed keeps its pass", () => {
+  const passing = { version: "2.1.316", literal: true, replacedSinceStart: false, nameEnvelope: true };
+  const HOUR = 3_600_000;
+  /** A seat that passed at launch (process started 1 h before the registration), then the file can no longer be read. */
+  async function passedThen(over?: Partial<NativeInboxDeps>) {
+    let resolves: string | null = "/opt/claude/bin/claude.exe";
+    let probe: Awaited<ReturnType<NativeInboxDeps["probeBinary"]>> | "throw" = passing;
+    let startedAt: Date | null | "throw" = null;
+    const f = make({
+      resolveExecPath: async () => resolves,
+      probeBinary: async () => { if (probe === "throw") throw new Error("spawn timed out"); return probe; },
+      processStartedAt: async () => { if (startedAt === "throw") throw new Error("ps failed"); return startedAt; },
+      ...over,
+    });
+    startedAt = new Date(f.clock.t - HOUR);
+    const first = await register(f, { execPath: null });
+    expect(first?.probe_result).toBe("pass");
+    f.clock.t += 2 * HOUR;
+    return {
+      f, first,
+      unreadable: () => { resolves = null; },
+      probeIs: (p: typeof probe) => { probe = p; },
+      startedIs: (s: typeof startedAt) => { startedAt = s; },
+    };
+  }
+
+  it("the binary file cannot be resolved from the pid (replaced on disk, or lsof timed out) → the pass, version, path and envelope stand; registered_at moves; the seat stays native-eligible", async () => {
+    const s = await passedThen();
+    s.unreadable();
+    const r = await register(s.f, { execPath: null });
+    expect([r?.probe_result, r?.claude_version, r?.exec_path, r?.name_envelope, r?.registered_at])
+      .toEqual(["pass", "2.1.316", "/opt/claude/bin/claude.exe", 1, new Date(s.f.clock.t).toISOString()]);
+    expect(s.f.inbox.endpointFor("node-a")).toMatchObject({ probe_result: "pass", claude_version: "2.1.316" });
+    const e = await s.f.inbox.eligibility(SEAT, SENDER);
+    expect(e.ok).toBe(true);
+  });
+
+  it.each([
+    ["--version came back empty (timed out under load)", { version: null, literal: true, replacedSinceStart: false }],
+    ["the file was replaced after the process started", { version: "2.1.316", literal: true, replacedSinceStart: true }],
+    ["the probe threw", "throw"],
+  ] as const)("%s → the pass stands", async (_label, probe) => {
+    const s = await passedThen();
+    s.probeIs(probe as never);
+    const r = await register(s.f, { execPath: null });
+    expect([r?.probe_result, r?.claude_version]).toEqual(["pass", "2.1.316"]);
+  });
+
+  it("a genuine inject-format failure still fails closed, even for the same process", async () => {
+    const s = await passedThen();
+    s.probeIs({ version: "2.1.316", literal: false, replacedSinceStart: false });
+    expect((await register(s.f, { execPath: null }))?.probe_result).toBe("fail:inject_format_absent");
+  });
+
+  it("a readable binary is re-probed: the recorded version follows the probe, nothing is carried over", async () => {
+    const s = await passedThen();
+    s.probeIs({ version: "2.1.317", literal: true, replacedSinceStart: false, nameEnvelope: false });
+    const r = await register(s.f, { execPath: null });
+    expect([r?.probe_result, r?.claude_version, r?.name_envelope]).toEqual(["pass", "2.1.317", 0]);
+  });
+
+  it("a new process (new pid) is probed afresh: unreadable binary → fail; readable → its own version", async () => {
+    const s = await passedThen();
+    s.unreadable();
+    expect((await register(s.f, { execPath: null, claudePid: 4343 }))?.probe_result).toBe("fail:exec_path_unresolved");
+    const t = await passedThen();
+    t.probeIs({ version: "2.1.400", literal: true, replacedSinceStart: false });
+    expect(await register(t.f, { execPath: null, claudePid: 4343 })).toMatchObject({ probe_result: "pass", claude_version: "2.1.400" });
+  });
+
+  it("a recycled pid (the process started after the earlier registration) is not the process that passed", async () => {
+    const s = await passedThen();
+    s.unreadable();
+    s.startedIs(new Date(s.f.clock.t - 60_000));
+    expect((await register(s.f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+
+  it.each([["unknown start time", null], ["start time lookup failed", "throw"]] as const)("%s → nothing is kept", async (_label, started) => {
+    const s = await passedThen();
+    s.unreadable();
+    s.startedIs(started as never);
+    expect((await register(s.f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+
+  it("without a start-time lookup wired, nothing is kept", async () => {
+    const s = await passedThen({ processStartedAt: undefined });
+    s.unreadable();
+    expect((await register(s.f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+
+  it.each([
+    ["another generation", { generation: "gen-2" }],
+    ["another session name", { sessionName: "other@rig1" }],
+  ] as const)("%s → a different launch, nothing is kept", async (_label, over) => {
+    const s = await passedThen();
+    s.unreadable();
+    expect((await register(s.f, { execPath: null, ...over }))?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+
+  it("another socket → nothing is kept", async () => {
+    const s = await passedThen();
+    s.unreadable();
+    const r = await s.f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: "/tmp/cc-socks/9999.sock",
+      transcriptPath: TRANSCRIPT, claudePid: 4242, execPath: null });
+    expect(r?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+
+  it("an earlier failure is never turned into a pass by a later failure", async () => {
+    const f = make({ resolveExecPath: async () => null, processStartedAt: async () => new Date(f.clock.t - HOUR) });
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+    f.clock.t += HOUR;
+    expect((await register(f, { execPath: null }))?.probe_result).toBe("fail:exec_path_unresolved");
+  });
+});
+
 describe("ncomms-3d: the sender-name envelope", () => {
   it.each([
     ["the probe passes and finds the parser", { version: "2.1.314", literal: true, replacedSinceStart: false, nameEnvelope: true }, 1],

@@ -82,7 +82,7 @@ export function fileIncludes(path: string, needle: string, chunkBytes = 4 * 1024
 }
 
 /** The start time of a process (`ps -o lstart=`), or null. */
-async function processStart(pid: number): Promise<Date | null> {
+export async function processStart(pid: number): Promise<Date | null> {
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 5_000, env: { ...process.env, LC_ALL: "C" } });
     const t = Date.parse(stdout.trim());
