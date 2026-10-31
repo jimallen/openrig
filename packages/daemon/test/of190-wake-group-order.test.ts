@@ -45,8 +45,7 @@ describe("OF-190: a coalesced wake group is sent in staging order", () => {
     await stage(["k2", "k3", "k10"]);
     // The earliest row has another sender: the delivery is still addressed as the row that started it (k3's sender).
     db.prepare("UPDATE outbox_entries SET sender_session = 'earlier@rig' WHERE outbox_id = 'wake-intent-k2'").run();
-    const deliver = (repo as unknown as { deliverWakeIntent(id: string): Promise<string> }).deliverWakeIntent.bind(repo);
-    await deliver("wake-intent-k3");
+    await repo["deliverWakeIntent"]("wake-intent-k3");
     expect(texts).toEqual(["k2\nk3\nk10"]);
     expect(actors).toEqual(["planner@rig"]);
   });
