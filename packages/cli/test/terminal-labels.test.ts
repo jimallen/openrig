@@ -21,7 +21,7 @@ describe("labels restated in the CLI equal the daemon's hc-placement", () => {
   // Every shape of lead: the Chief of Staff, a lead-looking name, and the first seat when none looks like a lead.
   it.each([
     ["the Chief of Staff among others", ["dev-impl@r", "exec-cos@r", "dev-qa@r"]],
-    ["the Chief of Staff after a lead-looking seat", ["dev-lead@r", "exec-cos@r"]],
+    ["the Chief of Staff after a lead-looking seat", ["dev.lead.x@r", "exec-cos@r"]],
     ["a lead-looking name", ["dev-impl@r", "dev-lead@r", "dev-qa@r"]],
     ["an orchestrator", ["dev-impl@r", "orch.main@r"]],
     ["no lead-looking name", ["dev-impl@r", "dev-qa@r"]],
