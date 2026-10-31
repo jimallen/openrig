@@ -2684,6 +2684,18 @@ describe("RestoreOrchestrator", () => {
     expect(sessionRegistry.getBindingForNode(newNode.id)).toMatchObject({ nodeId: newNode.id, tmuxSession: sessionName, tmuxPane: "%7" });
   });
 
+  it("a regrown seat bound to an hc terminal gets its terminal address back with its prior binding when the launch fails", async () => {
+    const { snap, newNode, sessionName } = snapshotThenRegrow("regrown-hc-launchfail-rig");
+    sessionRegistry.updateBinding(newNode.id, { attachmentType: "hc", tmuxSession: sessionName, terminalAddress: "t7" });
+    const tmux = mockTmux();
+    (tmux.createSession as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false as const, code: "unknown", message: "simulated launch failure" });
+
+    const result = await createOrchestrator({ tmux }).restore(snap.id);
+
+    expect(result.ok ? null : `${result.code}: ${result.message}`).toBeNull();
+    expect(sessionRegistry.getBindingForNode(newNode.id)).toMatchObject({ nodeId: newNode.id, attachmentType: "hc", tmuxSession: sessionName, terminalAddress: "t7", tmuxPane: null });
+  });
+
   it("a regrown seat whose resume concludes failed is rolled back to its prior binding on the NEW node id", async () => {
     const { snap, newNode, sessionName } = snapshotThenRegrow("regrown-rollback-rig");
     sessionRegistry.updateBinding(newNode.id, { tmuxSession: sessionName, tmuxPane: "%7" });

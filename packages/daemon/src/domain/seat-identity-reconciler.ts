@@ -1,5 +1,6 @@
 import { observeClaudePaneProcess, observeClaudePaneRuntime, observeCodexPaneProcess, listNativeProcesses, type NativeProcessLister, type NativeProcessObservation } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
+import { registeredPaneSql } from "./binding-pane.js";
 import { claudeResumeRotation } from "./session-registry.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -118,7 +119,7 @@ export class SeatIdentityReconciler {
   private runningSeats(): RunningSeatRow[] {
     return this.db.prepare(`
       SELECT n.id as node_id, n.runtime as runtime,
-             s.session_name as session_name, b.tmux_pane as tmux_pane, s.resume_token as resume_token,
+             s.session_name as session_name, ${registeredPaneSql(this.db)} as tmux_pane, s.resume_token as resume_token,
              s.resume_provenance as resume_provenance,
              s.resume_rotated_from as resume_rotated_from,
              s.resume_rotated_process as resume_rotated_process,
@@ -129,7 +130,7 @@ export class SeatIdentityReconciler {
       LEFT JOIN bindings b ON b.node_id = n.id
       WHERE s.status = 'running'
         AND s.session_name IS NOT NULL
-        AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+        AND COALESCE(b.attachment_type, 'tmux') IN ('tmux', 'hc')
     `).all() as RunningSeatRow[];
   }
 

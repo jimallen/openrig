@@ -25,6 +25,7 @@
 // (ssh vs http vs unknown) is resolved through the operator's read-only hosts
 // registry via the injected `resolveHost`.
 
+import { hcTerminalName } from "../../adapters/hc-seat.js";
 import type { HostEntry } from "../hosts/hosts-registry-reader.js";
 import type {
   AbsentSeat,
@@ -54,7 +55,9 @@ export interface ViewMemberInput {
   /** Pane label — `<agent> · <slice>` (AC-7). */
   label: string;
   /**
-   * The hc terminal to attach to (the seat's hc name, `hcTerminalName(seat)`); null if the seat has none.
+   * The seat's session name as the host knows it (the canonical name; `deriveViewMembers` and `savedMemberToInput` fill it so,
+   * and `hasSession` asks about it); null if the seat has none. It is NOT the hc terminal name: the composer attaches to
+   * `hcTerminalName(tmuxSession)`, because hc refuses a canonical name such as `verify-qa@eztrack` as a terminal name.
    * The field keeps its tmux-era name until the callers that fill it are renamed with it.
    */
   tmuxSession: string | null;
@@ -160,7 +163,7 @@ export function composeView(
         seat: m.seat,
         ...(m.runtime ? { runtime: m.runtime } : {}),
         label: m.label,
-        paneCommand: attach(`${m.host}/${m.tmuxSession}`),
+        paneCommand: attach(`${m.host}/${hcTerminalName(m.tmuxSession)}`),
         readOnly: m.readOnly,
       });
       continue;
@@ -187,7 +190,7 @@ export function composeView(
       seat: m.seat,
       ...(m.runtime ? { runtime: m.runtime } : {}),
       label: m.label,
-      paneCommand: attach(m.tmuxSession),
+      paneCommand: attach(hcTerminalName(m.tmuxSession)),
       readOnly: m.readOnly,
     });
   }

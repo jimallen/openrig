@@ -270,6 +270,20 @@ describe("WhoamiService", () => {
         expect(result.commands.sendExamples).toEqual(["rig send dev-live@my-rig 'message' --verify"]);
       });
 
+      it("an hc-bound peer whose terminal the reconciler confirmed gone is not reachable (its verdict names the terminal address, its tmux_pane is NULL)", () => {
+        const { rig, self } = seedSelfWithRig();
+        const dead = seedPeer("dev.killed", rig.id, [{ name: "dev-killed@my-rig", status: "running" }], "dev-killed@my-rig");
+        sessionRegistry.updateBinding(dead.id, { attachmentType: "hc", terminalAddress: "t7" });
+        seedPeer("dev.live", rig.id, [{ name: "dev-live@my-rig", status: "running" }], "dev-live@my-rig");
+        new SeatIdentityStore(db).upsert(verdict(dead.id, "dev-killed@my-rig", { evidence: { registeredPane: "t7", observedPid: null, observedCommand: null, matchedLayer: null } }));
+
+        const result = svc.resolve({ nodeId: self.id })!;
+
+        expect(db.prepare("SELECT tmux_pane FROM bindings WHERE node_id = ?").get(dead.id)).toEqual({ tmux_pane: null });
+        expect(result.peers.find((p) => p.logicalId === "dev.killed")!.reachable).toBe(false);
+        expect(result.peers.find((p) => p.logicalId === "dev.live")!.reachable).toBe(true);
+      });
+
       it("stays reachable on verdicts that do not prove the session gone (verified, tmux_unavailable, mismatch)", () => {
         const { rig, self } = seedSelfWithRig();
         const kinds: Array<[string, Partial<SeatIdentityVerdict>]> = [

@@ -9,6 +9,7 @@ import {
 import type { UsageSamplesStore, ProviderWindowSampleInput } from "./usage-samples-store.js";
 import type { ContextUsage } from "./types.js";
 import { readFreshStartupPending } from "./startup-orchestrator.js";
+import { registeredPaneSql } from "./binding-pane.js";
 
 /** Default polling interval: 30 seconds. */
 export const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -234,7 +235,7 @@ export class ContextMonitor {
         b.id AS binding_id,
         COALESCE(b.attachment_type, 'tmux') AS binding_attachment_type,
         b.tmux_session AS binding_session,
-        b.tmux_pane AS binding_pane,
+        ${registeredPaneSql(this.db)} AS binding_pane,
         b.tmux_window AS binding_window,
         b.updated_at AS binding_updated_at,
         (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id = n.id

@@ -61,7 +61,7 @@ export async function resumeRunningTranscriptCaptures(
         ORDER BY s2.id DESC
         LIMIT 1
       )
-      AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+      AND COALESCE(b.attachment_type, 'tmux') IN ('tmux', 'hc')
       AND b.tmux_session = s.session_name
   `).all() as RunningTranscriptSession[];
 

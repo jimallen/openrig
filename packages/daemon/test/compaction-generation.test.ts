@@ -29,17 +29,19 @@ afterEach(() => {
 function fixture(kind: "legacy" | "fresh" | "adopt" = "legacy", primaryMiss = false) {
   const db = createDb();
   cleanup.push(() => db.close());
-  // Seed a valid running binding before migration 060, then migrate normally.
+  // Seed a valid running session before migration 060, then migrate normally.
   // No deleted ledger rows, failed mint or null guard double creates the gap.
   migrate(db, ALL_MIGRATIONS.filter(m => m.name < "060"));
   db.prepare("INSERT INTO rigs (id,name) VALUES (?,?)").run("test-rig-id", "test-rig");
   db.prepare("INSERT INTO nodes (id,rig_id,logical_id,role,runtime) VALUES (?,?,?,?,?)")
     .run(node, "test-rig-id", "writer", "worker", "claude-code");
-  db.prepare("INSERT INTO bindings (id,node_id,tmux_session,tmux_pane) VALUES (?,?,?,?)")
-    .run("test-binding", node, seat, "%1");
   if (kind === "legacy") db.prepare(`INSERT INTO sessions (id,node_id,session_name,status,origin,startup_status)
     VALUES (?,?,?,'running','launched','ready')`).run("000legacy-session", node, seat);
   migrate(db, ALL_MIGRATIONS);
+  // The seat's binding is a tmux pane, seeded after every migration: migration 121 moves a tmux binding to hc (its pane id
+  // becomes NULL), and this suite is about a seat bound to the pane "%1". Migration 060 never reads bindings.
+  db.prepare("INSERT INTO bindings (id,node_id,attachment_type,tmux_session,tmux_pane) VALUES (?,?,?,?,?)")
+    .run("test-binding", node, "tmux", seat, "%1");
   const registry = new SessionRegistry(db), rigRepo = new RigRepository(db);
   if (kind === "fresh") {
     const s = registry.registerSession(node, seat);

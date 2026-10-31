@@ -9,6 +9,7 @@ import type { AgentActivityStore } from "./agent-activity-store.js";
 import type { AgentActivity, SeatIdentityVerdict } from "./types.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
+import { registeredPaneOf, registeredPaneSql } from "./binding-pane.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { verifyClaudePaneProcess, verifyClaudePaneRuntime, verifyCodexPaneProcess, type NativeProcessRow, type NativeProcessLister, type ClaudeResumeRotation, findExactNativeResumeProcess, listNativeProcesses } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
@@ -57,7 +58,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
     return { ok: false, detail: `tmux pane lookup failed: ${(error as Error).message}` };
   }
   if (panes.length !== 1) {
-    const registeredPane = input.sessionRegistry.getBindingForNode(input.nodeId)?.tmuxPane ?? null;
+    const registeredPane = registeredPaneOf(input.sessionRegistry.getBindingForNode(input.nodeId));
     identityStore.upsert({
       nodeId: input.nodeId,
       verdict: panes.length === 0 ? "pane_missing" : "mismatch",
@@ -164,9 +165,12 @@ export async function rebindAndVerifyPaneIdentity(input: {
   // Persist the replacement pane before the verdict so both records describe
   // the same current binding. A non-green verdict remains applicable and
   // therefore keeps the public topology in attention_required.
+  // The pane id the host reports is the terminal address for an hc seat: it belongs in `terminal_address`, never in `tmux_pane`.
   input.sessionRegistry.updateBinding(input.nodeId, {
     tmuxSession: input.sessionName,
-    tmuxPane: pane.id,
+    ...(input.sessionRegistry.getBindingForNode(input.nodeId)?.attachmentType === "hc"
+      ? { terminalAddress: pane.id }
+      : { tmuxPane: pane.id }),
   });
   identityStore.upsert(verdict);
 
@@ -560,7 +564,7 @@ export class SeatAttentionReconciler {
   } | null {
     const latest = findLatestSessionNameMatch(this.deps.sessionRegistry.db, sessionName);
     const row = latest ? this.deps.sessionRegistry.db.prepare(
-      `SELECT s.id, s.node_id, n.rig_id, n.runtime, s.resume_token, b.tmux_pane, s.startup_status, s.status,
+      `SELECT s.id, s.node_id, n.rig_id, n.runtime, s.resume_token, ${registeredPaneSql(this.deps.sessionRegistry.db)} AS tmux_pane, s.startup_status, s.status,
               (SELECT e.payload FROM events e WHERE e.node_id = s.node_id AND e.type IN ('node.startup_attention_required','node.startup_failed') ORDER BY e.seq DESC LIMIT 1) as latest_error_payload
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id

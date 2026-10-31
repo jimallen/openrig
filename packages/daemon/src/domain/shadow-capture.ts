@@ -3,6 +3,7 @@ import type { NodeInventoryEntry } from "./types.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CaptureObserver, type Observation } from "./capture-observer.js";
+import { registeredPaneSql } from "./binding-pane.js";
 
 export interface ShadowConfig { destination: string; maxRecords: number; maxBytes: number; capacity: number; maxQueuedBytes: number; maxObservationBytes: number }
 export interface ShadowWriter { append(bytes: string): Promise<void>; close(): Promise<void> }
@@ -103,7 +104,7 @@ export function inventoryCaptureOptions(db: Database.Database, capture?: ShadowC
   if (!capture) return {};
   return { captureObserver: capture.observer, observationBinding: (entry: NodeInventoryEntry) => {
     try {
-      const row = db.prepare(`SELECT b.tmux_pane AS pane, o.generation_uuid AS occupant
+      const row = db.prepare(`SELECT ${registeredPaneSql(db, "b")} AS pane, o.generation_uuid AS occupant
         FROM bindings b LEFT JOIN occupant_tenures o ON o.node_id=b.node_id
         AND o.generation_ordinal=(SELECT MAX(generation_ordinal) FROM occupant_tenures WHERE node_id=b.node_id)
         WHERE b.node_id=? AND b.tmux_session=? LIMIT 2`).all(entry.nodeId, entry.canonicalSessionName) as {pane: string | null; occupant: string | null}[];

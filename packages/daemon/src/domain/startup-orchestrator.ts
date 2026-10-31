@@ -29,6 +29,7 @@ import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister, type NativeRuntime } from "./native-process-lineage.js";
 import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForegroundState, type PresentMemo } from "./resume-settle.js";
 import { readStoredJsonObject } from "./stored-json.js";
+import { registeredPaneOf } from "./binding-pane.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
 const STARTUP_SUBMIT_CAPTURE_LINES = 200;
@@ -420,7 +421,7 @@ export class StartupOrchestrator {
           if (launchResult.ok) {
             appliedLaunch = launchResult.appliedLaunch;
             if (input.adapter.runtime === "claude-code" && launchResumeToken?.trim()) {
-              await this.recordClaudeResumeLaunch(input.sessionId, input.binding.tmuxPane ?? input.binding.tmuxSession, launchResumeToken.trim(), launchResult.launchedProcess);
+              await this.recordClaudeResumeLaunch(input.sessionId, registeredPaneOf(input.binding) ?? input.binding.tmuxSession, launchResumeToken.trim(), launchResult.launchedProcess);
             }
             const notice = nonInterruptiveNotice(input.adapter.runtime, input.binding);
             if (notice) warnings.push(`${input.sessionName ?? input.nodeId}: ${notice}`);
@@ -473,7 +474,7 @@ export class StartupOrchestrator {
             }
             // The launch is retained for reconciliation; record its process as it does when ready.
             if (input.adapter.runtime === "claude-code" && normalizedResumeToken) {
-              await this.recordClaudeResumeLaunch(input.sessionId, input.binding.tmuxPane ?? input.binding.tmuxSession, normalizedResumeToken, launchResult.launchedProcess);
+              await this.recordClaudeResumeLaunch(input.sessionId, registeredPaneOf(input.binding) ?? input.binding.tmuxSession, normalizedResumeToken, launchResult.launchedProcess);
             }
             errors.push(`Harness launch requires attention: ${launchResult.error}`);
             // isRestore selects context, not native continuity: pod-aware exact
@@ -769,7 +770,7 @@ export class StartupOrchestrator {
 
   /** Is the resumed runtime still in this pane? See paneForegroundState. `memo` lives on one startup's deliveries (R5). */
   private foregroundState(binding: NodeBinding, runtime: NativeRuntime, memo?: PresentMemo): Promise<PaneForegroundState> {
-    return paneForegroundState(runtime, { session: binding.tmuxSession, pane: binding.tmuxPane, tmux: this.tmuxAdapter,
+    return paneForegroundState(runtime, { session: binding.tmuxSession, pane: registeredPaneOf(binding), tmux: this.tmuxAdapter,
       listProcesses: this.listProcesses, ...(memo ? { memo, now: this.now } : {}) });
   }
 

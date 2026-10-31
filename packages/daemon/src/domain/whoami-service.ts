@@ -7,6 +7,7 @@ import { SeatIdentityStore } from "./seat-identity-store.js";
 import { applicableVerdict } from "./node-inventory.js";
 import { identityVerdictConfirmsSessionMissing, type BindingAttachmentType, type SeatIdentityVerdict } from "./types.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
+import { hasTerminalAddress } from "./binding-pane.js";
 
 export interface WhoamiResult {
   resolvedBy: "node_id" | "session_name";
@@ -451,13 +452,13 @@ export class WhoamiService {
     if (verdict !== null && verdict.sessionName === sessionName) {
       const current = this.db.prepare(`
         SELECT s.id as session_id, s.session_name, s.created_at as session_created_at,
-               b.tmux_pane as binding_tmux_pane, n.handover_at
+               b.tmux_pane as binding_tmux_pane, b.attachment_type as binding_attachment_type, ${hasTerminalAddress(this.db) ? "b.terminal_address" : "NULL"} as binding_terminal_address, n.handover_at
         FROM nodes n
         LEFT JOIN sessions s ON s.node_id = n.id
           AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
         LEFT JOIN bindings b ON b.node_id = n.id
         WHERE n.id = ?
-      `).get(nodeId) as { session_id: string | null; session_name: string | null; session_created_at: string | null; binding_tmux_pane: string | null; handover_at: string | null } | undefined;
+      `).get(nodeId) as { session_id: string | null; session_name: string | null; session_created_at: string | null; binding_tmux_pane: string | null; binding_attachment_type: string | null; binding_terminal_address: string | null; handover_at: string | null } | undefined;
       if (current && current.session_name !== null
         && identityVerdictConfirmsSessionMissing(applicableVerdict(verdict, { ...current, session_name: current.session_name }))) return false;
     }

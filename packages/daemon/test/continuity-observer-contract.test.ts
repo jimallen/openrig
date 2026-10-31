@@ -28,7 +28,7 @@ describe("S20 P5 current-occupant observer contract", () => {
     const reconciler = source("../src/domain/seat-identity-reconciler.ts");
 
     expect(handover).toMatch(/UPDATE bindings[\s\S]*tmux_pane = \?/);
-    expect(reconciler).toMatch(/b\.tmux_pane as tmux_pane/);
+    expect(reconciler).toMatch(/registeredPaneSql\(this\.db\)\} as tmux_pane/);
     expect(reconciler).toMatch(/getPanePid\(seat\.tmux_pane\)/);
   });
 });

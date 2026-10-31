@@ -17,6 +17,7 @@
 
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 
@@ -75,11 +76,14 @@ function member(overrides: Partial<ViewMemberInput> & { seat: string }): ViewMem
   };
 }
 
+/** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
+const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
+
 describe("view-composer partition vectors", () => {
   it("local live seat → hc attach -- <terminal> (writable: a plain attach)", () => {
     const v = composeView("v", [member({ seat: "dev-a@rig" })], ctxWith([]));
     expect(v.opened).toHaveLength(1);
-    expect(v.opened[0]!.paneCommand).toBe("hc attach -- 'dev-a@rig'");
+    expect(v.opened[0]!.paneCommand).toBe(`hc attach -- '${hcName("dev-a@rig")}'`);
     expect(v.opened[0]!.readOnly).toBe(false);
     expect(v.absent).toHaveLength(0);
     expect(v.degraded).toHaveLength(0);
@@ -87,16 +91,16 @@ describe("view-composer partition vectors", () => {
 
   it("view-only / cross-rig read-only seat → hc attach --observe (never types, never resizes)", () => {
     const v = composeView("v", [member({ seat: "dev-a@rig", readOnly: true })], ctxWith([]));
-    expect(v.opened[0]!.paneCommand).toBe("hc attach --observe -- 'dev-a@rig'");
+    expect(v.opened[0]!.paneCommand).toBe(`hc attach --observe -- '${hcName("dev-a@rig")}'`);
     expect(v.opened[0]!.readOnly).toBe(true);
   });
 
   it("ssh host → hc attach -- '<host id>/<terminal>' through the hc machine of that name; read-only adds --observe", () => {
     const rw = composeView("v", [member({ seat: "s@r", host: "vm1", tmuxSession: "s@r" })], ctxWith([SSH_HOST]));
-    expect(rw.opened[0]!.paneCommand).toBe("hc attach -- 'vm1/s@r'");
+    expect(rw.opened[0]!.paneCommand).toBe(`hc attach -- 'vm1/${hcName("s@r")}'`);
 
     const ro = composeView("v", [member({ seat: "s@r", host: "vm1", readOnly: true })], ctxWith([SSH_HOST]));
-    expect(ro.opened[0]!.paneCommand).toBe("hc attach --observe -- 'vm1/s@r'");
+    expect(ro.opened[0]!.paneCommand).toBe(`hc attach --observe -- 'vm1/${hcName("s@r")}'`);
 
     // The registry's ssh user and target no longer reach the command: the machine link owns them.
     expect(rw.opened[0]!.paneCommand).not.toContain("admin");
@@ -106,17 +110,18 @@ describe("view-composer partition vectors", () => {
 
   // The shell string carries a host id and a terminal name from our own data; both must stay ONE shell word,
   // and neither may be read by hc as an option.
-  it("a shell-sensitive host id or terminal name stays ONE quoted argument after `--`", () => {
+  it("a shell-sensitive host id stays ONE quoted argument after `--`, and a session name with a quote reaches hc only as its digest", () => {
     const NASTY: HostEntry = { id: "a b; rm -rf /", transport: "ssh", target: "x" };
     const v = composeView("v", [member({ seat: "s@r", host: NASTY.id, tmuxSession: "u'x" })], ctxWith([NASTY]));
     expect(v.opened).toHaveLength(1);
-    expect(v.opened[0]!.paneCommand).toBe("hc attach -- 'a b; rm -rf //u'\"'\"'x'");
+    expect(v.opened[0]!.paneCommand).toBe(`hc attach -- 'a b; rm -rf //${hcName("u'x")}'`);
     expect(v.opened[0]!.paneCommand).not.toContain("; rm -rf / hc");
   });
 
-  it("a terminal name that starts with '-' follows `--`, so it is a name and not an option", () => {
-    const v = composeView("v", [member({ seat: "-x", tmuxSession: "-x", readOnly: true })], ctxWith([]));
-    expect(v.opened[0]!.paneCommand).toBe("hc attach --observe -- '-x'");
+  it("a machine name that starts with '-' follows `--`, so it is a name and not an option", () => {
+    const DASHED: HostEntry = { id: "-x", transport: "ssh", target: "x" };
+    const v = composeView("v", [member({ seat: "s@r", host: DASHED.id, readOnly: true })], ctxWith([DASHED]));
+    expect(v.opened[0]!.paneCommand).toBe(`hc attach --observe -- '-x/${hcName("s@r")}'`);
   });
 
   it("http host → NO pane, honest-degrade with the exact reason class", () => {
@@ -203,9 +208,9 @@ describe("view-composer partition vectors", () => {
     collect(grid);
 
     expect(panes.filter((pane) => pane.label).map((pane) => pane.command)).toEqual([
-      ["sh", "-c", "env HERDR_AGENT=claude hc attach -- 'claude@rig'"],
-      ["sh", "-c", "env HERDR_AGENT=codex hc attach -- 'codex@rig'"],
-      ["sh", "-c", "hc attach -- 'operator@rig'"],
+      ["sh", "-c", `env HERDR_AGENT=claude hc attach -- '${hcName("claude@rig")}'`],
+      ["sh", "-c", `env HERDR_AGENT=codex hc attach -- '${hcName("codex@rig")}'`],
+      ["sh", "-c", `hc attach -- '${hcName("operator@rig")}'`],
     ]);
     expect(panes.at(-1)?.command).toEqual(["sh"]);
   });

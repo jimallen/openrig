@@ -1172,6 +1172,7 @@ export class RigRepository {
       tmuxSession: row.tmux_session,
       tmuxWindow: row.tmux_window,
       tmuxPane: row.tmux_pane,
+      terminalAddress: row.terminal_address ?? null,
       externalSessionName: row.external_session_name ?? null,
       cmuxWorkspace: row.cmux_workspace,
       cmuxSurface: row.cmux_surface,
@@ -1258,6 +1259,8 @@ interface BindingRow {
   tmux_session: string | null;
   tmux_window: string | null;
   tmux_pane: string | null;
+  /** Absent on a database that stops before migration 121. */
+  terminal_address?: string | null;
   external_session_name: string | null;
   cmux_workspace: string | null;
   cmux_surface: string | null;

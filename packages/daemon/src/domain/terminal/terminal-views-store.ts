@@ -153,7 +153,7 @@ export interface LiveSeatRow {
   canonicalSessionName: string | null;
   /** Runtime identity from the live node inventory (for provider-specific agent hints). */
   runtime?: string | null;
-  /** "tmux" for tmux-backed seats; other kinds have no attachable pane. */
+  /** "tmux" or "hc" for seats in a terminal; other kinds have no attachable terminal. */
   attachmentType: string | null;
   /** The tmux session name (canonical session name for tmux-backed seats). */
   tmuxSession?: string | null;
@@ -183,7 +183,7 @@ export function deriveViewMembers(
 ): ViewMemberInput[] {
   const members: ViewMemberInput[] = [];
   for (const row of rows) {
-    if (row.attachmentType !== "tmux") continue;
+    if (row.attachmentType !== "tmux" && row.attachmentType !== "hc") continue;
     const seat = row.canonicalSessionName;
     if (!seat) continue;
     const tmuxSession = row.tmuxSession ?? row.canonicalSessionName;

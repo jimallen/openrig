@@ -1,6 +1,7 @@
 // OPR.0.6.0.8 — open the whole rig in Herdr. A real TerminalService + real HerdrAdapter over an
 // injected socket transport, with a synthetic 17-seat rig. These prove what the adapter SENDS and
 // how it reads replies; they do not prove what a real Herdr does with duplicate labels or focus.
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { TerminalService, type TerminalServiceDeps } from "../src/domain/terminal/terminal-service.js";
 import { HerdrAdapter, HERDR_PANES_PER_PAGE, HERDR_PANES_UNCONFIRMED_NOTE, planHerdrLayout } from "../src/domain/terminal/herdr-adapter.js";
@@ -9,11 +10,15 @@ import { MAX_COLS, MAX_PER_WORKSPACE } from "../src/domain/cmux-layout-service.j
 import type { HerdrResult, HerdrTransport } from "../src/domain/terminal/herdr-transport.js";
 import type { ComposedView, OpenViewResult, TerminalProvider } from "../src/domain/terminal/terminal-provider.js";
 
+/** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
+const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
+
+
 const RIG = "big";
 const TEAM_HANDOFF_NOTE = "The shared dashboard is the overview; the team's lead pane is where you can talk about the work. Check the opened seats and any absent or degraded seats above. Can you see the team? A created workspace or a capture alone does not confirm what is visible on your screen.";
 const rows = Array.from({ length: 17 }, (_, i) => {
   const s = `seat-${String(i + 1).padStart(2, "0")}@${RIG}`;
-  return { canonicalSessionName: s, attachmentType: "tmux" as const, tmuxSession: s, rigName: RIG, logicalId: `pod.s${i + 1}` };
+  return { canonicalSessionName: s, attachmentType: "hc" as const, tmuxSession: s, rigName: RIG, logicalId: `pod.s${i + 1}` };
 });
 
 type Req = { method: string; params: Record<string, unknown> };
@@ -105,7 +110,7 @@ describe("S08 — the rig opens as one Herdr space, 16 cells per tab", () => {
     const applies = requests.filter((r) => r.method === "layout.apply");
     expect(applies.map((a) => a.params["tab_label"])).toEqual([`openrig:rig:${RIG}#${preview.planId.slice(0, 16)}#tok/1`, `openrig:rig:${RIG}#${preview.planId.slice(0, 16)}#tok/2`]);
     expect(applies.map((a) => cellSeats(a.params["root"]).length)).toEqual([16, 1]);
-    expect([...cellSeats(applies[0]!.params["root"]), ...cellSeats(applies[1]!.params["root"])]).toEqual(rows.map((r) => r.canonicalSessionName));
+    expect([...cellSeats(applies[0]!.params["root"]), ...cellSeats(applies[1]!.params["root"])]).toEqual(rows.map((r) => hcName(r.canonicalSessionName)));
   });
 
   it("the first tab is a 4×4 equal grid; the preview plan pages the same way", async () => {

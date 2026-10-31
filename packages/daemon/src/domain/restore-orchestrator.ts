@@ -97,6 +97,7 @@ const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 // existing export surface and the execution call sites below are unchanged.
 import { resolveActiveSnapshotSession, activeOccupantAmbiguityError, freshSeatLaunchCommand } from "./active-occupant.js";
 import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
+import { registeredPaneOf } from "./binding-pane.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -644,7 +645,7 @@ export class RestoreOrchestrator {
             // check's positive idle-shell evidence; opaque wrappers stay untouched.
             isLive = true;
             const binding = this.sessionRegistry.getBindingForNode(liveId!);
-            const pane = binding?.tmuxSession === session.sessionName ? binding.tmuxPane : null;
+            const pane = binding?.tmuxSession === session.sessionName ? registeredPaneOf(binding) : null;
             const runtime = liveTarget?.runtime ?? node.runtime;
             // Launch needs consistent positive evidence: both samples idle with the same fingerprint, and the
             // bound pane still in this session (a recycled pane id could name another session's shell).
@@ -821,6 +822,7 @@ export class RestoreOrchestrator {
         tmuxSession: priorState.binding.tmuxSession ?? undefined,
         tmuxWindow: priorState.binding.tmuxWindow ?? undefined,
         tmuxPane: priorState.binding.tmuxPane ?? undefined,
+        terminalAddress: priorState.binding.terminalAddress ?? undefined,
         externalSessionName: priorState.binding.externalSessionName ?? undefined,
         cmuxWorkspace: priorState.binding.cmuxWorkspace ?? undefined,
         cmuxSurface: priorState.binding.cmuxSurface ?? undefined,

@@ -7,6 +7,7 @@ import { shellQuote } from "../adapters/shell-quote.js";
 import { claudeClassicRendererEnvPrefix } from "../adapters/yolo-mode.js";
 import { parseClaudePermissionModes } from "./permission-drift.js";
 import { validateNativePermissionSelection } from "./native-permission-selection.js";
+import { registeredPaneSql } from "./binding-pane.js";
 
 export interface ClaudeLaunchTarget {
   nodeId: string;
@@ -34,7 +35,7 @@ export class ClaudeManagedLaunch {
 
   private target(nodeId: string): TargetSnapshot {
     const row = this.db.prepare(`SELECT n.id AS nodeId, n.runtime, n.cwd,
-      b.id AS bindingId, b.tmux_session AS session, b.tmux_pane AS pane,
+      b.id AS bindingId, b.tmux_session AS session, ${registeredPaneSql(this.db)} AS pane,
       (SELECT generation_uuid FROM occupant_tenures WHERE node_id=n.id
        ORDER BY generation_ordinal DESC LIMIT 1) AS generation
       FROM nodes n LEFT JOIN bindings b ON b.node_id=n.id WHERE n.id=?`).get(nodeId) as TargetSnapshot | undefined;

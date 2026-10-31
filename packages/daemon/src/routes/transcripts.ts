@@ -5,6 +5,7 @@ import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } 
 import type { TranscriptIngestHealth, TranscriptStore } from "../domain/transcript-store.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { startTmuxTranscriptCapture } from "../domain/transcript-capture.js";
+import { isTerminalAttachment } from "../domain/binding-pane.js";
 import { redactTranscriptContent } from "../domain/transcript-redaction.js";
 
 interface SessionRow {
@@ -70,7 +71,7 @@ async function tryStartCaptureForSession(
     .prepare("SELECT attachment_type, tmux_session FROM bindings WHERE node_id = ?")
     .get(nodeId) as BindingRow | undefined;
   if (!binding) return false;
-  if ((binding.attachment_type ?? "tmux") !== "tmux") return false;
+  if (!isTerminalAttachment(binding.attachment_type)) return false;
   if (!binding.tmux_session || binding.tmux_session !== sessionName) return false;
   const result = await startTmuxTranscriptCapture(tmuxAdapter, transcriptStore, rigName, sessionName);
   return result.started;
