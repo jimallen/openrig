@@ -361,7 +361,17 @@ describe("Chatroom CLI", () => {
       const prog = new Command();
       prog.exitOverride();
       const base = runningDeps(port);
-      prog.addCommand(chatroomCommand({ ...base, clientFactory: () => new DaemonClient(`http://user:secret@127.0.0.1:${port}`) }, deps));
+      prog.addCommand(chatroomCommand({ ...base, clientFactory: (url) => {
+        // fetch refuses a URL with credentials, so requests go through the plain client and only the reported base carries them.
+        const plain = new DaemonClient(url);
+        return new Proxy(plain, {
+          get: (target, prop) => {
+            if (prop === "baseUrl") return `http://user:secret@127.0.0.1:${port}`;
+            const value: unknown = Reflect.get(target, prop, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      } }, deps));
       await captureLogs(async () => { await prog.parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]); });
       expect(calls.length).toBe(1);
       expect(JSON.stringify(calls)).not.toContain("secret");
