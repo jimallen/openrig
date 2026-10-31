@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync, chmodSync, readFileSync, symlinkSync, renameSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, chmodSync, readFileSync, symlinkSync, renameSync, realpathSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
@@ -24,13 +24,26 @@ vi.mock("node:fs", async importOriginal => {
   return { ...fs, accessSync: (file: string) => { if (!fs.statSync(file).isFile()) throw Error("not executable"); } };
 });
 const open: Database.Database[] = [];
-afterEach(() => { for (const db of open.splice(0)) db.close(); vi.clearAllMocks(); vi.unstubAllEnvs(); });
+// Each fixture() mints its own temp root. Remove exactly the roots this run minted (never a name match in the
+// shared temp dir, so a parallel run's roots are untouched) once the test, and its database, are finished.
+const roots: string[] = [];
+afterEach(() => {
+  for (const db of open.splice(0)) db.close(); vi.clearAllMocks(); vi.unstubAllEnvs();
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+// Check: no root this file minted is still in the temp dir (afterAll runs after failed tests too).
+afterAll(() => {
+  const leftovers = roots.filter(root => existsSync(root));
+  for (const root of leftovers) rmSync(root, { recursive: true, force: true });
+  expect(roots.length, "positive control: the file minted temp roots").toBeGreaterThan(0);
+  expect(leftovers, "temp roots left behind by s03-bound-launch fixtures").toEqual([]);
+});
 const fsOps = { readFile: () => { throw Error("forbidden projection"); }, writeFile: () => { throw Error("forbidden projection"); },
   exists: () => false, mkdirp: () => { throw Error("forbidden projection"); }, copyFile: () => { throw Error("forbidden projection"); } };
 const help = '--permission-mode <mode> (choices: "acceptEdits", "auto", "default")';
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "s03-bound-")));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "s03-bound-"))); roots.push(root);
   const cwd = path.join(root, "seat's workspace"); mkdirSync(path.join(cwd, "bin"), { recursive: true });
   const executable = path.join(cwd, "bin", "claude"); writeFileSync(executable, "inert fake executable"); chmodSync(executable, 0o700);
   const daemonBin = path.join(root, "daemon-bin"); mkdirSync(daemonBin); writeFileSync(path.join(daemonBin, "claude"), "different daemon executable"); chmodSync(path.join(daemonBin, "claude"), 0o700);
