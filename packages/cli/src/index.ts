@@ -73,6 +73,7 @@ import { skillCommand } from "./commands/skill.js";
 import { agentImageCommand } from "./commands/agent-image.js";
 import { forkCommand } from "./commands/fork.js";
 import { workspaceCommand, type WorkspaceDeps } from "./commands/workspace.js";
+import { humanCommand } from "./commands/human.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import { unclaimCommand } from "./commands/unclaim.js";
 import { releaseCommand } from "./commands/release.js";
@@ -236,6 +237,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   // B7 — the reintroduced permission-policy verb (the context-mode verb above is now `rig mode`).
   program.addCommand(policyCommand());
   program.addCommand(whoamiCommand(depsOverride?.whoamiDeps));
+  program.addCommand(humanCommand());
   program.addCommand(configCommand(depsOverride?.configPath));
   program.addCommand(fileCommand());
   program.addCommand(preflightCommand());
