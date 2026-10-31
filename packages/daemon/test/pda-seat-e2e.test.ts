@@ -2,12 +2,12 @@
 // through the whole shipped chain, with nothing replaced but pda itself.
 //
 // REAL: the built `rig` CLI, a real daemon process (`rig daemon start` -> createDaemon, temp OPENRIG_HOME, its own
-// SQLite), a real tmux server on the harness's private socket (hermetic-env.ts: `tmux -S <scaffold>/tmux.sock`, the
-// default socket is never reached), the real `rig up` / `send` / `capture` / `down` / `seat pda-release` commands, the
+// SQLite), a real herdr-core (`hc`) on a private core of the test's own (helpers/hc-scratch.ts: own HOME, `HC_SESSION`
+// and XDG paths, the host's default core is never reached), the real `rig up` / `send` / `capture` / `down` / `seat pda-release` commands, the
 // real pda-runner process typed into the seat's pane, the real client and outbox, and the real stub runner for the
 // non-pda seat. FAKE: pda, by L1a's loopback `fake-pda.ts` (real HTTP, real dedupe, real SSE), reached through a
 // test-owned TCP gate so "pda restarts" without losing the fake's conversation, as a real pda keeps it in its SQLite.
-// Nothing here touches a real pda, a live daemon, ~/.openrig, or any tmux server but the scaffold's.
+// Nothing here touches a real pda, a live daemon, ~/.openrig, or any hc core but the test's own.
 //
 // The rows share one daemon and one fixture, in order, as stub-cli-journeys does; a row's number is its design/brief
 // number. Needs the CLI and daemon built (`npm run build -w packages/daemon -w packages/cli`): the pane runs the
@@ -24,7 +24,7 @@
 // sanitiser and the exact-value redaction are pinned by their unit tests, not driven through a pane (live Q11).
 // `--wait-for-idle` after 6 minutes of idle is unit-pinned (T27); row 9 (frames) waits out the 15 s hook window only.
 // Row 10 reads /proc for process environments, so that surface is scanned on Linux only. Run on Linux (Sparky:
-// tmux 3.4, node 22.23.2); not run on macOS.
+// hc 0.1.15, node 22.23.2); not run on macOS.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import Database from "better-sqlite3";
@@ -38,6 +38,8 @@ import { fileURLToPath } from "node:url";
 import { type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type RigResult, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { startFakePda, nonAllowlisted, type FakePda } from "./helpers/fake-pda.js";
 import { assistantEntry, assistantMessage, deltaEvent, messageEnd, messageStart, runEnd, runStart } from "./helpers/pda-real-shapes.js";
 import { parsePdaRunnerState, pdaSeatPaths, type PdaRunnerState } from "../src/adapters/pda-runner-protocol.js";
@@ -105,7 +107,8 @@ class Gate {
   }
 }
 
-describe("pda seat end to end: real daemon, real tmux (private socket), real runner, fake pda", () => {
+describe.runIf(findHc() !== null)("pda seat end to end: real daemon, real hc (private core), real runner, fake pda", () => {
+  let core: HcScratch;
   let scaffold: HermeticScaffold;
   let daemon: ScenarioDaemon;
   let fake: FakePda;
@@ -136,7 +139,10 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
   const db = () => new Database(join(scaffold.stateDir, "scenario.db"), { readonly: true, fileMustExist: true });
 
   beforeAll(async () => {
+    core = startHcScratch();
     scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color" } });
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     fake = await startFakePda({ token: BEARER, agents: ["research"] });
     gate = await Gate.open(Number(new URL(fake.baseUrl).port));
     tokenFile = join(scaffold.root, "pda-token");
@@ -181,7 +187,7 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
     } finally {
       await gate?.down().catch(() => undefined);
       await fake?.close().catch(() => undefined);
-      if (daemon) await daemon.stop(); else scaffold?.cleanup();
+      try { if (daemon) await daemon.stop(); else scaffold?.cleanup(); } finally { core?.cleanup(); }
     }
   }, 90_000);
 
@@ -532,7 +538,7 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
     fake.emit("research", messageEnd(assistantEntry(900001, `${STREAM_ALPHA}STREAM-BETA`)));
     fake.emit("research", runEnd([own.submissionId]));
     const done = await until("the run to end", async () => { const c = await captureText(); return c.includes("STREAM-BETA") && c.lastIndexOf("── idle ──") > c.indexOf("STREAM-BETA") ? c : null; });
-    expect(occurrences(done, "STREAM-ALPHA")).toBe(1);
+    expect(occurrences(done, "STREAM-ALPHA"), JSON.stringify(done.slice(-1500))).toBe(1);
     await until("the sidecar to say idle", () => sidecar()?.busy === false);
     // Let the first fact's post finish before the next run ends (row 11 asserts the rows; this is only a settle).
     await until("the first usage row", () => usageCount() >= 1, 20_000).catch(() => undefined);
@@ -578,23 +584,27 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
     expect(fake.postBodies.slice(posts).filter((b) => b.includes(marker))).toEqual([]);
   }, 120_000);
 
-  it("row 10: the token canary is in the token file and pda saw it, and nowhere else: tmux env, process argv and env, capture, sidecar, outbox, logs", async () => {
+  it("row 10: the token canary is in the token file and pda saw it, and nowhere else: the hc core's env and the terminal's record, process argv and env, capture, sidecar, outbox, logs", async () => {
     // Positive controls first: the runner really authenticated with the canary, and the one file that holds it is the token file.
     expect(fake.authorizations.filter((a) => a === `Bearer ${BEARER}`).length).toBeGreaterThan(5);
     expect(readFileSync(tokenFile, "utf8")).toBe(BEARER);
 
-    const tmux = (args: string[]) => new Promise<string>((res, rej) =>
-      execFile("tmux", ["-S", scaffold.tmuxSocketPath, ...args], { env: scaffold.env as NodeJS.ProcessEnv, maxBuffer: 64 * 1024 * 1024 }, (e, o) => e ? rej(e) : res(o)));
     const surfaces: Array<[string, string]> = [];
-    surfaces.push(["tmux environment (global)", await tmux(["show-environment", "-g"])]);
-    surfaces.push(["tmux environment (pda session)", await tmux(["show-environment", "-t", `=${PDA_SEAT}`])]);
-    surfaces.push(["tmux scrollback (pda pane)", await tmux(["capture-pane", "-p", "-J", "-S", "-", "-t", `=${PDA_SEAT}:`])]);
+    // The core is a process of its own with an environment of its own; the terminal's record holds its argv, labels and cwd; the
+    // scrollback is read from the core directly, apart from the CLI's capture below.
+    const status = core.run(["server", "status", "--json"]);
+    expect(status.status, status.stderr).toBe(0);
+    surfaces.push(["hc core status", status.stdout]);
+    const corePid = (JSON.parse(status.stdout) as { pid: number }).pid;
+    if (existsSync("/proc/self/environ")) surfaces.push(["hc core environment", readFileSync(`/proc/${corePid}/environ`, "utf8")]);
+    surfaces.push(["hc terminal record (pda seat)", JSON.stringify(await core.client().call("terminal.get", { terminal: hcTerminalName(PDA_SEAT) }))]);
+    surfaces.push(["hc scrollback (pda terminal)", JSON.stringify(await core.client().call("terminal.read", { terminal: hcTerminalName(PDA_SEAT), lines: 100_000 }))]);
     surfaces.push(["rig capture (pda seat)", await captureText(PDA_SEAT, 5000)]);
     surfaces.push(["process argv (ps -A)", await psAll()]);
     const seatDir = paths().seatRoot;
     for (const name of readdirSync(seatDir)) surfaces.push([`seat state: ${name}`, readFileSync(join(seatDir, name), "utf8")]);
 
-    // The environment of every process that belongs to this scaffold (the daemon, the runner, the shells, the tmux server).
+    // The environment of every process that belongs to this scaffold (the daemon, the runner, the shells).
     const owned: number[] = [];
     if (existsSync("/proc/self/environ")) {
       for (const pid of readdirSync("/proc").filter((n) => /^\d+$/.test(n))) {

@@ -1,56 +1,57 @@
-// OPR.0.7.0.5 — native harness for the in-place restart: a REAL tmux server on a private -S socket, a
-// compiled stub `codex` (no real Codex, no account, no credentials), the REAL CodexRuntimeAdapter, and the
-// production route factory with its default process and /proc readers. Both pane shapes.
+// OPR.0.7.0.5 — native harness for the in-place restart: terminals on a PRIVATE hc core (helpers/hc-scratch.ts: own HOME,
+// HC_SESSION and XDG paths, a verified stop at the end), a compiled stub `codex` (no real Codex, no account, no credentials),
+// the REAL CodexRuntimeAdapter, the REAL HcAdapter, and the production route factory with its default process and /proc
+// readers. Both pane shapes.
 //
-// Isolation (as seat-handover-cutover-e2e): a per-run owned -S socket on every tmux command, $TMUX removed,
-// teardown by session name then a verified stop of its own server; stub processes are killed by pid at the end. Skips without
-// tmux, a C compiler, or Linux /proc.
+// Isolation: every seat is a terminal of the test's own core, torn down by name and then by the verified stop of that core;
+// stub processes are killed by pid at the end. Skips without hc, a C compiler, or Linux /proc.
+//
+// What hc changes (design-hc-cutover §3 gap 5): there is no pane to respawn. A restart of a direct-native seat is kill, then
+// run again under the same name and labels, so the terminal's ADDRESS changes and the binding follows the label, and the
+// original's output stays readable at the old address as a finished terminal, not above the successor's. A shell-backed seat
+// keeps its terminal and its shell, as it kept its pane. There is no pane-local `remain-on-exit` to put back: a finished hc
+// terminal stays readable until removed.
 //
 // The real Codex must be unreachable (an earlier version of this harness let a login shell's profile put
-// the installed Codex first on PATH). So: every pane process starts NON-login from `env -i` with an
+// the installed Codex first on PATH). So: every terminal process starts NON-login from `env -i` with an
 // explicit PATH/HOME/CODEX_HOME; CODEX_HOME is the test's temp dir and asserted not to be ~/.codex;
-// every launch goes through the adapter's pinned launch PATH; and a check INSIDE the pane fails closed
+// every launch goes through the adapter's pinned launch PATH; and a check INSIDE the terminal fails closed
 // (prints PREFLIGHT-REFUSED, starts nothing) unless `codex` resolves to the stub there.
 //
-// Pane roots are given to tmux as separate argv words, so tmux execs them directly: no outer shell sits
-// between tmux and the pane's root process on images whose shell doesn't exec a lone `-c` command.
+// Roots are given to `terminal.run` as separate argv words, so hc execs them directly: no outer shell sits
+// between the core and the terminal's root process on images whose shell doesn't exec a lone `-c` command.
 import { describe, it, expect, afterAll } from "vitest";
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-host.js";
+import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
+import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
-import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-const pexec = promisify(execFile);
-const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
-delete cleanEnv.TMUX;
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(socket)} ${cmd.slice(5)}` : cmd;
-  const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
-  return stdout;
-};
-const tmux = (args: string) => exec(`tmux ${args}`);
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const TOKEN = "019a0000-0000-7000-8000-00000000c0de";
 
 function available(): boolean {
   try {
-    execFileSync("sh", ["-c", "command -v tmux && command -v cc"], { env: cleanEnv, stdio: "ignore" });
-    return fs.existsSync("/proc/self/environ");
+    execFileSync("sh", ["-c", "command -v cc"], { stdio: "ignore" });
+    return findHc() !== null && fs.existsSync("/proc/self/environ");
   } catch { return false; }
 }
 
 // Made only where the harness can run, so a skipped run leaves no empty folder behind.
 const runnable = available();
 const root = runnable ? fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-restart-native-")) : nodePath.join(os.tmpdir(), "openrig-restart-native-unused");
-// An owned -S socket in this run's own directory (a -L name would live in tmux's shared per-user directory).
-const socket = nodePath.join(root, "tmux.sock");
+let core: HcScratch | undefined;
+const scratch = (): HcScratch => (core ??= startHcScratch());
+const host = (): HcAdapter => new HcAdapter(scratch().client());
+const terminalOf = (seat: string) => scratch().client().call<HcTerminal>("terminal.get", { terminal: hcTerminalName(seat) });
 
 const STUB_C = `
 #include <stdio.h>
@@ -71,18 +72,15 @@ const sessions: string[] = [];
 const pids = new Set<number>();
 afterAll(async () => {
   if (!runnable) return;
-  for (const name of sessions) await tmux(`kill-session -t ${q(name)}`).catch(() => {});
+  for (const name of sessions) await host().killSession(name).catch(() => {});
   for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
-  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both). The seats ran on
-  // this run's owned socket (a -L run never creates it), and after the stop nothing answers on it.
-  expect(fs.existsSync(socket), "this run's tmux server ran on its owned socket").toBe(true);
-  await stopOwnedTmuxServer(socket, cleanEnv);
-  expect(await tmuxServerPid(socket, cleanEnv), "no server answers on the owned socket after the stop").toBeNull();
+  // Then this run's own core, stopped and verified gone before its directory goes (a failure keeps both).
+  core?.cleanup();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 async function panePid(pane: string): Promise<number> {
-  return Number((await tmux(`display-message -p -t ${q(pane)} '#{pane_pid}'`)).trim());
+  return (await host().getPanePid(pane)) ?? Number.NaN;
 }
 /** Running stub processes, by their executable path (never by matching command text). */
 function stubPids(): number[] {
@@ -92,27 +90,24 @@ function stubPids(): number[] {
   });
 }
 
-describe.runIf(runnable)("in-place restart, native (private tmux socket, stub codex)", () => {
+describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)", () => {
   const bin = nodePath.join(root, "bin");
   const home = nodePath.join(root, "codex-home");
   const work = nodePath.join(root, "work");
   const launchPath = `${bin}:/usr/bin:/bin`;
 
-  /** Each word single-quoted for the harness's sh, so tmux receives them as separate argv words. */
-  const argv = (...words: string[]) => words.map(q).join(" ");
-
   async function setup(shape: "shell_backed" | "direct_native", opts: { running?: { networkOverride: boolean; daemonOptOut: boolean; addDirs: string[] }; quiet?: boolean; prelude?: string;
-    /** Shell-backed: type the launch the way OpenRig does (tmux adapter's staged `/bin/sh <script>`). */
+    /** Shell-backed: type the launch the way OpenRig does (the host adapter's staged `/bin/sh <script>`). */
     staged?: boolean } = {}) {
     // One seat at a time: end the previous test's session and wait for its stub to exit.
-    for (const name of sessions) await tmux(`kill-session -t ${q(name)}`).catch(() => {});
+    for (const name of sessions) await host().killSession(name).catch(() => {});
     for (let i = 0; i < 50 && stubPids().length > 0; i++) await sleep(100);
     fs.mkdirSync(bin, { recursive: true });
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(work, { recursive: true });
     if (!fs.existsSync(nodePath.join(bin, "codex"))) {
       fs.writeFileSync(nodePath.join(root, "codex.c"), STUB_C);
-      execFileSync("cc", ["-o", nodePath.join(bin, "codex"), nodePath.join(root, "codex.c")], { env: cleanEnv });
+      execFileSync("cc", ["-o", nodePath.join(bin, "codex"), nodePath.join(root, "codex.c")]);
     }
     const stub = nodePath.join(bin, "codex");
     const resolved = execFileSync("/bin/sh", ["-c", "command -v codex"], { env: { PATH: launchPath }, encoding: "utf8" }).trim();
@@ -121,7 +116,7 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
     const seat = `dev-codex@${shape === "shell_backed" ? "shell" : "native"}-rig`;
     sessions.push(seat);
     const db = createFullTestDb();
-    const realTmux = new TmuxAdapter(exec);
+    const realTmux = host();
     const adapter = new CodexRuntimeAdapter({
       tmux: realTmux, launchPath,
       fsOps: { readFile: (p) => fs.readFileSync(p, "utf8"), writeFile: () => {}, exists: (p) => fs.existsSync(p), mkdirp: () => {}, homedir: root },
@@ -138,38 +133,42 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
     // The running Codex starts with exactly the flags the seat's managed relaunch composes.
     const override = new NativePermissionStore(db).launchOverride(node.id, "codex");
     const built = await adapter.buildResumeCommand({
-      id: "", nodeId: node.id, attachmentType: "tmux", tmuxSession: seat, tmuxWindow: null, tmuxPane: null,
+      id: "", nodeId: node.id, attachmentType: "hc", tmuxSession: seat, tmuxWindow: null, tmuxPane: null,
       cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: work, launchPosture: "floor",
       kernelAuthority: override.kernelAuthority, teamPermissionDefault: override.teamPermissionDefault,
       nonInterruptive: setupApp.rigRepo.getRigNonInterruptive(rig.id),
     }, { name: seat, resumeToken: TOKEN, ...(opts.running ? { running: opts.running } : {}) });
     if (!built.ok) throw new Error(built.error);
-    // Session env for respawns; the pane processes themselves start from env -i, non-login.
-    const env = `-e ${q(`PATH=${launchPath}`)} -e ${q(`CODEX_HOME=${home}`)} -e ${q(`HOME=${root}`)}`;
+    // The terminal's processes start from env -i, non-login: nothing of the core's or the test's environment reaches them.
     const cleanStart = ["env", "-i", `PATH=${launchPath}`, `HOME=${root}`, `CODEX_HOME=${home}`, "TERM=screen", ...(opts.quiet ? ["STUB_QUIET=1"] : []), "/bin/sh"];
     const preflight = `[ "$(command -v codex)" = ${q(stub)} ] && [ "$CODEX_HOME" = ${q(home)} ]`;
+    // A seat's terminal named and labelled as the host names one (the launch environment it records is the "session env" the
+    // restart reads back, as `-e CODEX_HOME=...` was on the tmux session), with the root process this harness chooses.
+    const startTerminal = (argv: string[]) => scratch().client().call("terminal.run", {
+      argv, name: hcTerminalName(seat), labels: { ...sessionEnvLabels({ CODEX_HOME: home }), [SEAT_LABEL]: seat }, cwd: work,
+      no_parent: true, no_notify: true, outlive_parent: true,
+    });
     if (shape === "shell_backed") {
-      await tmux(`-f /dev/null new-session -d -s ${q(seat)} -x 120 -y 30 -c ${q(work)} ${env} ${argv(...cleanStart)}`);
+      await startTerminal(cleanStart);
       await sleep(200);
       const launch = `${opts.prelude ?? ""}${preflight} && ${built.command} || echo PREFLIGHT-REFUSED`;
       if (opts.staged) {
         const sent = await realTmux.sendShellCommand(seat, launch);
         if (!sent.ok) throw new Error(sent.message);
       } else {
-        await tmux(`send-keys -t ${q(seat)} -l -- ${q(launch)}`);
-        await tmux(`send-keys -t ${q(seat)} Enter`);
+        await scratch().client().call("terminal.send", { terminal: hcTerminalName(seat), text: launch });
       }
     } else {
       const script = `${preflight} || { echo PREFLIGHT-REFUSED; exec sleep 30; }; exec ${built.command}`;
-      await tmux(`-f /dev/null new-session -d -s ${q(seat)} -x 120 -y 30 -c ${q(work)} ${env} ${argv(...cleanStart, "-c", script)}`);
+      await startTerminal([...cleanStart, "-c", script]);
     }
     await sleep(500);
-    const refused = (await tmux(`capture-pane -p -t ${q(seat)} -S -200`)).split("\n").some((line) => line.trim() === "PREFLIGHT-REFUSED");
-    expect(refused, "the in-pane preflight found the stub and the temp CODEX_HOME").toBe(false);
-    const pane = (await tmux(`list-panes -t ${q(seat)} -F '#{pane_id}'`)).trim();
-    setupApp.sessionRegistry.updateBinding(node.id, { attachmentType: "tmux", tmuxSession: seat, tmuxPane: pane });
+    const refused = ((await realTmux.capturePaneContent(seat, 200)) ?? "").split("\n").some((line) => line.trim() === "PREFLIGHT-REFUSED");
+    expect(refused, "the in-terminal preflight found the stub and the temp CODEX_HOME").toBe(false);
+    const pane = (await terminalOf(seat)).address;
+    setupApp.sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: seat, terminalAddress: pane });
     for (const pid of stubPids()) pids.add(pid);
-    expect(stubPids(), "exactly one stub codex, started by the pane").toHaveLength(1);
+    expect(stubPids(), "exactly one stub codex, started by the terminal").toHaveLength(1);
     const post = async (route: string, body: Record<string, unknown> = {}) => {
       const res = await setupApp.app.request(`/api/seat/${route}/${encodeURIComponent(seat)}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -178,7 +177,7 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
     return { seat, pane, post };
   }
 
-  it("shell-backed: the same conversation resumes in the same pane under the same shell, with the running choices", async () => {
+  it("shell-backed: the same conversation resumes in the same terminal under the same shell, with the running choices", async () => {
     const dirs = [nodePath.join(root, "shared-one"), nodePath.join(root, "shared-two")];
     const { seat, pane, post } = await setup("shell_backed", { running: { networkOverride: true, daemonOptOut: true, addDirs: dirs } });
     const shellBefore = await panePid(pane);
@@ -196,11 +195,11 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
     for (const pid of stubPids()) pids.add(pid);
     expect(stubPids(), "only the replacement stub runs").toEqual([result.body.newProcess.pid]);
     expect(result.body.newProcess.pid).not.toBe(oldStub);
-    expect(await panePid(pane), "same pane shell").toBe(shellBefore);
-    const screen = await tmux(`capture-pane -p -t ${q(pane)} -S -300`);
-    expect(screen, "the original's output stays in the pane").toContain(`from pid ${oldStub}`);
+    expect(await panePid(pane), "same terminal shell").toBe(shellBefore);
+    const screen = (await host().capturePaneContent(pane, 300)) ?? "";
+    expect(screen, "the original's output stays in the terminal").toContain(`from pid ${oldStub}`);
     expect(screen).toContain(`stub conversation ${TOKEN} pid ${result.body.newProcess.pid}`);
-    expect((await tmux(`list-panes -t ${q(seat)} -F '#{pane_id}'`)).trim()).toBe(pane);
+    expect((await terminalOf(seat)).address, "the seat's terminal is the same one").toBe(pane);
     // #1196 r2 F1: the replacement runs with the old process's --no-daemon, network override and add-dirs.
     const newArgv = fs.readFileSync(`/proc/${result.body.newProcess.pid}/cmdline`, "utf8").split("\0");
     expect(newArgv).toContain("--no-daemon");
@@ -211,7 +210,7 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
     expect(verified.body).toMatchObject({ ok: true, outcome: "restarted_account_unverified", accountEvidence: { state: "not_requested" } });
   }, 60_000);
 
-  it("a Codex launched the way OpenRig launches it (staged sh script), restarted twice in the same pane", async () => {
+  it("a Codex launched the way OpenRig launches it (staged sh script), restarted twice in the same terminal", async () => {
     const { pane, post } = await setup("shell_backed", { staged: true });
     const shell = await panePid(pane);
     const [oldStub] = stubPids();
@@ -229,33 +228,38 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
       expect(result.body).toMatchObject({ outcome: "restarted_account_unverified", pane, paneShape: "shell_backed" });
       for (const pid of stubPids()) pids.add(pid);
       expect(stubPids(), `round ${round}: only the replacement stub runs`).toEqual([result.body.newProcess.pid]);
-      expect(await panePid(pane), "same pane shell").toBe(shell);
+      expect(await panePid(pane), "same terminal shell").toBe(shell);
     }
   }, 90_000);
 
-  it("direct-native: respawned without -k, remain-on-exit put back after the verified replacement", async () => {
+  it("direct-native: killed and run again under the same name; the original's output stays readable at its old address", async () => {
     const { seat, pane, post } = await setup("direct_native");
     const before = await panePid(pane);
-    expect(stubPids(), "the pane's own process is the stub").toEqual([before]);
+    expect(stubPids(), "the terminal's own process is the stub").toEqual([before]);
     const result = await post("restart", { reason: "native harness" });
     expect(result.status, JSON.stringify(result.body)).toBe(200);
-    expect(result.body).toMatchObject({ outcome: "restarted_account_unverified", paneShape: "direct_native", pane });
+    expect(result.body).toMatchObject({ outcome: "restarted_account_unverified", paneShape: "direct_native" });
     expect(result.body.paneHeld).toBeUndefined();
     for (const pid of stubPids()) pids.add(pid);
-    const after = await panePid(pane);
+    const now = await terminalOf(seat);
+    expect(now.state, "the seat's name answers with a live terminal").toBe("live");
+    expect(now.labels[SEAT_LABEL]).toBe(seat);
+    expect(now.address, "a respawn mints a new address (no pane to keep)").not.toBe(pane);
+    const after = now.pid!;
     expect(after).not.toBe(before);
-    // The replacement is the respawned pane's root, or its child where the image's sh doesn't exec a lone
-    // command (review-r2's dash): compare with the reported process, and tie it to the pane separately.
+    // The replacement is the new terminal's root, or its child where the image's sh doesn't exec a lone
+    // command (review-r2's dash): compare with the reported process, and tie it to the terminal separately.
     const replacement = result.body.newProcess.pid as number;
     expect(stubPids(), "only the replacement stub runs").toEqual([replacement]);
     const parent = Number(fs.readFileSync(`/proc/${replacement}/stat`, "utf8").replace(/^.*\) /, "").split(" ")[1]);
-    expect([replacement, parent], "the replacement is the respawned pane's root or its direct child").toContain(after);
-    // tmux resets the visible screen on respawn; the original's earlier output is kept in scrollback.
-    const screen = await tmux(`capture-pane -p -t ${q(pane)} -S -300`);
-    expect(screen, "the original's scrollback stays in the pane").toContain(`from pid ${before}`);
+    expect([replacement, parent], "the replacement is the new terminal's root or its direct child").toContain(after);
+    // The successor's screen starts clean; the original's output is kept at the old address, as a finished terminal.
+    const screen = (await host().capturePaneContent(now.address, 300)) ?? "";
     expect(screen).toContain(`stub conversation ${TOKEN} pid ${replacement}`);
-    expect((await tmux(`show-options -p -v -t ${q(pane)} remain-on-exit`)).trim(), "no pane-local setting left behind").toBe("");
-    expect((await tmux(`list-panes -t ${q(seat)} -F '#{pane_id}'`)).trim()).toBe(pane);
+    expect(screen, "the original's output is not above the successor's").not.toContain(`from pid ${before}`);
+    const old = await scratch().client().call<HcTerminal>("terminal.get", { terminal: pane });
+    expect(old.state, "the original's terminal is finished, not removed").toBe("finished");
+    expect((await host().capturePaneContent(pane, 300)) ?? "", "the original's scrollback stays readable at its old address").toContain(`from pid ${before}`);
   }, 60_000);
 
   it("#1196 r2 F3: an Account line already below the cursor, untouched by the restart, is not account evidence", async () => {
@@ -263,15 +267,18 @@ describe.runIf(runnable)("in-place restart, native (private tmux socket, stub co
     // stays above it, so the frame keeps the line in place across the restart.
     const prelude = `printf '\\033[2J\\033[25;1H%s: %s\\033[1;1H' Account me@example.com; `;
     const { pane, post } = await setup("shell_backed", { quiet: true, prelude });
-    const before = (await tmux(`capture-pane -p -t ${q(pane)}`)).split("\n");
+    const before = ((await host().capturePaneScreen(pane)) ?? "").split("\n");
     expect(before[24], "the old Account line is on row 25 before the restart").toBe("Account: me@example.com");
     const result = await post("restart", { reason: "native harness F3" });
     expect(result.body, JSON.stringify(result.body)).toMatchObject({ outcome: "restarted_account_unverified" });
     for (const pid of stubPids()) pids.add(pid);
-    const after = (await tmux(`capture-pane -p -t ${q(pane)}`)).split("\n");
+    const after = ((await host().capturePaneScreen(pane)) ?? "").split("\n");
     expect(after[24], "the same line is still on row 25 after the restart").toBe("Account: me@example.com");
-    const cursor = Number((await tmux(`display-message -p -t ${q(pane)} '#{cursor_y}'`)).trim());
-    expect(cursor, "the cursor is above the old line").toBeLessThan(24);
+    // tmux asked the cursor row; hc states a cursor only in a full-screen app's first paint (measured: null for this positioned
+    // line on the primary screen), so the same fact is read off the screen: the restart's own output sits above the old line.
+    const outputRow = after.findIndex((line) => line.includes("stub conversation"));
+    expect(outputRow, "the restart's output is on the screen, above the old line").toBeGreaterThanOrEqual(0);
+    expect(outputRow, "the restart's output is above the old line").toBeLessThan(24);
     const verified = await post("restart-verify", { expectAccount: "me@example.com" });
     expect(verified.body).toMatchObject({ ok: true, outcome: "restarted_account_unverified", accountEvidence: { state: "not_observed" } });
   }, 60_000);

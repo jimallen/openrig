@@ -1,10 +1,10 @@
 // S5 fix round 1, r2-F4 (row 30045f39) — proof item 1's REAL-resume leg: after
 // `set-model`, a REAL managed successor (SeatHandoverService + real CodexRuntimeAdapter,
 // real codex TUI) runs the CANONICAL (post-set-model) model, with session lineage
-// preserved. Modeled on seat-handover-model-fidelity-e2e (D15 isolation: per-run -L
-// socket, env minus $TMUX, teardown by session name then kill-server on this run's own
-// -L socket only; opt-in: skips unless OPENRIG_E2E_REAL_CODEX=1, and when tmux/codex/auth
-// are absent).
+// preserved. Modeled on seat-handover-model-fidelity-e2e (isolation: a private hc core of
+// the test's own, helpers/hc-scratch.ts, never the host's; opt-in: skips unless OPENRIG_E2E_REAL_CODEX=1, and when
+// hc/codex/auth are absent). NOT RUN by the conversion (it drives the signed-in codex account; no go for that was given):
+// it type-checks and skips cleanly.
 //
 // DISCRIMINATOR: the node is CREATED pinned to the runtime default (gpt-5.6-sol) and
 // set-model moves it to a valid NON-default (gpt-5.6-luna). A successor footer showing
@@ -15,12 +15,11 @@
 // mechanism was already correct, so there is no RED for it; it strengthens proof
 // item 1 from citation+persistence to a driven real resume.
 import { describe, it, expect, afterAll } from "vitest";
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import nodePath from "node:path";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -31,27 +30,14 @@ import { SeatLifecycleService } from "../src/domain/seat-lifecycle-service.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-const pexec = promisify(execFile);
-// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
-// in tmux's shared per-user directory, beside the fleet's server.
-let sockDir = "";
-const sock = () => {
-  if (sockDir === "") sockDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-s5f4-e2e-"));
-  return nodePath.join(sockDir, "tmux.sock");
-};
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 delete cleanEnv.TMUX;
 delete cleanEnv.TMUX_TMPDIR;
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
-  const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
-  return stdout;
-};
-const tmux = (a: string) => exec(`tmux ${a}`);
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let core: HcScratch | undefined;
 
 const CREATED_MODEL = "gpt-5.6-sol";  // the runtime default — what a stale/reverted read shows
 const CANONICAL_MODEL = "gpt-5.6-luna"; // set-model target; footer renders it verbatim only via the updated pin
@@ -63,7 +49,7 @@ const REAL_CODEX_OPT_IN = process.env.OPENRIG_E2E_REAL_CODEX === "1";
 function preflightOk(): boolean {
   if (!REAL_CODEX_OPT_IN) return false;
   try {
-    execFileSync("sh", ["-c", "command -v tmux"], { env: cleanEnv, stdio: "ignore" });
+    if (findHc() === null) return false;
     execFileSync("sh", ["-c", "command -v codex"], { env: cleanEnv, stdio: "ignore" });
     return fs.existsSync(nodePath.join(os.homedir(), ".codex", "auth.json"));
   } catch { return false; }
@@ -83,34 +69,25 @@ function realFsOps(): any {
   };
 }
 
-const seats: string[] = [];
-afterAll(async () => {
-  if (!REAL_CODEX_OPT_IN) return; // a skipped run starts no tmux at all
-  if (sockDir === "") return; // no tmux command ran
-  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
-  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
-  await stopOwnedTmuxServer(sock(), cleanEnv);
-  fs.rmSync(sockDir, { recursive: true, force: true });
-});
+afterAll(() => { core?.cleanup(); });
 
-describe("S5 F4: set-model then a REAL managed successor runs the canonical model (real codex, isolated tmux)", () => {
+describe("S5 F4: set-model then a REAL managed successor runs the canonical model (real codex, private hc core)", () => {
   it.runIf(preflightOk())(
     "the successor's EFFECTIVE model is the post-set-model canonical pin, and lineage survives",
     async () => {
-      const sessions = await tmux("list-sessions -F '#{session_name}'").catch(() => "");
-      expect(sessions).not.toMatch(/dev-guard@|dev-planner@|orch-|review-/);
+      core = startHcScratch();
+      const realTmux = new HcAdapter(core.client());
+      expect(await realTmux.listSessions(), "the private core shows no seat before this run starts one").toEqual([]);
 
       const SEAT = "dev-impl@s5f4-rig";
-      seats.push(SEAT);
       const cwd = fs.mkdtempSync(nodePath.join(os.tmpdir(), "s5f4-e2e-"));
       execFileSync("sh", ["-c", `cd ${q(cwd)} && git init -q`], { env: cleanEnv });
       const queueRoot = nodePath.join(os.homedir(), ".openrig", "shared-docs", "rigs", "s5f4-rig", "state", "dev");
       fs.mkdirSync(queueRoot, { recursive: true });
 
-      await tmux(`kill-session -t ${q(SEAT)}`).catch(() => {});
-      await tmux(`new-session -d -s ${q(SEAT)} -x 120 -y 34 -c ${q(cwd)}`);
+      expect(await realTmux.createSession(SEAT, cwd), "the seat's terminal is created").toEqual({ ok: true });
       await sleep(200);
-      const pane = (await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_id}'`)).trim();
+      const pane = (await realTmux.listPanes(SEAT))[0]!.id;
 
       const db = createDb(); db.pragma("foreign_keys = ON"); migrate(db, ALL_MIGRATIONS);
       const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db);
@@ -121,9 +98,7 @@ describe("S5 F4: set-model then a REAL managed successor runs the canonical mode
       const session = sessionRegistry.registerSession(node.id, SEAT);
       sessionRegistry.updateStatus(session.id, "running");
       sessionRegistry.updateStartupStatus(session.id, "ready", new Date("2026-08-26T07:00:00Z").toISOString());
-      sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: pane });
-
-      const realTmux = new TmuxAdapter(exec);
+      sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, terminalAddress: pane });
 
       // THE VERB UNDER PROOF: set-model AFTER creation, BEFORE the managed successor.
       const lifecycle = new SeatLifecycleService({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: realTmux });
@@ -151,9 +126,9 @@ describe("S5 F4: set-model then a REAL managed successor runs the canonical mode
       const trustApprover = (async () => {
         for (let i = 0; i < 85; i++) {
           await sleep(1000);
-          const c = await tmux(`capture-pane -p -t ${q(pane)}`).catch(() => "");
+          const c = (await realTmux.capturePaneContent(SEAT, 0).catch(() => null)) ?? "";
           if (/Do you trust the contents of this directory/.test(c)) {
-            await tmux(`send-keys -t ${q(pane)} Enter`).catch(() => {});
+            await realTmux.sendKeys(SEAT, ["Enter"], undefined, { blocked: "allow" }).catch(() => {});
             return;
           }
         }
@@ -164,7 +139,7 @@ describe("S5 F4: set-model then a REAL managed successor runs the canonical mode
       const result: any = await service.handover({ seatRef: SEAT, reason: "F4 real-resume proof", source: "fresh", operator: "dev50-driver@test" });
       await trustApprover.catch(() => {});
       await sleep(3000);
-      const cap = await tmux(`capture-pane -p -t ${q(pane)} -S -400`);
+      const cap = (await realTmux.capturePaneContent(SEAT, 400)) ?? "";
       const footer = cap.split("\n").reverse().find((l) => /gpt-[\w.-]+ \S+ · \//.test(l) && l.includes(nodePath.basename(cwd)))
         ?? cap.split("\n").reverse().find((l) => /gpt-[\w.-]+ \S+ · \//.test(l));
       // eslint-disable-next-line no-console

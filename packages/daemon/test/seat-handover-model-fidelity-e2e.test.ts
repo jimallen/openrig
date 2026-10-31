@@ -1,10 +1,10 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import nodePath from "node:path";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -14,7 +14,7 @@ import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 // 0.5.2-07 — THE MONEY PROOF (the EFFECT leg, PM gate). Boot a codex seat PINNED to a CHEAP model,
 // HAND IT OVER through the REAL SeatHandoverService + the REAL CodexRuntimeAdapter, then read the
@@ -24,30 +24,16 @@ import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 // on main the handover reverts and the footer shows the default. This is the effect, not the indicator:
 // a real codex process, launched by the real adapter, reporting the model it is actually running.
 //
-// D15 isolation ([[real-run-e2e-daemon-isolation-doctrine]], [[tmux-kill-server-from-seat-reaps-fleet]]):
-// a per-run `-L` socket on EVERY tmux command (overrides $TMUX), full env MINUS $TMUX/$TMUX_TMPDIR,
-// verify-isolation-first, teardown by session name, then kill-server on this run's own -L socket only.
-// Opt-in: skips unless OPENRIG_E2E_REAL_CODEX=1, and when tmux/codex/auth are absent.
+// Isolation: the seat runs on a PRIVATE hc core (helpers/hc-scratch.ts: own HOME, HC_SESSION and XDG paths, a verified stop at
+// the end), never the host's own core. Opt-in: skips unless OPENRIG_E2E_REAL_CODEX=1, and when hc/codex/auth are absent.
+// NOT RUN by the conversion (it drives the signed-in codex account; no go for that was given): it type-checks and skips cleanly.
 
-const pexec = promisify(execFile);
-// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
-// in tmux's shared per-user directory, beside the fleet's server.
-let sockDir = "";
-const sock = () => {
-  if (sockDir === "") sockDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-mf-e2e-"));
-  return nodePath.join(sockDir, "tmux.sock");
-};
-const cleanEnv: any = { ...process.env };
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 delete cleanEnv.TMUX;
 delete cleanEnv.TMUX_TMPDIR;
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
-  const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
-  return stdout;
-};
-const tmux = (a: string) => exec(`tmux ${a}`);
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let core: HcScratch | undefined;
 
 // SPEC_MODEL is a VALID non-default model that codex renders VERBATIM in its effective-model footer
 // (no 400 / no silent fallback). DEFAULT_MODEL is the codex runtime default (fleet) that a REVERTED
@@ -64,7 +50,7 @@ const REAL_CODEX_OPT_IN = process.env.OPENRIG_E2E_REAL_CODEX === "1";
 function preflightOk(): boolean {
   if (!REAL_CODEX_OPT_IN) return false;
   try {
-    execFileSync("sh", ["-c", "command -v tmux"], { env: cleanEnv, stdio: "ignore" });
+    if (findHc() === null) return false;
     execFileSync("sh", ["-c", "command -v codex"], { env: cleanEnv, stdio: "ignore" });
     return fs.existsSync(nodePath.join(os.homedir(), ".codex", "auth.json"));
   } catch { return false; }
@@ -83,26 +69,18 @@ function realFsOps() {
   } as any;
 }
 
-const seats: string[] = [];
-afterAll(async () => {
-  if (!REAL_CODEX_OPT_IN) return; // a skipped run starts no tmux at all
-  if (sockDir === "") return; // no tmux command ran
-  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
-  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
-  await stopOwnedTmuxServer(sock(), cleanEnv);
-  fs.rmSync(sockDir, { recursive: true, force: true });
-});
+afterAll(() => { core?.cleanup(); });
 
-describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)", () => {
+describe("seat-handover model-fidelity money-proof (real codex, private hc core)", () => {
   it.runIf(preflightOk())(
     "the successor runs on the SPEC-pinned model, not the runtime default",
     async () => {
-      // isolation FIRST: the -L socket must never show fleet seats.
-      const sessions = await tmux("list-sessions -F '#{session_name}'").catch(() => "");
-      expect(sessions).not.toMatch(/dev-guard@|dev-planner@|orch-|review-/);
+      // isolation FIRST: the private core must show no seat before this run starts one.
+      core = startHcScratch();
+      const host = new HcAdapter(core.client());
+      expect(await host.listSessions()).toEqual([]);
 
       const SEAT = "dev-impl@mf-rig";
-      seats.push(SEAT);
       // A real cwd with a .git so the adapter's `--add-dir <cwd>/.git` is a real path.
       const cwd = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mf-e2e-"));
       execFileSync("sh", ["-c", `cd ${q(cwd)} && git init -q`], { env: cleanEnv });
@@ -114,10 +92,9 @@ describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)",
       const queueRoot = nodePath.join(os.homedir(), ".openrig", "shared-docs", "rigs", "mf-rig", "state", "dev");
       fs.mkdirSync(queueRoot, { recursive: true });
 
-      await tmux(`kill-session -t ${q(SEAT)}`).catch(() => {});
-      await tmux(`new-session -d -s ${q(SEAT)} -x 120 -y 34 -c ${q(cwd)}`);
+      expect(await host.createSession(SEAT, cwd), "the seat's terminal is created").toEqual({ ok: true });
       await sleep(200);
-      const pane = (await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_id}'`)).trim();
+      const pane = (await host.listPanes(SEAT))[0]!.id;
 
       const db = createDb(); db.pragma("foreign_keys = ON"); migrate(db, ALL_MIGRATIONS);
       const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db);
@@ -128,9 +105,9 @@ describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)",
       const session = sessionRegistry.registerSession(node.id, SEAT);
       sessionRegistry.updateStatus(session.id, "running");
       sessionRegistry.updateStartupStatus(session.id, "ready", new Date("2026-08-07T09:00:00Z").toISOString());
-      sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: pane });
+      sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, terminalAddress: pane });
 
-      const realTmux = new TmuxAdapter(exec) as any;
+      const realTmux = host as any;
       // The REAL adapter — createSuccessor's binding (carrying the spec model via A2-1) flows through
       // its real fresh-launch command construction, which emits -m.
       const codexAdapter = new CodexRuntimeAdapter({ tmux: realTmux, fsOps: realFsOps(), listProcesses: () => [] }) as any;
@@ -167,9 +144,9 @@ describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)",
         // headroom above unreachable in exactly the case it exists for.
         for (let i = 0; i < 85; i++) {
           await sleep(1000);
-          const c = await tmux(`capture-pane -p -t ${q(pane)}`).catch(() => "");
+          const c = (await host.capturePaneContent(SEAT, 0).catch(() => null)) ?? "";
           if (/Do you trust the contents of this directory/.test(c)) {
-            await tmux(`send-keys -t ${q(pane)} Enter`).catch(() => {});
+            await host.sendKeys(SEAT, ["Enter"], undefined, { blocked: "allow" }).catch(() => {});
             return;
           }
         }
@@ -178,7 +155,7 @@ describe("seat-handover model-fidelity money-proof (real codex, isolated tmux)",
       const result: any = await service.handover({ seatRef: SEAT, reason: "tiering", source: "fresh", operator: "orch@seat" });
       await trustApprover.catch(() => {});
       await sleep(3000);
-      const cap = await tmux(`capture-pane -p -t ${q(pane)} -S -400`);
+      const cap = (await host.capturePaneContent(SEAT, 400)) ?? "";
 
       // The EFFECTIVE-model line is the persistent footer "gpt-<name> <tier> · <cwd>", NOT the banner
       // "model: X /model to change" (the banner echoes the REQUESTED model even when the API rejects it

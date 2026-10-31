@@ -7,15 +7,17 @@ import Database from "better-sqlite3";
 import { type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 // OF-36: every command a message about an unusable saved startup context names is typed through a real POSIX shell
-// against a scratch daemon (own OPENRIG_HOME, ephemeral port, private tmux socket; never port 7433 or ~/.openrig), on
+// against a scratch daemon (own OPENRIG_HOME, ephemeral port, private hc core; never port 7433 or ~/.openrig), on
 // the stub runtime, and the command line is taken from the message's own output. Messages covered: restore's pre-restore
 // refusal and restore-check's blocker (saved_startup_context_unusable, both scopes of spec), a listed seat's refusal
 // (seat scope, spec route), `rig seat launch`'s wrong-shape advice (N-C2 rewritten), and the N6 spec-gone refusal.
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
 const topology = resolve(here, "../../test-system/scenarios/dev-pair-stub.yaml");
+const HC = findHc() !== null;
 const rigName = "dev-pair-stub";
 const impl = `dev-impl@${rigName}`;
 
@@ -29,7 +31,7 @@ function sh(line: string, env: Record<string, string | undefined>): Promise<{ co
 }
 
 function useRig(opts: { recordSpec: boolean }) {
-  const ctx: { scaffold?: HermeticScaffold; daemon?: ScenarioDaemon } = {};
+  const ctx: { core?: HcScratch; scaffold?: HermeticScaffold; daemon?: ScenarioDaemon } = {};
   const rig = (args: string[], t = 180_000) => runRig(args, ctx.daemon!.readEnv, rigBin, t);
   const run = (line: string) => sh(line, ctx.daemon!.readEnv);
   const sql = <T = unknown>(statement: string, ...params: unknown[]): T[] => {
@@ -49,7 +51,10 @@ function useRig(opts: { recordSpec: boolean }) {
     return Object.fromEntries((JSON.parse(ps.stdout) as Array<{ logicalId: string; sessionStatus: string }>).map((s) => [s.logicalId, s.sessionStatus]));
   };
   beforeAll(async () => {
+    ctx.core = startHcScratch();
     ctx.scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(ctx.scaffold.env, { HC_SESSION: ctx.core.session, XDG_RUNTIME_DIR: ctx.core.env.XDG_RUNTIME_DIR, HC_SOCKET: ctx.core.socketPath });
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
     const cwd = join(ctx.scaffold.root, "project");
     mkdirSync(cwd);
@@ -58,7 +63,9 @@ function useRig(opts: { recordSpec: boolean }) {
     if (!opts.recordSpec) sql("UPDATE rigs SET spec_source_path = NULL WHERE name = ?", rigName);
   }, 200_000);
   afterAll(async () => {
-    try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); }
+    try { await rig(["down", rigName, "--json", "--force"]); } finally {
+      try { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); } finally { ctx.core?.cleanup(); }
+    }
   }, 60_000);
   return { ctx, rig, run, sql, corrupt, policyFresh, snapshotCount, storedReadsOk, seatStatuses };
 }
@@ -90,7 +97,7 @@ async function adviseAndDown(t: ReturnType<typeof useRig>, downExit: number, col
 }
 
 for (const damage of DAMAGE) {
-  describe(`OF-36 rig seat launch's advice, ${damage.kind}, no spec, with a snapshot taken before the break: the named rig down + rig up heals`, () => {
+  describe.runIf(HC)(`OF-36 rig seat launch's advice, ${damage.kind}, no spec, with a snapshot taken before the break: the named rig down + rig up heals`, () => {
     const t = useRig({ recordSpec: false });
     it("typed from the refusal", async () => {
       const before = await t.rig(["snapshot", (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id]);
@@ -109,7 +116,7 @@ for (const damage of DAMAGE) {
     }, 400_000);
   });
 
-  describe(`OF-36 rig seat launch's advice, ${damage.kind}, no spec, no snapshot before the break: the named rig up refuses only this seat`, () => {
+  describe.runIf(HC)(`OF-36 rig seat launch's advice, ${damage.kind}, no spec, no snapshot before the break: the named rig up refuses only this seat`, () => {
     const t = useRig({ recordSpec: false });
     it("typed from the refusal", async () => {
       expect(t.snapshotCount(), "control: no snapshot was taken before the break").toBe(0);
@@ -125,7 +132,7 @@ for (const damage of DAMAGE) {
 }
 
 for (const recordSpec of [false, true]) {
-  describe(`OF-36 a plain rig up --existing, ${recordSpec ? "spec recorded" : "no spec"}, no usable copy: refused before it starts anything; restore-check says the same; the named remedy`, () => {
+  describe.runIf(HC)(`OF-36 a plain rig up --existing, ${recordSpec ? "spec recorded" : "no spec"}, no usable copy: refused before it starts anything; restore-check says the same; the named remedy`, () => {
     const t = useRig({ recordSpec });
     it("typed from the check and the refusal", async () => {
       t.policyFresh("dev.impl");
@@ -169,11 +176,11 @@ for (const recordSpec of [false, true]) {
   });
 }
 
-describe("OF-36 a listed seat, spec recorded, --startup-from stored, no usable copy: the named rig seat launch --fresh heals", () => {
+describe.runIf(HC)("OF-36 a listed seat, spec recorded, --startup-from stored, no usable copy: the named rig seat launch --fresh heals", () => {
   const t = useRig({ recordSpec: true });
   it("typed from the seat's refusal", async () => {
-    // The sibling must come back running: with no live session the scratch tmux server exits, and `rig seat launch`
-    // then refuses on the transport probe (tmux_probe_failed), as it does for any fresh launch (Sparky, 381d1b16).
+    // The sibling must come back running: `rig seat launch` refuses on the transport probe when the seat host cannot
+    // be asked, as it does for any fresh launch (Sparky, 381d1b16).
     t.policyFresh("dev.qa");
     t.corrupt("resolved_files_json", "{}");
     expect((await t.rig(["down", rigName, "--json"])).code).toBe(0);
@@ -189,7 +196,7 @@ describe("OF-36 a listed seat, spec recorded, --startup-from stored, no usable c
   }, 400_000);
 });
 
-describe("N-C2 N6: the recorded spec is gone and the saved row cannot be used: the refusal does not offer --startup-from stored", () => {
+describe.runIf(HC)("N-C2 N6: the recorded spec is gone and the saved row cannot be used: the refusal does not offer --startup-from stored", () => {
   const t = useRig({ recordSpec: true });
   it("typed", async () => {
     t.corrupt("startup_actions_json", BAD_ACTION);
@@ -208,7 +215,7 @@ describe("N-C2 N6: the recorded spec is gone and the saved row cannot be used: t
 });
 
 // OF-36 Q2 (Jim, 2026-10-20): `--startup-from snapshot:<id>`, typed from the advice that names it.
-describe("OF-36 Q2 the advice's snapshot route: rig seat launch --fresh --stop --startup-from snapshot:<id> heals only this seat", () => {
+describe.runIf(HC)("OF-36 Q2 the advice's snapshot route: rig seat launch --fresh --stop --startup-from snapshot:<id> heals only this seat", () => {
   const t = useRig({ recordSpec: false });
   it("typed from the refusal", async () => {
     const snap = await t.rig(["snapshot", (t.sql<{ id: string }>("SELECT id FROM rigs WHERE name = ?", rigName)[0]!).id]);
@@ -226,7 +233,7 @@ describe("OF-36 Q2 the advice's snapshot route: rig seat launch --fresh --stop -
   }, 400_000);
 });
 
-describe("OF-36 Q2 rig up --existing --fresh <seat> --startup-from snapshot:<id>, and the refusals", () => {
+describe.runIf(HC)("OF-36 Q2 rig up --existing --fresh <seat> --startup-from snapshot:<id>, and the refusals", () => {
   const t = useRig({ recordSpec: false });
   it("typed", async () => {
     const bad = await t.run(`rig seat launch '${impl}' --fresh --stop --startup-from snapshot: --reason x --json`);
@@ -252,7 +259,7 @@ describe("OF-36 Q2 rig up --existing --fresh <seat> --startup-from snapshot:<id>
 });
 
 // Review F1 (4728c079): every route restore-check's remediation names for a listed seat restore would refuse, typed.
-describe("OF-36 F1 no spec, no usable copy: the check does not offer leaving the seat out; the routes it names hold", () => {
+describe.runIf(HC)("OF-36 F1 no spec, no usable copy: the check does not offer leaving the seat out; the routes it names hold", () => {
   const t = useRig({ recordSpec: false });
   it("typed from the check", async () => {
     t.policyFresh("dev.impl");
@@ -279,7 +286,7 @@ describe("OF-36 F1 no spec, no usable copy: the check does not offer leaving the
 });
 
 for (const route of ["snapshot", "leave-out"] as const) {
-  describe(`OF-36 F1 spec gone, a usable older copy: the check's ${route} route starts the seat`, () => {
+  describe.runIf(HC)(`OF-36 F1 spec gone, a usable older copy: the check's ${route} route starts the seat`, () => {
     const t = useRig({ recordSpec: true });
     it("typed from the check", async () => {
       t.policyFresh("dev.impl");
@@ -304,7 +311,7 @@ for (const route of ["snapshot", "leave-out"] as const) {
 // Re-check G1 (5ffd9b97): a restore run with --startup-from snapshot:<id> must not hand that id to another seat unless
 // the snapshot holds a copy that seat can use. dev.qa stops awaiting a decision (the stub has no resume token).
 for (const qaCopy of ["broken", "usable"] as const) {
-  describe(`OF-36 G1 --startup-from snapshot:<id>, dev.qa's copy in that snapshot is ${qaCopy}: the command printed for dev.qa holds`, () => {
+  describe.runIf(HC)(`OF-36 G1 --startup-from snapshot:<id>, dev.qa's copy in that snapshot is ${qaCopy}: the command printed for dev.qa holds`, () => {
     const t = useRig({ recordSpec: false });
     it("typed from dev.qa's restore error", async () => {
       t.policyFresh("dev.impl");
