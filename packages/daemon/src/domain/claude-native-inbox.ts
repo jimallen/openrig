@@ -16,7 +16,7 @@
 // non-take (a later boundary, no ack, no marker in the transcript). See `sweep`.
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { OutboxEntry, OutboxHandler } from "./outbox-handler.js";
+import { WAKE_INTENT_PREFIX, type OutboxEntry, type OutboxHandler } from "./outbox-handler.js";
 import { nameEnvelope } from "./native-name-envelope.js";
 
 /** The marker line appended to a native message. `<id>` is the outbox row, `<nonce>` a per-row secret the sender never sees. */
@@ -86,6 +86,10 @@ export interface NativeInboxDeps {
   /** Called after a native row settles (review F3 and the R3 sender notice): the queue records the outcome on the
    *  row's qitem, and the sender is told when the outcome is not a delivery. Errors are the callback's own. */
   onSettled?: (row: OutboxEntry, outcome: NativeSettlement) => void;
+  /** OF-180 N2: called once per row, by the sweep, when a native row is past `deadlineMs` with no prompt boundary since its
+   *  write. An idle seat takes a queued message at once (measured), so a long silence is either a busy seat or a message held
+   *  behind a prompt the argv check cannot see (a managed or policy `crossSessionInbound` override: not measured). */
+  onStalled?: (row: OutboxEntry, ageMs: number) => void;
 }
 
 /** How a native row settled: `delivered` (hook ack or transcript), `unconfirmed` (indeterminate: hard deadline or a
@@ -107,14 +111,41 @@ export interface NativeDeliverResult {
   write?: "all" | "partial";
 }
 
-export interface NativeFallback { outboxId: string; sessionName: string; senderSession: string; body: string; auditPointer: string | null; wake: boolean }
+/** One tmux resend after a proven non-take. `outboxIds` are the rows it settles: one, or (`wake`) every row of a wake
+ *  group that was written as one text, in which case `body` is that text and `outboxId` the first row (OF-180 N7). */
+export interface NativeFallback { outboxId: string; outboxIds: string[]; sessionName: string; senderSession: string; body: string; auditPointer: string | null; wake: boolean }
 
 const AGENT_RUNTIMES = new Set(["claude-code", "codex", "pi", "pda", "omp", "stub"]);
 
 function newNonce(): string { return randomBytes(12).toString("hex"); }
 
+/** OF-180 N7: a wake group is written natively as ONE text (its rows' bodies joined by a newline, queue-repository
+ *  deliverWakeIntent) with one marker per row, all rows sharing the write time. Its tmux fallback must be that one text,
+ *  not one message per row. Wake rows of one destination, sender and write time are one group; the rows' order is their
+ *  id order (the original order is not stored). Any other row is its own fallback. */
+function groupFallbacks(rows: OutboxEntry[]): NativeFallback[] {
+  const out: NativeFallback[] = [];
+  const groups = new Map<string, NativeFallback>();
+  for (const row of rows) {
+    const wake = row.outboxId.startsWith(WAKE_INTENT_PREFIX);
+    const key = wake ? JSON.stringify([row.destinationSession, row.senderSession, row.nativeWrittenAt]) : null;
+    const group = key ? groups.get(key) : undefined;
+    if (group) {
+      group.outboxIds.push(row.outboxId);
+      group.body = `${group.body}\n${row.body}`;
+      continue;
+    }
+    const fallback: NativeFallback = { outboxId: row.outboxId, outboxIds: [row.outboxId], sessionName: row.destinationSession,
+      senderSession: row.senderSession, body: row.body, auditPointer: row.auditPointer, wake };
+    if (key) groups.set(key, fallback);
+    out.push(fallback);
+  }
+  return out;
+}
+
 export class ClaudeNativeInbox {
   private readonly waiters = new Map<string, () => void>();
+  private readonly stalledReported = new Set<string>();
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly ackWindowMs: number;
@@ -321,11 +352,14 @@ export class ClaudeNativeInbox {
    *  searched for the marker: found, the ack was lost and the row is delivered; absent, the row was not taken and is
    *  returned for the tmux path. No boundary by the hard deadline: indeterminate, never re-sent. */
   sweep(): { fallbacks: NativeFallback[]; settled: Array<{ outboxId: string; state: string; evidence: string }> } {
-    const fallbacks: NativeFallback[] = [];
+    const failedOver: OutboxEntry[] = [];
     const settled: Array<{ outboxId: string; state: string; evidence: string }> = [];
-    if (!this.hasTables()) return { fallbacks, settled };
+    if (!this.hasTables()) return { fallbacks: [], settled };
     const now = this.now().getTime();
-    for (const row of this.deps.outbox.listNativePending()) {
+    const pending = this.deps.outbox.listNativePending();
+    const stillPending = new Set(pending.map((r) => r.outboxId));
+    for (const id of this.stalledReported) if (!stillPending.has(id)) this.stalledReported.delete(id);
+    for (const row of pending) {
       const writtenAt = Date.parse(row.nativeWrittenAt ?? "");
       if (!Number.isFinite(writtenAt) || now - writtenAt < this.deadlineMs) continue;
       const seat = this.seatOf(row.destinationSession);
@@ -345,8 +379,7 @@ export class ClaudeNativeInbox {
         this.deps.outbox.settleNative(row.outboxId, "failed", { path: "native", evidence: "native_unconfirmed", detail: "boundary_without_ack" });
         this.notify(row.outboxId, { kind: "failing_over", evidence: "native_unconfirmed", detail: "boundary_without_ack" });
         settled.push({ outboxId: row.outboxId, state: "failed", evidence: "native_unconfirmed" });
-        fallbacks.push({ outboxId: row.outboxId, sessionName: row.destinationSession, senderSession: row.senderSession, body: row.body,
-          auditPointer: row.auditPointer, wake: row.outboxId.startsWith("wake-intent-") });
+        failedOver.push(row);
         continue;
       }
       if (now - writtenAt >= this.hardDeadlineMs) {
@@ -354,9 +387,12 @@ export class ClaudeNativeInbox {
           this.notify(row.outboxId, { kind: "unconfirmed", evidence: "native_unconfirmed", detail: "no_boundary_by_hard_deadline" });
         }
         settled.push({ outboxId: row.outboxId, state: "indeterminate", evidence: "native_unconfirmed" });
+      } else if (!this.stalledReported.has(row.outboxId)) {
+        this.stalledReported.add(row.outboxId);
+        try { this.deps.onStalled?.(row, now - writtenAt); } catch { /* a log line that fails never stops the sweep */ }
       }
     }
-    return { fallbacks, settled };
+    return { fallbacks: groupFallbacks(failedOver), settled };
   }
 
   private notify(outboxId: string, outcome: NativeSettlement): void {

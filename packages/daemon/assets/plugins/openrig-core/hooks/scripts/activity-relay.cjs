@@ -198,6 +198,11 @@ function buildNativeEndpointPayload(providerPayload, env = process.env) {
   };
 }
 
+// OF-180 N6: a person who pastes a delivered message with its marker into a prompt is blocked like a late duplicate (the
+// two cannot be told apart from the hook payload). The reason is shown to them, so it says how to send the text anyway.
+const NATIVE_DUPLICATE_BLOCK_REASON =
+  "OpenRig: this message was already delivered; duplicate suppressed. If you pasted it on purpose, delete the [openrig-msg ...] line and send it again.";
+
 const NATIVE_MARKER_RE = /\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]/g;
 
 // Native comms step 3, UserPromptSubmit of a Claude seat: the markers of native messages in the prompt.
@@ -296,7 +301,7 @@ async function main() {
     // stops a socket-injected copy cleanly). No reply, or any doubt, lets the prompt through.
     const reply = await postNativeJson("/api/activity/native-ack", ack);
     if (reply && reply.block === true) {
-      process.stdout.write(JSON.stringify({ decision: "block", reason: "OpenRig: this message was already delivered; duplicate suppressed." }) + "\n");
+      process.stdout.write(JSON.stringify({ decision: "block", reason: NATIVE_DUPLICATE_BLOCK_REASON }) + "\n");
     }
   }
 }

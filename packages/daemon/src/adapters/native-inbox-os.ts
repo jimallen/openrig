@@ -9,10 +9,14 @@ import { NAME_ENVELOPE_PARSER_LITERAL } from "../domain/native-name-envelope.js"
 
 const execFileAsync = promisify(execFile);
 
+/** OF-181 N1: how long a write may take to flush. Under the CLI's own 5 s request timeout, so a hung receiver whose socket
+ *  buffer a large message fills makes the daemon answer `partial` before the CLI gives up on the request. */
+export const SOCKET_WRITE_TIMEOUT_MS = 3_000;
+
 /** Writes newline-delimited JSON lines to a Unix socket and closes it. `none`: the connection failed, no byte left;
  *  `all`: every byte was flushed to the socket; `partial`: connected but the flush did not complete (it may or may not
  *  have landed). The inbox replies with nothing (measured), so nothing is read back. */
-export function writeSocketLines(socketPath: string, lines: unknown[], timeoutMs = 5_000): Promise<"none" | "all" | "partial"> {
+export function writeSocketLines(socketPath: string, lines: unknown[], timeoutMs = SOCKET_WRITE_TIMEOUT_MS): Promise<"none" | "all" | "partial"> {
   return new Promise((resolve) => {
     let connected = false;
     let flushed = false;

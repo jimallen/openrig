@@ -117,7 +117,8 @@ import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guar
 import { InboxHandler } from "./domain/inbox-handler.js";
 import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
 import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
-import { createNativeSettlementHandler, nativeFallbackOutcome, recordNativeFallback } from "./domain/native-inbox-settlement.js";
+import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
+import { createNativeSettlementHandler, failOverToTmux } from "./domain/native-inbox-settlement.js";
 import { fileIncludes, listProcesses as listProcessesForNative, probeClaudeBinary, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
@@ -653,9 +654,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   });
   // Native comms step 3: `transport.native_claude`, read at every launch and every send decision (a changed setting
   // reaches the next launch and the next send; seats need a relaunch to carry the inbox setting).
-  const nativeClaudeEnabled = (): boolean => {
-    try { return new ContextPackSettingsStore().resolveOne("transport.native_claude").value === true; } catch { return false; }
-  };
+  // OF-180 N4: the answer is kept until the settings file or the env override changes (one stat per decision, no parse).
+  const nativeClaudeEnabled = nativeClaudeFlag(new ContextPackSettingsStore());
   const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled });
   // #275: one reader for both Codex launch adapters, with the PATH, HOME and CODEX_HOME a seat session gets.
   const readCodexNetworkDefault = codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome });
@@ -1363,6 +1363,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const claudeNativeInbox: ClaudeNativeInbox = new ClaudeNativeInbox({
     db,
     onSettled: createNativeSettlementHandler(nativeSettlementDeps),
+    // OF-180 N2: a row unacked past the deadline with no prompt boundary since is named in the daemon log, once.
+    onStalled: (row, ageMs) => console.warn(`[native-inbox] ${row.outboxId} to ${row.destinationSession} was written natively ${Math.round(ageMs / 1000)}s ago and the seat has had no prompt boundary since. The seat may be busy, or it may be holding the message behind a prompt (for example a managed or policy setting that overrides crossSessionInbound; not measured).`),
     outbox: outboxHandlerInstance,
     enabled: nativeClaudeEnabled,
     panePid: async (session) => {
@@ -2194,13 +2196,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       nativeSweepRunning = true;
       try {
         const { fallbacks } = claudeNativeInbox.sweep();
-        for (const f of fallbacks) {
-          const res = await sessionTransport.send(f.sessionName, f.body, { forceTmux: true, verify: true, actorSession: f.senderSession, auditPointer: f.auditPointer ?? undefined });
-          const outcome = nativeFallbackOutcome(res, labelForTmuxSend(res));
-          outboxHandlerInstance.settleFallback(f.outboxId, outcome.state, outcome.label);
-          const entry = outboxHandlerInstance.getById(f.outboxId);
-          if (entry) await recordNativeFallback(nativeSettlementDeps, entry, res, outcome);
-        }
+        // OF-180 N7: a wake group goes out once, as the one text it was written as; every row of it settles on the result.
+        await failOverToTmux(nativeSettlementDeps, {
+          send: (f) => sessionTransport.send(f.sessionName, f.body, { forceTmux: true, verify: true, actorSession: f.senderSession, auditPointer: f.auditPointer ?? undefined }),
+          labelFor: labelForTmuxSend,
+          settleFallback: (id, state, label) => outboxHandlerInstance.settleFallback(id, state, label),
+          getById: (id) => outboxHandlerInstance.getById(id),
+        }, fallbacks);
       } catch (err) {
         console.warn(`[native-inbox] sweep failed: ${(err as Error).message}`);
       } finally {

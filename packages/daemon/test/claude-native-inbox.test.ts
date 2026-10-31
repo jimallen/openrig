@@ -409,7 +409,7 @@ describe("sweep: the deadline rule (R3)", () => {
     f.files.set(TRANSCRIPT, "unrelated");
     f.clock.t += 130_000;
     const r = f.inbox.sweep();
-    expect(r.fallbacks).toEqual([{ outboxId: id, sessionName: SEAT, senderSession: SENDER, body: "hello", auditPointer: null, wake: false }]);
+    expect(r.fallbacks).toEqual([{ outboxId: id, outboxIds: [id], sessionName: SEAT, senderSession: SENDER, body: "hello", auditPointer: null, wake: false }]);
     expect(row(f.db, id)).toMatchObject({ state: "failed", evidence: "native_unconfirmed", detail: "boundary_without_ack" });
     // a second sweep does not return it again
     expect(f.inbox.sweep().fallbacks).toEqual([]);
@@ -557,5 +557,133 @@ describe("settlement notifications (review F3 and the R3 notice)", () => {
     f.clock.t += 3_600_000;
     f.inbox.sweep();
     expect(f.settled).toEqual([{ id: res.outboxIds[0], kind: "unconfirmed", detail: "write_partial" }]);
+  });
+});
+
+// OF-181 N2: which binary path is probed when the pid and the relay both offer one.
+describe("OF-181 N2: the pid-derived binary beats the relay's", () => {
+  const passing = { version: "2.1.314", literal: true, replacedSinceStart: false };
+  it("both offered → the path found from the pid is probed and recorded, never the relay's", async () => {
+    const probed: string[] = [];
+    const f = make({ resolveExecPath: async () => "/from-pid/claude", probeBinary: async (p) => { probed.push(p); return passing; } });
+    const r = await register(f, { execPath: "/from-relay/claude" });
+    expect([r?.exec_path, probed]).toEqual(["/from-pid/claude", ["/from-pid/claude"]]);
+  });
+  it("the pid gives none (null) → the relay's path is the fallback", async () => {
+    const probed: string[] = [];
+    const f = make({ resolveExecPath: async () => null, probeBinary: async (p) => { probed.push(p); return passing; } });
+    const r = await register(f, { execPath: "/from-relay/claude" });
+    expect([r?.exec_path, probed]).toEqual(["/from-relay/claude", ["/from-relay/claude"]]);
+  });
+  it("the pid lookup throws → the relay's path is the fallback", async () => {
+    const probed: string[] = [];
+    const f = make({ resolveExecPath: async () => { throw new Error("lsof failed"); }, probeBinary: async (p) => { probed.push(p); return passing; } });
+    const r = await register(f, { execPath: "/from-relay/claude" });
+    expect([r?.exec_path, probed]).toEqual(["/from-relay/claude", ["/from-relay/claude"]]);
+  });
+});
+
+// OF-181 N3: the ack window's default.
+describe("OF-181 N3: the default ack window is 1.5 s", () => {
+  it("with no ackWindowMs given, a send waits for its ack 1500 ms (the CLI request is 5 s)", async () => {
+    const waits: number[] = [];
+    const f = make({ ackWindowMs: undefined, sleep: async (ms) => { waits.push(ms); } });
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
+    expect(waits).toEqual([1_500]);
+  });
+});
+
+// OF-180 N7: a wake group that fails over is resent once, as the text it was written as.
+describe("OF-180 N7: a wake group's tmux fallback is one message", () => {
+  type Eligible = Extract<Awaited<ReturnType<ClaudeNativeInbox["eligibility"]>>, { ok: true }>;
+  async function wakeGroup(f: Fake, names: string[], sender: string, eligibleFor: Eligible) {
+    const ids = names.map((s) => f.outbox.record({ outboxId: `${WAKE_INTENT_PREFIX}${s}`, senderSession: sender, destinationSession: SEAT, body: s }).outboxId);
+    for (const id of ids) f.outbox.claimForDelivery(id);
+    await f.inbox.deliver({ sessionName: SEAT, senderSession: sender, text: names.join("\n"), endpoint: eligibleFor.endpoint, committedOutboxIds: ids });
+    return ids;
+  }
+  async function eligibleFor(f: Fake, sender: string): Promise<Eligible> {
+    const e = await f.inbox.eligibility(SEAT, sender);
+    if (!e.ok) throw new Error(e.reason);
+    return e;
+  }
+  it("two rows written together are one fallback (their bodies, one per line); another group and a plain send stay separate", async () => {
+    const f = make(); await register(f);
+    const plain = (await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "plain", endpoint: (await eligibleFor(f, SENDER)).endpoint })).outboxIds[0]!;
+    const g1 = await wakeGroup(f, ["w1", "w2"], "queue@system", await eligibleFor(f, "queue@system"));
+    f.clock.t += 2_000;
+    const g2 = await wakeGroup(f, ["w3"], "queue@system", await eligibleFor(f, "queue@system"));
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 3_000).toISOString());
+    f.clock.t += 130_000;
+    const fallbacks = f.inbox.sweep().fallbacks.sort((a, b) => a.outboxId.localeCompare(b.outboxId));
+    expect(fallbacks).toEqual([
+      { outboxId: plain, outboxIds: [plain], sessionName: SEAT, senderSession: SENDER, body: "plain", auditPointer: null, wake: false },
+      { outboxId: g1[0], outboxIds: g1, sessionName: SEAT, senderSession: "queue@system", body: "w1\nw2", auditPointer: null, wake: true },
+      { outboxId: g2[0], outboxIds: g2, sessionName: SEAT, senderSession: "queue@system", body: "w3", auditPointer: null, wake: true },
+    ]);
+    for (const id of [plain, ...g1, ...g2]) expect(row(f.db, id)).toMatchObject({ state: "failed", evidence: "native_unconfirmed" });
+  });
+  it("wake rows of one write time but another sender are not merged", async () => {
+    const f = make(); await register(f);
+    const a = await wakeGroup(f, ["a1"], "queue@system", await eligibleFor(f, "queue@system"));
+    const b = await wakeGroup(f, ["b1"], "watchdog@system", await eligibleFor(f, "watchdog@system"));
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 3_000).toISOString());
+    f.clock.t += 130_000;
+    expect(f.inbox.sweep().fallbacks.map((x) => x.outboxIds)).toEqual([a, b]);
+  });
+  it("wake rows of one write time and sender for different seats are not merged", async () => {
+    const f = make(); await register(f);
+    const e = await eligibleFor(f, "queue@system");
+    const mk = (id: string, dest: string) => f.outbox.record({ outboxId: `${WAKE_INTENT_PREFIX}${id}`, senderSession: "queue@system", destinationSession: dest, body: id }).outboxId;
+    const a = mk("a1", SEAT); const b = mk("b1", SENDER); // SENDER is a second running claude seat (node-b)
+    f.outbox.claimForDelivery(a); f.outbox.claimForDelivery(b);
+    await f.inbox.deliver({ sessionName: SEAT, senderSession: "queue@system", text: "a1", endpoint: e.endpoint, committedOutboxIds: [a] });
+    await f.inbox.deliver({ sessionName: SENDER, senderSession: "queue@system", text: "b1", endpoint: e.endpoint, committedOutboxIds: [b] });
+    const stop = new Date(f.clock.t + 3_000).toISOString();
+    for (const node of ["node-a", "node-b"]) {
+      f.db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES ('rig-1', ?, 'agent.activity', ?)")
+        .run(node, JSON.stringify({ type: "agent.activity", activity: { rawEvent: "Stop", eventAt: stop, state: "idle", evidenceSource: "runtime_hook" } }));
+    }
+    f.clock.t += 130_000;
+    expect(f.inbox.sweep().fallbacks.map((x) => [x.sessionName, x.outboxIds])).toEqual([[SEAT, [a]], [SENDER, [b]]]);
+  });
+});
+
+// OF-180 N2: a native row that sits unacked with no boundary is named once (a managed override would look like this).
+describe("OF-180 N2: a stalled native row is named once", () => {
+  async function stalled(over?: Partial<NativeInboxDeps>) {
+    const calls: Array<{ id: string; ageMs: number }> = [];
+    const f = make({ onStalled: (r, ageMs) => { calls.push({ id: r.outboxId, ageMs }); }, ...over });
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const id = (await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint })).outboxIds[0]!;
+    return { f, calls, id };
+  }
+  it("not before the deadline; once past it with no boundary, with the row's age; not again on the next sweep", async () => {
+    const { f, calls, id } = await stalled();
+    f.clock.t += 60_000; f.inbox.sweep();
+    expect(calls).toEqual([]);
+    f.clock.t += 70_000; f.inbox.sweep(); f.inbox.sweep();
+    expect(calls).toEqual([{ id, ageMs: 130_000 }]);
+    expect(row(f.db, id)?.state).toBe("sending"); // naming it settles nothing
+  });
+  it("not when the seat has had a boundary (that row fails over instead), nor once the hard deadline settles it", async () => {
+    const a = await stalled();
+    recordActivity(a.f.db, "Stop", new Date(a.f.clock.t + 1_000).toISOString());
+    a.f.clock.t += 130_000; a.f.inbox.sweep();
+    expect(a.calls).toEqual([]);
+    const b = await stalled();
+    b.f.clock.t += 1_800_000; b.f.inbox.sweep();
+    expect(b.calls).toEqual([]);
+  });
+  it("a callback that throws does not stop the sweep", async () => {
+    const f = make({ onStalled: () => { throw new Error("log failed"); } });
+    await register(f);
+    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
+    f.clock.t += 130_000;
+    expect(() => f.inbox.sweep()).not.toThrow();
   });
 });
