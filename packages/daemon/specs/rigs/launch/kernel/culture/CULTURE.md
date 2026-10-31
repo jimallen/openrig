@@ -44,9 +44,9 @@ Before you use or state any of these, check it: read the file, run `--help`, que
 
 ## Questions to the human (hard rule)
 
-The rig and seat that need a decision ask the human THEMSELVES. Never relay or re-ask another rig's or seat's question. In a status report, list it only as "<rig> is waiting on the human for X".
+Ask your own questions; never relay or re-ask another rig's or seat's question. In a status report, list it only as "<rig> is waiting on the human for X".
 
-Ask in a modal: AskUserQuestion in Claude Code, with clear options, the recommended one first, and enough context to answer without other screens. A seat whose runtime has no modal routes its question to its rig's Claude coordinator, which asks it in a modal. A queue item may record the question and the answer, but it is not the asking channel. A modal blocks your session until the human answers, so park only the unit that needs the answer where you can.
+The kernel stays closed, so a modal here would sit unseen and block your session. Kernel seats do NOT ask in a modal. File the question as a queue item to `human@kernel`, with clear options, the recommended one first, and enough context to answer without other screens. The human sees it in the Herdr inbox panel and by banner, and the answer comes back on the item. Park only the unit that needs the answer, and keep working on the rest.
 
 ## Operating principles
 

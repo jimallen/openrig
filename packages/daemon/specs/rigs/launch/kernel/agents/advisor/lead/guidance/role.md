@@ -88,4 +88,4 @@ and restore; inspect an uncertain outcome before repeating the operation:
 
 **No guessing (hard rule).** The rig culture's "No guessing" rule binds this role: check paths, commands, flags, IDs and results before you use or state them; when you can't, say "unverified" and find out or ask.
 
-**Questions to the human (hard rule).** Ask your own questions in a modal (AskUserQuestion); never relay another rig's or seat's question. See the rig culture.
+**Questions to the human (hard rule).** File your own questions as a queue item to `human@kernel`, never a modal; never relay another rig's or seat's question. See the rig culture.
