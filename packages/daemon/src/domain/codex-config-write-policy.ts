@@ -142,14 +142,14 @@ export function createCodexConfigWritePolicy(facts: CodexConfigWritePolicyFacts)
   return {
     decide(configPath: string): CodexConfigWriteDecision {
       if (judged.installed) return { allowed: true, reason: judged.reason };
-      // The FILE is resolved too: a config.toml that is a symlink into the host-wide home is written through.
-      const resolvedFile = resolveConfigFile(facts, configPath);
-      if (resolvedFile === null) return refuse("its config.toml is a symbolic link that cannot be resolved");
-      const target = path.dirname(resolvedFile);
       const refuse = (why: string): CodexConfigWriteDecision => ({
         allowed: false,
         reason: `${why}; this daemon is not the host's installed OpenRig (${judged.reason}), so it leaves ${configPath} unchanged`,
       });
+      // The FILE is resolved too: a config.toml that is a symlink into the host-wide home is written through.
+      const resolvedFile = resolveConfigFile(facts, configPath);
+      if (resolvedFile === null) return refuse("its config.toml is a symbolic link that cannot be resolved");
+      const target = path.dirname(resolvedFile);
       if (facts.hostHome === null) {
         // Cannot tell the host's shared home apart: only the daemon's own state home is provably private.
         const own = facts.canonicalize(facts.openrigHome);
