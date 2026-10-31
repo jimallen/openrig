@@ -44,7 +44,7 @@ function seatHost(seats: Record<string, TerminalModes>) {
     capturePaneContent: (...a) => capture.capturePaneContent(...a),
     capturePanesContent: (...a) => capture.capturePanesContent(...a),
   };
-  const readsOf = (seat: string) => hc.calls.filter((c) => c.method === "terminal.read" && c.params.terminal === hcTerminalName(seat)).map((c) => c.params.lines);
+  const readsOf = (seat: string) => hc.calls.filter((c) => c.method === "terminal.read" && c.params.terminal === hcTerminalName(seat)).map((c) => (typeof c.params.lines === "number" ? c.params.lines : -1));
   return { host, hc, probed, readsOf, setModes: (seat: string, modes: TerminalModes) => modeOf.set(hcTerminalName(seat), modes) };
 }
 const live = { lines: 1000, pollIntervalMs: POLL };

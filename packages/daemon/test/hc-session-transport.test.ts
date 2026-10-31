@@ -10,6 +10,7 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { labelForTmuxSend } from "../src/domain/outbox-handler.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
+import { tmuxStub } from "./helpers/tmux-stub.js";
 import type { HcDeliveryOutcome, HcPendingSend } from "../src/adapters/hc-delivery.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 
@@ -24,7 +25,7 @@ function mockTmux(over: { capture?: (n: string, lines?: number) => Promise<strin
     sendKeys: vi.fn(async (): Promise<TmuxResult> => ({ ok: true })),
     capture: vi.fn(over.capture ?? (async () => "idle\n❯ ")),
   };
-  const tmux = {
+  const tmux = tmuxStub({
     hasSession: async () => true,
     probeSession: async () => ({ state: "present" as const }),
     sendText: calls.sendText, sendKeys: calls.sendKeys, capturePaneContent: calls.capture,
@@ -32,7 +33,7 @@ function mockTmux(over: { capture?: (n: string, lines?: number) => Promise<strin
     listSessions: async () => [], listWindows: async () => [], listPanes: async () => [],
     startPipePane: async () => ({ ok: true as const }), stopPipePane: async () => ({ ok: true as const }),
     getPanePid: async () => null, getPaneCommand: async () => null,
-  } as unknown as TmuxAdapter;
+  });
   return { tmux, calls };
 }
 

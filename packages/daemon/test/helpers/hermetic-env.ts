@@ -390,6 +390,9 @@ process.exit(result.status ?? 1);
   // Every `HC_`-prefixed name selects a core or acts as a terminal of one (a positional predicate, not a list: a selector a
   // later hc release adds is covered too). The scaffold's own selectors are set by `startHcCore()`, never inherited.
   for (const name of Object.keys(env)) if (name.startsWith("HC_")) delete env[name];
+  // hc finds its socket under XDG_RUNTIME_DIR before any state dir, so an inherited one would send a scaffold with no private
+  // core of its own to the host's `default` core. Without it the socket falls under the scaffold's own XDG_STATE_HOME.
+  delete env.XDG_RUNTIME_DIR;
   env.HOME = home;
   // Host-neutral shell: a login shell of zsh with no startup files in the scratch HOME runs
   // the zsh-newuser-install wizard, which eats the first keystroke typed into a seat pane

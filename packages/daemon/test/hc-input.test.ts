@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { HcClient, HcTerminal } from "../src/adapters/hc-client.js";
-import { HcError, HcOutcomeUnknownError, HcUnavailableError } from "../src/adapters/hc-client.js";
+import type { HcTerminal } from "../src/adapters/hc-client.js";
+import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError } from "../src/adapters/hc-client.js";
 import type { HcAttachEnd, HcAttachHandlers, HcAttachOpener, HcAttachParams, HcAttachment } from "../src/adapters/hc-attach.js";
 import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { HcInput, bracketedPasteOn, mapTmuxKeys, type HcInputGuard } from "../src/adapters/hc-input.js";
@@ -19,16 +19,16 @@ type Call = { method: string; params: Record<string, unknown>; timeoutMs?: numbe
 /** A client that answers from a table of method to result-or-error, and records every call. */
 function fakeClient(answers: Record<string, unknown | (() => unknown)>): { client: HcClient; calls: Call[] } {
   const calls: Call[] = [];
-  const client = {
-    async call(method: string, params: Record<string, unknown> = {}, options: { timeoutMs?: number } = {}) {
+  class TableClient extends HcClient {
+    override async call<T>(method: string, params: Record<string, unknown> = {}, options: { timeoutMs?: number } = {}): Promise<T> {
       calls.push({ method, params, timeoutMs: options.timeoutMs });
       const answer = answers[method];
-      const value = typeof answer === "function" ? (answer as () => unknown)() : answer;
+      const value: unknown = typeof answer === "function" ? (answer as () => unknown)() : answer;
       if (value instanceof Error) throw value;
-      return value;
-    },
-  } as unknown as HcClient;
-  return { client, calls };
+      return value as T;
+    }
+  }
+  return { client: new TableClient("/nonexistent"), calls };
 }
 
 interface Attached { opened: HcAttachParams[]; written: Buffer[]; detached: number; events: string[] }

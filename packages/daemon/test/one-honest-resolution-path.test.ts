@@ -152,6 +152,21 @@ describe("one path at the verbs: send and capture surface the transport outcome"
       expect(result.error).not.toMatch(/not found/i);
     });
 
+    // The reason code `tmux_unavailable` is a persisted contract and stays; the words an operator reads name the seat host.
+    it("the unreachable-host text names the terminal host and not the tmux server, on send and on capture, while the reason code keeps its name", async () => {
+      seedSeat();
+      const sent = await transportOver(NO_SERVER).send(SEAT, "hello");
+      const captured = await transportOver(NO_SERVER).capture(SEAT);
+      for (const result of [sent, captured]) {
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.reason).toBe("tmux_unavailable");
+        expect(result.error).toMatch(/^The terminal host \(the hc core\) could not be reached \(/);
+        // (The cause in the parentheses is the fixture's own exec error, which names tmux.)
+        expect(result.error).not.toMatch(/tmux server/i);
+      }
+    });
+
     it("session-missing text states its positive tmux evidence", async () => {
       seedSeat();
       const result = await transportOver(SESSION_GONE).send(SEAT, "hello");

@@ -18,7 +18,7 @@ function createMockExec(responses: Record<string, string | Error>): ExecFn {
       }
     }
     throw new Error("command not found");
-  }) as unknown as ExecFn;
+  });
 }
 
 const PIN = "0.1.15";
@@ -120,7 +120,7 @@ describe("RuntimeVerifier", () => {
 
   it("runs only `hc --version` for hc and for its old name tmux", async () => {
     const seen: string[] = [];
-    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.15"; }) as unknown as ExecFn;
+    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.15"; });
     await withCore(db, exec, async () => hello()).verifyAll(["hc", "tmux"]);
     expect(seen).toEqual(["hc --version", "hc --version"]);
   });
@@ -214,7 +214,7 @@ describe("RuntimeVerifier", () => {
       if (cmd === "claude --version") throw new Error("not found");
       if (cmd === "claude --help") return "Claude Code CLI\nUsage: claude [options]";
       throw new Error("unknown command");
-    }) as unknown as ExecFn;
+    });
     const verifier = new RuntimeVerifier({ exec, db });
 
     const result = await verifier.verifyClaude();
@@ -244,7 +244,7 @@ describe("RuntimeVerifier", () => {
       if (cmd === "codex --version") throw new Error("not found");
       if (cmd === "codex --help") return "Codex CLI\nUsage: codex [options]";
       throw new Error("unknown command");
-    }) as unknown as ExecFn;
+    });
     const verifier = new RuntimeVerifier({ exec, db });
 
     const result = await verifier.verifyCodex();
@@ -304,7 +304,7 @@ describe("RuntimeVerifier", () => {
 
   it('verifyAll(["tmux"]) is the seat-host check under its old name: it records "hc" and runs no tmux', async () => {
     const seen: string[] = [];
-    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.15"; }) as unknown as ExecFn;
+    const exec = vi.fn(async (cmd: string) => { seen.push(cmd); return "hc 0.1.15"; });
     const results = await withCore(db, exec, async () => hello()).verifyAll(["tmux"]);
 
     expect(results.map((r) => [r.runtime, r.status])).toEqual([["hc", "verified"]]);
@@ -312,8 +312,8 @@ describe("RuntimeVerifier", () => {
   });
 
   it("hc --version goes through the bounded probe exec, and a probe that does not answer is an error, not not_found", async () => {
-    const exec = vi.fn(async () => { throw new Error("exec must not run the hc probe"); }) as unknown as ExecFn;
-    const hang = vi.fn(async () => { throw new ProbeTimeoutError("hc --version", 30_000); }) as unknown as ExecFn;
+    const exec = vi.fn(async () => { throw new Error("exec must not run the hc probe"); });
+    const hang = vi.fn(async () => { throw new ProbeTimeoutError("hc --version", 30_000); });
     let asked = 0;
     const verifier = new RuntimeVerifier({ exec, probeExec: hang, db, hcHello: async () => { asked++; return hello(); } });
 
