@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { OPENRIG_HOME } from "../src/openrig-compat.js";
 import { collectAllowlistedProviderAuthEnv, createDaemon } from "../src/startup.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -612,6 +613,33 @@ describe("createDaemon startup composition", () => {
       });
       expect(fs.readFileSync(config).equals(before)).toBe(true);
     } finally {
+      result?.db.close();
+      restoreEnv(saved);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // OF-187: the start-up line states the judgement; its code root and OPENRIG_HOME are what createDaemon really passed.
+  it("OF-187 createDaemon logs the Codex config write judgement with its real code root and OPENRIG_HOME", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-of187-"));
+    const saved = saveEnv("HOME", "CODEX_HOME");
+    process.env.HOME = path.join(root, "daemon-home");
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    delete process.env.CODEX_HOME;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof createDaemon>> | undefined;
+    try {
+      result = await createDaemon({
+        cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
+        tmuxExec: async () => "",
+      });
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[openrig] codex config write policy:"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("not the installed daemon");
+      expect(lines[0]).toContain(`code root ${path.resolve(import.meta.dirname, "..")},`);
+      expect(lines[0]).toContain(`OPENRIG_HOME ${OPENRIG_HOME},`);
+    } finally {
+      log.mockRestore();
       result?.db.close();
       restoreEnv(saved);
       fs.rmSync(root, { recursive: true, force: true });

@@ -19,6 +19,7 @@ import {
   type CodexConfigWritePolicy,
   type CodexConfigWritePolicyFacts,
 } from "../src/domain/codex-config-write-policy.js";
+import { startupCodexConfigWritePolicy } from "../src/domain/codex-config-write-policy.js";
 import { ensureCodexSeatHome } from "../src/domain/codex-seat-home.js";
 
 const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
@@ -171,6 +172,10 @@ beforeEach(() => {
 });
 afterEach(() => { warn.mockRestore(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
+const realSymlinkTarget = (p: string): string | undefined => {
+  try { return fs.lstatSync(p).isSymbolicLink() ? fs.readlinkSync(p) : undefined; } catch { return undefined; }
+};
+
 /** The host's installed daemon: the npm layout under a lib dir, on the host's default OPENRIG_HOME. */
 function installedPolicy(): CodexConfigWritePolicy {
   const cli = path.join(tmp, "lib", "node_modules", "@openrig", "cli");
@@ -183,6 +188,7 @@ function installedPolicy(): CodexConfigWritePolicy {
     processHome: hostHome,
     readPackageName: (dir) => JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf-8")).name,
     canonicalize: canonicalizeBestEffort,
+    symlinkTarget: realSymlinkTarget,
   });
 }
 
@@ -195,6 +201,7 @@ function secondDaemonPolicy(): CodexConfigWritePolicy {
     processHome: hostHome,
     readPackageName: () => undefined,
     canonicalize: canonicalizeBestEffort,
+    symlinkTarget: realSymlinkTarget,
   });
 }
 
@@ -358,6 +365,96 @@ describe("OF-183 the shared ~/.codex/config.toml, seat-home trust mirror", () =>
 });
 
 // ---- census: no Codex config.toml writer escapes the policy -----------------------------------------------------
+describe("OF-187 the policy checks the config FILE, not only its directory", () => {
+  // A scratch daemon's private home holds a seat CODEX_HOME whose config.toml links to the host-wide file: the layout
+  // codex-seat-home.ts builds. The directory is private; the file it writes through is not.
+  const seatHome = () => path.join(tmp, "scratch", ".openrig", "codex-homes", "seat");
+  const linkSeatConfig = (to: string) => {
+    fs.mkdirSync(seatHome(), { recursive: true });
+    fs.symlinkSync(to, path.join(seatHome(), "config.toml"));
+    return path.join(seatHome(), "config.toml");
+  };
+
+  it("refuses a private directory's config.toml that is a symlink to the host-wide file, and leaves it byte-identical", () => {
+    fs.writeFileSync(hostConfig, "# live\n");
+    const before = fs.readFileSync(hostConfig);
+    const decision = secondDaemonPolicy().decide(linkSeatConfig(hostConfig));
+    expect(decision.allowed).toBe(false);
+    expect(fs.readFileSync(hostConfig).equals(before)).toBe(true);
+  });
+
+  it("refuses a chain of symlinks that ends in the host-wide file", () => {
+    fs.writeFileSync(hostConfig, "# live\n");
+    const hop = path.join(tmp, "scratch", ".openrig", "hop.toml");
+    fs.mkdirSync(path.dirname(hop), { recursive: true });
+    fs.symlinkSync(hostConfig, hop);
+    expect(secondDaemonPolicy().decide(linkSeatConfig(hop)).allowed).toBe(false);
+  });
+
+  it("refuses a DANGLING symlink whose target would be created inside the host-wide home", () => {
+    fs.rmSync(hostConfig, { force: true });
+    expect(secondDaemonPolicy().decide(linkSeatConfig(hostConfig)).allowed).toBe(false);
+  });
+
+  it("refuses a symlink loop (fails closed)", () => {
+    const a = path.join(seatHome(), "config.toml");
+    fs.mkdirSync(seatHome(), { recursive: true });
+    fs.symlinkSync(a, a);
+    expect(secondDaemonPolicy().decide(a).allowed).toBe(false);
+  });
+
+  it("CONTROL: a private config.toml that is a symlink to another private file stays allowed", () => {
+    const real = path.join(tmp, "scratch", ".openrig", "real.toml");
+    fs.mkdirSync(path.dirname(real), { recursive: true });
+    fs.writeFileSync(real, "");
+    expect(secondDaemonPolicy().decide(linkSeatConfig(real)).allowed).toBe(true);
+  });
+
+  it("the INSTALLED daemon keeps writing through a seat CODEX_HOME's symlinked config exactly as before", () => {
+    fs.writeFileSync(hostConfig, "# live\n");
+    expect(installedPolicy().decide(linkSeatConfig(hostConfig)).allowed).toBe(true);
+  });
+});
+
+describe("OF-187 start-up wiring, from an npm-shaped layout", () => {
+  const npmLayout = () => {
+    const cli = path.join(tmp, "lib", "node_modules", "@openrig", "cli");
+    fs.mkdirSync(path.join(cli, "daemon", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(cli, "package.json"), JSON.stringify({ name: "@openrig/cli" }));
+    return path.join(cli, "daemon", "dist");
+  };
+  const passwdHome = () => os.userInfo().homedir;
+
+  it("the start-up module dir `dist/` resolves to the daemon package root: installed on the host's OPENRIG_HOME", () => {
+    const lines: string[] = [];
+    const policy = startupCodexConfigWritePolicy(npmLayout(), path.join(passwdHome(), ".openrig"), (l) => lines.push(l));
+    expect(policy.decide(path.join(passwdHome(), ".codex", "config.toml")).allowed).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("installed daemon (");
+    expect(lines[0]).not.toContain("not the installed daemon");
+  });
+
+  it("the same layout on another OPENRIG_HOME is judged not installed, and the line names where it looked", () => {
+    const lines: string[] = [];
+    const dist = npmLayout();
+    const scratchHome = path.join(tmp, "scratch", ".openrig");
+    const policy = startupCodexConfigWritePolicy(dist, scratchHome, (l) => lines.push(l));
+    expect(policy.decide(path.join(passwdHome(), ".codex", "config.toml")).allowed).toBe(false);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("not the installed daemon");
+    expect(lines[0]).toContain(`code root ${path.dirname(dist)},`);
+    expect(lines[0]).toContain(`OPENRIG_HOME ${scratchHome},`);
+  });
+
+  it("a checkout layout is judged not installed, with the reason in the line", () => {
+    const lines: string[] = [];
+    startupCodexConfigWritePolicy(path.join(tmp, "work", "packages", "daemon", "src"), path.join(passwdHome(), ".openrig"), (l) => lines.push(l));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("not the installed daemon");
+    expect(lines[0]).toContain("is not an npm-installed @openrig/cli daemon");
+  });
+});
+
 describe("OF-183 census of Codex config.toml writers (instrument: a text scan of packages/daemon/src)", () => {
   const srcRoot = path.resolve(import.meta.dirname, "../src");
   const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
@@ -411,7 +508,7 @@ describe("OF-183 census of Codex config.toml writers (instrument: a text scan of
 
   it("startup hands the policy to the adapter, the node launcher and the route context", () => {
     const startup = fs.readFileSync(path.join(srcRoot, "startup.ts"), "utf-8");
-    expect(startup).toMatch(/const codexConfigWritePolicy = processCodexConfigWritePolicy\(/);
+    expect(startup).toMatch(/const codexConfigWritePolicy = startupCodexConfigWritePolicy\(import\.meta\.dirname, OPENRIG_HOME\);/);
     expect(startup).toMatch(/new CodexRuntimeAdapter\(\{[^\n]*configWritePolicy: codexConfigWritePolicy/);
     expect(startup).toMatch(/new NodeLauncher\(\{[\s\S]*?codexConfigWritePolicy,\n  \}\);/);
     expect(startup).toMatch(/const deps: AppDeps = \{[\s\S]*?codexConfigWritePolicy,/);
