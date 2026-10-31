@@ -121,3 +121,43 @@ describe("FocusedTerminal follows the terminal's size", () => {
     expect(term.written).toEqual(["hello\r\n", '{"type":"keys","cols":10,"rows":10}', '{"type":"size","cols":0,"rows":10}']);
   });
 });
+
+// In "width" fit the xterm's font scales to the wrapper from its natural size, measured at 90x27. A terminal of another grid has
+// another natural size: the font follows it, or the grid would be drawn too big or too small for its box.
+describe("FocusedTerminal font fit follows the grid", () => {
+  const sizes = { clientWidth: 0, clientHeight: 0, offsetWidth: 0, offsetHeight: 0 };
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
+    instances.length = 0; terminals.length = 0;
+    // jsdom lays nothing out: the wrapper is 450 px wide, the 90x27 xterm 900 x 500 px at the base font (12).
+    Object.assign(sizes, { clientWidth: 450, clientHeight: 250, offsetWidth: 900, offsetHeight: 500 });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => sizes.clientWidth });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => sizes.clientHeight });
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => sizes.offsetWidth });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => sizes.offsetHeight });
+  });
+  afterEach(() => {
+    cleanup(); vi.useRealTimers();
+    for (const key of ["clientWidth", "clientHeight", "offsetWidth", "offsetHeight"]) Reflect.deleteProperty(HTMLElement.prototype, key);
+  });
+
+  it("scales the natural size with the grid: half the width at 90 columns is a quarter of it at 180", async () => {
+    render(<FocusedTerminal sessionName="dev-a@rig" fit="width" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    const term = terminals[0]!;
+    expect(term.options.fontSize).toBe(6);  // 450 / 900 of the base 12
+    await act(async () => { instances[0]!.onmessage?.({ data: '{"type":"size","cols":180,"rows":27}' }); });
+    expect(term.options.fontSize).toBe(3);  // the natural width is now 1800 px
+    await act(async () => { instances[0]!.onmessage?.({ data: '{"type":"size","cols":45,"rows":27}' }); });
+    expect(term.options.fontSize).toBe(12);  // 450 px natural: it fits at the base font, and never upscales in "width"
+  });
+
+  it("scales the natural height with the rows, in the mode that fits both axes", async () => {
+    render(<FocusedTerminal sessionName="dev-a@rig" fit="contain" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    const term = terminals[0]!;
+    expect(term.options.fontSize).toBe(6);  // min(2, 450/900, 250/500) of the base 12
+    await act(async () => { instances[0]!.onmessage?.({ data: '{"type":"size","cols":90,"rows":54}' }); });
+    expect(term.options.fontSize).toBe(3);  // the natural height is now 1000 px: 250/1000
+  });
+});

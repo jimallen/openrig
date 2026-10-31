@@ -92,3 +92,34 @@ describe("transcript rotation over HcCapture", () => {
     expect(after.slice(-5).every((lines) => lines === 0)).toBe(true);
   });
 });
+
+// TranscriptHost asks only for the methods the rotation uses, so a host that is not a TmuxAdapter fits. The activity listing is the
+// optional one: a host with only `readAllSessionWindowActivity` (no snapshot) is asked for it as a method, with its own `this`.
+describe("transcript rotation over a host with only an activity listing", () => {
+  class Listing implements TranscriptHost {
+    asked = 0;
+    reads = 0;
+    constructor(private readonly activity: () => number) {}
+    async capturePaneContent() { this.reads += 1; return "screen\n"; }
+    async readAllSessionWindowActivity() { this.asked += 1; return new Map([["seat@rig", this.activity()]]); }
+  }
+  const polls = async (host: Listing) => {
+    await startAll(host, ["seat@rig"]);
+    await advance(30_000);
+    return host.reads;
+  };
+
+  it("backs off while the listing says the seat has not moved, and keeps its cadence while it has", async () => {
+    const still = new Listing(() => 7);
+    const stillReads = await polls(still);
+    expect(still.asked).toBeGreaterThan(0);  // the listing was asked, as a method of the host (an unbound call would throw and read as no hint)
+    clearAllTranscriptRotationsForTest();
+    let moving = 0;
+    const busy = new Listing(() => ++moving);
+    const busyReads = await polls(busy);
+    expect(stillReads).toBeLessThan(busyReads);
+    // Measured at this commit over 30 s of fake time: 16 reads at the 2 s cadence, 11 with the listing saying nothing moved.
+    expect(busyReads).toBeGreaterThanOrEqual(15);
+    expect(stillReads).toBeLessThanOrEqual(12);
+  });
+});
