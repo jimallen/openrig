@@ -2,7 +2,7 @@
 // (finalize and startup reconciliation leave native rows to the ack and the sweeper), the launch-flag merge, the two
 // activity routes, the relay payloads, the transport's native branch, the wake drain's native-pending result, and the
 // OS adapters (a real Unix socket in a temp dir; a chunked file search).
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { Hono } from "hono";
 import { createServer, type Server } from "node:net";
 import { createServer as createHttpServer } from "node:http";
@@ -311,53 +311,86 @@ describe("OS adapters", () => {
     expect(JSON.parse(got.trim())).toEqual({ type: "user", message: { role: "user", content: "hi\n\n[openrig-msg x:0123456789abcdef01234567]" } });
   });
 
-  it("ncomms-3c: a receiver that accepts but never reads or closes (a hung claude) does not hold the write: all, at once", async () => {
+  // The three timing rows below fake only setTimeout and clearTimeout (the writer's own timers) and leave the socket I/O
+  // real, so they assert on the timer values themselves and not on elapsed wall-clock time, which a loaded host stretches.
+  // `spin` waits on real time through setImmediate, which the fake does not touch.
+  const spin = async (ms: number, until: () => boolean = () => false) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end && !until()) await new Promise<void>((r) => setImmediate(r));
+  };
+  const fakeWriterTimers = () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    cleanups.push(() => vi.useRealTimers());
+  };
+
+  it("ncomms-3c: a receiver that accepts but never reads or closes (a hung claude) does not hold the write: all, before any timer fires", async () => {
     const dir = mkdtempSync(join(tmpdir(), "nc3-hung-"));
     const path = join(dir, "inbox.sock");
     const held: import("node:net").Socket[] = [];
     const server = createServer((c) => { c.pause(); held.push(c); }); // never reads, never closes
     cleanups.push(() => { for (const c of held) c.destroy(); server.close(); rmSync(dir, { recursive: true, force: true }); });
     await new Promise<void>((r) => server.listen(path, () => r()));
-    const t0 = Date.now();
-    expect(await writeSocketLines(path, [{ type: "user", message: { role: "user", content: "hi" } }])).toBe("all");
-    expect(Date.now() - t0).toBeLessThan(1_000);
+    fakeWriterTimers(); // the clock never advances: an answer here did not wait for the write timeout
+    const result = await Promise.race([
+      writeSocketLines(path, [{ type: "user", message: { role: "user", content: "hi" } }]),
+      spin(5_000).then(() => "waited for a timer" as const),
+    ]);
+    expect(result).toBe("all");
   });
 
   // OF-181 N1: a hung receiver whose socket buffer the message fills never flushes: the answer is `partial` at the
   // default timeout, which is under the CLI's 5 s request timeout (packages/cli/src/client.ts, default 5_000).
-  it("OF-181 N1: a hung receiver and a message too big for the socket buffer → partial, inside the CLI's 5 s", async () => {
+  it("OF-181 N1: a hung receiver and a message too big for the socket buffer → still pending at 2999 ms, partial at the 3000 ms default", async () => {
     const dir = mkdtempSync(join(tmpdir(), "nc3-big-"));
     const path = join(dir, "inbox.sock");
     const held: import("node:net").Socket[] = [];
     const server = createServer((c) => { c.pause(); held.push(c); });
     cleanups.push(() => { for (const c of held) c.destroy(); server.close(); rmSync(dir, { recursive: true, force: true }); });
     await new Promise<void>((r) => server.listen(path, () => r()));
-    const t0 = Date.now();
-    const result = await writeSocketLines(path, [{ type: "user", message: { role: "user", content: "x".repeat(32 * 1024 * 1024) } }]);
-    expect(result).toBe("partial");
-    expect(Date.now() - t0).toBeLessThan(4_500);
+    fakeWriterTimers();
+    let answer: string | null = null;
+    const pending = writeSocketLines(path, [{ type: "user", message: { role: "user", content: "x".repeat(32 * 1024 * 1024) } }]).then((r) => { answer = r; return r; });
+    await spin(5_000, () => held.length > 0); // the server has accepted
+    await spin(300); // and the client has connected and filled the socket buffer
+    vi.advanceTimersByTime(2_999);
+    await spin(100);
+    expect(answer).toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(await pending).toBe("partial"); // "none" here would mean the client had not connected yet: a failure, not a pass
   }, 15_000);
 
   // OF-181 N3: after the half-close the writer drops the socket on a timer, so a peer that never closes does not
   // leave one open descriptor per send.
-  it("OF-181 N3: a peer that reads everything but never closes finds the writer's end gone once the grace has passed", async () => {
-    // The server cannot see a destroyed client directly (it holds its half open), so it writes to it 3.0 s and 3.3 s
-    // after connecting, past the 2 s grace: a write to a client that is gone fails (EPIPE or a reset); to one still open it does not.
+  it("OF-181 N3: a peer that reads everything but never closes finds the writer's end open at 1999 ms and gone at 2000 ms", async () => {
+    // The server cannot see a destroyed client directly (it holds its half open), so it writes probes to it: a write to
+    // a client that is gone fails (EPIPE or a reset); to one still open it does not.
     const dir = mkdtempSync(join(tmpdir(), "nc3-grace-"));
     const path = join(dir, "inbox.sock");
     let got = "";
     let writeFailed = false;
-    const timers: NodeJS.Timeout[] = [];
+    let peer: import("node:net").Socket | null = null;
     const server = createServer({ allowHalfOpen: true }, (c) => {
+      peer = c;
       c.on("data", (b) => { got += b.toString(); });
       c.on("error", () => { writeFailed = true; });
-      for (const ms of [3_000, 3_300]) timers.push(setTimeout(() => { c.write("probe\n", (err) => { if (err) writeFailed = true; }); }, ms));
     });
-    cleanups.push(() => { for (const t of timers) clearTimeout(t); server.close(); rmSync(dir, { recursive: true, force: true }); });
+    cleanups.push(() => { peer?.destroy(); server.close(); rmSync(dir, { recursive: true, force: true }); });
     await new Promise<void>((r) => server.listen(path, () => r()));
+    fakeWriterTimers();
     expect(await writeSocketLines(path, [{ type: "user", message: { role: "user", content: "hi" } }])).toBe("all");
-    await new Promise((r) => setTimeout(r, 3_800));
-    expect(writeFailed).toBe(true);
+    const probe = async (ms: number) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end && !writeFailed) {
+        peer!.write("probe\n", (err) => { if (err) writeFailed = true; });
+        await spin(20);
+      }
+    };
+    vi.advanceTimersByTime(1_999);
+    await probe(400);
+    expect(writeFailed).toBe(false); // the writer's end is still open inside the grace
+    vi.advanceTimersByTime(1);
+    await probe(5_000);
+    expect(writeFailed).toBe(true); // and gone once it has passed
     expect(JSON.parse(got.trim())).toEqual({ type: "user", message: { role: "user", content: "hi" } }); // the flushed bytes arrived
   }, 15_000);
 

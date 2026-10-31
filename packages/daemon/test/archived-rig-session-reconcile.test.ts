@@ -151,6 +151,18 @@ describe("OF-177 archived rigs keep no running session rows for gone hosts", () 
     expect(statusOf(ids[0]!)).toBe("running");
   });
 
+  // OF-189: the in-transaction recheck has two halves, the rig (above) and the row's own status. A row ended by another
+  // path while the probe was in flight must not be written again: a second markDetached would stamp over the other
+  // path's end state and a second session.detached event would tell subscribers the seat went away twice.
+  it("re-checks inside the write: a row that left active status while the probe was in flight is not written and emits nothing", async () => {
+    const { ids } = seed("racy-row", [{ name: "a@racy-row", status: "running" }], true);
+    const adapter = withProbe(async () => { sessions.updateStatus(ids[0]!, "exited"); return { state: "absent" }; });
+    const result = await reconciler(adapter).reconcileArchivedRigs();
+    expect(result).toEqual({ checked: 1, detached: 0, errors: [] });
+    expect(statusOf(ids[0]!)).toBe("exited"); // not overwritten with "detached"
+    expect(detachedEvents()).toEqual([]);
+  });
+
   it("the existing per-rig reconcile() still skips archived-rig logic: a non-archived rig with a gone session is detached as before", async () => {
     const { rig, ids } = seed("plain", [{ name: "a@plain", status: "running" }], false);
     await reconciler(probing({}).adapter).reconcile(rig.id);
