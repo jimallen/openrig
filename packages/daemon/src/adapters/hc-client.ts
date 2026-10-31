@@ -81,7 +81,7 @@ interface RpcReply { id?: number; result?: unknown; error?: { code: number; mess
 /** One short-lived connection per call: a queued send can block for as long as a person types, and must never hold up
  *  a liveness read. Reaching the core and hearing it are kept apart: see the two error classes. */
 export class HcClient {
-  constructor(private readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS) {}
+  constructor(readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS) {}
 
   async hello(): Promise<HcHello> {
     const conn = await this.open();
