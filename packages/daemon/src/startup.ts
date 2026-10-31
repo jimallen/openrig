@@ -78,13 +78,8 @@ import { ExternalInstallExecutor } from "./domain/external-install-executor.js";
 import { PackageInstallService } from "./domain/package-install-service.js";
 import { BootstrapOrchestrator } from "./domain/bootstrap-orchestrator.js";
 import { routeBundleContents } from "./domain/bundle-content-routing.js";
-import { TmuxDiscoveryScanner } from "./domain/tmux-discovery-scanner.js";
-import { SessionFingerprinter } from "./domain/session-fingerprinter.js";
-import { SessionEnricher } from "./domain/session-enricher.js";
 import { DiscoveryRepository } from "./domain/discovery-repository.js";
-import { DiscoveryCoordinator } from "./domain/discovery-coordinator.js";
-import { ClaimService } from "./domain/claim-service.js";
-import { SelfAttachService } from "./domain/self-attach-service.js";
+import { SessionReconciler } from "./domain/session-reconciler.js";
 import { RigLifecycleService } from "./domain/rig-lifecycle-service.js";
 import { RigExpansionService } from "./domain/rig-expansion-service.js";
 // TODO: AS-T12 — migrate to pod-aware bundle source resolver
@@ -1204,23 +1199,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     } catch { /* logging must never throw */ }
   }
 
-  // Discovery services
-  const tmuxScanner = new TmuxDiscoveryScanner({ tmuxAdapter });
-  const sessionFingerprinter = new SessionFingerprinter({
-    cmuxAdapter, tmuxAdapter, fsExists: (p: string) => fs.existsSync(p),
-  });
-  const sessionEnricher = new SessionEnricher({
-    fsExists: (p: string) => fs.existsSync(p),
-    fsReaddir: (p: string) => fs.readdirSync(p),
-  });
+  // The discovery record store: seat handover keeps its successor candidate there, and rig release reads it.
   const discoveryRepo = new DiscoveryRepository(db);
-  const discoveryCoordinator = new DiscoveryCoordinator({
-    scanner: tmuxScanner, fingerprinter: sessionFingerprinter, enricher: sessionEnricher,
-    discoveryRepo, sessionRegistry, eventBus,
-  });
-  // Context usage store — constructed ahead of the refresher + ClaimService so the
+  // Context usage store — constructed ahead of the refresher + SessionReconciler so the
   // Claude status-line sidecar reader can be injected into BOTH: FR-3
-  // adoption-boundary capture (ClaimService) and FR-4 snapshot null-fill (refresher).
+  // adoption-boundary capture (SessionReconciler) and FR-4 snapshot null-fill (refresher).
   // Also threaded through WhoamiService + routes below (same single instance).
   const { ContextUsageStore } = await import("./domain/context-usage-store.js");
   const contextUsageStore = new ContextUsageStore(db, {
@@ -1279,9 +1262,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // process's, so capture and null-fill skip it.
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
   const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome });
-  const claimService = new ClaimService({
-    db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter, transcriptStore,
-    claudeContextProvisioner: claudeAdapter,
+  const sessionReconciler = new SessionReconciler({
+    db, rigRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
     // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture deps
     // (Claude sidecar reader + Codex thread-id capturer, both reuse).
     contextUsageStore,
@@ -1291,13 +1273,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     piRunnerStateStore: piAdapter,
     ompRunnerStateStore: ompAdapter,
   });
-  const selfAttachService = new SelfAttachService({
-    db, rigRepo, podRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
-    claudeContextProvisioner: claudeAdapter,
-    // OPR.0.4.3.28 B3 — echo the resolved activity url+token into the self-attach
-    // response env so the caller's shell can produce activity signal.
-    activityEnv: { url: resolvedActivityHookUrl, token: resolvedActivityHookToken },
-  });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter,
   });
@@ -1305,7 +1280,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   const specReviewService = new SpecReviewService();
 
-  // (ContextUsageStore is constructed above, ahead of ClaimService, for FR-3.)
+  // (ContextUsageStore is constructed above, ahead of SessionReconciler, for FR-3.)
   const whoamiService = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore });
   const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmuxAdapter, tmuxAdapter);
   // W2a-1 — producer wiring: the live occupant generation resolves synchronously from the shipped
@@ -1446,7 +1421,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     bootstrapOrchestrator,
     bootstrapRepo,
     discoveryRepo,
-    claimService,
+    sessionReconciler,
     rigLifecycleService,
     rigExpansionService,
     // Slice 15 — SeatActivityService owns the `terminal-active` primitive

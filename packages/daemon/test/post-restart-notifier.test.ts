@@ -62,11 +62,8 @@ function result(nodes: RestoreNodeResult[]): RestoreResult {
 }
 
 describe("who gets the prompt", () => {
-  it.each([
-    ["resumed", {}, true],
-    ["resumed, reattached (OF-155: its session never stopped)", { reattached: { sessionId: "s1", sessionName: "dev-a@rig1" } }, false],
-  ] as const)("%s → %s", (_label, extra, expected) => {
-    expect(needsPostRestartPrompt(node("node-a", "resumed", extra))).toBe(expected);
+  it("resumed → a prompt", () => {
+    expect(needsPostRestartPrompt(node("node-a", "resumed"))).toBe(true);
   });
 
   it.each(["fresh", "fresh-primed", "rebuilt", "awaiting-decision", "failed", "attention_required", "operator_recovered"] as const)(
@@ -74,10 +71,10 @@ describe("who gets the prompt", () => {
       expect(needsPostRestartPrompt(node("node-a", status))).toBe(false);
     });
 
-  it("a restore with mixed outcomes sends exactly once, to each resumed seat that was not reattached", async () => {
+  it("a restore with mixed outcomes sends exactly once, to each resumed seat", async () => {
     const f = make();
     const out = await f.notifier.onRestoreCompleted({ seq: 41, rigId: "rig-1", result: result([
-      node("node-a", "resumed"), node("node-b", "fresh-primed"), node("node-c", "resumed", { reattached: { sessionId: "s", sessionName: "dev-c@rig1" } }),
+      node("node-a", "resumed"), node("node-b", "fresh-primed"),
       node("node-d", "rebuilt"),
     ]) });
     expect(f.sent.map((s) => [s.sessionName, s.deliveryId, s.actorSession])).toEqual([["dev-a@rig1", "post-restart-41-node-a", POST_RESTART_SENDER]]);

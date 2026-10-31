@@ -86,16 +86,11 @@ import { ExternalInstallPlanner } from "../../src/domain/external-install-planne
 import { ExternalInstallExecutor } from "../../src/domain/external-install-executor.js";
 import { PackageInstallService } from "../../src/domain/package-install-service.js";
 import { BootstrapOrchestrator } from "../../src/domain/bootstrap-orchestrator.js";
-import { TmuxDiscoveryScanner } from "../../src/domain/tmux-discovery-scanner.js";
-import { SessionFingerprinter } from "../../src/domain/session-fingerprinter.js";
-import { SessionEnricher } from "../../src/domain/session-enricher.js";
 import { DiscoveryRepository } from "../../src/domain/discovery-repository.js";
 import { PsProjectionService } from "../../src/domain/ps-projection.js";
 import { UpCommandRouter } from "../../src/domain/up-command-router.js";
 import { RigTeardownOrchestrator } from "../../src/domain/rig-teardown.js";
-import { DiscoveryCoordinator } from "../../src/domain/discovery-coordinator.js";
-import { ClaimService } from "../../src/domain/claim-service.js";
-import { SelfAttachService } from "../../src/domain/self-attach-service.js";
+import { SessionReconciler } from "../../src/domain/session-reconciler.js";
 import { RigExpansionService } from "../../src/domain/rig-expansion-service.js";
 import { ContextUsageStore } from "../../src/domain/context-usage-store.js";
 import { HealthProjectionService, LiveContextHealthSource } from "../../src/domain/health-detectors.js";
@@ -390,18 +385,8 @@ export function createTestApp(
     podBundleSourceResolver: new PodBundleSourceResolver(),
   });
 
-  // Discovery services
-  const tmuxScanner = new TmuxDiscoveryScanner({ tmuxAdapter: tmux });
-  const fingerprinter = new SessionFingerprinter({
-    cmuxAdapter: cmux, tmuxAdapter: tmux, fsExists: () => false,
-  });
-  const enricher = new SessionEnricher({ fsExists: () => false, fsReaddir: () => [] });
   const discoveryRepo = new DiscoveryRepository(db);
-  const discoveryCoordinator = new DiscoveryCoordinator({
-    scanner: tmuxScanner, fingerprinter, enricher, discoveryRepo, sessionRegistry, eventBus,
-  });
-  const claimService = new ClaimService({ db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter: tmux, transcriptStore });
-  const selfAttachService = new SelfAttachService({ db, rigRepo, podRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore });
+  const sessionReconciler = new SessionReconciler({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux, transcriptStore });
   const rigExpansionService = new RigExpansionService({ db, rigRepo, eventBus, nodeLauncher, podInstantiator, sessionRegistry });
   const rigLifecycleService = new RigLifecycleService({ db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo, tmuxAdapter: tmux });
   const contextUsageStore = new ContextUsageStore(db, { stateDir: "/tmp/openrig-test" });
@@ -449,7 +434,7 @@ export function createTestApp(
     rigSpecExporter, rigSpecPreflight, rigInstantiator,
     packageRepo, installRepo, installEngine, installVerifier,
     bootstrapOrchestrator, bootstrapRepo,
-    discoveryRepo, claimService, rigExpansionService,
+    discoveryRepo, sessionReconciler, rigExpansionService,
     rigLifecycleService,
     psProjectionService: new PsProjectionService({ db }),
     upRouter,
@@ -490,7 +475,7 @@ export function createTestApp(
     rigSpecExporter, rigSpecPreflight, rigInstantiator,
     packageRepo, installRepo, installEngine, installVerifier,
     bootstrapOrchestrator, bootstrapRepo,
-    discoveryCoordinator, discoveryRepo, claimService, selfAttachService, rigExpansionService, tmuxScanner,
+    discoveryRepo, sessionReconciler, rigExpansionService,
     rigLifecycleService,
     psProjectionService: new PsProjectionService({ db }),
     upRouter,

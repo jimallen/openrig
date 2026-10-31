@@ -52,7 +52,7 @@ function terminalPodFragment(id = "infra", memberId = "server"): ExpansionReques
   };
 }
 
-describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
+describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
   let db: Database.Database;
   let setup: ReturnType<typeof createTestApp>;
   let tmuxCalls: Record<string, unknown[][]>;
@@ -90,7 +90,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     const { rig, node, sessionName } = await seedDetachedSeat();
     expect(latestSessionStatus(node.id)).toBe("detached");
 
-    const result = await setup.claimService.reconcileSession({ sessionName });
+    const result = await setup.sessionReconciler.reconcileSession({ sessionName });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -126,7 +126,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     for (const session of sessions) local.sessionRegistry.markDetached(session.id);
     localDb.prepare("UPDATE bindings SET tmux_pane = NULL WHERE node_id = ?").run(node.id);
 
-    const result = await local.claimService.reconcileSession({ sessionName: "infra-server@test-rig" });
+    const result = await local.sessionReconciler.reconcileSession({ sessionName: "infra-server@test-rig" });
 
     expect(result.ok).toBe(true);
     expect(local.sessionRegistry.getBindingForNode(node.id)?.tmuxPane).toBe("%refreshed");
@@ -144,7 +144,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     // Reset the call log AFTER seeding (expand legitimately creates sessions).
     for (const key of Object.keys(tmuxCalls)) delete tmuxCalls[key];
 
-    const result = await setup.claimService.reconcileSession({ sessionName });
+    const result = await setup.sessionReconciler.reconcileSession({ sessionName });
     expect(result.ok).toBe(true);
 
     expect(launchSpy).not.toHaveBeenCalled();
@@ -159,7 +159,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
 
   it("emits node.reconciled (not node.claimed) so the operator knows which op happened", async () => {
     const { node, sessionName } = await seedDetachedSeat();
-    await setup.claimService.reconcileSession({ sessionName });
+    await setup.sessionReconciler.reconcileSession({ sessionName });
 
     const events = db.prepare("SELECT payload FROM events WHERE type = 'node.reconciled'").all() as Array<{ payload: string }>;
     expect(events).toHaveLength(1);
@@ -177,7 +177,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     setup.sessionRegistry.markDetached(sess.id);
     setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@drift-rig" });
 
-    const result = await setup.claimService.reconcileSession({ sessionName: "dev-impl@drift-rig" });
+    const result = await setup.sessionReconciler.reconcileSession({ sessionName: "dev-impl@drift-rig" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.result.projectionDrift.join(" ")).toContain("runtime unverified");
@@ -194,7 +194,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     const node = local.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId: null });
     local.sessionRegistry.registerSession(node.id, "dev-impl@ghost-rig");
 
-    const result = await local.claimService.reconcileSession({ sessionName: "dev-impl@ghost-rig" });
+    const result = await local.sessionReconciler.reconcileSession({ sessionName: "dev-impl@ghost-rig" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("session_not_found");
@@ -202,7 +202,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
   });
 
   it("node_not_found for a session name the daemon never managed (points at discover/bind)", async () => {
-    const result = await setup.claimService.reconcileSession({ sessionName: "stranger@nowhere" });
+    const result = await setup.sessionReconciler.reconcileSession({ sessionName: "stranger@nowhere" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("node_not_found");
@@ -218,7 +218,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES (?, ?, ?, ?)").run(podId, rig.id, "dev", "Dev");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId });
 
-    const result = await setup.claimService.reconcileSession({
+    const result = await setup.sessionReconciler.reconcileSession({
       sessionName: "stranger@nowhere",
       rigId: rig.id,
       logicalId: "dev.impl",
@@ -243,7 +243,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES (?, ?, ?, ?)").run(podId, rig.id, "dev", "Dev");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "terminal", podId });
 
-    const result = await setup.claimService.reconcileSession({
+    const result = await setup.sessionReconciler.reconcileSession({
       sessionName: "dev-impl@canon-rig",
       rigId: rig.id,
       logicalId: "dev.impl",
@@ -260,7 +260,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     // A second node in the same rig that does NOT map to this session.
     const other = setup.rigRepo.addNode(rig.id, "infra.other", { runtime: "terminal", podId: null });
 
-    const result = await setup.claimService.reconcileSession({ sessionName, rigId: rig.id, logicalId: "infra.other" });
+    const result = await setup.sessionReconciler.reconcileSession({ sessionName, rigId: rig.id, logicalId: "infra.other" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("node_mismatch");
@@ -275,7 +275,7 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
       const sess = setup.sessionRegistry.registerSession(node.id, `dev-impl@rt-${runtime}`);
       setup.sessionRegistry.markDetached(sess.id);
 
-      const result = await setup.claimService.reconcileSession({ sessionName: `dev-impl@rt-${runtime}` });
+      const result = await setup.sessionReconciler.reconcileSession({ sessionName: `dev-impl@rt-${runtime}` });
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
       expect(result.result.nodeId).toBe(node.id);
@@ -306,7 +306,7 @@ describe("reconcile_session on the converge spine (OPR.0.3.4.3)", () => {
     setup.sessionRegistry.markDetached(sess.id);
 
     const result = await convergeOp(
-      { instantiator: setup.podInstantiator, claimService: setup.claimService },
+      { instantiator: setup.podInstantiator, sessionReconciler: setup.sessionReconciler },
       "",
       { kind: "reconcile_session", sessionName: "dev-impl@spine-rig" },
       ".",

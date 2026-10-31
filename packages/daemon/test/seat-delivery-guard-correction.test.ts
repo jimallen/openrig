@@ -4,7 +4,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
-import { ClaimService } from "../src/domain/claim-service.js";
+import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
@@ -34,7 +34,7 @@ function fixture(hooks: { file?: () => Promise<void>; exec?: (command: string) =
   tmux.probeSession = async () => ({ state: "present" });
   const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db), eventBus = new EventBus(db);
   const deps = { db, tmuxAdapter: tmux, rigRepo, sessionRegistry, eventBus };
-  const claim = new ClaimService({ ...deps, discoveryRepo: { db } as never });
+  const claim = new SessionReconciler(deps);
   const teardown = new RigTeardownOrchestrator({ ...deps, snapshotCapture: { db, captureSnapshot: () => ({ id: "private" }) } as never });
   const transport = new SessionTransport({ ...deps, sleep: async () => {} });
   return { ...deps, tmux, guard, commands, claim, teardown, transport, outbox: new OutboxHandler(db) };

@@ -1,9 +1,7 @@
-import { OutboxHandler } from "./outbox-handler.js";
 import { findBindingNodeLiveFirst, findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
-import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TranscriptStore } from "./transcript-store.js";
@@ -15,11 +13,6 @@ import {
   type PaneBindingObservation,
 } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
-import { isTypedResumeWord } from "./resume-token-validation.js";
-
-export type ClaimResult =
-  | { ok: true; nodeId: string; sessionId: string }
-  | { ok: false; code: string; error: string };
 
 /**
  * OPR.0.3.4.3 — outcome of the no-launch reconcile (adopt a hand-resumed
@@ -58,17 +51,13 @@ export interface ReconcileSessionOptions {
   logicalId?: string;
 }
 
-interface ClaimServiceDeps {
+interface SessionReconcilerDeps {
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
-  discoveryRepo: DiscoveryRepository;
   eventBus: EventBus;
   tmuxAdapter?: TmuxAdapter;
   transcriptStore?: TranscriptStore;
-  claudeContextProvisioner?: {
-    ensureContextCollector(binding: { cwd?: string | null; tmuxSession?: string | null }): void;
-  };
   // OPR.0.4.3.20 FR-3 — adoption-boundary resume-token capture. Both optional
   // and structurally typed (avoid a domain import cycle; older wirings / tests
   // that omit them make capture a silent no-op). contextUsageStore reads the
@@ -88,59 +77,34 @@ interface ClaimServiceDeps {
   ompRunnerStateStore?: ResumeTokenCaptureDeps["ompRunnerStateStore"];
 }
 
-interface BindOptions {
-  discoveredId: string;
-  rigId: string;
-  logicalId: string;
-}
-
-interface CreateAndBindToPodOptions {
-  discoveredId: string;
-  rigId: string;
-  podId: string;
-  podNamespace: string;
-  memberName: string;
-}
-
 /**
- * Adopts a discovered session into a managed rig.
- * Creates node + binding + session record atomically.
- * No package install, no guidance merge, no hooks.
+ * Re-adopts a managed seat's OWN canonical session after an outage (the no-launch reconcile, OPR.0.3.4.3).
+ * Session adoption of foreign sessions (discover / bind / claim / self-attach) is gone with hc-w7; this is the one piece
+ * of the former ClaimService that restore recovery (crash-cart, topology converge) still needs.
  */
-/** A discovery record can be adopted while it is active, or (OF-154) while it is `claimed` by a node that no longer exists:
- *  removing a node sets the claim's node to NULL (migration 013), and that claim holds nothing. */
-function claimable(discovered: { status: string; claimedNodeId: string | null }): boolean {
-  return discovered.status === "active" || (discovered.status === "claimed" && discovered.claimedNodeId === null);
-}
-
-export class ClaimService {
+export class SessionReconciler {
   readonly db: Database.Database;
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
-  private discoveryRepo: DiscoveryRepository;
   private eventBus: EventBus;
   private tmuxAdapter: TmuxAdapter | null;
   private transcriptStore: TranscriptStore | null;
-  private claudeContextProvisioner: ClaimServiceDeps["claudeContextProvisioner"] | null;
-  private contextUsageStore: ClaimServiceDeps["contextUsageStore"] | null;
-  private claudeProcessStartedAt: ClaimServiceDeps["claudeProcessStartedAt"] | null;
-  private resumeTokenCapturer: ClaimServiceDeps["resumeTokenCapturer"] | null;
-  private piRunnerStateStore: ClaimServiceDeps["piRunnerStateStore"] | null;
-  private ompRunnerStateStore: ClaimServiceDeps["ompRunnerStateStore"] | null;
+  private contextUsageStore: SessionReconcilerDeps["contextUsageStore"] | null;
+  private claudeProcessStartedAt: SessionReconcilerDeps["claudeProcessStartedAt"] | null;
+  private resumeTokenCapturer: SessionReconcilerDeps["resumeTokenCapturer"] | null;
+  private piRunnerStateStore: SessionReconcilerDeps["piRunnerStateStore"] | null;
+  private ompRunnerStateStore: SessionReconcilerDeps["ompRunnerStateStore"] | null;
 
-  constructor(deps: ClaimServiceDeps) {
-    if (deps.db !== deps.rigRepo.db) throw new Error("ClaimService: rigRepo must share the same db handle");
-    if (deps.db !== deps.sessionRegistry.db) throw new Error("ClaimService: sessionRegistry must share the same db handle");
-    if (deps.db !== deps.discoveryRepo.db) throw new Error("ClaimService: discoveryRepo must share the same db handle");
-    if (deps.db !== deps.eventBus.db) throw new Error("ClaimService: eventBus must share the same db handle");
+  constructor(deps: SessionReconcilerDeps) {
+    if (deps.db !== deps.rigRepo.db) throw new Error("SessionReconciler: rigRepo must share the same db handle");
+    if (deps.db !== deps.sessionRegistry.db) throw new Error("SessionReconciler: sessionRegistry must share the same db handle");
+    if (deps.db !== deps.eventBus.db) throw new Error("SessionReconciler: eventBus must share the same db handle");
     this.db = deps.db;
     this.rigRepo = deps.rigRepo;
     this.sessionRegistry = deps.sessionRegistry;
-    this.discoveryRepo = deps.discoveryRepo;
     this.eventBus = deps.eventBus;
     this.tmuxAdapter = deps.tmuxAdapter ?? null;
     this.transcriptStore = deps.transcriptStore ?? null;
-    this.claudeContextProvisioner = deps.claudeContextProvisioner ?? null;
     this.contextUsageStore = deps.contextUsageStore ?? null;
     this.claudeProcessStartedAt = deps.claudeProcessStartedAt ?? null;
     this.resumeTokenCapturer = deps.resumeTokenCapturer ?? null;
@@ -198,41 +162,10 @@ export class ClaimService {
     }
   }
 
-  /** Best-effort: send a short identity hint into the adopted session after claim. */
-  private async deliverClaimHint(tmuxSession: string, meta: {
-    rigName: string; logicalId: string;
-  }): Promise<void> {
-    if (!this.tmuxAdapter) return;
-    // OF-108: the hint is typed into the adopted pane, which may be a shell, and it holds the rig and node names inside a
-    // double-quoted string. A name that is not one plain word is not typed: the claim stands without its hint.
-    if (!isTypedResumeWord(meta.rigName) || !isTypedResumeWord(meta.logicalId)) return;
-    const hint = `--- OpenRig: You have been adopted into rig "${meta.rigName}" as ${meta.logicalId}. Run: rig whoami --json ---`;
-    const write = async () => {
-      const sent = await this.tmuxAdapter!.sendText(tmuxSession, hint);
-      if (sent.ok) await this.tmuxAdapter!.sendKeys(tmuxSession, ["Enter"]);
-    };
-    const guard = this.tmuxAdapter.deliveryGuard;
-    if (guard) await guard.operation(tmuxSession, write, async target => {
-      new OutboxHandler(this.db).retain({ outboxId: `guard-claim-${target.nodeId}-${target.occupant ?? "unknown"}`,
-        senderSession: "claim@system", destinationSession: tmuxSession, body: hint }, target);
-    });
-    else await write();
-  }
-
-  private maybeProvisionContextCollector(runtime: string | null | undefined, cwd: string | null | undefined, tmuxSession: string): void {
-    if (runtime !== "claude-code") return;
-    try {
-      this.claudeContextProvisioner?.ensureContextCollector({
-        cwd: cwd ?? undefined,
-        tmuxSession,
-      });
-    } catch { /* best-effort */ }
-  }
-
   /**
    * OPR.0.4.3.20 FR-3 — best-effort capture of a seat's resume token at the
    * adoption boundary (reconcile / adopt / bind). Called post-tx, pre-return
-   * from all three ClaimService adoption paths, precisely where an operator has
+   * from the reconcile adoption path, precisely where an operator has
    * just re-established a live session they expect to survive the next crash.
    *
    * Derivation is REUSE-ONLY and PURE READ — no pane writes, no launch — so it
@@ -302,111 +235,6 @@ export class ClaimService {
         runtime, outcome: "skipped", reason, redacted: true,
       });
     } catch { /* best-effort */ }
-  }
-
-  async bind(opts: BindOptions): Promise<ClaimResult> {
-    const discovered = this.discoveryRepo.getDiscoveredSession(opts.discoveredId);
-    if (!discovered) {
-      return { ok: false, code: "not_found", error: "Discovery record not found" };
-    }
-    if (!claimable(discovered)) {
-      return { ok: false, code: "not_active", error: `Discovery record is ${discovered.status}, not active` };
-    }
-
-    const rig = this.rigRepo.getRig(opts.rigId);
-    if (!rig) {
-      return { ok: false, code: "rig_not_found", error: "Target rig not found" };
-    }
-
-    const node = rig.nodes.find((candidate) => candidate.logicalId === opts.logicalId);
-    if (!node) {
-      return { ok: false, code: "node_not_found", error: `Logical ID '${opts.logicalId}' does not exist in rig` };
-    }
-
-    const guard = this.tmuxAdapter?.deliveryGuard;
-    if (guard && !guard.ownsLifecycle(node.id)) return guard.lifecycle([node.id], () => this.bind(opts));
-    const existingBinding = this.sessionRegistry.getBindingForNode(node.id);
-    if (existingBinding?.tmuxSession) {
-      return { ok: false, code: "already_bound", error: `Logical ID '${opts.logicalId}' is already bound` };
-    }
-
-    const discoveredRuntime = discovered.runtimeHint === "unknown" || discovered.runtimeHint === "terminal"
-      ? null
-      : discovered.runtimeHint;
-    if (node.runtime && discoveredRuntime && node.runtime !== discoveredRuntime) {
-      return {
-        ok: false,
-        code: "runtime_mismatch",
-        error: `Logical ID '${opts.logicalId}' expects runtime '${node.runtime}', but discovery resolved '${discoveredRuntime}'`,
-      };
-    }
-
-    const paneObservation = await this.observeBindingPane(
-      discovered.tmuxSession,
-      discovered.tmuxPane,
-    );
-
-    const bindTx = this.db.transaction(() => {
-      const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);
-      this.persistPaneBinding(
-        node.id,
-        discovered.tmuxSession,
-        paneObservation,
-        session.id,
-        discovered.tmuxWindow,
-      );
-      this.discoveryRepo.markClaimed(discovered.id, node.id);
-      this.eventBus.persistWithinTransaction({
-        type: "node.claimed",
-        rigId: opts.rigId,
-        nodeId: node.id,
-        logicalId: opts.logicalId,
-        discoveredId: discovered.id,
-      });
-
-      return { nodeId: node.id, sessionId: session.id };
-    });
-
-    try {
-      const { nodeId, sessionId } = bindTx();
-      this.tmuxAdapter?.deliveryGuard?.rebindLifecycle(nodeId);
-      const event = this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT 1").get() as { seq: number; type: string; rig_id: string; node_id: string; payload: string; created_at: string };
-      if (event) {
-        this.eventBus.notifySubscribers({
-          type: "node.claimed",
-          rigId: opts.rigId,
-          nodeId,
-          logicalId: opts.logicalId,
-          discoveredId: discovered.id,
-          seq: event.seq,
-          createdAt: event.created_at,
-        });
-      }
-      // Best-effort: set OpenRig-owned tmux metadata
-      try {
-        await this.setRiggedMetadata(discovered.tmuxSession, {
-          nodeId, sessionName: discovered.tmuxSession,
-          rigId: opts.rigId, rigName: rig!.rig.name, logicalId: opts.logicalId,
-        });
-      } catch { /* best-effort */ }
-      this.maybeProvisionContextCollector(node.runtime ?? discoveredRuntime, node.cwd ?? discovered.cwd, discovered.tmuxSession);
-      try {
-        await startTmuxTranscriptCapture(this.tmuxAdapter, this.transcriptStore, rig!.rig.name, discovered.tmuxSession);
-      } catch { /* best-effort */ }
-      // Best-effort: send post-claim identity hint
-      try {
-        await this.deliverClaimHint(discovered.tmuxSession, { rigName: rig!.rig.name, logicalId: opts.logicalId });
-      } catch { /* best-effort */ }
-      // OPR.0.4.3.20 FR-3 — capture the resume token at the adoption boundary.
-      await this.captureResumeTokenOnAdoption({
-        rigId: opts.rigId, nodeId, sessionId, sessionName: discovered.tmuxSession,
-        runtime: node.runtime ?? discoveredRuntime ?? null,
-      });
-
-      return { ok: true, nodeId, sessionId };
-    } catch (err) {
-      return { ok: false, code: "claim_error", error: (err as Error).message };
-    }
   }
 
   /**
@@ -631,120 +459,5 @@ export class ClaimService {
     const boundNodeId = findBindingNodeLiveFirst(this.db, sessionName);
     if (boundNodeId) return boundNodeId;
     return findLatestSessionNameMatch(this.db, sessionName)?.node_id ?? null;
-  }
-
-  async createAndBindToPod(opts: CreateAndBindToPodOptions): Promise<ClaimResult> {
-    const discovered = this.discoveryRepo.getDiscoveredSession(opts.discoveredId);
-    if (!discovered) {
-      return { ok: false, code: "not_found", error: "Discovery record not found" };
-    }
-    if (!claimable(discovered)) {
-      return { ok: false, code: "not_active", error: `Discovery record is ${discovered.status}, not active` };
-    }
-
-    const rig = this.rigRepo.getRig(opts.rigId);
-    if (!rig) {
-      return { ok: false, code: "rig_not_found", error: "Target rig not found" };
-    }
-
-    const podRow = this.db
-      .prepare("SELECT rig_id, namespace FROM pods WHERE id = ?")
-      .get(opts.podId) as { rig_id: string; namespace: string } | undefined;
-    if (!podRow || podRow.rig_id !== opts.rigId) {
-      return { ok: false, code: "pod_not_found", error: "Target pod not found in rig" };
-    }
-
-    const memberName = opts.memberName.trim();
-    const podNamespace = opts.podNamespace.trim();
-    if (!memberName) {
-      return { ok: false, code: "invalid_member_name", error: "memberName is required" };
-    }
-    if (!podNamespace) {
-      return { ok: false, code: "invalid_pod_namespace", error: "podNamespace is required" };
-    }
-    if (podRow.namespace !== podNamespace) {
-      return { ok: false, code: "invalid_pod_namespace", error: "podNamespace does not match target pod" };
-    }
-
-    const logicalId = `${podNamespace}.${memberName}`;
-    if (rig.nodes.some((n) => n.logicalId === logicalId)) {
-      return { ok: false, code: "duplicate_logical_id", error: `Logical ID '${logicalId}' already exists in rig` };
-    }
-
-    const discoveredRuntime = discovered.runtimeHint === "unknown" || discovered.runtimeHint === "terminal"
-      ? undefined
-      : discovered.runtimeHint;
-
-    const paneObservation = await this.observeBindingPane(
-      discovered.tmuxSession,
-      discovered.tmuxPane,
-    );
-
-    const claimTx = this.db.transaction(() => {
-      const node = this.rigRepo.addNode(opts.rigId, logicalId, {
-        runtime: discoveredRuntime,
-        cwd: discovered.cwd ?? undefined,
-        podId: opts.podId,
-      });
-
-      const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);
-      this.persistPaneBinding(
-        node.id,
-        discovered.tmuxSession,
-        paneObservation,
-        session.id,
-        discovered.tmuxWindow,
-      );
-      this.discoveryRepo.markClaimed(discovered.id, node.id);
-      this.eventBus.persistWithinTransaction({
-        type: "node.claimed",
-        rigId: opts.rigId,
-        nodeId: node.id,
-        logicalId,
-        discoveredId: discovered.id,
-      });
-
-      return { nodeId: node.id, sessionId: session.id };
-    });
-
-    try {
-      const { nodeId, sessionId } = claimTx();
-      const event = this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT 1").get() as { seq: number; type: string; rig_id: string; node_id: string; payload: string; created_at: string };
-      if (event) {
-        this.eventBus.notifySubscribers({
-          type: "node.claimed",
-          rigId: opts.rigId,
-          nodeId,
-          logicalId,
-          discoveredId: discovered.id,
-          seq: event.seq,
-          createdAt: event.created_at,
-        });
-      }
-      // Best-effort: set OpenRig-owned tmux metadata
-      try {
-        await this.setRiggedMetadata(discovered.tmuxSession, {
-          nodeId, sessionName: discovered.tmuxSession,
-          rigId: opts.rigId, rigName: rig!.rig.name, logicalId,
-        });
-      } catch { /* best-effort */ }
-      this.maybeProvisionContextCollector(discoveredRuntime, discovered.cwd, discovered.tmuxSession);
-      try {
-        await startTmuxTranscriptCapture(this.tmuxAdapter, this.transcriptStore, rig!.rig.name, discovered.tmuxSession);
-      } catch { /* best-effort */ }
-      // Best-effort: send post-claim identity hint
-      try {
-        await this.deliverClaimHint(discovered.tmuxSession, { rigName: rig!.rig.name, logicalId });
-      } catch { /* best-effort */ }
-      // OPR.0.4.3.20 FR-3 — capture the resume token at the adoption boundary.
-      await this.captureResumeTokenOnAdoption({
-        rigId: opts.rigId, nodeId, sessionId, sessionName: discovered.tmuxSession,
-        runtime: discoveredRuntime ?? null,
-      });
-
-      return { ok: true, nodeId, sessionId };
-    } catch (err) {
-      return { ok: false, code: "claim_error", error: (err as Error).message };
-    }
   }
 }

@@ -427,7 +427,7 @@ seatRoutes.post("/clean/:seatRef", async (c) => {
 // the seat's canonical session/window. VIEW-ONLY: it resolves the seat READ-ONLY
 // (SeatStatusService) and only probes/switches via the tmux adapter (already in
 // context). It does NOT construct SeatHandoverService / SessionRegistry writes /
-// ClaimService and never routes through converge/reconcile — no routing,
+// SessionReconciler and never routes through converge/reconcile — no routing,
 // binding, session, transcript, or identity mutation is possible here.
 seatRoutes.post("/switch-client/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));

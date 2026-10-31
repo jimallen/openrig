@@ -11,7 +11,6 @@ import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher
 import { NodeCmuxService } from "../src/domain/node-cmux-service.js";
 import { CmuxLayoutService } from "../src/domain/cmux-layout-service.js";
 import { setDaemonTmuxServer, shellWord } from "../src/adapters/tmux-server.js";
-import { ClaimService } from "../src/domain/claim-service.js";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { stageCmuxLine } from "../src/adapters/cmux-typed-line.js";
@@ -214,35 +213,6 @@ describe("a claimed session name is one shell word (OF-75)", () => {
     try { registry.registerClaimedSession(nodeId, name); } catch (err) { message = (err as Error).message; }
     expect(message).toMatch(/Invalid claimed session name/);
     expect(message.length).toBeLessThan(200);
-  });
-});
-
-describe("a claim hint is typed only with plain names (OF-108)", () => {
-  // The hint is typed into the adopted pane, which may be a shell, inside a double-quoted string.
-  async function hintFor(rigName: string, logicalId: string) {
-    const sendText = vi.fn(async (_target: string, _text: string) => ({ ok: true as const }));
-    const sendKeys = vi.fn(async (_target: string, _keys: string[]) => ({ ok: true as const }));
-    const db = {};
-    const claim = new ClaimService({ db, rigRepo: { db }, sessionRegistry: { db }, discoveryRepo: { db }, eventBus: { db }, tmuxAdapter: { sendText, sendKeys } } as never);
-    await (claim as unknown as { deliverClaimHint(s: string, m: { rigName: string; logicalId: string }): Promise<void> }).deliverClaimHint("worker@rig", { rigName, logicalId });
-    return { sendText, sendKeys };
-  }
-
-  it.each(HOSTILE)("a rig name holding %s types nothing", async (_label, value) => {
-    const { sendText, sendKeys } = await hintFor(`rig${value}`, "dev.impl");
-    expect(sendText).not.toHaveBeenCalled();
-    expect(sendKeys).not.toHaveBeenCalled();
-  });
-
-  it.each(HOSTILE)("a logical id holding %s types nothing", async (_label, value) => {
-    const { sendText } = await hintFor("my-rig", `dev.${value}`);
-    expect(sendText).not.toHaveBeenCalled();
-  });
-
-  it("control: plain names type the hint and submit it", async () => {
-    const { sendText, sendKeys } = await hintFor("my-rig", "dev.impl");
-    expect(sendText).toHaveBeenCalledWith("worker@rig", '--- OpenRig: You have been adopted into rig "my-rig" as dev.impl. Run: rig whoami --json ---');
-    expect(sendKeys).toHaveBeenCalledWith("worker@rig", ["Enter"]);
   });
 });
 

@@ -14,7 +14,7 @@ import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 
 const GUARDED = [
   "snapshotRepo", "snapshotCapture", "restoreOrchestrator", "rigSpecExporter", "rigSpecPreflight", "rigInstantiator",
-  "packageRepo", "installRepo", "bootstrapRepo", "discoveryRepo", "claimService",
+  "packageRepo", "installRepo", "bootstrapRepo", "discoveryRepo", "sessionReconciler",
   "psProjectionService", "podInstantiator",
 ] as const;
 
@@ -30,7 +30,7 @@ const MESSAGE: Record<(typeof GUARDED)[number], string> = {
   installRepo: "createApp: installRepo must share the same db handle",
   bootstrapRepo: "createApp: bootstrapRepo must share the same db handle",
   discoveryRepo: "createApp: discoveryRepo must share the same db handle",
-  claimService: "createApp: claimService must share the same db handle",
+  sessionReconciler: "createApp: sessionReconciler must share the same db handle",
   psProjectionService: "createApp: psProjectionService must share the same db handle",
   podInstantiator: "createApp: podInstantiator must share the same db handle",
 };

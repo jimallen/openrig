@@ -52,9 +52,8 @@ import {
  */
 
 const SEAT_LOOKUP_GUIDANCE = "List seats with: rig ps --nodes";
-/** OF-144: how to release one adopted row, named by its session id: `rig unclaim` needs an argument, and a name can match
- *  several adopted rows. The id releases that row alone (an older row leaves the seat's current occupant alone). */
-const unclaimGuidance = (sessionId: string) => `Release the adopted session with: rig unclaim ${sessionId}`;
+/** An adopted (origin=claimed) session is the person's own, and OpenRig never ends a session it did not start. */
+const unclaimGuidance = (_sessionId: string) => "End the adopted session yourself; OpenRig does not stop a session it did not start";
 
 /** Terminal session statuses — rows the clean verb must NOT touch (they already
  *  record an ended tenancy; the vocabulary is shared with seat-handover-service

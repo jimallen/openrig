@@ -9,7 +9,7 @@ import { tmuxAttachCommand } from "../adapters/tmux-server.js";
  * Points an already-attached tmux client (a human terminal / CMUX tile) at the
  * seat's canonical session/window. It is deliberately VIEW-ONLY: the only
  * dependencies are `rigRepo` (read, via SeatStatusService) and `tmuxAdapter`
- * (probe + switch). It holds NO SessionRegistry write surface, NO ClaimService,
+ * (probe + switch). It holds NO SessionRegistry write surface, NO SessionReconciler,
  * NO SeatHandoverService, and never calls converge/reconcile — so it is
  * structurally incapable of mutating routing, bindings, sessions, transcripts,
  * or node identity. It composes AFTER the routing-repair verbs

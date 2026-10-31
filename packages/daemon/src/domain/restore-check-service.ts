@@ -15,7 +15,6 @@ import { getSeatCwdFault, seatCwdFixAdvice, seatCwdUnusableMessage } from "./cwd
 import { projectRigWorkspaceRecreatable } from "./project-rig.js";
 import type { CurrentStateRehydrateEligibility } from "./rehydrate-eligibility.js";
 import type { Snapshot, RigServicesRecord, SeatIdentityVerdict, NodeStartupSnapshot } from "./types.js";
-import { ADOPTED_MARKER_OPTION, checkAdoptedIdentity, contestedAdoptedSessionReason, replacedAdoptedSessionReason, unknownAdoptedSessionReason, type AdoptedIdentityCheck, type AdoptedSessionLeftRunning, type SessionOptionRead } from "./adopted-reattach.js";
 
 // --- Types ---
 
@@ -251,12 +250,6 @@ export interface RestoreCheckDeps {
   probeSeatLiveness?: (sessionName: string) => Promise<SeatLiveness>;
   /** Get all rigs as summaries */
   listRigs: () => Array<{ rigId: string; name: string; hasServices?: boolean }>;
-  /** OF-155: the seat's adopted session that rig down left running, which rig up --existing reattaches
-   *  (adopted-reattach.ts, the rule restore uses). Absent: no seat is read as one. */
-  reattachableAdopted?: (nodeId: string) => AdoptedSessionLeftRunning | null;
-  /** a2: a tmux session option, as restore reads the OpenRig marker that tells whether a live adopted session is the one
-   *  rig down left (adopted-reattach.ts checkAdoptedIdentity). Absent: the marker cannot be read, so such a seat is unknown. */
-  readSessionOption?: (session: string, key: string) => Promise<SessionOptionRead>;
   /** OF-152: the rig lookup advice names rigs by (ids across every rig, archived included; names among unarchived ones).
    *  Absent: advice reads `listRigs`, which knows no archived rig. */
   rigRefs?: RigRefLookup;
@@ -305,8 +298,6 @@ export interface RestoreCheckDeps {
 
 interface RigRollupInput {
   liveness: Map<string, SeatLiveness>;
-  /** a2: by node id, whether a live adopted session rig down left running carries this seat's OpenRig marker. */
-  adoptedIdentity: Map<string, AdoptedIdentityCheck>;
   rig: { rigId: string; name: string };
   nodes: NodeInventoryEntry[];
   checks: CheckEntry[];
@@ -325,11 +316,6 @@ interface RecoveryRigInput {
   liveRunningSeats: string[];
   /** Seats live in tmux that the DB does NOT show running (DB out of step with tmux). */
   liveUnrecordedSeats: string[];
-  /** OF-155: seats whose adopted session rig down left running, live in tmux: rig up --existing reattaches them. */
-  reattachSeats: string[];
-  /** OF-155 review F1: of the seats whose liveness could not be read, those whose adopted session rig down left running:
-   *  restore probes these too, and fails them (adopted_liveness_unknown) rather than reattach or start them. */
-  unknownAdoptedSeats: string[];
   /** Seats tmux says are not live, as logical ids (for the per-seat fresh-launch advice). */
   deadSeatIds: string[];
   /** Seats whose tmux liveness could not be read. */
@@ -347,9 +333,6 @@ interface RecoveryRigInput {
   restoreRunningRowOwners: Record<string, string>;
   /** Of those owners, the owner's rig id (rig names are not unique). A missing id is read as "may be this rig". */
   restoreRunningRowOwnerRigIds: Record<string, string>;
-  /** OF-144: of those names, the ones whose row was adopted (origin=claimed): tmux name -> that row's session id, the exact
-   *  `rig unclaim` argument. `null`: the classification did not say which rows were adopted. */
-  restoreRunningRowAdopted: Record<string, string> | null;
 }
 
 interface HostInfraCheckResult {
@@ -362,7 +345,7 @@ type ListedRefusals = Map<string, Map<string, string> | Error>;
 /** Per rig: what restore's refusal rule says about running rows (an Error: it could not be asked). Absent: not asked. */
 type RunningClassifications = Map<string, NamedRunningClassification | Error>;
 /** OF-47: restore's classification (session ids) plus the tmux names of the rows it refuses on, for advice that names them. */
-type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string>; sessionOwnerRigIds?: Record<string, string>; adoptedSessionIds?: string[] };
+type NamedRunningClassification = RunningSessionClassification & { sessionNames?: Record<string, string>; sessionOwners?: Record<string, string>; sessionOwnerRigIds?: Record<string, string> };
 /** Would the next restore run at all? `refused`: a running row is live or unreadable (rig_not_stopped). */
 type RestoreRuns = "would_run" | "refused" | "unknown";
 
@@ -403,28 +386,7 @@ export class RestoreCheckService {
         try { liveness.set(name, await probe(name)); } catch { liveness.set(name, "unreadable"); }
       }));
     }
-    return this.check(opts, liveness, await this.predictListedRefusals(opts), await this.classifyRunning(opts, liveness), await this.readAdoptedIdentity(opts, liveness));
-  }
-
-  /** a2: for each seat whose adopted session rig down left running is live, whether it carries this seat's OpenRig marker, by
-   *  node id: restore's own check (checkAdoptedIdentity). A seat not read here has no entry, which the check reads as unknown. */
-  private async readAdoptedIdentity(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness>): Promise<Map<string, AdoptedIdentityCheck>> {
-    const out = new Map<string, AdoptedIdentityCheck>();
-    const readSessionOption = this.deps.readSessionOption;
-    if (!readSessionOption) return out;
-    const seats: Array<{ nodeId: string; sessionName: string }> = [];
-    try {
-      for (const rig of this.deps.listRigs()) {
-        if (opts.rig && rig.name !== opts.rig) continue;
-        for (const node of this.deps.getNodeInventory(rig.rigId)) {
-          if (!node.nodeId || !node.canonicalSessionName || liveness.get(node.canonicalSessionName) !== "live") continue;
-          const adopted = this.adoptedLeftRunning(node);
-          if (adopted?.kind === "reattach") seats.push({ nodeId: node.nodeId, sessionName: adopted.sessionName });
-        }
-      }
-    } catch { /* runCheck reports the same read failure as its own unknown result */ }
-    await Promise.all(seats.map(async ({ nodeId, sessionName }) => { out.set(nodeId, await checkAdoptedIdentity(nodeId, sessionName, readSessionOption)); }));
-    return out;
+    return this.check(opts, liveness, await this.predictListedRefusals(opts), await this.classifyRunning(opts, liveness));
   }
 
   /** Per rig, restore's own reading of its DB-running rows (every row, raw status) against tmux. The liveness already
@@ -475,7 +437,7 @@ export class RestoreCheckService {
    * `liveness` is the per-session tmux answer gathered by checkWithLiveness();
    * omitted, every seat is judged on DB state alone (the pre-OF-29 behaviour).
    */
-  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map(), running: RunningClassifications = new Map(), adoptedIdentity: Map<string, AdoptedIdentityCheck> = new Map()): RestoreCheckResult {
+  check(opts: RestoreCheckOpts, liveness: Map<string, SeatLiveness> = new Map(), listedRefusals: ListedRefusals = new Map(), running: RunningClassifications = new Map()): RestoreCheckResult {
     const checks: CheckEntry[] = [];
     // rev1-r2 no-false-ready: ready-seat caveat signals that default compact
     // COMPUTES but does NOT emit (AC-4 token-safe) still count toward the
@@ -491,7 +453,6 @@ export class RestoreCheckService {
     const restoreRunningRowNamesByRig = new Map<string, string[]>();
     const restoreRunningRowOwnersByRig = new Map<string, Record<string, string>>();
     const restoreRunningRowOwnerRigIdsByRig = new Map<string, Record<string, string>>();
-    const restoreRunningRowAdoptedByRig = new Map<string, Record<string, string> | null>();
 
     // Host-level checks — daemon probe throw produces unknown (not not_restorable).
     // Daemon definitely-down (healthy=false, negative text) is red/not_restorable.
@@ -566,7 +527,6 @@ export class RestoreCheckService {
       restoreRunningRowNamesByRig.set(rig.rigId, refusingRowNames(running.get(rig.rigId)));
       restoreRunningRowOwnersByRig.set(rig.rigId, refusingRowOwners(running.get(rig.rigId)));
       restoreRunningRowOwnerRigIdsByRig.set(rig.rigId, refusingRowOwnerRigIds(running.get(rig.rigId)));
-      restoreRunningRowAdoptedByRig.set(rig.rigId, refusingRowAdopted(running.get(rig.rigId)));
       if (!opts.recoveryOnly || !allReady) {
         const preconditions = this.checkRestorePreconditions(rig, opts, listedRefusals.get(rig.rigId), restoreRuns);
         checks.push(preconditions.check);
@@ -585,7 +545,7 @@ export class RestoreCheckService {
       }
 
       for (const node of nodes) {
-        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused", rig.name, adoptedIdentity);
+        const readinessCheck = this.checkSeatReadiness(node, liveness, restoreRuns === "refused", rig.name);
         checks.push(readinessCheck);
         rigChecks.push(readinessCheck);
 
@@ -664,11 +624,11 @@ export class RestoreCheckService {
         }
       }
 
-      rigRollupInputs.push({ liveness, adoptedIdentity, rig, nodes, checks: rigChecks, preconditionError });
+      rigRollupInputs.push({ liveness, rig, nodes, checks: rigChecks, preconditionError });
     }
 
     const internalRollups = rigRollupInputs.map((input) => this.buildRigRollup(input));
-    const rigRollups: RigRestoreRollup[] = internalRollups.map(({ liveRunningSeats: _a, liveUnrecordedSeats: _b, reattachSeats: _r, unknownAdoptedSeats: _ua, deadSeatIds: _c, unknownLivenessSeats: _unknown, ...rollup }) => rollup);
+    const rigRollups: RigRestoreRollup[] = internalRollups.map(({ liveRunningSeats: _a, liveUnrecordedSeats: _b, deadSeatIds: _c, unknownLivenessSeats: _unknown, ...rollup }) => rollup);
     for (const rollup of internalRollups) {
       const latestSnapshot = restoreInputsByRig.get(rollup.rigId) ?? this.inspectLatestSnapshot(rollup.rigId);
       recoveryRigInputs.push({
@@ -681,8 +641,6 @@ export class RestoreCheckService {
         snapshotLookupError: latestSnapshot.error,
         liveRunningSeats: rollup.liveRunningSeats,
         liveUnrecordedSeats: rollup.liveUnrecordedSeats,
-        reattachSeats: rollup.reattachSeats,
-        unknownAdoptedSeats: rollup.unknownAdoptedSeats,
         deadSeatIds: rollup.deadSeatIds,
         unknownLivenessSeats: rollup.unknownLivenessSeats,
         restoreRefused: restoreRefusedByRig.get(rollup.rigId) ?? false,
@@ -690,7 +648,6 @@ export class RestoreCheckService {
         restoreRunningRowNames: restoreRunningRowNamesByRig.get(rollup.rigId) ?? [],
         restoreRunningRowOwners: restoreRunningRowOwnersByRig.get(rollup.rigId) ?? {},
         restoreRunningRowOwnerRigIds: restoreRunningRowOwnerRigIdsByRig.get(rollup.rigId) ?? {},
-        restoreRunningRowAdopted: restoreRunningRowAdoptedByRig.get(rollup.rigId) ?? null,
       });
     }
 
@@ -1220,7 +1177,7 @@ export class RestoreCheckService {
     };
   }
 
-  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false, rigName = "", adoptedIdentity: Map<string, AdoptedIdentityCheck> = new Map()): CheckEntry {
+  private checkSeatReadiness(node: NodeInventoryEntry, liveness: Map<string, SeatLiveness>, restoreRefused = false, rigName = ""): CheckEntry {
     const session = node.canonicalSessionName ?? node.logicalId;
     const check = `seat.${session}.readiness`;
     // OF-47: restore (rig up --existing) is offered as a way back only when restore's own rule lets it run.
@@ -1273,62 +1230,6 @@ export class RestoreCheckService {
         status: "yellow",
         evidence: `Seat tmux liveness unknown: DB says running/ready but tmux session ${node.canonicalSessionName} could not be read`,
         remediation: "Check that tmux is reachable, then rerun rig restore-check",
-        remediationSafe: true,
-      };
-    }
-
-    // z2 review F5: another seat's live row names this adopted session too. Restore fails the seat before asking tmux
-    // (adopted_session_contested) and starts nothing, so the check says that, whatever tmux answered.
-    const contested = !dbReady ? this.adoptedLeftRunning(node, "contested") : null;
-    if (contested?.kind === "contested") {
-      return {
-        check,
-        status: "red",
-        evidence: `Adopted session ${contested.sessionName}, which rig down left running, is also the live session of seat ${contested.heldBy.seat} (row ${contested.heldBy.sessionId})`,
-        remediation: `rig up --existing would fail this seat (adopted_session_contested): ${contestedAdoptedSessionReason(contested)}; then rerun rig restore-check`,
-        remediationSafe: false,
-      };
-    }
-    // OF-155 review F1: tmux cannot answer for an adopted session rig down left running. Restore fails such a seat
-    // (adopted_liveness_unknown) and starts nothing, so the check says that, never "restore it".
-    const adoptedUnknown = !dbReady && tmux === "unreadable" ? this.adoptedLeftRunning(node) : null;
-    if (adoptedUnknown) {
-      return {
-        check,
-        status: "red",
-        evidence: `Adopted session ${adoptedUnknown.sessionName}, which rig down left running, could not be checked in tmux`,
-        remediation: `rig up --existing would neither reattach it nor start this seat (adopted_liveness_unknown). Check that tmux is reachable, then rerun rig restore-check`,
-        remediationSafe: false,
-      };
-    }
-    const adopted = !dbReady && tmux === "live" ? this.adoptedLeftRunning(node) : null;
-    // a2: restore reattaches a live adopted session only when it carries this seat's OpenRig marker (checkAdoptedIdentity).
-    const identity = adopted && node.nodeId ? adoptedIdentity.get(node.nodeId) ?? { kind: "unknown" as const, why: `its OpenRig marker (${ADOPTED_MARKER_OPTION}) was not read` } : null;
-    if (adopted && identity?.kind === "replaced") {
-      return {
-        check,
-        status: "red",
-        evidence: `Adopted session ${adopted.sessionName}, which rig down left running, is live, but it is marked as another seat's (${ADOPTED_MARKER_OPTION}=${identity.marker})`,
-        remediation: `rig up --existing would fail this seat (adopted_session_replaced): ${replacedAdoptedSessionReason(adopted, identity.marker)}; then rerun rig restore-check`,
-        remediationSafe: false,
-      };
-    }
-    if (adopted && identity?.kind === "unknown") {
-      return {
-        check,
-        status: "red",
-        evidence: `Adopted session ${adopted.sessionName}, which rig down left running, is live, but it could not be told to be the session rig down left (${identity.why})`,
-        remediation: `rig up --existing would fail this seat (adopted_liveness_unknown): ${unknownAdoptedSessionReason({ ...adopted, why: identity.why })}; then rerun rig restore-check`,
-        remediationSafe: false,
-      };
-    }
-    if (adopted) {
-      // OF-155: rig down left this adopted session running; rig up --existing reattaches it (option A), starting nothing.
-      return {
-        check,
-        status: "yellow",
-        evidence: `Adopted session ${adopted.sessionName} was left running by rig down (its row is detached and the seat's binding still names it)`,
-        remediation: `rig up --existing reattaches it (reattached: ${adopted.sessionName}); nothing is started. To release it from this seat instead: rig unclaim ${adopted.sessionId}`,
         remediationSafe: true,
       };
     }
@@ -1912,9 +1813,7 @@ export class RestoreCheckService {
           scope: "rig",
           rigId: input.rigId,
           rigName: input.rigName,
-          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because this check cannot tell whether those seats are live. ${input.unknownAdoptedSeats.length > 0
-            ? `Restore probes the seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts. It also probes an adopted session rig down left running (${input.unknownAdoptedSeats.join(", ")}): one it cannot check fails that seat (adopted_liveness_unknown), neither reattached nor started.`
-            : "Restore itself only probes seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts."}`,
+          reason: `tmux liveness is unknown for ${input.unknownLivenessSeats.join(", ")}; no restore command is advised because this check cannot tell whether those seats are live. ${"Restore itself only probes seats the DB shows running: it refuses (rig_not_stopped, 409) if one of those is live or unreadable, and otherwise starts."}`,
         });
         continue;
       }
@@ -1958,15 +1857,8 @@ export class RestoreCheckService {
         const held = heldName.map((name) => (ownerRigIds[name] === undefined || ownerRigIds[name] === input.rigId)
           ? `${name} is held by ${owners[name]}, a seat of this rig: do not kill it from here, it would end that seat; rig down ${downHandle} ends this rig's running rows for it, which is what lets restore run; it may leave the tmux session itself running (a name another seat still claims is not killed), so check it afterwards (rig capture -- ${shellQuote(name)}) and end it yourself if it is no longer wanted`
           : `${name} is held by ${owners[name]}, another rig's seat: do not kill it from here, it would end that seat; rig down ${downHandle} ends only this rig's older running row for it, without touching that session, which is what lets restore run`).join("; ");
-        // OF-144: an adopted row is released by its own session id (rig unclaim needs one; a name can match several rows). These
-        // rows are older ones (a live newest row is advised above), and releasing an older row leaves the seat's occupant alone.
-        const adopted = input.restoreRunningRowAdopted;
-        const adoptedOwn = adopted === null ? [] : ownName.filter((name) => adopted[name] !== undefined);
-        const adoptedNote = adopted === null
-          ? "An adopted session is the exception: rig down ends its row but leaves the tmux session running, and rig seat stop refuses it; release it with rig unclaim <session-id>. "
-          : adoptedOwn.map((name) => `${name} was adopted (not launched by OpenRig): rig down ends its row but leaves its tmux session running, and rig seat stop refuses it; release it with rig unclaim ${adopted[name]}. `).join("");
         const downEnds = ownName.length > 0
-          ? `rig down ${downHandle} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. ${adoptedNote}`
+          ? `rig down ${downHandle} ends ${ownName.join(", ")} (and stops the rest of the rig), as does rig seat stop <seat> for just that seat's live sessions. `
           : "";
         blocked.push({
           scope: "rig",
@@ -2002,7 +1894,7 @@ export class RestoreCheckService {
           rigName: input.rigName,
           action: "restore_from_latest_snapshot",
           command: `rig up --existing ${shellQuote(this.rigHandle(input.rigId, input.rigName))}`,
-          reason: `Rig has a latest snapshot and one or more seats are not running/ready.${input.reattachSeats.length > 0 ? ` It reattaches the adopted sessions rig down left running (reattached: ${input.reattachSeats.join(", ")}); nothing is started for them.` : ""}${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
+          reason: `Rig has a latest snapshot and one or more seats are not running/ready.${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
           safe: false,
           blocking: true,
         });
@@ -2015,7 +1907,7 @@ export class RestoreCheckService {
         rigName: input.rigName,
         action: "restore_from_latest_snapshot",
         command: `rig up --existing ${shellQuote(this.rigHandle(input.rigId, input.rigName))}`,
-        reason: `Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.${input.reattachSeats.length > 0 ? ` It reattaches the adopted sessions rig down left running (reattached: ${input.reattachSeats.join(", ")}); nothing is started for them.` : ""}${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
+        reason: `Current persisted state is eligible for an ordinary restore attempt; rig up would capture an auto-rehydrate snapshot whose restore inputs have not been inspected.${this.freshStartupNote(input.rigId, "restore", input.rigName)}`,
         safe: false,
         blocking: true,
       });
@@ -2142,15 +2034,13 @@ export class RestoreCheckService {
       : ` Seats it starts fresh (not resumed) come back on the startup files saved at their last successful launch; to start a seat on this rig's spec (${source}) as it is now instead, list it: rig up ${shellQuote(this.rigHandle(rigId, rigName))} --existing --fresh <seat>.`;
   }
 
-  private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; reattachSeats: string[]; unknownAdoptedSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {
+  private buildRigRollup(input: RigRollupInput): RigRestoreRollup & { liveRunningSeats: string[]; liveUnrecordedSeats: string[]; deadSeatIds: string[]; unknownLivenessSeats: string[] } {
     const blockingChecks = input.checks.filter((check) => check.status === "red");
     const caveatChecks = input.checks.filter((check) => check.status === "yellow");
     const expectedNodes = input.nodes.length;
     let runningReadyNodes = 0;
     const liveRunningSeats: string[] = [];
     const liveUnrecordedSeats: string[] = [];
-    const reattachSeats: string[] = [];
-    const unknownAdoptedSeats: string[] = [];
     const deadSeatIds: string[] = [];
     const unknownLivenessSeats: string[] = [];
     let blockedNodes = 0;
@@ -2172,15 +2062,10 @@ export class RestoreCheckService {
       const hasCaveat = nodeChecks.some((check) => check.status === "yellow");
       const seatLiveness = node.canonicalSessionName ? input.liveness.get(node.canonicalSessionName) : undefined;
       if (seatLiveness === "live") {
-        // a2: only a seat restore would reattach (its adopted session carries this seat's marker) counts as a reattach.
-        const reattaches = !!this.adoptedLeftRunning(node) && !!node.nodeId && input.adoptedIdentity.get(node.nodeId)?.kind === "same";
-        (node.sessionStatus === "running" ? liveRunningSeats : reattaches ? reattachSeats : liveUnrecordedSeats).push(session);
+        (node.sessionStatus === "running" ? liveRunningSeats : liveUnrecordedSeats).push(session);
       }
       if (seatLiveness === "dead") deadSeatIds.push(node.logicalId);
-      if (seatLiveness === "unreadable") {
-        unknownLivenessSeats.push(session);
-        if (node.sessionStatus !== "running" && this.adoptedLeftRunning(node)) unknownAdoptedSeats.push(session);
-      }
+      if (seatLiveness === "unreadable") unknownLivenessSeats.push(session);
       const runningReady = seatRunningReady(node, input.liveness);
       if (runningReady) runningReadyNodes += 1;
       if (hasBlocking) blockedNodes += 1;
@@ -2236,24 +2121,9 @@ export class RestoreCheckService {
       caveatChecks,
       liveRunningSeats,
       liveUnrecordedSeats,
-      reattachSeats,
-      unknownAdoptedSeats,
       deadSeatIds,
       unknownLivenessSeats,
     };
-  }
-
-  /** OF-155: the seat's adopted session rig down left running, when it is the session this check probed and of the kind
-   *  asked (`reattach` unless named: a contested one is not reattached). Unreadable reads as none, which keeps the stricter
-   *  "live although the DB does not show it running" advice (nothing is acted on). */
-  private adoptedLeftRunning(node: NodeInventoryEntry, kind: AdoptedSessionLeftRunning["kind"] = "reattach"): AdoptedSessionLeftRunning | null {
-    if (!node.nodeId || !this.deps.reattachableAdopted || !node.canonicalSessionName) return null;
-    try {
-      const adopted = this.deps.reattachableAdopted(node.nodeId);
-      return adopted && adopted.kind === kind && adopted.sessionName === node.canonicalSessionName ? adopted : null;
-    } catch {
-      return null;
-    }
   }
 
   /** Generate ordered repair steps from non-green checks with remediation.
@@ -2317,17 +2187,6 @@ function refusingRowOwnerRigIds(classification: NamedRunningClassification | Err
     const name = classification.sessionNames?.[id];
     const rigId = classification.sessionOwnerRigIds?.[id];
     return name !== undefined && rigId !== undefined ? [[name, rigId]] : [];
-  }));
-}
-
-/** OF-144: of the refusing rows, the adopted ones (tmux name -> session id); null when the classification does not say. */
-function refusingRowAdopted(classification: NamedRunningClassification | Error | undefined): Record<string, string> | null {
-  if (!classification || classification instanceof Error || classification.adoptedSessionIds === undefined) return null;
-  const adoptedIds = new Set(classification.adoptedSessionIds);
-  const ids = classification.live.length > 0 ? classification.live : classification.unknown;
-  return Object.fromEntries(ids.flatMap((id) => {
-    const name = classification.sessionNames?.[id];
-    return name !== undefined && adoptedIds.has(id) ? [[name, id]] : [];
   }));
 }
 

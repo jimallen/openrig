@@ -10,7 +10,7 @@ import { crashCartRoutes, __resetFleetAttempts } from "../src/routes/crash-cart.
 
 beforeEach(() => __resetFleetAttempts());
 
-function appWith(deps: { rigRepo: unknown; snapshotRepo: unknown; restoreOrchestrator: unknown; runtimeAdapters?: unknown; sessionRegistry?: unknown; tmuxAdapter?: unknown; claimService?: unknown }) {
+function appWith(deps: { rigRepo: unknown; snapshotRepo: unknown; restoreOrchestrator: unknown; runtimeAdapters?: unknown; sessionRegistry?: unknown; tmuxAdapter?: unknown; sessionReconciler?: unknown }) {
   const app = new Hono();
   app.use("*", async (c, next) => {
     c.set("rigRepo" as never, deps.rigRepo as never);
@@ -19,7 +19,7 @@ function appWith(deps: { rigRepo: unknown; snapshotRepo: unknown; restoreOrchest
     if (deps.runtimeAdapters !== undefined) c.set("runtimeAdapters" as never, deps.runtimeAdapters as never);
     if (deps.sessionRegistry !== undefined) c.set("sessionRegistry" as never, deps.sessionRegistry as never);
     if (deps.tmuxAdapter !== undefined) c.set("tmuxAdapter" as never, deps.tmuxAdapter as never);
-    if (deps.claimService !== undefined) c.set("claimService" as never, deps.claimService as never);
+    if (deps.sessionReconciler !== undefined) c.set("sessionReconciler" as never, deps.sessionReconciler as never);
     await next();
   });
   app.route("/api/crash-cart", crashCartRoutes);
@@ -257,7 +257,7 @@ describe("POST /api/crash-cart/restore-fleet — the async conductor batch verb"
       },
       // dev.planner's pane survived; dev.qa's pane died with the crash.
       tmuxAdapter: { hasSession: async (name: string) => name === "dev-planner@kernel" },
-      claimService: {
+      sessionReconciler: {
         reconcileSession: async ({ sessionName }: { sessionName: string }) => {
           reconciled.push(sessionName);
           return { ok: true, result: { sessionName } };

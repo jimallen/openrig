@@ -162,21 +162,6 @@ describe("SeatHandoverService", () => {
     ])));
   }
 
-  // a2: a discovered successor is a session the person started (origin claimed); like a claimed session it carries the
-  // seat's OpenRig marker, by which rig up --existing later tells it from a session recreated under its name.
-  it("a discovered successor is given the seat's OpenRig marker (@rigged_node_id)", async () => {
-    const { node } = seedSeat();
-    const discovered = seedDiscovery();
-    const setSessionOption = vi.fn(async () => ({ ok: true as const }));
-
-    const result = await newService(Object.assign(tmux(), { setSessionOption })).handover({
-      seatRef: "dev-impl@seat-rig", reason: "mvp-proof", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(setSessionOption).toHaveBeenCalledWith("successor-session", "@rigged_node_id", node.id);
-  });
-
   // hc cutover: a discovery record names a tmux session and pane and carries no terminal address, so this path binds tmux.
   // A seat the migration moved to hc must not keep its type or address when a tmux successor takes the seat.
   it("a discovered successor takes a seat the migration moved to hc: the row becomes tmux, with the record's window and pane and no address", async () => {
@@ -1013,7 +998,7 @@ describe("SeatHandoverService", () => {
       expect(real).toEqual({
         ok: false, code: "adopted_occupant",
         message: `Seat "dev-impl@seat-rig" is occupied by an adopted session, dev-impl@seat-rig (origin=claimed), which OpenRig did not start: a handover would replace its process, and OpenRig never ends a session the person started.`,
-        guidance: `Release it from the seat with: rig unclaim ${sessionId}, or stop it yourself; then start the seat fresh with rig seat launch, or hand over to a session you started with --source discovered:<id>.`,
+        guidance: `Stop it yourself; then start the seat fresh with rig seat launch, or hand over to a session you started with --source discovered:<id>.`,
       });
       expect(dry).toEqual(real);
       expect(respawnPane).not.toHaveBeenCalled();

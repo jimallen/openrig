@@ -268,13 +268,13 @@ export class RigTeardownOrchestrator {
     }
     if (session.origin === "claimed" && handled === undefined) {
       // An adopted session is not OpenRig's to kill (`rig seat stop` refuses it). End the ROW only, with no stop intent
-      // (nothing of ours stopped it), and leave its tmux session running. `detached` (what `rig unclaim` writes), not
+      // (nothing of ours stopped it), and leave its tmux session running. `detached`, not
       // `exited`, so the row still holds the name against another seat's kill. OF-155 (Jim, 2026-10-28): the seat's
       // LATEST adopted session is left running too, as rig seat stop leaves it.
       this.deps.sessionRegistry.updateStatus(session.sessionId, "detached");
       (result.warnings ??= []).push(older
-        ? `Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running.${c.deleting ? "" : ` Release it with: rig unclaim ${session.sessionId}`}`
-        : `Session '${session.sessionName}' was adopted (origin=claimed), not launched by OpenRig: rig down ended its row and left its tmux session running, as rig seat stop would. It is yours to stop: end it yourself if it is no longer wanted.${c.deleting ? " The rig is deleted, so nothing of OpenRig's holds it any more." : ` rig up --existing reattaches it; to release it from this seat instead: rig unclaim ${session.sessionId}`}`);
+        ? `Session '${session.sessionName}' is an older row of this seat that was adopted (origin=claimed), not launched by OpenRig: its row was ended and its tmux session was left running.`
+        : `Session '${session.sessionName}' was adopted (origin=claimed), not launched by OpenRig: rig down ended its row and left its tmux session running, as rig seat stop would. It is yours to stop: end it yourself if it is no longer wanted.${c.deleting ? " The rig is deleted, so nothing of OpenRig's holds it any more." : ""}`);
       return;
     }
     // An archived rig may retain a stale row for a name now owned by a live rig.

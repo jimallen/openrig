@@ -388,11 +388,11 @@ describe("SeatLifecycleService", () => {
     expect(sessionRegistry.getBindingForNode(a.node.id)).not.toBeNull();
   });
 
-  it("OF-144: clean refuses an adopted row and names it for rig unclaim by its id", async () => {
+  it("OF-144: clean refuses an adopted row and says OpenRig does not end it", async () => {
     const claimed = seatFixture("s5-rig", "dev.adopted", { origin: "claimed" });
     tmux.setAlive(claimed.sessionName, false);
     const result = await service.cleanSeat({ seatRef: claimed.sessionName, reason: "x" });
-    expect(result).toMatchObject({ ok: false, code: "claimed_session", guidance: `Release the adopted session with: rig unclaim ${claimed.session.id}` });
+    expect(result).toMatchObject({ ok: false, code: "claimed_session", guidance: "End the adopted session yourself; OpenRig does not stop a session it did not start" });
     expect(eventsOfType(db, "session.cleaned")).toHaveLength(0);
   });
 
@@ -402,8 +402,8 @@ describe("SeatLifecycleService", () => {
     expect(claimedResult.ok).toBe(false);
     if (claimedResult.ok) throw new Error("expected refusal");
     expect(claimedResult.code).toBe("claimed_session");
-    // OF-144: the advice names the exact command: rig unclaim takes a session ref, and the id is the one that cannot be ambiguous.
-    expect(claimedResult.guidance).toBe(`Release the adopted session with: rig unclaim ${claimed.session.id}`);
+    // hc-w7: rig unclaim is gone; the advice says the session is the person's to end.
+    expect(claimedResult.guidance).toBe("End the adopted session yourself; OpenRig does not stop a session it did not start");
 
     const probed = seatFixture("s5-rig", "dev.flaky");
     tmux.failProbeFor(probed.sessionName);
@@ -837,7 +837,7 @@ describe("SeatLifecycleService", () => {
 
       expect(result).toMatchObject({ ok: false, code: "claimed_session" });
       // OF-144: the older adopted row, by its own id (releasing it leaves the seat's newer occupant alone).
-      expect((result as { guidance: string }).guidance).toBe(`Release the adopted session with: rig unclaim ${older!.session.id}`);
+      expect((result as { guidance: string }).guidance).toBe("End the adopted session yourself; OpenRig does not stop a session it did not start");
       expect(tmux.killed).toEqual([]);
       expect(row(older.session.id)).toMatchObject({ status: "running" });
       expect(row(newerSession.id)).toMatchObject({ status: "running" });

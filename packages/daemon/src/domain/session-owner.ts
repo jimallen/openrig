@@ -15,7 +15,7 @@ export interface SessionOwnerRow {
  * never proves which node a session belongs to. `ignoreArchived` skips owners in archived rigs: an
  * archived rig keeps its bindings, so its node would otherwise claim the live seat's session.
  * `countReleased` (OPT-IN, for the callers that ask "may I KILL this name?": rig down, node removal, seat stop and the
- * restore-check advice that mirrors them) makes a released session hold its name too: `rig unclaim` marks an adopted
+ * restore-check advice that mirrors them) makes a released session hold its name too: releasing marks an adopted
  * session `detached` and clears its binding while the tmux session lives on as the person's own, so a `claimed` row in
  * that state owns the name for a kill (OF-68 F9). It is NOT part of "is this session managed by another seat": a
  * released session is by definition no longer managed, so seat handover (which asks that) leaves it off.

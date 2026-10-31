@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { reattachableAdoptedSession } from "../domain/adopted-reattach.js";
 import { dirname, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
@@ -222,8 +221,6 @@ export function createRestoreCheckService(
       { exists: existsSync, readFile: (path) => readFileSync(path, "utf-8") },
       resolve(import.meta.dirname, "../../assets/plugins/openrig-core/hooks/claude.json"),
     ).map(({ event }) => event),
-    reattachableAdopted: (nodeId) => reattachableAdoptedSession(rigRepo.db, nodeId), // OF-155: the rule restore uses
-    readSessionOption: tmuxAdapter ? (session, key) => tmuxAdapter.readSessionOption(session, key) : undefined, // a2: the marker check restore makes
     rigRefs: rigRepo, // OF-152: ids across every rig (archived included), names among unarchived ones
     listRigs: () => {
       const rigs = rigRepo.listRigs();
@@ -291,9 +288,7 @@ export function createRestoreCheckService(
         const sessionOwners = Object.fromEntries(owners.map(([id, owner]) => [id, `${owner.logical_id}@${owner.rig_name}`]));
         // Rig names are not unique: the advice decides "a seat of this same rig" on the owner's rig id.
         const sessionOwnerRigIds = Object.fromEntries(owners.map(([id, owner]) => [id, owner.rig_id]));
-        // OF-144: the adopted rows among them, so the advice can name `rig unclaim <session-id>` for each.
-        const adoptedSessionIds = refusingRows.filter((s) => s.origin === "claimed").map((s) => s.id);
-        return { ...classification, sessionNames, sessionOwners, sessionOwnerRigIds, adoptedSessionIds };
+        return { ...classification, sessionNames, sessionOwners, sessionOwnerRigIds };
       }
       : undefined,
     restoreParity: opts?.runtimeAdapters ? restoreParityDeps(rigRepo, opts.runtimeAdapters, opts.specReader ?? null) : undefined,

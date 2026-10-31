@@ -1,6 +1,6 @@
 // OPR.0.4.3.20 FR-3 — auto-capture of a seat's resume token at the adoption
-// boundary (reconcile / adopt / bind). Proves the capture matrix across ALL
-// THREE ClaimService adoption paths with injected fakes (a fake Claude sidecar
+// boundary. Session adoption (adopt / bind) is gone (hc-w7); reconcileSession is the one adoption path left, and the
+// whole capture matrix is driven through it. Proves the capture matrix with injected fakes (a fake Claude sidecar
 // reader + a fake Codex thread-id capturer), deterministically — no real `ps`,
 // no live tmux. Derivation/persist/validation primitives are reused; this
 // suite proves the wiring, provenance, honest-skip, best-effort, terminal-skip,
@@ -13,8 +13,7 @@ import { migrate } from "../src/db/migrate.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
-import { ClaimService } from "../src/domain/claim-service.js";
+import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 
@@ -29,12 +28,11 @@ function lstart(d: Date): string {
   return `${days[d.getDay()]} ${months[d.getMonth()]} ${String(d.getDate()).padStart(2, " ")} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`;
 }
 
-describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
+describe("SessionReconciler FR-3 — adoption-boundary resume-token capture", () => {
   let db: Database.Database;
   let rigRepo: RigRepository;
   let sessionRegistry: SessionRegistry;
   let eventBus: EventBus;
-  let discoveryRepo: DiscoveryRepository;
   let mockTmux: TmuxAdapter;
   let readSidecar: ReturnType<typeof vi.fn>;
   let captureCodexThreadId: ReturnType<typeof vi.fn>;
@@ -47,7 +45,6 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
     eventBus = new EventBus(db);
-    discoveryRepo = new DiscoveryRepository(db);
     mockTmux = {
       setSessionOption: vi.fn(async () => ({ ok: true as const })),
       getSessionOption: vi.fn(async () => null),
@@ -64,22 +61,12 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
 
   afterEach(() => { db.close(); });
 
-  function buildService(): ClaimService {
-    return new ClaimService({
-      db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter: mockTmux,
+  function buildService(): SessionReconciler {
+    return new SessionReconciler({
+      db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: mockTmux,
       contextUsageStore: { readSidecar: readSidecar as unknown as (n: string) => SidecarResult },
       resumeTokenCapturer: { captureCodexThreadId: captureCodexThreadId as unknown as (n: string) => Promise<string | undefined> },
       ...(claudeProcessStartedAt ? { claudeProcessStartedAt } : {}),
-    });
-  }
-
-  function seedDiscovery(opts?: { runtimeHint?: string; tmuxSession?: string }) {
-    return discoveryRepo.upsertDiscoveredSession({
-      tmuxSession: opts?.tmuxSession ?? "seat@test-rig",
-      tmuxPane: "%0",
-      runtimeHint: (opts?.runtimeHint ?? "claude-code") as never,
-      confidence: "high",
-      cwd: "/projects/app",
     });
   }
 
@@ -95,15 +82,15 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     return { type: row.type, payload: JSON.parse(row.payload) as Record<string, unknown> };
   }
 
-  // ---- bind() path ----
+  // ---- the capture matrix, driven through reconcileSession() ----
 
-  it("bind captures a Claude resume token from the sidecar session_id (provenance=adoption)", async () => {
+  it("reconcileSession captures a Claude resume token from the sidecar session_id (provenance=adoption)", async () => {
     readSidecar.mockReturnValue({ ok: true, data: { session_id: "claude-uuid-1234" } });
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "orch-lead@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" });
+    const result = await buildService().reconcileSession({ sessionName: "orch-lead@test-rig", rigId: rig.id, logicalId: "orch.lead" });
     expect(result.ok).toBe(true);
 
     const row = tokenRow(node.id);
@@ -119,13 +106,13 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     expect(JSON.stringify(ev?.payload)).not.toContain("claude-uuid-1234");
   });
 
-  it("bind captures a Codex resume token from the thread-id capturer (provenance=adoption)", async () => {
+  it("reconcileSession captures a Codex resume token from the thread-id capturer (provenance=adoption)", async () => {
     captureCodexThreadId.mockResolvedValue("codex-thread-abcd");
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "dev.qa", { runtime: "codex", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "codex", tmuxSession: "dev-qa@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-qa@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "dev.qa" });
+    const result = await buildService().reconcileSession({ sessionName: "dev-qa@test-rig", rigId: rig.id, logicalId: "dev.qa" });
     expect(result.ok).toBe(true);
 
     const row = tokenRow(node.id);
@@ -135,35 +122,35 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     expect(captureCodexThreadId).toHaveBeenCalledWith("dev-qa@test-rig");
   });
 
-  it("bind captures only an OMP seat's own runner session file", async () => {
+  it("reconcileSession captures only an OMP seat's own runner session file", async () => {
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "dev.omp", { runtime: "omp", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "omp", tmuxSession: "dev-omp@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-omp@test-rig" });
     const sessionFile = "/openrig/state/omp/dev-omp@test-rig/sessions/live.jsonl";
     const ompRead = vi.fn((name: string) => {
       expect(name).toBe("dev-omp@test-rig");
       return { ok: true as const, sessionFile };
     });
     const piRead = vi.fn(() => { throw new Error("Pi state must not be read for OMP"); });
-    const service = new ClaimService({
-      db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter: mockTmux,
+    const service = new SessionReconciler({
+      db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: mockTmux,
       ompRunnerStateStore: { readSessionFile: ompRead },
       piRunnerStateStore: { readSessionFile: piRead },
     });
 
-    expect((await service.bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "dev.omp" })).ok).toBe(true);
+    expect((await service.reconcileSession({ sessionName: "dev-omp@test-rig", rigId: rig.id, logicalId: "dev.omp" })).ok).toBe(true);
     expect(tokenRow(node.id)).toMatchObject({ resume_type: "omp_session_file", resume_token: sessionFile, resume_provenance: "adoption" });
     expect(ompRead).toHaveBeenCalledOnce();
     expect(piRead).not.toHaveBeenCalled();
   });
 
-  it("bind honest-skips when the Claude sidecar is missing (no token persisted, skip event with reason)", async () => {
+  it("reconcileSession honest-skips when the Claude sidecar is missing (no token persisted, skip event with reason)", async () => {
     readSidecar.mockReturnValue({ ok: false, reason: "missing_sidecar" });
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "orch-lead@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" });
+    const result = await buildService().reconcileSession({ sessionName: "orch-lead@test-rig", rigId: rig.id, logicalId: "orch.lead" });
     expect(result.ok).toBe(true);
 
     expect(tokenRow(node.id).resume_token).toBeNull();
@@ -179,19 +166,19 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
   describe("sidecar older than the pane's Claude process", () => {
     const processStart = new Date(2026, 9, 2, 11, 0, 0);
 
-    async function bindClaude(sidecar: SidecarResult) {
+    async function reconcileClaude(sidecar: SidecarResult) {
       readSidecar.mockReturnValue(sidecar);
       const rig = rigRepo.createRig("test-rig");
       const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
-      const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
-      expect((await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" })).ok).toBe(true);
+      sessionRegistry.updateBinding(node.id, { tmuxSession: "orch-lead@test-rig" });
+      expect((await buildService().reconcileSession({ sessionName: "orch-lead@test-rig", rigId: rig.id, logicalId: "orch.lead" })).ok).toBe(true);
       return { row: tokenRow(node.id), event: latestEvent() };
     }
 
     it("skips a sidecar sampled before the process started (reason=stale_sidecar)", async () => {
       const startedAt = vi.fn(async () => lstart(processStart));
       claudeProcessStartedAt = startedAt;
-      const { row, event } = await bindClaude({ ok: true, data: { session_id: "claude-earlier-process", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() } });
+      const { row, event } = await reconcileClaude({ ok: true, data: { session_id: "claude-earlier-process", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() } });
       expect(row.resume_token).toBeNull();
       expect(event?.payload).toMatchObject({ outcome: "skipped", reason: "stale_sidecar" });
       expect(startedAt).toHaveBeenCalledWith("orch-lead@test-rig");
@@ -199,7 +186,7 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
 
     it("captures a long-running session's own sample taken after its process started (re-adoption)", async () => {
       claudeProcessStartedAt = async () => lstart(new Date(2026, 8, 28, 9, 0, 0));
-      const { row } = await bindClaude({ ok: true, data: { session_id: "claude-current-process", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() } });
+      const { row } = await reconcileClaude({ ok: true, data: { session_id: "claude-current-process", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() } });
       expect(row.resume_token).toBe("claude-current-process");
     });
 
@@ -210,43 +197,43 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
       ["a failed process read", { session_id: "claude-unknown", sampled_at: new Date(2026, 9, 2, 10, 0, 0).toISOString() }, async () => { throw new Error("ps failed"); }],
     ])("captures as before when staleness is unknown: %s", async (_label, data, startedAt) => {
       claudeProcessStartedAt = startedAt as (sessionName: string) => Promise<string | null>;
-      const { row } = await bindClaude({ ok: true, data });
+      const { row } = await reconcileClaude({ ok: true, data });
       expect(row.resume_token).toBe("claude-unknown");
     });
   });
 
-  it("bind honest-skips when the Codex probe times out (undefined → reason=probe_timeout)", async () => {
+  it("reconcileSession honest-skips when the Codex probe times out (undefined → reason=probe_timeout)", async () => {
     captureCodexThreadId.mockResolvedValue(undefined);
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "dev.qa", { runtime: "codex", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "codex", tmuxSession: "dev-qa@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-qa@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "dev.qa" });
+    const result = await buildService().reconcileSession({ sessionName: "dev-qa@test-rig", rigId: rig.id, logicalId: "dev.qa" });
     expect(result.ok).toBe(true);
 
     expect(tokenRow(node.id).resume_token).toBeNull();
     expect(latestEvent()?.payload.reason).toBe("probe_timeout");
   });
 
-  it("bind honest-skips an invalid/malformed derived token (validity-before-persist → reason=invalid_token)", async () => {
+  it("reconcileSession honest-skips an invalid/malformed derived token (validity-before-persist → reason=invalid_token)", async () => {
     readSidecar.mockReturnValue({ ok: true, data: { session_id: "bad token with spaces!" } });
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "orch-lead@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" });
+    const result = await buildService().reconcileSession({ sessionName: "orch-lead@test-rig", rigId: rig.id, logicalId: "orch.lead" });
     expect(result.ok).toBe(true);
 
     expect(tokenRow(node.id).resume_token).toBeNull();
     expect(latestEvent()?.payload.reason).toBe("invalid_token");
   });
 
-  it("bind on a terminal-runtime node is exempt: no capture, no event, not a failure", async () => {
+  it("reconcileSession on a terminal-runtime node is exempt: no capture, no event, not a failure", async () => {
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "infra.term", { runtime: "terminal", cwd: "/tmp" });
-    const discovered = seedDiscovery({ runtimeHint: "terminal", tmuxSession: "infra-term@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "infra-term@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "infra.term" });
+    const result = await buildService().reconcileSession({ sessionName: "infra-term@test-rig", rigId: rig.id, logicalId: "infra.term" });
     expect(result.ok).toBe(true);
 
     expect(tokenRow(node.id).resume_token).toBeNull();
@@ -256,18 +243,18 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     expect(latestEvent()?.type).not.toBe("session.resume_token_captured");
   });
 
-  it("bind is best-effort: a throw inside capture does NOT fail the adoption", async () => {
+  it("reconcileSession is best-effort: a throw inside capture does NOT fail the adoption", async () => {
     readSidecar.mockImplementation(() => { throw new Error("sidecar read blew up"); });
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "orch-lead@test-rig" });
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" });
+    const result = await buildService().reconcileSession({ sessionName: "orch-lead@test-rig", rigId: rig.id, logicalId: "orch.lead" });
     expect(result.ok).toBe(true);
     expect(tokenRow(node.id).resume_token).toBeNull();
   });
 
-  it("bind emits outcome=preserved (NOT captured) when the provenance guard refuses the write", async () => {
+  it("reconcileSession emits outcome=preserved (NOT captured) when the provenance guard refuses the write", async () => {
     // The blocker scenario: a valid token IS derived, but a higher-rank token
     // (hook/operator) is already present at write time (e.g. a hook fired during
     // the async probe window). The writer returns false; the event must reflect
@@ -275,10 +262,10 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     readSidecar.mockReturnValue({ ok: true, data: { session_id: "claude-uuid-preserve" } });
     const rig = rigRepo.createRig("test-rig");
     const node = rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/projects/app" });
-    const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "orch-lead@test-rig" });
+    sessionRegistry.updateBinding(node.id, { tmuxSession: "orch-lead@test-rig" });
     const writeSpy = vi.spyOn(sessionRegistry, "updateResumeToken").mockReturnValue(false);
 
-    const result = await buildService().bind({ discoveredId: discovered.id, rigId: rig.id, logicalId: "orch.lead" });
+    const result = await buildService().reconcileSession({ sessionName: "orch-lead@test-rig", rigId: rig.id, logicalId: "orch.lead" });
     expect(result.ok).toBe(true);
     // Adoption capture DID attempt the write with the derived token + provenance.
     expect(writeSpy).toHaveBeenCalledWith(expect.any(String), "claude_id", "claude-uuid-preserve", "adoption");
@@ -290,25 +277,6 @@ describe("ClaimService FR-3 — adoption-boundary resume-token capture", () => {
     // Must NOT falsely report a captured adoption write.
     expect(ev?.payload.provenance).toBeUndefined();
     void node;
-  });
-
-  // ---- createAndBindToPod() path ----
-
-  it("createAndBindToPod captures a Claude token from the sidecar", async () => {
-    readSidecar.mockReturnValue({ ok: true, data: { session_id: "claude-uuid-cbp" } });
-    const rig = rigRepo.createRig("test-rig");
-    db.prepare("INSERT INTO pods (id, rig_id, namespace, label) VALUES (?, ?, ?, ?)").run("pod-dev", rig.id, "dev", "Dev");
-    const discovered = seedDiscovery({ runtimeHint: "claude-code", tmuxSession: "dev-coder@test-rig" });
-
-    const result = await buildService().createAndBindToPod({
-      discoveredId: discovered.id, rigId: rig.id, podId: "pod-dev", podNamespace: "dev", memberName: "coder",
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const row = tokenRow(result.nodeId);
-    expect(row.resume_token).toBe("claude-uuid-cbp");
-    expect(row.resume_provenance).toBe("adoption");
   });
 
   // ---- reconcileSession() path ----

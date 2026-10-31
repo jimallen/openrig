@@ -144,7 +144,7 @@ export interface AdoptRigDeps {
    *  classification restore's 409 guard runs (sessionRegistry rows ×
    *  tmuxAdapter.hasSession); the conductor never invents a probe. */
   probeLiveSessions: (rigId: string) => Promise<Array<{ sessionName: string; logicalId: string }>>;
-  /** The shipped no-launch adopt (ClaimService.reconcileSession — the
+  /** The shipped no-launch adopt (SessionReconciler.reconcileSession — the
    *  `rig reconcile-session` precedent): session state only, never input. */
   reconcileSession: (sessionName: string) => Promise<{ ok: boolean; code?: string; message?: string }>;
   /** The rig's full seat roster (logical ids) — adoption's complement is what

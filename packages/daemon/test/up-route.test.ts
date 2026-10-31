@@ -601,17 +601,17 @@ describe("Up API route", () => {
       return db_.prepare(`SELECT * FROM ${table} ORDER BY id`).all();
     }
 
-    // OF-163: a seat whose adopted session rig down left running (detached, binding kept) is planned as the reattach restore
-    // does (adopted-reattach.ts), through the route's own wiring; a seat listed --fresh is not.
-    it.each([[undefined, true], [["worker"], false]] as const)("plan:true with freshLogicalIds %s predicts the reattach: %s", async (fresh, reattach) => {
+    // OF-163 / hc-w7: adoption is gone, so a seat whose row is origin=claimed and detached is planned like any other
+    // detached seat: no reattach forecast, no adopted-session refusal, whether or not it is listed --fresh.
+    it.each([[undefined], [["worker"]]] as const)("plan:true with freshLogicalIds %s plans a claimed-origin detached seat without a reattach", async (fresh) => {
       const rig = rigRepo.createRig("plan-adopted-rig");
       const node = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "claude-code" });
       const sess = sessionRegistry.registerSession(node.id, "worker@plan-adopted-rig");
       db.prepare("UPDATE sessions SET origin = 'claimed', status = 'running' WHERE id = ?").run(sess.id);
       sessionRegistry.updateBinding(node.id, { tmuxSession: "worker@plan-adopted-rig", tmuxPane: "%3" });
       snapshotCapture.captureSnapshot(rig.id, "auto-pre-down");
-      sessionRegistry.updateStatus(sess.id, "detached"); // as rig down leaves an adopted session (OF-155)
-      // a2: the plan asks tmux as restore does: the session is live and carries the seat's OpenRig marker (written at claim).
+      sessionRegistry.updateStatus(sess.id, "detached");
+      // The session is live and carries the seat's marker: the plan used to read that as a reattach. It must not now.
       Object.assign(tmuxAdapter, { hasSession: async () => true, readSessionOption: async () => ({ ok: true as const, value: node.id }) });
 
       const res = await app.request("/api/up", {
@@ -622,14 +622,9 @@ describe("Up API route", () => {
 
       expect(res.status).toBe(200);
       const seat = (await res.json()).nodes[0];
-      if (reattach) {
-        expect(seat).toMatchObject({ intendedAction: "resume-original", reattach: { sessionId: sess.id, sessionName: "worker@plan-adopted-rig" }, freshRequired: false });
-        expect(seat.reason).toBe("reattaches its adopted session worker@plan-adopted-rig, which rig down left running; nothing is started (if that session has ended by then, restore goes the ordinary way)");
-      } else {
-        expect(seat.reattach).toBeUndefined();
-        // z2 review F4: restore refuses this fresh start while the adopted session is live, and the plan says so.
-        expect(seat.wouldRefuse).toBe(`its adopted session worker@plan-adopted-rig, which rig down left running, would be left running untracked: restore refuses the fresh start while it is live (release it first with rig unclaim ${sess.id}, end it yourself, or leave the seat out of --fresh to reattach it); once it has ended, the seat is started fresh`);
-      }
+      expect(seat.reattach).toBeUndefined();
+      expect(seat.wouldRefuse ?? "").not.toContain("adopted");
+      expect(seat.reason ?? "").not.toContain("adopted");
     });
 
     it("plan:true returns a read-only preview: restore() NOT called, zero session/snapshot mutation", async () => {

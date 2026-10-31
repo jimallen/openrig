@@ -31,7 +31,7 @@ function appDeps(db: ReturnType<typeof createFullTestDb>, uiDistDir: string, ext
     rigSpecExporter: s.rigSpecExporter, rigSpecPreflight: s.rigSpecPreflight, rigInstantiator: s.rigInstantiator,
     packageRepo: s.packageRepo, installRepo: s.installRepo, installEngine: s.installEngine, installVerifier: s.installVerifier,
     bootstrapOrchestrator: s.bootstrapOrchestrator, bootstrapRepo: s.bootstrapRepo,
-    discoveryRepo: s.discoveryRepo, claimService: s.claimService, psProjectionService: s.psProjectionService, upRouter: s.upRouter,
+    discoveryRepo: s.discoveryRepo, sessionReconciler: s.sessionReconciler, psProjectionService: s.psProjectionService, upRouter: s.upRouter,
     teardownOrchestrator: s.teardownOrchestrator, podInstantiator: s.podInstantiator, podBundleSourceResolver: s.podBundleSourceResolver,
     uiDistDir,
     ...extra,

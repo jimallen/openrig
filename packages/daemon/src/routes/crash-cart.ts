@@ -14,7 +14,7 @@ import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import type { RuntimeAdapter } from "../domain/runtime-adapter.js";
 import type { SessionRegistry } from "../domain/session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import type { ClaimService } from "../domain/claim-service.js";
+import type { SessionReconciler } from "../domain/session-reconciler.js";
 import {
   RestoreConductor,
   createDefaultRestoreRig,
@@ -56,7 +56,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
     // AMENDMENT 2 — the shipped machinery the adopt branch composes.
     sessionRegistry: c.get("sessionRegistry" as never) as SessionRegistry | undefined,
     tmuxAdapter: c.get("tmuxAdapter" as never) as TmuxAdapter | undefined,
-    claimService: c.get("claimService" as never) as ClaimService | undefined,
+    sessionReconciler: c.get("sessionReconciler" as never) as SessionReconciler | undefined,
   };
 }
 
@@ -64,8 +64,8 @@ function getDeps(c: { get: (key: string) => unknown }) {
  *  degraded daemon lacks any of it (the conductor then behaves exactly pre-amendment:
  *  a live-panes rig fail-closes through restore's own 409 — no clobber, no new path). */
 function buildAdoptDeps(deps: ReturnType<typeof getDeps>): AdoptRigDeps | undefined {
-  const { rigRepo, sessionRegistry, tmuxAdapter, claimService, restoreOrchestrator, runtimeAdapters } = deps;
-  if (!sessionRegistry || !tmuxAdapter || !claimService) return undefined;
+  const { rigRepo, sessionRegistry, tmuxAdapter, sessionReconciler, restoreOrchestrator, runtimeAdapters } = deps;
+  if (!sessionRegistry || !tmuxAdapter || !sessionReconciler) return undefined;
   return {
     // The same classification restore's 409 guard runs: DB-running sessions × tmux
     // reality. A tmux error is NOT live (fail-closed both ways: an unprobeable pane
@@ -87,7 +87,7 @@ function buildAdoptDeps(deps: ReturnType<typeof getDeps>): AdoptRigDeps | undefi
       }
       return live;
     },
-    reconcileSession: (sessionName) => claimService.reconcileSession({ sessionName }),
+    reconcileSession: (sessionName) => sessionReconciler.reconcileSession({ sessionName }),
     listRigSeats: (rigId) => rigRepo.getRig(rigId)?.nodes.map((n) => n.logicalId) ?? [],
     launchNodeSubset: (rigId, logicalIds) =>
       restoreOrchestrator.launchNodeSubset(rigId, logicalIds, {

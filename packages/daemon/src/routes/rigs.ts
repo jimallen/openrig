@@ -28,7 +28,7 @@ import type { SeatStructuralActivityService } from "../domain/seat-structural-ac
 import { deriveRigLifecycleState, deriveRigLifecycleFromInventory } from "../domain/ps-projection.js";
 import { identityVerdictConfirmsSessionMissing } from "../domain/types.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
-import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals, readPreviewContinuity, readPreviewReattach } from "../domain/restore-plan-preview.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows, predictedPlanRefusals, readPreviewContinuity } from "../domain/restore-plan-preview.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
 import { composeRigStatus, type SeatLifecycleInput } from "../domain/rig-status-compose.js";
 import { createRestoreCheckService } from "./restore-check.js";
@@ -299,7 +299,7 @@ rigsRoutes.get("/:id/status", async (c) => {
   const snapshotRepo = c.get("snapshotRepo" as never) as SnapshotRepository;
   const snapshot = snapshotRepo.findLatestRestoreUsable(rig.rig.id) ?? null;
   // Read-only per-seat forecast (mutated:false) — the restore-plan signal.
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(repo.db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined));
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), new Map(), readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name));
 
   // ps-lifecycle — per-node lifecycleState (never from pane text).
   const nodes: SeatLifecycleInput[] = getNodeInventory(repo.db, rig.rig.id).map((e) => ({
@@ -357,7 +357,7 @@ rigsRoutes.post("/:id/launch-plan", async (c) => {
   // a2 (OF-171 sibling): a listed seat restore would refuse is named here too.
   const { refusals, refusalPredictionError } = await planRefusals(c, repo, rig, snapshot, freshLogicalIds);
   return c.json({
-    ...buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(repo.db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)),
+    ...buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo.db, rig, snapshot), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name)),
     ...(refusalPredictionError ? { refusalPredictionError } : {}),
   }, 200);
 });
@@ -698,7 +698,7 @@ rigsRoutes.post("/:id/up", async (c) => {
     // (as POST /api/up does). This route restores with the default startup source.
     const { refusals, refusalPredictionError } = await planRefusals(c, repo, rig, snapshot ?? null, freshLogicalIds);
     return c.json({
-      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name), await readPreviewReattach(repo.db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)),
+      ...buildRestorePlanPreview(rig, snapshot ?? null, collectPreviewSessionRows(repo.db, rig, snapshot ?? null), freshLogicalIds, Date.now(), readFreshOccupantRelations(repo.db, rig.rig.id), refusals, readPreviewContinuity(repo.db, rig), rigAdviceHandleIn(repo.db, rig.rig.id, rig.rig.name)),
       ...(refusalPredictionError ? { refusalPredictionError } : {}),
     }, 200);
   }

@@ -6,7 +6,7 @@
 //
 // One prompt per resumed seat per restore, through the normal send path (native where eligible, tmux otherwise; the
 // outbox row is the record). Who gets it:
-//  - status `resumed` and not `reattached` (OF-155: a reattached seat's session never stopped, so nothing was killed);
+//  - status `resumed`;
 //  - not `fresh-primed` / `fresh` / `rebuilt`: those start a new conversation with their startup context or checkpoint.
 // A seat that is mid-turn or waiting on a prompt is not interrupted: native delivery waits for the seat's next boundary
 // by itself, and the tmux path waits for idle and is refused at a prompt, so the attempt is repeated until the seat moves
@@ -71,7 +71,7 @@ export type PostRestartOutcome =
 
 /** Who gets the prompt (see the header). */
 export function needsPostRestartPrompt(node: RestoreNodeResult): boolean {
-  return node.status === "resumed" && !node.reattached;
+  return node.status === "resumed";
 }
 
 export function postRestartDeliveryId(restoreSeq: number, nodeId: string): string {

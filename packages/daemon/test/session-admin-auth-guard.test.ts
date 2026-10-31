@@ -18,8 +18,8 @@ const TOKEN = "secret-terminal-token-abc123";
 // what is under test; the handler business logic is covered elsewhere.
 function stubDeps() {
   return {
-    // reconcile → convergeOp(reconcile_session) calls claimService.reconcileSession
-    claimService: { reconcileSession: async () => ({ ok: true, sessionName: "dev1-impl@test-rig", projectionDrift: [], continuity: "unverified" }) },
+    // reconcile → convergeOp(reconcile_session) calls sessionReconciler.reconcileSession
+    sessionReconciler: { reconcileSession: async () => ({ ok: true, sessionName: "dev1-impl@test-rig", projectionDrift: [], continuity: "unverified" }) },
     podInstantiator: {}, // presence-checked only
     // clear-attention
     seatAttentionReconciler: { clearAttention: async () => ({ ok: true, from: "attention_required", clearedBy: "evidence" }) },
@@ -35,7 +35,7 @@ function mountApp(bearerToken: string | null): { request: (p: string, init?: Req
   const app = new Hono();
   app.use("*", async (c, next) => {
     c.set("terminalBearerToken" as never, bearerToken);
-    c.set("claimService" as never, deps.claimService);
+    c.set("sessionReconciler" as never, deps.sessionReconciler);
     c.set("podInstantiator" as never, deps.podInstantiator);
     c.set("seatAttentionReconciler" as never, deps.seatAttentionReconciler);
     c.set("rigLifecycleService" as never, deps.rigLifecycleService);

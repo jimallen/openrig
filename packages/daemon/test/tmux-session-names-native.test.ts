@@ -6,7 +6,6 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
-import { TmuxDiscoveryScanner } from "../src/domain/tmux-discovery-scanner.js";
 import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const run = promisify(exec);
@@ -54,9 +53,6 @@ describe.skipIf(process.platform === "win32")("native tmux literal session names
           expect(session.created).toMatch(/^\d+$/);
           expect(session.attached).toBe(false);
         }
-        const result = await new TmuxDiscoveryScanner({ tmuxAdapter: adapter }).scan();
-        expect(result.panes.map(p => p.tmuxSession).sort()).toEqual([...names].sort());
-        for (const pane of result.panes) expect(pane.tmuxPane).toMatch(/^%\d+$/);
       });
     });
 
@@ -77,9 +73,6 @@ describe.skipIf(process.platform === "win32")("native tmux literal session names
     it(`${mode}: ordinary session discovery and capture remain unchanged`, async () => {
       await withServer(mode, ["plain"], async adapter => {
         expect(await adapter.listSessions()).toEqual([expect.objectContaining({ name: "plain", windows: 1, attached: false })]);
-        const result = await new TmuxDiscoveryScanner({ tmuxAdapter: adapter }).scan();
-        expect(result.panes).toHaveLength(1);
-        expect(result.panes[0]!.tmuxSession).toBe("plain");
         const batch = await adapter.capturePanesContent(["plain"]);
         expect(batch!.get("plain")?.text).toBe(await adapter.capturePaneContent("plain"));
       });

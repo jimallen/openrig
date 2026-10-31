@@ -1,7 +1,7 @@
 // OPR.0.4.3.04 B2 — the PURE, reusable resume-token DERIVE helper.
 //
 // This is the shared derivation core behind FR-3's adoption-boundary capture
-// (ClaimService.captureResumeTokenOnAdoption) AND the seat-handover discovered-
+// (SessionReconciler.captureResumeTokenOnAdoption) AND the seat-handover discovered-
 // mode capture. It performs REUSE-ONLY, PURE READ derivation — no pane writes,
 // no launch, no persistence, no event emission. The CALLER owns persistence
 // (updateResumeToken) and event emission (captured / preserved / skipped), so

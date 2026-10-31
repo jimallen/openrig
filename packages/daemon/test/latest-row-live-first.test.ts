@@ -20,7 +20,7 @@ import { discoverResumeToken } from "../src/domain/agent-images/resume-token-dis
 import { listWakeSessionsBySeat } from "../src/domain/wake-resolve-service.js";
 import { resolveForkSourceNode } from "../src/routes/agent-images.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
-import { ClaimService } from "../src/domain/claim-service.js";
+import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import { RigLifecycleService } from "../src/domain/rig-lifecycle-service.js";
 import { SeatAttentionReconciler } from "../src/domain/seat-attention-reconciler.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
@@ -120,7 +120,7 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
   });
 
   it("claim-service session-name fallback maps to the live node", () => {
-    const svc = Object.create(ClaimService.prototype) as unknown as { db: Database.Database; resolveNodeIdForSessionName(n: string): string | null };
+    const svc = Object.create(SessionReconciler.prototype) as unknown as { db: Database.Database; resolveNodeIdForSessionName(n: string): string | null };
     svc.db = db;
     expect(svc.resolveNodeIdForSessionName(NAME)).toBe(live.nodeId);
   });
@@ -204,7 +204,7 @@ describe("name-keyed latest-row lookups resolve a live rig before an archived on
 describe("claim-service binding lookup is live-first (OF-2)", () => {
   const BOUND = "dev-impl@alpha";
   function resolve(db: Database.Database): string | null {
-    const svc = Object.create(ClaimService.prototype) as unknown as { db: Database.Database; resolveNodeIdForSessionName(n: string): string | null };
+    const svc = Object.create(SessionReconciler.prototype) as unknown as { db: Database.Database; resolveNodeIdForSessionName(n: string): string | null };
     svc.db = db;
     return svc.resolveNodeIdForSessionName(BOUND);
   }

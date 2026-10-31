@@ -1,5 +1,5 @@
 import type { PodRigInstantiator, AddMemberOutcome } from "./rigspec-instantiator.js";
-import type { ClaimService, ReconcileSessionOutcome } from "./claim-service.js";
+import type { SessionReconciler, ReconcileSessionOutcome } from "./session-reconciler.js";
 
 /**
  * Topology-mutation converge spine (OPR.0.3.3.24, AC-6 scaffold).
@@ -110,13 +110,13 @@ export function diffTopology(declared: DeclaredMember[], live: LiveMember[]): To
 export interface ConvergeDeps {
   instantiator: PodRigInstantiator;
   /** Required for reconcile_session ops; add_member-only callers may omit it. */
-  claimService?: ClaimService;
+  sessionReconciler?: SessionReconciler;
 }
 
 /**
  * Apply a single topology op. `add_member` runs the extracted create-node +
  * launch-binding seam via PodRigInstantiator.addMemberToPod; `reconcile_session`
- * runs ClaimService.reconcileSession — the NO-LAUNCH, NO-INPUT adopt of a live
+ * runs SessionReconciler.reconcileSession — the NO-LAUNCH, NO-INPUT adopt of a live
  * hand-resumed session into its persisted node (never reaches NodeLauncher.
  * launchNode or any pane-input primitive). Every other kind is reported honestly
  * as detected-but-unsupported (NEVER silently skipped). The agent-ergonomics
@@ -140,14 +140,14 @@ export async function convergeOp(
       return { kind: "add_member", supported: true, outcome };
     }
     case "reconcile_session": {
-      if (!deps.claimService) {
+      if (!deps.sessionReconciler) {
         return {
           kind: "reconcile_session",
           supported: true,
           outcome: { ok: false, code: "reconcile_error", message: "Claim service unavailable; cannot reconcile." },
         };
       }
-      const outcome = await deps.claimService.reconcileSession({
+      const outcome = await deps.sessionReconciler.reconcileSession({
         sessionName: op.sessionName,
         rigId: op.rigId,
         logicalId: op.logicalId,

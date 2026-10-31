@@ -18,7 +18,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { Node, RigWithRelations } from "../domain/types.js";
 import { defaultProbeRuntimes } from "../domain/kernel-boot.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
-import { buildRestorePlanPreview, collectPreviewSessionRows, readPreviewContinuity, readPreviewReattach } from "../domain/restore-plan-preview.js";
+import { buildRestorePlanPreview, collectPreviewSessionRows, readPreviewContinuity } from "../domain/restore-plan-preview.js";
 import { assessCurrentStateRehydrateEligibility, snapshotMatchesCurrentOccupants } from "../domain/rehydrate-eligibility.js";
 import { deriveCanonicalSessionName, deriveSessionName } from "../domain/session-name.js";
 import { observeSolePane } from "../domain/pane-binding-observation.js";
@@ -133,10 +133,7 @@ startupRoutes.get("/:rigId", async (c) => {
   const snapshot = currentSnapshot(c, rig);
   const observedByNode = new Map<string, Awaited<ReturnType<typeof observeSeat>>>();
   for (const node of rig.nodes) observedByNode.set(node.id, await observeSeat(c, rig, node));
-  // OF-163 review F3 / a2 review F3: restore's own probe (liveness, then the OpenRig marker), so a seat restore would not
-  // reattach gets no reattach forecast, and one it would fail is forecast as failing.
-  const reattach = await readPreviewReattach(repo(c).db, rig, c.get("tmuxAdapter" as never) as TmuxAdapter | undefined);
-  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name), reattach);
+  const plan = buildRestorePlanPreview(rig, snapshot, collectPreviewSessionRows(repo(c).db, rig, snapshot), undefined, Date.now(), readFreshOccupantRelations(repo(c).db, rig.rig.id), new Map(), readPreviewContinuity(repo(c).db, rig), rigAdviceHandleIn(repo(c).db, rig.rig.id, rig.rig.name));
   const auth = await defaultProbeRuntimes();
   const history = sessions(c).getSessionsForRig(rig.rig.id);
   const seats = [];
@@ -212,8 +209,6 @@ startupRoutes.post("/:rigId/:logicalId", async (c) => {
       if (!eligibility.ok) return c.json({ ok: false, code: "startup_source_unavailable", message: eligibility.blockers.join("; ") }, 409);
       snapshot = captureRehydrate(c, rig.rig.id);
     }
-    // OF-163: no reattach forecast here. This seat was just observed stopped in tmux, so restore would not reattach an
-    // adopted session for it (it reattaches only a live one); the forecast is the ordinary one.
     const forecast = buildRestorePlanPreview(selectedRig, snapshot, collectPreviewSessionRows(repo(c).db, selectedRig, snapshot), undefined, Date.now(), {}, new Map(), readPreviewContinuity(repo(c).db, selectedRig), rigAdviceHandleIn(repo(c).db, selectedRig.rig.id, selectedRig.rig.name)).nodes[0]!;
     if (history.length > 0 && forecast.intendedAction !== "resume-original") return c.json({ ok: false, code: "resume_unavailable", freshAllowed: forecast.freshRequired,
       message: forecast.reason ?? "The prior conversation cannot be resumed under this seat's configured policy. A fresh conversation needs a separate decision." }, 409);

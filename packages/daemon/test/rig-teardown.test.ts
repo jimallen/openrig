@@ -949,7 +949,8 @@ describe("RigTeardownOrchestrator", () => {
         expect(tmux.killSession).not.toHaveBeenCalled();
         expect(result).toMatchObject({ sessionsKilled: 0, errors: [] });
         expect(result.warnings?.join(" ")).toContain(`Session '${OLD}'`);
-        expect(result.warnings?.join(" ")).toContain("rig unclaim");
+        expect(result.warnings?.join(" ")).not.toContain("rig unclaim");
+        expect(result.warnings?.join(" ")).toContain("its tmux session was left running");
         expect(row(olderId)).toEqual({ status: "detached", intentionally_stopped: 0 });
         expect(row(newerId)).toMatchObject({ status: "exited" });
         // The consequence for restore: no DB-running row is left to refuse rig_not_stopped.

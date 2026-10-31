@@ -51,7 +51,7 @@ function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir:
     bootstrapRepo: fullSetup.bootstrapRepo,
     
     discoveryRepo: fullSetup.discoveryRepo,
-    claimService: fullSetup.claimService,
+    sessionReconciler: fullSetup.sessionReconciler,
     psProjectionService: fullSetup.psProjectionService,
     upRouter: fullSetup.upRouter,
     teardownOrchestrator: fullSetup.teardownOrchestrator,

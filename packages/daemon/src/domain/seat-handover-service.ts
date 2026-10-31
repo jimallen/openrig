@@ -1,4 +1,3 @@
-import { writeAdoptedMarker } from "./adopted-reattach.js";
 import type Database from "better-sqlite3";
 import { readSeatEffort } from "./seat-effort.js";
 import { NativePermissionStore } from "./native-permission-store.js";
@@ -722,8 +721,6 @@ export class SeatHandoverService {
     // Post-commit + non-blocking (mirrors FR-3): the async derivation cannot run
     // inside better-sqlite3's synchronous transaction. Never logs the token.
     if (input.reportedSource.mode === "discovered" && "result" in committed) {
-      // a2: a discovered successor is a session the person started (origin claimed): it carries the seat's OpenRig marker.
-      await writeAdoptedMarker(this.tmuxAdapter, discovered.tmuxSession, input.node.id);
       await this.captureDiscoveredResumeToken({
         rigId: input.status.rig_id,
         nodeId: input.node.id,
@@ -946,7 +943,7 @@ export class SeatHandoverService {
         ok: false,
         code: "adopted_occupant",
         message: `Seat "${seatRef}" is occupied by an adopted session, ${latestSession.session_name} (origin=claimed), which OpenRig did not start: a handover would replace its process, and OpenRig never ends a session the person started.`,
-        guidance: `Release it from the seat with: rig unclaim ${latestSession.id}, or stop it yourself; then start the seat fresh with rig seat launch, or hand over to a session you started with --source discovered:<id>.`,
+        guidance: `Stop it yourself; then start the seat fresh with rig seat launch, or hand over to a session you started with --source discovered:<id>.`,
       } };
     }
     if (source.mode !== "fork") return { ok: true, status: statusResult, node, latestSession, forkSource: null };

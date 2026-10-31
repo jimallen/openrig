@@ -9,8 +9,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
-import { ClaimService } from "../src/domain/claim-service.js";
+import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforcer.js";
@@ -80,16 +79,16 @@ function fixture(kind: "legacy" | "fresh" | "adopt" = "legacy", primaryMiss = fa
     sleep: async ms => { clock += ms; await onSleep?.(); },
     resolveOccupantGeneration: s => primaryMiss ? null : registry.currentOccupantGenerationForSession(s),
   });
-  const claim = new ClaimService({ db, rigRepo, sessionRegistry: registry,
-    discoveryRepo: new DiscoveryRepository(db), eventBus: new EventBus(db), tmuxAdapter: tmux });
+  const claim = new SessionReconciler({ db, rigRepo, sessionRegistry: registry,
+    eventBus: new EventBus(db), tmuxAdapter: tmux });
   const app = new Hono();
   app.use("*", async (c, next) => {
     c.set("db" as never, db);
     c.set("compactionEnforcer" as never, enforcer);
     c.set("sessionTransport" as never, transport);
     c.set("contextUsageStore" as never, { getForNode: () => ({ availability: "known", usedPercentage: 90 }) });
-    c.set("claimService" as never, claim);
-    // The reconcile converge operation uses ClaimService, never the launcher.
+    c.set("sessionReconciler" as never, claim);
+    // The reconcile converge operation uses SessionReconciler, never the launcher.
     c.set("podInstantiator" as never, {});
     await next();
   });

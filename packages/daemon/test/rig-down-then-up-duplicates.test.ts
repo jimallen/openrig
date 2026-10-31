@@ -96,9 +96,9 @@ describe("rig up --existing after rig down, for a seat with more than one live r
     expect(node.error).toContain("OpenRig does not kill a session it did not start");
     // OF-133: the advice does not send the person to a command that cannot free the name (pinned in the next row).
     expect(node.error).not.toContain("release it with: rig unclaim");
-    expect(node.error).toContain("rig unclaim does not free the name");
+    expect(node.error).not.toContain("rig unclaim");
+    expect(node.error).toContain("That session keeps the seat's name until it ends or is renamed");
     expect(node.error).toContain("end it yourself, or rename it");
-    expect(node.error).toContain("keeps running the conversation this restore will resume");
     expect(node.error).not.toBe("duplicate");
     expect(await h.tmux.hasSession(seat.sessionName), "restore did not touch the person's session").toBe(true);
   });

@@ -24,7 +24,7 @@ import type { ContextUsageStore } from "../domain/context-usage-store.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import type { SessionTransport } from "../domain/session-transport.js";
 import type { PreviewRateLimiter } from "../domain/preview/preview-rate-limiter.js";
-import type { ClaimService } from "../domain/claim-service.js";
+import type { SessionReconciler } from "../domain/session-reconciler.js";
 import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
@@ -542,9 +542,9 @@ sessionAdminRoutes.get("/:sessionName/preview", terminalAuthGuard(), async (c) =
 // launches/kills/replays startup or writes input into the target pane.
 sessionAdminRoutes.post("/:sessionName/reconcile", terminalAuthGuard(), async (c) => {
   const sessionName = c.req.param("sessionName")!;
-  const claimService = c.get("claimService" as never) as ClaimService | undefined;
+  const sessionReconciler = c.get("sessionReconciler" as never) as SessionReconciler | undefined;
   const podInstantiator = c.get("podInstantiator" as never) as PodRigInstantiator | undefined;
-  if (!claimService || !podInstantiator) {
+  if (!sessionReconciler || !podInstantiator) {
     return c.json({ error: "Reconcile unavailable: claim service not configured on this daemon." }, 503);
   }
 
@@ -556,7 +556,7 @@ sessionAdminRoutes.post("/:sessionName/reconcile", terminalAuthGuard(), async (c
   }
 
   const converged = await convergeOp(
-    { instantiator: podInstantiator, claimService },
+    { instantiator: podInstantiator, sessionReconciler },
     rigId ?? "",
     { kind: "reconcile_session", sessionName, rigId, logicalId },
     ".",

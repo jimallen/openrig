@@ -29,7 +29,7 @@ import type { InstallVerifier } from "./domain/install-verifier.js";
 import type { BootstrapOrchestrator } from "./domain/bootstrap-orchestrator.js";
 import type { BootstrapRepository } from "./domain/bootstrap-repository.js";
 import type { DiscoveryRepository } from "./domain/discovery-repository.js";
-import type { ClaimService } from "./domain/claim-service.js";
+import type { SessionReconciler } from "./domain/session-reconciler.js";
 import { rigsRoutes } from "./routes/rigs.js";
 import { sessionsRoutes, nodesRoutes, sessionAdminRoutes } from "./routes/sessions.js";
 import { rigSpecSourceRoutes } from "./routes/rig-spec-source.js";
@@ -178,7 +178,7 @@ export interface AppDeps {
   bootstrapOrchestrator: BootstrapOrchestrator;
   bootstrapRepo: BootstrapRepository;
   discoveryRepo: DiscoveryRepository;
-  claimService: ClaimService;
+  sessionReconciler: SessionReconciler;
   rigExpansionService?: import("./domain/rig-expansion-service.js").RigExpansionService;
   rigLifecycleService?: RigLifecycleService;
   /**
@@ -486,8 +486,8 @@ export function createApp(deps: CreateAppDeps): Hono {
   if (deps.rigRepo.db !== deps.discoveryRepo.db) {
     throw new Error("createApp: discoveryRepo must share the same db handle");
   }
-  if (deps.rigRepo.db !== deps.claimService.db) {
-    throw new Error("createApp: claimService must share the same db handle");
+  if (deps.rigRepo.db !== deps.sessionReconciler.db) {
+    throw new Error("createApp: sessionReconciler must share the same db handle");
   }
   if (deps.rigRepo.db !== deps.psProjectionService.db) {
     throw new Error("createApp: psProjectionService must share the same db handle");
@@ -546,7 +546,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("bootstrapOrchestrator" as never, deps.bootstrapOrchestrator);
     c.set("bootstrapRepo" as never, deps.bootstrapRepo);
     c.set("discoveryRepo" as never, deps.discoveryRepo);
-    c.set("claimService" as never, deps.claimService);
+    c.set("sessionReconciler" as never, deps.sessionReconciler);
     c.set("rigExpansionService" as never, deps.rigExpansionService);
     c.set("rigLifecycleService" as never, deps.rigLifecycleService);
     c.set("psProjectionService" as never, deps.psProjectionService);

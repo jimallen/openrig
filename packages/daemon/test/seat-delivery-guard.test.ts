@@ -1,4 +1,3 @@
-import { ClaimService } from "../src/domain/claim-service.js";
 import { TerminalSessionBroker } from "../src/terminal/TerminalSessionBroker.js";
 import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforcer.js";
 import { ModelDivergenceMonitor } from "../src/domain/model-divergence/model-divergence-monitor.js";
@@ -455,13 +454,6 @@ it("automatic reminder records retained custody and no delivered fire or input",
   expect(await tmux.sendKeys("probe",["Enter"])).toMatchObject({ok:false});expect(commands).toHaveLength(count);db.close();
  });
 
- it("claim hint is one retained notification, not an injected adoption message",async()=>{
-  const f=queueFixture();await f.guard.set("a",true,"person","draft");
-  const claim=new ClaimService({db:f.db,rigRepo:f.rigRepo,sessionRegistry:f.sessionRegistry,discoveryRepo:new DiscoveryRepository(f.db),eventBus:f.bus,tmuxAdapter:f.tmux});
-  for(let i=0;i<2;i++)await (claim as any).deliverClaimHint("worker@test",{rigName:"test",logicalId:"worker"});
-  expect(f.outbox.heldForNode("a").total).toBe(1);expect(f.outbox.heldForNode("a").items[0]).toMatchObject({senderSession:"claim@system",deliveryState:"retained",deliveredAt:null});
-  expect(f.writes).toEqual([]);f.db.close();
- });
  it("broker explicit human text survives while its automatic redraw and compaction refuse",async()=>{
   const f=queueFixture();await f.guard.set("a",true,"person","draft");
   const broker=new TerminalSessionBroker("worker@test",f.tmux);

@@ -121,10 +121,11 @@ describe("rig unclaim of an adopted row that is not its seat's latest (OF-144)",
     expect(record(seatRecord)).toEqual({ status: "active", claimed_node_id: null });
   });
 
-  it("rig down's warning names rig unclaim <id> for the older adopted row, and running it once the seat is relaunched leaves the new occupant bound", async () => {
+  it("rig down's warning for the older adopted row names no command, and releasing it (rig release's engine) once the seat is relaunched leaves the new occupant bound", async () => {
     const { seat, olderId, adoptedRecord } = await seatWithOlderAdoptedRow();
     const down = await new RigTeardownOrchestrator({ db: h.db, rigRepo: h.rigRepo, sessionRegistry: h.sessionRegistry, tmuxAdapter: h.tmux, snapshotCapture: h.snapshotCapture, eventBus: new EventBus(h.db) }).teardown(seat.rigId);
-    expect(down.warnings?.join(" ")).toContain(`Release it with: rig unclaim ${olderId}`);
+    expect(down.warnings?.join(" ")).toContain("its tmux session was left running");
+    expect(down.warnings?.join(" ")).not.toContain("rig unclaim");
     expect(h.db.prepare("SELECT status FROM sessions WHERE id = ?").get(olderId)).toEqual({ status: "detached" });
     // The seat comes back (any relaunch leaves this state: a new newest row, live and bound). The harness cannot resume a
     // conversation, so the relaunch is written as its outcome rather than driven through restore.

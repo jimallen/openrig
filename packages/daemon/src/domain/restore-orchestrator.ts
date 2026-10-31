@@ -1,5 +1,4 @@
 import { decideSeatLaunchOutcome, decideSeatPreLaunchGate, liveSeatGateInputs, noFreshStartRemedy, readContinuityRow, snapshotSeatResumes } from "./restore-seat-gates.js";
-import { contestedAdoptedSessionReason, probeAdoptedSession as probeAdoptedSessionShared, replacedAdoptedSessionReason, unknownAdoptedSessionReason, type AdoptedSessionProbe } from "./adopted-reattach.js";
 import { RUNTIMES_WITHOUT_FRESH_START } from "./runtime-adapter.js";
 import { classifyRunningSessions, type RunningSessionClassification } from "./restore-running-sessions.js";
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
@@ -995,12 +994,6 @@ export class RestoreOrchestrator {
     }
   }
 
-  /** OF-155: the seat's adopted session that rig down left running, asked of tmux by the probe its plan and forecasts run
-   *  too (adopted-reattach.ts probeAdoptedSession). Read-only. */
-  private probeAdoptedSession(nodeId: string): Promise<AdoptedSessionProbe> {
-    return probeAdoptedSessionShared(this.db, nodeId, this.tmuxAdapter);
-  }
-
   /** OF-32: what pre-restore validation checks for a seat this restore starts fresh, read as restoreNodeUnisolated
    *  will act (see validatePreRestore's `freshSeatStartup`). */
   private freshSeatStartupToValidate(rigId: string, logicalId: string, opts: RestoreSeatOpts | undefined, selectedCopy: NodeStartupSnapshot | null): FreshSeatStartupOverride {
@@ -1053,34 +1046,6 @@ export class RestoreOrchestrator {
     // logical id but has a new node id, and a write keyed by the old one violates the foreign key to `nodes`.
     let node = entry.node;
     const liveNode = this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId);
-    // OF-155 (Jim, 2026-10-28, option A): rig down leaves a seat's adopted session running (detached, binding kept). The
-    // seat comes back by reattaching that session, before any gate: nothing is started, so a live conversation never gets
-    // a second process. Review F4: a seat listed --fresh whose adopted session is still live is refused with advice, since
-    // starting it fresh would silently leave the person's session running untracked; once it has ended, --fresh proceeds.
-    if (liveNode) {
-      const freshListed = opts?.freshLogicalIds?.includes(node.logicalId) ?? false;
-      const adopted = await this.probeAdoptedSession(liveNode.id);
-      if (adopted.kind === "contested") {
-        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_contested",
-          error: `${node.logicalId} was not restored: ${contestedAdoptedSessionReason(adopted)}. Nothing was changed for this seat.` };
-      }
-      if (adopted.kind === "replaced") {
-        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_replaced",
-          error: `${node.logicalId} was not restored: ${replacedAdoptedSessionReason(adopted, adopted.marker)}. Nothing was changed for this seat.` };
-      }
-      if (adopted.kind === "live" && freshListed) {
-        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_session_live",
-          error: `${node.logicalId} was not started fresh: its adopted session '${adopted.sessionName}', which rig down left running, is still live, and a fresh start would leave the person's session running untracked. Release it from the seat first (rig unclaim ${adopted.sessionId}) or end it yourself, then rerun; or leave the seat out of --fresh to reattach it. Nothing was changed for this seat.` };
-      }
-      if (adopted.kind === "live") {
-        this.sessionRegistry.updateStatus(adopted.sessionId, "running");
-        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "resumed", reattached: { sessionId: adopted.sessionId, sessionName: adopted.sessionName } };
-      }
-      if (adopted.kind === "unknown") {
-        return { nodeId: liveNode.id, logicalId: node.logicalId, status: "failed", errorCode: "adopted_liveness_unknown",
-          error: `${node.logicalId} was not restored: ${unknownAdoptedSessionReason(adopted)}. Nothing was changed for this seat.${adopted.why ? "" : " Retry rig up --existing once tmux answers."}` };
-      }
-    }
     // OF-40: the gates before the seat's startup files (removed seat, ambiguous occupant, runtime mismatch, earlier
     // occupant's token, `restoring` continuity, resumable seat with no token) are decided by restore-seat-gates.ts,
     // the function restore-check asks, so the check cannot be greener than this.
@@ -1317,10 +1282,10 @@ export class RestoreOrchestrator {
         nodeId,
         logicalId: node.logicalId,
         status: "failed",
-        // OF-116 R1: a tmux session of the seat's own name is still running that this restore did not start, most often an
-        // adopted session `rig down` left running (it is not OpenRig's to kill). The raw tmux word says none of that.
+        // OF-116 R1: a tmux session of the seat's own name is still running that this restore did not start (it is not
+        // OpenRig's to kill). The raw tmux word says none of that.
         error: launchResult.code === "duplicate_session"
-          ? `${node.logicalId} was not started: a tmux session named '${launchOpts?.sessionName ?? expectedSessionName ?? "(derived)"}' is already running and OpenRig does not kill a session it did not start (${launchResult.message}). That session keeps the seat's name until it ends or is renamed: end it yourself, or rename it with tmux rename-session if you want to keep it (a renamed adopted session keeps running the conversation this restore will resume), then run rig up --existing again. rig unclaim does not free the name (it only stops OpenRig tracking an adopted session, which keeps running). (rig seat launch --fresh would meet the same session and refuse.)`
+          ? `${node.logicalId} was not started: a tmux session named '${launchOpts?.sessionName ?? expectedSessionName ?? "(derived)"}' is already running and OpenRig does not kill a session it did not start (${launchResult.message}). That session keeps the seat's name until it ends or is renamed: end it yourself, or rename it with tmux rename-session if you want to keep it, then run rig up --existing again. (rig seat launch --fresh would meet the same session and refuse.)`
           : launchResult.message,
         ...(launchResult.code === "seat_cwd_unusable" || launchResult.code === "duplicate_session" ? { errorCode: launchResult.code } : {}),
       };
