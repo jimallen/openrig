@@ -56,7 +56,6 @@ function post(app: { request: (p: string, init?: RequestInit) => Response | Prom
 const ROUTES: Array<{ name: string; path: string }> = [
   { name: "reconcile", path: "/api/sessions/dev1-impl%40test-rig/reconcile" },
   { name: "clear-attention", path: "/api/sessions/dev1-impl%40test-rig/clear-attention" },
-  { name: "unclaim", path: "/api/sessions/dev1-impl%40test-rig/unclaim" },
 ];
 
 describe("session-admin mutation auth guard (OPR.0.4.3.02)", () => {

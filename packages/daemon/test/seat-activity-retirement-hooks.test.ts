@@ -14,9 +14,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
-import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
-import { ClaimService } from "../src/domain/claim-service.js";
-import { discoveryRoutes } from "../src/routes/discovery.js";
 import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -63,7 +60,7 @@ function fixture(
 }
 
 describe("retired hook evidence through the real HTTP route", () => {
-  it("an adopted differently named successor's first permission hook survives before the next sweep", async () => {
+  it("a differently named successor's first permission hook survives before the next sweep", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "adopt-hook-"));
     const socket = join(scratch, "tmux.sock");
     const exec = promisify(execFile);
@@ -84,22 +81,9 @@ describe("retired hook evidence through the real HTTP route", () => {
     const successor = "adopted-successor";
     await tmux("new-session", "-d", "-s", successor, "sleep 60");
     const pane = (await tmux("display-message", "-p", "-t", successor, "#{pane_id}")).trim();
-    const discovery = new DiscoveryRepository(f.db);
-    f.db.prepare("INSERT INTO discovered_sessions (id, tmux_session, tmux_pane, runtime_hint, confidence) VALUES (?, ?, ?, ?, ?)")
-      .run("successor-discovery", successor, pane, "claude-code", "high");
-    const claim = new ClaimService({ db: f.db, rigRepo: f.rigs, sessionRegistry: f.sessions,
-      discoveryRepo: discovery, eventBus: f.eventBus, tmuxAdapter: adapter });
-    f.app.use("/api/discovery/*", async (c, next) => {
-      c.set("claimService" as never, claim as never);
-      await next();
-    });
-    f.app.route("/api/discovery", discoveryRoutes);
-    const adoption = await f.app.request("/api/discovery/successor-discovery/adopt", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rigId: f.rig.id, target: { kind: "node", logicalId: "dev.a" } }),
-    });
-    expect(adoption.status).toBe(201);
-    expect((await adoption.json()).ok).toBe(true);
+    // The successor takes the seat as a differently named occupant (what a handover commit leaves behind).
+    f.sessions.registerClaimedSession(f.node.id, successor);
+    f.sessions.updateBinding(f.node.id, { tmuxSession: successor, tmuxPane: pane });
     const generation = f.sessions.currentOccupantTenure(f.node.id)!.generationUuid;
     await f.hook({ sessionName: successor, nodeId: f.node.id, subtype: "permission_prompt", generation });
     expect(f.store.getLatestForNode({ nodeId: f.node.id })).toMatchObject({ state: "needs_input", reason: "permission_prompt" });

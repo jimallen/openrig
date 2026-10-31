@@ -74,7 +74,7 @@ describe("P16 — AppDeps members with safety semantics are composed (definednes
     "transcriptStore", "providerService", "seatIdentityReconciler",
     "seatActivityService", "watchdogJobsRepo", "watchdogHistoryLog",
     "watchdogPolicyEngine", "watchdogScheduler", "periodicSnapshotScheduler",
-    "workflowRuntime", "selfAttachService", "rigLifecycleService",
+    "workflowRuntime", "rigLifecycleService",
     "resumeMetadataRefresher", "runtimeAdapters",
     "seatStructuralActivityService",
     "streamStore", "askService", "wakeResolveService", "projectClassifier",

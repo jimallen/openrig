@@ -449,7 +449,7 @@ export function createTestApp(
     rigSpecExporter, rigSpecPreflight, rigInstantiator,
     packageRepo, installRepo, installEngine, installVerifier,
     bootstrapOrchestrator, bootstrapRepo,
-    discoveryCoordinator, discoveryRepo, claimService, selfAttachService, rigExpansionService,
+    discoveryRepo, claimService, rigExpansionService,
     rigLifecycleService,
     psProjectionService: new PsProjectionService({ db }),
     upRouter,

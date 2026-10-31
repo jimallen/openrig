@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
+import { seedClaimedSession } from "./helpers/claimed-session.js";
 
 describe("Rig lifecycle routes", () => {
   let db: Database.Database;
@@ -14,47 +15,6 @@ describe("Rig lifecycle routes", () => {
 
   afterEach(() => {
     db.close();
-  });
-
-  it("POST /api/sessions/:sessionRef/unclaim releases a claimed session and reactivates discovery", async () => {
-    const rig = setup.rigRepo.createRig("claim-rig");
-    const discovered = setup.discoveryRepo.upsertDiscoveredSession({
-      tmuxSession: "manual-claim-session",
-      tmuxPane: "%1",
-      cwd: "/tmp",
-      activeCommand: "codex",
-      runtimeHint: "codex",
-      confidence: "high",
-    });
-
-    setup.rigRepo.addNode(rig.id, "external.helper", { runtime: "codex" });
-    const claimed = await setup.claimService.bind({
-      discoveredId: discovered.id,
-      rigId: rig.id,
-      logicalId: "external.helper",
-    });
-    expect(claimed.ok).toBe(true);
-    if (!claimed.ok) return;
-
-    const res = await setup.app.request(`/api/sessions/${claimed.sessionId}/unclaim`, {
-      method: "POST",
-    });
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.ok).toBe(true);
-    expect(body.sessionId).toBe(claimed.sessionId);
-
-    const sessions = setup.sessionRegistry.getSessionsForRig(rig.id);
-    expect(sessions.find((session) => session.id === claimed.sessionId)?.status).toBe("detached");
-
-    const rigState = setup.rigRepo.getRig(rig.id);
-    const node = rigState?.nodes.find((candidate) => candidate.logicalId === "external.helper");
-    expect(node?.binding).toBeNull();
-
-    const rediscovered = setup.discoveryRepo.getDiscoveredSession(discovered.id);
-    expect(rediscovered?.status).toBe("active");
-    expect(rediscovered?.claimedNodeId).toBeNull();
   });
 
   it("POST /api/rigs/:rigId/release releases claimed sessions without killing tmux and deletes the rig", async () => {
@@ -79,12 +39,12 @@ describe("Rig lifecycle routes", () => {
     setup.rigRepo.addNode(rig.id, "external.a", { runtime: "codex" });
     setup.rigRepo.addNode(rig.id, "external.b", { runtime: "codex" });
 
-    const boundA = await setup.claimService.bind({
+    const boundA = seedClaimedSession(setup, {
       discoveredId: discoveredA.id,
       rigId: rig.id,
       logicalId: "external.a",
     });
-    const boundB = await setup.claimService.bind({
+    const boundB = seedClaimedSession(setup, {
       discoveredId: discoveredB.id,
       rigId: rig.id,
       logicalId: "external.b",
@@ -409,7 +369,7 @@ describe("Rig lifecycle routes", () => {
     });
 
     setup.rigRepo.addNode(rig.id, "external.helper", { runtime: "codex" });
-    const claimed = await setup.claimService.bind({
+    const claimed = seedClaimedSession(setup, {
       discoveredId: discovered.id,
       rigId: rig.id,
       logicalId: "external.helper",
@@ -417,10 +377,8 @@ describe("Rig lifecycle routes", () => {
     expect(claimed.ok).toBe(true);
     if (!claimed.ok) return;
 
-    const unclaim = await setup.app.request(`/api/sessions/${claimed.sessionId}/unclaim`, {
-      method: "POST",
-    });
-    expect(unclaim.status).toBe(200);
+    const unclaim = await setup.rigLifecycleService.unclaimSession(claimed.sessionId);
+    expect(unclaim.ok).toBe(true);
 
     const res = await setup.app.request(`/api/rigs/${rig.id}/nodes/external.helper`, {
       method: "DELETE",

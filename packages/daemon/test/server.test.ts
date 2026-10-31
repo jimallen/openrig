@@ -49,7 +49,7 @@ function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir:
     installVerifier: fullSetup.installVerifier,
     bootstrapOrchestrator: fullSetup.bootstrapOrchestrator,
     bootstrapRepo: fullSetup.bootstrapRepo,
-    discoveryCoordinator: fullSetup.discoveryCoordinator,
+    
     discoveryRepo: fullSetup.discoveryRepo,
     claimService: fullSetup.claimService,
     psProjectionService: fullSetup.psProjectionService,

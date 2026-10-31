@@ -681,23 +681,6 @@ sessionAdminRoutes.post("/:sessionName/resume-token", terminalAuthGuard(), async
   }, 200);
 });
 
-// POST /api/sessions/:sessionRef/unclaim
-sessionAdminRoutes.post("/:sessionRef/unclaim", terminalAuthGuard(), async (c) => {
-  const sessionRef = c.req.param("sessionRef")!;
-  const { rigLifecycleService } = getDeps(c);
-  if (!rigLifecycleService) {
-    return c.json({ error: "Lifecycle service not available" }, 500);
-  }
-
-  const result = await rigLifecycleService.unclaimSession(sessionRef);
-  if (!result.ok) {
-    const status = result.code === "session_ambiguous" ? 409 : 404;
-    return c.json(result, status);
-  }
-
-  return c.json(result, 200);
-});
-
 // GET /api/sessions/:sessionName/generation-record?sinceBytes=N
 // Mechanics-gate fix (desk ruling d9b3989a): the CONSUMPTION-BY-EFFECT source for `rig walk`.
 // Serves the seat's current-generation append-only conversation record identity plus the suffix

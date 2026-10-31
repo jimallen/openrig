@@ -28,10 +28,8 @@ import type { InstallEngine } from "./domain/install-engine.js";
 import type { InstallVerifier } from "./domain/install-verifier.js";
 import type { BootstrapOrchestrator } from "./domain/bootstrap-orchestrator.js";
 import type { BootstrapRepository } from "./domain/bootstrap-repository.js";
-import type { DiscoveryCoordinator } from "./domain/discovery-coordinator.js";
 import type { DiscoveryRepository } from "./domain/discovery-repository.js";
 import type { ClaimService } from "./domain/claim-service.js";
-import type { SelfAttachService } from "./domain/self-attach-service.js";
 import { rigsRoutes } from "./routes/rigs.js";
 import { sessionsRoutes, nodesRoutes, sessionAdminRoutes } from "./routes/sessions.js";
 import { rigSpecSourceRoutes } from "./routes/rig-spec-source.js";
@@ -41,7 +39,6 @@ import { snapshotsRoutes, restoreRoutes } from "./routes/snapshots.js";
 import { handleExportYaml, handleExportJson, rigspecImportRoutes } from "./routes/rigspec.js";
 import { packagesRoutes } from "./routes/packages.js";
 import { bootstrapRoutes } from "./routes/bootstrap.js";
-import { discoveryRoutes } from "./routes/discovery.js";
 import { bundleRoutes } from "./routes/bundles.js";
 import { restoreCheckRoutes } from "./routes/restore-check.js";
 import { crashCartRoutes } from "./routes/crash-cart.js";
@@ -180,10 +177,8 @@ export interface AppDeps {
   installVerifier: InstallVerifier;
   bootstrapOrchestrator: BootstrapOrchestrator;
   bootstrapRepo: BootstrapRepository;
-  discoveryCoordinator: DiscoveryCoordinator;
   discoveryRepo: DiscoveryRepository;
   claimService: ClaimService;
-  selfAttachService?: SelfAttachService;
   rigExpansionService?: import("./domain/rig-expansion-service.js").RigExpansionService;
   rigLifecycleService?: RigLifecycleService;
   /**
@@ -494,9 +489,6 @@ export function createApp(deps: CreateAppDeps): Hono {
   if (deps.rigRepo.db !== deps.claimService.db) {
     throw new Error("createApp: claimService must share the same db handle");
   }
-  if (deps.selfAttachService && deps.rigRepo.db !== deps.selfAttachService.db) {
-    throw new Error("createApp: selfAttachService must share the same db handle");
-  }
   if (deps.rigRepo.db !== deps.psProjectionService.db) {
     throw new Error("createApp: psProjectionService must share the same db handle");
   }
@@ -553,10 +545,8 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("installVerifier" as never, deps.installVerifier);
     c.set("bootstrapOrchestrator" as never, deps.bootstrapOrchestrator);
     c.set("bootstrapRepo" as never, deps.bootstrapRepo);
-    c.set("discoveryCoordinator" as never, deps.discoveryCoordinator);
     c.set("discoveryRepo" as never, deps.discoveryRepo);
     c.set("claimService" as never, deps.claimService);
-    c.set("selfAttachService" as never, deps.selfAttachService);
     c.set("rigExpansionService" as never, deps.rigExpansionService);
     c.set("rigLifecycleService" as never, deps.rigLifecycleService);
     c.set("psProjectionService" as never, deps.psProjectionService);
@@ -755,7 +745,6 @@ export function createApp(deps: CreateAppDeps): Hono {
   app.route("/api/packages", packagesRoutes);
   app.route("/api/agents", agentsRoutes);
   app.route("/api/bootstrap", bootstrapRoutes);
-  app.route("/api/discovery", discoveryRoutes);
   app.route("/api/bundles", bundleRoutes);
   app.route("/api/ps", psRoutes);
   app.route("/api/up", upRoutes);

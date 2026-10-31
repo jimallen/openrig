@@ -1445,10 +1445,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     installVerifier,
     bootstrapOrchestrator,
     bootstrapRepo,
-    discoveryCoordinator,
     discoveryRepo,
     claimService,
-    selfAttachService,
     rigLifecycleService,
     rigExpansionService,
     // Slice 15 — SeatActivityService owns the `terminal-active` primitive

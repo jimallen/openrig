@@ -7,15 +7,14 @@
 // startup.ts createDaemon and passes them to createApp (server.ts); these guards fail the boot if that ever drifts.
 //
 // Census (instrument: `grep -c "must share the same db handle" src/server.ts` at the base e38e10c3 = 18 lines: 1 comment + 17 throws, each read in createApp):
-// 17 guards = eventBus + sessionRegistry + teardownOrchestrator (already pinned) + 14 pinned here (13 unconditional + the
-// optional selfAttachService, which is guarded only when present). One row per guard, each killed by deleting that guard alone.
+// 16 guards = eventBus + sessionRegistry + teardownOrchestrator (already pinned) + 13 pinned here. One row per guard, each killed by deleting that guard alone.
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/server.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 
 const GUARDED = [
   "snapshotRepo", "snapshotCapture", "restoreOrchestrator", "rigSpecExporter", "rigSpecPreflight", "rigInstantiator",
-  "packageRepo", "installRepo", "bootstrapRepo", "discoveryRepo", "claimService", "selfAttachService",
+  "packageRepo", "installRepo", "bootstrapRepo", "discoveryRepo", "claimService",
   "psProjectionService", "podInstantiator",
 ] as const;
 
@@ -32,7 +31,6 @@ const MESSAGE: Record<(typeof GUARDED)[number], string> = {
   bootstrapRepo: "createApp: bootstrapRepo must share the same db handle",
   discoveryRepo: "createApp: discoveryRepo must share the same db handle",
   claimService: "createApp: claimService must share the same db handle",
-  selfAttachService: "createApp: selfAttachService must share the same db handle",
   psProjectionService: "createApp: psProjectionService must share the same db handle",
   podInstantiator: "createApp: podInstantiator must share the same db handle",
 };
@@ -48,10 +46,5 @@ describe("OF-168: every createApp same-handle guard is pinned by its own row", (
     const foreign = createTestApp(createFullTestDb());
     expect(foreign[key].db, "precondition: the foreign service really is on another handle").not.toBe(services.rigRepo.db);
     expect(() => createApp(Object.assign({}, services, { [key]: foreign[key] }))).toThrow(MESSAGE[key]);
-  });
-
-  it("selfAttachService is optional: an app built without one is created (the guard fires only for a present service)", () => {
-    const { app: _app, ...services } = createTestApp(createFullTestDb());
-    expect(() => createApp({ ...services, selfAttachService: undefined })).not.toThrow();
   });
 });
