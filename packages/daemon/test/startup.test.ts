@@ -549,7 +549,9 @@ describe("createDaemon startup composition", () => {
   it("GAP-7 shares one custom absolute CODEX_HOME between production session env and adapter config writes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-gap7-custom-"));
     const daemonHome = path.join(root, "daemon-home");
-    const codexHome = path.join(root, "daemon-codex");
+    // OF-183: a daemon that is not the host's installed one writes only a config it can prove private, so the custom
+    // CODEX_HOME sits inside the daemon's private HOME.
+    const codexHome = path.join(daemonHome, "daemon-codex");
     const workspace = path.join(root, "workspace");
     fs.mkdirSync(workspace, { recursive: true });
     const saved = saveEnv("HOME", "CODEX_HOME");
@@ -573,6 +575,42 @@ describe("createDaemon startup composition", () => {
       const configPath = path.join(codexHome, "config.toml");
       expect(fs.readFileSync(configPath, "utf8")).toContain(`[projects."${workspace}"]`);
       expect(fs.existsSync(path.join(daemonHome, ".codex", "config.toml"))).toBe(false);
+    } finally {
+      result?.db.close();
+      restoreEnv(saved);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // OF-183: createDaemon is the production composition. A checkout build (this test runs from one) is not the host's
+  // installed daemon, so a Codex home it cannot prove private is left byte-identical by start-up and by a seat launch.
+  it("OF-183 a daemon that is not the host's installed one leaves a Codex home it cannot prove private byte-identical", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-of183-"));
+    const daemonHome = path.join(root, "daemon-home");
+    const sharedCodex = path.join(root, "shared-codex");
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.mkdirSync(daemonHome, { recursive: true });
+    fs.mkdirSync(sharedCodex, { recursive: true });
+    const config = path.join(sharedCodex, "config.toml");
+    fs.writeFileSync(config, "# a live seat's config\nmodel = \"fixture\"\n");
+    const before = fs.readFileSync(config);
+    const saved = saveEnv("HOME", "CODEX_HOME", "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED");
+    process.env.HOME = daemonHome;
+    process.env.CODEX_HOME = sharedCodex;
+    process.env.OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED = "true";
+    let result: Awaited<ReturnType<typeof createDaemon>> | undefined;
+    try {
+      result = await createDaemon({
+        cmuxFactory: async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); },
+        tmuxExec: async () => "",
+      });
+      await result.deps.runtimeAdapters!.codex!.deliverStartup([], {
+        id: "of183-binding", nodeId: "of183-node", tmuxSession: "of183-session",
+        tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+        updatedAt: "", cwd: workspace,
+      });
+      expect(fs.readFileSync(config).equals(before)).toBe(true);
     } finally {
       result?.db.close();
       restoreEnv(saved);

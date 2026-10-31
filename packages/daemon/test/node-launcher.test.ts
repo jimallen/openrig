@@ -19,6 +19,8 @@ import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaul
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import type { PersistedEvent } from "../src/domain/types.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { hostCodexWithTrustedHook, secondDaemonPolicyFor, type HostCodexFixture } from "./helpers/codex-shared-config-fixture.js";
+import type { CodexConfigWritePolicy } from "../src/domain/codex-config-write-policy.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -148,6 +150,37 @@ describe("NodeLauncher", () => {
     // Subscriber notified
     expect(notifications).toHaveLength(1);
     expect(notifications[0]!.type).toBe("node.launched");
+  });
+
+  // OF-183: the seat's CODEX_HOME symlinks the host-wide config.toml, so a launch used to mirror hook trust into it.
+  describe("OF-183 the shared Codex config.toml on a codex launch", () => {
+    let fx: HostCodexFixture;
+    beforeEach(() => { fx = hostCodexWithTrustedHook("nl-of183-"); });
+    afterEach(() => { fx.cleanup(); });
+
+    const launchCodexSeat = async (policy?: CodexConfigWritePolicy) => {
+      const rig = rigRepo.createRig("of183-rig");
+      rigRepo.addNode(rig.id, "verify-qa", { role: "qa", runtime: "codex" });
+      const launcher = new NodeLauncher({
+        db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: mockTmuxAdapter(),
+        sessionEnv: { OPENRIG_HOME: fx.scratchOpenrigHome, CODEX_HOME: fx.codexHome },
+        ...(policy ? { codexConfigWritePolicy: policy } : {}),
+      });
+      const result = await launcher.launchNode(rig.id, "verify-qa");
+      expect(result.ok).toBe(true);
+    };
+
+    it("a launch by a daemon that is not the host's installed one leaves the shared config.toml byte-identical", async () => {
+      const before = await fs.readFile(fx.config);
+      await launchCodexSeat(secondDaemonPolicyFor(fx));
+      expect((await fs.readFile(fx.config)).equals(before)).toBe(true);
+    });
+
+    it("CONTROL: with no restriction the same launch mirrors the seat's hook trust into the shared file", async () => {
+      const before = await fs.readFile(fx.config);
+      await launchCodexSeat();
+      expect((await fs.readFile(fx.config)).equals(before)).toBe(false);
+    });
   });
 
   it("codex seats launch with a per-seat CODEX_HOME; claude seats get none", async () => {

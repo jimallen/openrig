@@ -8,6 +8,7 @@ import type { AppliedLaunchObservation } from "./permission-drift.js";
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
+import type { CodexConfigWritePolicy } from "./codex-config-write-policy.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
@@ -106,6 +107,7 @@ export class SuccessorSessionLauncher {
   private readinessSettings: Pick<SettingsStore, "resolveOne">;
   private sleep: (ms: number) => Promise<void>;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
+  private codexConfigWritePolicy: CodexConfigWritePolicy | null;
   private exitPollMs: number;
   private exitTimeoutMs: number;
   private seatCwdFault: (cwd: string) => SeatCwdFault | null;
@@ -133,6 +135,8 @@ export class SuccessorSessionLauncher {
        * its just-created session. Omitted → option application is skipped.
        */
       tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
+      /** OF-183: whether this daemon may change the shared Codex config.toml a seat home links to. Absent = unrestricted. */
+      codexConfigWritePolicy?: CodexConfigWritePolicy;
       /** Cutover retiree-exit poll interval + total bounded timeout (per graceful/forced phase). */
       exitPollMs?: number;
       exitTimeoutMs?: number;
@@ -151,6 +155,7 @@ export class SuccessorSessionLauncher {
     this.readinessSettings = opts.readinessSettings ?? new SettingsStore();
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.tmuxOptionDefaults = opts.tmuxOptionDefaults ?? null;
+    this.codexConfigWritePolicy = opts.codexConfigWritePolicy ?? null;
     this.exitPollMs = opts.exitPollMs ?? 100;
     this.exitTimeoutMs = opts.exitTimeoutMs ?? 3_000;
   }
@@ -203,6 +208,7 @@ export class SuccessorSessionLauncher {
         const seatHome = await ensureCodexSeatHome(departingSession, {
           openrigHome: this.sessionEnv?.["OPENRIG_HOME"],
           sharedCodexHome: this.sessionEnv?.["CODEX_HOME"],
+          ...(this.codexConfigWritePolicy ? { configWritePolicy: this.codexConfigWritePolicy } : {}),
         });
         env["CODEX_HOME"] = seatHome.path;
         seatHomeWarnings.push(...seatHome.warnings); // OF-115: told to the operator in the handover result

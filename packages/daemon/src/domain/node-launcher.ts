@@ -14,6 +14,7 @@ import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { observeSolePane, paneObservationVerdict } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
+import type { CodexConfigWritePolicy } from "./codex-config-write-policy.js";
 import { ensureGitWorktreeShim, withWorktreeShimPath } from "./git-worktree-shim.js";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -67,6 +68,8 @@ interface NodeLauncherDeps {
    * skips option application entirely.
    */
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
+  /** OF-183: whether this daemon may change the shared Codex config.toml a seat home links to. Absent = unrestricted. */
+  codexConfigWritePolicy?: CodexConfigWritePolicy;
 }
 
 export class NodeLauncher {
@@ -79,6 +82,7 @@ export class NodeLauncher {
   private sessionEnv: Record<string, string>;
   private runtimeSessionEnv: Record<string, Record<string, string | undefined>>;
   private defaultSilenceWindowSeconds: number;
+  private codexConfigWritePolicy: CodexConfigWritePolicy | null;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
 
   constructor(deps: NodeLauncherDeps) {
@@ -104,6 +108,7 @@ export class NodeLauncher {
     this.runtimeSessionEnv = deps.runtimeSessionEnv ?? {};
     this.defaultSilenceWindowSeconds = deps.defaultSilenceWindowSeconds ?? 3;
     this.tmuxOptionDefaults = deps.tmuxOptionDefaults ?? null;
+    this.codexConfigWritePolicy = deps.codexConfigWritePolicy ?? null;
   }
 
   async launchNode(
@@ -198,6 +203,7 @@ export class NodeLauncher {
         const seatHome = await ensureCodexSeatHome(sessionName, {
           openrigHome: this.sessionEnv["OPENRIG_HOME"],
           sharedCodexHome: this.sessionEnv["CODEX_HOME"],
+          ...(this.codexConfigWritePolicy ? { configWritePolicy: this.codexConfigWritePolicy } : {}),
         });
         openRigEnv["CODEX_HOME"] = seatHome.path;
         // OF-115: a profile withheld for carrying a seat identity, or a shared config.toml that sets one, is told to the
