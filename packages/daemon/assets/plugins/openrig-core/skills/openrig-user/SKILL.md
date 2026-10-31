@@ -1403,8 +1403,6 @@ Current shipped MCP tools:
 - `rig_snapshot_create`
 - `rig_snapshot_list`
 - `rig_restore`
-- `rig_discover`
-- `rig_bind`
 - `rig_bundle_inspect`
 - `rig_agent_validate`
 - `rig_rig_validate`
