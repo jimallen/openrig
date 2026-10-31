@@ -202,7 +202,18 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
     universeSql: `1`,
     // A pda runner's held-message report reads needs_input so the seat shows in rig ps (OF-89); it is a delivery
     // hold, re-reported while it lasts, not a permission stall, so it is not a hit.
-    hitSql: `json_extract(payload, '$.activity.state') = 'needs_input' AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE(json_extract(payload, '$.activity.rawSubtype'), '') IN (${PDA_HELD_CODES.map((c) => `'${c}'`).join(", ")}))`,
+    // A question to Jim is not a stall either (Jim, 2026-10-31: the rig asks in a modal). Claude Code reports its
+    // AskUserQuestion modal as Notification/permission_prompt, like a real permission prompt (measured: 46 of
+    // exec-cos@eztrack's 49 needs_input in 7 days followed an AskUserQuestion call by 6-12 s). What tells them apart is
+    // the seat's NEXT PostToolUse in the same generation: AskUserQuestion after an answered modal. A permission prompt
+    // is followed by its own tool's PostToolUse, a denied one by none, and an unanswered modal by none yet: all three
+    // still count. Another tool's PostToolUse first (a racing or subagent tool) also counts: ambiguous, so reported.
+    hitSql: `json_extract(payload, '$.activity.state') = 'needs_input' AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE(json_extract(payload, '$.activity.rawSubtype'), '') IN (${PDA_HELD_CODES.map((c) => `'${c}'`).join(", ")}))`
+      + ` AND COALESCE((SELECT json_extract(nx.payload, '$.activity.rawSubtype') FROM events nx WHERE nx.type = 'agent.activity' AND nx.seq > events.seq`
+      + ` AND json_valid(nx.payload) AND json_extract(nx.payload, '$.activity.rawEvent') = 'PostToolUse'`
+      + ` AND json_extract(nx.payload, '$.sessionName') IS json_extract(events.payload, '$.sessionName')`
+      + ` AND json_extract(nx.payload, '$.activity.generation') IS json_extract(events.payload, '$.activity.generation')`
+      + ` ORDER BY nx.seq LIMIT 1), '') IS NOT 'AskUserQuestion'`,
     classSql: `CASE WHEN json_extract(payload, '$.activity.state') IN ${KNOWN_ACTIVITY_STATES} THEN json_extract(payload, '$.activity.state') ELSE 'other' END`,
     classLabel: "activity events by state",
     scope: seatScope,

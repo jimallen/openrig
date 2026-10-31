@@ -42,12 +42,12 @@ export function fixture() {
   const event = (type: string, payload: unknown, createdAt: string, ids: { rigId?: string; nodeId?: string } = {}) =>
     Number(db.prepare("INSERT INTO events (rig_id, node_id, type, payload, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(ids.rigId ?? null, ids.nodeId ?? null, type, typeof payload === "string" ? payload : JSON.stringify(payload), createdAt).lastInsertRowid);
-  const activity = (a: { seat: string; rawEvent?: string; rawSubtype?: string | null; state?: string; hoursAgo: number; rigId?: string; nodeId?: string; type?: string; identity?: boolean }) => {
+  const activity = (a: { seat: string; rawEvent?: string; rawSubtype?: string | null; state?: string; hoursAgo: number; rigId?: string; nodeId?: string; type?: string; identity?: boolean; generation?: string }) => {
     const type = a.type ?? "agent.activity";
     const rawEvent = a.rawEvent ?? "SessionStart";
     const seq = event(type, {
       type, rigId: a.rigId ?? "rig-1", nodeId: a.nodeId ?? `node-${a.seat}`, sessionName: a.seat, runtime: "claude-code",
-      activity: { state: a.state ?? "unknown", rawEvent, ...(a.rawSubtype === null ? {} : { rawSubtype: a.rawSubtype ?? "compact" }) },
+      activity: { state: a.state ?? "unknown", rawEvent, ...(a.rawSubtype === null ? {} : { rawSubtype: a.rawSubtype ?? "compact" }), ...(a.generation ? { generation: a.generation } : {}) },
     }, stamp(a.hoursAgo));
     // The daemon records one agent.session_identity event beside every SessionStart hook event.
     if (type === "agent.activity" && rawEvent === "SessionStart" && a.identity !== false) {
