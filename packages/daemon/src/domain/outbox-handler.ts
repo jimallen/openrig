@@ -93,6 +93,11 @@ export interface OutboxOutcomeLabel {
 
 /** The label for a tmux send's result, from SendResult's own vocabulary (structural, so this module does not import the
  *  transport). An ok send that reports neither `outcome` nor `verified` is `send_ok`: it landed, with no render claim. */
+/** An hc send with no confirmation yet: not a failure, and never to be resent by a caller (a queued send outlives its client). */
+export function isUnconfirmedHcSend(res: { ok: boolean; reason?: string }): boolean {
+  return !res.ok && (res.reason === "waiting_on_person" || res.reason === "delivery_outcome_unknown");
+}
+
 export function labelForTmuxSend(res: { ok: boolean; verified?: boolean; outcome?: string; reason?: string; path?: string; hcPending?: unknown }): OutboxOutcomeLabel {
   if (res.path === "hc") return labelForHcSend(res);
   if (res.outcome === "retained") return { path: "tmux", evidence: "retained", detail: res.reason ?? null };

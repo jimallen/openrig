@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
-import { labelForTmuxSend, type OutboxHandler } from "../domain/outbox-handler.js";
+import { isUnconfirmedHcSend, labelForTmuxSend, type OutboxHandler } from "../domain/outbox-handler.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
 // S2 (OPR.0.5.4.3) — the sender-side half of two-ended honesty: appended to any
@@ -145,8 +145,11 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         target_runtime_unverified: 409,
         target_runner_unverified: 409,
         target_runtime_conflict: 409, // OF-160-F2: binding changed before/after the paste
+        // hc: accepted, not confirmed. Anything 5xx invites a resend, and a queued send outlives its client.
+        waiting_on_person: 202,
+        delivery_outcome_unknown: 202,
       };
-      const status = (statusMap[result.reason ?? ""] ?? 500) as 400 | 404 | 409 | 500 | 502 | 503;
+      const status = (statusMap[result.reason ?? ""] ?? 500) as 202 | 400 | 404 | 409 | 500 | 502 | 503;
       return c.json(result, status);
     }
 
@@ -322,6 +325,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
               identityProvenance: "transport:v1",
             });
             if (r.ok) outbox.markDelivered(entry.outboxId, labelForTmuxSend(r));
+            else if (isUnconfirmedHcSend(r)) outbox.markIndeterminate(entry.outboxId, labelForTmuxSend(r));
             else outbox.markFailed(entry.outboxId, labelForTmuxSend(r));
           } catch (err) {
             console.warn(`[transport/broadcast] outbox auto-record failed for ${r.sessionName} (fan-out already dispatched): ${(err as Error).message}`);
