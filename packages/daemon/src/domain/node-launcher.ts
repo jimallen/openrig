@@ -11,6 +11,7 @@ import {
   getTranscriptRotationOptionsFromEnv,
 } from "./transcript-rotation.js";
 import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
+import { paneBindingFields } from "./binding-pane.js";
 import { observeSolePane, paneObservationVerdict } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { ensureCodexSeatHome } from "./codex-seat-home.js";
@@ -274,7 +275,7 @@ export class NodeLauncher {
         this.sessionRegistry.updateStatus(session.id, "running");
         this.sessionRegistry.updateBinding(node.id, {
           tmuxSession: sessionName,
-          ...(paneObservation.ok ? { tmuxPane: paneObservation.pane } : {}),
+          ...(paneObservation.ok ? paneBindingFields(this.tmuxAdapter.hostKind, paneObservation.pane) : {}),
         });
         if (!paneObservation.ok) {
           new SeatIdentityStore(this.db).upsert(paneObservationVerdict({

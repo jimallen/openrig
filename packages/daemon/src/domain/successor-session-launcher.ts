@@ -372,10 +372,10 @@ export class SuccessorSessionLauncher {
     const binding: NodeBinding = {
       id: "",
       nodeId: node.id,
-      attachmentType: "tmux",
+      attachmentType: this.tmuxAdapter.hostKind,
       tmuxSession,
       tmuxWindow: null,
-      tmuxPane,
+      ...(this.tmuxAdapter.hostKind === "hc" ? { tmuxPane: null, terminalAddress: tmuxPane } : { tmuxPane }),
       cmuxWorkspace: null,
       cmuxSurface: null,
       updatedAt: "",

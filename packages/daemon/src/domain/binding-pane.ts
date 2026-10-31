@@ -53,3 +53,8 @@ export function registeredPaneSql(db: Database.Database, alias = "b"): string {
 export function isTerminalAttachment(attachmentType: string | null | undefined): boolean {
   return (attachmentType ?? "tmux") === "tmux" || attachmentType === "hc";
 }
+
+/** What a launch writes for the pane it observed: an hc pane id is the terminal's address, and `tmux_pane` stays NULL. */
+export function paneBindingFields(hostKind: "tmux" | "hc" | undefined, pane: string): { attachmentType: "hc"; terminalAddress: string } | { tmuxPane: string } {
+  return hostKind === "hc" ? { attachmentType: "hc", terminalAddress: pane } : { tmuxPane: pane };
+}

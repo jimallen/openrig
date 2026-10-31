@@ -29,6 +29,11 @@ import { loadHumanRegistry } from "./domain/gateway/human-registry.js";
 import { EventBus } from "./domain/event-bus.js";
 import { NodeLauncher } from "./domain/node-launcher.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
+import { registeredPaneOf } from "./domain/binding-pane.js";
+import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
+import { HcAdapter } from "./adapters/hc-adapter.js";
+import { HcClient } from "./adapters/hc-client.js";
+import { HcDelivery } from "./adapters/hc-delivery.js";
 import { TmuxAdapter } from "./adapters/tmux.js";
 import { setDaemonTmuxServer, tmuxServerArgs } from "./adapters/tmux-server.js";
 import { CmuxAdapter } from "./adapters/cmux.js";
@@ -511,10 +516,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // An injected string exec keeps the shell path, so its fake sees every command. OPENRIG_TMUX_SHELL=1 keeps it too.
   const argvExec = opts?.argvExec
     ?? (opts?.tmuxExec || (process.env.OPENRIG_TMUX_SHELL === "1" && process.platform !== "win32") ? undefined : execArgvCommand);
-  const tmuxAdapter = new TmuxAdapter(opts?.tmuxExec ?? execCommand, undefined, argvExec);
+  // The seat host is hc. An injected exec keeps the tmux adapter only for the suites not converted yet: no runtime path
+  // passes one, so there is no dual host.
+  const hcClient = opts?.tmuxExec || opts?.argvExec ? undefined : new HcClient();
+  const hcAdapter = hcClient ? new HcAdapter(hcClient) : undefined;
+  const hcDelivery = hcAdapter ? new HcDelivery(hcAdapter.client, hcAdapter) : undefined;
+  const tmuxAdapter: TmuxAdapter = hcAdapter ?? new TmuxAdapter(opts?.tmuxExec ?? execCommand, undefined, argvExec);
   // The real tmux runs with this process's environment, so its server is the one $TMUX names.
   // An injected exec has no server of its own: printed attach commands stay in the default form.
-  setDaemonTmuxServer(opts?.tmuxExec ? [] : tmuxServerArgs(process.env));
+  setDaemonTmuxServer(opts?.tmuxExec || hcAdapter ? [] : tmuxServerArgs(process.env));
   const deliveryGuard = new SeatDeliveryGuard(db, target => resolveGuardTarget(db, target));
   deliveryGuard.recoverActivation();
   tmuxAdapter.deliveryGuard = deliveryGuard;
@@ -1476,6 +1486,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         slowOpRecorder,
         activityEndpointFile: () => readActivityEndpointFile(OPENRIG_HOME),
         nativeInbox: claudeNativeInbox,
+        ...(hcDelivery ? { hcDelivery } : {}),
         captureObserver: shadow.capture?.observer,
         runnerSendReadiness: runnerSendReadinessFromAdapters(runtimeAdapterMap),
       });
@@ -2211,6 +2222,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     nativeNotice.send = (to, text) => sessionTransport.send(to, text, { forceTmux: true, actorSession: "daemon@kernel" }).catch(() => undefined);
     void nativeSweep();
     const nativeSweepTimer = setInterval(() => { void nativeSweep(); }, 15_000);
+    // hc: sends with no confirmation yet settle only on evidence, at boot and on this timer. Nothing here sends.
+    if (hcDelivery) {
+      const hcSweep = () => sweepHcUnsettled({
+        outbox: outboxHandlerInstance, verify: (pending) => hcDelivery.verify(pending),
+        recordNudgeAttempt: (qitemId, result) => queueRepoInstance.recordNudgeAttempt(qitemId, result),
+      }).catch((err: unknown) => { console.warn(`[hc-delivery] sweep failed: ${(err as Error).message}`); });
+      void hcSweep();
+      setInterval(() => { void hcSweep(); }, 15_000).unref();
+    }
     nativeSweepTimer.unref?.();
     queueRepoInstance.attachActivityReader((session) => {
       const nodeId = resolveSessionNodeId(db, session);
@@ -2534,7 +2554,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
               sessionName: seat.sessionName,
               generation: seat.generation,
               occupantBootAt: tenure?.bootAt ?? null,
-              binding: binding ? { tmuxSession: binding.tmuxSession, tmuxPane: binding.tmuxPane } : null,
+              binding: binding ? { tmuxSession: binding.tmuxSession, tmuxPane: registeredPaneOf(binding) } : null,
               identity: seatIdentityStore.getForNode(seat.nodeId),
               sidecar: sidecar.ok ? sidecar.data : null,
             }, genDeps, (path) => {
