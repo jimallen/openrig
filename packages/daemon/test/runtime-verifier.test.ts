@@ -83,14 +83,14 @@ describe("RuntimeVerifier", () => {
 
   it("a running core on another generation -> error, however it says so", async () => {
     const exec = createMockExec({ "hc --version": "hc 0.1.15" });
-    const answers: Array<() => Promise<HcHello>> = [
-      async () => hello({ generation: HC_GENERATION + 1 }),
-      async () => { throw new HcError("this core speaks generation 2", "unsupported_generation", -32000); },
+    const answers: Array<[() => Promise<HcHello>, string]> = [
+      [async () => hello({ generation: HC_GENERATION + 1 }), "the hc core speaks generation 2, this build 1"],
+      [async () => { throw new HcError("this core speaks generation 2", "unsupported_generation", -32000); }, "the hc core refused generation 1"],
     ];
-    for (const answer of answers) {
+    for (const [answer, expected] of answers) {
       const result = await withCore(db, exec, answer).verifyHc();
       expect(result.status).toBe("error");
-      expect(result.error).toContain("generation");
+      expect(result.error).toContain(expected);
     }
   });
 
