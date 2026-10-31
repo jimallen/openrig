@@ -73,6 +73,9 @@ export interface NativeInboxDeps {
    *  the file was replaced since: then the running version is unknown). A hook's environment carries CLAUDE_PID but
    *  not CLAUDE_CODE_EXECPATH (measured on claude 2.1.314, Linux and macOS), so the relay cannot report the binary. */
   resolveExecPath?: (pid: number) => Promise<string | null>;
+  /** OF-191: when the process with this pid started (null when unknown). Lets a re-registration of the same process keep
+   *  its earlier pass when the binary file can no longer be read; absent, nothing is kept. */
+  processStartedAt?: (pid: number) => Promise<Date | null>;
   /** The node's live occupant generation, or null when unknown. */
   liveGeneration: (nodeId: string) => string | null;
   now?: () => Date;
@@ -115,7 +118,11 @@ export interface NativeDeliverResult {
  *  group that was written as one text, in which case `body` is that text and `outboxId` the first row (OF-180 N7). */
 export interface NativeFallback { outboxId: string; outboxIds: string[]; sessionName: string; senderSession: string; body: string; auditPointer: string | null; wake: boolean }
 
-const AGENT_RUNTIMES = new Set(["claude-code", "codex", "pi", "pda", "omp", "stub"]);
+/** OF-191: the probe results that say only "the binary file could not be re-read or re-run now", which tells nothing about
+ *  a process already proven. `fail:inject_format_absent` and `fail:no_claude_pid` are not among them and always stand. */
+const REINSPECTION_FAILURES = new Set(["fail:exec_path_unresolved", "fail:version_unknown", "fail:binary_replaced_since_start", "fail:probe_error"]);
+
+const AGENT_RUNTIMES =new Set(["claude-code", "codex", "pi", "pda", "omp", "stub"]);
 
 function newNonce(): string { return randomBytes(12).toString("hex"); }
 
@@ -189,6 +196,8 @@ export class ClaudeNativeInbox {
         probe = "fail:probe_error";
       }
     }
+    const kept = REINSPECTION_FAILURES.has(probe) ? await this.provenSameProcess(input) : null;
+    if (kept) { execPath = kept.exec_path; version = kept.claude_version; probe = "pass"; envelope = kept.name_envelope === 1; }
     const row: NativeEndpointRow = {
       node_id: input.nodeId, session_name: input.sessionName, generation: input.generation, socket_path: input.socketPath,
       transcript_path: input.transcriptPath, claude_pid: input.claudePid, exec_path: execPath, claude_version: version,
@@ -200,6 +209,25 @@ export class ClaudeNativeInbox {
         transcript_path=excluded.transcript_path, claude_pid=excluded.claude_pid, exec_path=excluded.exec_path, claude_version=excluded.claude_version,
         probe_result=excluded.probe_result, name_envelope=excluded.name_envelope, registered_at=excluded.registered_at`).run(row);
     return row;
+  }
+
+  /** OF-191: the endpoint row of the very process that already passed its launch probe, or null. Every SessionStart
+   *  (a start, /clear, /compact, /resume) posts the endpoint again, and the probe reads the binary FILE, not the running
+   *  process: once the file is replaced (an update, a reinstall; lsof then names a bare `/claude`) or the host is too
+   *  loaded for lsof or `--version` to answer in time, the re-probe fails for a process whose version was already proven.
+   *  That live process cannot have changed its version, so its earlier pass stands. It stands only when the same process is
+   *  proven: same node, session, generation, pid and socket, and the pid's start time is not after the earlier
+   *  registration (a recycled pid starts later). With no start time known, nothing is kept: the failure stands. */
+  private async provenSameProcess(input: { nodeId: string; sessionName: string; generation: string | null; socketPath: string; claudePid: number | null }): Promise<NativeEndpointRow | null> {
+    if (!input.claudePid || !this.deps.processStartedAt) return null;
+    const prior = this.endpointFor(input.nodeId);
+    if (!prior || prior.probe_result !== "pass" || !prior.claude_version || !prior.exec_path) return null;
+    if (prior.claude_pid !== input.claudePid || prior.socket_path !== input.socketPath
+      || prior.session_name !== input.sessionName || prior.generation !== input.generation) return null;
+    let started: Date | null = null;
+    try { started = await this.deps.processStartedAt(input.claudePid); } catch { started = null; }
+    const registered = Date.parse(prior.registered_at);
+    return started && Number.isFinite(registered) && started.getTime() <= registered ? prior : null;
   }
 
   endpointFor(nodeId: string): NativeEndpointRow | null {
