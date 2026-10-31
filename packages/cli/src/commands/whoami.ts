@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { Command } from "commander";
 import { readOwnHostName, resolveEffectiveHost } from "../host-selection.js";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { DaemonClient, remoteDaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, resolveOriginSelfHostId, fetchSelfHostIdentity } from "../daemon-lifecycle.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
@@ -160,9 +160,21 @@ function whoamiPeersBound(): number {
   }
 }
 
-type TmuxExecFn = (cmd: string) => string;
+/** The label holding a seat's canonical session name on its hc terminal. Must equal `SEAT_LABEL` in
+ *  daemon/src/adapters/hc-host.ts (the CLI cannot import the daemon; whoami-hc-identity.test.ts pins the two). */
+export const HC_SEAT_LABEL = "openrig.seat";
 
-const defaultTmuxExec: TmuxExecFn = (cmd: string) => execSync(cmd, { encoding: "utf-8" }).trim();
+/** Reads the labels of one hc terminal by its address (`t7`). Throws when they cannot be read. */
+export type HcLabelsFn = (terminalId: string) => Record<string, string>;
+
+/** `hc get <id> --json` in this seat's own env: hc sets `HC_SESSION`, `HC_TERMINAL_SOCKET` and `HC_TERMINAL_ID` for a
+ *  seat, so the call reaches the core that holds the seat. No shell, so the id is never interpreted. */
+const defaultHcLabels: HcLabelsFn = (terminalId) => {
+  const out = execFileSync("hc", ["get", terminalId, "--json"], { encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+  const labels = (JSON.parse(out) as { labels?: unknown }).labels;
+  if (!labels || typeof labels !== "object" || Array.isArray(labels)) return {};
+  return Object.fromEntries(Object.entries(labels).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+};
 
 function buildPartialWhoamiResult(source: { nodeId?: string; sessionName?: string }): Record<string, unknown> {
   return {
@@ -200,14 +212,14 @@ function buildPartialWhoamiResult(source: { nodeId?: string; sessionName?: strin
  * 2. --session flag
  * 3. OPENRIG_NODE_ID env
  * 4. OPENRIG_SESSION_NAME env
- * 5. TMUX_PANE → @rigged_node_id tmux metadata
- * 6. TMUX_PANE → @rigged_session_name tmux metadata
- * 7. TMUX_PANE → tmux display-message (raw session name)
- * 8. fail
+ * 5. HC_TERMINAL_ID → the terminal's `openrig.seat` label (the seat's canonical session name)
+ * 6. fail
+ * A terminal with no such label (not an OpenRig seat), an hc that is missing or cannot be reached, or an id that
+ * is not an address all fall through to the failure, as an unreadable tmux option did.
  */
 export function resolveIdentitySource(
   opts: { nodeId?: string; session?: string },
-  tmuxExec: TmuxExecFn = defaultTmuxExec,
+  hcLabels: HcLabelsFn = defaultHcLabels,
 ): { nodeId?: string; sessionName?: string } | null {
   if (opts.nodeId) return { nodeId: opts.nodeId };
   if (opts.session) return { sessionName: opts.session };
@@ -222,27 +234,14 @@ export function resolveIdentitySource(
   }
   if (envSessionName) return { sessionName: envSessionName };
 
-  // TMUX_PANE fallback — try OpenRig metadata first, then raw session name
-  const tmuxPane = process.env["TMUX_PANE"];
-  if (tmuxPane) {
-    // Step 5: @rigged_node_id metadata (strongest adopted-session anchor)
+  // hc fallback — the seat's terminal address, then its seat label
+  const terminalId = process.env["HC_TERMINAL_ID"]?.trim();
+  if (terminalId && !terminalId.startsWith("-") && !/\s/.test(terminalId)) {
     try {
-      const nodeId = tmuxExec(`tmux show-option -v -t ${JSON.stringify(tmuxPane)} @rigged_node_id`);
-      if (nodeId) return { nodeId };
-    } catch { /* metadata not set — continue */ }
-
-    // Step 6: @rigged_session_name metadata
-    try {
-      const sessionName = tmuxExec(`tmux show-option -v -t ${JSON.stringify(tmuxPane)} @rigged_session_name`);
-      if (sessionName) return { sessionName };
-    } catch { /* metadata not set — continue */ }
-
-    // Step 7: raw tmux session name (weakest fallback)
-    try {
-      const sessionName = tmuxExec(`tmux display-message -p -t ${JSON.stringify(tmuxPane)} "#{session_name}"`);
+      const sessionName = hcLabels(terminalId)[HC_SEAT_LABEL]?.trim();
       if (sessionName) return { sessionName };
     } catch {
-      // tmux not available or pane not found — skip
+      // hc not installed, core not reachable or terminal gone — skip
     }
   }
 

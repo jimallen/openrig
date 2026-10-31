@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import http from "node:http";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { whoamiCommand, resolveIdentitySource } from "../src/commands/whoami.js";
+import { whoamiCommand, resolveIdentitySource, HC_SEAT_LABEL } from "../src/commands/whoami.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
@@ -113,11 +116,11 @@ describe("Whoami CLI", () => {
     savedEnv = {
       OPENRIG_NODE_ID: process.env["OPENRIG_NODE_ID"],
       OPENRIG_SESSION_NAME: process.env["OPENRIG_SESSION_NAME"],
-      TMUX_PANE: process.env["TMUX_PANE"],
+      HC_TERMINAL_ID: process.env["HC_TERMINAL_ID"],
     };
     delete process.env["OPENRIG_NODE_ID"];
     delete process.env["OPENRIG_SESSION_NAME"];
-    delete process.env["TMUX_PANE"];
+    delete process.env["HC_TERMINAL_ID"];
   });
 
   afterEach(() => {
@@ -166,22 +169,6 @@ describe("Whoami CLI", () => {
     expect(logs.join("\n")).toContain("my-rig");
   });
 
-  it("TMUX_PANE resolves via tmux display-message to exact session name (no metadata set)", () => {
-    // Test the resolution function directly with a controlled tmux mock
-    process.env["TMUX_PANE"] = "%42";
-    const mockTmuxExec = vi.fn((cmd: string) => {
-      if (cmd.includes("show-option")) throw new Error("unknown option");
-      return "dev-impl@my-rig";
-    });
-
-    const result = resolveIdentitySource({}, mockTmuxExec);
-
-    const displayCalls = mockTmuxExec.mock.calls.filter((c) => (c[0] as string).includes("display-message"));
-    expect(displayCalls).toHaveLength(1);
-    expect(displayCalls[0]![0]).toContain("%42");
-    expect(result).toEqual({ sessionName: "dev-impl@my-rig" });
-  });
-
   it("--json prints raw daemon JSON response", async () => {
     process.env["OPENRIG_NODE_ID"] = "node-1";
     const { logs } = await captureLogs(async () => {
@@ -218,66 +205,75 @@ describe("Whoami CLI", () => {
     expect(logs.join("\n")).toContain("ambiguous");
   });
 
-  // Adopted-session parity: tmux metadata resolution
-  it("TMUX_PANE with @rigged_node_id metadata resolves nodeId (takes precedence over display-message)", () => {
-    process.env["TMUX_PANE"] = "%42";
-    // Mock: @rigged_node_id returns a value, display-message would return a DIFFERENT session name
-    const mockTmuxExec = vi.fn((cmd: string) => {
-      if (cmd.includes("show-option") && cmd.includes("@rigged_node_id")) return "node-claimed-123";
-      if (cmd.includes("display-message")) return "fallback-session-name";
-      throw new Error("unexpected tmux call");
+  // hc identity: HC_TERMINAL_ID plus the `openrig.seat` label replace the tmux options and TMUX_PANE.
+  describe("hc terminal identity", () => {
+    it("HC_TERMINAL_ID resolves the session name from the terminal's openrig.seat label", () => {
+      process.env["HC_TERMINAL_ID"] = "t42";
+      const labels = vi.fn((_id: string): Record<string, string> => ({ [HC_SEAT_LABEL]: "dev-impl@my-rig", "herdr.space": "other" }));
+
+      expect(resolveIdentitySource({}, labels)).toEqual({ sessionName: "dev-impl@my-rig" });
+      expect(labels).toHaveBeenCalledExactlyOnceWith("t42");
     });
 
-    const result = resolveIdentitySource({}, mockTmuxExec);
-
-    expect(result).toEqual({ nodeId: "node-claimed-123" });
-    // display-message should NOT have been called — metadata took precedence
-    const displayCalls = mockTmuxExec.mock.calls.filter((c) => (c[0] as string).includes("display-message"));
-    expect(displayCalls).toHaveLength(0);
-  });
-
-  it("TMUX_PANE with @rigged_session_name (no node_id) resolves sessionName (takes precedence over display-message)", () => {
-    process.env["TMUX_PANE"] = "%42";
-    const mockTmuxExec = vi.fn((cmd: string) => {
-      if (cmd.includes("show-option") && cmd.includes("@rigged_node_id")) throw new Error("unknown option");
-      if (cmd.includes("show-option") && cmd.includes("@rigged_session_name")) return "claimed-session@rig";
-      if (cmd.includes("display-message")) return "different-raw-session";
-      throw new Error("unexpected tmux call");
+    it("the label key is the one the daemon's HcHost writes", () => {
+      const daemon = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../daemon/src/adapters/hc-host.ts"), "utf8");
+      expect(daemon).toMatch(/export const SEAT_LABEL = "openrig\.seat";/);
+      expect(HC_SEAT_LABEL).toBe("openrig.seat");
     });
 
-    const result = resolveIdentitySource({}, mockTmuxExec);
-
-    expect(result).toEqual({ sessionName: "claimed-session@rig" });
-    const displayCalls = mockTmuxExec.mock.calls.filter((c) => (c[0] as string).includes("display-message"));
-    expect(displayCalls).toHaveLength(0);
-  });
-
-  it("TMUX_PANE with no metadata falls back to display-message", () => {
-    process.env["TMUX_PANE"] = "%42";
-    const mockTmuxExec = vi.fn((cmd: string) => {
-      if (cmd.includes("show-option")) throw new Error("unknown option");
-      if (cmd.includes("display-message")) return "raw-session-name";
-      throw new Error("unexpected tmux call");
+    it("a terminal without the seat label is not an identity", () => {
+      process.env["HC_TERMINAL_ID"] = "t42";
+      expect(resolveIdentitySource({}, () => ({ "herdr.space": "x" }))).toBeNull();
+      expect(resolveIdentitySource({}, () => ({ [HC_SEAT_LABEL]: "  " }))).toBeNull();
     });
 
-    const result = resolveIdentitySource({}, mockTmuxExec);
-
-    expect(result).toEqual({ sessionName: "raw-session-name" });
-  });
-
-  it("TMUX_PANE with metadata error falls through gracefully to display-message", () => {
-    process.env["TMUX_PANE"] = "%42";
-    let callCount = 0;
-    const mockTmuxExec = vi.fn((cmd: string) => {
-      callCount++;
-      if (cmd.includes("show-option")) throw new Error("tmux not available");
-      if (cmd.includes("display-message")) return "fallback-session";
-      throw new Error("unexpected");
+    it("an hc that cannot answer falls through to no identity", () => {
+      process.env["HC_TERMINAL_ID"] = "t42";
+      expect(resolveIdentitySource({}, () => { throw new Error("hc: not found"); })).toBeNull();
     });
 
-    const result = resolveIdentitySource({}, mockTmuxExec);
+    it("no HC_TERMINAL_ID, or an id that could be an option, never asks hc", () => {
+      const labels = vi.fn(() => ({ [HC_SEAT_LABEL]: "dev-impl@my-rig" }));
+      expect(resolveIdentitySource({}, labels)).toBeNull();
+      for (const id of ["", "  ", "--json", "t4 t5"]) {
+        process.env["HC_TERMINAL_ID"] = id;
+        expect(resolveIdentitySource({}, labels)).toBeNull();
+      }
+      expect(labels).not.toHaveBeenCalled();
+    });
 
-    expect(result).toEqual({ sessionName: "fallback-session" });
+    it("TMUX_PANE alone is no longer an identity source", () => {
+      process.env["TMUX_PANE"] = "%42";
+      try {
+        expect(resolveIdentitySource({}, () => ({}))).toBeNull();
+      } finally {
+        delete process.env["TMUX_PANE"];
+      }
+    });
+
+    it("flags and OPENRIG_* env win over the hc label, and hc is not asked", () => {
+      process.env["HC_TERMINAL_ID"] = "t42";
+      const labels = vi.fn(() => ({ [HC_SEAT_LABEL]: "from-hc@rig" }));
+      expect(resolveIdentitySource({ nodeId: "n1" }, labels)).toEqual({ nodeId: "n1" });
+      expect(resolveIdentitySource({ session: "s@r" }, labels)).toEqual({ sessionName: "s@r" });
+      process.env["OPENRIG_SESSION_NAME"] = "env@rig";
+      expect(resolveIdentitySource({}, labels)).toEqual({ sessionName: "env@rig" });
+      expect(labels).not.toHaveBeenCalled();
+    });
+
+    it("an hc that cannot be run leaves whoami with its existing guidance", async () => {
+      // The default reader runs `hc`; with no hc on PATH it throws and the chain ends in the usual refusal.
+      process.env["HC_TERMINAL_ID"] = "t42";
+      const path = process.env["PATH"];
+      process.env["PATH"] = "/nonexistent";
+      try {
+        const { logs, exitCode } = await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "whoami"]); });
+        expect(exitCode).toBe(1);
+        expect(logs.join("\n")).toContain("Cannot determine identity");
+      } finally {
+        process.env["PATH"] = path;
+      }
+    });
   });
 
   it("human output includes rig, pod, session, peers, edges, transcript", async () => {
