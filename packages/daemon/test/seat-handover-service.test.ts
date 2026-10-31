@@ -177,6 +177,21 @@ describe("SeatHandoverService", () => {
     expect(setSessionOption).toHaveBeenCalledWith("successor-session", "@rigged_node_id", node.id);
   });
 
+  // hc cutover: a discovery record names a tmux session and pane and carries no terminal address, so this path binds tmux.
+  // A seat the migration moved to hc must not keep its type or address when a tmux successor takes the seat.
+  it("a discovered successor takes a seat the migration moved to hc: the row becomes tmux, with the record's window and pane and no address", async () => {
+    const { node } = seedSeat();
+    db.prepare("UPDATE bindings SET attachment_type = 'hc', tmux_pane = NULL, terminal_address = 't7' WHERE node_id = ?").run(node.id);
+    const discovered = seedDiscovery({ tmuxSession: "successor-session", tmuxPane: "%4" });
+
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "hc-vocabulary", source: `discovered:${discovered.id}`, operator: "orch-lead@seat-rig" });
+
+    expect(result.ok).toBe(true);
+    expect(db.prepare("SELECT attachment_type, tmux_session, tmux_window, tmux_pane, terminal_address FROM bindings WHERE node_id = ?").get(node.id)).toEqual({
+      attachment_type: "tmux", tmux_session: "successor-session", tmux_window: "0", tmux_pane: "%4", terminal_address: null,
+    });
+  });
+
   it("binds an active seat to an already-created discovered successor", async () => {
     const { rig, node, sessionId } = seedSeat();
     const discovered = seedDiscovery();

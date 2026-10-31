@@ -4,7 +4,7 @@ import { monotonicFactory } from "ulid";
 import { randomUUID } from "node:crypto";
 
 const ulid = monotonicFactory();
-import type { Session, Binding } from "./types.js";
+import type { Session, Binding, BindingAttachmentType } from "./types.js";
 import { validateSessionName, validateClaimedSessionName, MAX_CLAIMED_SESSION_NAME_LENGTH } from "./session-name.js";
 import { formatWatchdogRegistrationError } from "./watchdog-auto-registration.js";
 import type { ClaudeLaunchedProcess, ClaudeResumeRotation } from "./native-process-lineage.js";
@@ -31,7 +31,7 @@ interface OccupantTenureRow {
 }
 
 interface BindingFields {
-  attachmentType?: "tmux" | "external_cli";
+  attachmentType?: BindingAttachmentType;
   tmuxSession?: string;
   tmuxWindow?: string;
   tmuxPane?: string;

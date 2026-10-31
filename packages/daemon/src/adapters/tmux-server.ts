@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { hcTerminalName } from "./hc-seat.js";
 
 function realpath(p: string): string {
   try {
@@ -67,4 +68,14 @@ export function shellWord(value: string): string {
 export function tmuxAttachCommand(session: string): string {
   const server = daemonServerArgs.map((arg, i) => (i % 2 === 0 ? arg : shellWord(arg))).join(" ");
   return `tmux${server ? ` ${server}` : ""} attach -t ${shellWord(session)}`;
+}
+
+/**
+ * `hc attach -- <terminal>` for a seat bound to an hc terminal. `seat` is the canonical seat name; hc refuses names like
+ * `verify-qa@eztrack`, so the terminal is addressed by `hcTerminalName(seat)` (hc accepts a name in the TERMINAL argument:
+ * `hc attach --help`, hc 0.1.15). `--` ends options, as in the composer's pane commands. No server flags: the core is
+ * the default one (design-hc-cutover section 12), so there is nothing to name.
+ */
+export function hcAttachCommand(seat: string): string {
+  return `hc attach -- ${shellWord(hcTerminalName(seat))}`;
 }

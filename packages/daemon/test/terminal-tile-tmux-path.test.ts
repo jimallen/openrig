@@ -75,7 +75,7 @@ class RecordingHerdr implements TerminalProvider {
   }
 }
 
-function service(resolveLocalTmux?: TerminalServiceDeps["resolveLocalTmux"]): { svc: TerminalService; herdr: RecordingHerdr } {
+function service(resolveLocalHc?: TerminalServiceDeps["resolveLocalHc"], resolveLocalTmux?: TerminalServiceDeps["resolveLocalTmux"]): { svc: TerminalService; herdr: RecordingHerdr } {
   const herdr = new RecordingHerdr();
   const rows = [{ canonicalSessionName: "a@r", attachmentType: "tmux" as const, tmuxSession: "a@r", rigName: "r", logicalId: "pod.a" }];
   const deps = {
@@ -87,18 +87,19 @@ function service(resolveLocalTmux?: TerminalServiceDeps["resolveLocalTmux"]): { 
     listRigNames: () => ["r"],
     resolveHost: () => null,
     hasSession: () => true,
+    ...(resolveLocalHc ? { resolveLocalHc } : {}),
     ...(resolveLocalTmux ? { resolveLocalTmux } : {}),
   } as TerminalServiceDeps;
   return { svc: new TerminalService(deps), herdr };
 }
 
-// TRANSITIONAL. terminal-service.ts (not part of this change) still hands the composer `localTmux`, which the composer
-// ignores, and never `localHc`. So whatever the resolver finds, the pane today is the bare `hc` token. When terminal-service
-// passes `localHc`, the first row below becomes the absolute-path case and the rest stay as they are.
-describe("#707 the service does not yet pass a resolved hc to the composer", () => {
-  const cases: Array<[string, TerminalServiceDeps["resolveLocalTmux"] | undefined, string]> = [
-    ["an absolute path from the old resolver", () => "/usr/local/bin/tmux", "hc attach -- 'a@r'"],
-    ["a bare name", () => "tmux", "hc attach -- 'a@r'"],
+// The service hands the composer the hc path the daemon resolved, so a provider started with a narrower PATH still runs
+// the attach (#707). Only an absolute path is used; the old tmux resolver is never read.
+describe("#707 the service passes the resolved hc to the composer", () => {
+  const cases: Array<[string, TerminalServiceDeps["resolveLocalHc"] | undefined, string]> = [
+    ["an absolute path", () => "/usr/local/bin/hc", "'/usr/local/bin/hc' attach -- 'a@r'"],
+    ["an absolute path from an async probe", async () => "/opt/homebrew/bin/hc", "'/opt/homebrew/bin/hc' attach -- 'a@r'"],
+    ["a bare name", () => "hc", "hc attach -- 'a@r'"],
     ["nothing found", async () => null, "hc attach -- 'a@r'"],
     ["a failed probe", () => { throw new Error("probe failed"); }, "hc attach -- 'a@r'"],
     ["no resolver", undefined, "hc attach -- 'a@r'"],
@@ -110,14 +111,24 @@ describe("#707 the service does not yet pass a resolved hc to the composer", () 
     expect(herdr.last!.opened[0]!.paneCommand).toBe(expected);
   });
 
+  it("never reads the removed tmux resolver: its absolute path is not an hc", async () => {
+    let tmuxCalls = 0;
+    const { svc, herdr } = service(undefined, () => { tmuxCalls++; return "/usr/local/bin/tmux"; });
+    const res = await svc.openView({ view: "rig:r" });
+    expect(res.ok).toBe(true);
+    expect(herdr.last!.opened[0]!.paneCommand).toBe("hc attach -- 'a@r'");
+    expect(tmuxCalls).toBe(0);
+  });
+
   it("resolves once, so the preview's plan still matches the open", async () => {
     let calls = 0;
-    const { svc, herdr } = service(async () => { calls++; return "/usr/local/bin/tmux"; });
+    const { svc, herdr } = service(async () => { calls++; return "/usr/local/bin/hc"; });
     const preview = await svc.previewView({ view: "rig:r" }) as { planId: string };
     const res = await svc.openView({ view: "rig:r", expectedPlan: preview.planId });
     expect(res.code).toBeUndefined();
     expect(res.ok).toBe(true);
     expect(herdr.last).not.toBeNull();
+    expect(herdr.last!.opened[0]!.paneCommand).toBe("'/usr/local/bin/hc' attach -- 'a@r'");
     expect(calls).toBe(1);
   });
 });

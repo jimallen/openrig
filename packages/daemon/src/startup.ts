@@ -184,6 +184,7 @@ import { MissionControlNotificationDispatcher } from "./domain/mission-control/n
 import { NtfyNotificationAdapter } from "./domain/mission-control/notification-adapter-ntfy.js";
 import { WebhookNotificationAdapter } from "./domain/mission-control/notification-adapter-webhook.js";
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
+import type { BindingAttachmentType } from "./domain/types.js";
 import { OPENRIG_HOME } from "./openrig-compat.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
@@ -1997,7 +1998,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // inventory: the canonical session name IS the tmux session; no host field).
     const toLiveSeatRow = (e: {
       canonicalSessionName: string | null;
-      attachmentType?: "tmux" | "external_cli" | null;
+      attachmentType?: BindingAttachmentType | null;
       runtime?: string | null;
       rigName: string;
       logicalId: string;

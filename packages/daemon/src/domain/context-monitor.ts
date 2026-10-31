@@ -24,6 +24,8 @@ interface EligibleSession {
   status: string;
   startup_completed_at: string | null;
   binding_id: string | null;
+  /** The query admits only these two; a missing binding reads as tmux. */
+  binding_attachment_type: "tmux" | "hc";
   binding_session: string | null;
   binding_pane: string | null;
   binding_window: string | null;
@@ -230,6 +232,7 @@ export class ContextMonitor {
         s.status,
         s.startup_completed_at,
         b.id AS binding_id,
+        COALESCE(b.attachment_type, 'tmux') AS binding_attachment_type,
         b.tmux_session AS binding_session,
         b.tmux_pane AS binding_pane,
         b.tmux_window AS binding_window,
@@ -255,7 +258,7 @@ export class ContextMonitor {
           )
         )
         AND (r.archived_at IS NULL OR s.status = 'running')
-        AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+        AND COALESCE(b.attachment_type, 'tmux') IN ('tmux', 'hc')
         AND COALESCE(b.tmux_session, s.session_name) IS NOT NULL
         ${nodeId === undefined ? "" : "AND n.id = ?"}
     `).all(...(nodeId === undefined ? [] : [nodeId])) as EligibleSession[];
@@ -295,7 +298,7 @@ export class ContextMonitor {
       const readiness = await checker.checkReady({
         id: `context-monitor:${session.session_id}`,
         nodeId: session.node_id,
-        attachmentType: "tmux",
+        attachmentType: session.binding_attachment_type,
         tmuxSession: session.session_name,
         tmuxWindow: null,
         tmuxPane: null,
