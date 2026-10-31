@@ -24,6 +24,7 @@
       "types": "./dist/daemon-shutdown.d.ts",
       "import": "./dist/daemon-shutdown.js"
     },
+    "./hc": { "types": "./dist/hc-surface.d.ts", "import": "./dist/hc-surface.js" },
     "./crash-cart": {
       "types": "./dist/crash-cart-surface.d.ts",
       "import": "./dist/crash-cart-surface.js"

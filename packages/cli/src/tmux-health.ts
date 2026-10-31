@@ -5,14 +5,10 @@
 // runs (spike 1+2), with the caller's env. So this module runs only `hc --version` (measured safe) and reads the core's
 // socket itself, which is what the daemon's HcClient does too.
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { HC_GENERATION, HC_PINNED_VERSION, resolveHcSocket } from "@openrig/daemon/hc";
 
-/** The hc release OpenRig is built and tested against. A core upgrade is a tested release step, so this is an exact pin. */
-export const HC_PINNED_VERSION = "0.1.15";
-/** The protocol generation this build speaks; a core on any other refuses `hello` and OpenRig must stop there. Mirrors
- *  the daemon's HC_GENERATION (daemon/src/adapters/hc-client.ts), which the CLI package cannot import. */
-export const HC_GENERATION = 1;
+// The pin and the protocol generation are the daemon's (hc-surface.ts); re-exported so importers keep one place to ask.
+export { HC_GENERATION, HC_PINNED_VERSION };
 
 const HELLO_TIMEOUT_MS = 3_000;
 
@@ -31,16 +27,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** The core's socket, as hc itself finds it. The same rule as the daemon's resolveHcSocket (HC_SOCKET, the runtime
- *  dir, then the state dir). */
-export function resolveHcSocketPath(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
-  if (env["HC_SOCKET"]) return env["HC_SOCKET"];
-  const session = env["HC_SESSION"] || "default";
-  if (env["XDG_RUNTIME_DIR"]) return join(env["XDG_RUNTIME_DIR"], "herdr-core", `${session}.sock`);
-  const state = env["XDG_STATE_HOME"] || join(home, ".local", "state");
-  return join(state, "herdr-core", session, `${session}.sock`);
-}
-
 /** What a core answered to `hello`, or why nothing was learned. */
 export type HcHelloOutcome =
   | { kind: "hello"; generation: number; version: string }
@@ -49,7 +35,7 @@ export type HcHelloOutcome =
   | { kind: "unreadable"; detail: string };
 
 /** One `hello` over the core's socket. It never starts a core: a missing socket or a refused connection is `no_core`. */
-export function readHcHello(socketPath: string = resolveHcSocketPath(), timeoutMs: number = HELLO_TIMEOUT_MS): Promise<HcHelloOutcome> {
+export function readHcHello(socketPath: string = resolveHcSocket(), timeoutMs: number = HELLO_TIMEOUT_MS): Promise<HcHelloOutcome> {
   return new Promise((resolve) => {
     let settled = false;
     let buffer = "";

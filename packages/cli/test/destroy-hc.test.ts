@@ -13,11 +13,9 @@ import {
   buildDestroyPlan,
   executeDestroy,
   hcCallOverSocket,
-  hcSeatTerminalName,
   killHcSeat,
   listManagedHcSeatsFromDb,
   listManagedTmuxSessionsFromDb,
-  resolveHcSocketPath,
   type DestroyDeps,
   type DestroyPlan,
   type HcCall,
@@ -50,15 +48,6 @@ const notFound = () => new HcDestroyRefusedError("not_found", "not_found");
 const down = () => new HcDestroyUnavailableError("hc core: not reachable");
 const live = (seat: string, address = "t7") => ({ address, state: "live", labels: { "openrig.seat": seat } });
 const finished = (seat: string, address = "t7", reason = "killed") => ({ address, state: "finished", reason, labels: { "openrig.seat": seat } });
-
-describe("hc seat names", () => {
-  it("derives the terminal name from the canonical seat name by the daemon's recipe", () => {
-    expect(hcSeatTerminalName("verify-qa@eztrack")).toBe(nameOf("verify-qa@eztrack"));
-    expect(hcSeatTerminalName("verify-qa@eztrack")).toBe("s-" + createHash("sha256").update("verify-qa@eztrack").digest("hex").slice(0, 24));
-    expect(hcSeatTerminalName("a@b")).not.toBe(hcSeatTerminalName("a@c"));
-    expect(hcSeatTerminalName("a@b")).toMatch(/^s-[0-9a-f]{24}$/);
-  });
-});
 
 describe("killHcSeat: ends one seat's terminal and nothing else", () => {
   it("looks the seat up by its derived name, then kills by the address the core returned", async () => {
@@ -378,14 +367,5 @@ describe("hcCallOverSocket", () => {
     await vi.waitFor(() => expect(server?.listening).toBe(true));
     await expect(hcCallOverSocket(path)("terminal.kill", { terminal: "t1" })).rejects.toBeInstanceOf(HcDestroyUnavailableError);
     expect(seen).toEqual(["hello"]);
-  });
-});
-
-describe("resolveHcSocketPath", () => {
-  it("follows hc: HC_SOCKET, else the runtime dir, else the state dir", () => {
-    expect(resolveHcSocketPath({ HC_SOCKET: "/a.sock" }, "/h")).toBe("/a.sock");
-    expect(resolveHcSocketPath({ XDG_RUNTIME_DIR: "/r", HC_SESSION: "x" }, "/h")).toBe("/r/herdr-core/x.sock");
-    expect(resolveHcSocketPath({ XDG_STATE_HOME: "/s" }, "/h")).toBe("/s/herdr-core/default/default.sock");
-    expect(resolveHcSocketPath({}, "/h")).toBe("/h/.local/state/herdr-core/default/default.sock");
   });
 });

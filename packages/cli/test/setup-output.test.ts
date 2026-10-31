@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
+import { HC_PINNED_VERSION } from "../src/tmux-health.js";
 import { setupCommand, type SetupDeps, type SetupResult } from "../src/commands/setup.js";
 
 // Exercise the real command/result path without probing or changing this host.
@@ -25,6 +26,7 @@ function fixture(failed: boolean): SetupDeps {
     env: {},
     exec: vi.fn((cmd: string) => {
       if (cmd === "claude auth status" && failed) throw new Error("fixture login missing");
+      if (cmd === "hc --version") return `hc ${HC_PINNED_VERSION}`;
       if (cmd === "cmux capabilities --json") return '{"capabilities":[]}';
       return "available";
     }),
