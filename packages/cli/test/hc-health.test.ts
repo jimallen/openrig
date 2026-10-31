@@ -2,8 +2,9 @@
 // The production consequence of each row: a wrong answer here either lets OpenRig launch seats on a host it cannot
 // speak to, or reads a machine with no core yet as broken.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -190,8 +191,11 @@ describe("readHcHello over a socket", () => {
       if (server) { for (const s of sockets) s.destroy(); await new Promise<void>((done) => server!.close(() => done())); }
       rmSync(sockPath, { force: true });
       await core(behave);
+      const started = Date.now();
       const outcome = await readHcHello(sockPath, wait);
       expect(outcome.kind, label).toBe("unreadable");
+      // Only the silent core is answered by the timer; the others are answered when the reply or the hang-up arrives.
+      if (label !== "silent") expect(Date.now() - started, label).toBeLessThan(1500);
     }
   });
 
@@ -203,5 +207,20 @@ describe("readHcHello over a socket", () => {
     server = null;
     // The listener is gone, so there is nothing to connect to.
     expect(await readHcHello(sockPath)).toMatchObject({ kind: "no_core" });
+  });
+
+  it("is no_core for a stale socket file whose listener was killed (refused), and for a path through a file (not a directory)", async () => {
+    // A listener killed without cleaning up leaves its socket file: connecting is refused rather than not found.
+    const child = spawn(process.execPath, ["-e", `require("node:net").createServer().listen(${JSON.stringify(sockPath)}, () => console.log("up"))`], { stdio: ["ignore", "pipe", "ignore"] });
+    try {
+      await new Promise<void>((done) => child.stdout!.once("data", () => done()));
+      child.kill("SIGKILL");
+      await new Promise<void>((done) => child.once("exit", () => done()));
+      expect(await readHcHello(sockPath)).toMatchObject({ kind: "no_core", detail: expect.stringContaining("ECONNREFUSED") });
+    } finally {
+      child.kill("SIGKILL");
+    }
+    writeFileSync(join(dir, "afile"), "");
+    expect(await readHcHello(join(dir, "afile", "c.sock"))).toMatchObject({ kind: "no_core", detail: expect.stringContaining("ENOTDIR") });
   });
 });

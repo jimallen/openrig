@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { RuntimeVerifier, HC_PINNED_VERSION } from "../src/domain/runtime-verifier.js";
+import { ProbeTimeoutError } from "../src/adapters/bounded-probe-exec.js";
 import { HC_GENERATION, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcHello } from "../src/adapters/hc-client.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -308,5 +309,20 @@ describe("RuntimeVerifier", () => {
 
     expect(results.map((r) => [r.runtime, r.status])).toEqual([["hc", "verified"]]);
     expect(seen.every((cmd) => !cmd.startsWith("tmux"))).toBe(true);
+  });
+
+  it("hc --version goes through the bounded probe exec, and a probe that does not answer is an error, not not_found", async () => {
+    const exec = vi.fn(async () => { throw new Error("exec must not run the hc probe"); }) as unknown as ExecFn;
+    const hang = vi.fn(async () => { throw new ProbeTimeoutError("hc --version", 30_000); }) as unknown as ExecFn;
+    let asked = 0;
+    const verifier = new RuntimeVerifier({ exec, probeExec: hang, db, hcHello: async () => { asked++; return hello(); } });
+
+    const result = await verifier.verifyHc();
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("did not answer");
+    expect(hang).toHaveBeenCalledWith("hc --version");
+    expect(exec).not.toHaveBeenCalled();
+    expect(asked).toBe(0);
   });
 });
