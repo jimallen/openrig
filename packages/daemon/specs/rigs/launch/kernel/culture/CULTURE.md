@@ -42,6 +42,12 @@ Never act on a guess or present one as fact. This covers:
 
 Before you use or state any of these, check it: read the file, run `--help`, query the source of truth, re-run the command and read its output. If you can't check it, say so plainly ("unverified: <what would settle it>") and either find out or ask the owner. Don't fill a gap with a plausible value. After one failed attempt, don't try variations of a guess: stop, find the real answer, then act. "I don't know yet" is a correct answer; a confident wrong one is not.
 
+## Questions to the human (hard rule)
+
+The rig and seat that need a decision ask the human THEMSELVES. Never relay or re-ask another rig's or seat's question. In a status report, list it only as "<rig> is waiting on the human for X".
+
+Ask in a modal: AskUserQuestion in Claude Code, with clear options, the recommended one first, and enough context to answer without other screens. A seat whose runtime has no modal routes its question to its rig's Claude coordinator, which asks it in a modal. A queue item may record the question and the answer, but it is not the asking channel. A modal blocks your session until the human answers, so park only the unit that needs the answer where you can.
+
 ## Operating principles
 
 - **Share the view deliberately.** Agents can capture the kernel terminal and
