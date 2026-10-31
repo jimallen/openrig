@@ -174,7 +174,7 @@ describe.skipIf(!HC)("HcViewer and the stream broker against a private hc core",
   }, 60_000);
 
   describe("through the stream broker", () => {
-    it("never reads the history of a full-screen app that reports the mouse, and a read that does is the injection", async () => {
+    it("never reads the history of a full-screen app that reports the mouse, and a raw read that does is the injection", async () => {
       await runLogger("wheel@rig", "mouse");
       await readyLogger("wheel@rig");
       const registry = new TerminalBrokerRegistry(viewer);
@@ -185,8 +185,12 @@ describe.skipIf(!HC)("HcViewer and the stream broker against a private hc core",
         for (const offset of [5, 50, 5, 0, 7]) await broker.scroll(sub, offset);
         await new Promise((resolve) => setTimeout(resolve, 800));
         expect(logOf("wheel").filter((line) => line.startsWith("KEY"))).toEqual([]);
-        // The instrument can see them: a read that asks for history does inject wheel events (SGR mouse reports, 1b5b3c).
+        // The viewer's own history read goes through HcCapture, which asks a full-screen app for its screen only (w16).
         await viewer.readHistory("wheel@rig", 100);
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        expect(logOf("wheel").filter((line) => line.startsWith("KEY"))).toEqual([]);
+        // The instrument can see them: a raw read that asks for history does inject wheel events (SGR mouse reports, 1b5b3c).
+        await core.client.call("terminal.read", { terminal: hcTerminalName("wheel@rig"), lines: 100 });
         await waitUntil(async () => logOf("wheel").filter((line) => line.startsWith("KEY")), (keys) => keys.length > 0, "the injected wheel events");
         expect(logOf("wheel").filter((line) => line.startsWith("KEY"))[0]).toMatch(/^KEY 1b5b3c3(?:6|7)/);
       } finally {
