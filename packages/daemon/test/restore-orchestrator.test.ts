@@ -4298,7 +4298,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.result.rigResult).toBe("partially_restored");
   });
 
-  it("D3: a fresh node nobody asked for prevents fully_restored; one named in --fresh does not (OF-196)", async () => {
+  it("D3: a fresh node named in --fresh is clean; the unrequested case is pinned by the OF-196 roll-up rows", async () => {
     // A rig where one node launches fresh (no resume data) and others succeed
     const snapshot = seedRigAndSnapshot({
       nodes: [
@@ -4318,13 +4318,6 @@ describe("RestoreOrchestrator", () => {
     const node = result.result.nodes.find((n) => n.logicalId === "agent-a");
     expect(node?.status).toBe("fresh-primed");
     expect(result.result.rigResult).toBe("fully_restored");
-
-    // D3 invariant per PM, kept for a fresh start nobody asked for: it prevents fully_restored.
-    const unasked = await createOrchestrator().restore(snapshot.id, { freshLogicalIds: ["someone-else"] });
-    expect(unasked.ok).toBe(true);
-    if (!unasked.ok) return;
-    expect(unasked.result.nodes.find((n) => n.logicalId === "agent-a")?.status).toBe("fresh-primed");
-    expect(unasked.result.rigResult).toBe("partially_restored");
   });
 
   it("D1/D4: missing required startup file blocks restore before mutation", async () => {
