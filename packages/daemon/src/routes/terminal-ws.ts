@@ -24,7 +24,7 @@ const MAX_EARLY_TERMINAL_FRAME_BYTES = 256 * 1024;
 export interface HcTerminalDeps {
   client: HcClient;
   /** The adapter's delivery guard: a person's typing is marked as human input, and takes the seat's input lease. */
-  guard?: SeatDeliveryGuard;
+  guard?: Pick<SeatDeliveryGuard, "input" | "checkInput" | "humanInput">;
   opener?: HcAttachOpener;
   sizes?: SizeSource;
   capture?: Pick<HcCapture, "capturePaneContent">;

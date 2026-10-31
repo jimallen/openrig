@@ -98,6 +98,39 @@ describe.skipIf(!HC)("the terminal WebSocket on herdr-core (private core)", () =
     }
   }, 30_000);
 
+  it("marks a person's typing as human input under the seat's delivery guard, when the daemon has one", async () => {
+    const log: string[] = [];
+    const guarded = new Hono();
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: guarded });
+    registerTerminalWs(guarded, upgradeWebSocket as never, {
+      bearerToken: null,
+      hc: {
+        client: core.client,
+        guard: {
+          humanInput: async (name, fn) => { log.push(`human:${name}`); const out = await fn(); log.push("human-done"); return out; },
+          input: async (name, fn) => { log.push(`input:${name}`); return fn(); },
+          checkInput: (name) => { log.push(`check:${name}`); },
+        },
+      },
+    });
+    const other = serve({ fetch: guarded.fetch, port: 0, hostname: "127.0.0.1" });
+    injectWebSocket(other);
+    if (!other.listening) await once(other, "listening");
+    const ws = new WebSocket(`ws://127.0.0.1:${(other.address() as AddressInfo).port}/api/terminal/dialog%40rig`);
+    try {
+      await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(new Error("ws failed to open")); });
+      ws.send(JSON.stringify({ type: "keys", keys: ["Enter"] }));
+      await waitUntil(async () => log, (all) => all.includes("human-done"), "the guarded input");
+      expect(log).toEqual(["human:dialog@rig", "input:dialog@rig", "check:dialog@rig", "human-done"]);
+    } finally {
+      ws.close();
+      const closed = once(other, "close");
+      other.close();
+      (other as import("node:http").Server).closeAllConnections?.();
+      await closed;
+    }
+  }, 30_000);
+
   it("tells the socket the terminal's size before its first byte, and again when it changes, back to the original when the writer leaves", async () => {
     const terminal = await get("dialog@rig");
     const { ws, messages, sizes } = await connect("dialog@rig");
