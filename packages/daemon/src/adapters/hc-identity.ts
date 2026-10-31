@@ -1,5 +1,5 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
-import { SEAT_LABEL, hcTerminalName } from "./hc-host.js";
+import { SEAT_LABEL, hcTerminalName } from "./hc-seat.js";
 import type { SessionWindowSnapshot, TmuxPane, TmuxResult, TmuxSession, TmuxWindow } from "./tmux.js";
 
 /** hc addresses (`t7`, or `machine/t7` for a terminal on another machine). A seat is never named like one: a seat's hc name

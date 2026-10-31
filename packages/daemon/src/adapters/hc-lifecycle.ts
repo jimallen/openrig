@@ -1,5 +1,5 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
-import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-host.js";
+import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
 import type { TmuxResult } from "./tmux.js";
 
 /** Label a probe terminal carries instead of the seat label, so a probe is never read as a seat. */

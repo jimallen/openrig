@@ -57,6 +57,9 @@ export interface HcTerminal {
   pid?: number | null;
   reason?: string | null;
   keep?: boolean;
+  status_ms?: number | null;
+  finished_ms?: number | null;
+  reported?: boolean;
   exit_code?: number | null;
   turn?: number;
   status?: { state: string; kind?: string | null } | null;

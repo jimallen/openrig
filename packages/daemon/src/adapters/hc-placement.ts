@@ -1,5 +1,5 @@
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
-import { SEAT_LABEL, hcTerminalName } from "./hc-host.js";
+import { SEAT_LABEL, hcTerminalName } from "./hc-seat.js";
 
 /**
  * Where a seat shows in the Herdr app, and how it is kept alive while that view changes.
