@@ -1356,7 +1356,7 @@ edges: []
       const freshApp = setup.app;
       const bootstrapOrch = setup.bootstrapOrchestrator;
       // The host kind the route reads from its adapter decides how an unbound seat is told to attach.
-      (setup.tmuxAdapter as unknown as { hostKind: string }).hostKind = host;
+      Object.defineProperty(setup.tmuxAdapter, "hostKind", { value: host });
 
       // Write a valid pod spec file so the route's pre-bootstrap
       // resolution path succeeds and reaches the bootstrap() call.
