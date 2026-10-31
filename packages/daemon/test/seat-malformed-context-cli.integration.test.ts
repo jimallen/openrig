@@ -7,9 +7,10 @@ import Database from "better-sqlite3";
 import { type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { installTrustedScenario, prepareTrustedHermeticEnv } from "./helpers/trusted-scaffold.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 // N-C2 (review of f55023a1): every command the refusal's guidance names is typed through a real POSIX shell against a
-// scratch daemon (own OPENRIG_HOME, ephemeral port, private tmux socket; never port 7433 or ~/.openrig), on the stub
+// scratch daemon (own OPENRIG_HOME, ephemeral port, private hc core; never port 7433 or ~/.openrig), on the stub
 // runtime. The command line is taken from the refusal's own output, not restated here.
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
@@ -29,7 +30,7 @@ function sh(line: string, env: Record<string, string | undefined>): Promise<{ co
 }
 
 function useRig(opts: { recordSpec: boolean }) {
-  const ctx: { scaffold?: HermeticScaffold; daemon?: ScenarioDaemon } = {};
+  const ctx: { core?: HcScratch; scaffold?: HermeticScaffold; daemon?: ScenarioDaemon } = {};
   const rig = (args: string[], t = 180_000) => runRig(args, ctx.daemon!.readEnv, rigBin, t);
   const db = () => new Database(join(ctx.scaffold!.stateDir, "scenario.db"));
   const sql = (statement: string, ...params: unknown[]) => { const d = db(); try { return d.prepare(statement).run(...params); } finally { d.close(); } };
@@ -45,7 +46,10 @@ function useRig(opts: { recordSpec: boolean }) {
   };
   const rigId = async () => (JSON.parse((await rig(["ps", "--json"])).stdout) as Array<{ rigId: string; rigName: string }>).find((r) => r.rigName === rigName)!.rigId;
   beforeAll(async () => {
+    ctx.core = startHcScratch();
     ctx.scaffold = prepareTrustedHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } });
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(ctx.scaffold.env, { HC_SESSION: ctx.core.session, XDG_RUNTIME_DIR: ctx.core.env.XDG_RUNTIME_DIR, HC_SOCKET: ctx.core.socketPath });
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
     const cwd = join(ctx.scaffold.root, "project");
     mkdirSync(cwd);
@@ -54,7 +58,9 @@ function useRig(opts: { recordSpec: boolean }) {
     if (!opts.recordSpec) sql("UPDATE rigs SET spec_source_path = NULL WHERE name = ?", rigName);
   }, 200_000);
   afterAll(async () => {
-    try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); }
+    try { await rig(["down", rigName, "--json", "--force"]); } finally {
+      try { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); } finally { ctx.core?.cleanup(); }
+    }
   }, 60_000);
   return { ctx, rig, sql, corrupt, refuse, seatStatuses, rigId, db };
 }
@@ -63,7 +69,7 @@ function useRig(opts: { recordSpec: boolean }) {
 const STORED_READS_OK = async (t: ReturnType<typeof useRig>) =>
   (await t.rig(["seat", "launch", impl, "--fresh", "--stop", "--startup-from", "stored", "--reason", "again", "--json"])).code === 0;
 
-describe("N-C2 spec recorded: the named `rig seat launch --fresh --stop` heals every kind of unreadable row", () => {
+describe.runIf(findHc() !== null)("N-C2 spec recorded: the named `rig seat launch --fresh --stop` heals every kind of unreadable row", () => {
   const t = useRig({ recordSpec: true });
   const variants: Array<[string, string, string]> = [
     ["bad projection entry", "projection_entries_json", JSON.stringify([{ category: "memory" }])],

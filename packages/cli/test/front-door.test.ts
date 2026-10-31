@@ -10,7 +10,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { stopOwnedTmuxServerSync } from "../../daemon/test/helpers/orphan-reaper.js";
+import { findHc, startHcScratch } from "../../daemon/test/helpers/hc-scratch.js";
+import type { HcTerminal } from "../../daemon/src/adapters/hc-client.js";
 import { runFrontDoor, resolveTuiPath, probeFrontDoor, type FrontDoorIo } from "../src/front-door.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
 
@@ -407,45 +408,45 @@ describe("resolveTuiPath — monorepo-first, bundled fallback (the daemon resolv
 
 describe("PUBLIC bin ownership (guard finding 1 — the wrapper is the real front door)", () => {
   const binWrapper = join(__dirname, "..", "dist", "bin-wrapper.js");
-  const hasTmux = spawnSync("tmux", ["-V"], { encoding: "utf-8" }).status === 0;
-  it.skipIf(!existsSync(binWrapper) || !hasTmux)("bare PUBLIC bin under a REAL PTY reaches the crash-cart COCKPIT when the daemon is down (BLOCKER 1 ownership + reachability)", () => {
-    // tmux gives the process a real TTY on BOTH streams. A dead daemon URL is exactly the crash-cart's
+  const hasHc = findHc() !== null;
+  it.skipIf(!existsSync(binWrapper) || !hasHc)("bare PUBLIC bin under a REAL PTY reaches the crash-cart COCKPIT when the daemon is down (BLOCKER 1 ownership + reachability)", async () => {
+    // An hc terminal gives the process a real TTY on BOTH streams. A dead daemon URL is exactly the crash-cart's
     // state: post-fix the front door LAUNCHES the TUI, which renders the daemon-down cockpit
     // ("daemon not running") — stronger ownership proof than the old degrade message (it reaches the
     // actual feature). Commander's usage bypass would mean the front door did NOT own the invocation.
     // Isolated OPENRIG_HOME so the launched TUI never reads the live rig (fully contained + read-only).
-    const session = `frontdoor-pin-${process.pid}`;
-    const home = mkdtempSync(join(tmpdir(), "fd-tmux-home-"));
-    // A private server gives this test both a bounded IPC path and useful failure evidence.
-    const socket = join(home, "tmux.sock");
+    const name = `frontdoor-pin-${process.pid}`;
+    const home = mkdtempSync(join(tmpdir(), "fd-hc-home-"));
+    // A private core of this test's own (helpers/hc-scratch.ts) gives it both a bounded IPC path and useful failure evidence.
+    const core = startHcScratch();
     const exitFile = join(home, "child-exit");
     const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
-    const tmux = (args: string[]) => spawnSync("tmux", ["-S", socket, ...args], { encoding: "utf-8", timeout: 10000 });
-    const diagnostic = (r: ReturnType<typeof tmux>) => JSON.stringify({
-      status: r.status, signal: r.signal, error: r.error?.message, stderr: r.stderr,
-      childExit: existsSync(exitFile) ? readFileSync(exitFile, "utf8") : "still running or not started",
-    });
+    const diagnostic = async () => {
+      const t = await core.client().call<HcTerminal>("terminal.get", { terminal: name }).catch((e: unknown) => ({ error: String(e) }));
+      return JSON.stringify({
+        terminal: "error" in t ? t : { state: t.state, reason: t.reason, exit_code: t.exit_code, foreground: t.foreground?.name },
+        childExit: existsSync(exitFile) ? readFileSync(exitFile, "utf8") : "still running or not started",
+      });
+    };
     try {
-      const run = tmux(["new-session", "-d", "-s", session, "-x", "120", "-y", "30",
-        `OPENRIG_HOME=${quote(home)} OPENRIG_URL=http://127.0.0.1:9 ${quote(process.execPath)} ${quote(binWrapper)}; printf '%s' $? > ${quote(exitFile)}; sleep 15`]);
-      expect(run.status, diagnostic(run)).toBe(0);
+      await core.client().call("terminal.run", {
+        argv: ["sh", "-c", `OPENRIG_HOME=${quote(home)} OPENRIG_URL=http://127.0.0.1:9 ${quote(process.execPath)} ${quote(binWrapper)}; printf '%s' $? > ${quote(exitFile)}; sleep 15`],
+        name, cwd: home, no_parent: true, no_notify: true, outlive_parent: true,
+      });
       let text = "";
       for (let i = 0; i < 20 && !/EXPLORER|mission control could not start|Usage: rig/.test(text); i++) {
         spawnSync("sleep", ["0.5"]);
-        const capture = tmux(["capture-pane", "-t", session, "-p"]);
-        expect(capture.status, diagnostic(capture)).toBe(0);
-        text = capture.stdout ?? "";
+        text = (await core.client().call<{ text: string }>("terminal.read", { terminal: name, lines: 0 })).text ?? "";
       }
-      // Keep BOTH TTY streams on the child; capture-pane includes terminal error text.
-      // Do not reinterpret an empty capture or failed tmux client as a valid UI result.
-      const pane = tmux(["display-message", "-p", "-t", session, "#{pane_current_command} #{pane_dead} #{pane_dead_status}"]);
-      expect(text, `${diagnostic(pane)} pane=${pane.stdout}`).toMatch(/EXPLORER|mission control could not start/);
+      // Keep BOTH TTY streams on the child; the screen includes terminal error text.
+      // Do not reinterpret an empty read or a finished terminal as a valid UI result.
+      expect(text, `${await diagnostic()} screen=${text}`).toMatch(/EXPLORER|mission control could not start/);
       expect(text).not.toMatch(/Usage: rig \[options\] \[command\]/);
     } finally {
-      stopOwnedTmuxServerSync(socket, process.env); // Only this test's private server, verified gone before its directory.
+      core.cleanup(); // Only this test's private core, verified gone before its directory.
       rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   // (Removed the in-process forced-TTY "reaches the degrade branch" belt: its premise was a FAST
   //  daemon-down DEGRADE, which BLOCKER 1's fix replaces with launching the crash-cart TUI. Forcing a

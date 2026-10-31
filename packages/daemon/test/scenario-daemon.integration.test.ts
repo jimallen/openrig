@@ -8,6 +8,7 @@ import {
   findFreePort,
   type ScenarioDaemon,
 } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 // Slice 51-02 — the forced-local daemon SPAWN (the last hermetic-helper unit).
 // Integration: the helper spawns a REAL scenario-local daemon (the built `rig`
@@ -26,15 +27,18 @@ function realBaseEnv() {
   return { HOME: process.env.HOME, PATH: process.env.PATH, TERM: "xterm" };
 }
 
-describe("scenario-daemon forced-local spawn (integration)", () => {
+describe.runIf(findHc() !== null)("scenario-daemon forced-local spawn (integration)", () => {
+  let core: HcScratch | undefined;
   let scaffold: HermeticScaffold | undefined;
   let daemon: ScenarioDaemon | undefined;
 
   afterEach(async () => {
     if (daemon) await daemon.stop().catch(() => {});
     else if (scaffold) scaffold.cleanup();
+    core?.cleanup();
     daemon = undefined;
     scaffold = undefined;
+    core = undefined;
   });
 
   it("findFreePort returns a usable ephemeral port", async () => {
@@ -45,6 +49,9 @@ describe("scenario-daemon forced-local spawn (integration)", () => {
 
   it("spawns a real forced-local daemon, serves the ps read, and tears it down", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
 
     // /healthz is up on the helper's OWN daemon
@@ -66,6 +73,9 @@ describe("scenario-daemon forced-local spawn (integration)", () => {
 
   it("readEnv points at the helper's own daemon, never a foreign target", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
     expect(daemon.readEnv.OPENRIG_URL).toBe(daemon.baseUrl);
     expect(daemon.baseUrl).toContain("127.0.0.1");
@@ -75,6 +85,9 @@ describe("scenario-daemon forced-local spawn (integration)", () => {
   // daemon; restart re-spawns it through the SAME guarantees (same port/scratch).
   it("daemon sigterm kills the scenario-local daemon (healthz refused)", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
     expect((await fetch(`${daemon.baseUrl}/healthz`)).ok).toBe(true);
     await daemon.sigterm();
@@ -83,6 +96,9 @@ describe("scenario-daemon forced-local spawn (integration)", () => {
 
   it("daemon restart re-spawns the scenario-local daemon on the same port/scratch", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
     const beforePort = daemon.port;
     await daemon.restart();

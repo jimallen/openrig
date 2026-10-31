@@ -1,10 +1,10 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { hcTerminalName } from "../src/adapters/hc-host.js";
+import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
@@ -14,86 +14,70 @@ import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
-import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { waitUntil } from "./helpers/hc-private-core.js";
 
 // OPR.0.5.5.5 — end-to-end money proof for the two NEW executable handover
-// sources against an ISOLATED tmux server (same D15 isolation discipline as
-// seat-handover-cutover-e2e: per-run owned -S socket, no $TMUX, teardown by
-// session name then a verified stop of its own server; skips when tmux is unavailable).
+// sources against a PRIVATE hc core (helpers/hc-scratch.ts: own HOME, HC_SESSION and
+// XDG paths, a verified stop at the end; skips when hc is unavailable).
 //
 // FORK: the real cutover runs and the resolved native id ARRIVES at the launch
 // surface (the marker adapter renders the forkSource it received into the real
-// pane) — proving fork execution is a native-fork launch, not a blank fresh
+// terminal) — proving fork execution is a native-fork launch, not a blank fresh
 // launch relabeled. REBUILD: a real on-disk artifact chain is resolved and the
-// priming packet is REALLY delivered (visible in the pane), with the executed
+// priming packet is REALLY delivered (visible in the terminal), with the executed
 // set recorded on the result.
+//
+// What hc changes (design-hc-cutover §3 gap 5): a respawn is kill, then run again under the same name and labels, so the
+// terminal's ADDRESS changes and the binding follows the label; the tmux pin "SAME pane id" becomes "the same seat name, a
+// live terminal, the binding on its address".
 
-const pexec = promisify(execFile);
-// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
-// in tmux's shared per-user directory, beside the fleet's server.
-let sockDir = "";
-const sock = () => {
-  if (sockDir === "") sockDir = mkdtempSync(join(tmpdir(), "openrig-s05e2e-"));
-  return join(sockDir, "tmux.sock");
-};
-const cleanEnv: any = { ...process.env };
-delete cleanEnv.TMUX;
-const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
-  const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
-  return stdout;
-};
-const tmux = (a: string) => exec(`tmux ${a}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const HC = findHc();
+let core: HcScratch | undefined;
+const scratch = (): HcScratch => (core ??= startHcScratch());
+const adapter = (): HcAdapter => new HcAdapter(scratch().client());
 
-function tmuxAvailableSync(): boolean {
-  try { execFileSync("sh", ["-c", "command -v tmux"], { env: cleanEnv, stdio: "ignore" }); return true; } catch { return false; }
-}
-
-const seats: string[] = [];
 const tempDirs: string[] = [];
-afterAll(async () => {
+afterAll(() => {
   for (const d of tempDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ } }
-  // Nothing to stop or check only when no test ran and no tmux command was sent (a skipped run). A run whose seats ran on
-  // anything but the owned socket fails the check below instead of skipping it.
-  if (seats.length === 0 && sockDir === "") return;
-  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
-  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
-  // The seats ran on this run's owned socket (a -L run never creates it), and after the stop nothing answers on it.
-  expect(existsSync(sock()), "this run's tmux server ran on its owned socket").toBe(true);
-  await stopOwnedTmuxServer(sock(), cleanEnv);
-  expect(await tmuxServerPid(sock(), cleanEnv), "no server answers on the owned socket after the stop").toBeNull();
-  rmSync(sockDir, { recursive: true, force: true });
+  core?.cleanup();
 });
 
+const get = (terminal: string) => scratch().client().call<HcTerminal>("terminal.get", { terminal });
+const typeLine = (seat: string, text: string) => scratch().client().call("terminal.send", { terminal: hcTerminalName(seat), text });
+const read = async (terminal: string, lines = 400) => (await scratch().client().call<{ text: string }>("terminal.read", { terminal, lines })).text;
+
+/** The seat's terminal on the private core, its shell armed to exit on TERM, the predecessor line really on screen. */
 async function seedPane(seat: string): Promise<string> {
-  seats.push(seat);
-  await tmux(`kill-session -t ${q(seat)}`).catch(() => {});
-  await tmux(`new-session -d -s ${q(seat)} -x 110 -y 24`);
-  await sleep(200);
-  const pane = (await tmux(`list-panes -t ${q(seat)} -F '#{pane_id}'`)).trim();
-  await tmux(`send-keys -t ${q(pane)} -l -- ${q("trap 'exit 0' TERM")}`);
-  await tmux(`send-keys -t ${q(pane)} Enter`);
-  // A just-created shell can swallow early send-keys during init — poll until
-  // the predecessor sentinel has ACTUALLY rendered, so the post-cutover
-  // scrollback assertion tests preservation, not send-keys timing.
+  const created = await adapter().createSession(seat, "/tmp");
+  expect(created, "the seat's terminal is created").toEqual({ ok: true });
+  const address = (await get(hcTerminalName(seat))).address;
+  await typeLine(seat, "trap 'exit 0' TERM");
+  // A just-created shell can swallow early input during init — poll until the predecessor sentinel has ACTUALLY rendered,
+  // so the post-cutover assertion tests the cutover, not input timing.
   for (let attempt = 0; attempt < 10; attempt++) {
-    await tmux(`send-keys -t ${q(pane)} -l -- ${q("echo predecessor_line_S05")}`);
-    await tmux(`send-keys -t ${q(pane)} Enter`);
+    await typeLine(seat, "echo predecessor_line_S05");
     await sleep(300);
-    const pre = await tmux(`capture-pane -p -t ${q(pane)} -S -400`);
-    if (pre.includes("predecessor_line_S05")) break;
+    if ((await read(address)).includes("predecessor_line_S05")) break;
   }
-  return pane;
+  return address;
 }
 
-describe("seat-handover source execution e2e (isolated tmux)", () => {
-  it.runIf(tmuxAvailableSync())(
-    "FORK end-to-end: the resolved native id reaches the real launch in the preserved pane; continuity records forked",
+/** The terminal the seat's name answers with now, which must be live and carry the seat's canonical name. */
+async function successorOf(seat: string): Promise<HcTerminal> {
+  const terminal = await get(hcTerminalName(seat));
+  expect(terminal.state, `${seat} answers with a live terminal`).toBe("live");
+  expect(terminal.labels["openrig.seat"]).toBe(seat);
+  return terminal;
+}
+
+describe("seat-handover source execution e2e (private hc core)", () => {
+  it.runIf(HC !== null)(
+    "FORK end-to-end: the resolved native id reaches the real launch in the seat's new terminal; continuity records forked",
     async () => {
       const SEAT = "dev-impl@fork-e2e-rig";
-      const pane = await seedPane(SEAT);
+      const address = await seedPane(SEAT);
 
       const db = createDb(); db.pragma("foreign_keys = ON"); migrate(db, ALL_MIGRATIONS);
       const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db);
@@ -103,39 +87,39 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
       const session = sessionRegistry.registerSession(node.id, SEAT);
       sessionRegistry.updateStatus(session.id, "running");
       sessionRegistry.updateStartupStatus(session.id, "ready", new Date("2026-08-07T09:00:00Z").toISOString());
-      sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: pane });
+      sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, terminalAddress: address });
       // The incumbent's native conversation id — what fork must resolve + carry.
       sessionRegistry.updateResumeToken(session.id, "codex_id", "native-e2e-abc123", "scrape");
 
       const marker = {
         runtime: "codex",
         async launchHarness(binding: any, opts: any) {
-          // Render the RECEIVED fork source into the real pane — the pin below
+          // Render the RECEIVED fork source into the real terminal — the pin below
           // reads it back from capture, proving the id crossed the whole path.
           const stamp = opts?.forkSource ? `FORKED_FROM_${opts.forkSource.value}` : "NO_FORK_SOURCE";
-          await tmux(`send-keys -t ${q(binding.tmuxSession)} -l -- ${q(`printf '\\n=== SUCCESSOR ${stamp} ===\\n'; stty -echo 2>/dev/null; cat`)}`);
-          await tmux(`send-keys -t ${q(binding.tmuxSession)} Enter`); await sleep(150);
+          await typeLine(binding.tmuxSession, `printf '\\n=== SUCCESSOR ${stamp} ===\\n'; stty -echo 2>/dev/null; cat`);
+          await sleep(150);
           return { ok: true, resumeToken: "post-fork-tok", resumeType: "codex_id" };
         },
         async checkReady() { return { ready: true }; },
       };
       const service = new SeatHandoverService({
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
-        tmuxAdapter: new TmuxAdapter(exec) as any, runtimeAdapters: { codex: marker as any },
+        tmuxAdapter: adapter(), runtimeAdapters: { codex: marker as any },
         readinessTimeoutMs: 3000, sleep,
       });
 
       const result: any = await service.handover({ seatRef: SEAT, reason: "context-wall", source: `fork:${SEAT}`, operator: "orch@e2e" });
       await sleep(400);
-      const paneAfter = (await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_id}'`)).trim();
-      const cap = await tmux(`capture-pane -p -t ${q(pane)} -S -400`);
+      const successor = await successorOf(SEAT);
+      const cap = await read(successor.address);
 
       expect(result.ok, "fork handover executes").toBe(true);
-      expect(paneAfter, "SAME pane id (seat identity preserved)").toBe(pane);
+      expect(successor.address, "a respawn mints a new address; the seat is the same name").not.toBe(address);
       expect(cap, "the resolved native id reached the launch surface").toContain("FORKED_FROM_native-e2e-abc123");
       // Scrollback preservation (deep-history money proof) is owned by
       // seat-handover-cutover-e2e — fork rides the SAME respawn path; this file
-      // pins what S05 adds: the native id arriving at the launch in-place.
+      // pins what S05 adds: the native id arriving at the launch in the seat.
       expect(result.result.currentStatus.continuityOutcome).toBe("forked");
       expect(result.result.sourceOutcome).toMatchObject({ mode: "fork", forkedFrom: SEAT });
       db.close();
@@ -143,11 +127,11 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
     60_000,
   );
 
-  it.runIf(tmuxAvailableSync())(
+  it.runIf(HC !== null)(
     "REBUILD end-to-end: a real on-disk chain primes the successor through real delivery; the executed set is recorded; continuity records rebuilt",
     async () => {
       const SEAT = "dev-impl@rebuild-e2e-rig";
-      const pane = await seedPane(SEAT);
+      const address = await seedPane(SEAT);
 
       // Real durable chain on disk: RECAP.md present, LEARNED.md deliberately
       // ABSENT so the gap leg is proven end-to-end too.
@@ -165,21 +149,21 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
       const session = sessionRegistry.registerSession(node.id, SEAT);
       sessionRegistry.updateStatus(session.id, "running");
       sessionRegistry.updateStartupStatus(session.id, "ready", new Date("2026-08-07T09:00:00Z").toISOString());
-      sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: pane });
+      sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, terminalAddress: address });
 
       const marker = {
         runtime: "codex",
         async launchHarness(binding: any, opts: any) {
           const stamp = opts?.forkSource || opts?.resumeToken ? "UNEXPECTED_NON_FRESH" : "FRESH_REBUILD_TARGET";
-          await tmux(`send-keys -t ${q(binding.tmuxSession)} -l -- ${q(`printf '\\n=== SUCCESSOR ${stamp} ===\\n'; stty -echo 2>/dev/null; cat`)}`);
-          await tmux(`send-keys -t ${q(binding.tmuxSession)} Enter`); await sleep(150);
+          await typeLine(binding.tmuxSession, `printf '\\n=== SUCCESSOR ${stamp} ===\\n'; stty -echo 2>/dev/null; cat`);
+          await sleep(150);
           return { ok: true };
         },
         async checkReady() { return { ready: true }; },
       };
       const service = new SeatHandoverService({
         db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
-        tmuxAdapter: new TmuxAdapter(exec) as any, runtimeAdapters: { codex: marker as any },
+        tmuxAdapter: adapter(), runtimeAdapters: { codex: marker as any },
         // Production-shaped resolver: DECLARES addresses; the service existence-
         // filters them against the REAL filesystem (default existsSync).
         rebuildPrimingResolver: () => ({
@@ -193,11 +177,11 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
 
       const result: any = await service.handover({ seatRef: SEAT, reason: "degraded-incumbent", source: "rebuild", operator: "orch@e2e" });
       await sleep(500);
-      const cap = await tmux(`capture-pane -p -t ${q(pane)} -S -400`);
+      const cap = await read((await successorOf(SEAT)).address);
 
       expect(result.ok, "rebuild handover executes").toBe(true);
       expect(cap, "successor launched fresh (no fork/resume)").toContain("FRESH_REBUILD_TARGET");
-      // The priming packet REALLY landed in the pane and points at the artifact.
+      // The priming packet REALLY landed in the terminal and points at the artifact.
       expect(cap, "priming packet delivered end-to-end").toContain("Seat rebuild handover");
       expect(cap, "resolved artifact address delivered").toContain(recapAddress);
       expect(result.result.currentStatus.continuityOutcome).toBe("rebuilt");
@@ -216,7 +200,7 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
   // the fork's own id, never its parent's; and launch, readiness and attention failures stay failures.
   async function forkSeat(seat: string, launch: { ok: boolean; error?: string; token?: string }, ready: { ready: boolean; code?: string; reason?: string },
     opts: { forkFrom?: { seat: string; token: string } } = {}) {
-    const pane = await seedPane(seat);
+    const address = await seedPane(seat);
     const db = createDb(); db.pragma("foreign_keys = ON"); migrate(db, ALL_MIGRATIONS);
     const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db);
     const discoveryRepo = new DiscoveryRepository(db), eventBus = new EventBus(db);
@@ -225,7 +209,7 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
     const session = sessionRegistry.registerSession(node.id, seat);
     sessionRegistry.updateStatus(session.id, "running");
     sessionRegistry.updateStartupStatus(session.id, "ready", new Date("2026-08-07T09:00:00Z").toISOString());
-    sessionRegistry.updateBinding(node.id, { tmuxSession: seat, tmuxPane: pane });
+    sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: seat, terminalAddress: address });
     sessionRegistry.updateResumeToken(session.id, "codex_id", "parent-thread-0001", "scrape");
     if (opts.forkFrom) {
       // A fork source on another seat: the parent (that seat's conversation) differs from this seat's retiree.
@@ -240,8 +224,8 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
       runtime: "codex",
       async launchHarness(binding: any, launchOpts: any) {
         forkSources.push(launchOpts?.forkSource);
-        await tmux(`send-keys -t ${q(binding.tmuxSession)} -l -- ${q("printf '\\n=== FORK RUNNING, ID NOT YET CAPTURED ===\\n'; stty -echo 2>/dev/null; cat")}`);
-        await tmux(`send-keys -t ${q(binding.tmuxSession)} Enter`); await sleep(150);
+        await typeLine(binding.tmuxSession, "printf '\\n=== FORK RUNNING, ID NOT YET CAPTURED ===\\n'; stty -echo 2>/dev/null; cat");
+        await sleep(150);
         // The adapter's capture missed: success carries no resumeToken (launch.ok) or the launch failed.
         return launch.ok ? { ok: true, ...(launch.token ? { resumeToken: launch.token, resumeType: "codex_id" } : {}) } : { ok: false, error: launch.error ?? "launch failed" };
       },
@@ -249,17 +233,17 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
     };
     const service = new SeatHandoverService({
       db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
-      tmuxAdapter: new TmuxAdapter(exec) as any, runtimeAdapters: { codex: marker as any },
+      tmuxAdapter: adapter(), runtimeAdapters: { codex: marker as any },
       readinessTimeoutMs: 1500, sleep,
     });
     const result: any = await service.handover({ seatRef: seat, reason: "context-wall", source: `fork:${opts.forkFrom?.seat ?? seat}`, operator: "orch@e2e" });
     const rows = () => db.prepare("SELECT id, status, resume_type, resume_token, resume_provenance FROM sessions WHERE node_id = ? ORDER BY rowid")
       .all(node.id) as Array<{ id: string; status: string; resume_type: string | null; resume_token: string | null; resume_provenance: string | null }>;
-    return { db, pane, node, session, sessionRegistry, result, rows, generationBefore, forkSources };
+    return { db, address, node, session, sessionRegistry, result, rows, generationBefore, forkSources };
   }
 
-  it.runIf(tmuxAvailableSync())(
-    "FORK, id capture missed: the ready successor commits with the id PENDING, supersedes the old row, keeps the pane",
+  it.runIf(HC !== null)(
+    "FORK, id capture missed: the ready successor commits with the id PENDING, supersedes the old row, binds the live terminal",
     async () => {
       const SEAT = "dev-impl@fork-pending-rig";
       const w = await forkSeat(SEAT, { ok: true }, { ready: true });
@@ -274,16 +258,16 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
       const generationAfter = w.sessionRegistry.currentOccupantTenure(w.node.id)?.generationUuid ?? null;
       expect(generationAfter).not.toBeNull();
       expect(generationAfter).not.toBe(w.generationBefore);
-      expect(w.sessionRegistry.getBindingForNode(w.node.id)?.tmuxPane, "bound to the same, live pane").toBe(w.pane);
-      expect((await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_id} #{pane_dead}'`)).trim()).toBe(`${w.pane} 0`);
+      const live = await successorOf(SEAT);
+      expect(w.sessionRegistry.getBindingForNode(w.node.id), "bound to the seat's live terminal").toMatchObject({ attachmentType: "hc", terminalAddress: live.address });
       expect(w.result.result.currentStatus.continuityOutcome).toBe("forked");
       expect(w.forkSources[0], "the handover asks for a pending id on a miss").toMatchObject({ kind: "native_id", value: "parent-thread-0001", pendingIdAllowed: true });
 
-      // The existing late capture (snapshot refresh, fill-null) on the fork's pane.
-      const shellPid = Number((await tmux(`display-message -p -t ${q(w.pane)} '#{pane_pid}'`)).trim());
+      // The existing late capture (snapshot refresh, fill-null) on the fork's terminal.
+      const shellPid = live.pid!;
       let nativeAnswer: string | undefined;
       const refresher = new ResumeMetadataRefresher({
-        sessionRegistry: w.sessionRegistry, tmuxAdapter: new TmuxAdapter(exec) as any,
+        sessionRegistry: w.sessionRegistry, tmuxAdapter: adapter(),
         listProcesses: () => [{ pid: 999_001, ppid: shellPid, command: "codex fork parent-thread-0001" }],
         readCodexThreadIdByPid: () => nativeAnswer, sleep: async () => {},
       });
@@ -302,7 +286,7 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
     60_000,
   );
 
-  it.runIf(tmuxAvailableSync())(
+  it.runIf(HC !== null)(
     "FORK, id capture missed: launch failure, readiness timeout and an attention gate stay failures, with nothing committed",
     async () => {
       const cases: Array<[string, { ok: boolean; error?: string }, { ready: boolean; code?: string; reason?: string }]> = [
@@ -313,6 +297,8 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
       for (const [seat, launch, ready] of cases) {
         const w = await forkSeat(seat, launch, ready);
         expect(w.result.ok, `${seat}: ${JSON.stringify(w.result)}`).toBe(false);
+        // The failure is the induced one: a seat that cannot be respawned fails the same way and would pass this row for the wrong reason.
+        expect(JSON.stringify(w.result), `${seat}: the failure is not the respawn's`).not.toMatch(/respawn/i);
         const rows = w.rows();
         expect(rows, `${seat}: no successor row committed`).toHaveLength(1);
         expect(rows[0]).toMatchObject({ id: w.session.id, resume_token: "parent-thread-0001" });
@@ -322,7 +308,7 @@ describe("seat-handover source execution e2e (isolated tmux)", () => {
     90_000,
   );
 
-  it.runIf(tmuxAvailableSync())(
+  it.runIf(HC !== null)(
     "FORK: a launch-time capture that answers the parent's or the retiree's id stays PENDING; only the fork's own id is captured",
     async () => {
       // Fork of the seat's own conversation: the parent and the retiree are the same id.

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { spawnScenarioDaemon, runRig, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 import {
   readSurface,
   transcriptReadArgv,
@@ -77,17 +78,22 @@ describe("surface readers — tui_socket `state` query (fake unix socket)", () =
   });
 });
 
-describe("surface readers — live daemon (integration)", () => {
+describe.runIf(findHc() !== null)("surface readers — live daemon (integration)", () => {
+  let core: HcScratch | undefined;
   let scaffold: HermeticScaffold | undefined;
   let daemon: ScenarioDaemon | undefined;
   afterEach(async () => {
     if (daemon) await daemon.stop().catch(() => {});
     else if (scaffold) scaffold.cleanup();
-    daemon = undefined; scaffold = undefined;
+    core?.cleanup();
+    daemon = undefined; scaffold = undefined; core = undefined;
   });
 
   it("ps and queue readers return parsed bare arrays from the scenario-local daemon", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
     const ctx: SurfaceContext = { rigBin: RIG_BIN, readEnv: daemon.readEnv, baseUrl: daemon.baseUrl };
 
@@ -104,6 +110,9 @@ describe("surface readers — live daemon (integration)", () => {
   // transcript" was false for transcript. This crosses it for real.
   it("the transcript reader reaches JSON mode at the REAL CLI boundary (not human text)", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
 
     // Drive the shipped CLI with the reader's OWN argv, then assert on the effect:

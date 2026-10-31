@@ -7,8 +7,8 @@
 // bootstrap → instantiate() path. This test drives the user's actual command.
 //
 // The rig has ONE terminal-runtime member (builtin:terminal, zero startup
-// actions) so nothing agent-shaped launches; seats land on the scaffold-owned
-// tmux server, never the fleet's. Contention note: spawns a real daemon
+// actions) so nothing agent-shaped launches; seats land on a private hc core of the
+// test's own (helpers/hc-scratch.ts), never the host's. Contention note: spawns a real daemon
 // (seconds), bounded by timeout.
 import { describe, it, expect, afterEach } from "vitest";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import { dirname, resolve, join } from "node:path";
 import fs from "node:fs";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { spawnScenarioDaemon, runRig, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RIG_BIN = resolve(HERE, "../../cli/dist/bin-wrapper.js");
@@ -39,19 +40,25 @@ pods:
     edges: []
 `;
 
-describe("topology defaults DOOR (real daemon, real rig up)", () => {
+describe.runIf(findHc() !== null)("topology defaults DOOR (real daemon, real rig up)", () => {
+  let core: HcScratch | undefined;
   let scaffold: HermeticScaffold | undefined;
   let daemon: ScenarioDaemon | undefined;
 
   afterEach(async () => {
     if (daemon) await daemon.stop().catch(() => {});
     else if (scaffold) scaffold.cleanup();
+    core?.cleanup();
     daemon = undefined;
     scaffold = undefined;
+    core = undefined;
   });
 
   it("rig up rejects an unknown topology key before daemon or filesystem topology mutation", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
 
     const specDir = join(scaffold.root, "specs", "typo-rig");
@@ -76,6 +83,9 @@ describe("topology defaults DOOR (real daemon, real rig up)", () => {
 
   it("rig up then context trace walks runtime-matching instance, rig, pod, and seat defaults", async () => {
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
 
     // A spec dir INSIDE the scaffold carrying topology/ defaults at all four altitudes.
@@ -134,6 +144,9 @@ describe("topology defaults DOOR (real daemon, real rig up)", () => {
     expect(fs.statSync(shippedTopology).isDirectory()).toBe(true);
 
     scaffold = prepareHermeticEnv({ baseEnv: realBaseEnv() });
+    core = startHcScratch();
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(scaffold.env, { HC_SESSION: core.session, XDG_RUNTIME_DIR: core.env.XDG_RUNTIME_DIR, HC_SOCKET: core.socketPath });
     daemon = await spawnScenarioDaemon(scaffold, { rigBin: RIG_BIN });
 
     const specDir = join(scaffold.root, "specs", "factory");

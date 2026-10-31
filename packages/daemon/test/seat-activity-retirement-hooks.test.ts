@@ -8,13 +8,14 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { activityRoutes } from "../src/routes/activity.js";
 import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { HcIdentity } from "../src/adapters/hc-identity.js";
+import { findHc, startHcScratch } from "./helpers/hc-scratch.js";
+
+// hc has no window-activity clock (design-hc-cutover §3 gap 4; HcAdapter wires none), which is a product call not made here. The
+// first row's subject is the sweep's reading of the core's real membership, so it passes a clock of its own: the seat last moved in
+// 2023, far from wall clock, hence idle at every sweep, as the injected reader clock made it before.
+const STALE_ACTIVITY_SECONDS = 1_700_000_000;
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -60,30 +61,22 @@ function fixture(
 }
 
 describe("retired hook evidence through the real HTTP route", () => {
-  it("a differently named successor's first permission hook survives before the next sweep", async () => {
-    const scratch = mkdtempSync(join(tmpdir(), "adopt-hook-"));
-    const socket = join(scratch, "tmux.sock");
-    const exec = promisify(execFile);
-    const tmux = async (...args: string[]) => (await exec("tmux", ["-S", socket, ...args])).stdout;
-    cleanups.push(async () => {
-      await stopOwnedTmuxServer(socket, process.env);
-      rmSync(scratch, { recursive: true, force: true });
-    });
-    const adapter = new TmuxAdapter(async () => { throw new Error("unexpected shell path"); }, undefined,
-      async argv => tmux(...argv.slice(1)));
-    const f = fixture(adapter, () => new Date(Date.now() + 10_000));
-    await tmux("new-session", "-d", "-s", f.session.sessionName, "sleep 60");
+  it.runIf(findHc() !== null)("a differently named successor's first permission hook survives before the next sweep", async () => {
+    const core = startHcScratch();
+    cleanups.push(async () => { core.cleanup(); });
+    const host = new HcAdapter(core.client());
+    const f = fixture(new HcIdentity(core.client(), { activity: () => STALE_ACTIVITY_SECONDS }));
+    expect(await host.createSession(f.session.sessionName, "/tmp"), "the first occupant got a terminal").toEqual({ ok: true });
     await f.oracle.pollAllRunningTmuxSeats(f.db);
     expect(f.oracle.getSeatStateBySession(f.session.sessionName)?.activity).toBe("idle-at-prompt");
-    await tmux("kill-session", "-t", f.session.sessionName);
+    expect(await host.killSession(f.session.sessionName)).toEqual({ ok: true });
     f.sessions.updateStatus(f.session.id, "exited");
     f.sessions.clearBinding(f.node.id);
-    const successor = "adopted-successor";
-    await tmux("new-session", "-d", "-s", successor, "sleep 60");
-    const pane = (await tmux("display-message", "-p", "-t", successor, "#{pane_id}")).trim();
-    // The successor takes the seat as a differently named occupant (what a handover commit leaves behind).
-    f.sessions.registerClaimedSession(f.node.id, successor);
-    f.sessions.updateBinding(f.node.id, { tmuxSession: successor, tmuxPane: pane });
+    // The successor is a new occupant under a different name (the handover shape; adopting an external session is dropped).
+    const successor = "dev-b@retirement-hooks";
+    expect(await host.createSession(successor, "/tmp"), "the successor got a terminal").toEqual({ ok: true });
+    const next = f.sessions.registerSession(f.node.id, successor);
+    f.sessions.updateStatus(next.id, "running");
     const generation = f.sessions.currentOccupantTenure(f.node.id)!.generationUuid;
     await f.hook({ sessionName: successor, nodeId: f.node.id, subtype: "permission_prompt", generation });
     expect(f.store.getLatestForNode({ nodeId: f.node.id })).toMatchObject({ state: "needs_input", reason: "permission_prompt" });

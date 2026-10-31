@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { prepareHermeticEnv, type HermeticScaffold } from "./helpers/hermetic-env.js";
 import { runRig, spawnScenarioDaemon, type ScenarioDaemon } from "./helpers/scenario-daemon.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-// OF-102, typed through the shipped CLI against a scratch daemon (own OPENRIG_HOME, ephemeral port, private tmux
-// socket; never port 7433 or ~/.openrig), on the stub runtime, with NO operator bearer configured (as the live
+// OF-102, typed through the shipped CLI against a scratch daemon (own OPENRIG_HOME, ephemeral port, private hc
+// core; never port 7433 or ~/.openrig), on the stub runtime, with NO operator bearer configured (as the live
 // daemon). The situation it repairs: a rig created before OpenRig recorded a spec source, whose seat's saved startup
 // files are pinned to an old release's real folder while the release link has moved on. `rig spec-source set` must
 // make `rig seat launch --fresh --startup-from spec` rewrite the seat's saved files through the link as typed, and a
@@ -44,8 +45,8 @@ startup:
   actions: []
 `;
 
-describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typed link on a fresh launch", () => {
-  const ctx: { scaffold?: HermeticScaffold; daemon?: ScenarioDaemon; base?: string } = {};
+describe.runIf(findHc() !== null)("OF-102 rig spec-source set: a rig with no spec source re-reads the typed link on a fresh launch", () => {
+  const ctx: { core?: HcScratch; scaffold?: HermeticScaffold; daemon?: ScenarioDaemon; base?: string } = {};
   let root = "";
   let project = "";
   let typedSpec = "";   // through ~/.agents-release/current (a link inside a trusted root)
@@ -70,11 +71,14 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
   beforeAll(async () => {
     // The scaffold root normally sits in the temp folder, which the trust check refuses; build it under the real home folder
     // (the test runner points HOME at a temp fixture, so ask the account database instead).
+    ctx.core = startHcScratch();
     ctx.base = mkdtempSync(join(userInfo().homedir, ".of102-e2e-"));
     const savedTmp = process.env.TMPDIR;
     process.env.TMPDIR = ctx.base;
     try { ctx.scaffold = prepareHermeticEnv({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" } }); }
     finally { if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp; }
+    // The daemon and its CLI find the seat host by these, as a daemon finds it in production.
+    Object.assign(ctx.scaffold.env, { HC_SESSION: ctx.core.session, XDG_RUNTIME_DIR: ctx.core.env.XDG_RUNTIME_DIR, HC_SOCKET: ctx.core.socketPath });
     root = realpathSync(ctx.scaffold.root);
     for (const d of [root, ctx.scaffold.openrigHome]) chmodSync(d, 0o755);
     ctx.daemon = await spawnScenarioDaemon(ctx.scaffold, { rigBin });
@@ -113,7 +117,9 @@ describe("OF-102 rig spec-source set: a rig with no spec source re-reads the typ
     typedSpec = join(released, "current", "rigs", "team", "rig.yaml");
   }, 200_000);
   afterAll(async () => {
-    try { await rig(["down", rigName, "--json", "--force"]); } finally { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (ctx.base) rmSync(ctx.base, { recursive: true, force: true }); }
+    try { await rig(["down", rigName, "--json", "--force"]); } finally {
+      try { await ctx.daemon?.stop(); ctx.scaffold?.cleanup(); if (ctx.base) rmSync(ctx.base, { recursive: true, force: true }); } finally { ctx.core?.cleanup(); }
+    }
   }, 60_000);
 
   it("before `set`: the rig records nothing, so a spec launch can only replay the saved files, still pinned to A's real folder", async () => {

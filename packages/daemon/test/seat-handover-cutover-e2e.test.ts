@@ -1,10 +1,8 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { execFileSync } from "node:child_process";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { hcTerminalName } from "../src/adapters/hc-host.js";
+import type { HcTerminal } from "../src/adapters/hc-client.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
@@ -13,79 +11,54 @@ import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
-import { stopOwnedTmuxServer, tmuxServerPid } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
+import { waitUntil } from "./helpers/hc-private-core.js";
 
-// P14 — the committed money-proof e2e for the seat-handover CUTOVER (r1's LOW-optional; guards the
-// tmux-version regression class that bit us: respawn-pane -k CLEARS scrollback, and tabs sanitize to "_"
-// under env -i). Drives the REAL handover (createSuccessor → terminateRetiree → respawn-no-k → commit)
-// against an ISOLATED tmux server, proving predecessor scrollback SURVIVES in the SAME pane on BOTH the
-// graceful and forced retiree-exit paths.
+// P14 — the committed money-proof e2e for the seat-handover CUTOVER (r1's LOW-optional). Drives the REAL handover
+// (createSuccessor → terminateRetiree → respawn → commit) against a PRIVATE hc core, proving the retiree's process is DEAD,
+// its history stays READABLE, and the successor boots under the SAME seat name, on BOTH the graceful and forced retiree-exit
+// paths.
 //
-// D15 isolation ([[real-run-e2e-daemon-isolation-doctrine]], [[tmux-kill-server-from-seat-reaps-fleet]]):
-// a per-run owned `-S` socket in this run's own directory on EVERY tmux command (overrides $TMUX), full env MINUS
-// $TMUX (env -i strips the locale and breaks tab-delimited formats), verify-isolation-first, and teardown by session
-// name, then a verified stop of this run's own server (never a shared socket). Guarded: skips when tmux is unavailable.
+// What hc changes (design-hc-cutover §3 gap 5): there is no pane to keep. A respawn is kill, then run again under the same
+// name and labels, so the terminal's ADDRESS changes (the binding follows the label), and the predecessor's scrollback is not
+// above the successor's output: it stays readable at its old address as a finished terminal. The tmux money proof "the SAME
+// pane id, scrollback in the SAME pane" has no meaning here; what it guarded, that the predecessor's history survives the
+// cutover, is asserted at the old address.
+//
+// Isolation: the core is helpers/hc-scratch.ts's (own HOME, HC_SESSION and XDG paths, a verified stop at the end, an orphan
+// guard); the adapter reaches that core's socket and no other. Skips when hc is unavailable.
 
-const pexec = promisify(execFile);
-// An owned -S socket in this run's own directory, made on first use (a skipped run creates nothing). A -L name would live
-// in tmux's shared per-user directory, beside the fleet's server.
-let sockDir = "";
-const sock = () => {
-  if (sockDir === "") sockDir = mkdtempSync(join(tmpdir(), "openrig-e2e-"));
-  return join(sockDir, "tmux.sock");
-};
-const cleanEnv: any = { ...process.env };
-delete cleanEnv.TMUX;
-const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const exec = async (cmd: string): Promise<string> => {
-  const safe = cmd.startsWith("tmux ") ? `tmux -S ${q(sock())} ${cmd.slice(5)}` : cmd;
-  const { stdout } = await pexec("sh", ["-c", safe], { env: cleanEnv });
-  return stdout;
-};
-const tmux = (a: string) => exec(`tmux ${a}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const HC = findHc();
+let core: HcScratch | undefined;
+const scratch = (): HcScratch => (core ??= startHcScratch());
 
-function tmuxAvailableSync(): boolean {
-  try { execFileSync("sh", ["-c", "command -v tmux"], { env: cleanEnv, stdio: "ignore" }); return true; } catch { return false; }
-}
+afterAll(() => { core?.cleanup(); });
 
-const seats: string[] = [];
-afterAll(async () => {
-  // Nothing to stop or check only when no test ran and no tmux command was sent (a skipped run). A run whose seats ran on
-  // anything but the owned socket fails the check below instead of skipping it.
-  if (seats.length === 0 && sockDir === "") return;
-  for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // by name first
-  // Then this run's own server, stopped and verified gone before its directory goes (a failure keeps both).
-  // The seats ran on this run's owned socket (a -L run never creates it), and after the stop nothing answers on it.
-  expect(existsSync(sock()), "this run's tmux server ran on its owned socket").toBe(true);
-  await stopOwnedTmuxServer(sock(), cleanEnv);
-  expect(await tmuxServerPid(sock(), cleanEnv), "no server answers on the owned socket after the stop").toBeNull();
-  rmSync(sockDir, { recursive: true, force: true });
-});
+const get = (terminal: string) => scratch().client().call<HcTerminal>("terminal.get", { terminal });
+const typeLine = (seat: string, text: string) => scratch().client().call("terminal.send", { terminal: hcTerminalName(seat), text });
+const read = async (terminal: string, lines: number) => (await scratch().client().call<{ text: string }>("terminal.read", { terminal, lines })).text;
 
-describe("seat-handover cutover money-proof (isolated tmux, both retiree-exit paths)", () => {
-  it.runIf(tmuxAvailableSync())(
-    "predecessor scrollback SURVIVES in the SAME pane on graceful + forced paths",
+describe("seat-handover cutover money-proof (private hc core, both retiree-exit paths)", () => {
+  it.runIf(HC !== null)(
+    "the retiree dies, predecessor history stays readable, and the successor boots under the SAME seat name on graceful + forced paths",
     async () => {
-      // Verify isolation FIRST: the owned socket must never show fleet seats.
-      const sessions = await tmux("list-sessions -F '#{session_name}'").catch(() => "");
-      expect(sessions).not.toMatch(/dev-guard@|dev-planner@|orch-|review-/);
+      const adapter = new HcAdapter(scratch().client());
+      // Verify isolation FIRST: the private core must show no seat before this run starts one.
+      expect(await adapter.listSessions()).toEqual([]);
 
       for (const graceful of [true, false]) {
         const SEAT = `dev-impl@${graceful ? "graceful" : "forced"}-rig`;
-        seats.push(SEAT);
-        await tmux(`kill-session -t ${q(SEAT)}`).catch(() => {});
-        await tmux(`new-session -d -s ${q(SEAT)} -x 110 -y 24`);
-        await sleep(200);
-        const pane = (await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_id}'`)).trim();
-        // GRACEFUL: arm a SIGTERM trap so the retiree shell exits cleanly; FORCED: no trap → SIGKILL fallback.
-        if (graceful) { await tmux(`send-keys -t ${q(pane)} -l -- ${q("trap 'exit 0' TERM")}`); await tmux(`send-keys -t ${q(pane)} Enter`); }
-        // ~28 predecessor lines → real DEEP scrollback (past the 24-row pane).
-        for (let i = 1; i <= 28; i++) {
-          await tmux(`send-keys -t ${q(pane)} -l -- ${q(`echo v1_line_${i}_atom_A5`)}`);
-          await tmux(`send-keys -t ${q(pane)} Enter`);
-        }
+        const created = await adapter.createSession(SEAT, "/tmp");
+        expect(created, "the seat's terminal is created").toEqual({ ok: true });
         await sleep(300);
+        const before = await get(hcTerminalName(SEAT));
+        const address = before.address;
+        // GRACEFUL: arm a SIGTERM trap so the retiree shell exits cleanly; FORCED: no trap → SIGKILL fallback.
+        if (graceful) await typeLine(SEAT, "trap 'exit 0' TERM");
+        // 150 predecessor lines → real DEEP scrollback (past the terminal's 120-row screen).
+        await typeLine(SEAT, "i=1; while [ $i -le 150 ]; do echo v1_line_${i}_atom_A5; i=$((i+1)); done");
+        await waitUntil(() => read(address, 400), (text) => text.includes("v1_line_150_atom_A5"), "the predecessor's last line");
 
         const db = createDb(); db.pragma("foreign_keys = ON"); migrate(db, ALL_MIGRATIONS);
         const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db);
@@ -95,50 +68,59 @@ describe("seat-handover cutover money-proof (isolated tmux, both retiree-exit pa
         const session = sessionRegistry.registerSession(node.id, SEAT);
         sessionRegistry.updateStatus(session.id, "running");
         sessionRegistry.updateStartupStatus(session.id, "ready", new Date("2026-08-07T09:00:00Z").toISOString());
-        sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: pane });
+        sessionRegistry.updateBinding(node.id, { attachmentType: "hc", tmuxSession: SEAT, terminalAddress: address });
 
         const marker = {
           runtime: "codex",
           async launchHarness(binding: any) {
-            await tmux(`send-keys -t ${q(binding.tmuxSession)} -l -- ${q("printf '\\n=== SUCCESSOR v2 in the SAME pane ===\\n'; stty -echo 2>/dev/null; cat")}`);
-            await tmux(`send-keys -t ${q(binding.tmuxSession)} Enter`); await sleep(150);
+            await typeLine(binding.tmuxSession, "printf '\\n=== SUCCESSOR v2 in the SAME seat ===\\n'; stty -echo 2>/dev/null; cat");
+            await sleep(150);
             return { ok: true, resumeToken: "tok", resumeType: "codex_id" };
           },
           async checkReady() { return { ready: true }; },
         };
         const service = new SeatHandoverService({
           db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
-          tmuxAdapter: new TmuxAdapter(exec) as any, runtimeAdapters: { codex: marker as any },
+          tmuxAdapter: adapter, runtimeAdapters: { codex: marker as any },
           predecessorRecapResolver: () => ({ recap: [{ role: "user", content: "finish A5" }, { role: "assistant", content: "A5 landed; handing to v2" }], recordPath: "/tmp/pred-record.jsonl" }),
           readinessTimeoutMs: 3000, sleep,
           seatCwdFault: () => null, // fixture seat folders are fake paths
         });
 
-        // (i-a) capture the retiree PROCESS (the pane's shell PID) BEFORE cutover — the
+        // (i-a) capture the retiree PROCESS (the terminal's root pid) BEFORE cutover — the
         // ghost-wake source (specimen 5) was gen-1's SESSION-LOCAL memory-only cron, which
         // lives and dies INSIDE this process. Proving the retiree is dead post-handover is
         // the class-closing pin: a session-local automation cannot fire once its process is gone.
-        const retireePid = (await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_pid}'`)).trim();
+        const retireePid = before.pid;
+        expect(retireePid, "hc reports the retiree's pid").toBeGreaterThan(1);
 
         const result: any = await service.handover({ seatRef: SEAT, reason: "context ~85%", source: "fresh", operator: "orch@seat" });
         await sleep(500);
-        const paneAfter = (await tmux(`list-panes -t ${q(SEAT)} -F '#{pane_id}'`)).trim();
-        const cap = await tmux(`capture-pane -p -t ${q(pane)} -S -400`);
-        const predLines = cap.split("\n").filter((l) => l.includes("v1_line_")).length;
+        const after = await get(hcTerminalName(SEAT));
+        const cap = await read(after.address, 400);
+        const old = await get(address);
+        const oldCap = await read(address, 400);
+        const predLines = oldCap.split("\n").filter((l) => l.includes("v1_line_")).length;
 
         // The money proof, both paths:
-        expect(result.ok, `${graceful ? "graceful" : "forced"} handover`).toBe(true);
-        expect(paneAfter, "SAME pane id (scrollback context)").toBe(pane);
-        expect(predLines, "predecessor deep history PRESERVED in native scrollback").toBeGreaterThan(0);
-        expect(cap, "successor booted in the same pane").toContain("SUCCESSOR v2");
+        expect(result.ok, `${graceful ? "graceful" : "forced"} handover: ${JSON.stringify(result)}`).toBe(true);
+        expect(after.state, "the seat's name now answers with a live terminal").toBe("live");
+        expect(after.labels["openrig.seat"], "the successor carries the seat's canonical name").toBe(SEAT);
+        expect(after.address, "a respawn mints a new address (no pane to keep)").not.toBe(address);
+        expect(sessionRegistry.getBindingForNode(node.id), "the binding follows the label to the new terminal")
+          .toMatchObject({ attachmentType: "hc", terminalAddress: after.address });
+        expect(old.state, "the predecessor's terminal is finished, not removed").toBe("finished");
+        expect(predLines, "predecessor deep history PRESERVED, readable at its old address").toBeGreaterThan(100);
+        expect(cap, "successor booted in the seat's new terminal").toContain("SUCCESSOR v2");
         expect(cap, "stopgap from-record recap fired").toContain("from record");
+        expect(cap, "the predecessor's lines are not in the successor's terminal").not.toContain("v1_line_");
 
         // (i-a) THE CLASS-CLOSING PIN: the retiree process is DEAD post-handover, so its
         // session-local memory-only automations (crons/timers registered in-process — the
         // ghost-wake source) died with it. A regression that let the retiree survive the
         // cutover (or respawned WITHOUT terminating it first) flips this red.
         let retireeAlive = true;
-        try { execFileSync("sh", ["-c", `kill -0 ${retireePid}`], { env: cleanEnv, stdio: "ignore" }); }
+        try { execFileSync("sh", ["-c", `kill -0 ${retireePid}`], { stdio: "ignore" }); }
         catch { retireeAlive = false; }
         expect(retireeAlive, `${graceful ? "graceful" : "forced"} retiree process (pid ${retireePid}) DEAD post-handover — session-local automations die with it`).toBe(false);
         db.close();

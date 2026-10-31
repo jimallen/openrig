@@ -1,45 +1,51 @@
 import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { HcIdentity } from "../src/adapters/hc-identity.js";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
 import { readWaitingView } from "../src/domain/queue-waiting.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch } from "./helpers/hc-scratch.js";
 
-const exec = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
+// hc has no window-activity clock (design-hc-cutover §3 gap 4; HcIdentity says so, and HcAdapter wires none), so a live hc seat
+// gives the sampler no timestamp unless a source is passed: which source is a product call, not made here. This suite's subject is
+// RETIREMENT, which reads the core's real membership (the seats it lists, whether one is there), so it passes a clock of its own:
+// every seat last moved in 2023, far from wall clock, hence idle at every sweep, as the injected reader clock made them before.
+const STALE_ACTIVITY_SECONDS = 1_700_000_000;
+
 async function fixture() {
   const scratch = mkdtempSync(path.join(tmpdir(), "retire-"));
-  const socket = path.join(scratch, "tmux.sock");
-  const tmux = async (...args: string[]) => (await exec("tmux", ["-S", socket, ...args])).stdout;
+  const core = startHcScratch();
   const db = new Database(path.join(scratch, "state.db"));
   db.exec(`CREATE TABLE nodes(id TEXT PRIMARY KEY, runtime TEXT);
     CREATE TABLE sessions(id INTEGER, node_id TEXT, session_name TEXT, status TEXT);
     CREATE TABLE bindings(node_id TEXT, attachment_type TEXT);
     CREATE TABLE queue_items(qitem_id TEXT PRIMARY KEY, source_session TEXT, destination_session TEXT,
       state TEXT, blocked_on TEXT, closure_required_at TEXT, ts_created TEXT);`);
-  const adapter = new TmuxAdapter(async () => { throw new Error("unexpected shell path"); }, undefined,
-    async argv => tmux(...argv.slice(1)));
-  // A reader clock ten seconds ahead makes genuine native window timestamps idle
-  // without a wall-clock sleep. Only the service clock is injected, not tmux data.
-  const svc = new SeatActivityService({ tmux: adapter, defaultWindowSeconds: 3,
-    now: () => new Date(Date.now() + 10_000) });
+  const adapter = new HcAdapter(core.client());
+  // The membership the sampler reads is the core's own; only the clock is the test's.
+  const svc = new SeatActivityService({ tmux: new HcIdentity(core.client(), { activity: () => STALE_ACTIVITY_SECONDS }), defaultWindowSeconds: 3 });
+  /** End the seat's terminal, as `tmux kill-session` ended its session. */
+  const kill = async (session: string) => {
+    const ended = await adapter.killSession(session);
+    expect(ended, `${session} had a live terminal to end`).toEqual({ ok: true });
+  };
   cleanups.push(async () => {
     db.close();
-    await stopOwnedTmuxServer(socket, process.env);
+    core.cleanup();
     rmSync(scratch, { recursive: true, force: true });
   });
   async function add(id: number, node: string, session: string) {
     db.prepare("INSERT OR IGNORE INTO nodes VALUES (?, NULL)").run(node);
     db.prepare("INSERT INTO sessions VALUES (?, ?, ?, 'running')").run(id, node, session);
-    await tmux("new-session", "-d", "-s", session, "sleep 60");
+    const created = await adapter.createSession(session, scratch);
+    expect(created, `${session} got a terminal`).toEqual({ ok: true });
   }
   function waiting(session: string) {
     db.prepare("INSERT OR REPLACE INTO queue_items VALUES ('q1', 'sender@fixture', ?, 'pending', NULL, NULL, ?)")
@@ -52,10 +58,10 @@ async function fixture() {
       return row ? svc.getSeatState(row.node_id) : null;
     });
   }
-  return { db, adapter, svc, tmux, add, waiting };
+  return { db, adapter, svc, kill, add, waiting };
 }
 
-describe("seat oracle retirement", () => {
+describe.runIf(findHc() !== null)("seat oracle retirement", () => {
   it("a stopped durable seat loses oracle confidence while another running seat stays observable", async () => {
     const f = await fixture();
     await f.add(1, "node-a", "a@fixture"); await f.add(2, "node-b", "b@fixture");
@@ -63,7 +69,7 @@ describe("seat oracle retirement", () => {
     const before = f.svc.getSeatState("node-a")!;
     expect(f.waiting("a@fixture").liveness.confidence).toBe("oracle");
     const nextState = f.svc.waitForSeatState("node-a", { afterSeq: before.seq, timeoutMs: 1000 });
-    await f.tmux("kill-session", "-t", "a@fixture");
+    await f.kill("a@fixture");
     f.db.prepare("UPDATE sessions SET status = 'exited' WHERE node_id = 'node-a'").run();
     await f.svc.pollAllRunningTmuxSeats(f.db);
     expect(await f.adapter.hasSession("a@fixture")).toBe(false);
@@ -77,7 +83,7 @@ describe("seat oracle retirement", () => {
   it("a revived same-name seat gets fresh sampler evidence after retirement", async () => {
     const f = await fixture(); await f.add(1, "node-a", "a@fixture");
     await f.svc.pollAllRunningTmuxSeats(f.db);
-    await f.tmux("kill-session", "-t", "a@fixture");
+    await f.kill("a@fixture");
     f.db.prepare("UPDATE sessions SET status = 'exited'").run();
     await f.svc.pollAllRunningTmuxSeats(f.db);
     expect(f.svc.getSeatState("node-a")!.activity).toBe("unknown");
