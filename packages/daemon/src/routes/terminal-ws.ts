@@ -1,5 +1,11 @@
 import type { Hono } from "hono";
+import { HcAttach, type HcAttachOpener } from "../adapters/hc-attach.js";
+import type { HcCapture } from "../adapters/hc-capture.js";
+import type { HcClient } from "../adapters/hc-client.js";
+import { HcInput } from "../adapters/hc-input.js";
+import { HcViewer, type SizeSource } from "../adapters/hc-viewer.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
+import type { SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import { constantTimeEqual } from "../middleware/auth-bearer-token.js";
 import {
   TerminalBrokerRegistry,
@@ -10,6 +16,51 @@ import {
 
 const MAX_EARLY_TERMINAL_FRAMES = 32;
 const MAX_EARLY_TERMINAL_FRAME_BYTES = 256 * 1024;
+
+/**
+ * What the live terminal needs to watch seats on herdr-core. Startup injects it (the route builds nothing from the environment):
+ * the one client the daemon uses for every other call, and the delivery guard if the daemon has one. The rest is for tests.
+ */
+export interface HcTerminalDeps {
+  client: HcClient;
+  /** The adapter's delivery guard: a person's typing is marked as human input, and takes the seat's input lease. */
+  guard?: SeatDeliveryGuard;
+  opener?: HcAttachOpener;
+  sizes?: SizeSource;
+  capture?: Pick<HcCapture, "capturePaneContent">;
+}
+
+/**
+ * The viewer behind the route. A person's keys and pasted text go in with `blocked: "allow"`: someone at the broker may answer
+ * a dialog the program is blocked on, which a delivery refuses by default (hc-input.ts, BlockedPolicy). An observer's own keystrokes
+ * are dropped by the core, so input does not ride the attach.
+ */
+export function createHcTerminalViewer(deps: HcTerminalDeps): HcViewer {
+  const opener = deps.opener ?? new HcAttach(deps.client.socketPath);
+  const input = new HcInput(deps.client, opener, deps.guard ? { guard: deps.guard } : {});
+  const { guard } = deps;
+  return new HcViewer({
+    client: deps.client,
+    opener,
+    ...(deps.sizes ? { sizes: deps.sizes } : {}),
+    ...(deps.capture ? { capture: deps.capture } : {}),
+    input: {
+      keys: (name, keys) => input.sendKeys(name, keys, undefined, { blocked: "allow" }),
+      paste: (name, text) => input.sendText(name, text, undefined, { blocked: "allow" }),
+      ...(guard ? { humanInput: <T>(name: string, fn: () => Promise<T>) => guard.humanInput(name, fn) } : {}),
+    },
+  });
+}
+
+/**
+ * The terminal's size, to the socket. A terminal on herdr-core has no fixed geometry: the viewer is an observer and follows the size
+ * of the terminal, and a client that draws at another size draws a wrong screen. It is a JSON text frame told before the first byte
+ * of a paint and whenever the size changes; the UI (FocusedTerminal.tsx) recognises it whole. Terminal output is never JSON
+ * of this shape, and a program that prints it can only resize its own view.
+ */
+export function terminalSizeFrame(cols: number, rows: number): string {
+  return JSON.stringify({ type: "size", cols, rows });
+}
 
 /** Terminal bearer authentication; server.ts applies the shared browser boundary before this route. */
 export function terminalAuthMiddleware(opts: { bearerToken: string | null }) {
@@ -37,12 +88,12 @@ export function registerTerminalAuthOnly(app: Hono, opts: { bearerToken: string 
 export function registerTerminalWs(
   app: Hono,
   upgradeWebSocket: Parameters<typeof import("@hono/node-ws").createNodeWebSocket>[0] extends { app: infer _A } ? never : never,
-  opts: { bearerToken: string | null },
+  opts: { bearerToken: string | null; hc?: HcTerminalDeps },
 ): void;
 export function registerTerminalWs(
   app: Hono,
   upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
-  opts: { bearerToken: string | null; livenessIntervalMs?: number },
+  opts: { bearerToken: string | null; livenessIntervalMs?: number; hc?: HcTerminalDeps },
 ): void {
   const terminalAuth = terminalAuthMiddleware(opts);
 
@@ -50,11 +101,14 @@ export function registerTerminalWs(
   // created lazily from the first connection's tmux adapter (a daemon
   // singleton). This is what makes many viewers of one seat share ONE pipe and
   // a fanned-out stream instead of fighting over per-connection pipes.
-  let registry: TerminalBrokerRegistry | null = null;
-  const getRegistry = (tmux: BrokerTmux): TerminalBrokerRegistry => {
-    if (!registry) {
-      registry = new TerminalBrokerRegistry(tmux, { livenessMs: opts.livenessIntervalMs });
-    }
+  // With `hc` injected the registry is built once, here, from an HcViewer: no tmux adapter is read from the request.
+  let registry: TerminalBrokerRegistry | null = opts.hc
+    ? new TerminalBrokerRegistry(createHcTerminalViewer(opts.hc), { livenessMs: opts.livenessIntervalMs })
+    : null;
+  const getRegistry = (tmux: BrokerTmux | null): TerminalBrokerRegistry => {
+    if (registry) return registry;
+    if (!tmux) throw new Error("no terminal host");
+    registry = new TerminalBrokerRegistry(tmux, { livenessMs: opts.livenessIntervalMs });
     return registry;
   };
 
@@ -102,18 +156,20 @@ export function registerTerminalWs(
 
       return {
         async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
-          const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
-          if (!tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
+          const tmux = opts.hc ? null : c.get("tmuxAdapter") as TmuxAdapter | undefined;
+          if (!opts.hc && !tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
           // Adapt the WebSocket to a broker subscriber. The broker owns the pipe,
           // the seed, the fanout, honest session-death close, and cleanup.
           const sub: TerminalSubscriber = {
             send: (data: string) => { try { ws.send(data); } catch { /* closed socket */ } },
             close: (code: number, reason: string) => { try { ws.close(code, reason); } catch { /* already closed */ } },
+            // Only a stream host (herdr-core) calls this; the tmux host pins 90x27 and never does.
+            size: (cols: number, rows: number) => { try { ws.send(terminalSizeFrame(cols, rows)); } catch { /* closed socket */ } },
           };
           subscriber = sub;
           let b: TerminalSessionBroker;
           try {
-            b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+            b = await getRegistry(tmux as unknown as BrokerTmux | null).attach(sessionName, sub);
           } catch {
             // The WebSocket adapter does not await onOpen. Contain attach failures
             // here; the registry disposes the failed broker before rejecting.
