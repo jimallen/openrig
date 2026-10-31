@@ -4298,7 +4298,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.result.rigResult).toBe("partially_restored");
   });
 
-  it("D3: any fresh node prevents fully_restored", async () => {
+  it("D3: a fresh node nobody asked for prevents fully_restored; one named in --fresh does not (OF-196)", async () => {
     // A rig where one node launches fresh (no resume data) and others succeed
     const snapshot = seedRigAndSnapshot({
       nodes: [
@@ -4310,16 +4310,21 @@ describe("RestoreOrchestrator", () => {
     });
 
     const orchestrator = createOrchestrator();
-    // A1 premise: the fresh node is DELIBERATE (fresh-listed) — the D3 aggregation claim is unchanged.
+    // OF-196 (Jim, 2026-10-31): a seat the operator named in --fresh was started as asked, so it is not partial.
     const result = await orchestrator.restore(snapshot.id, { freshLogicalIds: ["agent-a"] });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const node = result.result.nodes.find((n) => n.logicalId === "agent-a");
     expect(node?.status).toBe("fresh-primed");
-    // D3 invariant per PM: fresh nodes prevent fully_restored
-    expect(result.result.rigResult).not.toBe("fully_restored");
-    expect(result.result.rigResult).toBe("partially_restored");
+    expect(result.result.rigResult).toBe("fully_restored");
+
+    // D3 invariant per PM, kept for a fresh start nobody asked for: it prevents fully_restored.
+    const unasked = await createOrchestrator().restore(snapshot.id, { freshLogicalIds: ["someone-else"] });
+    expect(unasked.ok).toBe(true);
+    if (!unasked.ok) return;
+    expect(unasked.result.nodes.find((n) => n.logicalId === "agent-a")?.status).toBe("fresh-primed");
+    expect(unasked.result.rigResult).toBe("partially_restored");
   });
 
   it("D1/D4: missing required startup file blocks restore before mutation", async () => {
@@ -4573,7 +4578,8 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.result.rigResult).toBe("partially_restored");
+    // OF-196: the optional-file warning is only a warning; the requested fresh start is clean.
+    expect(result.result.rigResult).toBe("fully_restored");
     expect(result.result.warnings.some((warning) => warning.includes("optional startup file missing"))).toBe(true);
     // OF-32 stage 3: the seat has no saved context of its own, so its fresh start replays this snapshot copy, which
     // pre-restore validation and the per-seat check before its launch both inspect: the warning is still said once.
