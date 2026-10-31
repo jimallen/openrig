@@ -516,7 +516,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       // that human; it is not stuck, and a finding would post the human again. Unposted, failed,
       // legacy and non-human rows keep this net.
       if (deps.queueRepo.humanNotificationPostedThisEpisode(row.qitemId)) continue;
-      // Jim's inbox: an item waiting on the operator is not stuck; the banner is its reminder.
+      // Jim's inbox: an item waiting on the operator is not stuck; `rig health` flags it after 24 h (rsi/human-inbox-waiting-health.ts).
       if (isLocalHumanInbox(row.destinationSession)) continue;
       candidates.push({
         kind: "unclaimed-obligation",

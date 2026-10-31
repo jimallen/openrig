@@ -31,8 +31,8 @@
 //      delivery rides the gateway, exactly like its @external address.
 //   4. The local human inbox (exactly `human@kernel`, LOCAL_HUMAN_INBOX_ADDRESS) is a held
 //      destination: the operator's own inbox on this machine. It has no terminal and no
-//      connector, so nothing is dispatched; the queue row IS the delivery and the macOS
-//      banner (rsi/human-gate-notifier.ts) is how the operator learns of it. It sits AFTER
+//      connector, so nothing is dispatched; the queue row IS the delivery and the inbox
+//      panel is how the operator learns of it (rig health flags an item waiting over 24 h). It sits AFTER
 //      the pane and registry legs, so a real pane or a registered human of that name still
 //      wins, and it matches the one literal address only: near misses (human-typo@kernel,
 //      human@host) stay unroutable so a mistyped address is still refused loudly.
