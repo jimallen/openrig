@@ -1,11 +1,18 @@
 // OF-180 N4: `transport.native_claude` is read on every send; the answer is kept until the settings file or the env
 // override changes. Real files in a temp dir; nothing here reads ~/.openrig.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as nodeFs from "node:fs";
 import { mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { cachedFlag, nativeClaudeFlag, NATIVE_CLAUDE_ENV, settingsFileSignature } from "../src/domain/native-claude-setting.js";
+
+// The real statSync by default; one test hands the signature a fabricated stat (see the inode row).
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, statSync: vi.fn(actual.statSync) };
+});
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const c of cleanups.splice(0)) c(); delete process.env[NATIVE_CLAUDE_ENV]; });
@@ -53,6 +60,24 @@ describe("settingsFileSignature", () => {
     writeFileSync(join(dir, "next.json"), '{"a":2}'); utimesSync(join(dir, "next.json"), 2_000, 2_000);
     renameSync(join(dir, "next.json"), p); // same bytes and mtime, a new inode
     expect(settingsFileSignature(p)).not.toBe(second);
+  });
+});
+
+describe("settingsFileSignature: the inode term", () => {
+  // A real atomic replace cannot isolate the inode: the rename moves the change time too, so a signature without the inode
+  // would still differ. The kernel offers no way to hold size, mtime and ctime equal across two inodes, so the stat result
+  // is fabricated here: stats identical in every field but the inode. Production consequence: a settings file replaced
+  // by an atomic save that lands on the same size and timestamps would keep serving the old flag value.
+  it("two stats that differ only in the inode give two signatures; identical stats give one", () => {
+    const stat = (ino: bigint) => ({ ino, size: 7n, mtimeNs: 5n, ctimeNs: 9n });
+    const statSync = vi.mocked(nodeFs.statSync);
+    const sign = (ino: bigint) => {
+      statSync.mockImplementationOnce((() => stat(ino)) as unknown as typeof nodeFs.statSync);
+      return settingsFileSignature("/fabricated/config.json");
+    };
+    const first = sign(100n);
+    expect(sign(100n)).toBe(first);
+    expect(sign(101n)).not.toBe(first);
   });
 });
 

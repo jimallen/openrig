@@ -625,6 +625,22 @@ describe("OF-180 N7: a wake group's tmux fallback is one message", () => {
     ]);
     for (const id of [plain, ...g1, ...g2]) expect(row(f.db, id)).toMatchObject({ state: "failed", evidence: "native_unconfirmed" });
   });
+  // OF-190: only wake rows merge. Two ordinary sends to one seat from one sender with one write time (same clock tick)
+  // are two messages; merging them would resend them as one text and settle both rows on one send.
+  it("two plain rows with the same destination, sender and write time stay two fallbacks", async () => {
+    const f = make(); await register(f);
+    const e = await eligibleFor(f, SENDER);
+    const one = (await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "first", endpoint: e.endpoint })).outboxIds[0]!;
+    const two = (await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "second", endpoint: e.endpoint })).outboxIds[0]!;
+    const writtenAt = (id: string) => (f.db.prepare("SELECT native_written_at AS at FROM outbox_entries WHERE outbox_id = ?").get(id) as { at: string | null }).at;
+    expect(writtenAt(one)).not.toBeNull();
+    expect(writtenAt(one)).toBe(writtenAt(two)); // the premise: one write time
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 3_000).toISOString());
+    f.clock.t += 130_000;
+    const fallbacks = f.inbox.sweep().fallbacks.sort((a, b) => a.body.localeCompare(b.body));
+    expect(fallbacks.map((x) => [x.outboxIds.length, x.body, x.wake])).toEqual([[1, "first", false], [1, "second", false]]);
+    expect(new Set(fallbacks.flatMap((x) => x.outboxIds))).toEqual(new Set([one, two]));
+  });
   it("wake rows of one write time but another sender are not merged", async () => {
     const f = make(); await register(f);
     const a = await wakeGroup(f, ["a1"], "queue@system", await eligibleFor(f, "queue@system"));
