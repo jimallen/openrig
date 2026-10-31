@@ -235,6 +235,102 @@ describe("D9 controls", () => {
   });
 });
 
+describe("D9: a question to Jim in a modal is not a stall (Jim, 2026-10-31)", () => {
+  // Shapes measured on the live daemon (exec-cos@eztrack, 7 days): Claude Code reports its AskUserQuestion modal as
+  // Notification/permission_prompt; the seat's next PostToolUse names the tool. Eight of a shape reach the threshold.
+  const S = "exec-cos@eztrack", G = "gen-1";
+  const prompt = (f: F, seat = S, generation = G) => f.activity({ seat, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 2, generation });
+  const post = (f: F, tool: string, seat = S, generation = G) => f.activity({ seat, rawEvent: "PostToolUse", rawSubtype: tool, state: "running", hoursAgo: 2, generation });
+  const stop = (f: F) => f.activity({ seat: S, rawEvent: "Stop", rawSubtype: null, state: "idle", hoursAgo: 2, generation: G });
+  const count = (f: F) => {
+    const records = f.records(createPermissionStallSource(f.deps()));
+    return records.length === 0 ? 0 : span(records[0]!).count;
+  };
+
+  it("a modal, then its PostToolUse(AskUserQuestion): not counted", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); post(f, "AskUserQuestion"); stop(f); }
+    expect(count(f)).toBe(0);
+  });
+
+  it("a permission prompt, then its tool's PostToolUse: counted", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); post(f, "Bash"); stop(f); }
+    expect(count(f)).toBe(8);
+  });
+
+  it("a denied prompt, with no PostToolUse after it: counted", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); stop(f); }
+    expect(count(f)).toBe(8);
+  });
+
+  it("an unanswered modal counts until it is answered", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) prompt(f);
+    expect(count(f)).toBe(8);
+    post(f, "AskUserQuestion");
+    expect(count(f)).toBe(0);
+  });
+
+  it("chosen: another tool's PostToolUse before the AskUserQuestion one (a racing or subagent tool) counts, as ambiguous", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); post(f, "Read"); post(f, "AskUserQuestion"); }
+    expect(count(f)).toBe(8);
+  });
+
+  it("the answer must come from the same seat and the same generation", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); post(f, "AskUserQuestion", "verify-qa@eztrack"); }
+    expect(count(f)).toBe(8);
+    const g = fixture();
+    for (let i = 0; i < 8; i++) { prompt(g, S, `gen-${i}`); post(g, "AskUserQuestion", S, `gen-${i}-next`); }
+    expect(count(g)).toBe(8);
+  });
+
+  it("only a PostToolUse answers: another event naming AskUserQuestion (a PreToolUse, should a relay send one) does not", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); f.activity({ seat: S, rawEvent: "PreToolUse", rawSubtype: "AskUserQuestion", state: "running", hoursAgo: 2, generation: G }); }
+    expect(count(f)).toBe(8);
+  });
+
+  it("review: a denied prompt right before an answered modal counts (it does not borrow the modal's answer)", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); prompt(f); post(f, "AskUserQuestion"); }
+    expect(count(f)).toBe(8);
+  });
+
+  it("review: a PermissionRequest is always a real request, even before an AskUserQuestion answer", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) {
+      f.activity({ seat: S, rawEvent: "PermissionRequest", rawSubtype: "Bash", state: "needs_input", hoursAgo: 2, generation: G });
+      post(f, "AskUserQuestion");
+    }
+    expect(count(f)).toBe(8);
+  });
+
+  it("review: the answer must come within 12 hours of the prompt", () => {
+    const late = fixture();
+    for (let i = 0; i < 8; i++) {
+      late.activity({ seat: S, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 20, generation: `g-${i}` });
+      late.activity({ seat: S, rawEvent: "PostToolUse", rawSubtype: "AskUserQuestion", state: "running", hoursAgo: 7, generation: `g-${i}` });
+    }
+    expect(count(late)).toBe(8);  // answered 13 h later: counted
+    const inTime = fixture();
+    for (let i = 0; i < 8; i++) {
+      inTime.activity({ seat: S, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 20, generation: `g-${i}` });
+      inTime.activity({ seat: S, rawEvent: "PostToolUse", rawSubtype: "AskUserQuestion", state: "running", hoursAgo: 9, generation: `g-${i}` });
+    }
+    expect(count(inTime)).toBe(0);  // answered 11 h later: not counted
+  });
+
+  it("the measured mix: eight modals and eight permission prompts count eight", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); post(f, "AskUserQuestion"); prompt(f); post(f, "Bash"); }
+    expect(count(f)).toBe(8);
+  });
+});
+
 describe("D12 controls", () => {
   it("splits every sent wake-up over the closed delivery-status list and reads the failing job against the others", () => {
     const f = fixture();
