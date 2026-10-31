@@ -1,6 +1,6 @@
-// #707 — a seat's tile must not depend on the terminal provider's PATH to find tmux, and a pane that
+// #707 — a seat's tile must not depend on the terminal provider's PATH to find hc, and a pane that
 // exits at once must not be reported as opened. The shell parsing below is real; no terminal
-// provider, tmux server or ssh server is claimed, and the herdr replies are fakes.
+// provider, hc core or machine link is claimed, and the herdr replies are fakes.
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,26 +14,26 @@ import type { ComposedPane, ComposedView, OpenViewResult, TerminalProvider } fro
 
 const local = (seat: string, readOnly = false): ViewMemberInput => ({ seat, label: seat, tmuxSession: seat, host: null, readOnly, alive: true });
 
-describe("#707 local tiles run the tmux the daemon resolves", () => {
-  it("a provider PATH without tmux fails the bare command; the resolved path attaches, keeping -r", () => {
+describe("#707 local tiles run the hc the daemon resolves", () => {
+  it("a provider PATH without hc fails the bare command; the resolved path attaches, keeping --observe", () => {
     const root = mkdtempSync(join(tmpdir(), "openrig-707-"));
-    const narrow = join(root, "provider-path"); // the provider's PATH: no tmux here
-    const elsewhere = join(root, "elsewhere"); // where the daemon found tmux
+    const narrow = join(root, "provider-path"); // the provider's PATH: no hc here
+    const elsewhere = join(root, "elsewhere"); // where the daemon found hc
     mkdirSync(narrow);
     mkdirSync(elsewhere);
-    const tmux = join(elsewhere, "tmux");
-    writeFileSync(tmux, '#!/bin/sh\nprintf "%s\\n" "$@" > "$OPR_ARGS"\n', { mode: 0o700 });
+    const hc = join(elsewhere, "hc");
+    writeFileSync(hc, '#!/bin/sh\nprintf "%s\\n" "$@" > "$OPR_ARGS"\n', { mode: 0o700 });
     const argsFile = join(root, "args");
     const env = { PATH: narrow, OPR_ARGS: argsFile };
     try {
       for (const readOnly of [false, true]) {
         const bare = composeView("v", [local("seat'a", readOnly)], { resolveHost: () => null });
-        // The reported failure: `sh: tmux: command not found`, exit 127.
+        // The reported failure: `sh: hc: command not found`, exit 127.
         expect(spawnSync("/bin/sh", ["-c", bare.opened[0]!.paneCommand], { env }).status).toBe(127);
 
-        const resolved = composeView("v", [local("seat'a", readOnly)], { resolveHost: () => null, localTmux: tmux });
+        const resolved = composeView("v", [local("seat'a", readOnly)], { resolveHost: () => null, localHc: hc });
         execFileSync("/bin/sh", ["-c", resolved.opened[0]!.paneCommand], { env });
-        expect(readFileSync(argsFile, "utf8").trimEnd().split("\n")).toEqual(["attach", ...(readOnly ? ["-r"] : []), "-t", "seat'a"]);
+        expect(readFileSync(argsFile, "utf8").trimEnd().split("\n")).toEqual(["attach", ...(readOnly ? ["--observe"] : []), "--", "seat'a"]);
         expect(resolved.opened[0]!.readOnly).toBe(readOnly);
       }
     } finally {
@@ -41,20 +41,25 @@ describe("#707 local tiles run the tmux the daemon resolves", () => {
     }
   });
 
-  it("an ssh tile's remote command is unchanged when a local path is resolved", () => {
-    const remote: ViewMemberInput = { seat: "r", label: "r", tmuxSession: "r", host: "edge", readOnly: true, alive: true };
+  it("a machine tile runs the same local hc, which forwards over its machine link", () => {
+    const remote: ViewMemberInput = { seat: "r", label: "r", tmuxSession: "t", host: "edge", readOnly: true, alive: true };
     const resolveHost = () => ({ id: "edge", transport: "ssh" as const, target: "fixture" });
-    const withPath = composeView("v", [remote], { resolveHost, localTmux: "/opt/homebrew/bin/tmux" });
-    const without = composeView("v", [remote], { resolveHost });
-    expect(withPath.opened[0]!.paneCommand).toBe(without.opened[0]!.paneCommand);
-    expect(withPath.opened[0]!.paneCommand).not.toContain("/opt/homebrew");
+    const withPath = composeView("v", [remote], { resolveHost, localHc: "/opt/homebrew/bin/hc" });
+    expect(withPath.opened[0]!.paneCommand).toBe("'/opt/homebrew/bin/hc' attach --observe -- 'edge/t'");
   });
 
-  it("without a resolved path the composed view is byte-identical to before", () => {
+  it("without a resolved path the composed view uses the bare hc token", () => {
     const members = [local("a"), local("b", true)];
     const before = composeView("v", members, { resolveHost: () => null });
-    expect(JSON.stringify(composeView("v", members, { resolveHost: () => null, localTmux: undefined }))).toBe(JSON.stringify(before));
-    expect(before.opened.map((p) => p.paneCommand)).toEqual(["tmux attach -t 'a'", "tmux attach -r -t 'b'"]);
+    expect(JSON.stringify(composeView("v", members, { resolveHost: () => null, localHc: undefined }))).toBe(JSON.stringify(before));
+    expect(before.opened.map((p) => p.paneCommand)).toEqual(["hc attach -- 'a'", "hc attach --observe -- 'b'"]);
+  });
+
+  it("the removed tmux context fields change nothing: a path and server flags still compose a bare hc", () => {
+    const members = [local("a")];
+    const plain = composeView("v", members, { resolveHost: () => null });
+    const legacy = composeView("v", members, { resolveHost: () => null, localTmux: "/usr/bin/tmux", localTmuxServer: ["-L", "x"] });
+    expect(legacy.opened[0]!.paneCommand).toBe(plain.opened[0]!.paneCommand);
   });
 });
 
@@ -87,13 +92,16 @@ function service(resolveLocalTmux?: TerminalServiceDeps["resolveLocalTmux"]): { 
   return { svc: new TerminalService(deps), herdr };
 }
 
-describe("#707 the service passes only an absolute resolved tmux to the composer", () => {
+// TRANSITIONAL. terminal-service.ts (not part of this change) still hands the composer `localTmux`, which the composer
+// ignores, and never `localHc`. So whatever the resolver finds, the pane today is the bare `hc` token. When terminal-service
+// passes `localHc`, the first row below becomes the absolute-path case and the rest stay as they are.
+describe("#707 the service does not yet pass a resolved hc to the composer", () => {
   const cases: Array<[string, TerminalServiceDeps["resolveLocalTmux"] | undefined, string]> = [
-    ["an absolute path", () => "/usr/local/bin/tmux", "'/usr/local/bin/tmux' attach -t 'a@r'"],
-    ["a bare name", () => "tmux", "tmux attach -t 'a@r'"],
-    ["nothing found", async () => null, "tmux attach -t 'a@r'"],
-    ["a failed probe", () => { throw new Error("probe failed"); }, "tmux attach -t 'a@r'"],
-    ["no resolver", undefined, "tmux attach -t 'a@r'"],
+    ["an absolute path from the old resolver", () => "/usr/local/bin/tmux", "hc attach -- 'a@r'"],
+    ["a bare name", () => "tmux", "hc attach -- 'a@r'"],
+    ["nothing found", async () => null, "hc attach -- 'a@r'"],
+    ["a failed probe", () => { throw new Error("probe failed"); }, "hc attach -- 'a@r'"],
+    ["no resolver", undefined, "hc attach -- 'a@r'"],
   ];
   it.each(cases)("%s", async (_name, resolver, expected) => {
     const { svc, herdr } = service(resolver);
@@ -128,7 +136,7 @@ function herdrOpening(paneList: (params: Record<string, unknown>) => HerdrResult
   };
   return { adapter: new HerdrAdapter({ transportFactory: () => transport, newLaunchToken: () => "tok" }), methods };
 }
-const pane = (seat: string, label = seat): ComposedPane => ({ seat, label, paneCommand: `tmux attach -t '${seat}'`, readOnly: false });
+const pane = (seat: string, label = seat): ComposedPane => ({ seat, label, paneCommand: `hc attach -- '${seat}'`, readOnly: false });
 const viewOf = (...panes: ComposedPane[]): ComposedView => ({ id: "v", opened: panes, absent: [], degraded: [], pages: [panes] });
 // Three seats lay out as a 2×2 grid with one blank filler pane (label "").
 const listed = (...labels: Array<string | undefined>): HerdrResult => ({

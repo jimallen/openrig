@@ -57,7 +57,6 @@ import type { ComposedView } from "../src/domain/terminal/terminal-provider.js";
 
 // --- host-registry fixtures ---
 const SSH_HOST: HostEntry = { id: "vm1", transport: "ssh", target: "vm1.local", user: "admin" };
-const SSH_HOST_NO_USER: HostEntry = { id: "vm2", transport: "ssh", target: "10.0.0.9" };
 const HTTP_HOST: HostEntry = { id: "factory", transport: "http", url: "http://x:7433", bearer_env: "T" };
 
 function ctxWith(hosts: HostEntry[]): ComposeContext {
@@ -77,51 +76,47 @@ function member(overrides: Partial<ViewMemberInput> & { seat: string }): ViewMem
 }
 
 describe("view-composer partition vectors", () => {
-  it("local live seat → tmux attach -t (no -r)", () => {
+  it("local live seat → hc attach -- <terminal> (writable: a plain attach)", () => {
     const v = composeView("v", [member({ seat: "dev-a@rig" })], ctxWith([]));
     expect(v.opened).toHaveLength(1);
-    expect(v.opened[0]!.paneCommand).toBe("tmux attach -t 'dev-a@rig'");
+    expect(v.opened[0]!.paneCommand).toBe("hc attach -- 'dev-a@rig'");
     expect(v.opened[0]!.readOnly).toBe(false);
     expect(v.absent).toHaveLength(0);
     expect(v.degraded).toHaveLength(0);
   });
 
-  it("view-only / cross-rig read-only seat → tmux attach -r -t", () => {
+  it("view-only / cross-rig read-only seat → hc attach --observe (never types, never resizes)", () => {
     const v = composeView("v", [member({ seat: "dev-a@rig", readOnly: true })], ctxWith([]));
-    expect(v.opened[0]!.paneCommand).toBe("tmux attach -r -t 'dev-a@rig'");
+    expect(v.opened[0]!.paneCommand).toBe("hc attach --observe -- 'dev-a@rig'");
     expect(v.opened[0]!.readOnly).toBe(true);
   });
 
-  it("ssh host → ssh '<user@target>' tmux attach -t (destination shell-quoted); read-only adds -r", () => {
+  it("ssh host → hc attach -- '<host id>/<terminal>' through the hc machine of that name; read-only adds --observe", () => {
     const rw = composeView("v", [member({ seat: "s@r", host: "vm1", tmuxSession: "s@r" })], ctxWith([SSH_HOST]));
-    expect(rw.opened[0]!.paneCommand).toBe("ssh 'admin@vm1.local' 'tmux attach -t '\"'\"'s@r'\"'\"''");
+    expect(rw.opened[0]!.paneCommand).toBe("hc attach -- 'vm1/s@r'");
 
     const ro = composeView("v", [member({ seat: "s@r", host: "vm1", readOnly: true })], ctxWith([SSH_HOST]));
-    expect(ro.opened[0]!.paneCommand).toBe("ssh 'admin@vm1.local' 'tmux attach -r -t '\"'\"'s@r'\"'\"''");
+    expect(ro.opened[0]!.paneCommand).toBe("hc attach --observe -- 'vm1/s@r'");
 
-    const nouser = composeView("v", [member({ seat: "s@r", host: "vm2" })], ctxWith([SSH_HOST_NO_USER]));
-    expect(nouser.opened[0]!.paneCommand).toBe("ssh '10.0.0.9' 'tmux attach -t '\"'\"'s@r'\"'\"''");
+    // The registry's ssh user and target no longer reach the command: the machine link owns them.
+    expect(rw.opened[0]!.paneCommand).not.toContain("admin");
+    expect(rw.opened[0]!.paneCommand).not.toContain("vm1.local");
+    expect(rw.opened[0]!.paneCommand).not.toContain("ssh");
   });
 
-  // Guard G1 — the ssh destination is STRUCTURED registry data injected into a
-  // shell command string; it must stay shell-inert (exactly one argument) and
-  // must never be option-shaped.
-  it("G1: a shell-sensitive ssh destination stays ONE quoted argument (no extra shell words)", () => {
-    const NASTY: HostEntry = { id: "evil", transport: "ssh", target: "a b; rm -rf /", user: "u'x" };
-    const v = composeView("v", [member({ seat: "s@r", host: "evil", tmuxSession: "s@r" })], ctxWith([NASTY]));
+  // The shell string carries a host id and a terminal name from our own data; both must stay ONE shell word,
+  // and neither may be read by hc as an option.
+  it("a shell-sensitive host id or terminal name stays ONE quoted argument after `--`", () => {
+    const NASTY: HostEntry = { id: "a b; rm -rf /", transport: "ssh", target: "x" };
+    const v = composeView("v", [member({ seat: "s@r", host: NASTY.id, tmuxSession: "u'x" })], ctxWith([NASTY]));
     expect(v.opened).toHaveLength(1);
-    // single-quoted, embedded quote POSIX-escaped ('\'') — metacharacters are literal.
-    expect(v.opened[0]!.paneCommand).toBe("ssh 'u'\"'\"'x@a b; rm -rf /' 'tmux attach -t '\"'\"'s@r'\"'\"''");
-    // the dangerous run never becomes its own shell word:
-    expect(v.opened[0]!.paneCommand).not.toContain("; rm -rf / tmux");
+    expect(v.opened[0]!.paneCommand).toBe("hc attach -- 'a b; rm -rf //u'\"'\"'x'");
+    expect(v.opened[0]!.paneCommand).not.toContain("; rm -rf / hc");
   });
 
-  it("G1: an option-shaped ssh destination (leading '-') is degraded, never composed", () => {
-    const OPT: HostEntry = { id: "opt", transport: "ssh", target: "-oProxyCommand=touch pwned" };
-    const v = composeView("v", [member({ seat: "s@r", host: "opt", tmuxSession: "s@r" })], ctxWith([OPT]));
-    expect(v.opened).toHaveLength(0);
-    expect(v.degraded).toHaveLength(1);
-    expect(v.degraded[0]!.reason).toContain("option-shaped");
+  it("a terminal name that starts with '-' follows `--`, so it is a name and not an option", () => {
+    const v = composeView("v", [member({ seat: "-x", tmuxSession: "-x", readOnly: true })], ctxWith([]));
+    expect(v.opened[0]!.paneCommand).toBe("hc attach --observe -- '-x'");
   });
 
   it("http host → NO pane, honest-degrade with the exact reason class", () => {
@@ -140,19 +135,19 @@ describe("view-composer partition vectors", () => {
     ]);
   });
 
-  it("dead local seat → absent named; session-less seat → absent named", () => {
+  it("dead local seat → absent named; terminal-less seat → absent named", () => {
     const dead = composeView("v", [member({ seat: "s@r", alive: false })], ctxWith([]));
     expect(dead.opened).toHaveLength(0);
-    expect(dead.absent).toEqual([{ seat: "s@r", host: null, reason: "tmux session s@r is not alive" }]);
+    expect(dead.absent).toEqual([{ seat: "s@r", host: null, reason: "hc terminal s@r is not alive" }]);
 
     const noSess = composeView("v", [member({ seat: "s@r", tmuxSession: null })], ctxWith([]));
     expect(noSess.absent).toEqual([
-      { seat: "s@r", host: null, reason: "no tmux session recorded for this seat" },
+      { seat: "s@r", host: null, reason: "no hc terminal recorded for this seat" },
     ]);
 
     const sshNoSess = composeView("v", [member({ seat: "s@r", host: "vm1", tmuxSession: null })], ctxWith([SSH_HOST]));
     expect(sshNoSess.absent).toEqual([
-      { seat: "s@r", host: "vm1", reason: "no tmux session recorded for this seat" },
+      { seat: "s@r", host: "vm1", reason: "no hc terminal recorded for this seat" },
     ]);
   });
 
@@ -208,9 +203,9 @@ describe("view-composer partition vectors", () => {
     collect(grid);
 
     expect(panes.filter((pane) => pane.label).map((pane) => pane.command)).toEqual([
-      ["sh", "-c", "env HERDR_AGENT=claude tmux attach -t 'claude@rig'"],
-      ["sh", "-c", "env HERDR_AGENT=codex tmux attach -t 'codex@rig'"],
-      ["sh", "-c", "tmux attach -t 'operator@rig'"],
+      ["sh", "-c", "env HERDR_AGENT=claude hc attach -- 'claude@rig'"],
+      ["sh", "-c", "env HERDR_AGENT=codex hc attach -- 'codex@rig'"],
+      ["sh", "-c", "hc attach -- 'operator@rig'"],
     ]);
     expect(panes.at(-1)?.command).toEqual(["sh"]);
   });
