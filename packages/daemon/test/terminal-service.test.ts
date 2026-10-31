@@ -93,7 +93,7 @@ function makeDeps(overrides: Partial<TerminalServiceDeps> = {}): {
 
 describe("TerminalService — view resolution + one-shape result", () => {
   it.each([false, true])("keeps the view outcome and puts the human handoff beside it (provider unavailable=%s)", async unavailable => {
-    const { deps, herdr } = makeDeps({ resolveLocalTmux: () => "/opt/tools/tmux" });
+    const { deps, herdr } = makeDeps({ resolveLocalHc: () => "/opt/tools/hc" });
     let calls = 0;
     herdr.openView = async view => {
       calls++;
@@ -116,11 +116,11 @@ describe("TerminalService — view resolution + one-shape result", () => {
     expect(notes).toContain("Can you see the team?");
     expect(notes).toContain("does not confirm");
     if (unavailable) {
-      expect(result.notes).toContain("dev.driver: env -u TMUX '/opt/tools/tmux' attach -t 'dev-driver@acme-build'");
-      expect(result.notes).toContain("rev.r1: env -u TMUX '/opt/tools/tmux' attach -t 'rev-r1@acme-build'");
+      expect(result.notes).toContain(`dev.driver: env -u TMUX '/opt/tools/hc' attach -- '${hcName("dev-driver@acme-build")}'`);
+      expect(result.notes).toContain(`rev.r1: env -u TMUX '/opt/tools/hc' attach -- '${hcName("rev-r1@acme-build")}'`);
       expect(notes).toContain("include every command in full, unchanged");
     } else {
-      expect(notes).not.toContain("attach -t");
+      expect(notes).not.toContain("attach");
     }
   });
 
@@ -133,7 +133,7 @@ describe("TerminalService — view resolution + one-shape result", () => {
     expect(res.opened).toEqual(["dev-driver@acme-build", "rev-r1@acme-build"]);
     // interactive → no `-r` in the composed pane commands
     expect(herdr.lastView?.opened.every((p) => p.readOnly === false)).toBe(true);
-    expect(herdr.lastView?.opened[0]?.paneCommand).toBe("tmux attach -t 'dev-driver@acme-build'");
+    expect(herdr.lastView?.opened[0]?.paneCommand).toBe(`hc attach -- '${hcName("dev-driver@acme-build")}'`);
   });
 
   it("the rig:<id> alias form resolves the same rig (the rig-scoped route delegation)", async () => {
@@ -168,7 +168,7 @@ describe("TerminalService — view resolution + one-shape result", () => {
     const res = await svc.openView({ view });
     expect(res.ok).toBe(true);
     expect(herdr.lastView?.opened.every((p) => p.readOnly === true)).toBe(true);
-    expect(herdr.lastView?.opened[0]?.paneCommand).toContain("attach -r -t");
+    expect(herdr.lastView?.opened[0]?.paneCommand).toContain(`hc attach --observe -- '${hcName("dev-driver@acme-build")}'`);
     expect(res.notes?.join("\n") ?? "").not.toMatch(/lead pane|Can you see the team/);
   });
 
@@ -356,7 +356,7 @@ describe("default saved kernel conversations", () => {
     expect(result.opened).toEqual(unavailable ? [] : ["operator-bound", "tui-bound", "advisor-bound"]);
     expect(result.notes?.join("\n")).toContain("Default kernel view:");
     expect(result.notes?.join("\n")).not.toMatch(/lead pane|Can you see the team/);
-    if (unavailable) expect(result.notes).toContain("operator: env -u TMUX tmux attach -t 'operator-bound'");
+    if (unavailable) expect(result.notes).toContain(`operator: env -u TMUX hc attach -- '${hcName("operator-bound")}'`);
   });
 
   it.each(["herdr", "cmux"])("offers existing conversation attachments when %s is unavailable", async providerName => {
@@ -371,11 +371,11 @@ describe("default saved kernel conversations", () => {
     const result = await new TerminalService(deps).openView({ view: "saved:kernel", provider: providerName });
     expect(result).toMatchObject({ ok: false, opened: [], code: `${providerName}_unavailable` });
     expect(result.absent.map(member => member.seat)).toContain("advisor-bound");
-    expect(result.notes).toContain("operator: env -u TMUX tmux attach -t 'operator-bound'");
-    expect(result.notes).toContain("dashboard: env -u TMUX tmux attach -t 'actual-tui'");
+    expect(result.notes).toContain(`operator: env -u TMUX hc attach -- '${hcName("operator-bound")}'`);
+    expect(result.notes).toContain(`dashboard: env -u TMUX hc attach -- '${hcName("actual-tui")}'`);
     expect(result.notes).toContain("Original provider detail");
-    expect(result.notes!.join("\n")).not.toContain("attach -t 'advisor-bound'");
-    expect(result.notes!.join("\n")).not.toContain("queue-bound");
+    expect(result.notes!.join("\n")).not.toContain(hcName("advisor-bound"));
+    expect(result.notes!.join("\n")).not.toContain(hcName("queue-bound"));
   });
 
   it.each([["claude-code", "codex"], ["claude-code", "claude-code"], ["codex", "codex"]])("opens the operator first with dashboard and advisor on their own pages for %s/%s", async (advisorRuntime, operatorRuntime) => {

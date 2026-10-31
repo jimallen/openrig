@@ -18,9 +18,6 @@ function tmuxPublicMethods(): string[] {
     .filter((name) => name !== "constructor");
 }
 
-/** Built by the viewer package; they join HcAdapter when it lands. Empty once it has. */
-const PENDING_VIEWER = ["startPipePane", "stopPipePane", "getPaneCursorPosition", "resizeWindow", "listClients", "switchClient"];
-
 class FakeClient extends HcClient {
   calls: string[] = [];
   constructor() { super("/nonexistent"); }
@@ -31,13 +28,22 @@ class FakeClient extends HcClient {
   }
 }
 
+/** Wrappers that run a caller's function inside the delivery guard. They touch no tmux, so HcAdapter inherits them. */
+const INHERITED_BY_DESIGN = ["humanInput", "operation"];
+
 describe("HcAdapter", () => {
-  it("has every public method of the tmux adapter, the viewer's aside", () => {
-    const adapter = new HcAdapter(new FakeClient());
+  it("overrides every public method of the tmux adapter that could reach tmux, the viewer's included", () => {
     const methods = tmuxPublicMethods();
     expect(methods.length).toBeGreaterThan(40);  // positive control: the source was really parsed
-    const missing = methods.filter((name) => typeof (adapter as unknown as Record<string, unknown>)[name] !== "function");
-    expect(missing.sort()).toEqual([...PENDING_VIEWER].sort());
+    // HcAdapter extends TmuxAdapter, so `typeof adapter[name] === "function"` is true for a method it forgot (inherited,
+    // and running tmux through the refusing exec). Only an OWN method on the prototype means it was ported.
+    const notOverridden = methods.filter((name) => !Object.prototype.hasOwnProperty.call(HcAdapter.prototype, name) && !INHERITED_BY_DESIGN.includes(name));
+    expect(notOverridden.sort()).toEqual([]);
+    // Control for the allow-list: each entry is a real tmux method that HcAdapter really leaves inherited.
+    for (const name of INHERITED_BY_DESIGN) {
+      expect(methods).toContain(name);
+      expect(Object.prototype.hasOwnProperty.call(HcAdapter.prototype, name)).toBe(false);
+    }
   });
 
   it("reaches the core through each area", async () => {
