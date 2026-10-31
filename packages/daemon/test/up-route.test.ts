@@ -1178,6 +1178,31 @@ edges: []
       expect(r!.attentionNodes).toHaveLength(3);
     });
 
+    it("HG-4: the attach hint comes from the caller's resolver, so an hc seat is not told to use tmux", () => {
+      const result = {
+        rigId: "rig-hc-1",
+        stages: [{
+          stage: "import_rig",
+          status: "blocked",
+          detail: {
+            code: "attention_required",
+            message: "2 nodes require attention before becoming interactive.",
+            attentionNodes: [
+              { logicalId: "dev.a", sessionName: "dev-a@hc-rig", reason: "startup_timeout" },
+              { logicalId: "dev.b", sessionName: "dev-b@hc-rig", reason: "startup_timeout" },
+            ],
+          },
+        }],
+      };
+      const r = buildAttentionResponse(result, (name) => (name === "dev-a@hc-rig" ? "hc attach -- s-aaaa" : null));
+      expect(r!.error.action).toContain("hc attach -- s-aaaa");
+      expect(r!.error.action).not.toMatch(/tmux/);
+      // A seat the resolver cannot name gets no invented hint; with none left the advice falls back to `rig ps`.
+      const none = buildAttentionResponse(result, () => null);
+      expect(none!.error.action).toContain("see `rig ps`");
+      expect(none!.error.action).not.toMatch(/tmux/);
+    });
+
     it("HG-4: multi-node action message points to attentionNodes when attach hints are abbreviated", () => {
       const result = {
         rigId: "rig-conveyor-4",
@@ -1303,7 +1328,10 @@ edges: []
   });
 
   describe("OPR.0.3.2.CT BLOCKER-2 (route-level): POST /api/up surfaces 409 with 3-part body on attention_required partial", () => {
-    it("attention_required partial → 409 with error.fact / error.consequence / error.action / attentionNodes", async () => {
+    it.each([
+      { host: "tmux" as const, attach: /tmux attach -t dev-impl@conveyor-attention-route-test/ },
+      { host: "hc" as const, attach: /hc attach -- s-[0-9a-f]{24}/ },
+    ])("attention_required partial on a $host host → 409 with error.fact / error.consequence / error.action / attentionNodes", async ({ host, attach }) => {
       // Build a fresh app instance so we can monkey-patch the
       // orchestrator without leaking state into other tests.
       db.close();
@@ -1327,6 +1355,8 @@ edges: []
       });
       const freshApp = setup.app;
       const bootstrapOrch = setup.bootstrapOrchestrator;
+      // The host kind the route reads from its adapter decides how an unbound seat is told to attach.
+      (setup.tmuxAdapter as unknown as { hostKind: string }).hostKind = host;
 
       // Write a valid pod spec file so the route's pre-bootstrap
       // resolution path succeeds and reaches the bootstrap() call.
@@ -1398,7 +1428,8 @@ edges: []
         expect(body.error.fact).toMatch(/require[s]? attention/i);
         expect(body.error.consequence).toMatch(/rig-stub-1/);
         expect(body.error.consequence).toMatch(/rig ps/);
-        expect(body.error.action).toMatch(/tmux attach -t dev-impl@conveyor-attention-route-test/);
+        expect(body.error.action).toMatch(attach);
+        if (host === "hc") expect(body.error.action).not.toMatch(/tmux/);
         expect(body.error.action).not.toMatch(/rig setup --cwd/);
         // attentionNodes array carried through to operator
         expect(body.attentionNodes).toBeInstanceOf(Array);

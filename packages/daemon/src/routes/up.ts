@@ -21,7 +21,7 @@ import { MultiRigLauncher } from "../domain/topology/multi-rig-launcher.js";
 import { remoteUpLeaf } from "../domain/topology/remote-up-leaf.js";
 import { loadHostRegistry } from "../domain/hosts/hosts-registry-reader.js";
 import type { HttpHostEntry } from "../domain/hosts/hosts-registry-reader.js";
-import { tmuxAttachCommand } from "../adapters/tmux-server.js";
+import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 import { rigAdviceHandle, rigAdviceHandleIn } from "../domain/rig-ref.js";
 
 export const upRoutes = new Hono();
@@ -39,7 +39,7 @@ export const upRoutes = new Hono();
 export function buildAttentionResponse(result: {
   rigId?: string;
   stages: Array<{ stage: string; status: string; detail?: unknown }>;
-}): {
+}, attachCommandFor: (sessionName: string) => string | null = tmuxAttachCommand): {
   error: { fact: string; consequence: string; action: string };
   attentionNodes: import("../domain/types.js").AttentionNode[];
 } | null {
@@ -57,7 +57,8 @@ export function buildAttentionResponse(result: {
   const nodeCount = detail.attentionNodes.length;
   const sessionAttachHints = detail.attentionNodes
     .filter((n) => n.sessionName)
-    .map((n) => tmuxAttachCommand(n.sessionName))
+    .map((n) => attachCommandFor(n.sessionName))
+    .filter((hint): hint is string => hint !== null);
   const visibleAttachHints = sessionAttachHints.slice(0, 3).join(" ; ");
   const remainingAttachHintCount = Math.max(0, sessionAttachHints.length - 3);
   const attachHintText = visibleAttachHints
@@ -480,7 +481,19 @@ upRoutes.post("/", async (c) => {
         // same way), surface a 3-part error so the operator sees the
         // affected sessions and inspect their actual state. The rig + sessions are
         // PRESERVED on disk; `rig ps` lists them. PRD HG-4.
-        const attentionResponse = buildAttentionResponse(result);
+        // The advice names how each seat is reached on ITS host (`hc attach` for an hc terminal), not always tmux.
+        const attachBySession = new Map<string, string | null>();
+        if (result.rigId) {
+          const { getNodeInventory } = await import("../domain/node-inventory.js");
+          for (const n of getNodeInventory(bootstrapRepo.db, result.rigId)) {
+            if (n.canonicalSessionName) attachBySession.set(n.canonicalSessionName, n.tmuxAttachCommand);
+          }
+        }
+        const hostIsHc = (c.get("tmuxAdapter" as never) as import("../adapters/tmux.js").TmuxAdapter | undefined)?.hostKind === "hc";
+        const attentionResponse = buildAttentionResponse(
+          result,
+          (sessionName) => attachBySession.get(sessionName) ?? (hostIsHc ? hcAttachCommand(sessionName) : tmuxAttachCommand(sessionName)),
+        );
         if (attentionResponse) {
           return c.json({ ...result, attachCommand, ...attentionResponse }, 409);
         }
