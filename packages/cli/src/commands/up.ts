@@ -687,7 +687,7 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         }
         console.log(`Rig "${rigName ?? rigId}" restored (ID: ${rigId})`);
         if (rigResult) console.log(`Result: ${rigResult}`);
-        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; startupSource?: RestoreStartupSourceReport; reattached?: { sessionName: string } }>) ?? [];
+        const nodes = (res.data["nodes"] as Array<{ logicalId: string; status: string; error?: string; requestedFresh?: boolean; guidanceGaps?: string[]; startupSource?: RestoreStartupSourceReport; reattached?: { sessionName: string } }>) ?? [];
         for (const n of nodes) {
           // OPR.0.3.4.2 — the five-term vocabulary renders distinctly; the
           // awaiting-decision reason is part of the line (not a dead end).
@@ -709,6 +709,15 @@ team back with its conversations, run rig up <rig-name> --existing, not the spec
         const warnings = (res.data["warnings"] as string[]) ?? [];
         for (const w of warnings) {
           console.error(`  warning: ${w}`);
+        }
+        if (rigResult === "partially_restored") {
+          // Name what made the rig partial; awaiting-decision and failed seats say so on their own lines.
+          for (const n of nodes) {
+            if (n.status === "failed" || n.status === "awaiting-decision") continue;
+            if (n.guidanceGaps?.length) console.log(`  not fully restored: ${n.logicalId} is running without guidance blocks: ${n.guidanceGaps.join(", ")}`);
+            else if (n.status === "attention_required") console.log(`  not fully restored: ${n.logicalId} is parked on a runtime prompt (attention_required)`);
+            else if ((n.status === "fresh" || n.status === "fresh-primed") && !n.requestedFresh) console.log(`  not fully restored: ${n.logicalId} started ${n.status}, not resumed, and was not named in --fresh`);
+          }
         }
         // Attach command from server response (uses real canonical session name)
         const attachCommand = res.data["attachCommand"] as string | undefined;

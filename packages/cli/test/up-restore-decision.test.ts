@@ -151,6 +151,27 @@ describe("rig up --existing — resume-original default (OPR.0.3.4.2)", () => {
     expect(upBodies).toHaveLength(0);
   });
 
+  it("OF-196: a partially_restored result names each seat that made it partial", async () => {
+    respond = () => ({
+      status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",
+      nodes: [
+        { logicalId: "a", status: "fresh-primed", requestedFresh: true },
+        { logicalId: "b", status: "fresh-primed" },
+        { logicalId: "c", status: "resumed", guidanceGaps: ["blk"] },
+        { logicalId: "d", status: "attention_required" },
+      ], warnings: [],
+    });
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "myrig", "--existing"]);
+    });
+    const out = logs.join("\n");
+    expect(out).not.toContain("not fully restored: a ");
+    expect(out).toContain("not fully restored: b started fresh-primed, not resumed, and was not named in --fresh");
+    expect(out).toContain("not fully restored: c is running without guidance blocks: blk");
+    expect(out).toContain("not fully restored: d is parked on a runtime prompt");
+    expect(exitCode).toBe(1);
+  });
+
   it("under --startup-from stored, an accepted fresh start after a failed resume replays the saved files too", async () => {
     respond = () => ({
       status: "restored", rigId: "rig-1", rigName: "myrig", rigResult: "partially_restored",

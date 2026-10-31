@@ -367,6 +367,21 @@ describe("RestoreOrchestrator", () => {
       expect(created[0]!.fresh_start).toBe(marked);
     });
 
+    it("OF-196: every seat named in --fresh and started fresh-primed rolls up fully_restored; a seat nobody named stays partial", async () => {
+      const named = await createOrchestrator({ tmux: mockTmux() }).restore(absentSeat().id, { freshLogicalIds: ["worker"] });
+      expect(named.ok).toBe(true);
+      if (!named.ok) return;
+      expect(named.result.nodes[0]).toMatchObject({ status: "fresh-primed", requestedFresh: true });
+      expect(named.result.rigResult).toBe("fully_restored");
+      // Same seat, but --fresh names a different seat: the blank-slate start was not asked for.
+      const unnamed = await createOrchestrator({ tmux: mockTmux() }).restore(absentSeat({ restorePolicy: "relaunch_fresh" }).id, { freshLogicalIds: ["someone-else"] });
+      expect(unnamed.ok).toBe(true);
+      if (!unnamed.ok) return;
+      expect(unnamed.result.nodes[0]!.status).toBe("fresh-primed");
+      expect(unnamed.result.nodes[0]!.requestedFresh).toBeUndefined();
+      expect(unnamed.result.rigResult).toBe("partially_restored");
+    });
+
     it("--fresh still starts it fresh", async () => {
       const tmux = mockTmux();
       const result = await createOrchestrator({ tmux }).restore(absentSeat().id, { freshLogicalIds: ["worker"] });
@@ -4284,7 +4299,7 @@ describe("RestoreOrchestrator", () => {
     expect(result.result.rigResult).toBe("partially_restored");
   });
 
-  it("D3: any fresh node prevents fully_restored", async () => {
+  it("D3: a fresh node named in --fresh is clean; the unrequested case is pinned by the OF-196 roll-up rows", async () => {
     // A rig where one node launches fresh (no resume data) and others succeed
     const snapshot = seedRigAndSnapshot({
       nodes: [
@@ -4296,16 +4311,14 @@ describe("RestoreOrchestrator", () => {
     });
 
     const orchestrator = createOrchestrator();
-    // A1 premise: the fresh node is DELIBERATE (fresh-listed) — the D3 aggregation claim is unchanged.
+    // OF-196 (Jim, 2026-10-31): a seat the operator named in --fresh was started as asked, so it is not partial.
     const result = await orchestrator.restore(snapshot.id, { freshLogicalIds: ["agent-a"] });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const node = result.result.nodes.find((n) => n.logicalId === "agent-a");
     expect(node?.status).toBe("fresh-primed");
-    // D3 invariant per PM: fresh nodes prevent fully_restored
-    expect(result.result.rigResult).not.toBe("fully_restored");
-    expect(result.result.rigResult).toBe("partially_restored");
+    expect(result.result.rigResult).toBe("fully_restored");
   });
 
   it("D1/D4: missing required startup file blocks restore before mutation", async () => {
@@ -4559,7 +4572,8 @@ describe("RestoreOrchestrator", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.result.rigResult).toBe("partially_restored");
+    // OF-196: the optional-file warning is only a warning; the requested fresh start is clean.
+    expect(result.result.rigResult).toBe("fully_restored");
     expect(result.result.warnings.some((warning) => warning.includes("optional startup file missing"))).toBe(true);
     // OF-32 stage 3: the seat has no saved context of its own, so its fresh start replays this snapshot copy, which
     // pre-restore validation and the per-seat check before its launch both inspect: the warning is still said once.
@@ -5375,6 +5389,24 @@ describe("RestoreOrchestrator", () => {
       ]);
       expect(result).toBe("partially_restored");
       expect(result).not.toBe("failed");
+    });
+
+    it("OF-196: requested fresh-primed seats are clean; an unrequested one, or a requested one with guidance gaps, is partial", () => {
+      expect(rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "fresh-primed", requestedFresh: true },
+        { nodeId: "n2", logicalId: "b", status: "fresh-primed", requestedFresh: true },
+      ])).toBe("fully_restored");
+      expect(rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "fresh-primed", requestedFresh: true },
+        { nodeId: "n2", logicalId: "b", status: "fresh-primed" },
+      ])).toBe("partially_restored");
+      expect(rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "fresh-primed", requestedFresh: true, guidanceGaps: ["g"] },
+      ])).toBe("partially_restored");
+      expect(rollupRestoreRigResult([
+        { nodeId: "n1", logicalId: "a", status: "fresh-primed", requestedFresh: true },
+        { nodeId: "n2", logicalId: "b", status: "awaiting-decision" },
+      ])).toBe("partially_restored");
     });
 
     it("all-failed -> failed (reserved for genuine all-failure only)", () => {
