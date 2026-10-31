@@ -112,6 +112,8 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     // handover successor gets the same mouse/status/clipboard defaults as a
     // launched seat (orch C1 scope ruling).
     tmuxOptionDefaults: (c.get("tmuxOptionDefaults" as never) as import("../domain/tmux-option-defaults.js").TmuxOptionDefaultsApplier | undefined) ?? undefined,
+    // OF-183 — whether this daemon may change the shared Codex config.toml (a handover successor's seat home links to it).
+    codexConfigWritePolicy: (c.get("codexConfigWritePolicy" as never) as import("../domain/codex-config-write-policy.js").CodexConfigWritePolicy | undefined) ?? undefined,
     // B2 — discovered-mode resume-token capture derive-helper deps.
     contextUsageStore: (c.get("contextUsageStore" as never) as import("../domain/resume-token-capture.js").ResumeTokenCaptureDeps["contextUsageStore"]) ?? undefined,
     resumeTokenCapturer: (c.get("resumeMetadataRefresher" as never) as import("../domain/resume-token-capture.js").ResumeTokenCaptureDeps["resumeTokenCapturer"]) ?? undefined,

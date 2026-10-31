@@ -10,6 +10,8 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaults.js";
 import type { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { hostCodexWithTrustedHook, secondDaemonPolicyFor, type HostCodexFixture } from "./helpers/codex-shared-config-fixture.js";
+import type { CodexConfigWritePolicy } from "../src/domain/codex-config-write-policy.js";
 
 describe("SuccessorSessionLauncher", () => {
   let db: Database.Database;
@@ -59,7 +61,11 @@ describe("SuccessorSessionLauncher", () => {
     return { runtime, launchHarness, checkReady } as unknown as RuntimeAdapter;
   }
 
-  function launcher(tmuxOptionDefaults?: TmuxOptionDefaultsApplier, sharedCodexHome = "/daemon-codex"): SuccessorSessionLauncher {
+  function launcher(
+    tmuxOptionDefaults?: TmuxOptionDefaultsApplier,
+    sharedCodexHome = "/daemon-codex",
+    overrides: Partial<ConstructorParameters<typeof SuccessorSessionLauncher>[2]> = {},
+  ): SuccessorSessionLauncher {
     const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
     return new SuccessorSessionLauncher(tmux, discoveryRepo, {
       sessionEnv: { OPENRIG_HOME: seatHomes, HOME: "/daemon-home", CODEX_HOME: sharedCodexHome },
@@ -71,6 +77,7 @@ describe("SuccessorSessionLauncher", () => {
       exitPollMs: 1,
       exitTimeoutMs: 5,
       tmuxOptionDefaults,
+      ...overrides,
     });
   }
 
@@ -108,6 +115,33 @@ describe("SuccessorSessionLauncher", () => {
     } finally {
       fs.rmSync(shared, { recursive: true, force: true });
     }
+  });
+
+  // OF-183: the successor's CODEX_HOME symlinks the host-wide config.toml, so a handover used to mirror hook trust into it.
+  describe("OF-183 the shared Codex config.toml on a codex handover", () => {
+    let fx: HostCodexFixture;
+    beforeEach(() => { fx = hostCodexWithTrustedHook("ssl-of183-"); });
+    afterEach(() => { fx.cleanup(); });
+
+    const handOver = async (policy?: CodexConfigWritePolicy) => {
+      const res = await launcher(undefined, fx.codexHome, {
+        sessionEnv: { OPENRIG_HOME: fx.scratchOpenrigHome, HOME: "/daemon-home", CODEX_HOME: fx.codexHome },
+        ...(policy ? { codexConfigWritePolicy: policy } : {}),
+      }).createSuccessor({ node: { id: "node-1", runtime: "codex", cwd: "/w" }, departingSessionName: "dev-impl@rig" });
+      expect(res.ok).toBe(true);
+    };
+
+    it("a handover by a daemon that is not the host's installed one leaves the shared config.toml byte-identical", async () => {
+      const before = fs.readFileSync(fx.config);
+      await handOver(secondDaemonPolicyFor(fx));
+      expect(fs.readFileSync(fx.config).equals(before)).toBe(true);
+    });
+
+    it("CONTROL: with no restriction the same handover mirrors the seat's hook trust into the shared file", async () => {
+      const before = fs.readFileSync(fx.config);
+      await handOver();
+      expect(fs.readFileSync(fx.config).equals(before)).toBe(false);
+    });
   });
 
   it("tells the handover result when the per-seat codex home could not be made, and still hands over", async () => {

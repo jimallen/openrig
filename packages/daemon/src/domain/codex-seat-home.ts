@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "./codex-config-write-policy.js";
 import { codexActivityHookTrustRecords, computeCodexHandlerHash, findTomlTable, lineStartsAtDocumentLevel, upsertCodexHookTrust, upsertVerifiedCodexHookTrust } from "../adapters/codex-runtime-adapter.js";
 
 /**
@@ -318,12 +319,19 @@ export function mirrorCodexHookTrust(content: string, sharedKeySource: string, s
 // starting in another seat never reads a truncated file.
 const configWrites = new Map<string, Promise<unknown>>();
 
-async function syncSeatHookTrust(home: string, log: (message: string) => void): Promise<boolean> {
+async function syncSeatHookTrust(home: string, log: (message: string) => void, policy: CodexConfigWritePolicy): Promise<boolean> {
   const seatConfig = path.join(home, "config.toml");
   const stat = await fs.lstat(seatConfig).catch(() => null);
   if (!stat?.isSymbolicLink()) return false; // a seat-owned config carries its own trust
   const sharedKeySource = await fs.realpath(seatConfig);
   const seatKeySource = path.join(await fs.realpath(home), "config.toml");
+  // OF-183: the seat's config.toml is a symlink to the SHARED file, and this mirror edits the file it points at. A
+  // daemon that is not the host's installed one leaves it alone (the seat then asks for hook trust natively).
+  const decision = policy.decide(sharedKeySource);
+  if (!decision.allowed) {
+    log(`[openrig] codex seat hook trust not mirrored: ${decision.reason}`);
+    return false;
+  }
   const run = (configWrites.get(sharedKeySource) ?? Promise.resolve()).catch(() => undefined).then(async () => {
     const content = await fs.readFile(sharedKeySource, "utf-8");
     const { content: next, copies } = planCodexHookTrustMirror(content, sharedKeySource, seatKeySource);
@@ -428,7 +436,7 @@ async function seedSeatPackages(home: string, shared: string): Promise<string[]>
  */
 export async function ensureCodexSeatHome(
   sessionName: string,
-  opts?: { openrigHome?: string; sharedCodexHome?: string; log?: (message: string) => void },
+  opts?: { openrigHome?: string; sharedCodexHome?: string; log?: (message: string) => void; configWritePolicy?: CodexConfigWritePolicy },
 ): Promise<CodexSeatHome> {
   const openrigHome = opts?.openrigHome ?? process.env["OPENRIG_HOME"] ?? path.join(os.homedir(), ".openrig");
   const shared = opts?.sharedCodexHome ?? process.env["CODEX_HOME_DEFAULT"] ?? path.join(os.homedir(), ".codex");
@@ -449,7 +457,7 @@ export async function ensureCodexSeatHome(
   }
   linked.push(...(await seedSeatPackages(home, shared)));
   // Every launch, not only on creation: trust given after the home was made carries over too.
-  await syncSeatHookTrust(home, opts?.log ?? ((message) => console.log(message))).catch(() => false);
+  await syncSeatHookTrust(home, opts?.log ?? ((message) => console.log(message)), opts?.configWritePolicy ?? unrestrictedCodexConfigWrites).catch(() => false);
 
   // Profile fragments are COPIED (see module doc): per-seat canonical path,
   // per-seat identity edits stay seat-local.

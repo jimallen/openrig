@@ -18,7 +18,7 @@ const exec = promisify(execFile), roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true }); });
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-selected-home-")); roots.push(root);
-  const home = path.join(root, "home"), selected = path.join(root, "selected home's"), cwd = path.join(root, "project-two"), bin = path.join(root, "bin");
+  const home = path.join(root, "home"), selected = path.join(root, "home", "selected home's"), cwd = path.join(root, "project-two"), bin = path.join(root, "bin");
   for (const dir of [home, selected, cwd, bin, path.join(home, ".codex"), path.join(root, "project-one")]) fs.mkdirSync(dir, { recursive: true });
   const firstConfig = path.join(home, ".codex/config.toml"); fs.writeFileSync(firstConfig, '# first-home sentinel\nmodel = "fixture"\n');
   fs.writeFileSync(path.join(home, '.codex/history.jsonl'), '{"fixture":"first-home"}\n');

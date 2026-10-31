@@ -168,6 +168,8 @@ interface SeatHandoverServiceDeps {
    * mouse/status/clipboard defaults as a NodeLauncher-launched seat.
    */
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
+  /** OF-183: forwarded to the successor launcher. */
+  codexConfigWritePolicy?: import("./codex-config-write-policy.js").CodexConfigWritePolicy;
   /**
    * Ghost-stage (e) seam — the per-store retiring-occupant invalidator, authored by the ghost-stage
    * slice and CALLED once at commit() so the cutover successor never inherits a predecessor's seat-name-
@@ -268,6 +270,7 @@ export class SeatHandoverService {
       readinessTimeoutMs: deps.readinessTimeoutMs,
       sleep: deps.sleep,
       tmuxOptionDefaults: deps.tmuxOptionDefaults,
+      ...(deps.codexConfigWritePolicy ? { codexConfigWritePolicy: deps.codexConfigWritePolicy } : {}),
       ...(deps.seatCwdFault ? { seatCwdFault: deps.seatCwdFault } : {}),
     });
     this.captureDeps = {

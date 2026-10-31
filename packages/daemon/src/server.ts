@@ -161,6 +161,8 @@ export interface AppDeps {
   /** OPR.0.4.6.02 S1 — the shared tmux option-defaults applier, exposed to
    *  the seat-handover route so a fresh successor gets launch-only defaults. */
   tmuxOptionDefaults?: TmuxOptionDefaultsApplier;
+  /** OF-183 — whether this daemon may change the shared Codex config.toml; exposed to the seat-handover route. */
+  codexConfigWritePolicy?: import("./domain/codex-config-write-policy.js").CodexConfigWritePolicy;
   cmuxAdapter: CmuxAdapter;
   snapshotCapture: SnapshotCapture;
   snapshotRepo: SnapshotRepository;
@@ -522,6 +524,7 @@ export function createApp(deps: CreateAppDeps): Hono {
     c.set("startupOrchestrator" as never, deps.startupOrchestrator);
     c.set("tmuxAdapter" as never, deps.tmuxAdapter);
     c.set("tmuxOptionDefaults" as never, deps.tmuxOptionDefaults);
+    c.set("codexConfigWritePolicy" as never, deps.codexConfigWritePolicy);
     c.set("sessionEnv" as never, deps.sessionEnv);
     c.set("runtimeSessionEnv" as never, deps.runtimeSessionEnv);
     c.set("cmuxAdapter" as never, deps.cmuxAdapter);

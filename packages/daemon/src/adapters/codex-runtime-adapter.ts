@@ -36,6 +36,7 @@ import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorksp
 import { shellQuote } from "./shell-quote.js";
 import { prepareSeatMcpLaunchArgs, type PathJudgeIo, type SeatMcpSelection, type codexConfigServerNames } from "../domain/codex-mcp-servers.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
+import { unrestrictedCodexConfigWrites, type CodexConfigWritePolicy } from "../domain/codex-config-write-policy.js";
 
 import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
 
@@ -131,6 +132,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // (FR-A) to write config-layer [hooks] command entries that are cwd-independent and
   // version-matched to the running daemon (NOT ${PLUGIN_ROOT}, NOT a per-cwd copy).
   private activityRelayPath?: string;
+  // OF-183: whether this daemon may change a given Codex config.toml. Startup always injects the real policy; absent
+  // (unit tests, other embedders) keeps every write as it was.
+  private configWritePolicy: CodexConfigWritePolicy;
+  private refusedConfigWrites = new Set<string>();
 
   constructor(deps: {
     tmux: TmuxAdapter;
@@ -153,8 +158,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     existingMcpServerNames?: (launch: { cwd: string; sessionName: string; profile: string | null }) => ReturnType<typeof codexConfigServerNames>;
     resolveGitAddDirs?: CodexGitAddDirResolver;
     prepareTeamWorkspace?: PrepareCodexTeamWorkspace;
+    configWritePolicy?: CodexConfigWritePolicy;
   }) {
     this.tmux = deps.tmux;
+    this.configWritePolicy = deps.configWritePolicy ?? unrestrictedCodexConfigWrites;
     this.prepareTeamWorkspace = deps.prepareTeamWorkspace;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
@@ -192,6 +199,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!opts?.codexVersion) return;
     if (isCodex013xOrLater(opts.codexVersion)) return;
     const configPath = this.resolveCodexConfigPath();
+    if (!this.mayChangeConfig(configPath)) return;
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
     const updated = upsertCodexHooksFeature(existing);
     if (updated !== existing) {
@@ -230,6 +238,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return;
     }
     const configPath = this.resolveCodexConfigPath();
+    if (!this.mayChangeConfig(configPath)) return;
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
     const withHooks = upsertCodexActivityHooks(existing, relay);
     if (withHooks !== existing) {
@@ -286,6 +295,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    */
   removeCodexActivityHooks(): void {
     const configPath = this.resolveCodexConfigPath();
+    if (!this.mayChangeConfig(configPath)) return;
     if (!this.fs.exists(configPath)) return;
     const existing = this.fs.readFile(configPath);
     const updated = stripCodexActivityHooks(existing);
@@ -685,8 +695,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   }
 
   private projectEntry(entry: ProjectionEntry, cwd: string, warnings: string[]): boolean {
-    if (entry.category === "runtime_resource" && this.applyRuntimeResource(entry)) {
-      return true;
+    if (entry.category === "runtime_resource") {
+      const applied = this.applyRuntimeResource(entry, warnings);
+      if (applied === "applied") return true;
+      if (applied === "refused") return false;
     }
 
     if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
@@ -787,12 +799,18 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
   }
 
-  private applyRuntimeResource(entry: ProjectionEntry): boolean {
+  private applyRuntimeResource(entry: ProjectionEntry, warnings: string[]): "applied" | "refused" | "not_applicable" {
     if (entry.resourceType !== "codex_config_fragment") {
-      return false;
+      return "not_applicable";
     }
 
     const configPath = this.resolveCodexConfigPath();
+    const decision = this.configWritePolicy.decide(configPath);
+    if (!decision.allowed) {
+      warnings.push(`codex config fragment ${entry.effectiveId} not applied: ${decision.reason}`);
+      this.logRefusedConfigWrite(configPath, decision.reason);
+      return "refused";
+    }
     this.fs.mkdirp(nodePath.dirname(configPath));
 
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
@@ -806,7 +824,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const rendered = upsertManagedCodexConfigFragment(existing, entry.effectiveId, fragment);
     assertRendersAsLoadableToml(rendered, configPath, entry.effectiveId);
     this.fs.writeFile(configPath, rendered);
-    return true;
+    return "applied";
   }
 
   /**
@@ -841,6 +859,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private provisionWorkspaceTrust(cwd: string | null): void {
     if (!cwd) return;
     const configPath = this.resolveCodexConfigPath();
+    if (!this.mayChangeConfig(configPath)) return;
     this.fs.mkdirp(nodePath.dirname(configPath));
 
     let content = "";
@@ -855,6 +874,19 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
 
     this.fs.writeFile(configPath, content);
+  }
+
+  /** OF-183: false (and said once per file) when this daemon must leave the Codex config at `configPath` unchanged. */
+  private mayChangeConfig(configPath: string): boolean {
+    const decision = this.configWritePolicy.decide(configPath);
+    if (!decision.allowed) this.logRefusedConfigWrite(configPath, decision.reason);
+    return decision.allowed;
+  }
+
+  private logRefusedConfigWrite(configPath: string, reason: string): void {
+    if (this.refusedConfigWrites.has(configPath)) return;
+    this.refusedConfigWrites.add(configPath);
+    console.warn(`[openrig] codex config unchanged: ${reason}`);
   }
 
   private resolveCodexConfigPath(): string {
