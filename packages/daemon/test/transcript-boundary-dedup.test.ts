@@ -1,48 +1,51 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { exec, execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { TmuxAdapter } from "../src/adapters/tmux.js";
-import { shellQuote } from "../src/adapters/shell-quote.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { HcClient } from "../src/adapters/hc-client.js";
+import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-const run = promisify(exec);
-const runFile = promisify(execFile);
+/** The real client to the private core, counting the reads a capture makes. */
+class CountingClient extends HcClient {
+  reads = 0;
+  override async call<T>(method: string, params: Record<string, unknown> = {}, options: { timeoutMs?: number } = {}): Promise<T> {
+    if (method === "terminal.read") this.reads += 1;
+    return super.call<T>(method, params, options);
+  }
+}
 
-describe.skipIf(process.platform === "win32")("native transcript boundary replay", () => {
+describe.skipIf(!findHc())("hc transcript boundary replay", () => {
+  let scratch: HcScratch;
+  beforeAll(() => { scratch = startHcScratch(); }, 60_000);
+  afterAll(() => scratch?.cleanup());
+
   it("does not accumulate a boundary line echoed in unchanged pane scrollback", async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "boundary-replay-"));
-    const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "socket-"));
-    const socket = path.join(socketDir, "owned.sock");
     const outputPath = path.join(temp, "transcript.log");
     const sessionName = "boundary@fixture";
     const oldBoundary = "--- SESSION BOUNDARY: prior restore";
     const echoedBoundary = "--- SESSION BOUNDARY: latest restore";
-    const env = { ...process.env, HOME: temp };
-    delete env.TMUX; delete env.TMUX_TMPDIR;
+    const client = new CountingClient(scratch.socketPath);
+    const adapter = new HcAdapter(client);
     try {
-      const command = `printf '%s\\n' ${shellQuote(echoedBoundary)} 'stable terminal output'; sleep 60`;
-      await runFile("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", sessionName, command], { env });
-      let captures = 0;
-      const tmuxAdapter = new TmuxAdapter(async (command) => {
-        const result = await run(`tmux -S ${shellQuote(socket)} ${command.slice(5)}`, { env });
-        if (command.includes("capture-pane")) captures += 1;
-        return result.stdout;
+      await scratch.client().call("terminal.run", {
+        argv: ["sh", "-c", `printf '%s\\n' '${echoedBoundary}' 'stable terminal output'; sleep 60`], name: hcTerminalName(sessionName),
+        labels: { [SEAT_LABEL]: sessionName }, cwd: temp, no_parent: true, no_notify: true, outlive_parent: true,
       });
-      const readyDeadline = Date.now() + 2000;
-      while (!(await tmuxAdapter.capturePaneContent(sessionName, 20))?.includes("stable terminal output") && Date.now() < readyDeadline) {
+      const readyDeadline = Date.now() + 5000;
+      while (!(await adapter.capturePaneContent(sessionName, 20))?.includes("stable terminal output") && Date.now() < readyDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      expect(await tmuxAdapter.capturePaneContent(sessionName, 20)).toContain(echoedBoundary);
+      expect(await adapter.capturePaneContent(sessionName, 20)).toContain(echoedBoundary);
       fs.writeFileSync(outputPath, `${oldBoundary}\n${echoedBoundary}\n`);
-      captures = 0;
-      startTranscriptRotation(tmuxAdapter, sessionName, outputPath, { lines: 20, pollIntervalMs: 30 });
-      const captureDeadline = Date.now() + 2000;
-      while (captures < 4 && Date.now() < captureDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(captures).toBeGreaterThanOrEqual(4);
+      client.reads = 0;
+      startTranscriptRotation(adapter, sessionName, outputPath, { lines: 20, pollIntervalMs: 30 });
+      const captureDeadline = Date.now() + 5000;
+      while (client.reads < 4 && Date.now() < captureDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(client.reads).toBeGreaterThanOrEqual(4);
       stopTranscriptRotation(sessionName);
       const lines = fs.readFileSync(outputPath, "utf8").split("\n");
       expect(lines.filter((line) => line === oldBoundary)).toHaveLength(1);
@@ -51,9 +54,8 @@ describe.skipIf(process.platform === "win32")("native transcript boundary replay
       expect(lines).toContain("stable terminal output");
     } finally {
       stopTranscriptRotation(sessionName);
-      await stopOwnedTmuxServer(socket, env);
+      await adapter.killSession(sessionName);
       fs.rmSync(temp, { recursive: true, force: true });
-      fs.rmSync(socketDir, { recursive: true, force: true });
     }
   });
 });

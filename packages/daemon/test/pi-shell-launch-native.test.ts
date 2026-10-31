@@ -3,25 +3,26 @@ import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
-import { execFile, execFileSync, exec as execCallback } from "node:child_process";
-import { promisify } from "node:util";
-import { describe, expect, it, vi } from "vitest";
-import { TmuxAdapter, type TmuxFileOps } from "../src/adapters/tmux.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
+import { sessionEnvLabels } from "../src/adapters/hc-identity.js";
+import { defaultTmuxFileOps } from "../src/adapters/tmux.js";
 import { PiRuntimeAdapter } from "../src/adapters/pi-runtime-adapter.js";
 import { PiResumeAdapter } from "../src/adapters/pi-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
 import { buildPiRunnerCommand, piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
-import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
+import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
-const exec = promisify(execCallback);
-const run = promisify(execFile);
-let hasTmux = false;
-try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); hasTmux = true; } catch { /* optional native dependency */ }
 const quote = (s: string) => "'" + s.replace(/'/g, "'\"'\"'") + "'";
 
 // The runner entry is deliberately offline: this exercises the real adapter,
-// tmux, canonical macOS tty and shell, without starting Pi or touching provider settings.
-describe.skipIf(!hasTmux || process.platform === "win32")("Pi launch through native tty", () => {
+// an hc terminal, canonical macOS tty and shell, without starting Pi or touching provider settings.
+describe.skipIf(!findHc() || !fs.existsSync("/bin/bash"))("Pi launch through an hc terminal's tty", () => {
+  let scratch: HcScratch;
+  beforeAll(() => { scratch = startHcScratch(); }, 60_000);
+  afterAll(() => scratch?.cleanup());
+
   it.each([...["fresh", "fork", "resume", "short-long-tmpdir", "fresh-long-tmpdir", "fork-long-tmpdir", "resume-long-tmpdir"].flatMap(mode => [
     { mode, canonical: true }, { mode, canonical: false },
   ]), ...["fresh-routing", "fork-routing", "resume-routing", "fork-routing-long-tmpdir", "resume-routing-long-tmpdir"].map(mode => ({ mode, canonical: false }))])("preserves $mode runner arguments (canonical reader: $canonical)", async ({ mode, canonical }) => {
@@ -29,7 +30,6 @@ describe.skipIf(!hasTmux || process.platform === "win32")("Pi launch through nat
     const longTmp = mode.endsWith("long-tmpdir");
     const routing = mode.includes("-routing");
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-"));
-    const socket = path.join(temp, "tmux.sock");
     const session = "pi-fixture";
     const long = Array.from({ length: 8 }, () => "nested-directory-" + "x".repeat(35)).join(path.sep);
     const stateRoot = path.join(temp, longTmp ? "short" : long, "state");
@@ -91,29 +91,29 @@ setInterval(() => {}, 1000);
         sessionEnv.OPENRIG_URL = `http://127.0.0.1:${(routeServer.address() as { port: number }).port}`;
       }
       // The canonical reader models a shell before an interactive line editor
-      // takes over. Only the owned fixture socket receives input.
-      await run("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", session,
-        ...(routing ? Object.entries(sessionEnv).flatMap(([key, value]) => ["-e", `${key}=${value}`]) : []),
-        `env PATH=${quote(process.env.PATH ?? "")} ${canonical
-          ? `/bin/sh -c 'stty icanon -echo; while IFS= read -r line; do eval "$line"; done'`
-          : routing ? `/bin/bash --noprofile --rcfile ${quote(rc)} -i` : "/bin/bash --noprofile --norc -i"}`]);
+      // takes over. Only the owned fixture core receives input.
+      const launchEnv = routing ? sessionEnv : { PATH: process.env.PATH ?? "" };
+      await scratch.client().call("terminal.run", {
+        argv: canonical
+          ? ["env", `PATH=${process.env.PATH ?? ""}`, "/bin/sh", "-c", 'stty icanon -echo; while IFS= read -r line; do eval "$line"; done']
+          : routing ? ["/bin/bash", "--noprofile", "--rcfile", rc, "-i"] : ["/bin/bash", "--noprofile", "--norc", "-i"],
+        env: launchEnv, name: hcTerminalName(session), cwd: temp, no_parent: true, no_notify: true, outlive_parent: true,
+        labels: { [SEAT_LABEL]: session, ...(routing ? sessionEnvLabels(sessionEnv) : {}) },
+      });
+      // A long TMPDIR makes the staged script's path too long to type: the adapter takes its temp names from the process tmpdir.
       const longTmpdir = path.join(temp, ...Array.from({ length: 9 }, () => "t".repeat(60)));
-      let fileOps: TmuxFileOps | undefined;
       if (longTmp) {
         fs.mkdirSync(longTmpdir, { recursive: true });
-        let names = 0;
-        fileOps = {
-          tmpName: () => path.join(longTmpdir, `launch-${names++}.tmp`),
-          bufferName: () => `pi-buffer-${names++}`,
-          writeFile: (p, text, options) => fs.promises.writeFile(p, text, options),
-          unlink: p => fs.promises.unlink(p),
-        };
-        expect(Buffer.byteLength(`/bin/sh ${quote(fileOps.tmpName())}`)).toBeGreaterThan(512);
+        vi.stubEnv("TMPDIR", longTmpdir);
+        expect(Buffer.byteLength(`/bin/sh ${quote(defaultTmuxFileOps().tmpName())}`)).toBeGreaterThan(512);
       }
-      const tmux = new TmuxAdapter(async command => (await exec(command.replace(/^tmux /,
-        `tmux -S ${quote(socket)} `))).stdout, fileOps);
+      const tmux = new HcAdapter(scratch.client());
       const send = vi.spyOn(tmux, "sendShellCommand");
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // hc reports a terminal's foreground process on its next sweep (about 0.4 s after the start; see the it.fails in
+      // claude-interactive-launch.test.ts), where tmux knew `pane_current_command` at once. Launch once it is there.
+      for (let i = 0; i < 400 && !(await scratch.client().call<{ foreground?: { name?: string } | null }>("terminal.get", { terminal: hcTerminalName(session) })).foreground?.name; i++) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
       if (routing) {
         for (let i = 0; i < 100 && !fs.existsSync(path.join(temp, "rc-ready")); i++) {
           await new Promise(resolve => setTimeout(resolve, 20));
@@ -159,8 +159,12 @@ setInterval(() => {}, 1000);
       if (canonical) return; // Argument-delivery floor; readiness needs real interactive shell job control.
       const readiness = new PiRuntimeAdapter({ tmux, fsOps, stateRoot, runnerEntryPath: runner });
       const binding = { tmuxSession: session, cwd } as never;
+      // The foreground is reported on hc's sweep, so "the runner is the foreground" is true a moment after the runner started.
+      for (let attempt = 0; attempt < 400 && !(await readiness.checkReady(binding)).ready; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
       expect(await readiness.checkReady(binding)).toEqual({ ready: true });
-      await run("tmux", ["-S", socket, "send-keys", "-t", session, "C-c"]);
+      expect(await tmux.sendKeys(session, ["C-c"])).toEqual({ ok: true });
       // The pane's foreground command is not a reliable "runner is gone" signal: it can read as something other than
       // "node" before the process is reaped, and checkReady then still reports { ready: true } (6 of 90 loaded runs, each in
       // 0.3-0.5 s, so never a slow exit). Poll checkReady itself, bounded well inside this test's 10 s budget, and keep the
@@ -170,9 +174,10 @@ setInterval(() => {}, 1000);
       }
       expect(await readiness.checkReady(binding)).toMatchObject({ ready: false, code: "runner_exited" });
     } finally {
-      await stopOwnedTmuxServer(socket, process.env);
+      vi.unstubAllEnvs();
+      await new HcAdapter(scratch.client()).killSession(session);
       if (routeServer?.listening) await new Promise<void>(resolve => routeServer.close(() => resolve()));
       fs.rmSync(temp, { recursive: true, force: true });
     }
-  }, 10_000);
+  }, 60_000);
 });
