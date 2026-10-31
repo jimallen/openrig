@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -100,7 +100,7 @@ describe("S03 future native permission selections (offline; no native effect cla
     expect(() => validateNativePermissionSelection("pi", "full_bypass")).toThrow(/trust is separate/);
   });
   it("persists selection across DB reopen, applies explicit precedence and rejects runtime drift", async () => {
-    const file = join(tmpdir(), `s03-${randomUUID()}.sqlite`); const f = fixture("codex", file);
+    const file = join(mkTemp(join(tmpdir(), "s03-native-permissions-")), "perm.sqlite"); const f = fixture("codex", file);
     await f.service.setPermissions(input("full_bypass")); f.db.close();
     const db = new Database(file); opened.push(db); const store = new NativePermissionStore(db);
     expect(store.apply({ ...binding(f.node.id), launchPosture: "floor" }, "codex").launchPosture).toBe("full_bypass");

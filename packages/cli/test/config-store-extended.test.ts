@@ -9,8 +9,7 @@
 //   - parseNamedPairs decodes the named-pair format
 //   - init-workspace creates the canonical project scaffold; idempotent
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkTemp } from "./helpers/temp-roots.js";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -33,10 +32,13 @@ const HOISTED_HOME: string = vi.hoisted(() => {
   const os = require("node:os");
   const fs = require("node:fs");
   const path = require("node:path");
-  const home = mkTemp(path.join(os.tmpdir(), "config-store-home-")) as string;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "config-store-home-")) as string;
   process.env["OPENRIG_HOME"] = home;
   return home;
 });
+
+// vi.hoisted cannot use imported helpers, so this root is removed here rather than via mkTemp.
+afterAll(() => { rmSync(HOISTED_HOME, { recursive: true, force: true }); });
 
 function clearEnv(): () => void {
   const keysToClear = [
