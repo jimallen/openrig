@@ -122,6 +122,7 @@ import { outboxOutcomeLabelSchema } from "./migrations/117_outbox_outcome_label.
 import { nativeInboxSchema } from "./migrations/118_native_inbox.js";
 import { nativeNameEnvelopeSchema } from "./migrations/119_native_name_envelope.js";
 import { nodeEnvPassthroughSchema } from "./migrations/120_node_env_passthrough.js";
+import { bindingTerminalAddressSchema } from "./migrations/121_binding_terminal_address.js";
 
 /** Numbers held for changes that have not landed, with the exact name each must land under. pda L0
  *  (pda-runtime-design-9l Rev 2): L2b added 115 (`nodes.pda_binding`) and L2c added 116
@@ -252,4 +253,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   nativeInboxSchema,
   nativeNameEnvelopeSchema,
   nodeEnvPassthroughSchema,
+  bindingTerminalAddressSchema,
 ];
