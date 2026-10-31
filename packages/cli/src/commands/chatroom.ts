@@ -1,10 +1,68 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { DaemonClient, DaemonConnectionError, DaemonTimeoutError, type DaemonResponse } from "../client.js";
 import { readOpenRigEnv } from "../openrig-compat.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+
+/** Label that ties a watch terminal to the rig it watches. */
+export const CHATROOM_LABEL = "openrig.chatroom";
+
+/** hc names are 1 to 32 of a-z 0-9 - _ . A digest keeps `name_taken` as the atomic one-watch-per-rig refusal for any rig name. */
+export function chatroomTerminalName(rig: string): string {
+  return `cr-${createHash("sha256").update(rig).digest("hex").slice(0, 24)}`;
+}
+
+export interface HcRunResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  /** Set when `hc` could not be started at all (not installed, not executable). */
+  spawnError?: string;
+}
+
+/** The seams the dedicated-terminal watch uses: the `hc` CLI and the argv that re-runs this CLI. */
+export interface ChatroomHcDeps {
+  runHc(args: string[]): HcRunResult;
+  /** Absolute argv that starts this same CLI, so the terminal does not depend on the core's PATH. */
+  selfArgv(): string[];
+}
+
+const realHcDeps: ChatroomHcDeps = {
+  runHc(args) {
+    // No shell: the rig name only ever travels as one argv element.
+    const r = spawnSync("hc", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", spawnError: r.error?.message };
+  },
+  selfArgv: () => [process.execPath, process.argv[1] ?? "rig"],
+};
+
+/** `hc --json` reports a refusal as {"error":{"kind":...,"message":...}} on stderr; read stdout too. */
+function hcErrorKind(r: HcRunResult): { kind?: string; message?: string } {
+  for (const text of [r.stderr, r.stdout]) {
+    try {
+      const parsed = JSON.parse(text.trim()) as { error?: { kind?: string; message?: string } };
+      if (parsed.error) return parsed.error;
+    } catch { /* not JSON */ }
+  }
+  return {};
+}
+
+/**
+ * The terminal does not inherit this process's env (hc gives a program the core's env), so the daemon address
+ * this command already resolved is stated in the argv. A URL that carries credentials is left out of argv.
+ */
+function daemonUrlEnv(baseUrl: string): string[] {
+  try {
+    const u = new URL(baseUrl);
+    if (u.username || u.password) return [];
+  } catch {
+    return [];
+  }
+  return [`OPENRIG_URL=${baseUrl}`];
+}
 
 interface RigSummary {
   id: string;
@@ -36,7 +94,7 @@ function isTransientPollError(err: unknown): boolean {
   return err instanceof DaemonConnectionError && err.causeCode !== undefined && TRANSIENT_CONNECTION_CODES.has(err.causeCode);
 }
 
-export function chatroomCommand(depsOverride?: StatusDeps): Command {
+export function chatroomCommand(depsOverride?: StatusDeps, hcDeps: ChatroomHcDeps = realHcDeps): Command {
   const cmd = new Command("chatroom").description("Chat room for rig communication");
   const getDeps = (): StatusDeps => depsOverride ?? {
     lifecycleDeps: realDeps(),
@@ -151,12 +209,13 @@ export function chatroomCommand(depsOverride?: StatusDeps): Command {
       }
     });
 
-  // chatroom watch <rig> [--tmux]
+  // chatroom watch <rig> [--terminal]   (--tmux: hidden alias of --terminal, kept for scripts and the shipped skill text)
   cmd
     .command("watch")
     .argument("<rig>", "Rig name")
-    .option("--tmux", "Run watch in a dedicated tmux session")
-    .action(async (rig: string, opts: { tmux?: boolean }) => {
+    .option("--terminal", "Run watch in a dedicated hc terminal that outlives this command")
+    .addOption(new Option("--tmux", "Alias of --terminal").hideHelp())
+    .action(async (rig: string, opts: { terminal?: boolean; tmux?: boolean }) => {
       const client = await getClient();
       if (!client) return;
 
@@ -169,16 +228,27 @@ export function chatroomCommand(depsOverride?: StatusDeps): Command {
         return;
       }
 
-      if (opts.tmux) {
-        const sessionName = `chatroom@${rig}`;
-        try {
-          execSync(`tmux new-session -d -s ${JSON.stringify(sessionName)} "rig chatroom watch ${JSON.stringify(rig)}"`, { stdio: "ignore" });
-          console.log(`Started watch in tmux session: ${sessionName}`);
-          console.log(`Attach with: tmux attach -t ${sessionName}`);
-        } catch {
-          console.error(`Failed to create tmux session '${sessionName}'. It may already exist.`);
+      if (opts.terminal || opts.tmux) {
+        const name = chatroomTerminalName(rig);
+        const program = ["/usr/bin/env", ...daemonUrlEnv(client.baseUrl), ...hcDeps.selfArgv(), "chatroom", "watch", rig];
+        const result = hcDeps.runHc([
+          "run", "--json", "--bg", "--no-parent", "--no-notify", "--outlive-parent",
+          "--name", name, "--label", `${CHATROOM_LABEL}=${rig}`, "--", ...program,
+        ]);
+        if (result.spawnError || result.status !== 0) {
+          const err = hcErrorKind(result);
+          if (err.kind === "name_taken") {
+            console.error(`A watch for '${rig}' is already running in terminal '${name}'. Attach with: hc attach ${name}`);
+          } else if (result.spawnError) {
+            console.error(`Failed to start hc: ${result.spawnError}`);
+          } else {
+            console.error(`Failed to start the watch terminal for '${rig}': ${err.message ?? `hc exited with ${result.status}`}`);
+          }
           process.exitCode = 1;
+          return;
         }
+        console.log(`Started watch in hc terminal: ${name}`);
+        console.log(`Attach with: hc attach ${name}`);
         return;
       }
 
