@@ -1,7 +1,6 @@
 // OF-180 N4: `transport.native_claude` is read on every send; the answer is kept until the settings file or the env
 // override changes. Real files in a temp dir; nothing here reads ~/.openrig.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as nodeFs from "node:fs";
 import { mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,9 +8,10 @@ import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 import { cachedFlag, nativeClaudeFlag, NATIVE_CLAUDE_ENV, settingsFileSignature } from "../src/domain/native-claude-setting.js";
 
 // The real statSync by default; one test hands the signature a fabricated stat (see the inode row).
+const fabricated = vi.hoisted(() => ({ stat: undefined as object | undefined }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, statSync: vi.fn(actual.statSync) };
+  return { ...actual, statSync: (...args: Parameters<typeof actual.statSync>) => fabricated.stat ?? actual.statSync(...args) };
 });
 
 const cleanups: Array<() => void> = [];
@@ -70,10 +70,9 @@ describe("settingsFileSignature: the inode term", () => {
   // by an atomic save that lands on the same size and timestamps would keep serving the old flag value.
   it("two stats that differ only in the inode give two signatures; identical stats give one", () => {
     const stat = (ino: bigint) => ({ ino, size: 7n, mtimeNs: 5n, ctimeNs: 9n });
-    const statSync = vi.mocked(nodeFs.statSync);
     const sign = (ino: bigint) => {
-      statSync.mockImplementationOnce((() => stat(ino)) as unknown as typeof nodeFs.statSync);
-      return settingsFileSignature("/fabricated/config.json");
+      fabricated.stat = stat(ino);
+      try { return settingsFileSignature("/fabricated/config.json"); } finally { fabricated.stat = undefined; }
     };
     const first = sign(100n);
     expect(sign(100n)).toBe(first);
