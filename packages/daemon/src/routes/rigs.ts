@@ -21,6 +21,7 @@ import {
 } from "../domain/node-inventory.js";
 import { projectionLane } from "../domain/projection-lane.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
+import { Reconciler } from "../domain/reconciler.js";
 import type { AgentActivityStore } from "../domain/agent-activity-store.js";
 import type { SeatActivityService } from "../domain/seat-activity-service.js";
 import type { SeatStructuralActivityService } from "../domain/seat-structural-activity-service.js";
@@ -578,6 +579,14 @@ rigsRoutes.post("/:id/archive", async (c) => {
     return { changed, persisted };
   })();
 
+  // OF-177: an archived rig must not keep session rows that read `running` for hosts that are gone.
+  // Best effort and after the archive committed: a failed probe leaves the row for the boot reconcile.
+  const archiveAdapter = c.get("tmuxAdapter" as never) as TmuxAdapter | undefined;
+  if (result.changed && archiveAdapter) {
+    try {
+      await new Reconciler({ db: eventBus.db, sessionRegistry: getSessionRegistry(c), eventBus, tmuxAdapter: archiveAdapter }).reconcileArchivedRigs(rigId);
+    } catch { /* the archive itself succeeded; the next boot reconcile retries */ }
+  }
   try {
     if (result.persisted) eventBus.notifySubscribers(result.persisted);
     return c.json({ ok: true, rigId, archived: result.changed });

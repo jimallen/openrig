@@ -774,6 +774,25 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       } catch { /* logging must never throw */ }
     }
   }
+  // OF-177: listRigs() above hides archived rigs, so their stale 'running' rows were never reconciled.
+  try {
+    const archived = await reconciler.reconcileArchivedRigs();
+    reconcileChecked += archived.checked;
+    reconcileDetached += archived.detached;
+    reconcileErrors += archived.errors.length;
+    for (const e of archived.errors) {
+      try {
+        // eslint-disable-next-line no-console
+        console.warn(`startup reconcile warning: archived session=${e.sessionId} error=${e.error}`);
+      } catch { /* logging must never throw */ }
+    }
+  } catch (err) {
+    reconcileErrors += 1;
+    try {
+      // eslint-disable-next-line no-console
+      console.warn(`startup reconcile warning: archived rigs error=${err instanceof Error ? err.message : String(err)}`);
+    } catch { /* logging must never throw */ }
+  }
   try {
     // eslint-disable-next-line no-console
     console.log(`startup reconcile: rigs=${rigs.length} checked=${reconcileChecked} detached=${reconcileDetached} errors=${reconcileErrors}`);
