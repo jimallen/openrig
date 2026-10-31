@@ -1,66 +1,29 @@
 // The TUI's "Open terminals" path end to end: the TUI's preview, its planId passed as the expected plan, and the CLI
 // window opener with the provider omitted (`rig terminal open --window --expected-plan <planId> -- <view>`).
 // Real: the daemon's terminal routes and TerminalService (provider selection, composition, plan hashing) over
-// localhost, the TUI and CLI daemon clients, and the window opener's plain-tmux fallback on an isolated tmux server.
+// localhost, and the TUI and CLI daemon clients.
 // Stubbed: the provider adapters' status and liveness, the Herdr binary probe, and the macOS desktop launcher
 // (osascript), which records its command instead of opening a window.
-import { afterAll, afterEach, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { afterEach, expect, it } from "vitest";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { DaemonClient as CliClient } from "../src/client.js";
 import { openTerminalWindow, type WindowDeps } from "../src/terminal-window.js";
-import { stopOwnedTmuxServerSync } from "../../daemon/test/helpers/orphan-reaper.js";
 import { DaemonClient as TuiClient } from "../../tui/src/daemon-client.js";
 import { terminalRoutes } from "../../daemon/src/routes/terminal.js";
 import { TerminalService } from "../../daemon/src/domain/terminal/terminal-service.js";
 import { HERDR_PANES_PER_PAGE } from "../../daemon/src/domain/terminal/herdr-adapter.js";
 import type { TerminalProvider } from "../../daemon/src/domain/terminal/terminal-provider.js";
 
-const env = { ...process.env }; delete env["TMUX"];
-const sockets: string[] = [];
-const dirs: string[] = [];
-// Owned -S sockets in this file's own directory (a -L name lives in tmux's shared per-user directory, with every other
-// run's servers); short names keep the paths inside the macOS Unix-socket limit.
-const socketDir = mkdtempSync(path.join(tmpdir(), "tw-"));
-const sock = (name: string) => path.join(socketDir, name);
-let keepSocketDir = false;
 const servers: Array<{ close(): void }> = [];
-function tmux(socket: string, args: string[]): string {
-  return execFileSync("tmux", ["-S", sock(socket), "-f", "/dev/null", ...args], { encoding: "utf8", env, timeout: 5000 });
-}
-afterEach(() => {
-  for (const server of servers.splice(0)) server.close();
-  // Each server is stopped and verified gone; one that cannot be fails the test and keeps the socket directory.
-  const failures: unknown[] = [];
-  for (const socket of sockets.splice(0)) {
-    try { stopOwnedTmuxServerSync(sock(socket), env); } catch (error) { failures.push(error); }
-  }
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  if (failures.length > 0) { keepSocketDir = true; throw failures[0]; }
-});
-afterAll(() => { if (!keepSocketDir) rmSync(socketDir, { recursive: true, force: true }); });
+afterEach(() => { for (const server of servers.splice(0)) server.close(); });
 
 async function fixture(herdrAvailable: boolean) {
-  const id = randomUUID().slice(0, 12);
-  const source = `src-${id}`, viewer = `view-${id}`;
-  sockets.push(source, viewer);
-  const dir = mkdtempSync(path.join(tmpdir(), "tui-window-"));
-  dirs.push(dir);
-  const wrapper = path.join(dir, "tmux");
-  writeFileSync(wrapper, `#!/bin/sh\nexec tmux -S ${sock(source)} -f /dev/null "$@"\n`, { mode: 0o755 });
   const seats = ["seat0", "seat1"];
-  for (const seat of seats) tmux(source, ["new-session", "-d", "-s", seat, "sleep 120"]);
-  tmux(viewer, ["new-session", "-d", "-s", "viewer-fixture", "sleep 120"]);
-  tmux(viewer, ["set-option", "-g", "default-size", "120x40"]);
   const providerOpens: string[] = [];
   const provider = (name: string, available: boolean, panesPerPage?: number): TerminalProvider => ({
     name, ...(panesPerPage ? { panesPerPage } : {}),
-    status: async () => ({ provider: name, available, capabilities: { layout: true } }),
+    status: async () => ({ provider: name, available, capabilities: { layout: true }, ...(name === "herdr" && available ? { launch: { socketPath: "/fixture/herdr.sock" } } : {}) }),
     liveness: async () => ({ alive: available }),
     openView: async (view) => {
       providerOpens.push(name);
@@ -73,7 +36,7 @@ async function fixture(herdrAvailable: boolean) {
     resolveProvider: name => providers[name] ?? null,
     viewsStore: { get: viewId => (viewId === "fixture" ? saved : null), list: () => [saved] },
     listRigSeats: () => null, listPodSeats: () => null, listScopeSeats: () => null, listRigNames: () => [],
-    resolveHost: () => null, hasSession: () => true, resolveLocalTmux: () => wrapper,
+    resolveHost: () => null, hasSession: () => true, resolveLocalTmux: () => "/fixture/tmux",
   } as ConstructorParameters<typeof TerminalService>[0]);
   const app = new Hono();
   app.use("*", async (c, next) => { (c.set.bind(c) as (k: string, v: unknown) => void)("terminalService", service); await next(); });
@@ -84,29 +47,36 @@ async function fixture(herdrAvailable: boolean) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const launched: string[] = [];
   const deps: WindowDeps = {
-    herdrConfig: () => { throw new Error("tmux must not prepare Herdr config"); },
-    platform: "darwin", env: { TERM_PROGRAM: "Apple_Terminal", HOME: dir }, exists: () => false,
+    herdrConfig: () => "/fixture/private herdr.toml",
+    platform: "darwin", env: { TERM_PROGRAM: "Apple_Terminal", HOME: "/fixture/home" }, exists: () => false,
     exec: async (file, args) => {
-      if (file === "herdr" || file.endsWith("/herdr")) throw new Error("herdr: not installed");
-      if (file === "/bin/sh") return "tmux";
+      if (args.includes("--version")) { if (!herdrAvailable) throw new Error("herdr: not installed"); return "herdr 0.9.3"; }
+      if (file === "/bin/sh") { if (!herdrAvailable) throw new Error("herdr: not installed"); return "/fixture/bin/herdr"; }
       if (file === "/usr/bin/osascript") { launched.push(args.join(" ")); return "window"; }
-      if (file === "tmux") return tmux(viewer, args);
       throw new Error(`unexpected executable ${file}`);
     },
-    launch: async () => {}, sleep: async () => {}, id: () => id,
+    launch: async () => {}, sleep: async () => {}, id: () => "fixture",
   };
-  const viewCreated = () => tmux(viewer, ["list-sessions", "-F", "#{session_name}"]).split("\n").includes(`openrig-view-${id}`);
-  return { baseUrl, saved, deps, launched, providerOpens, viewCreated };
+  return { baseUrl, saved, deps, launched, providerOpens };
 }
 
-it("with no Herdr and a live cmux, Open terminals reaches the plain-tmux window", async () => {
+it("with no Herdr and a live cmux, Open terminals opens no window and no other viewer", async () => {
   const f = await fixture(false);
   const preview = await new TuiClient({ baseUrl: f.baseUrl }).previewTerminal("saved:fixture");
   const result = await openTerminalWindow(new CliClient(f.baseUrl), "saved:fixture", undefined, f.deps, preview.planId);
-  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "tmux", opened: ["seat0", "seat1"] });
-  expect(f.viewCreated()).toBe(true);
-  expect(f.launched).toHaveLength(1);
+  expect(result).toMatchObject({ ok: false, provider: "herdr", opened: [], windowAttempted: false });
+  expect(result.error).toContain("Herdr is not installed");
+  expect(f.launched).toEqual([]);
   expect(f.providerOpens).toEqual([]);
+});
+
+it("with Herdr available, Open terminals opens one window and asks the daemon to place the previewed seats once", async () => {
+  const f = await fixture(true);
+  const preview = await new TuiClient({ baseUrl: f.baseUrl }).previewTerminal("saved:fixture");
+  const result = await openTerminalWindow(new CliClient(f.baseUrl), "saved:fixture", undefined, f.deps, preview.planId);
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "herdr", opened: ["seat0", "seat1"] });
+  expect(f.launched).toHaveLength(1);
+  expect(f.providerOpens).toEqual(["herdr"]);
 });
 
 it("with Herdr available, the TUI preview's plan is the one the window opener checks, as before", async () => {
@@ -120,15 +90,15 @@ it("with Herdr available, the TUI preview's plan is the one the window opener ch
   expect(tui.planId).toBe(windowOpener.planId);
 });
 
-it("a view that really changed after the preview is still refused, without a window or a tmux view", async () => {
-  const f = await fixture(false);
+it("a view that really changed after the preview is still refused, without a window or a view", async () => {
+  const f = await fixture(true);
   const preview = await new TuiClient({ baseUrl: f.baseUrl }).previewTerminal("saved:fixture");
   f.saved.members = f.saved.members.slice(0, 1);
   const result = await openTerminalWindow(new CliClient(f.baseUrl), "saved:fixture", undefined, f.deps, preview.planId);
   expect(result.ok).toBe(false);
   expect(result.error).toContain("The terminal view changed since preview");
   expect(f.launched).toEqual([]);
-  expect(f.viewCreated()).toBe(false);
+  expect(f.providerOpens).toEqual([]);
 });
 
 it("a provider-less open that isn't a window still chooses cmux when Herdr isn't available", async () => {
