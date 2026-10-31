@@ -3,6 +3,9 @@ import { Hono } from "hono";
 import { decodeTime } from "ulid";
 import type Database from "better-sqlite3";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
+import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
+import { seatDeliveryGuardSchema } from "../src/db/migrations/087_seat_delivery_guard.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -153,11 +156,17 @@ describe("one path at the verbs: send and capture surface the transport outcome"
     });
 
     // The reason code `tmux_unavailable` is a persisted contract and stays; the words an operator reads name the seat host.
-    it("the unreachable-host text names the terminal host and not the tmux server, on send and on capture, while the reason code keeps its name", async () => {
+    it("the unreachable-host text names the terminal host and not the tmux server, on send, on send with a wait for idle and on capture, while the reason code keeps its name", async () => {
       seedSeat();
       const sent = await transportOver(NO_SERVER).send(SEAT, "hello");
+      // The wait for idle probes the seat before it waits, and only a seat the delivery guard knows takes that path.
+      const guarded = new TmuxAdapter(failingExec(NO_SERVER));
+      db.exec(outboxEntriesSchema.sql);
+      db.exec(seatDeliveryGuardSchema.sql);
+      guarded.deliveryGuard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
+      const sentAfterWait = await new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: guarded }).send(SEAT, "hello", { waitForIdleMs: 1_000 });
       const captured = await transportOver(NO_SERVER).capture(SEAT);
-      for (const result of [sent, captured]) {
+      for (const result of [sent, sentAfterWait, captured]) {
         expect(result.ok).toBe(false);
         if (result.ok) return;
         expect(result.reason).toBe("tmux_unavailable");
