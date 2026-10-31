@@ -4,7 +4,6 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDaemon } from "../src/startup.js";
-import { execArgvCommand } from "../src/adapters/tmux-exec.js";
 import type { ArgvExecFn, ExecFn, TmuxAdapter } from "../src/adapters/tmux.js";
 import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 
@@ -33,12 +32,16 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
     fs.rmSync(tmuxDir, { recursive: true, force: true });
   });
 
-  for (const host of ["linux", "darwin"] as const) {
-    it(`runs tmux without a shell on ${host}`, async () => {
+  // The seat host is hc unless a suite injects a tmux exec (startup.ts: "no runtime path passes one"), so no platform
+  // reaches the tmux adapter's argv exec by default and OPENRIG_TMUX_SHELL has nothing left to choose.
+  for (const host of ["linux", "darwin", "win32"] as const) {
+    it(`seats the daemon on hc, with no tmux exec, on ${host}`, async () => {
       Object.defineProperty(process, "platform", { ...platform, value: host });
       const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
       try {
-        expect(argvExecOf(daemon.deps.tmuxAdapter)).toBe(execArgvCommand);
+        expect(daemon.deps.tmuxAdapter.hostKind).toBe("hc");
+        // Its exec is the refusal HcAdapter installs, so a tmux call that slipped through fails loudly and never runs tmux.
+        await expect(argvExecOf(daemon.deps.tmuxAdapter)!(["list-sessions"])).rejects.toThrow(/a tmux path was reached/);
       } finally {
         daemon.eventLoopMonitor.stop();
         daemon.db.close();
@@ -46,17 +49,26 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
     });
   }
 
-  it("OPENRIG_TMUX_SHELL=1 keeps tmux on the shell path on linux, and is ignored on Windows", async () => {
+  it("OPENRIG_TMUX_SHELL=1 does not move the daemon off hc", async () => {
     vi.stubEnv("OPENRIG_TMUX_SHELL", "1");
-    for (const [host, expected] of [["linux", undefined], ["win32", execArgvCommand]] as const) {
-      Object.defineProperty(process, "platform", { ...platform, value: host });
-      const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
-      try {
-        expect(argvExecOf(daemon.deps.tmuxAdapter), host).toBe(expected);
-      } finally {
-        daemon.eventLoopMonitor.stop();
-        daemon.db.close();
-      }
+    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+    try {
+      expect(daemon.deps.tmuxAdapter.hostKind).toBe("hc");
+    } finally {
+      daemon.eventLoopMonitor.stop();
+      daemon.db.close();
+    }
+  });
+
+  it("an injected argv exec keeps the tmux adapter, and is the exec it runs", async () => {
+    const argvExec: ArgvExecFn = async () => "";
+    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory, argvExec });
+    try {
+      expect(daemon.deps.tmuxAdapter.hostKind).toBe("tmux");
+      expect(argvExecOf(daemon.deps.tmuxAdapter)).toBe(argvExec);
+    } finally {
+      daemon.eventLoopMonitor.stop();
+      daemon.db.close();
     }
   });
 
