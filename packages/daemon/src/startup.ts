@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { PostRestartNotifier } from "./domain/post-restart-notifier.js";
+import { wirePostRestartPrompt, type PostRestartWiringOptions } from "./domain/post-restart-wiring.js";
 import { resolveSessionNodeId } from "./domain/queue-owner.js";
 import { isSessionNameRunning, resolveRunningSeat } from "./domain/latest-session-name-match.js";
 import { listWakeSessionsBySeat } from "./domain/wake-resolve-service.js";
@@ -230,6 +230,8 @@ interface DaemonOptions {
   terminalBearerToken?: string | null;
   /** Overrides the `ui.enabled` setting (tests). */
   webUiEnabled?: boolean;
+  /** Clock and delays of the post-restart prompt (tests); absent = 20 s first delay, 60 s retries, 30 min window. */
+  postRestartTiming?: PostRestartWiringOptions["timing"];
 }
 
 interface DaemonResult {
@@ -2150,22 +2152,18 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const sessionTransport = deps.sessionTransport;
   if (sessionTransport) {
     // OF-182: a seat whose conversation a restore resumed is told it was restarted and its background work was killed.
-    const postRestart = new PostRestartNotifier({
-      enabled: () => {
-        try { return new ContextPackSettingsStore().resolveOne("recovery.post_restart_prompt").value === true; } catch { return true; }
-      },
-      sessionOf: (nodeId) => (db.prepare("SELECT session_name AS name FROM sessions WHERE node_id = ? AND status = 'running' ORDER BY rowid DESC LIMIT 1")
-        .get(nodeId) as { name: string } | undefined)?.name ?? null,
-      rigNameOf: (rigId) => (db.prepare("SELECT name FROM rigs WHERE id = ?").get(rigId) as { name: string } | undefined)?.name ?? null,
+    // A daemon restart inside the 30-minute window must not lose the prompt: restores still inside it are re-derived
+    // from the event log (the outbox row under the fixed delivery id keeps a delivered one from being sent twice).
+    const postRestart = wirePostRestartPrompt({
+      db,
+      eventBus,
+      readSwitch: () => new ContextPackSettingsStore().resolveOne("recovery.post_restart_prompt").value === true,
       send: (sessionName, text, opts) => sessionTransport.send(sessionName, text, opts),
       outbox: outboxHandlerInstance,
       log: (line) => console.warn(line),
+      timing: opts?.postRestartTiming,
     });
-    eventBus.subscribe((event) => {
-      if (event.type !== "restore.completed") return;
-      void postRestart.onRestoreCompleted({ seq: event.seq, rigId: event.rigId, result: event.result })
-        .catch((err) => console.warn(`[post-restart] ${err instanceof Error ? err.message : String(err)}`));
-    });
+    void postRestart.rederiveFromLog().catch((err) => console.warn(`[post-restart] ${err instanceof Error ? err.message : String(err)}`));
     // Native comms step 3: the deadline sweeper (§8.1 R3). It reads the database, so rows a restart left `sending` are
     // settled too: delivered when the marker is in the seat's transcript, failed over to tmux after a proven non-take,
     // indeterminate (never re-sent) when no boundary came by the hard deadline. One sweep at a time.
