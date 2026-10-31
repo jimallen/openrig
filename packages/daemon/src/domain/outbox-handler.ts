@@ -467,12 +467,24 @@ export class OutboxHandler {
       .run(state, state === "delivered" ? new Date().toISOString() : null, label.path, label.evidence, label.detail ?? null, outboxId).changes === 1;
   }
 
-  /** Native rows still awaiting their ack, oldest first. */
+  /** Native rows still awaiting their ack, oldest first. Within one write time the order is staging order (OF-190): a
+   *  coalesced wake group is written in that order, so a tmux resend rebuilt from these rows reads the same. The outbox id
+   *  is no order ("blocker-10" sorts before "blocker-9"). */
   listNativePending(): OutboxEntry[] {
     if (!this.hasNativeColumns()) return [];
     const rows = this.db.prepare(`SELECT * FROM outbox_entries WHERE delivery_state = 'sending' AND delivery_path = 'native'
-      AND ack_evidence = 'native_written' ORDER BY native_written_at, outbox_id`).all() as OutboxEntryRow[];
+      AND ack_evidence = 'native_written' ORDER BY native_written_at, rowid`).all() as OutboxEntryRow[];
     return rows.map((r) => this.rowToEntry(r, "mark"));
+  }
+
+  /** OF-190: the entries in the order they were staged (insertion order, the table's rowid), the one order a wake group is
+   *  written in and can be rebuilt in. */
+  inStagingOrder(entries: OutboxEntry[]): OutboxEntry[] {
+    const rank = this.db.prepare("SELECT rowid AS n FROM outbox_entries WHERE outbox_id = ?");
+    return entries
+      .map((entry) => ({ entry, n: (rank.get(entry.outboxId) as { n: number } | undefined)?.n ?? Number.MAX_SAFE_INTEGER }))
+      .sort((a, b) => a.n - b.n)
+      .map((x) => x.entry);
   }
 
   private hasNativeColumns(): boolean {

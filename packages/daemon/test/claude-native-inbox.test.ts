@@ -790,6 +790,34 @@ describe("OF-180 N7: a wake group's tmux fallback is one message", () => {
     expect(fallbacks.map((x) => [x.outboxIds.length, x.body, x.wake])).toEqual([[1, "first", false], [1, "second", false]]);
     expect(new Set(fallbacks.flatMap((x) => x.outboxIds))).toEqual(new Set([one, two]));
   });
+  // OF-190: the resend text must read in the order the wake was written (staging order), not in outbox-id string order,
+  // where "blocker-10" sorts before "blocker-9". A resent wake that lists a later blocker first misleads the seat.
+  it("a wake group resent over tmux reads in the order it was written, not in id order (blocker-9 before blocker-10)", async () => {
+    const f = make(); await register(f);
+    const e = await eligibleFor(f, "queue@system");
+    const staged = ["blocker-9", "blocker-10", "blocker-11"]; // staged (and written) in this order
+    const ids = staged.map((s) => f.outbox.record({ outboxId: `${WAKE_INTENT_PREFIX}${s}`, senderSession: "queue@system", destinationSession: SEAT, body: s }).outboxId);
+    for (const id of ids) f.outbox.claimForDelivery(id);
+    await f.inbox.deliver({ sessionName: SEAT, senderSession: "queue@system", text: staged.join("\n"), endpoint: e.endpoint, committedOutboxIds: ids });
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 3_000).toISOString());
+    f.clock.t += 130_000;
+    const fallbacks = f.inbox.sweep().fallbacks;
+    expect(fallbacks.map((x) => [x.outboxIds, x.body])).toEqual([[ids, "blocker-9\nblocker-10\nblocker-11"]]);
+  });
+  // OF-190 (unsettled claim, now measured): two wake groups to one seat from one sender written in the same millisecond
+  // carry the same (destination, sender, write time). Nothing stored tells the groups apart, so they come back as ONE
+  // fallback holding both texts in write order, and every row of both settles on that one send. Nothing is lost or
+  // reordered across groups; the two sends become one message. Telling them apart needs a stored group id (a migration).
+  it("two wake groups written in the same millisecond come back as one fallback, both texts in write order, every row settled", async () => {
+    const f = make(); await register(f);
+    const e = await eligibleFor(f, "queue@system");
+    const g1 = await wakeGroup(f, ["w1", "w2"], "queue@system", e);
+    const g2 = await wakeGroup(f, ["w3"], "queue@system", e); // clock not advanced: the same write time
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 3_000).toISOString());
+    f.clock.t += 130_000;
+    const fallbacks = f.inbox.sweep().fallbacks;
+    expect(fallbacks.map((x) => [x.outboxIds, x.body])).toEqual([[[...g1, ...g2], "w1\nw2\nw3"]]);
+  });
   it("wake rows of one write time but another sender are not merged", async () => {
     const f = make(); await register(f);
     const a = await wakeGroup(f, ["a1"], "queue@system", await eligibleFor(f, "queue@system"));

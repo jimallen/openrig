@@ -1186,9 +1186,12 @@ export class QueueRepository {
         });
         for (const peer of peers) if (actionable(this.outbox!.getById(peer.outbox_id)!) && this.outbox!.claimForDelivery(peer.outbox_id)) intents.push(this.outbox!.getById(peer.outbox_id)!);
       }
-      return intents;
+      // OF-190: one text, written in staging order whichever row started the delivery; the tmux resend of a failed-over
+      // native write is rebuilt from the rows in the same order (nothing else of the order is stored).
+      return this.outbox!.inStagingOrder(intents);
     })();
-    const intent = group[0];
+    // The row that started this delivery names the destination, sender and qitem, as before; only the text order is staging order.
+    const intent = group.find((entry) => entry.outboxId === outboxId) ?? group[0];
     if (!intent) return superseded ? "failed" : "skipped";
     // Only deliver a wake for a qitem that actually exists. A wake intent whose
     // target qitem is missing — a caller-recorded id under this prefix (the route
