@@ -522,6 +522,9 @@ export interface RestoreNodeResult {
   // outside the five-term split.)
   status: "resumed" | "rebuilt" | "fresh" | "fresh-primed" | "awaiting-decision" | "failed" | "attention_required" | "operator_recovered";
   error?: string;
+  /** The operator named this seat in `--fresh` and it was started fresh as asked: a requested fresh start is a clean
+   *  outcome, so the rig roll-up does not count it as partial. Absent for a blank-slate start nobody asked for. */
+  requestedFresh?: boolean;
   /** The launcher's refusal code when the launch itself was refused (OF-69: `seat_cwd_unusable`), so a caller can branch on it. */
   errorCode?: string;
   /** OF-155 (Jim, 2026-10-28, option A): the seat came back by reattaching its adopted session, which rig down had left
