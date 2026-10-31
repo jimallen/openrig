@@ -205,15 +205,21 @@ export function createPermissionStallSource(deps: RsiFindingSourceDeps): RsiFind
     // A question to Jim is not a stall either (Jim, 2026-10-31: the rig asks in a modal). Claude Code reports its
     // AskUserQuestion modal as Notification/permission_prompt, like a real permission prompt (measured: 46 of
     // exec-cos@eztrack's 49 needs_input in 7 days followed an AskUserQuestion call by 6-12 s). What tells them apart is
-    // the seat's NEXT PostToolUse in the same generation: AskUserQuestion after an answered modal. A permission prompt
-    // is followed by its own tool's PostToolUse, a denied one by none, and an unanswered modal by none yet: all three
-    // still count. Another tool's PostToolUse first (a racing or subagent tool) also counts: ambiguous, so reported.
+    // the seat's NEXT PostToolUse in the same generation: AskUserQuestion after an answered modal, with no other
+    // needs_input in between (a denied prompt right before a modal must not borrow the modal's answer). Only a
+    // Notification row can be a modal (a PermissionRequest is always a real request). A permission prompt is followed by its own
+    // tool's PostToolUse, a denied one by none, and an unanswered modal by none yet: all still count. Another tool's
+    // PostToolUse first (a racing or subagent tool) also counts: ambiguous, so reported. The answer must come within
+    // 12 hours: Jim answered all 151 of exec-cos's modals within 11.7 h (median 0.7 min, p95 4.4 h), and a later
+    // answer must not hide an old prompt. The lookup walks idx_events_node_type_seq from the row's own seq.
     hitSql: `json_extract(payload, '$.activity.state') = 'needs_input' AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE(json_extract(payload, '$.activity.rawSubtype'), '') IN (${PDA_HELD_CODES.map((c) => `'${c}'`).join(", ")}))`
-      + ` AND COALESCE((SELECT json_extract(nx.payload, '$.activity.rawSubtype') FROM events nx WHERE nx.type = 'agent.activity' AND nx.seq > events.seq`
-      + ` AND json_valid(nx.payload) AND json_extract(nx.payload, '$.activity.rawEvent') = 'PostToolUse'`
+      + ` AND NOT (json_extract(payload, '$.activity.rawEvent') IS 'Notification' AND COALESCE((SELECT CASE WHEN json_extract(nx.payload, '$.activity.rawEvent') = 'PostToolUse' THEN json_extract(nx.payload, '$.activity.rawSubtype') END`
+      + ` FROM events nx WHERE nx.node_id = events.node_id AND nx.type = 'agent.activity' AND nx.seq > events.seq`
+      + ` AND nx.created_at <= datetime(events.created_at, '+12 hours')`
+      + ` AND json_valid(nx.payload) AND (json_extract(nx.payload, '$.activity.rawEvent') = 'PostToolUse' OR json_extract(nx.payload, '$.activity.state') = 'needs_input')`
       + ` AND json_extract(nx.payload, '$.sessionName') IS json_extract(events.payload, '$.sessionName')`
       + ` AND json_extract(nx.payload, '$.activity.generation') IS json_extract(events.payload, '$.activity.generation')`
-      + ` ORDER BY nx.seq LIMIT 1), '') IS NOT 'AskUserQuestion'`,
+      + ` ORDER BY nx.seq LIMIT 1), '') = 'AskUserQuestion')`,
     classSql: `CASE WHEN json_extract(payload, '$.activity.state') IN ${KNOWN_ACTIVITY_STATES} THEN json_extract(payload, '$.activity.state') ELSE 'other' END`,
     classLabel: "activity events by state",
     scope: seatScope,

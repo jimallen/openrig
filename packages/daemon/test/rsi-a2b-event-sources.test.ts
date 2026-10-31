@@ -294,6 +294,36 @@ describe("D9: a question to Jim in a modal is not a stall (Jim, 2026-10-31)", ()
     expect(count(f)).toBe(8);
   });
 
+  it("review: a denied prompt right before an answered modal counts (it does not borrow the modal's answer)", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) { prompt(f); prompt(f); post(f, "AskUserQuestion"); }
+    expect(count(f)).toBe(8);
+  });
+
+  it("review: a PermissionRequest is always a real request, even before an AskUserQuestion answer", () => {
+    const f = fixture();
+    for (let i = 0; i < 8; i++) {
+      f.activity({ seat: S, rawEvent: "PermissionRequest", rawSubtype: "Bash", state: "needs_input", hoursAgo: 2, generation: G });
+      post(f, "AskUserQuestion");
+    }
+    expect(count(f)).toBe(8);
+  });
+
+  it("review: the answer must come within 12 hours of the prompt", () => {
+    const late = fixture();
+    for (let i = 0; i < 8; i++) {
+      late.activity({ seat: S, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 20, generation: `g-${i}` });
+      late.activity({ seat: S, rawEvent: "PostToolUse", rawSubtype: "AskUserQuestion", state: "running", hoursAgo: 7, generation: `g-${i}` });
+    }
+    expect(count(late)).toBe(8);  // answered 13 h later: counted
+    const inTime = fixture();
+    for (let i = 0; i < 8; i++) {
+      inTime.activity({ seat: S, rawEvent: "Notification", rawSubtype: "permission_prompt", state: "needs_input", hoursAgo: 20, generation: `g-${i}` });
+      inTime.activity({ seat: S, rawEvent: "PostToolUse", rawSubtype: "AskUserQuestion", state: "running", hoursAgo: 9, generation: `g-${i}` });
+    }
+    expect(count(inTime)).toBe(0);  // answered 11 h later: not counted
+  });
+
   it("the measured mix: eight modals and eight permission prompts count eight", () => {
     const f = fixture();
     for (let i = 0; i < 8; i++) { prompt(f); post(f, "AskUserQuestion"); prompt(f); post(f, "Bash"); }

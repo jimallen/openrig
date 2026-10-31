@@ -48,7 +48,7 @@ export function fixture() {
     const seq = event(type, {
       type, rigId: a.rigId ?? "rig-1", nodeId: a.nodeId ?? `node-${a.seat}`, sessionName: a.seat, runtime: "claude-code",
       activity: { state: a.state ?? "unknown", rawEvent, ...(a.rawSubtype === null ? {} : { rawSubtype: a.rawSubtype ?? "compact" }), ...(a.generation ? { generation: a.generation } : {}) },
-    }, stamp(a.hoursAgo));
+    }, stamp(a.hoursAgo), { rigId: a.rigId ?? "rig-1", nodeId: a.nodeId ?? `node-${a.seat}` });  // the columns, as the daemon writes them
     // The daemon records one agent.session_identity event beside every SessionStart hook event.
     if (type === "agent.activity" && rawEvent === "SessionStart" && a.identity !== false) {
       event("agent.session_identity", { type: "agent.session_identity", sessionName: a.seat, provenance: "hook" }, stamp(a.hoursAgo));
