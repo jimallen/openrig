@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HcClient, type HcTerminal } from "../src/adapters/hc-client.js";
-import { HcCapture } from "../src/adapters/hc-capture.js";
+import { HcAttach } from "../src/adapters/hc-attach.js";
+import { HcCapture, ObserverModeProbe } from "../src/adapters/hc-capture.js";
 import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { HC, PrivateCore, waitUntil } from "./helpers/hc-private-core.js";
 
@@ -84,19 +85,63 @@ describe.skipIf(!HC)("HcCapture against a private hc core", () => {
     expect(out?.get("n300@rig")?.capturedAt).toBeInstanceOf(Date);
   });
 
-  it("scrolls an idle full-screen app that reports the mouse when history is asked for, and a screen read sends it nothing", async () => {
+  /** A background loop that changes the app's screen every second. */
+  const CHURN = "(i=0; while :; do i=$((i+1)); printf '\\033[HROW%s ' $i; sleep 1; done) & ";
+  /** The wheel events a stub full-screen app (alternate screen, mouse reporting) received: SGR mouse reports, `ESC [ <`. */
+  const stub = async (seat: string, body: string) => {
+    const received = join(core.root, `${seat.split("@")[0]}-stdin`);
+    await core.runSeat(seat, `: > ${received}; printf '\\033[?1049h\\033[?1000h\\033[?1006h\\033[H\\033[2JROW1\\n\\033]7501;state=idle:app=t\\033\\\\'; ${body}stty raw -echo; exec cat >> ${received}`);
+    await waitUntil(async () => (await capture.capturePaneScreen(seat)) ?? "", (text) => text.includes("ROW1"), `${seat} screen`);
+    return () => readFileSync(received, "latin1");
+  };
+
+  it("positive control: a raw history read of an idle full-screen app that reports the mouse does inject wheel events, a screen read does not", async () => {
     // Measured on hc 0.1.15: terminal.read with lines > 0 reads such an app "stitched", by sending it wheel events (about 2.5 s the first time).
-    // A history read of a live seat is therefore not free of side effects; a screen read is.
-    const received = join(core.root, "mouse-app-stdin");
-    await core.runSeat("mouse@rig", `: > ${received}; printf '\\033[?1049h\\033[?1000h\\033[?1006h\\033[H\\033[2JROW1\\n\\033]7501;state=idle:app=t\\033\\\\'; stty raw -echo; exec cat >> ${received}`);
-    await waitUntil(async () => (await capture.capturePaneScreen("mouse@rig")) ?? "", (text) => text.includes("ROW1"), "mouse@rig screen");
-    const bytes = () => readFileSync(received, "latin1");
-    expect(await capture.capturePaneScreen("mouse@rig")).toContain("ROW1");
+    // This is the defect HcCapture avoids; the instrument must be able to see it or the zero below proves nothing.
+    const bytes = await stub("control@rig", "");
+    const ref = hcTerminalName("control@rig");
+    await core.client.call("terminal.read", { terminal: ref, lines: 0 });
     await new Promise((r) => setTimeout(r, 500));
     expect(bytes()).toBe("");
-    expect(await capture.capturePaneContent("mouse@rig", 20)).toContain("ROW1");
-    await waitUntil(async () => bytes(), (text) => text.includes("\u001b[<6"), "wheel events from the history read");
-  }, 20_000);
+    await core.client.call("terminal.read", { terminal: ref, lines: 20 });
+    await waitUntil(async () => bytes(), (text) => text.includes("\u001b[<6"), "wheel events from the raw history read");
+    // The churning stub is no less able to receive them, or its zero below would prove nothing.
+    const churning = await stub("controlchurn@rig", CHURN);
+    // w14: on a screen that changes every second a raw read takes about 10 s and answers `complete: false`.
+    await core.client.call("terminal.read", { terminal: hcTerminalName("controlchurn@rig"), lines: 20 }, { timeoutMs: 40_000 });
+    await waitUntil(async () => churning(), (text) => text.includes("\u001b[<6"), "wheel events from the raw read of a churning app");
+  }, 80_000);
+
+  it("sends a full-screen app that reports the mouse no wheel events, however often it is polled for history", async () => {
+    // Idle app, and an app whose screen changes every second (w14: that case made every raw read inject 600 to 4,700 events and take 10 s).
+    const idle = await stub("mouse@rig", "");
+    const churn = await stub("churn@rig", CHURN);
+    const both = ["mouse@rig", "churn@rig"];
+    const started = Date.now();
+    for (let poll = 0; poll < 6; poll++) {
+      for (const seat of both) {
+        expect(await capture.capturePaneContent(seat, 1000)).toContain("ROW");
+        expect(await capture.capturePaneHistory(seat)).toBeNull();
+      }
+      const batch = await capture.capturePanesContent(both, 80);
+      expect(batch?.get("mouse@rig")?.text).toContain("ROW1");
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    await new Promise((r) => setTimeout(r, 800));
+    expect(Date.now() - started).toBeGreaterThan(3000);  // the churning app changed its screen under the polls
+    expect(idle()).toBe("");
+    expect(churn()).toBe("");
+  }, 60_000);
+
+  it("reads a terminal's modes from an observer's first paint: plain, alternate screen alone, alternate screen with the mouse, finished, absent", async () => {
+    const probe = new ObserverModeProbe(new HcAttach(core.client.socketPath));
+    const modes = (seat: string) => probe.modesOf(hcTerminalName(seat));
+    await expect(modes("n300@rig")).resolves.toEqual({ altScreen: false, mouse: false });
+    await expect(modes("alt@rig")).resolves.toEqual({ altScreen: true, mouse: false });
+    await expect(modes("mouse@rig")).resolves.toEqual({ altScreen: true, mouse: true });
+    await expect(modes("done@rig")).resolves.toEqual({ altScreen: false, mouse: false });
+    await expect(modes("nobody@rig")).resolves.toBeNull();
+  });
 
   it("reads null where the core is not running", async () => {
     const gone = new HcCapture(new HcClient(`${core.root}/no-such.sock`));

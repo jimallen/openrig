@@ -28,7 +28,11 @@ const CLASSIFIED: Record<string, Row> = {
   "domain/resume-metadata-refresher.ts": { sendText: 1, send: 0, cls: "gated" },
   "domain/seat-handover-service.ts": { sendText: 2, send: 0, cls: "handover" },
   "domain/session-transport.ts": { sendText: 3, send: 0, cls: "impl" },
+  // HcAdapter (the hc seat host, behind tmux's method names): `sendText` delegates to HcInput.sendText, the one sender, which
+  // is `impl`. Its text arrives already stripped or classified by the caller of the adapter, as it does for TmuxAdapter.
+  "adapters/hc-adapter.ts": { sendText: 1, send: 0, cls: "impl" },
   "domain/startup-orchestrator.ts": { sendText: 1, send: 1, cls: "stripped (typed text) + constant (guarded retry sends no text)" },
+  "routes/terminal-ws.ts": { sendText: 1, send: 0, cls: "person (a text frame typed at the live terminal, sent with blocked: allow: someone at the broker may answer a dialog)" },
   "routes/transport.ts": { sendText: 0, send: 1, cls: "person" },
   "startup.ts": { sendText: 0, send: 6, cls: "stripped (watchdog, model monitor, native comms step 3's delivery notice via nativeNoticeText, OF-182's post-restart prompt via postRestartText) + constant (attention probe) + replay (native comms step 3: the sweeper's tmux fallback re-sends a native message's accepted text through the same transport, so it keeps that message's class)" },
   "terminal/TerminalSessionBroker.ts": { sendText: 1, send: 0, cls: "person" },

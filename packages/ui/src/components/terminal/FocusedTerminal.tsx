@@ -64,6 +64,26 @@ const DAEMON_CONTROL_PLANE_UNHEALTHY =
 
 type WsMessage = { type: "keys"; keys: string[] } | { type: "text"; text: string };
 
+/**
+ * A terminal on herdr-core has no fixed geometry (the daemon's viewer is an observer and follows the terminal's size), so the daemon
+ * tells the socket the size as one whole JSON text frame, before the first byte of a paint and whenever it changes
+ * (terminal-ws.ts, terminalSizeFrame). The tmux host never sends it: its pane is pinned to 90x27. Null for anything else, which is
+ * terminal output. The bounds keep a hostile frame from asking xterm for an absurd grid.
+ */
+export const MAX_TERMINAL_CELLS = 1000;
+export function parseTerminalSizeFrame(data: string): { cols: number; rows: number } | null {
+  if (!data.startsWith('{"type":"size"')) return null;
+  try {
+    const frame = JSON.parse(data) as { type?: unknown; cols?: unknown; rows?: unknown };
+    const { cols, rows } = frame;
+    if (frame.type !== "size" || typeof cols !== "number" || typeof rows !== "number") return null;
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || cols > MAX_TERMINAL_CELLS || rows > MAX_TERMINAL_CELLS) return null;
+    return { cols, rows };
+  } catch {
+    return null;
+  }
+}
+
 export function mapXtermInput(data: string): WsMessage[] {
   const messages: WsMessage[] = [];
   let i = 0;
@@ -173,6 +193,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // fontSize so 90x27 fits - no CSS transform, so selection stays native-correct.
   const fitWrapperRef = useRef<HTMLDivElement>(null);
   const naturalSizeRef = useRef<{ w: number; h: number } | null>(null);
+  // The grid the xterm is drawn at: 90x27 until the daemon tells the size of a terminal that has its own (herdr-core).
+  const gridRef = useRef({ cols: LIVE_TERMINAL_COLS, rows: LIVE_TERMINAL_ROWS });
   const fitRef = useRef(fit);
   fitRef.current = fit;
   const termRef = useRef<unknown>(null);
@@ -270,7 +292,20 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
     ws.onmessage = (evt) => {
       if (generationRef.current !== gen) return;
-      const term = termRef.current as { write(data: string): void; scrollToBottom(): void } | null;
+      const term = termRef.current as { write(data: string): void; scrollToBottom(): void; resize(cols: number, rows: number): void } | null;
+      const size = typeof evt.data === "string" ? parseTerminalSizeFrame(evt.data) : null;
+      if (size) {
+        // Follow the terminal: draw at its size, and scale the natural size (measured at 90x27) with the grid so the fit still holds.
+        if (term) {
+          const was = gridRef.current;
+          gridRef.current = size;
+          term.resize(size.cols, size.rows);
+          const natural = naturalSizeRef.current;
+          if (natural) naturalSizeRef.current = { w: (natural.w * size.cols) / was.cols, h: (natural.h * size.rows) / was.rows };
+          applyFontSizeFit();
+        }
+        return;
+      }
       if (typeof evt.data === "string" && term) {
         term.write(evt.data);
         if (Date.now() <= promptScrollUntilRef.current) {
@@ -309,7 +344,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
     wsRef.current = ws;
     return ws;
-  }, [sessionName, daemonBaseUrl, disposeTerminal, scrollLiveTerminalToPrompt]);
+  }, [sessionName, daemonBaseUrl, disposeTerminal, scrollLiveTerminalToPrompt, applyFontSizeFit]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -337,6 +372,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
           allowProposedApi: true,
         });
 
+        // A new xterm is 90x27 at the base font: what the natural size is measured from.
+        gridRef.current = { cols: LIVE_TERMINAL_COLS, rows: LIVE_TERMINAL_ROWS };
+        naturalSizeRef.current = null;
         term.open(containerRef.current!);
         // Some xterm DOM layers do not inherit the theme background. Pin every
         // render layer opaque so clear/erase operations actually erase.

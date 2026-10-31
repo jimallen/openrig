@@ -18,6 +18,17 @@ import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { CAPTURE_BATCH, type TmuxAdapter } from "../adapters/tmux.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 
+/**
+ * What a rotation needs of a seat host: tmux's adapter, or HcAdapter. Captures are requests, not promises. On hc a terminal that is
+ * full-screen, reports the mouse, or whose modes are unknown is read for its SCREEN ONLY (hc-capture.ts): asking an idle full-screen
+ * app for history makes the core scroll it with mouse-wheel events, and this rotation asks every seat for `lines` every 2 to 6 s. So
+ * on hc a transcript file of such a seat holds the screen as of the last tick, not `lines` of history. The conversation itself is in the
+ * runtime's own files (Claude, Codex and Pi write their sessions), and a byte-complete record of what was shown is the attach stream
+ * (HcViewer), which this rotation does not read.
+ */
+export type TranscriptHost = Pick<TmuxAdapter, "capturePaneContent">
+  & Partial<Pick<TmuxAdapter, "capturePanesContent" | "readAllSessionWindowActivity" | "readSessionWindowSnapshot">>;
+
 export interface TranscriptRotationOptions {
   /** Trailing line count to capture each tick. */
   lines: number;
@@ -71,11 +82,12 @@ interface CaptureStats {
 }
 const captureStats = new Map<string, CaptureStats>();
 interface ActivityListing { activity: Map<string, number>; sessions: Set<string> | null }
-let activitySnapshots = new WeakMap<TmuxAdapter, { at: number; pending: boolean; result: Promise<ActivityListing | null> }>();
+let activitySnapshots = new WeakMap<TranscriptHost, { at: number; pending: boolean; result: Promise<ActivityListing | null> }>();
 
 /** The session's window activity, and whether a listing that answered lacks the session (it does not exist on the server). */
-async function activityHint(adapter: TmuxAdapter, session: string, cadence: number): Promise<{ activity: number | undefined; absent: boolean }> {
-  if (typeof adapter.readAllSessionWindowActivity !== "function") return { activity: undefined, absent: false };
+async function activityHint(adapter: TranscriptHost, session: string, cadence: number): Promise<{ activity: number | undefined; absent: boolean }> {
+  const readAll = adapter.readAllSessionWindowActivity?.bind(adapter);
+  if (typeof readAll !== "function") return { activity: undefined, absent: false };
   let snapshot = activitySnapshots.get(adapter);
   if (!snapshot || (!snapshot.pending && Date.now() - snapshot.at >= Math.min(cadence, 1000))) {
     const next = { at: Date.now(), pending: true, result: Promise.resolve<ActivityListing | null>(null) };
@@ -85,7 +97,7 @@ async function activityHint(adapter: TmuxAdapter, session: string, cadence: numb
     // OF-176: the shared snapshot, so a listing the activity sweep made within the hint's own reuse window costs no fork.
     const request = Promise.resolve().then((): Promise<ActivityListing | null> => (typeof adapter.readSessionWindowSnapshot === "function"
       ? adapter.readSessionWindowSnapshot(Math.min(cadence, 1000)).then((snapshot) => snapshot && { activity: snapshot.activity, sessions: snapshot.sessions })
-      : adapter.readAllSessionWindowActivity().then((activity) => activity && { activity, sessions: null })))
+      : readAll().then((activity) => activity && { activity, sessions: null })))
       .catch(() => null).finally(() => { next.pending = false; });
     next.result = new Promise((resolve) => {
       const deadline = setTimeout(() => resolve(null), ACTIVITY_HINT_DEADLINE_MS);
@@ -127,11 +139,11 @@ interface CaptureRequest { sessionName: string; isCurrent: () => boolean; resolv
 // one fork that fails alone, instead of failing their chunk's chain every round. One that captures again rejoins.
 // (OF-176: a session the activity hint's listing lacks no longer reaches a capture at all; see the tick.)
 let unlistedSessions = new Set<string>();
-let pendingCaptures = new Map<TmuxAdapter, Map<number, CaptureRequest[]>>();
+let pendingCaptures = new Map<TranscriptHost, Map<number, CaptureRequest[]>>();
 
 /** Queue a capture until the microtasks queued now have run. Ticks that share one timer and one activity-hint promise
  *  reach this point in the same microtask round, so their captures share one batch; a later one gets its own. */
-function captureSoon(adapter: TmuxAdapter, sessionName: string, lines: number, isCurrent: () => boolean): Promise<string | null> {
+function captureSoon(adapter: TranscriptHost, sessionName: string, lines: number, isCurrent: () => boolean): Promise<string | null> {
   // The batch lists sessions by name, so pane, window and `session:window` targets read per target.
   if (typeof adapter.capturePanesContent !== "function" || /^[%@$]\d+$/.test(sessionName) || sessionName.includes(":")) {
     return Promise.resolve().then(() => adapter.capturePaneContent(sessionName, lines));
@@ -164,10 +176,10 @@ function flushCaptures(): void {
 }
 
 /** One chained call, with a listing beside it. A session the batch left out reads per target. */
-async function captureBatch(adapter: TmuxAdapter, lines: number, requests: CaptureRequest[]): Promise<void> {
+async function captureBatch(adapter: TranscriptHost, lines: number, requests: CaptureRequest[]): Promise<void> {
   const perTarget = (r: CaptureRequest) => Promise.resolve().then(() => adapter.capturePaneContent(r.sessionName, lines)).then(r.resolve, () => r.resolve(null));
   if (requests.length === 1) return void perTarget(requests[0]!);
-  const panes = await Promise.resolve().then(() => adapter.capturePanesContent(requests.map((r) => r.sessionName), lines)).catch(() => null);
+  const panes = await Promise.resolve().then(() => adapter.capturePanesContent?.(requests.map((r) => r.sessionName), lines) ?? null).catch(() => null);
   for (const r of requests) {
     const pane = panes?.get(r.sessionName);
     if (pane) {
@@ -215,7 +227,7 @@ export function getLastCaptureAt(sessionName: string): number | undefined {
  *  first tick fires immediately unless an old capture for this session is
  *  still pending; replacement then waits for a scheduled tick after it settles. */
 export function startTranscriptRotation(
-  tmuxAdapter: TmuxAdapter,
+  tmuxAdapter: TranscriptHost,
   sessionName: string,
   outputPath: string,
   opts: TranscriptRotationOptions,
