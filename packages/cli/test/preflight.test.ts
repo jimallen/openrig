@@ -5,23 +5,34 @@ import { tmpdir } from "node:os";
 import net from "node:net";
 import { Command } from "commander";
 import { SystemPreflight } from "../src/system-preflight.js";
+import { HC_GENERATION, HC_PINNED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
 import { ConfigStore } from "../src/config-store.js";
 import { preflightCommand } from "../src/commands/preflight.js";
 import type { DaemonStatus } from "../src/daemon-lifecycle.js";
 
-function makeExec(tmuxMode: "healthy" | "missing" | "unhealthy" = "healthy"): (cmd: string) => Promise<string> {
+type HcMode = "healthy" | "missing" | "wrong_version" | "other_generation" | "core_version" | "no_core" | "refused" | "unreadable";
+
+function makeExec(hcMode: HcMode = "healthy"): (cmd: string) => Promise<string> {
   return async (cmd: string) => {
-    if (cmd === "tmux -V") {
-      if (tmuxMode === "missing") throw new Error("command not found: tmux");
-      return "tmux 3.6a";
+    if (cmd === "hc --version") {
+      if (hcMode === "missing") throw new Error("command not found: hc");
+      return hcMode === "wrong_version" ? "hc 0.1.14\n" : `hc ${HC_PINNED_VERSION}\n`;
     }
-    if (cmd === "tmux list-sessions") {
-      if (tmuxMode === "missing") throw new Error("command not found: tmux");
-      if (tmuxMode === "unhealthy") throw new Error("server exited unexpectedly");
-      return "";
-    }
-    if (cmd.includes("tmux")) return "tmux 3.6a";
     return "";
+  };
+}
+
+/** What the core answers to hello in each mode. The default socket is never read by these tests. */
+function makeHello(hcMode: HcMode = "healthy"): () => Promise<HcHelloOutcome> {
+  return async () => {
+    switch (hcMode) {
+      case "no_core": return { kind: "no_core", detail: "no hc core at /x (ENOENT)" };
+      case "refused": return { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" };
+      case "other_generation": return { kind: "hello", generation: 2, version: HC_PINNED_VERSION };
+      case "core_version": return { kind: "hello", generation: HC_GENERATION, version: "0.1.14" };
+      case "unreadable": return { kind: "unreadable", detail: "no reply to hello in 3000 ms" };
+      default: return { kind: "hello", generation: HC_GENERATION, version: HC_PINNED_VERSION };
+    }
   };
 }
 
@@ -36,15 +47,18 @@ describe("SystemPreflight", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "preflight-"));
     savedVersion = process.version;
+    // rig preflight builds its own SystemPreflight with the default core reader: point it at no core, never a real one.
+    vi.stubEnv("HC_SOCKET", join(tmpDir, "no-core.sock"));
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     rmSync(tmpDir, { recursive: true, force: true });
     Object.defineProperty(process, "version", { value: savedVersion, writable: true });
   });
 
   function createPreflight(opts?: {
-    tmuxMode?: "healthy" | "missing" | "unhealthy";
+    hcMode?: HcMode;
     configOverrides?: Record<string, unknown>;
     daemonStatus?: Partial<DaemonStatus>;
   }) {
@@ -55,7 +69,8 @@ describe("SystemPreflight", () => {
     mkdirSync(homeDir, { recursive: true });
 
     return new SystemPreflight({
-      exec: makeExec(opts?.tmuxMode ?? "healthy"),
+      exec: makeExec(opts?.hcMode ?? "healthy"),
+      readHcHello: makeHello(opts?.hcMode ?? "healthy"),
       configStore: config,
       getDaemonStatus: makeStatus(opts?.daemonStatus),
       riggedHome: homeDir,
@@ -101,26 +116,52 @@ describe("SystemPreflight", () => {
   });
 
   // Test 3
-  it("tmux missing → ready: false with guidance", async () => {
-    const pf = createPreflight({ tmuxMode: "missing" });
+  it("hc missing → ready: false with guidance", async () => {
+    const pf = createPreflight({ hcMode: "missing" });
     const result = await pf.run();
     expect(result.ready).toBe(false);
-    const tmuxCheck = result.checks.find((c) => c.name === "tmux");
-    expect(tmuxCheck!.ok).toBe(false);
-    expect(tmuxCheck!.error).toContain("not found");
-    expect(tmuxCheck!.fix).toContain("install tmux");
+    const hcCheck = result.checks.find((c) => c.name === "hc");
+    expect(hcCheck!.ok).toBe(false);
+    expect(hcCheck!.error).toContain("not found");
+    expect(hcCheck!.fix).toContain("Install hc");
+    expect(result.checks.find((c) => c.name === "tmux")).toBeUndefined();
   });
 
-  it("tmux installed but default control socket unhealthy → ready: false with guidance", async () => {
-    const pf = createPreflight({ tmuxMode: "unhealthy" });
-    const result = await pf.run();
-
+  it("hc of another version than the pin → ready: false, naming both versions", async () => {
+    const result = await createPreflight({ hcMode: "wrong_version" }).run();
     expect(result.ready).toBe(false);
-    const tmuxCheck = result.checks.find((c) => c.name === "tmux");
-    expect(tmuxCheck!.ok).toBe(false);
-    expect(tmuxCheck!.error).toContain("control socket");
-    expect(tmuxCheck!.reason).toContain("server exited unexpectedly");
-    expect(tmuxCheck!.fix).toContain("restart the default tmux server");
+    const hcCheck = result.checks.find((c) => c.name === "hc")!;
+    expect(hcCheck.ok).toBe(false);
+    expect(hcCheck.error).toContain("not the pinned version");
+    expect(hcCheck.reason).toContain("0.1.14");
+    expect(hcCheck.reason).toContain(HC_PINNED_VERSION);
+  });
+
+  it("a running core on another protocol generation → ready: false", async () => {
+    for (const mode of ["other_generation", "refused"] as const) {
+      const hcCheck = (await createPreflight({ hcMode: mode }).run()).checks.find((c) => c.name === "hc")!;
+      expect(hcCheck.ok, mode).toBe(false);
+      expect(hcCheck.error, mode).toContain("protocol generation");
+    }
+  });
+
+  it("a running core of another version than the pin → ready: false", async () => {
+    const hcCheck = (await createPreflight({ hcMode: "core_version" }).run()).checks.find((c) => c.name === "hc")!;
+    expect(hcCheck.ok).toBe(false);
+    expect(hcCheck.reason).toContain("the running core is hc 0.1.14");
+  });
+
+  it("a core that cannot be read is unhealthy, and its reason is shown", async () => {
+    const hcCheck = (await createPreflight({ hcMode: "unreadable" }).run()).checks.find((c) => c.name === "hc")!;
+    expect(hcCheck.ok).toBe(false);
+    expect(hcCheck.error).toContain("not healthy");
+    expect(hcCheck.reason).toContain("no reply to hello");
+  });
+
+  it("no core running is healthy: a health check never starts one", async () => {
+    const result = await createPreflight({ hcMode: "no_core" }).run({ port: 0 });
+    expect(result.checks.find((c) => c.name === "hc")).toEqual({ name: "hc", ok: true });
+    expect(result.ready).toBe(true);
   });
 
   // Test 4
@@ -130,6 +171,7 @@ describe("SystemPreflight", () => {
     chmodSync(readonlyDir, 0o444);
     const pf = new SystemPreflight({
       exec: makeExec(),
+      readHcHello: makeHello(),
       configStore: new ConfigStore(join(tmpDir, "config.json")),
       getDaemonStatus: makeStatus(),
       riggedHome: join(readonlyDir, "nested"),
@@ -187,7 +229,7 @@ describe("SystemPreflight", () => {
   // Test 8
   it("multiple failures reported together (additive)", async () => {
     Object.defineProperty(process, "version", { value: "v18.19.0", writable: true });
-    const pf = createPreflight({ tmuxMode: "missing" });
+    const pf = createPreflight({ hcMode: "missing" });
     const result = await pf.run();
     expect(result.ready).toBe(false);
     const failedChecks = result.checks.filter((c) => !c.ok);

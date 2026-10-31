@@ -9,7 +9,7 @@ import { parseDocument } from "yaml";
 import { runDoctorChecks, type DoctorDeps } from "./doctor.js";
 import { resolveDaemonPath } from "../daemon-lifecycle.js";
 import { ConfigStore } from "../config-store.js";
-import { buildTmuxControlFailure, probeTmuxControl } from "../tmux-health.js";
+import { HC_PINNED_VERSION, buildHcHostFailure, probeHcInstall } from "../tmux-health.js";
 import { checkClaudeAuth, checkCodexAuth } from "../provider-auth.js";
 
 export interface SetupStep {
@@ -66,14 +66,13 @@ const HERDR_INSTALL_COMMAND = "curl -fsSL https://herdr.dev/install.sh | sh";
 
 const CORE_STEP_IDS = [
   "brew",
-  "tmux_install",
+  "hc_install",
   "herdr_install",
   "ghostty_install",
   "claude_install",
   "claude_auth",
   "codex_install",
   "codex_auth",
-  "tmux_config",
   "verify",
 ];
 const FULL_EXTRA_STEP_IDS = ["jq_install", "gh_install"];
@@ -365,36 +364,35 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
         id: "brew",
         status: "fail",
         message: "Homebrew not found.",
-        reason: "Homebrew is required to install tmux on macOS.",
+        reason: "Homebrew installs the optional tools setup offers on macOS (jq and gh in the full profile).",
         fixHint: "Install Homebrew: https://brew.sh",
       });
     }
   }
 
-  // 2. tmux
-  const tmuxProbe = probeTmuxControl((cmd) => deps.exec(cmd));
-  if (tmuxProbe.code === "not_installed") {
-    if (!brewOk) {
-      steps.push({ id: "tmux_install", status: "skipped", message: "Skipped: Homebrew not available.", reason: "tmux install requires Homebrew." });
-    } else {
-      try {
-        installCommand(deps, "brew install tmux");
-        steps.push({ id: "tmux_install", status: "applied", message: "Installed tmux with Homebrew." });
-      } catch (err) {
-        steps.push({ id: "tmux_install", status: "fail", message: `Failed to install tmux: ${(err as Error).message}` });
-      }
-    }
-  } else if (!tmuxProbe.available) {
-    const failure = buildTmuxControlFailure(tmuxProbe.detail ?? "unknown tmux control failure");
+  // 2. hc: the seat host. Setup checks it is installed and the pinned version, by `hc --version` alone: nothing here
+  // starts a core. It does not install hc: how hc is installed on a machine without it is not settled (the herdr
+  // installer below installs `herdr` only, measured from its script), so a missing or wrong hc is a failure with a hint.
+  const hcProbe = probeHcInstall((cmd) => deps.exec(cmd));
+  if (hcProbe.code === "pinned") {
+    steps.push({ id: "hc_install", status: "pass", message: `hc ${hcProbe.version} available.` });
+  } else if (hcProbe.code === "not_installed") {
     steps.push({
-      id: "tmux_install",
+      id: "hc_install",
+      status: "fail",
+      message: "hc not found.",
+      reason: "OpenRig runs agent seats in hc terminals.",
+      fixHint: `Install hc (herdr-core) ${HC_PINNED_VERSION}, then rerun rig setup.`,
+    });
+  } else {
+    const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");
+    steps.push({
+      id: "hc_install",
       status: "fail",
       message: failure.message,
       reason: failure.reason,
       fixHint: failure.fix,
     });
-  } else {
-    steps.push({ id: "tmux_install", status: "pass", message: "tmux available." });
   }
 
   // 3. Herdr is the default view provider. Leave optional cmux installations untouched.
@@ -461,39 +459,7 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     steps.push({ id: codexName, ...codexAuth, ...(codexFix ? { fixHint: codexFix } : {}) });
   }
 
-  // 6. tmux config
-  const TMUX_CONF = `${process.env["HOME"] ?? "~"}/.tmux.conf`;
-  const MANAGED_MARKER = "# OpenRig managed block";
-  const MANAGED_BLOCK = [
-    MANAGED_MARKER,
-    "set -g mouse on",
-    "set -g history-limit 50000",
-    `# End ${MANAGED_MARKER}`,
-  ].join("\n");
-
-  try {
-    const existing = deps.readFile(TMUX_CONF);
-    if (existing && existing.includes(MANAGED_MARKER)) {
-      // Replace existing managed block
-      const replaced = existing.replace(
-        new RegExp(`${MANAGED_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?# End ${MANAGED_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
-        MANAGED_BLOCK,
-      );
-      deps.writeFile(TMUX_CONF, replaced);
-      steps.push({ id: "tmux_config", status: "applied", message: "Updated OpenRig managed tmux config block." });
-    } else if (existing) {
-      deps.writeFile(TMUX_CONF, existing.trimEnd() + "\n\n" + MANAGED_BLOCK + "\n");
-      steps.push({ id: "tmux_config", status: "applied", message: "Appended OpenRig managed tmux config block." });
-    } else {
-      deps.writeFile(TMUX_CONF, MANAGED_BLOCK + "\n");
-      steps.push({ id: "tmux_config", status: "applied", message: "Created .tmux.conf with OpenRig managed block." });
-    }
-  } catch (err) {
-    steps.push({ id: "tmux_config", status: "warn", message: `Could not update tmux config: ${(err as Error).message}` });
-  }
-
-  // 7. Verify
-  const tmuxOk = steps.some((s) => s.id === "tmux_install" && (s.status === "pass" || s.status === "applied"));
+  // 6. Verify
   const anyFail = steps.some((s) => s.status === "fail");
   steps.push({
     id: "verify",

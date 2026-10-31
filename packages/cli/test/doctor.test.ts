@@ -3,6 +3,7 @@ import { createProgram } from "../src/index.js";
 import { Command } from "commander";
 import { doctorCommand, runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { resolveCmuxSettingsPath } from "../src/cmux-config.js";
+import { HC_GENERATION, HC_PINNED_VERSION, type HcHelloOutcome } from "../src/tmux-health.js";
 
 const CMUX_SETTINGS_PATH = resolveCmuxSettingsPath();
 
@@ -18,7 +19,7 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
     baseDir: "/install/cli/dist",
     readFile: () => null,
     exec: (cmd: string) => {
-      if (cmd === "tmux -V") return "tmux 3.4\n";
+      if (cmd === "hc --version") return "hc 0.1.15\n";
       if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
       if (cmd === "cmux --help") return "cmux help\n";
       return "";
@@ -28,6 +29,7 @@ function makeDeps(overrides?: Partial<DoctorDeps>): DoctorDeps {
     platform: "darwin",
     mkdirp: () => {},
     checkWritable: () => {},
+    readHcHello: async () => ({ kind: "no_core", detail: "fixture: no core" }),
     ...overrides,
   };
 }
@@ -78,100 +80,98 @@ describe("runDoctorChecks", () => {
     expect(uiCheck?.fix).toBeTruthy();
   });
 
-  it("tmux available -> pass", () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") return "";
-        if (cmd === "tmux show-options -gqv mouse") return "on\n";
-        return "";
-      },
-    });
-    const { checks } = runDoctorChecks(deps);
-    const tmuxCheck = checks.find((c) => c.name === "tmux");
-    expect(tmuxCheck?.status).toBe("pass");
+  const hcExec = (hc: () => string) => (cmd: string) => {
+    if (cmd === "hc --version") return hc();
+    if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
+    if (cmd === "cmux --help") return "cmux help\n";
+    return "";
+  };
+
+  it("hc installed at the pinned version -> pass, naming the version", () => {
+    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${HC_PINNED_VERSION}\n`) }));
+    const hcCheck = checks.find((c) => c.name === "hc");
+    expect(hcCheck?.status).toBe("pass");
+    expect(hcCheck?.message).toBe(`hc ${HC_PINNED_VERSION}`);
   });
 
-  it("tmux installed but default control socket unhealthy -> fail with attention guidance", () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux list-sessions") throw new Error("server exited unexpectedly");
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        return "";
-      },
-    });
-
-    const { checks } = runDoctorChecks(deps);
-    const tmuxCheck = checks.find((c) => c.name === "tmux");
-
-    expect(tmuxCheck?.status).toBe("fail");
-    expect(tmuxCheck?.message).toContain("control socket");
-    expect(tmuxCheck?.reason).toContain("server exited unexpectedly");
-    expect(tmuxCheck?.fix).toContain("restart the default tmux server");
+  it("hc of another version than the pin -> fail naming both versions", () => {
+    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => "hc 0.1.14\n") }));
+    const hcCheck = checks.find((c) => c.name === "hc");
+    expect(hcCheck?.status).toBe("fail");
+    expect(hcCheck?.message).toContain("not the pinned version");
+    expect(hcCheck?.reason).toContain("0.1.14");
+    expect(hcCheck?.reason).toContain(HC_PINNED_VERSION);
   });
 
-  it("tmux mouse enabled on macOS -> pass", () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux show-options -gqv mouse") return "on\n";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        return "";
-      },
-    });
-    const { checks } = runDoctorChecks(deps);
-    const mouseCheck = checks.find((c) => c.name === "tmux_mouse");
-    expect(mouseCheck?.status).toBe("pass");
-    expect(mouseCheck?.message).toContain("enabled");
+  it("hc version output that cannot be read -> fail, not a pass", () => {
+    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => "usage: hc\n") }));
+    expect(checks.find((c) => c.name === "hc")?.status).toBe("fail");
   });
 
-  it("tmux mouse disabled on macOS -> warn with exact fix", () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "tmux show-options -gqv mouse") return "off\n";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        return "";
-      },
-    });
-    const { checks } = runDoctorChecks(deps);
-    const mouseCheck = checks.find((c) => c.name === "tmux_mouse");
-    expect(mouseCheck?.status).toBe("warn");
-    expect(mouseCheck?.message).toContain("disabled");
-    expect(mouseCheck?.fix).toContain("tmux set -g mouse on");
-    expect(mouseCheck?.fix).toContain("~/.tmux.conf");
-    expect(mouseCheck?.fix).toContain("tmux source-file ~/.tmux.conf");
+  it("hc missing -> fail with guidance", () => {
+    const { checks } = runDoctorChecks(makeDeps({ exec: hcExec(() => { throw new Error("not found"); }) }));
+    const hcCheck = checks.find((c) => c.name === "hc");
+    expect(hcCheck?.status).toBe("fail");
+    expect(hcCheck?.fix).toContain("Install hc");
   });
 
-  it("tmux missing -> fail with guidance", () => {
-    const deps = makeDeps({
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") throw new Error("not found");
-        return "";
-      },
-    });
-    const { checks } = runDoctorChecks(deps);
-    const tmuxCheck = checks.find((c) => c.name === "tmux");
-    expect(tmuxCheck?.status).toBe("fail");
-    expect(tmuxCheck?.fix).toContain("brew");
+  it("there is no tmux check, no tmux mouse check, and no tmux command run", () => {
+    const seen: string[] = [];
+    const exec = hcExec(() => `hc ${HC_PINNED_VERSION}\n`);
+    for (const platform of ["darwin", "linux"] as const) {
+      const { checks } = runDoctorChecks(makeDeps({ platform, exec: (cmd) => { seen.push(cmd); return exec(cmd); } }));
+      expect(checks.some((c) => c.name === "tmux" || c.name === "tmux_mouse")).toBe(false);
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.some((cmd) => cmd.startsWith("tmux"))).toBe(false);
   });
 
-  it("tmux mouse check is omitted on non-macOS hosts", () => {
-    const deps = makeDeps({
-      platform: "linux",
-      exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
-        if (cmd === "cmux capabilities --json") return '{"capabilities":["surface.focus"]}\n';
-        if (cmd === "cmux --help") return "cmux help\n";
-        return "";
-      },
+  describe("the running core", () => {
+    const core = async (readHcHello: () => Promise<HcHelloOutcome>, over: Partial<DoctorDeps> = {}) => {
+      const { asyncChecks } = runDoctorChecks(makeDeps({ exec: hcExec(() => `hc ${HC_PINNED_VERSION}\n`), readHcHello, ...over }));
+      return (await Promise.all(asyncChecks)).find((c) => c.name === "hc_core");
+    };
+
+    it("pass on the pinned version and this generation", async () => {
+      const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: HC_PINNED_VERSION }));
+      expect(check).toMatchObject({ status: "pass" });
+      expect(check?.message).toContain(HC_PINNED_VERSION);
     });
-    const { checks } = runDoctorChecks(deps);
-    expect(checks.find((c) => c.name === "tmux_mouse")).toBeUndefined();
+
+    it("fail on another protocol generation, whether the core refuses or answers", async () => {
+      const answers: HcHelloOutcome[] = [
+        { kind: "hello", generation: HC_GENERATION + 1, version: HC_PINNED_VERSION },
+        { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" },
+      ];
+      for (const answer of answers) {
+        const check = await core(async () => answer);
+        expect(check?.status, answer.kind).toBe("fail");
+        expect(check?.message, answer.kind).toContain("protocol generation");
+      }
+    });
+
+    it("fail on a core of another version", async () => {
+      const check = await core(async () => ({ kind: "hello", generation: HC_GENERATION, version: "0.1.14" }));
+      expect(check?.status).toBe("fail");
+      expect(check?.reason).toContain("0.1.14");
+    });
+
+    it("fail on a core that does not answer", async () => {
+      expect((await core(async () => ({ kind: "unreadable", detail: "no reply to hello in 3000 ms" })))?.status).toBe("fail");
+    });
+
+    it("pass, with a note, when no core runs: a doctor run starts none", async () => {
+      const check = await core(async () => ({ kind: "no_core", detail: "no hc core at /x (ENOENT)" }));
+      expect(check?.status).toBe("pass");
+      expect(check?.message).toContain("No hc core running");
+    });
+
+    it("is not asked when hc itself is missing or the wrong version", async () => {
+      const readHcHello = vi.fn(async (): Promise<HcHelloOutcome> => ({ kind: "no_core", detail: "x" }));
+      const { asyncChecks } = runDoctorChecks(makeDeps({ exec: hcExec(() => "hc 0.1.14\n"), readHcHello }));
+      expect((await Promise.all(asyncChecks)).some((c) => c.name === "hc_core")).toBe(false);
+      expect(readHcHello).not.toHaveBeenCalled();
+    });
   });
 
   it("cmux_shell pass when shell capabilities work", () => {
@@ -185,7 +185,7 @@ describe("runDoctorChecks", () => {
     const deps = makeDeps({
       readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? "{\n  \"automation\": {\n    \"socketControlMode\": \"cmuxOnly\"\n  }\n}\n" : null,
       exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return "hc 0.1.15\n";
         if (cmd === "cmux capabilities --json") {
           throw new Error("Failed to connect to socket at /tmp/cmux.sock");
         }
@@ -204,7 +204,7 @@ describe("runDoctorChecks", () => {
   it("cmux_shell warn when cmux missing", () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return "hc 0.1.15\n";
         throw new Error("command not found: cmux");
       },
     });
@@ -364,7 +364,7 @@ describe("runDoctorChecks", () => {
   it("shell cmux missing -> no cmux_daemon check (no misleading signal)", async () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return "hc 0.1.15\n";
         throw new Error("command not found: cmux");
       },
       checkPort: async () => false, // daemon running
@@ -498,7 +498,7 @@ describe("rig doctor", () => {
   it("--json stays healthy when cmux is only a warning", async () => {
     const deps = makeDeps({
       exec: (cmd: string) => {
-        if (cmd === "tmux -V") return "tmux 3.4\n";
+        if (cmd === "hc --version") return "hc 0.1.15\n";
         if (cmd === "cmux capabilities --json") {
           throw new Error("Failed to connect to socket at /tmp/cmux.sock");
         }

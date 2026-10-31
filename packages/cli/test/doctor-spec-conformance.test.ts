@@ -30,7 +30,8 @@ function baseDeps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     exists: () => true,
     baseDir: "/tmp",
     readFile: () => null,
-    exec: () => "tmux 3.4",
+    exec: () => "hc 0.1.15",
+    readHcHello: async () => ({ kind: "no_core", detail: "fixture: no core" }),
     checkPort: async () => true,
     configStore: {
       resolve: () => ({
