@@ -5,7 +5,7 @@ import type { TranscriptStore } from "./transcript-store.js";
 import { findSessionNameMatches } from "./session-name-matches.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { applicableVerdict } from "./node-inventory.js";
-import { identityVerdictConfirmsSessionMissing, type SeatIdentityVerdict } from "./types.js";
+import { identityVerdictConfirmsSessionMissing, type BindingAttachmentType, type SeatIdentityVerdict } from "./types.js";
 import { resolveWorkspaceContext, type WhoamiWorkspaceBlock } from "./workspace/workspace-resolver.js";
 
 export interface WhoamiResult {
@@ -15,7 +15,7 @@ export interface WhoamiResult {
     rigName: string;
     nodeId: string;
     logicalId: string;
-    attachmentType: "tmux" | "external_cli";
+    attachmentType: BindingAttachmentType;
     podId: string | null;
     podNamespace: string | null;
     podLabel: string | null;

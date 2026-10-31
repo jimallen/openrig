@@ -26,7 +26,7 @@ import type { TmuxAdapter } from "../adapters/tmux.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
 import type { EventBus } from "./event-bus.js";
-import type { AgentActivity } from "./types.js";
+import type { AgentActivity, BindingAttachmentType } from "./types.js";
 import { RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
 import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
 import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "../lib/pane-envelope.js";
@@ -543,7 +543,7 @@ export function detectBackgroundJobs(paneContent: string): BackgroundJobs | null
 export async function probeSessionActivity(input: {
   sessionName: string | null;
   runtime: string | null;
-  attachmentType: "tmux" | "external_cli" | null | undefined;
+  attachmentType: BindingAttachmentType | null | undefined;
   tmuxAdapter: TmuxAdapter;
   now?: Date;
   /** S01/S02 P2: optional read-only observer of the capture this probe already takes. */
@@ -2641,7 +2641,7 @@ export class SessionTransport {
         const paneVeto = await probeSessionActivity({
           sessionName: input.sessionName,
           runtime: input.runtime,
-          attachmentType: input.attachmentType as "tmux" | "external_cli" | null | undefined,
+          attachmentType: input.attachmentType as BindingAttachmentType | null | undefined,
           tmuxAdapter: this.tmuxAdapter,
           now,
           captureObserver: this.captureObserver,
@@ -2657,7 +2657,7 @@ export class SessionTransport {
     const probe = await probeSessionActivity({
       sessionName: input.sessionName,
       runtime: input.runtime,
-      attachmentType: input.attachmentType as "tmux" | "external_cli" | null | undefined,
+      attachmentType: input.attachmentType as BindingAttachmentType | null | undefined,
       tmuxAdapter: this.tmuxAdapter,
       now,
       captureObserver: this.captureObserver,

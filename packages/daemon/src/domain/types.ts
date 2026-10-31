@@ -83,10 +83,14 @@ export interface Edge {
   createdAt: string;
 }
 
+/** How a seat is attached: a tmux pane (until cutover), an hc terminal, or an outbound-only external CLI. The column default stays
+ *  'tmux' (SQLite cannot change one), so a writer of an hc seat must name `hc` itself. */
+export type BindingAttachmentType = "tmux" | "hc" | "external_cli";
+
 export interface Binding {
   id: string;
   nodeId: string;
-  attachmentType?: "tmux" | "external_cli";
+  attachmentType?: BindingAttachmentType;
   tmuxSession: string | null;
   tmuxWindow: string | null;
   tmuxPane: string | null;
@@ -705,7 +709,7 @@ export interface NodeInventoryEntry {
    */
   role: string | null;
   canonicalSessionName: string | null;
-  attachmentType?: "tmux" | "external_cli" | null;
+  attachmentType?: BindingAttachmentType | null;
   nodeKind: "agent" | "infrastructure";
   runtime: string | null;
   /** Effective current status; confirmed session absence projects as detached. */
@@ -878,7 +882,7 @@ export interface NodeWorkspaceInfo {
 export interface NodeDetailPeer {
   logicalId: string;
   canonicalSessionName: string | null;
-  attachmentType?: "tmux" | "external_cli" | null;
+  attachmentType?: BindingAttachmentType | null;
   runtime: string | null;
 }
 

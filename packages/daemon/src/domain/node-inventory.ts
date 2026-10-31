@@ -20,7 +20,7 @@ import { findLatestUsableSnapshot, findLatestUsableSnapshotsForAllRigs, readSave
 import { resolveNodeWorkspace } from "./workspace/workspace-resolver.js";
 import { deriveCanonicalSessionName } from "./session-name.js";
 import { buildNativeResumeCommand, buildCodexResumeCore } from "./native-resume-probe.js";
-import { tmuxAttachCommand } from "../adapters/tmux-server.js";
+import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 
 // -- Row types for SQL results --
 
@@ -60,6 +60,8 @@ interface InventoryRow {
   binding_attachment_type: string | null;
   binding_id: string | null;
   binding_tmux_pane: string | null;
+  /** Set when the seat is bound to an hc terminal (migration 121); NULL for tmux and external_cli rows. */
+  binding_terminal_address: string | null;
 }
 
 interface EventRow {
@@ -454,6 +456,15 @@ function mapProjectionEntries(entries: unknown[]): Array<{ id: string; category:
 }
 
 /**
+ * What a verdict's `registeredPane` is compared with: the terminal address for a seat bound to hc (its `tmux_pane` is NULL
+ * by migration 121, and a NULL must not stand in for the registration), the tmux pane id otherwise. A caller that does not
+ * select the two optional columns reads every row as tmux.
+ */
+function registeredPaneOf(row: { binding_tmux_pane: string | null; binding_attachment_type?: string | null; binding_terminal_address?: string | null }): string | null {
+  return row.binding_attachment_type === "hc" ? row.binding_terminal_address ?? null : row.binding_tmux_pane;
+}
+
+/**
  * OPR.0.4.3.19 rev1-r2 B1 — gate a durable identity verdict to the CURRENT
  * binding. The verdict table is keyed only by node_id, so on rebind/relaunch
  * (same node_id, new session + new pane) the stored verdict describes a pane
@@ -472,11 +483,12 @@ function mapProjectionEntries(entries: unknown[]): Array<{ id: string; category:
  */
 export function applicableVerdict(
   verdict: SeatIdentityVerdict | null,
-  row: Pick<InventoryRow, "session_id" | "session_name" | "session_created_at" | "binding_tmux_pane" | "handover_at">,
+  row: Pick<InventoryRow, "session_id" | "session_name" | "session_created_at" | "binding_tmux_pane" | "handover_at">
+    & Partial<Pick<InventoryRow, "binding_attachment_type" | "binding_terminal_address">>,
 ): SeatIdentityVerdict | null {
   if (!verdict) return null;
   if (verdict.sessionName !== row.session_name) return null;
-  if (verdict.evidence.registeredPane !== row.binding_tmux_pane) return null;
+  if (verdict.evidence.registeredPane !== registeredPaneOf(row)) return null;
   const observedAt = Date.parse(verdict.observedAt);
   if (!Number.isFinite(observedAt)) return null;
   // SQLite's datetime('now') is UTC but omits the timezone suffix.
@@ -542,6 +554,11 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
   const codexConfigProfileSelect = hasCodexConfigProfile
     ? "n.codex_config_profile"
     : "NULL";
+  // Fixtures that list their migrations by hand may stop before 121 (hc terminal address). Without the column an hc
+  // verdict simply cannot apply (fail-open, as for an absent verdict); production always has it.
+  const hasTerminalAddress = db.prepare("PRAGMA table_info(bindings)").all()
+    .some((row) => (row as { name?: string }).name === "terminal_address");
+  const terminalAddressSelect = hasTerminalAddress ? "b.terminal_address" : "NULL";
   const stmt = db.prepare(`
     SELECT
       n.id as node_id,
@@ -577,7 +594,8 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
       s.startup_completed_at,
       b.attachment_type as binding_attachment_type,
       b.id as binding_id,
-      b.tmux_pane as binding_tmux_pane
+      b.tmux_pane as binding_tmux_pane,
+      ${terminalAddressSelect} as binding_terminal_address
     FROM nodes n
     JOIN rigs r ON r.id = n.rig_id
     LEFT JOIN pods p ON p.id = n.pod_id
@@ -702,7 +720,11 @@ function buildInventoryEntry(
     handoverResult: row.handover_result as NodeInventoryEntry["handoverResult"] ?? null,
     previousOccupant: row.previous_occupant,
     handoverAt: row.handover_at,
-    tmuxAttachCommand: row.binding_attachment_type === "tmux" && row.session_name ? tmuxAttachCommand(row.session_name) : null,
+    // The field keeps its name (it crosses repos: the rigs skill reads it); an hc seat's value is the hc attach command.
+    tmuxAttachCommand: !row.session_name ? null
+      : row.binding_attachment_type === "tmux" ? tmuxAttachCommand(row.session_name)
+      : row.binding_attachment_type === "hc" ? hcAttachCommand(row.session_name)
+      : null,
     resumeCommand: computeResumeCommand(row.runtime, row.resume_token, row.codex_config_profile),
     // OPR.0.4.0.26: recoveryGuidance is NOT inlined per node in the LIST
     // payload. It duplicated ~47KB of templated prose across all nodes and

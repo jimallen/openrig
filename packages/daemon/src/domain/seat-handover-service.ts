@@ -1053,7 +1053,10 @@ export class SeatHandoverService {
         ).run(...previousSessionIdsSuperseded);
       }
 
+      // A discovery record names a tmux session and pane and carries no terminal address, so this path binds tmux until the
+      // successor launch hands the record one (hc-lifecycle). writeSeatBinding already writes hc rows correctly.
       this.upsertBinding(input.node.id, {
+        attachmentType: "tmux",
         tmuxSession: input.discovered.tmuxSession,
         tmuxWindow: input.discovered.tmuxWindow,
         tmuxPane: input.discovered.tmuxPane,
@@ -1226,26 +1229,8 @@ export class SeatHandoverService {
     };
   }
 
-  private upsertBinding(nodeId: string, fields: { tmuxSession: string; tmuxWindow: string | null; tmuxPane: string | null }): void {
-    const existing = this.db.prepare("SELECT id FROM bindings WHERE node_id = ?").get(nodeId) as { id: string } | undefined;
-    if (existing) {
-      this.db.prepare(`
-        UPDATE bindings SET
-          attachment_type = 'tmux',
-          tmux_session = ?,
-          tmux_window = ?,
-          tmux_pane = ?,
-          external_session_name = NULL,
-          updated_at = datetime('now')
-        WHERE node_id = ?
-      `).run(fields.tmuxSession, fields.tmuxWindow, fields.tmuxPane, nodeId);
-      return;
-    }
-
-    this.db.prepare(`
-      INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_window, tmux_pane)
-      VALUES (?, ?, 'tmux', ?, ?, ?)
-    `).run(ulid(), nodeId, fields.tmuxSession, fields.tmuxWindow, fields.tmuxPane);
+  private upsertBinding(nodeId: string, fields: SeatBindingWrite): void {
+    writeSeatBinding(this.db, nodeId, fields);
   }
 }
 
@@ -1326,4 +1311,42 @@ export function buildRestorePacket(info: {
     );
   }
   return lines.join("\n");
+}
+
+/** What a seat's binding row is rewritten to. `hc` names the terminal the core minted (`t7`); a pane id means nothing there. */
+export type SeatBindingWrite =
+  | { attachmentType: "tmux"; tmuxSession: string; tmuxWindow: string | null; tmuxPane: string | null }
+  | { attachmentType: "hc"; tmuxSession: string; terminalAddress: string };
+
+/**
+ * Point a node's binding at a new occupant, inserting the row if the node has none. The column DEFAULT is 'tmux' (SQLite
+ * cannot change one), so `attachment_type` is always written, and `terminal_address` with it: an hc row carries its
+ * address and no pane, and a tmux row clears any address a previous hc binding left (a tmux row never names a terminal).
+ * `tmux_session` stays the seat's canonical name in both (the hc terminal name is
+ * derived from it).
+ */
+export function writeSeatBinding(db: Database.Database, nodeId: string, fields: SeatBindingWrite): void {
+  const window = fields.attachmentType === "tmux" ? fields.tmuxWindow : null;
+  const pane = fields.attachmentType === "tmux" ? fields.tmuxPane : null;
+  const address = fields.attachmentType === "hc" ? fields.terminalAddress : null;
+  const existing = db.prepare("SELECT id FROM bindings WHERE node_id = ?").get(nodeId) as { id: string } | undefined;
+  if (existing) {
+    db.prepare(`
+      UPDATE bindings SET
+        attachment_type = ?,
+        tmux_session = ?,
+        tmux_window = ?,
+        tmux_pane = ?,
+        terminal_address = ?,
+        external_session_name = NULL,
+        updated_at = datetime('now')
+      WHERE node_id = ?
+    `).run(fields.attachmentType, fields.tmuxSession, window, pane, address, nodeId);
+    return;
+  }
+
+  db.prepare(`
+    INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_window, tmux_pane, terminal_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(ulid(), nodeId, fields.attachmentType, fields.tmuxSession, window, pane, address);
 }
