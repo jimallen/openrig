@@ -58,7 +58,11 @@ async function finalObservation(output: string) {
       if (captures === 27) {
         // The default budget has 26 loop observations plus one final read.
         // Release output only at that final boundary, avoiding timer races.
-        fs.writeFileSync(gate, output);
+        // Atomic: the fixture polls for this file every 5 ms and, once it exists, prints its content once and stops
+        // polling. A plain write is create-empty-then-fill; a fixture tick between the two printed nothing, and the
+        // poll below then waited out its whole ceiling for output that would never come.
+        fs.writeFileSync(`${gate}.tmp`, output);
+        fs.renameSync(`${gate}.tmp`, gate);
         await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_CEILING_MS }).toContain(output);
       }
       return nativeCapture(target, lines);

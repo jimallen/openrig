@@ -1418,13 +1418,20 @@ describe("SessionTransport", () => {
     const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
     const tmux = mockTmux({ capturePaneContent: scriptedPanes([UNREADABLE]), sendText: sendTextSpy });
     const transport = createTransport(tmux, { waitForIdlePollMs: 10 });
+    // A starved event loop delays every timer at once. A 60 ms wait was consumed whole by one stall (the loop then
+    // expires after ONE observation, correctly: none starts after the deadline), and the wall bound was a fixed 250 ms
+    // of slack. So: a wait a stall does not swallow, and the overshoot measured against a control timer due at the same
+    // instant, which is late by exactly the stall the loop suffered.
+    const waitMs = 500;
     const t0 = performance.now();
-    const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 60 });
+    const control = new Promise<number>((resolve) => setTimeout(() => resolve(performance.now() - t0), waitMs));
+    const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: waitMs });
     const wall = performance.now() - t0;
+    const controlWall = await control;
     expect(result).toMatchObject({ ok: false, reason: "target_activity_unknown", sent: false });
-    expect(result.waitedMs!).toBeGreaterThanOrEqual(60);
+    expect(result.waitedMs!).toBeGreaterThanOrEqual(waitMs);
     expect(result.attempts!).toBeGreaterThanOrEqual(2);
-    expect(wall).toBeLessThan(60 + 250);
+    expect(wall - controlWall).toBeLessThan(250);
     expect(sendTextSpy).not.toHaveBeenCalled();
   });
 

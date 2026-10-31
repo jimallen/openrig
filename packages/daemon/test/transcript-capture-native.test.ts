@@ -54,29 +54,52 @@ it.skipIf(!nativeAvailable)("retains active native output before a normal stop d
   const exec = promisify(execFile);
   const run = async (...args: string[]) => (await exec("tmux", ["-S", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const captureStarts: number[] = [];
+  let slowestExecMs = 0;
   const adapter = new TmuxAdapter(async () => { throw new Error("expected argv transport"); }, undefined, async (argv) => {
+    if (argv[1] === "capture-pane") captureStarts.push(Date.now());
+    const began = performance.now();
     const result = await run(...argv.slice(1));
+    slowestExecMs = Math.max(slowestExecMs, performance.now() - began);
     // Exercise a nonzero capture duration, retaining the actual tmux bytes.
     if (argv[1] === "capture-pane") await wait(100);
     return result;
   });
   const file = join(root, "seat.log");
+  const transcriptHas = (text: string) => { try { return readFileSync(file, "utf8").includes(text); } catch { return false; } };
+  // A condition wait: it resolves the moment `f` holds; the ceiling only bounds a genuine hang.
+  const until = async (f: () => boolean, what: string) => {
+    const deadline = Date.now() + 30_000;
+    while (!f()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await wait(25);
+    }
+  };
   try {
     await run("new-session", "-d", "-s", "seat", "-x", "100", "-y", "30", "cat");
     startTranscriptRotation(adapter, "seat", file, { lines: 1000, pollIntervalMs: 2000 }, () => ({ lines: 1000, pollIntervalMs: 2000 }));
-    await wait(1100);
+    await until(() => captureStarts.length > 0, "the first capture");
     await run("send-keys", "-t", "seat", "-l", "first activity"); await run("send-keys", "-t", "seat", "Enter");
-    await wait(2000);
+    // Send the final output just after a capture has landed, so the next capture is a full cadence step away. A fixed
+    // schedule of waits drifts on a loaded host until the send falls on the wrong side of a capture, and the output
+    // then lands a whole step later than the cadence says: that is the schedule moving, not the capture.
+    await until(() => transcriptHas("first activity"), "a capture of the first activity");
     await run("send-keys", "-t", "seat", "-l", "final active output αβ"); await run("send-keys", "-t", "seat", "Enter");
-    await wait(1300);
+    await until(() => transcriptHas("final active output αβ"), "the final output in the transcript");
     stopTranscriptRotation("seat");
+    // The capture that landed it is the latest to have started (a capture takes over 100 ms here, a poll 25 ms).
+    // Capture starts are one 2000 ms cadence step apart, quantized to the 1000 ms timer step; the capture's own latency
+    // must not stretch that. The allowance beyond the step is the slowest tmux call this host took, three times over
+    // (the activity listing before a capture, the capture, a late timer).
+    const [previousStart, landingStart] = captureStarts.slice(-2) as [number, number];
+    expect(landingStart - previousStart).toBeLessThanOrEqual(2000 + 1000 + 3 * slowestExecMs);
     expect(readFileSync(file, "utf8")).toContain("final active output αβ");
   } finally {
     stopTranscriptRotation("seat");
     await stopOwnedTmuxServer(socket, process.env);
     rmSync(root, { recursive: true, force: true });
   }
-}, 15_000);
+}, 45_000);
 
 
 it.skipIf(!nativeAvailable)("keeps real idle transcript health fresh across a variable 4.2s capture", async () => {
