@@ -82,7 +82,7 @@ const cellSeats = (root: unknown): string[] => {
   const out: string[] = [];
   const walk = (n: any) => {
     if (!n || typeof n !== "object") return;
-    if (n.type === "pane" && Array.isArray(n.command)) { const m = /attach -t '([^']+)'/.exec(n.command.join(" ")); if (m) out.push(m[1]!); }
+    if (n.type === "pane" && Array.isArray(n.command)) { const m = /attach (?:--observe )?-- '([^']+)'/.exec(n.command.join(" ")); if (m) out.push(m[1]!); }
     for (const k of ["first", "second", "children", "left", "right", "top", "bottom"]) {
       const v = n[k]; if (Array.isArray(v)) v.forEach(walk); else walk(v);
     }

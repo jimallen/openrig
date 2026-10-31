@@ -5,13 +5,20 @@
 // partition rules live here, in one testable pure function, so no provider
 // re-implements them:
 //
-//   local live       → `tmux attach -t <session>` (tmux = the daemon-resolved
+//   local live       → `hc attach -- <terminal>` (hc = the daemon-resolved
 //                      absolute path when the context carries one)
 //   view-only / cross-rig (read-only)
-//                    → `tmux attach -r -t <session>`
-//   ssh host         → `ssh <dest> tmux attach [-r] -t <session>`
+//                    → `hc attach --observe -- <terminal>`
+//   ssh host         → `hc attach [--observe] -- <machine>/<terminal>`: the
+//                      host id names the hc machine (design section 13)
 //   http host        → NO pane; honest-degrade { seat, host, reason }
-//   dead / no session → absent[] (named, never silently dropped)
+//   dead / no terminal → absent[] (named, never silently dropped)
+//
+// Size (measured on a private hc 0.1.15 core, 2026-10-31): a plain `hc attach` resizes the
+// program to the attaching terminal at once, with no key typed, and the program goes back to
+// its creation size (200x120) when the last viewer leaves. `--observe` never resizes and never
+// types. So a read-only pane is an observer, and a writable pane is the person's seat: it takes
+// the size of the tile it runs in, and with two writable viewers the last to attach wins.
 //
 // The composer takes members that already carry a STRUCTURED `host` field (a
 // host id, never a `member@rig@host` string — MH BR-1). Host classification
@@ -46,7 +53,10 @@ export interface ViewMemberInput {
   runtime?: string | null;
   /** Pane label — `<agent> · <slice>` (AC-7). */
   label: string;
-  /** The tmux session to attach to (may be null if the seat has no tmux binding). */
+  /**
+   * The hc terminal to attach to (the seat's hc name, `hcTerminalName(seat)`); null if the seat has none.
+   * The field keeps its tmux-era name until the callers that fill it are renamed with it.
+   */
   tmuxSession: string | null;
   /** Structured host id when remote; null for a local seat. */
   host: string | null;
@@ -63,27 +73,20 @@ export interface ComposeContext {
   /** Panes per page for the target provider; defaults to PANES_PER_PAGE. */
   panesPerPage?: number;
   /**
-   * Absolute path of the tmux executable the daemon resolves. Used only for LOCAL panes, so a
-   * provider started with a narrower PATH can still run the attach (#707). Absent → the bare
-   * `tmux` token, unchanged. Never put into an ssh remote command: that host resolves its own.
+   * Absolute path of the hc executable the daemon resolves, so a provider started with a narrower
+   * PATH can still run the attach (#707, now for hc). Absent → the bare `hc` token. Used for every
+   * pane: a remote member also attaches through the local hc, which forwards over its machine link.
    */
+  localHc?: string;
+  /** @deprecated tmux is gone; ignored. Kept only so terminal-service.ts, which still passes it, compiles until it is rewired. */
   localTmux?: string;
-  /**
-   * The daemon's tmux server flags (`-L <name>` or `-S <path>`), for LOCAL panes only. The daemon's
-   * sessions live on the server its inherited $TMUX names, which a new terminal doesn't reach by
-   * default. Absent or empty → no flags, unchanged. Never put into an ssh remote command.
-   */
+  /** @deprecated tmux is gone; ignored (see localTmux). */
   localTmuxServer?: readonly string[];
 }
 
 /** POSIX single-quote a string so session names / targets are shell-inert in the composed command. */
 function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\"'\"'") + "'";
-}
-
-/** The remote ssh destination — `user@target` when a user is declared, else `target`. */
-function sshDest(host: Extract<HostEntry, { transport: "ssh" }>): string {
-  return host.user ? `${host.user}@${host.target}` : host.target;
 }
 
 /** Chunk panes into fixed-size grid pages (one provider tab per page). */
@@ -112,11 +115,12 @@ export function composeView(
   const opened: ComposedPane[] = [];
   const absent: AbsentSeat[] = [];
   const degraded: DegradedSeat[] = [];
-  const localServer = (ctx.localTmuxServer ?? []).map((arg, i) => (i % 2 === 0 ? arg : shellQuote(arg))).join(" ");
-  const localTmux = `${ctx.localTmux ? shellQuote(ctx.localTmux) : "tmux"}${localServer ? ` ${localServer}` : ""}`;
+  const hc = ctx.localHc ? shellQuote(ctx.localHc) : "hc";
 
   for (const m of members) {
-    const attachFlag = m.readOnly ? "-r " : "";
+    // `--` ends options, so a terminal or machine name that starts with `-` stays a name (measured:
+    // `hc attach -- -x` looks the terminal up as "-x").
+    const attach = (target: string) => `${hc} attach ${m.readOnly ? "--observe " : ""}-- ${shellQuote(target)}`;
 
     if (m.host !== null) {
       // Remote member: classify by the registry entry's transport.
@@ -141,37 +145,22 @@ export function composeView(
         });
         continue;
       }
-      // ssh host: a seat with no recorded tmux session cannot be attached.
+      // ssh host: a seat with no recorded terminal cannot be attached.
       if (!m.tmuxSession) {
         absent.push({
           seat: m.seat,
           host: m.host,
-          reason: "no tmux session recorded for this seat",
+          reason: "no hc terminal recorded for this seat",
         });
         continue;
       }
-      // Guard G1: the host registry is STRUCTURED data, but the pane command is a
-      // shell string — so the ssh destination must be shell-inert AND not
-      // option-shaped. A registry `user`/`target` with whitespace or shell
-      // metacharacters would otherwise split into extra shell words; a leading
-      // `-` would be parsed BY ssh as an option (option injection). We shell-quote
-      // the destination so it stays exactly ONE argument, and honest-degrade (named,
-      // never run) a destination that begins with `-`.
-      const dest = sshDest(host);
-      if (dest.startsWith("-")) {
-        degraded.push({
-          seat: m.seat,
-          host: m.host,
-          reason: `host ${m.host} ssh destination '${dest}' is option-shaped (leading '-'); refusing to compose an ssh tile`,
-        });
-        continue;
-      }
-      const remoteCommand = `tmux attach ${attachFlag}-t ${shellQuote(m.tmuxSession)}`;
+      // The host id is the hc machine name (`hc machine add --name <id>`); that mapping is
+      // not read from `hc machine ls` yet (unverified for any registry whose ids differ).
       opened.push({
         seat: m.seat,
         ...(m.runtime ? { runtime: m.runtime } : {}),
         label: m.label,
-        paneCommand: `ssh ${shellQuote(dest)} ${shellQuote(remoteCommand)}`,
+        paneCommand: attach(`${m.host}/${m.tmuxSession}`),
         readOnly: m.readOnly,
       });
       continue;
@@ -182,7 +171,7 @@ export function composeView(
       absent.push({
         seat: m.seat,
         host: null,
-        reason: "no tmux session recorded for this seat",
+        reason: "no hc terminal recorded for this seat",
       });
       continue;
     }
@@ -190,7 +179,7 @@ export function composeView(
       absent.push({
         seat: m.seat,
         host: null,
-        reason: `tmux session ${m.tmuxSession} is not alive`,
+        reason: `hc terminal ${m.tmuxSession} is not alive`,
       });
       continue;
     }
@@ -198,7 +187,7 @@ export function composeView(
       seat: m.seat,
       ...(m.runtime ? { runtime: m.runtime } : {}),
       label: m.label,
-      paneCommand: `${localTmux} attach ${attachFlag}-t ${shellQuote(m.tmuxSession)}`,
+      paneCommand: attach(m.tmuxSession),
       readOnly: m.readOnly,
     });
   }

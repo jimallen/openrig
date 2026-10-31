@@ -54,19 +54,20 @@ describe("the daemon's tmux server", () => {
     expect(tmuxAttachCommand("dev-build@starter")).toBe("tmux -S '/tmp/my sockets/team' attach -t dev-build@starter");
   });
 
-  it("puts the server into local panes, never into an ssh pane", () => {
+  it("composes no tmux server into any pane: hc picks its core from the environment, and a machine tile goes through its link", () => {
     const local: ViewMemberInput = { seat: "dev-review@starter", label: "reviewer", tmuxSession: "dev-review@starter", host: null, readOnly: false, alive: true };
     const remote: ViewMemberInput = { seat: "dev-build@starter", label: "builder", tmuxSession: "dev-build@starter", host: "box", readOnly: false, alive: true };
     const resolveHost = () => ({ id: "box", transport: "ssh" as const, target: "box.example" });
     const plain = composeView("v", [local, remote], { resolveHost });
     expect(plain.opened.map((p) => p.paneCommand)).toEqual([
-      "tmux attach -t 'dev-review@starter'",
-      "ssh 'box.example' 'tmux attach -t '\"'\"'dev-build@starter'\"'\"''",
+      "hc attach -- 'dev-review@starter'",
+      "hc attach -- 'box/dev-build@starter'",
     ]);
-    const onServer = composeView("v", [local, remote], { resolveHost, localTmux: "/usr/bin/tmux", localTmuxServer: ["-L", "person"] });
+    const onServer = composeView("v", [local, remote], { resolveHost, localHc: "/usr/bin/hc", localTmux: "/usr/bin/tmux", localTmuxServer: ["-L", "person"] });
     expect(onServer.opened.map((p) => p.paneCommand)).toEqual([
-      "'/usr/bin/tmux' -L 'person' attach -t 'dev-review@starter'",
-      plain.opened[1]!.paneCommand,
+      "'/usr/bin/hc' attach -- 'dev-review@starter'",
+      "'/usr/bin/hc' attach -- 'box/dev-build@starter'",
     ]);
+    expect(JSON.stringify(onServer)).not.toMatch(/tmux|-L|person/);
   });
 });
