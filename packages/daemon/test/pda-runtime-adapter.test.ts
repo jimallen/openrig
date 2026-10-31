@@ -303,6 +303,23 @@ describe("PdaRuntimeAdapter.sendReadiness", () => {
     expect(await ask()).toMatchObject({ state: "idle", reason: "runner_idle", sampledAt: NOW.toISOString() });
   });
 
+  // OF-185: the injected-clock form of e2e row 9 (stale). The wall clock never enters: only `now` against `aliveAt`.
+  it("a forged held head is believed only inside the alive window: the same file is an answer at the edge and none one millisecond past it", async () => {
+    const held = { requestId: "openrig/forged/launch/1", code: "pda_message_held" as const, at: "2026-01-01T00:00:00.000Z" };
+    writeSidecar(state({ aliveAt: NOW.toISOString(), held }));
+    for (const [label, nowMs, expected] of [
+      ["fresh", NOW.getTime(), "answer"],
+      // the 180 s window is restated, not imported: this row must fail if the window itself moves
+      ["last instant of the window", NOW.getTime() + 180_000, "answer"],
+      ["one ms past the window", NOW.getTime() + 180_001, "none"],
+      ["ten minutes on", NOW.getTime() + 10 * 60_000, "none"],
+    ] as const) {
+      const got = await ask({ now: () => new Date(nowMs) });
+      if (expected === "answer") expect(got, label).toMatchObject({ state: "needs_input", reason: "pda_message_held", evidenceSource: "runner_sidecar" });
+      else expect(got, label).toBeNull();
+    }
+  });
+
   it("null, never a throw, for an absent, unparseable, not-ready, exited or stale sidecar, and for a read that throws", async () => {
     expect(await ask()).toBeNull(); // absent
     writeSidecar("{ not json");

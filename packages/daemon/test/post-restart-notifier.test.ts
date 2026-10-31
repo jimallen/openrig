@@ -16,10 +16,12 @@ const dbs: Database.Database[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
 
 const T0 = Date.parse("2026-10-30T18:00:00.000Z");
+/** The seat's session start: deliberately not the handling time, so a timestamp taken from the clock fails. */
+const SEAT_START = "2026-10-30T17:59:00.000Z";
 
 interface Sent { sessionName: string; text: string; deliveryId: string; actorSession: string; waitForIdleMs: number }
 
-function make(opts: { script?: PostRestartSendResult[]; enabled?: boolean; sessions?: Record<string, string | null>; over?: Partial<PostRestartDeps> } = {}) {
+function make(opts: { script?: PostRestartSendResult[]; enabled?: boolean; sessions?: Record<string, string | null>; startedAt?: Record<string, string>; over?: Partial<PostRestartDeps> } = {}) {
   const db = createDb();
   migrate(db, ALL_MIGRATIONS);
   dbs.push(db);
@@ -27,11 +29,13 @@ function make(opts: { script?: PostRestartSendResult[]; enabled?: boolean; sessi
   const clock = { t: T0 };
   const sent: Sent[] = [];
   const sleeps: number[] = [];
+  const logs: string[] = [];
   const script = [...(opts.script ?? [])];
   const sessions: Record<string, string | null> = opts.sessions ?? { "node-a": "dev-a@rig1", "node-b": "dev-b@rig1", "node-c": "dev-c@rig1", "node-d": "dev-d@rig1" };
   const notifier = new PostRestartNotifier({
     enabled: () => opts.enabled ?? true,
-    sessionOf: (nodeId) => sessions[nodeId] ?? null,
+    sessionOf: (nodeId) => (sessions[nodeId] ? { name: sessions[nodeId]!, startedAt: opts.startedAt?.[nodeId] ?? SEAT_START } : null),
+    log: (line) => logs.push(line),
     rigNameOf: () => "rig1",
     send: async (sessionName, text, o) => {
       sent.push({ sessionName, text, ...o });
@@ -46,7 +50,7 @@ function make(opts: { script?: PostRestartSendResult[]; enabled?: boolean; sessi
     waitForIdleMs: 60_000,
     ...opts.over,
   });
-  return { db, outbox, notifier, sent, sleeps, clock };
+  return { db, outbox, notifier, sent, sleeps, clock, logs };
 }
 
 function node(nodeId: string, status: RestoreNodeResult["status"], extra: Partial<RestoreNodeResult> = {}): RestoreNodeResult {
@@ -107,7 +111,72 @@ describe("the prompt", () => {
     await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]) });
     expect(f.sleeps[0]).toBe(20_000);
     expect(f.sent[0]).toMatchObject({ waitForIdleMs: 60_000, actorSession: "restore@system" });
-    expect(f.sent[0]!.text).toBe(postRestartText({ rigName: "rig1", restartedAt: new Date(T0).toISOString() }));
+    expect(f.sent[0]!.text).toBe(postRestartText({ rigName: "rig1", restartedAt: SEAT_START }));
+  });
+
+  it("OF-184: 'restarted at' is the seat's session start, not the handling time (the clock is 20 s past T0 when it is sent)", async () => {
+    const f = make({ startedAt: { "node-a": "2026-10-30T17:58:12.000Z" } });
+    await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]) });
+    expect(f.sent[0]!.text).toContain("restarted at 2026-10-30T17:58:12.000Z");
+    expect(f.sent[0]!.text).not.toContain(new Date(T0 + 20_000).toISOString());
+  });
+});
+
+describe("OF-184: a seat replaced inside the window", () => {
+  const RESTORED_AT = "2026-10-30T18:00:00.000Z";
+
+  it("a session started after the restore completed gets no 'resumed' prompt and no row", async () => {
+    const f = make({ startedAt: { "node-a": "2026-10-30T18:05:00.000Z" } });
+    const out = await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]), createdAt: RESTORED_AT });
+    expect(out[0]).toMatchObject({ outcome: "replaced", attempts: 0 });
+    expect(f.sent).toHaveLength(0);
+    expect(f.outbox.getById("post-restart-7-node-a")).toBeNull();
+  });
+
+  it("a seat replaced after a few busy retries stops at the replacement: nothing is sent to it", async () => {
+    const startedAt: Record<string, string> = { "node-a": SEAT_START };
+    const sends: string[] = [];
+    const f = make({
+      startedAt,
+      over: {
+        // the first attempt is refused (seat busy); by the next one the seat has been launched again
+        send: async (sessionName) => { sends.push(sessionName); startedAt["node-a"] = "2026-10-30T18:03:00.000Z"; return { ok: false, reason: "not_idle" }; },
+      },
+    });
+    const out = await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]), createdAt: RESTORED_AT });
+    expect(sends).toHaveLength(1);
+    expect(out[0]).toMatchObject({ outcome: "replaced", attempts: 1 });
+    expect(f.outbox.getById("post-restart-7-node-a")).toBeNull();
+  });
+
+  it("a session that started before (or at) the restore is the resumed seat and is sent to", async () => {
+    const f = make({ startedAt: { "node-a": RESTORED_AT } });
+    const out = await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]), createdAt: RESTORED_AT });
+    expect(out[0]).toMatchObject({ outcome: "delivered" });
+  });
+
+  it("the window runs from the restore, not from when a re-derived event is handled", async () => {
+    const f = make({ startedAt: { "node-a": "2026-10-30T17:30:00.000Z" }, script: Array.from({ length: 100 }, () => ({ ok: false, reason: "not_idle" })) });
+    // restored 25 minutes before T0: 5 minutes of window left
+    const out = await f.notifier.onRestoreCompleted({ seq: 7, rigId: "rig-1", result: result([node("node-a", "resumed")]), createdAt: new Date(T0 - 25 * 60_000).toISOString() });
+    expect(out[0]).toMatchObject({ outcome: "undelivered" });
+    expect(f.sent.length).toBe(5);
+  });
+});
+
+describe("OF-184: retry log noise", () => {
+  it("a seat busy for the whole window logs the refusal once, plus the window-closed line", async () => {
+    const f = make({ script: Array.from({ length: 100 }, () => ({ ok: false, reason: "target_needs_input" })) });
+    await f.notifier.onRestoreCompleted({ seq: 9, rigId: "rig-1", result: result([node("node-a", "resumed")]) });
+    expect(f.sent.length).toBe(30);
+    expect(f.logs.filter((l) => l.includes("not delivered (target_needs_input)"))).toHaveLength(1);
+    expect(f.logs.filter((l) => l.includes("not delivered within the window"))).toHaveLength(1);
+  });
+
+  it("a different refusal reason is logged again", async () => {
+    const f = make({ script: [{ ok: false, reason: "not_idle" }, { ok: false, reason: "target_needs_input" }, { ok: false, reason: "target_needs_input" }, { ok: true }] });
+    await f.notifier.onRestoreCompleted({ seq: 9, rigId: "rig-1", result: result([node("node-a", "resumed")]) });
+    expect(f.logs).toHaveLength(2);
   });
 });
 

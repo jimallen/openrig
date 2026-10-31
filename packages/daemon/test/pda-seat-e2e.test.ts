@@ -356,15 +356,26 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
   }, 180_000);
 
   it("row 9 (stale): a sidecar older than the alive window is no answer: a forged held head refuses only while fresh", async () => {
+    // OF-185. A forged file is believed or disbelieved by its age alone, but the real runner rewrites its sidecar every
+    // 60 s with its own (empty) held head, which erases the forgery whenever a tick lands between our write and the
+    // daemon's read; the CLI's latency under load is the width of that window. So the forgery is written right after a
+    // tick, which leaves it a whole interval before the next one (pausing the runner is not an option: the daemon then
+    // sees a non-running foreground process and refuses for another reason). If a tick still intervenes, the control
+    // says so instead of reporting a send that "was not refused". The age arithmetic itself is pinned with an injected
+    // clock in pda-runtime-adapter.test.ts ("a forged held head is believed only inside the alive window").
     const file = paths().runnerStatePath;
+    const seenAlive = sidecar()?.aliveAt;
+    await until("the runner's next alive tick, so the forgery has a whole 60 s interval", () => sidecar()?.aliveAt !== seenAlive, 90_000);
     const base = JSON.parse(readFileSync(file, "utf8")) as PdaRunnerState;
+    const FORGED = "openrig/forged/launch/1";
     const forge = (aliveAt: string) => writeFileSync(file, JSON.stringify({
-      ...base, aliveAt, held: { requestId: "openrig/forged/launch/1", code: "pda_message_held", at: aliveAt },
+      ...base, aliveAt, held: { requestId: FORGED, code: "pda_message_held", at: aliveAt },
     }));
     const entriesBefore = fake.entries("research").length;
     try {
       forge(new Date().toISOString()); // control: the forgery is believed while it is fresh
       const fresh = await cli(["send", PDA_SEAT, "STALE-PROBE-FRESH", "--json"]);
+      expect(sidecar()?.held?.requestId, "the forged head must still be the sidecar's content: a runner tick overwrote it before the daemon read it").toBe(FORGED);
       expect(fresh.code).not.toBe(0);
       expect(JSON.parse(fresh.stdout)).toMatchObject({ ok: false, reason: "target_needs_input", activity: { reason: "pda_message_held", evidenceSource: "runner_sidecar" } });
       expect(fake.entries("research")).toHaveLength(entriesBefore);
@@ -378,7 +389,7 @@ describe("pda seat end to end: real daemon, real tmux (private socket), real run
       const rewritten = await until("the runner to rewrite its sidecar", () => sidecar()?.held === undefined, 5_000).catch(() => false);
       if (!rewritten) writeFileSync(file, JSON.stringify({ ...base, aliveAt: new Date().toISOString() }));
     }
-  }, 60_000);
+  }, 180_000); // up to 60 s for the tick, then the two sends
 
   const psAll = () => new Promise<string>((res, rej) => execFile("ps", ["-A", "-ww", "-o", "pid=,args="], { maxBuffer: 64 * 1024 * 1024 }, (e, o) => e ? rej(e) : res(o)));
   /** This scaffold's pda-runner processes: the argv names the scaffold's own state root. */

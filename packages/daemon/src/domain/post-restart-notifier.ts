@@ -11,11 +11,21 @@
 // A seat that is mid-turn or waiting on a prompt is not interrupted: native delivery waits for the seat's next boundary
 // by itself, and the tmux path waits for idle and is refused at a prompt, so the attempt is repeated until the seat moves
 // on or the window closes. The delivery id is fixed per restore and node: a row under it means done, never resent.
+// OF-184: the window runs from the restore event, "restarted at" is the seat's session start, and a session that started
+// after the restore is a replacement (the seat was launched again), which is not told its conversation resumed. A daemon
+// restart inside the window re-derives the pending prompts from the event log (post-restart-wiring.ts). With the typing
+// guard on, the send comes back `retained`: the guard owns that row and it is final, so such a seat gets no prompt (pinned).
 import { labelForTmuxSend, type OutboxEntry, type OutboxRecordInput, type OutboxOutcomeLabel } from "./outbox-handler.js";
 import { inertStartupText } from "./packet-text.js";
 import type { RestoreNodeResult, RestoreResult } from "./types.js";
 
 export const POST_RESTART_SENDER = "restore@system";
+
+/** A seat's running session: its name, and when that session started (ISO, UTC). */
+export interface PostRestartSession {
+  name: string;
+  startedAt: string;
+}
 
 export interface PostRestartSendResult {
   ok: boolean;
@@ -29,8 +39,8 @@ export interface PostRestartSendResult {
 export interface PostRestartDeps {
   /** `recovery.post_restart_prompt`, read once per restore. */
   enabled: () => boolean;
-  /** The running session of a node, or null. */
-  sessionOf: (nodeId: string) => string | null;
+  /** The running session of a node (latest), or null. */
+  sessionOf: (nodeId: string) => PostRestartSession | null;
   /** The rig's name, for the prompt. */
   rigNameOf: (rigId: string) => string | null;
   send: (sessionName: string, text: string, opts: { deliveryId: string; actorSession: string; auditPointer: string; waitForIdleMs: number }) => Promise<PostRestartSendResult>;
@@ -54,7 +64,7 @@ export interface PostRestartDeps {
 }
 
 export type PostRestartOutcome =
-  | { nodeId: string; sessionName: string | null; outcome: "delivered" | "native_written" | "retained" | "already_sent" | "no_session" | "undelivered"; attempts: number; detail?: string };
+  | { nodeId: string; sessionName: string | null; outcome: "delivered" | "native_written" | "retained" | "already_sent" | "no_session" | "undelivered" | "replaced"; attempts: number; detail?: string };
 
 /** Who gets the prompt (see the header). */
 export function needsPostRestartPrompt(node: RestoreNodeResult): boolean {
@@ -65,6 +75,7 @@ export function postRestartDeliveryId(restoreSeq: number, nodeId: string): strin
   return `post-restart-${restoreSeq}-${nodeId}`;
 }
 
+/** `restartedAt` is when the seat's session started, not when the prompt is handled. */
 export function postRestartText(input: { rigName: string; restartedAt: string }): string {
   return inertStartupText(
     `OpenRig: this seat was restarted at ${input.restartedAt} (rig ${input.rigName} was restored and your conversation resumed). `
@@ -93,43 +104,64 @@ export class PostRestartNotifier {
     this.waitForIdleMs = deps.waitForIdleMs ?? 60_000;
   }
 
-  /** `restore.completed`: one delivery per resumed seat, run concurrently. Resolves when every seat is settled. */
-  async onRestoreCompleted(event: { seq: number; rigId: string; result: RestoreResult }): Promise<PostRestartOutcome[]> {
+  /**
+   * `restore.completed`: one delivery per resumed seat, run concurrently. Resolves when every seat is settled.
+   * `createdAt` (ISO) is when the restore completed: the window runs from it, and a seat whose session started after it
+   * is a replacement, not the seat this restore resumed. Without it (tests) the window runs from now and no seat is
+   * judged replaced.
+   */
+  async onRestoreCompleted(event: { seq: number; rigId: string; result: RestoreResult; createdAt?: string }): Promise<PostRestartOutcome[]> {
     if (!this.deps.enabled()) return [];
     const nodes = event.result.nodes.filter(needsPostRestartPrompt);
     if (nodes.length === 0) return [];
-    const text = postRestartText({ rigName: this.deps.rigNameOf(event.rigId) ?? event.rigId, restartedAt: this.now().toISOString() });
-    return Promise.all(nodes.map((node) => this.deliverOne(event.seq, node.nodeId, text)));
+    const rigName = this.deps.rigNameOf(event.rigId) ?? event.rigId;
+    const at = event.createdAt === undefined ? Number.NaN : Date.parse(event.createdAt);
+    const restoredAtMs = Number.isNaN(at) ? null : at;
+    return Promise.all(nodes.map((node) => this.deliverOne(event.seq, node.nodeId, rigName, restoredAtMs)));
   }
 
-  private async deliverOne(restoreSeq: number, nodeId: string, text: string): Promise<PostRestartOutcome> {
+  private async deliverOne(restoreSeq: number, nodeId: string, rigName: string, restoredAtMs: number | null): Promise<PostRestartOutcome> {
     const deliveryId = postRestartDeliveryId(restoreSeq, nodeId);
     if (this.inFlight.has(deliveryId) || this.deps.outbox.getById(deliveryId)) {
       return { nodeId, sessionName: null, outcome: "already_sent", attempts: 0 };
     }
     this.inFlight.add(deliveryId);
     try {
-      const started = this.now().getTime();
+      const started = restoredAtMs ?? this.now().getTime();
       await this.sleep(this.firstDelayMs);
       let attempts = 0;
       let last: PostRestartSendResult | null = null;
       let sessionName: string | null = null;
+      let text = "";
+      let lastLogged: string | null = null;
       while (this.now().getTime() - started < this.windowMs) {
         if (this.deps.outbox.getById(deliveryId)) return { nodeId, sessionName, outcome: "already_sent", attempts };
-        sessionName = this.deps.sessionOf(nodeId);
-        if (sessionName) {
+        const session = this.deps.sessionOf(nodeId);
+        sessionName = session?.name ?? null;
+        if (session && restoredAtMs !== null && Date.parse(session.startedAt) > restoredAtMs) {
+          // The seat was launched again after the restore that resumed it: "your conversation resumed" is false for it.
+          this.deps.log?.(`[post-restart] node ${nodeId}: session ${session.name} started after the restore; not sent`);
+          return { nodeId, sessionName, outcome: "replaced", attempts, detail: `session started ${session.startedAt}` };
+        }
+        if (session) {
+          text = postRestartText({ rigName, restartedAt: session.startedAt });
           attempts++;
-          last = await this.deps.send(sessionName, text, { deliveryId, actorSession: POST_RESTART_SENDER, auditPointer: deliveryId, waitForIdleMs: this.waitForIdleMs });
+          last = await this.deps.send(session.name, text, { deliveryId, actorSession: POST_RESTART_SENDER, auditPointer: deliveryId, waitForIdleMs: this.waitForIdleMs });
           if (last.path === "native") return { nodeId, sessionName, outcome: "native_written", attempts };
           if (last.outcome === "retained") return { nodeId, sessionName, outcome: "retained", attempts };
           if (last.ok) {
             // The tmux path records nothing itself; record and settle the row as the send route does.
-            this.deps.outbox.record({ outboxId: deliveryId, senderSession: POST_RESTART_SENDER, destinationSession: sessionName, body: text,
+            this.deps.outbox.record({ outboxId: deliveryId, senderSession: POST_RESTART_SENDER, destinationSession: session.name, body: text,
               auditPointer: deliveryId, identityProvenance: "transport:v1" });
             this.deps.outbox.markDelivered(deliveryId, labelForTmuxSend(last));
             return { nodeId, sessionName, outcome: "delivered", attempts };
           }
-          this.deps.log?.(`[post-restart] ${sessionName}: attempt ${attempts} not delivered (${last.reason ?? last.error ?? "unknown"}); retrying`);
+          // One line per distinct reason, not one per attempt: a busy seat is retried for up to the whole window.
+          const why = last.reason ?? last.error ?? "unknown";
+          if (why !== lastLogged) {
+            this.deps.log?.(`[post-restart] ${sessionName}: attempt ${attempts} not delivered (${why}); retrying every ${this.retryEveryMs} ms until the window closes`);
+            lastLogged = why;
+          }
         }
         await this.sleep(this.retryEveryMs);
       }
