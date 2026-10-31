@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import http from "node:http";
 import { Command } from "commander";
-import { chatroomCommand } from "../src/commands/chatroom.js";
+import { chatroomCommand, type ChatroomHcDeps, type HcRunResult } from "../src/commands/chatroom.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
@@ -256,23 +256,117 @@ describe("Chatroom CLI", () => {
     expect(exitCode).toBe(1);
   });
 
-  it("chatroom watch --tmux spawns rig chatroom watch as the session command", async () => {
-    // Mock execSync to verify the tmux command
-    const origExecSync = (await import("node:child_process")).execSync;
-    let capturedCmd = "";
-    const { execSync } = await import("node:child_process");
+  describe("watch in a dedicated hc terminal", () => {
+    // Recipe restated independently of the source: cr- + first 24 hex of sha256("my-rig") (shasum -a 256).
+    const MY_RIG_TERMINAL = "cr-951006fa75ef7730ec3258ce";
 
-    // We can't easily mock execSync in this test setup, so verify the --tmux
-    // option prints the expected output when the tmux command fails (which it will
-    // in CI since there's no tmux server)
-    const { logs, exitCode } = await captureLogs(async () => {
-      await makeCmd().parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--tmux"]);
+    function fakeHc(result: Partial<HcRunResult> = {}) {
+      const calls: string[][] = [];
+      const deps: ChatroomHcDeps = {
+        runHc: (args) => { calls.push(args); return { status: 0, stdout: "{}", stderr: "", ...result }; },
+        selfArgv: () => ["/abs/node", "/abs/rig.js"],
+      };
+      return { calls, deps };
+    }
+
+    function watchCmd(deps: ChatroomHcDeps, port_: number = port): Command {
+      const prog = new Command();
+      prog.exitOverride();
+      prog.addCommand(chatroomCommand(runningDeps(port_), deps));
+      return prog;
+    }
+
+    it("--terminal starts the watch with hc run, one argv element per value and no shell", async () => {
+      const { calls, deps } = fakeHc();
+      const { logs, exitCode } = await captureLogs(async () => {
+        await watchCmd(deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]);
+      });
+      expect(calls).toEqual([[
+        "run", "--json", "--bg", "--no-parent", "--no-notify", "--outlive-parent",
+        "--name", MY_RIG_TERMINAL, "--label", "openrig.chatroom=my-rig", "--",
+        "/usr/bin/env", `OPENRIG_URL=http://127.0.0.1:${port}`, "/abs/node", "/abs/rig.js", "chatroom", "watch", "my-rig",
+      ]]);
+      expect(logs.join("\n")).toContain(`Started watch in hc terminal: ${MY_RIG_TERMINAL}`);
+      expect(logs.join("\n")).toContain(`hc attach ${MY_RIG_TERMINAL}`);
+      expect(logs.join("\n")).not.toContain("tmux");
+      expect(exitCode).toBeUndefined();
     });
 
-    const output = logs.join("\n");
-    // Either it created the session or it reported an error about an existing session
-    const tmuxSucceeded = output.includes("chatroom@my-rig");
-    expect(tmuxSucceeded).toBe(true);
+    it("--tmux is a hidden alias that behaves exactly as --terminal", async () => {
+      const viaTerminal = fakeHc();
+      const viaTmux = fakeHc();
+      await captureLogs(async () => { await watchCmd(viaTerminal.deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]); });
+      await captureLogs(async () => { await watchCmd(viaTmux.deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--tmux"]); });
+      expect(viaTmux.calls.length).toBe(1);
+      expect(viaTmux.calls).toEqual(viaTerminal.calls);
+      const help = chatroomCommand(runningDeps(port), viaTmux.deps).commands.find((c) => c.name() === "watch")!.helpInformation();
+      expect(help).toContain("--terminal");
+      expect(help).not.toContain("--tmux");
+    });
+
+    it("a plain watch never calls hc", async () => {
+      const { calls, deps } = fakeHc();
+      await captureLogs(async () => { await watchCmd(deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig"]); });
+      expect(calls).toEqual([]);
+    });
+
+    it("an unknown rig never calls hc", async () => {
+      const { calls, deps } = fakeHc();
+      const { exitCode } = await captureLogs(async () => { await watchCmd(deps).parseAsync(["node", "rig", "chatroom", "watch", "no-such-rig", "--terminal"]); });
+      expect(calls).toEqual([]);
+      expect(exitCode).toBe(1);
+    });
+
+    it("a rig name with shell metacharacters stays one argv element and gets a valid hc name", async () => {
+      const odd = "my rig; $(touch x) 'q'";
+      const oddServer = http.createServer((req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify([{ id: "rig-odd", name: odd, nodeCount: 1 }]));
+      });
+      const oddPort = await new Promise<number>((resolve) => oddServer.listen(0, () => resolve((oddServer.address() as { port: number }).port)));
+      const { calls, deps } = fakeHc();
+      await captureLogs(async () => { await watchCmd(deps, oddPort).parseAsync(["node", "rig", "chatroom", "watch", odd, "--terminal"]); });
+      oddServer.close();
+      expect(calls[0]!.at(-1)).toBe(odd);
+      expect(calls[0]!).toContain(`openrig.chatroom=${odd}`);
+      const name = calls[0]![calls[0]!.indexOf("--name") + 1]!;
+      expect(name).toMatch(/^[a-z0-9_.-]{1,32}$/);
+    });
+
+    it("name_taken reads as a watch already running, exit 1", async () => {
+      const { deps } = fakeHc({ status: 1, stdout: "", stderr: JSON.stringify({ error: { kind: "name_taken", message: "a live terminal is already named x" } }) });
+      const { logs, exitCode } = await captureLogs(async () => { await watchCmd(deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]); });
+      expect(logs.join("\n")).toContain(`already running in terminal '${MY_RIG_TERMINAL}'`);
+      expect(logs.join("\n")).not.toContain("Started");
+      expect(exitCode).toBe(1);
+    });
+
+    it("another hc refusal reports hc's own message, exit 1", async () => {
+      const { deps } = fakeHc({ status: 1, stdout: JSON.stringify({ error: { kind: "spawn_failed", message: "cannot start x" } }) });
+      const { logs, exitCode } = await captureLogs(async () => { await watchCmd(deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]); });
+      expect(logs.join("\n")).toContain("cannot start x");
+      expect(logs.join("\n")).not.toContain("already running");
+      expect(exitCode).toBe(1);
+    });
+
+    it("hc missing from PATH reports that, exit 1", async () => {
+      const { deps } = fakeHc({ status: null, spawnError: "spawn hc ENOENT" });
+      const { logs, exitCode } = await captureLogs(async () => { await watchCmd(deps).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]); });
+      expect(logs.join("\n")).toContain("Failed to start hc: spawn hc ENOENT");
+      expect(exitCode).toBe(1);
+    });
+
+    it("a daemon URL that carries credentials is not put in argv", async () => {
+      const { calls, deps } = fakeHc();
+      const prog = new Command();
+      prog.exitOverride();
+      const base = runningDeps(port);
+      prog.addCommand(chatroomCommand({ ...base, clientFactory: () => new DaemonClient(`http://user:secret@127.0.0.1:${port}`) }, deps));
+      await captureLogs(async () => { await prog.parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]); });
+      expect(calls.length).toBe(1);
+      expect(JSON.stringify(calls)).not.toContain("secret");
+      expect(JSON.stringify(calls)).not.toContain("OPENRIG_URL");
+    });
   });
 
   it("chatroom history --sender filters messages", async () => {
