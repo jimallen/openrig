@@ -164,6 +164,9 @@ export class RigExpansionService {
             // pda: PRESENCE-preserving RAW carry like remote_control -- a present-invalid block reaches the canonical
             // validator (parsePdaSpecBlock) and rejects there; only an absent key is omitted.
             ...("pda" in member && member.pda !== undefined ? { pda: member.pda } : {}),
+            // env_passthrough: PRESENCE-preserving RAW carry like pda -- a present-invalid list reaches the canonical
+            // validator and rejects there; only an absent key is omitted.
+            ...("envPassthrough" in member && member.envPassthrough !== undefined ? { env_passthrough: member.envPassthrough } : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
             ...(member.effort ? { effort: member.effort } : {}),

@@ -1263,7 +1263,7 @@ export class PodRigInstantiator {
     const initialRefusal = eligible();
     if (initialRefusal) return refuse(initialRefusal);
 
-    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda"]);
+    const retainedFields = new Set(["id", "label", "agent_ref", "profile", "runtime", "model", "effort", "remote_control", "cwd", "role", "codex_config_profile", "permission_policy", "restore_policy", "pda", "env_passthrough"]);
     if (Object.keys(memberFragment).some(key => !retainedFields.has(key))) return refuse("Retry accepts only retained member fields; topology and startup overrides require a separate change.");
     const rawSpec = { version: "0.2", name: rig.rig.name, pods: [{ id: podRow.namespace, label: podRow.label, members: [memberFragment], edges: [] }], edges: [] };
     const validation = PodRigSpecSchema.validate(rawSpec);
@@ -1288,7 +1288,8 @@ export class PodRigInstantiator {
       // A retry relaunches the seat from this member; one that dropped or added remote_control would
       // silently rewrite the persisted declaration, so it must agree with the retained seat.
       || (member.remoteControl === true) !== (node.remoteControl === true)
-      || !retainedPdaBindingAgrees(member.pda, node)) return refuse("Member source disagrees with the retained seat identity or policy.");
+      || !retainedPdaBindingAgrees(member.pda, node)
+      || JSON.stringify(member.envPassthrough ?? []) !== JSON.stringify(this.deps.rigRepo.getNodeEnvPassthrough(node.id))) return refuse("Member source disagrees with the retained seat identity or policy.");
     const resolved = resolveAgentRef(member.agentRef, rigRoot, this.deps.fsOps);
     if (!resolved.ok) return refuse(agentRefFailureMessage(resolved));
     if (!node.resolvedSpecHash || resolved.resolved.hash !== node.resolvedSpecHash) return refuse("Agent source hash differs from the failed first start.");
@@ -1617,6 +1618,7 @@ export class PodRigInstantiator {
             effort: member.effort ?? configResult.config.effort,
             remoteControl: member.remoteControl,
             pda: member.pda,
+            envPassthrough: member.envPassthrough,
             codexConfigProfile: member.codexConfigProfile,
             // OPR.0.4.8.3 Seam B: bootstrap inline addNode is the FOURTH node-creation
             // site (see the role wire note above) — same member-ref persistence as
@@ -1988,6 +1990,7 @@ export class PodRigInstantiator {
       effort: input.member.effort,
       remoteControl: input.member.remoteControl,
       pda: input.member.pda,
+      envPassthrough: input.member.envPassthrough,
       codexConfigProfile: input.member.codexConfigProfile,
       // OPR.0.4.8.3 Seam B: the member's OWN raw ref persists on the node (like role);
       // rig-level lives on the rig row; precedence applies at RESOLUTION, not storage.

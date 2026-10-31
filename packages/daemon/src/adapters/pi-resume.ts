@@ -40,6 +40,8 @@ interface PiResumeOptions {
   usageFactsEnabled?: () => boolean;
   /** OPR.0.7.0.2 K4: whether usage.pi_openrouter_charge is on, read at each resume (absent = off). */
   openRouterChargeEnabled?: () => boolean;
+  /** The seat's extra environment names (spec `env_passthrough`), by session name; absent or [] = the baseline. */
+  envPassthroughFor?: (sessionName: string) => string[];
 }
 
 export class PiResumeAdapter {
@@ -114,6 +116,7 @@ export class PiResumeAdapter {
       launchId,
       usageFacts: this.runtime === "pi" && (this.options.usageFactsEnabled?.() ?? false),
       openRouterCharge: this.runtime === "pi" && (this.options.openRouterChargeEnabled?.() ?? false),
+      envPassthrough: this.options.envPassthroughFor?.(tmuxSessionName) ?? [],
     });
 
     const command = this.runtime === "pi" && this.options.seatLaunchEnvironment

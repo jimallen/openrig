@@ -175,6 +175,9 @@ export class RigSpecExporter {
         if (node.remoteControl) member.remoteControl = true;
         // The pda binding round-trips export -> import (D2: export reads the column).
         if (node.pda) member.pda = node.pda;
+        // A Pi or OMP seat's extra environment names round-trip export -> import (names only).
+        const envPassthrough = this.rigRepo.getNodeEnvPassthrough(node.id);
+        if (envPassthrough.length > 0) member.envPassthrough = envPassthrough;
         // OPR.0.4.6.FAC1: a declared seat role exports with the pod
         // member (round-trip fidelity — export→import keeps the role).
         if (node.role) member.role = node.role;

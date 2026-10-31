@@ -163,6 +163,7 @@ export class RigSpecCodec {
         if (m.remoteControl) member["remote_control"] = true;
         // Parse carries pda (schema normalize), so serialize must too: a bundle or draft would otherwise drop the binding.
         if (m.pda) member["pda"] = { agent: m.pda.agent, base_url: m.pda.baseUrl };
+        if (m.envPassthrough && m.envPassthrough.length > 0) member["env_passthrough"] = [...m.envPassthrough];
         // OPR.0.4.6.FAC1: role round-trips through spec serialization.
         if (m.role) member["role"] = m.role;
         // OPR.0.4.8.3 Seam B: per-seat permission_policy ref round-trips through spec serialization.

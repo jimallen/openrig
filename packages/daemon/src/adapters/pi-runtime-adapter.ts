@@ -66,6 +66,8 @@ export interface PiRuntimeAdapterDeps {
   usageFactsEnabled?: () => boolean;
   /** OPR.0.7.0.2 K4: whether usage.pi_openrouter_charge is on, read at each launch (absent = off). */
   openRouterChargeEnabled?: () => boolean;
+  /** The seat's extra environment names (spec `env_passthrough`), by session name; absent or [] = the baseline. */
+  envPassthroughFor?: (sessionName: string) => string[];
   /** The clock `sendReadiness` judges the sidecar's alive tick against (tests inject; defaults to the wall clock). */
   now?: () => Date;
 }
@@ -82,12 +84,14 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   private newLaunchId: () => string;
   private usageFactsEnabled: () => boolean;
   private openRouterChargeEnabled: () => boolean;
+  private envPassthroughFor: (sessionName: string) => string[];
   private now: () => Date;
 
   constructor(deps: PiRuntimeAdapterDeps) {
     this.now = deps.now ?? (() => new Date());
     this.usageFactsEnabled = deps.usageFactsEnabled ?? (() => false);
     this.openRouterChargeEnabled = deps.openRouterChargeEnabled ?? (() => false);
+    this.envPassthroughFor = deps.envPassthroughFor ?? (() => []);
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
@@ -293,6 +297,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
       launchId,
       usageFacts: this.runtime === "pi" && this.usageFactsEnabled(),
       openRouterCharge: this.runtime === "pi" && this.openRouterChargeEnabled(),
+      envPassthrough: this.envPassthroughFor(sessionName),
     });
 
     const command = this.runtime === "pi" && this.seatLaunchEnvironment
