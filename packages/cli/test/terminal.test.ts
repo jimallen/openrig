@@ -69,19 +69,19 @@ describe("rig terminal CLI", () => {
 
   it("--window uses local desktop handling and reports a headless refusal without a provider POST", async () => {
     const previewPath = "/api/terminal/preview?view=saved%3Akernel&provider=herdr";
-    const pane = { seat: "operator", label: "operator", paneCommand: "tmux attach-session -t '=operator'" };
+    const pane = { seat: "operator", label: "operator", paneCommand: "hc attach operator" };
     const { deps, calls } = makeDeps({ routes: { [`GET ${previewPath}`]: { status: 200, data: {
-      planId: "headless-plan", status: {}, composed: { opened: [pane], pages: [[pane]], absent: [], degraded: [] },
+      planId: "headless-plan", status: { launch: { socketPath: "/fixture/herdr.sock" } }, composed: { opened: [pane], pages: [[pane]], absent: [], degraded: [] },
     } } } });
     const factory = deps.clientFactory;
     deps.clientFactory = url => Object.assign(factory(url), { baseUrl: "http://localhost:7433" });
-    deps.windowDeps = { platform: "linux", env: {}, exists: () => false, exec: vi.fn(async () => { throw new Error("not installed"); }), launch: vi.fn(), sleep: vi.fn(), id: () => "unused" };
+    deps.windowDeps = { platform: "linux", env: {}, exists: () => false, exec: vi.fn(async (file: string, args: string[]) => args.includes("--version") ? "herdr 0.9.3" : file === "/bin/sh" ? "/fixture/bin/herdr" : (() => { throw new Error(`unexpected ${file}`); })()), herdrConfig: () => "/fixture/private.toml", launch: vi.fn(), sleep: vi.fn(), id: () => "unused" };
     const program = createProgram({ terminalDeps: deps });
     program.exitOverride();
     await program.parseAsync(["node", "rig", "terminal", "open", "saved:kernel", "--window", "--json"]);
     expect(process.exitCode).toBe(1);
     expect(JSON.parse(logs[0]!)).toMatchObject({ ok: false, opened: [], code: "terminal_window_failed", windowAttempted: false });
-    expect(JSON.parse(logs[0]!).error).toContain("run: env -u TMUX tmux attach-session -t '=operator'");
+    expect(JSON.parse(logs[0]!).error).toContain("HERDR_SOCKET_PATH='/fixture/herdr.sock' HERDR_CONFIG_PATH='/fixture/private.toml' '/fixture/bin/herdr'");
     expect(calls).toEqual([{ method: "GET", path: previewPath }]);
     expect(calls.some(call => call.method === "POST")).toBe(false);
     expect(deps.windowDeps.launch).not.toHaveBeenCalled();

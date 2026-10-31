@@ -1,5 +1,5 @@
 // Real daemon routes, kernel composition/plan hashing, both clients and the window opener.
-// HTTP stays in-process; provider availability, tmux commands and desktop launching are simulated.
+// HTTP stays in-process; provider availability, the Herdr probe and desktop launching are simulated.
 import { afterEach, expect, it } from "vitest";
 import { Hono } from "hono";
 import { DaemonClient as CliClient } from "../src/client.js";
@@ -28,9 +28,14 @@ function fixture() {
   const kernelSeats = ["operator.agent", "operator.human", "advisor.lead"].map((logicalId, i) => ({
     logicalId, canonicalSessionName: seats[i]!, tmuxSession: seats[i]!, attachmentType: "tmux", rigName: "kernel", runtime: "stub",
   }));
+  const providerOpens: string[][][] = [];
   const provider: TerminalProvider = {
-    name: "herdr", status: async () => ({ provider: "herdr", available: false, capabilities: { layout: true } }),
-    liveness: async () => ({ alive: false }), openView: async () => { throw new Error("must use the window opener"); },
+    name: "herdr", status: async () => ({ provider: "herdr", available: true, capabilities: { layout: true }, launch: { socketPath: "/fixture/herdr.sock" } }),
+    liveness: async () => ({ alive: true }),
+    openView: async view => {
+      providerOpens.push(view.pages.map(page => page.map(pane => pane.seat)));
+      return { provider: "herdr", ok: true, opened: view.opened.map(pane => pane.seat), absent: view.absent, degraded: view.degraded, pages: view.pages.length };
+    },
   };
   const service = new TerminalService({
     resolveProvider: () => provider, viewsStore: { get: () => null, list: () => [] },
@@ -47,20 +52,18 @@ function fixture() {
   const deps: WindowDeps = {
     columns: async () => process.stdout.columns,
     platform: "darwin", env: { TERM_PROGRAM: "Apple_Terminal", HOME: "/fixture/home" }, exists: () => false,
-    herdrConfig: () => { throw new Error("must not prepare Herdr config"); },
+    herdrConfig: () => "/fixture/private herdr.toml",
     exec: async (file, args) => {
-      if (file === "herdr" || file.endsWith("/herdr")) throw new Error("herdr: not installed");
-      if (file === "/bin/sh") return "tmux";
+      if (args.includes("--version")) return "herdr 0.9.3";
+      if (file === "/bin/sh") return "/fixture/bin/herdr";
       if (file === "/usr/bin/osascript") { launched.push(args.join(" ")); return "window"; }
-      if (file !== "tmux") throw new Error(`unexpected executable ${file}`);
-      commands.push(args);
-      if (args.includes("default-size")) return "160x40";
-      if (args.includes("window-size")) return "latest";
-      return "%1";
+      // Any other executable (a tmux, a Herdr inventory read) is recorded, and nothing here answers it.
+      commands.push([file, ...args]);
+      throw new Error(`unexpected executable ${file}`);
     },
     launch: async () => {}, sleep: async () => {}, id: () => "fixture",
   };
-  return { tui: new TuiClient({ baseUrl, fetchImpl }), cli: new CliClient(baseUrl, { fetchImpl }), deps, launched, commands, kernelSeats, alive };
+  return { tui: new TuiClient({ baseUrl, fetchImpl }), cli: new CliClient(baseUrl, { fetchImpl }), deps, launched, commands, providerOpens, kernelSeats, alive };
 }
 
 it.each([119, 120, 159, 160, undefined])("opens the default kernel at the previewed width %s", async columns => {
@@ -69,11 +72,13 @@ it.each([119, 120, 159, 160, undefined])("opens the default kernel at the previe
   const preview = await f.tui.previewTerminal("saved:kernel");
   const wide = columns !== undefined && columns >= 120;
   const result = await openTerminalWindow(f.cli, "saved:kernel", undefined, f.deps, preview.planId);
-  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "tmux", pages: wide ? 2 : 3 });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "herdr", pages: wide ? 2 : 3 });
   expect(preview.composed.pages.map(page => page.map(pane => pane.seat))).toEqual(wide
     ? [["dashboard", "operator"], ["advisor"]] : [["operator"], ["dashboard"], ["advisor"]]);
   expect(result.opened).toEqual(preview.composed.opened.map(pane => pane.seat));
-  expect(f.commands.some(args => args[0] === "new-session")).toBe(true);
+  // The daemon, not the CLI, places the seats: it was asked once, with the pages the preview showed.
+  expect(f.providerOpens).toEqual([preview.composed.pages.map(page => page.map(pane => pane.seat))]);
+  expect(f.commands).toEqual([]);
   expect(f.launched).toHaveLength(1);
 });
 
@@ -88,10 +93,11 @@ it.each([[119, 120], [120, 119], [undefined, 120], [120, undefined]])("requires 
   expect(stale.error).toContain("The terminal view changed since preview");
   expect(f.launched).toEqual([]);
   expect(f.commands).toEqual([]);
+  expect(f.providerOpens).toEqual([]);
   const fresh = await tui.previewTerminal("saved:kernel");
   expect(fresh.planId).not.toBe(preview.planId);
   const result = await openTerminalWindow(f.cli, "saved:kernel", undefined, f.deps, fresh.planId);
-  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "tmux" });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "herdr" });
 });
 
 it("allows a resize that keeps the same kernel composition", async () => {
@@ -102,7 +108,7 @@ it("allows a resize that keeps the same kernel composition", async () => {
   terminalWidth(159);
   expect((await tui.previewTerminal("saved:kernel")).planId).toBe(preview.planId);
   const result = await openTerminalWindow(f.cli, "saved:kernel", undefined, f.deps, preview.planId);
-  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "tmux" });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, provider: "herdr" });
 });
 
 it.each(["topology", "liveness"])("still refuses a real kernel %s change at a wide width", async change => {
@@ -116,4 +122,5 @@ it.each(["topology", "liveness"])("still refuses a real kernel %s change at a wi
   expect(result.error).toContain("The terminal view changed since preview");
   expect(f.launched).toEqual([]);
   expect(f.commands).toEqual([]);
+  expect(f.providerOpens).toEqual([]);
 });
