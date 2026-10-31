@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import { PdaLaunchReservations, type PdaClaimPhase, type PdaLaunchReservation } from "./pda-launch-reservations.js";
 import { PDA_RESUME_TYPE, PDA_RUNTIME, parsePdaResumeToken, parsePdaSpecBlock, type PdaBinding } from "../adapters/pda-runner-protocol.js";
+import { piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX } from "../adapters/pi-runner-protocol.js";
 
 /**
  * Free helper: returns the latest snapshot for a rig whose data carries non-null
@@ -128,6 +129,8 @@ interface NodeOptions {
   remoteControl?: boolean;
   /** The pda agent the seat drives (runtime pda): persisted as nodes.pda_binding. */
   pda?: PdaBinding;
+  /** A Pi seat's extra environment names (spec `env_passthrough`): persisted as nodes.env_passthrough. */
+  envPassthrough?: string[];
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -598,6 +601,12 @@ export class RigRepository {
       this.db.prepare("UPDATE nodes SET pda_binding = ? WHERE id = ?").run(serializePdaBinding(opts.pda), id);
     }
 
+    if (opts?.envPassthrough && opts.envPassthrough.length > 0) {
+      // No silent skip: a seat whose names were not stored would launch without the variables its spec names.
+      if (!this.hasNodeColumn("env_passthrough")) throw new Error("nodes.env_passthrough is missing (migration 120 has not run); the env_passthrough names cannot be stored");
+      this.db.prepare("UPDATE nodes SET env_passthrough = ? WHERE id = ?").run(JSON.stringify(opts.envPassthrough), id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -809,6 +818,20 @@ export class RigRepository {
       .prepare("UPDATE nodes SET model = ? WHERE id = ?")
       .run(model, nodeId);
     return result.changes > 0;
+  }
+
+  /** A Pi seat's extra environment names, as its launch passes them to the runner. Fails closed: a missing
+   *  column, a NULL, or anything that is not a JSON array of names reads as none (the baseline only), and an
+   *  individual name the runner would refuse is left out. Names only; values come from the seat pane at launch. */
+  getNodeEnvPassthrough(nodeId: string): string[] {
+    if (!this.hasNodeColumn("env_passthrough")) return [];
+    const row = this.db.prepare("SELECT env_passthrough AS v FROM nodes WHERE id = ?").get(nodeId) as { v: string | null } | undefined;
+    if (!row?.v) return [];
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.v); } catch { return []; }
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((name): name is string => typeof name === "string" && piEnvPassthroughRefusal(name) === null)
+      .slice(0, PI_ENV_PASSTHROUGH_MAX);
   }
 
   setNodeEffort(nodeId: string, effort: string): boolean {

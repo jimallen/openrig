@@ -225,6 +225,31 @@ const PI_ENV_OPENRIG_VARS = [
   "OPENRIG_HOME", "OPENRIG_URL", "OPENRIG_HOST", "OPENRIG_PORT", "OPENRIG_SHARED_DOCS_ROOT",
 ] as const;
 
+/** A seat's extra environment names (spec member `env_passthrough`): the variables its pi child keeps beyond the
+ *  baseline, taken by name from the runner's own environment (the seat pane's, as a Codex seat inherits it). Names
+ *  only: no value is ever in the spec, the database, the command line or a log. Never an OpenRig or legacy rig
+ *  variable (identity and routing are the launcher's, and tokens never cross), never Pi's own isolation variables. */
+export const PI_ENV_PASSTHROUGH_MAX = 32;
+/** Names that change what a process runs or loads, so a passed value would run code before any tool is chosen. The
+ *  baseline still keeps PATH: this refuses it only as an extra, so a spec cannot widen the list to it. */
+const PI_ENV_LOADER_PREFIX = /^(LD_|DYLD_)/;
+const PI_ENV_CODE_LOADING_NAMES = new Set([
+  "PATH", "IFS", "ENV", "BASH_ENV", "ZDOTDIR", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND",
+  "NODE_OPTIONS", "NODE_PATH",
+  "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
+  "PERL5OPT", "PERL5LIB",
+  "RUBYOPT", "RUBYLIB",
+  "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+  "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXEC_PATH",
+]);
+export function piEnvPassthroughRefusal(name: string): string | null {
+  if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(name)) return "is not an environment variable name (A-Z, 0-9 and _, at most 64 characters)";
+  if (/^(OPENRIG_|RIGGED_)/.test(name)) return "is an OpenRig variable, which the launcher sets and never passes through";
+  if (/^PI_CODING_AGENT_/.test(name)) return "is a Pi isolation variable, which the runner sets";
+  if (PI_ENV_LOADER_PREFIX.test(name) || PI_ENV_CODE_LOADING_NAMES.has(name)) return "changes what a process runs or loads, so it never passes through";
+  return null;
+}
+
 /** Model declaration: Pi accepts `--model provider/id`. The provider segment
  *  (before the first "/") selects the env passthrough var, if any. */
 export function providerFromModel(model: string | undefined): string | null {
@@ -238,10 +263,15 @@ export function providerFromModel(model: string | undefined): string | null {
  *  the runner's own env; only allowlisted names cross the boundary. */
 export function buildPiChildEnv(
   source: Record<string, string | undefined>,
-  opts: { agentDir: string; sessionsDir: string; model?: string; runtime?: RunnerRuntime; sessionName?: string; nodeId?: string; openrigHome?: string; openrigUrl?: string },
+  opts: { agentDir: string; sessionsDir: string; model?: string; runtime?: RunnerRuntime; sessionName?: string; nodeId?: string; openrigHome?: string; openrigUrl?: string; extraNames?: readonly string[] },
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of [...PI_ENV_BASELINE_VARS, ...PI_ENV_OPENRIG_VARS]) {
+    const value = source[name];
+    if (value !== undefined) env[name] = value;
+  }
+  for (const name of opts.extraNames ?? []) {
+    if (piEnvPassthroughRefusal(name) !== null) continue;
     const value = source[name];
     if (value !== undefined) env[name] = value;
   }
@@ -299,6 +329,8 @@ export interface PiRunnerLaunchOpts {
   usageFacts?: boolean;
   /** OPR.0.7.0.2 K4: Pi only, with usageFacts — the runner looks up OpenRouter's charge (usage.pi_openrouter_charge). */
   openRouterCharge?: boolean;
+  /** The seat's extra environment names (spec `env_passthrough`); names only, refused names dropped. */
+  envPassthrough?: readonly string[];
   /** Session file path or id to fork from via CLI --fork (FR-6). */
   forkRef?: string;
   /** Launch-attempt scope stamped into every runner sidecar write. */
@@ -332,6 +364,8 @@ export function buildPiRunnerCommand(opts: PiRunnerLaunchOpts): string {
     parts.push("--usage-facts");
     if (opts.openRouterCharge) parts.push("--openrouter-charge");
   }
+  const extra = [...new Set(opts.envPassthrough ?? [])].filter((name) => piEnvPassthroughRefusal(name) === null);
+  if (extra.length > 0) parts.push("--env-pass", shellQuote(extra.join(",")));
   return parts.join(" ");
 }
 

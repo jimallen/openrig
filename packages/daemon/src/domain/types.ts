@@ -1172,6 +1172,9 @@ export interface RigSpecPodMember {
   remoteControl?: boolean;
   /** The pda agent this seat drives (runtime pda only, required there). Parsed by L0's parsePdaSpecBlock. */
   pda?: import("../adapters/pda-runner-protocol.js").PdaBinding;
+  /** A Pi seat's extra environment names (`env_passthrough`): its child keeps these, taken by name from the
+   *  seat pane's environment. Names only. */
+  envPassthrough?: string[];
   /**
    * OPR.0.4.6.FAC1: optional seat-side role declaration (writes the
    * existing `nodes.role` column via createMemberNode → addNode). The

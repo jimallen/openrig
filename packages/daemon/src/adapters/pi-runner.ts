@@ -30,7 +30,7 @@ import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSes
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
 import { OpenRouterChargeLookup, openRouterGenerationFetcher, type ChargeProvenance } from "./pi-openrouter-charge.js";
 import {
-  piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState,
+  piSeatPaths, buildPiChildArgs, buildPiChildEnv, buildPendingRunnerState, parsePiRunnerState, piEnvPassthroughRefusal, PI_ENV_PASSTHROUGH_MAX,
   PI_RUNNER_READY_MARKER, PI_RUNNER_EXIT_MARKER, PI_RUNNER_ERROR_MARKER, PI_PROVIDER_ENV_VARS, PI_SIDECAR_TICK_MS, PI_SIDECAR_CHECK_MS,
   type PiRunnerState, type RunnerRuntime,
 } from "./pi-runner-protocol.js";
@@ -845,6 +845,8 @@ interface RunnerArgs {
   /** OPR.0.7.0.2: report usage facts from persisted entries (the daemon passes it when usage.pi_cost_facts is on). */
   usageFacts?: boolean;
   openRouterCharge?: boolean;
+  /** The seat's extra environment names for the pi child (spec `env_passthrough`). */
+  envPassthrough?: string[];
 }
 
 /** OF-87: the pane editor for the Pi and OMP runners. A Ctrl-C byte inside a bracketed paste is pasted text, so one
@@ -890,6 +892,16 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
       case "--fork": args.forkRef = next(); break;
       case "--usage-facts": args.usageFacts = true; break;
       case "--openrouter-charge": args.openRouterCharge = true; break;
+      case "--env-pass": {
+        const names = next().split(",").filter((name) => name.length > 0);
+        if (names.length > PI_ENV_PASSTHROUGH_MAX) throw new Error(`--env-pass names at most ${PI_ENV_PASSTHROUGH_MAX} variables`);
+        for (const name of names) {
+          const refusal = piEnvPassthroughRefusal(name);
+          if (refusal) throw new Error(`--env-pass: ${name} ${refusal}`);
+        }
+        args.envPassthrough = names;
+        break;
+      }
       case "--approve": args.trust = "approve"; break;
       case "--no-approve": args.trust = "no-approve"; break;
       case "--approval-mode": {
@@ -1086,6 +1098,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     nodeId: process.env.OPENRIG_NODE_ID,
     openrigHome: process.env.OPENRIG_HOME,
     openrigUrl: endpoint?.baseUrl ?? process.env.OPENRIG_URL,
+    extraNames: args.envPassthrough,
   });
   const childArgs = buildPiChildArgs({
     sessionsDir: paths.sessionsDir,
