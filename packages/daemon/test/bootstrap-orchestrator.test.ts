@@ -9,7 +9,8 @@ import { migrate } from "../src/db/migrate.js";
 import { BootstrapOrchestrator } from "../src/domain/bootstrap-orchestrator.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { BootstrapRepository } from "../src/domain/bootstrap-repository.js";
-import { RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { HC_PINNED_VERSION, RuntimeVerifier } from "../src/domain/runtime-verifier.js";
+import { HC_GENERATION, type HcHello } from "../src/adapters/hc-client.js";
 import { RequirementsProbeRegistry } from "../src/domain/requirements-probe.js";
 import { ExternalInstallPlanner } from "../src/domain/external-install-planner.js";
 import { ExternalInstallExecutor } from "../src/domain/external-install-executor.js";
@@ -23,6 +24,13 @@ import { ProbeTimeoutError, RUNTIME_PROBE_TIMEOUT_MS } from "../src/adapters/bou
 import type { FsOps } from "../src/domain/package-resolver.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 
+
+/** The seat host bootstrap verifies is hc: `hc --version` on the PATH and a core that answers `hello` (injected, so no
+ *  test reaches a real socket). */
+const HC_VERSION_OUTPUT = `hc ${HC_PINNED_VERSION}`;
+const hcHello = async (): Promise<HcHello> => ({
+  generation: HC_GENERATION, version: HC_PINNED_VERSION, core: { id: "c", name: "n" }, framed: false, methods: [], features: [],
+});
 
 const SIMPLE_SPEC_YAML = `
 schema_version: 1
@@ -162,7 +170,7 @@ describe("BootstrapOrchestrator", () => {
 
   function buildOrchestrator(opts?: { exec?: ExecFn; instantiator?: unknown; podInstantiator?: unknown }) {
     const exec = opts?.exec ?? createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "codex --version": "codex 0.5.0",
       "cmux capabilities": '{"workspaces":true}',
@@ -172,7 +180,7 @@ describe("BootstrapOrchestrator", () => {
     });
 
     const bootstrapRepo = new BootstrapRepository(db);
-    const runtimeVerifier = new RuntimeVerifier({ exec, db });
+    const runtimeVerifier = new RuntimeVerifier({ exec, db, hcHello });
     const probeRegistry = new RequirementsProbeRegistry(exec, { platform: "darwin" });
     const installPlanner = new ExternalInstallPlanner({ platform: "darwin" });
     const installExecutor = new ExternalInstallExecutor({ exec, db });
@@ -200,6 +208,18 @@ describe("BootstrapOrchestrator", () => {
       podInstantiator: opts?.podInstantiator as any,
     });
   }
+
+  // The verifier also accepts "tmux" and answers it as hc, so the stage detail cannot tell the two names apart. What
+  // bootstrap ASKS for is what every spec is checked against first; a seat host asked for as "tmux" would be a request
+  // for a host that no longer exists the day the verifier drops the alias.
+  it("asks the runtime verifier for the seat host by its name, hc, before the runtimes the spec names", async () => {
+    const verifyAll = vi.spyOn(RuntimeVerifier.prototype, "verifyAll");
+    const orch = buildOrchestrator({ instantiator: createMockInstantiator(db) });
+    const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(SIMPLE_SPEC_YAML) });
+    expect(result.status).toBe("completed");
+    expect(verifyAll).toHaveBeenCalledTimes(1);
+    expect(verifyAll.mock.calls[0]![0]).toEqual(["hc", "claude-code"]);
+  });
 
   it.each([
     ["false", undefined, false], ["true", undefined, true],
@@ -556,7 +576,7 @@ edges: []
 
   it("a runtime whose probe didn't answer within its bound is reported as that, not as not found", async () => {
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": new ProbeTimeoutError("claude --version", RUNTIME_PROBE_TIMEOUT_MS),
     });
     const result = await buildOrchestrator({ exec }).bootstrap({ mode: "apply", sourceRef: writeSpec(SIMPLE_SPEC_YAML), autoApprove: true });
@@ -567,7 +587,7 @@ edges: []
 
   it("missing and unverifiable runtimes are named separately in one summary", async () => {
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": new ProbeTimeoutError("claude --version", RUNTIME_PROBE_TIMEOUT_MS),
     });
     const spec = SIMPLE_SPEC_YAML.replace("edges: []", "  - id: helper\n    runtime: codex\nedges: []");
@@ -616,7 +636,7 @@ edges: []
     const specPath = writeSpec(specYaml);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'missing-tool'": new Error("not found"),
     });
@@ -690,12 +710,12 @@ requirements:
 
     // Non-darwin platform so system_packages -> unsupported -> manual_only
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "command -v": "/usr/bin/tool",
     });
     const bootstrapRepo = new BootstrapRepository(db);
-    const runtimeVerifier = new RuntimeVerifier({ exec, db });
+    const runtimeVerifier = new RuntimeVerifier({ exec, db, hcHello });
     const probeRegistry = new RequirementsProbeRegistry(exec, { platform: "linux" });
     const installPlanner = new ExternalInstallPlanner({ platform: "linux" });
     const installExecutor = new ExternalInstallExecutor({ exec, db });
@@ -757,7 +777,7 @@ edges: []
       new BootstrapOrchestrator({
         db,
         bootstrapRepo: new BootstrapRepository(db2), // Wrong db
-        runtimeVerifier: new RuntimeVerifier({ exec: vi.fn() as any, db }),
+        runtimeVerifier: new RuntimeVerifier({ exec: vi.fn() as any, db, hcHello }),
         probeRegistry: new RequirementsProbeRegistry(vi.fn() as any),
         installPlanner: new ExternalInstallPlanner(),
         installExecutor: new ExternalInstallExecutor({ exec: vi.fn() as any, db }),
@@ -832,7 +852,7 @@ requirements:
     const specPath = writeSpec(SPEC_WITH_PACKAGES_YAML);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'missing-tool'": new Error("not found"),
       "brew list": new Error("not found"),
@@ -871,7 +891,7 @@ requirements:
     const specPath = writeSpec(SPEC_WITH_PACKAGES_YAML);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'rg'": new Error("not found"),
       "brew list": new Error("not found"),
@@ -925,7 +945,7 @@ requirements:
     const specPath = writeSpec(SPEC_WITH_PACKAGES_YAML);
 
     const exec = vi.fn(async (cmd: string) => {
-      if (cmd.includes("tmux -V")) return "tmux 3.4";
+      if (cmd.includes("hc --version")) return HC_VERSION_OUTPUT;
       if (cmd.includes("claude --version")) return "claude 1.0.0";
       if (cmd.includes("command -v")) throw new Error("not found");
       if (cmd.includes("brew list")) throw new Error("not found");
@@ -984,7 +1004,7 @@ requirements:
 
     const brewInstalls: string[] = [];
     const exec = vi.fn(async (cmd: string) => {
-      if (cmd.includes("tmux -V")) return "tmux 3.4";
+      if (cmd.includes("hc --version")) return HC_VERSION_OUTPUT;
       if (cmd.includes("claude --version")) return "claude 1.0.0";
       if (cmd.includes("command -v")) throw new Error("not found");
       if (cmd.includes("brew list")) throw new Error("not found");
@@ -1025,7 +1045,7 @@ requirements:
     const specPath = writeSpec(SPEC_WITH_PACKAGES_YAML);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'rg'": new Error("not found"),
       "brew list": new Error("not found"),
@@ -1084,7 +1104,7 @@ requirements:
     const execCalls: string[] = [];
     const exec = vi.fn(async (cmd: string) => {
       execCalls.push(cmd);
-      if (cmd.includes("tmux -V")) return "tmux 3.4";
+      if (cmd.includes("hc --version")) return HC_VERSION_OUTPUT;
       if (cmd.includes("claude --version")) return "claude 1.0.0";
       if (cmd.includes("command -v")) throw new Error("not found");
       if (cmd.includes("brew list")) throw new Error("not found");
@@ -1131,7 +1151,7 @@ requirements:
     const specPath = writeSpec(SPEC_WITH_PACKAGES_YAML);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'missing-tool'": new Error("not found"),
       "brew list": new Error("not found"),
@@ -1210,7 +1230,7 @@ edges: []
     const specPath = writeSpec(specYaml);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'ripgrep'": new Error("not found"),
       "brew list": new Error("not found"),
@@ -1252,7 +1272,7 @@ requirements:
     const specPath = writeSpec(SPEC_WITH_PACKAGES_YAML);
 
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
       "'git'": "/usr/bin/git",
       "'missing-tool'": new Error("not found"),
@@ -1360,11 +1380,11 @@ exports:
     // Bootstrap from bundle
     const bundleResolver = new BundleSourceResolver({ fsOps: realFsOps() });
     const exec = createMockExec({
-      "tmux -V": "tmux 3.4",
+      "hc --version": HC_VERSION_OUTPUT,
       "claude --version": "claude 1.0.0",
     });
     const bootstrapRepo = new (await import("../src/domain/bootstrap-repository.js")).BootstrapRepository(db);
-    const runtimeVerifier = new (await import("../src/domain/runtime-verifier.js")).RuntimeVerifier({ exec, db });
+    const runtimeVerifier = new (await import("../src/domain/runtime-verifier.js")).RuntimeVerifier({ exec, db, hcHello });
     const probeRegistry = new (await import("../src/domain/requirements-probe.js")).RequirementsProbeRegistry(exec, { platform: "darwin" });
     const installPlanner = new (await import("../src/domain/external-install-planner.js")).ExternalInstallPlanner({ platform: "darwin" });
     const installExecutor = new (await import("../src/domain/external-install-executor.js")).ExternalInstallExecutor({ exec, db });
@@ -1498,7 +1518,7 @@ ${integrityYaml}
     const orch = new BootstrapOrchestrator({
       db,
       bootstrapRepo: new BootstrapRepository(db),
-      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db }),
+      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
       probeRegistry: new RequirementsProbeRegistry(createMockExec({})),
       installPlanner: new ExternalInstallPlanner(),
       installExecutor: new ExternalInstallExecutor({ exec: createMockExec({}), db }),
@@ -1574,7 +1594,7 @@ edges: []
     const orch = new BootstrapOrchestrator({
       db,
       bootstrapRepo: new BootstrapRepository(db),
-      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db }),
+      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
       probeRegistry: new RequirementsProbeRegistry(createMockExec({})),
       installPlanner: new ExternalInstallPlanner(),
       installExecutor: new ExternalInstallExecutor({ exec: createMockExec({}), db }),
@@ -1653,7 +1673,7 @@ edges: []
     const orch = new BootstrapOrchestrator({
       db,
       bootstrapRepo: new BootstrapRepository(db),
-      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db }),
+      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
       probeRegistry: new RequirementsProbeRegistry(createMockExec({})),
       installPlanner: new ExternalInstallPlanner(),
       installExecutor: new ExternalInstallExecutor({ exec: createMockExec({}), db }),
@@ -1727,7 +1747,7 @@ edges: []
     const orch = new BootstrapOrchestrator({
       db,
       bootstrapRepo: new BootstrapRepository(db),
-      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db }),
+      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
       probeRegistry: new RequirementsProbeRegistry(createMockExec({})),
       installPlanner: new ExternalInstallPlanner(),
       installExecutor: new ExternalInstallExecutor({ exec: createMockExec({}), db }),
@@ -1786,7 +1806,7 @@ edges: []
     const orch = new BootstrapOrchestrator({
       db,
       bootstrapRepo: new BootstrapRepository(db),
-      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db }),
+      runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
       probeRegistry: new RequirementsProbeRegistry(createMockExec({})),
       installPlanner: new ExternalInstallPlanner(),
       installExecutor: new ExternalInstallExecutor({ exec: createMockExec({}), db }),

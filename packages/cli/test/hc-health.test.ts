@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   HC_GENERATION, HC_PINNED_VERSION, buildHcHostFailure, classifyHcCore, parseHcVersion, probeHcHostAsync, probeHcInstall,
-  readHcHello, resolveHcSocketPath, type HcHelloOutcome,
+  readHcHello, type HcHelloOutcome,
 } from "../src/tmux-health.js";
 
 // The pin is restated, not imported: a change to it must fail here and be a deliberate, reviewed edit.
@@ -104,16 +104,6 @@ describe("buildHcHostFailure", () => {
       expect(f.reason, code).toContain("DETAIL");
       expect(`${f.message}${f.reason}${f.fix}`, code).not.toMatch(/tmux/i);
     }
-  });
-});
-
-describe("resolveHcSocketPath", () => {
-  it("follows hc: HC_SOCKET, then the runtime dir, then the state dir; HC_SESSION names the core", () => {
-    expect(resolveHcSocketPath({ HC_SOCKET: "/s/x.sock", XDG_RUNTIME_DIR: "/r" }, "/h")).toBe("/s/x.sock");
-    expect(resolveHcSocketPath({ XDG_RUNTIME_DIR: "/r" }, "/h")).toBe("/r/herdr-core/default.sock");
-    expect(resolveHcSocketPath({ XDG_RUNTIME_DIR: "/r", HC_SESSION: "qa" }, "/h")).toBe("/r/herdr-core/qa.sock");
-    expect(resolveHcSocketPath({ XDG_STATE_HOME: "/st", HC_SESSION: "qa" }, "/h")).toBe("/st/herdr-core/qa/qa.sock");
-    expect(resolveHcSocketPath({}, "/h")).toBe("/h/.local/state/herdr-core/default/default.sock");
   });
 });
 

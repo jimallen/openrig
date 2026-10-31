@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { whoamiCommand, resolveIdentitySource, HC_SEAT_LABEL } from "../src/commands/whoami.js";
+import { SEAT_LABEL as HC_SEAT_LABEL } from "@openrig/daemon/hc";
+import { whoamiCommand, resolveIdentitySource } from "../src/commands/whoami.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
@@ -222,9 +220,7 @@ describe("Whoami CLI", () => {
       expect(labels).toHaveBeenCalledExactlyOnceWith("t42");
     });
 
-    it("the label key is the one the daemon's HcHost writes", () => {
-      const daemon = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../daemon/src/adapters/hc-host.ts"), "utf8");
-      expect(daemon).toMatch(/export const SEAT_LABEL = "openrig\.seat";/);
+    it("reads the label key the daemon writes (the daemon's own constant, through the hc surface)", () => {
       expect(HC_SEAT_LABEL).toBe("openrig.seat");
     });
 

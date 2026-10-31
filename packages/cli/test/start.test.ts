@@ -9,6 +9,7 @@ import { startCommand } from "../src/commands/start.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import { printedSeatLaunchCommands, runPrintedSeatCommand } from "./helpers/advised-command.js";
+import { HC_PINNED_VERSION } from "../src/tmux-health.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -823,7 +824,7 @@ describe("S20 — start auto-start: routing env never becomes bind intent", () =
         post: vi.fn(async () => { throw new Error("SENTINEL-STOP"); }),
         get: vi.fn(async () => { throw new Error("SENTINEL-STOP"); }),
       }) as never,
-      preflightExec: async (cmd: string) => (cmd === "tmux -V" ? "tmux 3.6a" : ""),
+      preflightExec: async (cmd: string) => (cmd === "hc --version" ? `hc ${HC_PINNED_VERSION}` : ""),
       promptYesNo: async () => false,
     }));
     try {

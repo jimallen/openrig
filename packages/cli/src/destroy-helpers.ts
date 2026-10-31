@@ -1,9 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createConnection } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import Database from "better-sqlite3";
+import { HcClient, HcError, SEAT_LABEL, hcTerminalName, resolveHcSocket } from "@openrig/daemon/hc";
 
 export const DESTROY_CONFIRM_TOKEN = "destroy-openrig-state";
 
@@ -383,13 +380,7 @@ export function killTmuxSessionWithCli(sessionName: string): boolean {
 }
 
 // ---- hc seats --------------------------------------------------------------------------------------------------
-// The CLI cannot import the daemon's hc client (the daemon package exports no such surface), so this is the minimum
-// of it: one short-lived connection per call, `hello` at generation 1, then one request. Keep in step with
-// packages/daemon/src/adapters/hc-client.ts and hc-host.ts (`SEAT_LABEL`, `hcTerminalName`).
-
-const HC_GENERATION = 1;
-const HC_SEAT_LABEL = "openrig.seat";
-const HC_TIMEOUT_MS = 10_000;
+// The socket client, the seat label and the terminal name are the daemon's (`@openrig/daemon/hc`, hc-surface.ts).
 
 /** The outcome of ending one seat's hc terminal. Only `killed` and `missing` are positive evidence the seat is gone. */
 export type HcSeatOutcome = "killed" | "missing" | "refused" | "unconfirmed";
@@ -412,29 +403,17 @@ export class HcDestroyRefusedError extends Error {
 
 export type HcCall = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 
-export function hcSeatTerminalName(seat: string): string {
-  return `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
-}
-
-export function resolveHcSocketPath(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
-  if (env.HC_SOCKET) return env.HC_SOCKET;
-  const session = env.HC_SESSION || "default";
-  if (env.XDG_RUNTIME_DIR) return join(env.XDG_RUNTIME_DIR, "herdr-core", `${session}.sock`);
-  const state = env.XDG_STATE_HOME || join(home, ".local", "state");
-  return join(state, "herdr-core", session, `${session}.sock`);
-}
-
 /** Ends one seat's terminal, and only a terminal that carries that seat's label. Goes by terminal, by address: it never
  *  closes an app tab or space, which would end every terminal in it (design section 5). */
 export async function killHcSeat(seat: string, call: HcCall): Promise<HcSeatOutcome> {
   let found: HcTerminalFacts;
   try {
-    found = (await call("terminal.get", { terminal: hcSeatTerminalName(seat) })) as HcTerminalFacts;
+    found = (await call("terminal.get", { terminal: hcTerminalName(seat) })) as HcTerminalFacts;
   } catch (err) {
     if (err instanceof HcDestroyRefusedError && err.kind === "not_found") return "missing";
     return "unconfirmed";
   }
-  if (found.labels?.[HC_SEAT_LABEL] !== seat) return "refused";
+  if (found.labels?.[SEAT_LABEL] !== seat) return "refused";
   if (found.state === "finished") return found.reason === "spawn_pending" ? "unconfirmed" : "missing";
   try {
     const after = (await call("terminal.kill", { terminal: found.address })) as HcTerminalFacts;
@@ -445,50 +424,21 @@ export async function killHcSeat(seat: string, call: HcCall): Promise<HcSeatOutc
   }
 }
 
-/** One request on its own connection, after a `hello` at this build's generation. */
-export function hcCallOverSocket(socketPath: string, timeoutMs = HC_TIMEOUT_MS): HcCall {
-  return (method, params) => new Promise<unknown>((resolve, reject) => {
-    const socket = createConnection(socketPath);
-    socket.setEncoding("utf8");
-    let buffer = "";
-    let step: "connect" | "hello" | "request" = "connect";
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      fn();
-    };
-    const fail = (why: string) => finish(() => reject(new HcDestroyUnavailableError(`hc core: ${why}`)));
-    const timer = setTimeout(() => fail(`no reply in ${timeoutMs} ms`), timeoutMs);
-    const send = (id: number, name: string, p: Record<string, unknown>) =>
-      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: name, params: p })}\n`);
-    socket.once("connect", () => { step = "hello"; send(1, "hello", { generation: HC_GENERATION, framed: false }); });
-    socket.on("error", (err) => fail(step === "connect" ? `not reachable (${err.message})` : err.message));
-    socket.on("close", () => fail("closed the connection"));
-    socket.on("data", (chunk: string) => {
-      buffer += chunk;
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        if (!line.trim()) continue;
-        let reply: { id?: number; result?: unknown; error?: { message: string; data?: { kind?: string } } };
-        try { reply = JSON.parse(line); } catch { fail("sent a line that is not JSON"); return; }
-        if (reply.id === 1 && step === "hello") {
-          if (reply.error) { fail(`refused hello (${reply.error.data?.kind ?? "unknown"})`); return; }
-          if ((reply.result as { generation?: number } | undefined)?.generation !== HC_GENERATION) { fail("speaks another protocol generation"); return; }
-          step = "request";
-          send(2, method, params);
-        } else if (reply.id === 2 && step === "request") {
-          if (reply.error) finish(() => reject(new HcDestroyRefusedError(reply.error!.message, reply.error!.data?.kind ?? "unknown")));
-          else finish(() => resolve(reply.result));
-        }
-      }
-    });
-  });
+/** One request on its own connection, after a `hello` at this build's generation (the daemon's `HcClient`). Nothing
+ *  that reached the core and got no answer, a foreign generation and a missing socket are all "unavailable": the seat's
+ *  fate is unknown. A refusal of the request itself keeps hc's `kind`. */
+export function hcCallOverSocket(socketPath: string, timeoutMs?: number): HcCall {
+  const client = new HcClient(socketPath, timeoutMs);
+  return async (method, params) => {
+    try {
+      return await client.call<unknown>(method, params);
+    } catch (err) {
+      if (err instanceof HcError && err.kind !== "unsupported_generation") throw new HcDestroyRefusedError(err.message, err.kind);
+      throw new HcDestroyUnavailableError(err instanceof Error ? err.message : String(err));
+    }
+  };
 }
 
 export function killHcSeatWithCore(seat: string): Promise<HcSeatOutcome> {
-  return killHcSeat(seat, hcCallOverSocket(resolveHcSocketPath()));
+  return killHcSeat(seat, hcCallOverSocket(resolveHcSocket()));
 }

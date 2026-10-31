@@ -13,6 +13,7 @@ import { emitCrossHostError, emitCrossHostFailure } from "../cross-host-cli-help
 import { ConfigStore } from "../config-store.js";
 import { compactOutputEnabled } from "../queue-receipt.js";
 import { shellQuote } from "../cross-host-executor.js";
+import { SEAT_LABEL } from "@openrig/daemon/hc";
 
 interface WhoamiCliOptions {
   nodeId?: string;
@@ -160,10 +161,6 @@ function whoamiPeersBound(): number {
   }
 }
 
-/** The label holding a seat's canonical session name on its hc terminal. Must equal `SEAT_LABEL` in
- *  daemon/src/adapters/hc-host.ts (the CLI cannot import the daemon; whoami-hc-identity.test.ts pins the two). */
-export const HC_SEAT_LABEL = "openrig.seat";
-
 /** Reads the labels of one hc terminal by its address (`t7`). Throws when they cannot be read. */
 export type HcLabelsFn = (terminalId: string) => Record<string, string>;
 
@@ -238,7 +235,7 @@ export function resolveIdentitySource(
   const terminalId = process.env["HC_TERMINAL_ID"]?.trim();
   if (terminalId && !terminalId.startsWith("-") && !/\s/.test(terminalId)) {
     try {
-      const sessionName = hcLabels(terminalId)[HC_SEAT_LABEL]?.trim();
+      const sessionName = hcLabels(terminalId)[SEAT_LABEL]?.trim();
       if (sessionName) return { sessionName };
     } catch {
       // hc not installed, core not reachable or terminal gone — skip

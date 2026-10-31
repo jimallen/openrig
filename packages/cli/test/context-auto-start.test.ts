@@ -7,6 +7,7 @@ import { Command } from "commander";
 import { contextCommand } from "../src/commands/context.js";
 import type { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps } from "../src/daemon-lifecycle.js";
+import { HC_PINNED_VERSION } from "../src/tmux-health.js";
 
 describe("context add local auto-start", () => {
   let root: string;
@@ -70,7 +71,7 @@ describe("context add local auto-start", () => {
     };
     const post = vi.fn(async () => ({ status: 200, data: { count: 1, entries: [], errors: [] } }));
     const clientFactory = vi.fn(() => ({ post }) as unknown as DaemonClient);
-    const preflightExec = vi.fn(async (cmd: string) => cmd === "tmux -V" ? "tmux 3.6a" : "");
+    const preflightExec = vi.fn(async (cmd: string) => cmd === "hc --version" ? `hc ${HC_PINNED_VERSION}` : "");
     const command = () => new Command().exitOverride().addCommand(contextCommand({ lifecycleDeps, clientFactory, preflightExec }));
     const add = () => command().parseAsync(["node", "rig", "context", "add", source, "--json"]);
     return { lifecycleDeps, clientFactory, preflightExec, post, command, add };
@@ -168,10 +169,10 @@ describe("context add local auto-start", () => {
 
   it("keeps preflight failures visible and does not spawn", async () => {
     const f = fixture();
-    f.preflightExec.mockRejectedValue(new Error("tmux missing"));
+    f.preflightExec.mockRejectedValue(new Error("hc missing"));
     await f.add();
     expect(process.exitCode).toBe(1);
-    expect(vi.mocked(console.error).mock.calls.flat().join("\n")).toContain("tmux was not found");
+    expect(vi.mocked(console.error).mock.calls.flat().join("\n")).toContain("hc was not found in PATH");
     expect(f.lifecycleDeps.spawn).not.toHaveBeenCalled();
   });
 

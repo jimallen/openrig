@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HC_GENERATION, HC_PINNED_VERSION, classifyHcCore, parseHcVersion, probeHcInstall, readHcHello, resolveHcSocketPath } from "../src/tmux-health.js";
+import { HC_GENERATION, HC_PINNED_VERSION, classifyHcCore, parseHcVersion, probeHcInstall, readHcHello } from "../src/tmux-health.js";
+import { resolveHcSocket } from "@openrig/daemon/hc";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 
@@ -16,7 +17,7 @@ describe.skipIf(!HC)("hc health against a private hc core", () => {
     PATH: process.env.PATH, HOME: join(root, "h"), HC_SESSION: `w${process.pid}`,
     XDG_CONFIG_HOME: join(root, "c"), XDG_DATA_HOME: join(root, "d"), XDG_STATE_HOME: join(root, "s"), XDG_RUNTIME_DIR: join(root, "r"),
   };
-  const socket = resolveHcSocketPath(env, env.HOME);
+  const socket = resolveHcSocket(env, env.HOME);
   let started = false;
 
   beforeAll(() => {

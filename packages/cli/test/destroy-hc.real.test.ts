@@ -11,10 +11,10 @@ import {
   hcCallOverSocket,
   killHcSeat,
   listManagedHcSeatsFromDb,
-  resolveHcSocketPath,
   type DestroyDeps,
   type HcCall,
 } from "../src/destroy-helpers.js";
+import { resolveHcSocket } from "@openrig/daemon/hc";
 
 const HC = spawnSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).stdout.trim();
 const nameOf = (seat: string) => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
@@ -39,7 +39,7 @@ describe.skipIf(!HC)("rig destroy --all against a private hc core", () => {
     for (const d of ["h", "c", "d", "s", "r"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
     execFileSync(HC, ["server", "start"], { env, stdio: "ignore" });
     coreUp = true;
-    call = hcCallOverSocket(resolveHcSocketPath(env, env.HOME));
+    call = hcCallOverSocket(resolveHcSocket(env, env.HOME));
   });
 
   afterAll(() => {

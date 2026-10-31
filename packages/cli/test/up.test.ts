@@ -6,6 +6,7 @@ import { formatRemoteUpFailure, upCommand } from "../src/commands/up.js";
 import { DaemonClient } from "../src/client.js";
 import { LOG_FILE, STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import { HC_PINNED_VERSION } from "../src/tmux-health.js";
 
 function mockLifecycleDeps(overrides?: Partial<LifecycleDeps>): LifecycleDeps {
   return {
@@ -55,8 +56,7 @@ function runningDeps(port: number): StatusDeps {
 }
 
 function healthyPreflightExec(cmd: string): Promise<string> {
-  if (cmd === "tmux -V") return Promise.resolve("tmux 3.6a");
-  if (cmd === "tmux list-sessions") return Promise.resolve("");
+  if (cmd === "hc --version") return Promise.resolve(`hc ${HC_PINNED_VERSION}`);
   return Promise.resolve("");
 }
 

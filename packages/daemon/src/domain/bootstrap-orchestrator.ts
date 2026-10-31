@@ -413,7 +413,7 @@ export class BootstrapOrchestrator {
     stages.push({ stage: "resolve_packages", status: "ok", detail: { resolved: [...resolvedPackages.keys()] } });
 
     // --- Stage 3: VERIFY_RUNTIMES ---
-    const runtimes = new Set<string>(["tmux"]);
+    const runtimes = new Set<string>(["hc"]);
     for (const node of spec.nodes) {
       if (node.runtime) runtimes.add(node.runtime);
     }
