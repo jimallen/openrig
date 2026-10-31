@@ -19,6 +19,7 @@
 // observes at PreCompact/SessionStart/PostCompact time.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import { spawnSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -160,7 +161,7 @@ describe("A3-R3 compaction-asset clock/stamp injection (real-spawn)", () => {
 
   it("DETERMINISM PIN: the full writer→bridge sequence twice under the SAME clock → byte-identical asset stamps", () => {
     const runOnce = (): { createdAt: unknown; outputDir: unknown; deliveredAt: unknown; postCompactAt: unknown } => {
-      const home = join(mkdtempSync(join(tmpdir(), "compaction-clock-run-")), ".openrig");
+      const home = join(mkTemp(join(tmpdir(), "compaction-clock-run-")), ".openrig");
       const jsonl = writeFixtureJsonl(dirname(home));
       expect(runHook(home, { transcript_path: jsonl, cwd: dirname(home) }, INJECTED_ISO).status).toBe(0);
       // The delivery event carries the SAME transcript identity the marker recorded (the real

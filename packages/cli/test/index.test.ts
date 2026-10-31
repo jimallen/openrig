@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createProgram, isDirectRun } from "../src/index.js";
 import { CLI_VERSION } from "../src/version.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 describe("CLI entrypoint direct-run detection", () => {
   it("treats a symlinked bin path as direct execution", () => {

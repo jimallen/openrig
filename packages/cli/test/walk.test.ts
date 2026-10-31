@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { walkCommand, parsePaceMs, type WalkDeps } from "../src/commands/walk.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {

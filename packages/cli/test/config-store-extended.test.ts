@@ -9,7 +9,7 @@
 //   - parseNamedPairs decodes the named-pair format
 //   - init-workspace creates the canonical project scaffold; idempotent
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,6 +36,9 @@ const HOISTED_HOME: string = vi.hoisted(() => {
   process.env["OPENRIG_HOME"] = home;
   return home;
 });
+
+// vi.hoisted cannot use imported helpers, so this root is removed here rather than via mkTemp.
+afterAll(() => { rmSync(HOISTED_HOME, { recursive: true, force: true }); });
 
 function clearEnv(): () => void {
   const keysToClear = [

@@ -514,6 +514,7 @@ describe("createDaemon startup composition", () => {
       db.close();
     } finally {
       vi.unstubAllEnvs();
+      fs.rmSync(shimHome, { recursive: true, force: true });
     }
   });
 

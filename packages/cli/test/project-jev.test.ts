@@ -5,7 +5,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { projectCommand, type ProjectDeps } from "../src/commands/project.js";
 import { JevRun, JEV_MODEL, JEV_ENDPOINT, CAPTURE_QUESTIONS, classifyCapture, readExperiment, setExperiment, validateJev } from "../src/commands/project-jev.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", () => ({getDaemonStatus: async () => ({running:true}), daemonStatusGuard: () => true, getDaemonUrl: () => "http://offline.invalid"}));
 vi.mock("../src/commands/daemon.js", () => ({realDeps: () => { throw Error("real lifecycle forbidden"); }}));

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -76,7 +77,7 @@ describe("git-worktree-shim", () => {
     const rigRepo = new RigRepository(db);
     const sessionRegistry = new SessionRegistry(db);
     const eventBus = new EventBus(db);
-    const fakeOs = await fs.mkdtemp(path.join(os.tmpdir(), "shim-home-"));
+    const fakeOs = mkTemp(path.join(os.tmpdir(), "shim-home-"));
     const openrigHome = path.join(fakeOs, ".openrig");
     await fs.mkdir(openrigHome, { recursive: true });
 

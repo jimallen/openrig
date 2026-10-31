@@ -11,7 +11,7 @@ import { Command } from "commander";
 import { upCommand } from "../src/commands/up.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
-import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {

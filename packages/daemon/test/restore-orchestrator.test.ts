@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkTemp } from "./helpers/temp-roots.js";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -44,8 +45,8 @@ const WORK_DIR = existingRigRoot("work");
 
 // Two real directories for the rows that compare a regrown seat's live cwd with the snapshot's: the launch refuses a cwd that
 // does not exist (seat_cwd_unusable), so a made-up path would stop the seat before the setting under test is read.
-const SNAPSHOT_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u14-snapshot-cwd-")));
-const LIVE_CWD = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "u14-live-cwd-")));
+const SNAPSHOT_CWD = fs.realpathSync(mkTemp(path.join(os.tmpdir(), "u14-snapshot-cwd-")));
+const LIVE_CWD = fs.realpathSync(mkTemp(path.join(os.tmpdir(), "u14-live-cwd-")));
 process.on("exit", () => { fs.rmSync(SNAPSHOT_CWD, { recursive: true, force: true }); fs.rmSync(LIVE_CWD, { recursive: true, force: true }); });
 
 function setupDb(): Database.Database {
@@ -4064,7 +4065,7 @@ describe("RestoreOrchestrator", () => {
     const snap = seedRigAndSnapshot({ resumeType: "none" });
 
     const { TranscriptStore } = await import("../src/domain/transcript-store.js");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "restore-transcript-"));
+    const tmpDir = mkTemp(path.join(os.tmpdir(), "restore-transcript-"));
     const transcriptStore = new TranscriptStore({ transcriptsRoot: tmpDir, enabled: true });
 
     const tmux = mockTmux();
