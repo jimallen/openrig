@@ -4,7 +4,6 @@ import { Command } from "commander";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
 import { createProgram } from "../src/index.js";
-import { unclaimCommand } from "../src/commands/unclaim.js";
 import { releaseCommand } from "../src/commands/release.js";
 import { removeCommand } from "../src/commands/remove.js";
 import { launchCommand } from "../src/commands/launch.js";
@@ -53,19 +52,6 @@ describe("Lifecycle CLI commands", () => {
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
-      if (req.method === "POST" && req.url === "/api/sessions/session-123/unclaim") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          ok: true,
-          rigId: "rig-1",
-          nodeId: "node-1",
-          logicalId: "external.helper",
-          sessionId: "session-123",
-          sessionName: "manual-helper",
-        }));
-        return;
-      }
-
       if (req.method === "POST" && req.url === "/api/rigs/rig-1/release") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
@@ -187,21 +173,6 @@ describe("Lifecycle CLI commands", () => {
         return;
       }
 
-      if (req.method === "POST" && req.url === "/api/sessions/session-shared/unclaim") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          ok: true, rigId: "rig-1", nodeId: "node-1", logicalId: "external.helper", sessionId: "session-shared", sessionName: "manual-helper",
-          warnings: ["Session 'manual-helper' is also held by a live row of this seat, so its discovery record was left claimed for that row; release that row to free it."],
-        }));
-        return;
-      }
-
-      if (req.method === "POST" && req.url === "/api/sessions/missing/unclaim") {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: "Claimed session 'missing' not found." }));
-        return;
-      }
-
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "not found" }));
     });
@@ -229,35 +200,6 @@ describe("Lifecycle CLI commands", () => {
       clientFactory: (url) => new DaemonClient(url),
     };
   }
-
-  it("unclaim prints released session details", async () => {
-    const program = new Command();
-    program.exitOverride();
-    program.addCommand(unclaimCommand(runningDeps()));
-
-    const { logs, exitCode } = await captureLogs(async () => {
-      await program.parseAsync(["node", "rig", "unclaim", "session-123"]);
-    });
-
-    expect(exitCode).toBeUndefined();
-    expect(logs.join("\n")).toContain("Released claimed session manual-helper");
-    expect(logs.join("\n")).toContain("external.helper");
-  });
-
-  // OF-144 review F1: what unclaim left as it was is shown, not dropped.
-  it("unclaim prints the daemon's warnings", async () => {
-    const program = new Command();
-    program.exitOverride();
-    program.addCommand(unclaimCommand(runningDeps()));
-
-    const { logs, exitCode } = await captureLogs(async () => {
-      await program.parseAsync(["node", "rig", "unclaim", "session-shared"]);
-    });
-
-    expect(exitCode).toBeUndefined();
-    expect(logs.join("\n")).toContain("Released claimed session manual-helper");
-    expect(logs.join("\n")).toContain("  warning: Session 'manual-helper' is also held by a live row of this seat, so its discovery record was left claimed for that row; release that row to free it.");
-  });
 
   it("remove prints removed node details", async () => {
     const program = new Command();
@@ -409,34 +351,6 @@ describe("Lifecycle CLI commands", () => {
     expect(logs.join("\n")).toContain("rig import --instantiate");
   });
 
-  it("--json prints raw unclaim payload", async () => {
-    const program = new Command();
-    program.exitOverride();
-    program.addCommand(unclaimCommand(runningDeps()));
-
-    const { logs, exitCode } = await captureLogs(async () => {
-      await program.parseAsync(["node", "rig", "unclaim", "session-123", "--json"]);
-    });
-
-    expect(exitCode).toBeUndefined();
-    const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.ok).toBe(true);
-    expect(parsed.sessionId).toBe("session-123");
-  });
-
-  it("errors exit non-zero with server message", async () => {
-    const program = new Command();
-    program.exitOverride();
-    program.addCommand(unclaimCommand(runningDeps()));
-
-    const { logs, exitCode } = await captureLogs(async () => {
-      await program.parseAsync(["node", "rig", "unclaim", "missing"]);
-    });
-
-    expect(exitCode).toBe(1);
-    expect(logs.join("\n")).toContain("not found");
-  });
-
   it("release exits non-zero when the rig contains launched nodes", async () => {
     const program = new Command();
     program.exitOverride();
@@ -451,10 +365,11 @@ describe("Lifecycle CLI commands", () => {
     expect(logs.join("\n")).toContain("dev.impl");
   });
 
-  it("createProgram wires unclaim, release, remove, and shrink", async () => {
+  it("createProgram wires release, remove, and shrink", async () => {
     const program = createProgram();
     expect(program.commands.find((c) => c.name() === "launch")).toBeDefined();
-    expect(program.commands.find((c) => c.name() === "unclaim")).toBeDefined();
+    expect(program.commands.find((c) => c.name() === "unclaim")).toBeUndefined();
+    expect(program.commands.find((c) => c.name() === "attach")).toBeUndefined();
     expect(program.commands.find((c) => c.name() === "release")).toBeDefined();
     expect(program.commands.find((c) => c.name() === "remove")).toBeDefined();
     expect(program.commands.find((c) => c.name() === "shrink")).toBeDefined();

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapCommand } from "../src/commands/bootstrap.js";
-import { discoverCommand } from "../src/commands/discover.js";
 import { workflowCommand } from "../src/commands/workflow.js";
 import { workspaceCommand } from "../src/commands/workspace.js";
 import { getDaemonStatus, type DaemonStatus, type LifecycleDeps } from "../src/daemon-lifecycle.js";
@@ -15,7 +14,6 @@ afterEach(() => { vi.restoreAllMocks(); process.exitCode = undefined; });
 
 const entries = [
   ["bootstrap", bootstrapCommand, ["./fixture.yaml", "--plan"]],
-  ["discover", discoverCommand, []],
   ["workflow", workflowCommand, ["list"]],
   ["workspace", workspaceCommand, ["doctor"]],
 ] as const;

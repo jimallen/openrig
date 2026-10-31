@@ -24,24 +24,7 @@ import { SliceScopePage } from "../src/components/project/ScopePages.js";
 import { TopologyTableView } from "../src/components/topology/TopologyTableView.js";
 import { TopologyTerminalView } from "../src/components/topology/TopologyTerminalView.js";
 import { RigScopePage } from "../src/components/topology/ScopePages.js";
-import { DiscoveryPanel } from "../src/components/DiscoveryPanel.js";
-import { useClearPlacementOnHostSwitch } from "../src/hooks/useHosts.js";
 
-// DiscoveryPanel's discovery hooks are mocked file-wide (no other test here
-// consumes them) — the regressions assert AFFORDANCE state, and the adopt
-// POST path is covered by zero-POST fetch asserts.
-const mockUseDiscoveredSessions = vi.fn();
-const mockUseDiscoveryScan = vi.fn();
-const mockUseAdoptSession = vi.fn();
-vi.mock("../src/hooks/useDiscovery.js", async (importActual) => {
-  const actual = await importActual<typeof import("../src/hooks/useDiscovery.js")>();
-  return {
-    ...actual,
-    useDiscoveredSessions: (...args: unknown[]) => mockUseDiscoveredSessions(...args),
-    useDiscoveryScan: () => mockUseDiscoveryScan(),
-    useAdoptSession: () => mockUseAdoptSession(),
-  };
-});
 import { TopologyTab } from "../src/components/slices/tabs/TopologyTab.js";
 import { LiveNodeDetails } from "../src/components/LiveNodeDetails.js";
 
@@ -821,111 +804,5 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
     const statusCalls = mockFetch.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/status"));
     expect(statusCalls).toEqual([]);
     expect(postCalls()).toEqual([]);
-  });
-
-  const ELIGIBLE_NODE_TARGET = {
-    kind: "node" as const,
-    rigId: "r1",
-    logicalId: "a1",
-    eligible: true,
-  };
-
-  function wireDiscoveryMocks() {
-    // the target-flow region renders INSIDE the selected discovered-session's
-    // card — the selected id must resolve to a real session (stage-1 field
-    // find: an empty list renders neither the card nor the remote note).
-    mockUseDiscoveredSessions.mockReturnValue({
-      data: [
-        {
-          id: "ds-1",
-          tmuxSession: "proof-ui-add-pod",
-          tmuxWindow: "0",
-          tmuxPane: "%7",
-          pid: 111,
-          cwd: "/Users/example/code/openrig",
-          activeCommand: "codex",
-          runtimeHint: "codex",
-          confidence: "high",
-          evidenceJson: null,
-          configJson: null,
-          status: "active",
-          claimedNodeId: null,
-          firstSeenAt: "2026-04-02 10:00:00",
-          lastSeenAt: "2026-04-02 10:05:00",
-        },
-      ],
-    });
-    mockUseDiscoveryScan.mockReturnValue({ mutate: vi.fn(), isPending: false });
-    mockUseAdoptSession.mockReturnValue({ mutate: vi.fn(), isPending: false, isError: false, error: null });
-  }
-
-  it("discovery panel remote (rev1-r2 stale-target path): an eligible target renders NO target card / NO adopt — honest note + zero POSTs", async () => {
-    wireDiscoveryMocks();
-    wireB1Fetch("vps-a");
-    renderPrimed(
-      () => (
-        <DiscoveryPanel
-          onClose={() => {}}
-          selectedDiscoveredId="ds-1"
-          onSelectDiscoveredId={() => {}}
-          placementTarget={ELIGIBLE_NODE_TARGET}
-          onClearPlacement={() => {}}
-        />
-      ),
-      "vps-a",
-    );
-    await waitFor(() => expect(screen.getByTestId("discovery-remote-readonly")).toBeTruthy());
-    expect(screen.queryByTestId("discovery-target-card")).toBeNull();
-    expect(screen.queryByTestId("discovery-confirm-adopt")).toBeNull();
-    expect(postCalls()).toEqual([]);
-  });
-
-  it("discovery panel local CONTROL: the eligible target renders the card + adopt", async () => {
-    wireDiscoveryMocks();
-    wireB1Fetch();
-    renderPrimed(
-      () => (
-        <DiscoveryPanel
-          onClose={() => {}}
-          selectedDiscoveredId="ds-1"
-          onSelectDiscoveredId={() => {}}
-          placementTarget={ELIGIBLE_NODE_TARGET}
-          onClearPlacement={() => {}}
-        />
-      ),
-      LOCAL_HOST_ID,
-    );
-    await waitFor(() => expect(screen.getByTestId("discovery-target-card")).toBeTruthy());
-    expect(screen.getByTestId("discovery-confirm-adopt")).toBeTruthy();
-    expect(screen.queryByTestId("discovery-remote-readonly")).toBeNull();
-  });
-
-  it("the shell belt: ANY selected-host change clears placement (useClearPlacementOnHostSwitch)", async () => {
-    wireB1Fetch();
-    const clear = vi.fn();
-    function Probe() {
-      useClearPlacementOnHostSwitch(clear);
-      return <div data-testid="belt-probe" />;
-    }
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 5 * 60_000 } } });
-    qc.setQueryData(["hosts"], {
-      ownName: "Linkpix Proof Host",
-      selected: "local",
-      hosts: [{ id: "vps-a", transport: "http", url: "http://vps-a:7433", selected: false, status: "reachable" }],
-    });
-    render(
-      <QueryClientProvider client={qc}>
-        <Probe />
-      </QueryClientProvider>,
-    );
-    await waitFor(() => expect(screen.getByTestId("belt-probe")).toBeTruthy());
-    expect(clear).not.toHaveBeenCalled();
-    // the host switch — a target created while local must not survive this
-    qc.setQueryData(["hosts"], {
-      ownName: "Linkpix Proof Host",
-      selected: "vps-a",
-      hosts: [{ id: "vps-a", transport: "http", url: "http://vps-a:7433", selected: true, status: "reachable" }],
-    });
-    await waitFor(() => expect(clear).toHaveBeenCalled());
   });
 });

@@ -8,7 +8,6 @@
 // host.name via useSetSetting → POST /api/config/:key), the ONE write
 // path both surfaces converge on.
 
-import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { missionControlAuthHeaders } from "../components/mission-control/missionControlAuth.js";
 import { LOCAL_HOST_ID } from "../lib/host-param.js";
@@ -96,24 +95,6 @@ export function useHostSelection(): { known: boolean; isLocal: boolean } {
 export function useLocalFilesAllowed(): boolean {
   const { known, isLocal } = useHostSelection();
   return known && isLocal;
-}
-
-/** OPR.0.4.6.MH2 rev1-r2 re-re-verdict B1 — discovery placement targets
- *  feed the LOCAL adopt mutation; a target created while local must not
- *  survive a host switch (stale ADOPT actionable under a remote label).
- *  The shell calls this with its clearPlacement so ANY selected-host
- *  change drops the stale target + discovered-session selection (belt;
- *  the panel additionally suppresses the target/adopt UI under a remote
- *  selection — braces). */
-export function useClearPlacementOnHostSwitch(clear: () => void) {
-  const hostId = useSelectedHostId();
-  const prev = useRef(hostId);
-  useEffect(() => {
-    if (prev.current !== hostId) {
-      prev.current = hostId;
-      clear();
-    }
-  }, [hostId, clear]);
 }
 
 /** Selection WRITE — the same one write path as the CLI (`rig host select`

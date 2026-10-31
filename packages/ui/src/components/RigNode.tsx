@@ -51,7 +51,6 @@ interface RigNodeData {
   contextAvailability?: string;
   contextTotalInputTokens?: number | null;
   contextTotalOutputTokens?: number | null;
-  placementState?: "available" | "selected" | null;
   // PL-019: agent activity drives the node's primary "is this agent
   // working?" dot color (replacing the previous startup-status color).
   // currentQitems surfaces in the hover hint when the agent is running.
@@ -120,8 +119,6 @@ export function RigNode({ data }: { data: RigNodeData }) {
   const tokenLabel = formatCompactTokenCount(tokenTotal);
   const tokenTitle = formatTokenTotalTitle(data.contextTotalInputTokens, data.contextTotalOutputTokens);
 
-  const placementChipLabel = data.placementState === "selected" ? "target" : data.placementState === "available" ? "avail" : null;
-
   // PL-019 item 5: include active-qitem summary in the hover hint when the
   // agent is currently running and the daemon attached one or more qitems.
   // Short ULID tail for hover; full id is in the drawer (separate surface).
@@ -180,11 +177,7 @@ export function RigNode({ data }: { data: RigNodeData }) {
           flash: activityCard.flash,
           reducedMotion: data.reducedMotion,
         }),
-        data.placementState === "selected"
-          ? "border-emerald-600 ring-2 ring-emerald-400/70 shadow-[0_0_0_3px_rgba(52,211,153,0.12)]"
-          : data.placementState === "available"
-            ? "border-emerald-500 ring-1 ring-emerald-300/70"
-            : "border-on-surface",
+        "border-on-surface",
       )}
       data-activity-card-state={activityCard.state}
       data-activity-card-flash={activityCard.flash ?? "none"}
@@ -367,21 +360,6 @@ export function RigNode({ data }: { data: RigNodeData }) {
                 progressive
               />
             )}
-          </div>
-        )}
-
-        {placementChipLabel && (
-          <div className="pt-1">
-            <span
-              data-testid={`placement-chip-${data.logicalId}`}
-              className={`inline-flex items-center border px-1.5 py-0.5 font-mono text-[7px] uppercase tracking-[0.12em] ${
-                data.placementState === "selected"
-                  ? "border-emerald-700 bg-emerald-700 text-white"
-                  : "border-emerald-300 bg-emerald-50 text-emerald-800"
-              }`}
-            >
-              {placementChipLabel}
-            </span>
           </div>
         )}
       </div>

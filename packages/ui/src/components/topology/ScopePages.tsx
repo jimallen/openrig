@@ -319,7 +319,7 @@ export function RigScopePage() {
       <ActivityRollupBar rigId={rigId} />
       {effectiveActive === "graph" ? (
         <div className="flex-1 min-h-0 relative">
-          <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
+          <RigGraph rigId={rigId} rigName={rig?.name ?? null} />
         </div>
       ) : null}
       {effectiveActive === "table" ? (
@@ -434,7 +434,7 @@ export function PodScopePage() {
     >
       {effectiveActive === "graph" ? (
         <div className="flex-1 min-h-0 relative">
-          <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
+          <RigGraph rigId={rigId} rigName={null} podScope={podName} />
         </div>
       ) : null}
       {effectiveActive === "table" ? (

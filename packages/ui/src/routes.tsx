@@ -34,7 +34,6 @@ import { BundleInspector } from "./components/BundleInspector.js";
 import { BundleInstallFlow } from "./components/BundleInstallFlow.js";
 import { LibraryReview } from "./components/LibraryReview.js";
 import { LiveNodeDetails } from "./components/LiveNodeDetails.js";
-import { DiscoveryOverlay } from "./components/DiscoveryOverlay.js";
 import { AuditHistoryView } from "./components/mission-control/views/AuditHistoryView.js";
 import { useRigSummary } from "./hooks/useRigSummary.js";
 import { EmptyState } from "./components/ui/empty-state.js";
@@ -365,7 +364,7 @@ function RigDetail() {
   return (
     <div className="flex flex-col flex-1 h-full">
       <div className="flex-1 min-h-[400px] relative">
-        <RigGraph rigId={rigId} rigName={rigName ?? null} showDiscovered={false} />
+        <RigGraph rigId={rigId} rigName={rigName ?? null} />
       </div>
     </div>
   );
@@ -461,12 +460,6 @@ const discoveryRoute = createRoute({
       />
     </div>
   ),
-});
-
-const discoveryInventoryRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/discovery/inventory",
-  component: DiscoveryOverlay,
 });
 
 const bundleInspectRoute = createRoute({
@@ -584,7 +577,6 @@ export const routeTree = rootRoute.addChildren([
   agentSpecReviewRoute,
   libraryReviewRoute,
   discoveryRoute,
-  discoveryInventoryRoute,
   bundleInspectRoute,
   bundleInstallRoute,
   // Redirects from deleted routes

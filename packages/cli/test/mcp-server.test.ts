@@ -41,20 +41,18 @@ describe("MCP Server", () => {
     if (cleanup) await cleanup();
   });
 
-  // T1: MCP server lists all 18 tools
-  it("lists all 18 tools", async () => {
+  // T1: MCP server lists all 16 tools
+  it("lists all 16 tools", async () => {
     await setup();
     const result = await mcpClient.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "rig_add",
       "rig_agent_validate",
-      "rig_bind",
       "rig_bundle_inspect",
       "rig_capture",
       "rig_chatroom_send",
       "rig_chatroom_watch",
-      "rig_discover",
       "rig_down",
       "rig_ps",
       "rig_restore",
@@ -330,7 +328,7 @@ describe("MCP Server", () => {
 
     // Verify server is responsive
     const result = await mcpClient.listTools();
-    expect(result.tools.length).toBe(18);
+    expect(result.tools.length).toBe(16);
 
     // Clean disconnect
     await cleanup();
@@ -344,7 +342,7 @@ describe("MCP Server", () => {
     await client2.connect(ct2);
 
     const result2 = await client2.listTools();
-    expect(result2.tools.length).toBe(18);
+    expect(result2.tools.length).toBe(16);
 
     await client2.close();
     await server2.close();

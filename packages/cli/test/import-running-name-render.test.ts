@@ -8,7 +8,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Command } from "commander";
-import { adoptCommand } from "../src/commands/adopt.js";
 import { importCommand } from "../src/commands/import.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-lifecycle.js";
@@ -75,7 +74,7 @@ describe("rig import rendering — rig_name_running teaching refusal (S5b r2)", 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  async function run(mode: "--instantiate" | "--materialize-only" | "adopt"): Promise<{ out: string; exitCode: number | undefined }> {
+  async function run(mode: "--instantiate" | "--materialize-only"): Promise<{ out: string; exitCode: number | undefined }> {
     const captured: string[] = [];
     const originalExit = process.exitCode;
     process.exitCode = undefined;
@@ -89,10 +88,8 @@ describe("rig import rendering — rig_name_running teaching refusal (S5b r2)", 
         clientFactory: (baseUrl: string) => new DaemonClient(baseUrl),
         readFile: (p: string) => fs.readFileSync(p, "utf-8"),
       };
-      const args = mode === "adopt"
-        ? ["node", "rig", "adopt", specPath, "--bind", "crew.a=existing-session"]
-        : ["node", "rig", "import", specPath, mode];
-      prog.addCommand(mode === "adopt" ? adoptCommand(deps as never) : importCommand(deps as never));
+      const args = ["node", "rig", "import", specPath, mode];
+      prog.addCommand(importCommand(deps as never));
       await prog.parseAsync(args).catch(() => {});
     } finally {
       vi.restoreAllMocks();
@@ -102,7 +99,7 @@ describe("rig import rendering — rig_name_running teaching refusal (S5b r2)", 
     return { out: captured.join("\n"), exitCode };
   }
 
-  for (const mode of ["--instantiate", "--materialize-only", "adopt"] as const) {
+  for (const mode of ["--instantiate", "--materialize-only"] as const) {
     it(`${mode}: renders the teaching refusal verbatim — no spec-blaming or daemon-logs noise`, async () => {
       const { out, exitCode } = await run(mode);
 

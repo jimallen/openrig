@@ -1,13 +1,12 @@
 // OPR.0.4.3.02 — CLI half of the session-admin mutation auth guard.
-// The three CLI callers of the newly-guarded mutating routes must attach the
+// The CLI callers of the newly-guarded mutating routes must attach the
 // terminal bearer via terminalAuthHeaders() (as `rig seat set-resume-token`
-// already does), else `rig reconcile-session` / `rig unclaim` /
+// already does), else `rig reconcile-session` /
 // `rig seat clear-attention` would 401 against a non-loopback daemon — the
 // exact mode this slice protects. Mirrors seat-set-resume-token.test.ts.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { reconcileSessionCommand } from "../src/commands/reconcile-session.js";
-import { unclaimCommand } from "../src/commands/unclaim.js";
 import { seatCommand } from "../src/commands/seat.js";
 import type { StatusDeps } from "../src/commands/status.js";
 
@@ -48,16 +47,6 @@ describe("session-admin CLI callers attach the terminal bearer header (OPR.0.4.3
 
     expect(postCalls.length).toBe(1);
     expect(postCalls[0]!.path).toBe("/api/sessions/dev-impl%40my-rig/reconcile");
-    expect(postCalls[0]!.options).toHaveProperty("headers");
-  });
-
-  it("rig unclaim posts with { headers } (terminalAuthHeaders)", async () => {
-    const postCalls: PostCall[] = [];
-    const deps = makeDeps({ status: 200, data: { sessionName: "dev-impl@my-rig", logicalId: "dev.impl", rigId: "rig-1" } }, postCalls);
-    await unclaimCommand(deps).parseAsync(["node", "rig", "dev-impl@my-rig", "--json"]);
-
-    expect(postCalls.length).toBe(1);
-    expect(postCalls[0]!.path).toBe("/api/sessions/dev-impl%40my-rig/unclaim");
     expect(postCalls[0]!.options).toHaveProperty("headers");
   });
 

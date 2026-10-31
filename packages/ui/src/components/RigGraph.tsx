@@ -4,8 +4,6 @@ import { ReactFlow, Controls, Handle, Position, type NodeTypes, type EdgeTypes, 
 import "@xyflow/react/dist/style.css";
 import { useRigGraph } from "../hooks/useRigGraph.js";
 import { useRigEvents } from "../hooks/useRigEvents.js";
-import { useDiscoveredSessionsConditional, type DiscoveredSession } from "../hooks/useDiscovery.js";
-import { useDiscoveryPlacement, useDrawerSelection } from "./AppShell.js";
 import { getEdgeStyle } from "@/lib/edge-styles";
 import { applyTreeLayout } from "@/lib/graph-layout";
 import { RigNode } from "./RigNode.js";
@@ -31,7 +29,6 @@ function PodGroupNode({
     podId?: string | null;
     podNamespace?: string | null;
     podDisplayName?: string | null;
-    placementState?: "available" | "selected" | null;
   };
 }) {
   const label = data.podDisplayName ?? data.podNamespace ?? inferPodName(data.logicalId) ?? displayPodName(data.podId ?? data.logicalId);
@@ -39,13 +36,7 @@ function PodGroupNode({
   return (
     <div
       data-testid="pod-group-node"
-      className={`w-full h-full relative pointer-events-auto ${
-        data.placementState === "selected"
-          ? "ring-2 ring-emerald-500/80 shadow-[0_0_0_4px_rgba(52,211,153,0.12)]"
-          : data.placementState === "available"
-            ? "ring-1 ring-emerald-300/80"
-            : ""
-      }`}
+      className="w-full h-full relative pointer-events-auto"
     >
       <div className="absolute left-4 top-3 inline-flex items-center font-mono text-[12px] font-bold leading-none tracking-[0.08em] text-on-surface">
         {`${label} pod`}
@@ -54,26 +45,8 @@ function PodGroupNode({
   );
 }
 
-/** Discovered (unmanaged) node rendered with dashed border */
-function DiscoveredNode({ data }: { data: { session: DiscoveredSession } }) {
-  const s = data.session;
-  return (
-    <div data-testid="discovered-graph-node" className="border-dashed border-2 border-foreground/30 bg-surface-low/50 p-spacing-3 min-w-[180px]">
-      <Handle type="target" position={Position.Top} className="opacity-0" />
-      <div className="text-label-sm font-mono uppercase mb-spacing-1">{s.tmuxSession}:{s.tmuxPane}</div>
-      <div className="flex gap-spacing-2 items-center mb-spacing-1">
-        <span className="text-label-sm uppercase text-foreground-muted">{s.runtimeHint}</span>
-        <span className="text-label-sm text-foreground-muted">{s.confidence}</span>
-      </div>
-      {s.cwd && <div className="text-label-sm font-mono text-foreground-muted truncate">{s.cwd}</div>}
-      <Handle type="source" position={Position.Bottom} className="opacity-0" />
-    </div>
-  );
-}
-
 const nodeTypes: NodeTypes = {
   rigNode: RigNode,
-  discoveredNode: DiscoveredNode,
   podGroup: PodGroupNode,
 };
 
@@ -107,12 +80,10 @@ interface FocusMessage {
 export function RigGraph({
   rigId,
   rigName = null,
-  showDiscovered = true,
   podScope,
 }: {
   rigId: string | null;
   rigName?: string | null;
-  showDiscovered?: boolean;
   /** V1 polish slice Phase 5.1 P5.1-5: pod-scope filter. When set, the
    *  graph renders only nodes/edges/podGroups whose pod matches this
    *  name (matched via inferPodName + node.podId/podNamespace). Other
@@ -121,7 +92,6 @@ export function RigGraph({
   podScope?: string;
 }) {
   const { data, isPending: loading, error: queryError } = useRigGraph(rigId ?? "");
-  const discoveredSessions = useDiscoveredSessionsConditional(showDiscovered);
   const allRawNodes = data?.nodes ?? [];
   const allRawEdges = data?.edges ?? [];
 
@@ -243,32 +213,6 @@ export function RigGraph({
   }, [rawEdges, shouldAnimate, rawNodes.length]);
 
   // Apply tree layout + entrance animation to nodes
-  const podMetaById = useMemo(() => {
-    const meta = new Map<string, { displayName: string | null; namespace: string | null }>();
-    for (const node of rawNodes as Node[]) {
-      const nodeData = node.data as { logicalId?: string | null; podId?: string | null; podLabel?: string | null; podNamespace?: string | null } | undefined;
-      if ((node.type === "podGroup" || node.type === "group") && nodeData?.podId) {
-        meta.set(nodeData.podId, {
-          displayName: nodeData.podLabel ?? nodeData.podNamespace ?? inferPodName(nodeData.logicalId) ?? displayPodName(nodeData.podId),
-          namespace: nodeData.podNamespace ?? nodeData.logicalId ?? null,
-        });
-        continue;
-      }
-      const podId = nodeData?.podId ?? null;
-      if (!podId) continue;
-      const namespace = nodeData?.podNamespace ?? inferPodName(nodeData?.logicalId) ?? null;
-      const displayName = nodeData?.podLabel ?? namespace ?? displayPodName(podId);
-      if (!meta.has(podId)) {
-        meta.set(podId, { displayName, namespace });
-      }
-    }
-    return meta;
-  }, [rawNodes]);
-
-  const { selection, setSelection } = useDrawerSelection();
-  const { selectedDiscoveredId, placementTarget, setPlacementTarget } = useDiscoveryPlacement();
-  const placementMode = selection?.type === "discovery" && Boolean(selectedDiscoveredId);
-
   const rfNodes = useMemo(() => {
     const podDisplayNames = new Map<string, string>();
     for (const node of rawNodes as Node[]) {
@@ -294,33 +238,9 @@ export function RigGraph({
       ...node,
       data: (() => {
         if (node.type === "podGroup" || node.type === "group") {
-          const podData = node.data as { podId?: string | null };
-          const podId = podData?.podId ?? null;
-          const selectedPod =
-            placementTarget?.kind === "pod" && podId !== null && placementTarget.podId === podId;
           return {
             ...(node.data ?? {}),
             podDisplayName: podDisplayNames.get(node.id) ?? null,
-            placementState: placementMode ? (selectedPod ? "selected" : "available") : null,
-          };
-        }
-
-        if (node.type === "rigNode") {
-          const nodeData = node.data as {
-            logicalId?: string | null;
-            binding?: { tmuxSession?: string | null } | null;
-            canonicalSessionName?: string | null;
-          };
-          const available = !nodeData?.binding && !nodeData?.canonicalSessionName;
-          const selectedNode =
-            placementTarget?.kind === "node" &&
-            nodeData?.logicalId !== undefined &&
-            placementTarget.logicalId === nodeData.logicalId;
-          return {
-            ...(node.data ?? {}),
-            placementState: placementMode
-              ? (selectedNode ? "selected" : available ? "available" : null)
-              : null,
           };
         }
 
@@ -332,18 +252,8 @@ export function RigGraph({
         animationDelay: shouldAnimate ? `${Math.min(index * 50, 2000)}ms` : undefined,
       },
     }));
-
-    // Add discovered sessions as dashed nodes below managed ones
-    const maxY = managed.reduce((max, n) => Math.max(max, (n.position?.y ?? 0)), 0);
-    const discovered = discoveredSessions.map((s, i) => ({
-      id: `discovered-${s.id}`,
-      type: "discoveredNode" as const,
-      position: { x: 300, y: maxY + 200 + i * 150 },
-      data: { session: s } as Record<string, unknown>,
-    }));
-
-    return [...managed, ...discovered] as Node[];
-  }, [rawNodes, rawEdges, shouldAnimate, discoveredSessions, placementMode, placementTarget]);
+    return managed as Node[];
+  }, [rawNodes, rawEdges, shouldAnimate]);
 
   const activityNodes = useMemo(() => rfNodes.map((node) => {
     if (node.type !== "rigNode") return node;
@@ -377,48 +287,6 @@ export function RigGraph({
   const onNodeClick: NodeMouseHandler = useCallback(
     async (_event, node) => {
       if (!rigId) return;
-
-      if (placementMode) {
-        // OPR.0.4.6.MH2 rev1-r2 re-verdict B1: placement targets feed the
-        // LOCAL discovery bind/adopt mutation — a remote-rendered node/pod
-        // must never become a placement target.
-        if (graphIsRemote) {
-          return;
-        }
-        if (node.type === "podGroup" || node.type === "group") {
-          const podData = node.data as { podId?: string | null };
-          const podId = podData?.podId ?? null;
-          const podMeta = podId ? podMetaById.get(podId) : null;
-          const eligible = Boolean(podId && podMeta?.namespace);
-          setPlacementTarget({
-            kind: "pod",
-            rigId,
-            podId: podId ?? "",
-            podNamespace: podMeta?.namespace ?? null,
-            podLabel: podMeta?.displayName ?? null,
-            eligible,
-            ...(eligible ? {} : { reason: "This pod cannot receive a new node yet." }),
-          });
-          return;
-        }
-
-        if (node.type === "rigNode") {
-          const nodeData = node.data as {
-            logicalId: string;
-            binding: { tmuxSession?: string | null; cmuxSurface?: string | null } | null;
-            canonicalSessionName?: string | null;
-          };
-          const available = !nodeData.binding && !nodeData.canonicalSessionName;
-          setPlacementTarget({
-            kind: "node",
-            rigId,
-            logicalId: nodeData.logicalId,
-            eligible: available,
-            ...(available ? {} : { reason: "This node is already claimed." }),
-          });
-          return;
-        }
-      }
 
       if (node.type === "podGroup" || node.type === "group") {
         // Phase 4 P4-5: 'rig' kind retired from DrawerSelection;
@@ -473,7 +341,7 @@ export function RigGraph({
         showFocusMessage({ text: "Focus failed", type: "error" });
       }
     },
-    [placementMode, podMetaById, rigId, setPlacementTarget, navigate, setSelection, showFocusMessage, graphIsRemote]
+    [rigId, navigate, showFocusMessage, graphIsRemote]
   );
 
   if (rigId === null) {
@@ -529,14 +397,6 @@ export function RigGraph({
           "bg-surface-lowest border-outline-variant text-on-surface-variant"
         }`}>
           {focusMessage.text}
-        </div>
-      )}
-      {placementMode && !graphIsRemote && (
-        <div
-          data-testid="graph-placement-banner"
-          className="absolute top-spacing-4 left-1/2 z-20 -translate-x-1/2 border border-emerald-300/90 bg-[rgba(236,253,245,0.92)] px-3.5 py-2 font-mono text-[10px] text-emerald-950 shadow-[0_12px_28px_rgba(34,197,94,0.14)] backdrop-blur-sm"
-        >
-          PLACEMENT MODE / click an available node to bind, or click a pod to add a new node.
         </div>
       )}
       <ReactFlow

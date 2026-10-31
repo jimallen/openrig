@@ -44,7 +44,6 @@ import {
 import { Explorer, shouldSuppressExplorerMount, type ExplorerSurface } from "./Explorer.js";
 import { SharedDetailDrawer, type DrawerSelection } from "./SharedDetailDrawer.js";
 import { PreviewStack } from "./preview/PreviewStack.js";
-import type { DiscoveryPlacementTarget } from "./DiscoveryPanel.js";
 import { SpecsWorkspaceProvider } from "./SpecsWorkspace.js";
 import {
   TopologyOverlayProvider,
@@ -53,7 +52,6 @@ import {
 import { ThemeSelector } from "./ThemeSelector.js";
 import { useSettings } from "../hooks/useSettings.js";
 import { useActivityFeed } from "../hooks/useActivityFeed.js";
-import { useClearPlacementOnHostSwitch } from "../hooks/useHosts.js";
 import { useGlobalEvents } from "../hooks/useGlobalEvents.js";
 import { cn } from "../lib/utils.js";
 import { parseSessionName } from "../lib/session-name.js";
@@ -68,33 +66,13 @@ interface DrawerSelectionContextValue {
   setSelection: (sel: DrawerSelection) => void;
 }
 
-interface DiscoveryPlacementContextValue {
-  selectedDiscoveredId: string | null;
-  setSelectedDiscoveredId: (id: string | null) => void;
-  placementTarget: DiscoveryPlacementTarget;
-  setPlacementTarget: (target: DiscoveryPlacementTarget) => void;
-  clearPlacement: () => void;
-}
-
 export const DrawerSelectionContext = createContext<DrawerSelectionContextValue>({
   selection: null,
   setSelection: () => {},
 });
 
-export const DiscoveryPlacementContext = createContext<DiscoveryPlacementContextValue>({
-  selectedDiscoveredId: null,
-  setSelectedDiscoveredId: () => {},
-  placementTarget: null,
-  setPlacementTarget: () => {},
-  clearPlacement: () => {},
-});
-
 export function useDrawerSelection() {
   return useContext(DrawerSelectionContext);
-}
-
-export function useDiscoveryPlacement() {
-  return useContext(DiscoveryPlacementContext);
 }
 
 // V1 polish slice Phase 5.1 P5.1-1 + DRIFT P5.1-D2: useNodeSelection
@@ -382,8 +360,6 @@ function AppShellInner({ children }: AppShellProps) {
     return window.innerWidth >= WIDE_LAYOUT_BREAKPOINT;
   });
   const [selectionState, setSelectionState] = useState<DrawerSelection>(null);
-  const [selectedDiscoveredId, setSelectedDiscoveredIdState] = useState<string | null>(null);
-  const [placementTarget, setPlacementTargetState] = useState<DiscoveryPlacementTarget>(null);
 
   const { events } = useActivityFeed();
 
@@ -397,16 +373,6 @@ function AppShellInner({ children }: AppShellProps) {
     [isWideLayout],
   );
 
-  const clearPlacement = useCallback(() => {
-    setSelectedDiscoveredIdState(null);
-    setPlacementTargetState(null);
-  }, []);
-
-  const setSelectedDiscoveredId = useCallback((id: string | null) => {
-    setSelectedDiscoveredIdState(id);
-    setPlacementTargetState(null);
-  }, []);
-
   // Window resize → wide-layout flag.
   useEffect(() => {
     const handleResize = () => {
@@ -416,17 +382,6 @@ function AppShellInner({ children }: AppShellProps) {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
-
-  // Cross-route: clear discovery placement when discovery selection clears.
-  useEffect(() => {
-    if (selectionState?.type !== "discovery") clearPlacement();
-  }, [selectionState, clearPlacement]);
-
-  // OPR.0.4.6.MH2 rev1-r2 re-re-verdict B1: a placement target created while
-  // local must not survive a host switch — ANY selected-host change clears
-  // the target + discovered-session selection (the panel-side brace
-  // additionally suppresses the adopt UI under remote).
-  useClearPlacementOnHostSwitch(clearPlacement);
 
   // SC-3a — drawer content does NOT persist across reload (it's contextual).
   // Mobile-narrow viewports: close drawer + close explorer when route changes
@@ -494,15 +449,6 @@ function AppShellInner({ children }: AppShellProps) {
 
   return (
     <DrawerSelectionContext.Provider value={{ selection: selectionState, setSelection }}>
-      <DiscoveryPlacementContext.Provider
-          value={{
-            selectedDiscoveredId,
-            setSelectedDiscoveredId,
-            placementTarget,
-            setPlacementTarget: setPlacementTargetState,
-            clearPlacement,
-          }}
-        >
           <div className="h-screen flex flex-col">
             {/* Top bar — universal across viewports per universal-shell.md
                 L40–L53. Single source of truth: same element renders at
@@ -652,10 +598,6 @@ function AppShellInner({ children }: AppShellProps) {
                 selection={selectionState}
                 onClose={() => setSelection(null)}
                 events={events}
-                selectedDiscoveredId={selectedDiscoveredId}
-                onSelectDiscoveredId={setSelectedDiscoveredId}
-                placementTarget={placementTarget}
-                onClearPlacement={clearPlacement}
               />
 
               {/* Preview Terminal v0 (PL-018) — pinned-preview side rail.
@@ -670,7 +612,6 @@ function AppShellInner({ children }: AppShellProps) {
               <MobileBottomNav pathname={pathname} />
             </div>
           </div>
-      </DiscoveryPlacementContext.Provider>
     </DrawerSelectionContext.Provider>
   );
 }

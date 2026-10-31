@@ -221,10 +221,6 @@ function DrawerHost({ children }: { children: ReactNode }) {
         selection={selection}
         onClose={() => setSelection(null)}
         events={[]}
-        selectedDiscoveredId={null}
-        onSelectDiscoveredId={() => {}}
-        placementTarget={null}
-        onClearPlacement={() => {}}
       />
     </DrawerSelectionContext.Provider>
   );

@@ -378,10 +378,6 @@ describe("Drawer triggers (P4-2) fire setSelection with correct kind on click", 
 
 const NOOP_PROPS = {
   events: [],
-  selectedDiscoveredId: null as string | null,
-  onSelectDiscoveredId: () => {},
-  placementTarget: null,
-  onClearPlacement: () => {},
 };
 
 describe("SharedDetailDrawer (Phase 4) routes selection.type to the correct viewer", () => {

@@ -4,7 +4,7 @@ import { ReactFlowProvider, MarkerType } from "@xyflow/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RigGraph } from "../src/components/RigGraph.js";
 import { RigNode } from "../src/components/RigNode.js";
-import { DiscoveryPlacementContext, DrawerSelectionContext } from "../src/components/AppShell.js";
+import { DrawerSelectionContext } from "../src/components/AppShell.js";
 import { createMockEventSourceClass, instances } from "./helpers/mock-event-source.js";
 import type { MockEventSourceInstance } from "./helpers/mock-event-source.js";
 
@@ -149,7 +149,7 @@ describe("RigGraph", () => {
       },
     ], []));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       const groupNode = container.querySelector(".react-flow__node-podGroup") as HTMLElement | null;
@@ -210,7 +210,7 @@ describe("RigGraph", () => {
       },
     ], []));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       const rigNode = container.querySelector(".react-flow__node-rigNode") as HTMLElement | null;
@@ -273,7 +273,7 @@ describe("RigGraph", () => {
     const { container } = render(
       <QueryWrapper>
         <DrawerSelectionContext.Provider value={{ selection: null, setSelection }}>
-          <RigGraph showDiscovered={false} rigId="rig-1" />
+          <RigGraph rigId="rig-1" />
         </DrawerSelectionContext.Provider>
       </QueryWrapper>
     );
@@ -288,221 +288,10 @@ describe("RigGraph", () => {
     expect(setSelection).not.toHaveBeenCalled();
   });
 
-  it("clicking an unbound node in discovery placement mode selects it as a bind target", async () => {
-    mockFetch.mockResolvedValueOnce(mockGraphResponse([
-      {
-        id: "n1",
-        type: "rigNode",
-        position: { x: 0, y: 0 },
-        data: {
-          logicalId: "dev.impl",
-          rigId: "rig-1",
-          role: "worker",
-          runtime: "claude-code",
-          model: null,
-          status: null,
-          binding: null,
-          nodeKind: "agent",
-          startupStatus: null,
-          canonicalSessionName: null,
-          podId: "dev",
-          restoreOutcome: "n-a",
-          resumeToken: null,
-        },
-      },
-    ], []));
-
-    const setPlacementTarget = vi.fn();
-
-    const { container } = render(
-      <QueryWrapper>
-        <DrawerSelectionContext.Provider value={{ selection: { type: "discovery" }, setSelection: vi.fn() }}>
-          <DiscoveryPlacementContext.Provider
-            value={{
-              selectedDiscoveredId: "disc-1",
-              setSelectedDiscoveredId: vi.fn(),
-              placementTarget: null,
-              setPlacementTarget,
-              clearPlacement: vi.fn(),
-            }}
-          >
-            <RigGraph showDiscovered={false} rigId="rig-1" />
-          </DiscoveryPlacementContext.Provider>
-        </DrawerSelectionContext.Provider>
-      </QueryWrapper>
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector(".react-flow__node-rigNode")).not.toBeNull();
-    });
-
-    fireEvent.click(container.querySelector(".react-flow__node-rigNode")!);
-
-    expect(setPlacementTarget).toHaveBeenCalledWith({
-      kind: "node",
-      rigId: "rig-1",
-      logicalId: "dev.impl",
-      eligible: true,
-    });
-  });
-
-  // OPR.0.4.6.MH2 rev1-r2 re-verdict B1: placement targets feed the LOCAL
-  // discovery bind/adopt mutation — under a REMOTE selection a rendered node
-  // must never become a target and the placement banner must not advertise.
-  // (The test above is the local-positive control for this exact flow.)
-  it("remote-selected: placement-mode click sets NO target and the placement banner is absent (rev1-r2 B1)", async () => {
-    mockFetch.mockResolvedValueOnce(mockGraphResponse([
-      {
-        id: "n1",
-        type: "rigNode",
-        position: { x: 0, y: 0 },
-        data: {
-          logicalId: "dev.impl",
-          rigId: "rig-1",
-          role: "worker",
-          runtime: "claude-code",
-          model: null,
-          status: null,
-          binding: null,
-          nodeKind: "agent",
-          startupStatus: null,
-          canonicalSessionName: null,
-          podId: "dev",
-          restoreOutcome: "n-a",
-          resumeToken: null,
-        },
-      },
-    ], []));
-
-    const setPlacementTarget = vi.fn();
-    const qc = new QueryClient({
-      defaultOptions: { queries: { retry: false, gcTime: 5 * 60_000 } },
-    });
-    qc.setQueryData(["hosts"], {
-      ownName: "Linkpix Proof Host",
-      selected: "vps-a",
-      hosts: [{ id: "vps-a", transport: "http", url: "http://vps-a:7433", selected: true, status: "reachable" }],
-    });
-
-    const { container } = render(
-      <QueryClientProvider client={qc}>
-        <DrawerSelectionContext.Provider value={{ selection: { type: "discovery" }, setSelection: vi.fn() }}>
-          <DiscoveryPlacementContext.Provider
-            value={{
-              selectedDiscoveredId: "disc-1",
-              setSelectedDiscoveredId: vi.fn(),
-              placementTarget: null,
-              setPlacementTarget,
-              clearPlacement: vi.fn(),
-            }}
-          >
-            <RigGraph showDiscovered={false} rigId="rig-1" />
-          </DiscoveryPlacementContext.Provider>
-        </DrawerSelectionContext.Provider>
-      </QueryClientProvider>
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector(".react-flow__node-rigNode")).not.toBeNull();
-    });
-
-    // the banner never advertises placement on remote data
-    expect(container.querySelector("[data-testid='graph-placement-banner']")).toBeNull();
-
-    fireEvent.click(container.querySelector(".react-flow__node-rigNode")!);
-
-    expect(setPlacementTarget).not.toHaveBeenCalled();
-    const postCalls = mockFetch.mock.calls.filter(
-      ([, init]) => (init as RequestInit | undefined)?.method === "POST",
-    );
-    expect(postCalls).toEqual([]);
-  });
-
-  it("clicking a pod group in discovery placement mode selects it as an add-to-pod target", async () => {
-    mockFetch.mockResolvedValueOnce(mockGraphResponse([
-      {
-        id: "pod-dev",
-        type: "podGroup",
-        position: { x: 0, y: 0 },
-        data: {
-          logicalId: "dev",
-          podLabel: "Development",
-          rigId: "rig-1",
-          role: null,
-          runtime: null,
-          model: null,
-          status: null,
-          binding: null,
-          nodeKind: "agent",
-          startupStatus: null,
-          canonicalSessionName: null,
-          podId: "dev",
-          restoreOutcome: "n-a",
-          resumeToken: null,
-        },
-      },
-      {
-        id: "n1",
-        type: "rigNode",
-        position: { x: 0, y: 0 },
-        parentId: "pod-dev",
-        data: {
-          logicalId: "dev.impl",
-          rigId: "rig-1",
-          role: "worker",
-          runtime: "claude-code",
-          model: null,
-          status: "running",
-          binding: { tmuxSession: "dev-impl@test-rig", cmuxSurface: null },
-          nodeKind: "agent",
-          startupStatus: "ready",
-          canonicalSessionName: "dev-impl@test-rig",
-          podId: "dev",
-          restoreOutcome: "n-a",
-          resumeToken: null,
-        },
-      },
-    ], []));
-
-    const setPlacementTarget = vi.fn();
-    const { container } = render(
-      <QueryWrapper>
-        <DrawerSelectionContext.Provider value={{ selection: { type: "discovery" }, setSelection: vi.fn() }}>
-          <DiscoveryPlacementContext.Provider
-            value={{
-              selectedDiscoveredId: "disc-1",
-              setSelectedDiscoveredId: vi.fn(),
-              placementTarget: null,
-              setPlacementTarget,
-              clearPlacement: vi.fn(),
-            }}
-          >
-            <RigGraph showDiscovered={false} rigId="rig-1" />
-          </DiscoveryPlacementContext.Provider>
-        </DrawerSelectionContext.Provider>
-      </QueryWrapper>
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector(".react-flow__node-podGroup")).not.toBeNull();
-    });
-
-    fireEvent.click(container.querySelector(".react-flow__node-podGroup")!);
-
-    expect(setPlacementTarget).toHaveBeenCalledWith({
-      kind: "pod",
-      rigId: "rig-1",
-      podId: "dev",
-      podNamespace: "dev",
-      podLabel: "Development",
-      eligible: true,
-    });
-  });
-
   it("renders nodes from mock graph data", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       // React Flow renders nodes with data-testid="rf__node-{id}"
@@ -514,7 +303,7 @@ describe("RigGraph", () => {
   it("passes edges to ReactFlow (edge container rendered)", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       // React Flow renders nodes successfully (proves graph data was accepted)
@@ -535,14 +324,14 @@ describe("RigGraph", () => {
     // Never resolves — stays in loading
     mockFetch.mockReturnValueOnce(new Promise(() => {}));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
     expect(screen.getByTestId("graph-loading")).toBeDefined();
   });
 
   it("empty state rendered when nodes array is empty", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse([], []));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.getByTestId("empty-topology")).toBeDefined();
@@ -552,7 +341,7 @@ describe("RigGraph", () => {
   it("error state rendered on fetch failure", async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.getByText(/error/i)).toBeDefined();
@@ -560,7 +349,7 @@ describe("RigGraph", () => {
   });
 
   it("rigId=null shows 'No rig selected' placeholder, no fetch", () => {
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId={null} /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId={null} /></QueryWrapper>);
 
     expect(screen.getByText(/no rig selected/i)).toBeDefined();
     expect(mockFetch).not.toHaveBeenCalled();
@@ -569,7 +358,7 @@ describe("RigGraph", () => {
   it("rigId='abc' fetches /api/rigs/abc/graph", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse([], []));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="abc" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="abc" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith("/api/rigs/abc/graph");
@@ -579,7 +368,7 @@ describe("RigGraph", () => {
   it("graph view does NOT render a diagonal watermark stamp (OPR.0.4.0.21 ghost removal)", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" rigName="demo-rig" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" rigName="demo-rig" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.queryByTestId("rig-stamp-watermark")).toBeNull();
@@ -593,7 +382,7 @@ describe("RigGraph", () => {
   it("renders custom RigNode content via nodeTypes registration", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       // React Flow uses our custom node type — nodes have class react-flow__node-rigNode
@@ -796,29 +585,6 @@ describe("RigNode", () => {
     expect(screen.queryByTestId("toolbar-copy-resume")).toBeNull();
   });
 
-  it("shows an availability marker when the node can receive a discovered session", () => {
-    const data = {
-      logicalId: "dev.impl",
-      rigId: "rig-1",
-      role: "worker",
-      runtime: "claude-code",
-      model: null,
-      status: null,
-      startupStatus: null,
-      canonicalSessionName: null,
-      binding: null,
-      placementState: "available" as const,
-    };
-
-    render(
-      <ReactFlowProvider>
-        <RigNode data={data} />
-      </ReactFlowProvider>
-    );
-
-    expect(screen.getByTestId("placement-chip-dev.impl").textContent).toBe("avail");
-  });
-
   it("toolbar keeps terminal and cmux actions when no resumeToken", () => {
     const data = {
       logicalId: "dev.impl",
@@ -927,7 +693,7 @@ describe("RigNode", () => {
   it("treats nodes as non-draggable so the canvas can pan through them", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       const node = container.querySelector(".react-flow__node-rigNode");
@@ -981,7 +747,7 @@ describe("Edge styles", () => {
 describe("Graph entrance animation", () => {
   it("initial navigation sets data-animated='true'", async () => {
     mockFetch.mockResolvedValue(mockGraphResponse(sampleNodes(), sampleEdges()));
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       const view = screen.getByTestId("graph-view");
@@ -996,13 +762,13 @@ describe("Graph entrance animation", () => {
       return Promise.resolve(mockGraphResponse(sampleNodes(), sampleEdges()));
     });
 
-    const { rerender } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { rerender } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     // Wait for first render with data
     await waitFor(() => expect(screen.getByTestId("graph-view")).toBeDefined());
 
     // Force a rerender (simulating data refresh)
-    rerender(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    rerender(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     // After the useEffect has set animatedRigRef, shouldAnimate should be false
     await waitFor(() => {
@@ -1013,7 +779,7 @@ describe("Graph entrance animation", () => {
 
   it("empty topology state renders wireframe ghost", async () => {
     mockFetch.mockResolvedValue(mockGraphResponse([], []));
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.getByTestId("empty-topology")).toBeDefined();
@@ -1023,7 +789,7 @@ describe("Graph entrance animation", () => {
 
   it("loading state shows skeleton", async () => {
     mockFetch.mockReturnValue(new Promise(() => {}));
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.getByTestId("graph-loading")).toBeDefined();
@@ -1035,7 +801,7 @@ describe("RigGraph SSE integration", () => {
   it("SSE message triggers second fetch to /api/rigs/:id/graph", async () => {
     mockFetch.mockResolvedValue(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     // Wait for initial fetch
     await waitFor(() => {
@@ -1064,7 +830,7 @@ describe("RigGraph SSE integration", () => {
       ))
       .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     // Wait for initial render with 1 node
     await waitFor(() => {
@@ -1088,7 +854,7 @@ describe("RigGraph SSE integration", () => {
   it("reconnecting indicator visible on EventSource error", async () => {
     mockFetch.mockResolvedValue(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => expect(instances.length).toBeGreaterThan(0));
 
@@ -1104,7 +870,7 @@ describe("RigGraph SSE integration", () => {
   it("reconnect open event clears indicator and triggers refetch", async () => {
     mockFetch.mockResolvedValue(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => expect(instances.length).toBeGreaterThan(0));
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
@@ -1141,7 +907,7 @@ describe("RigGraph click-through to focus", () => {
       .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
@@ -1168,7 +934,7 @@ describe("RigGraph click-through to focus", () => {
       .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
@@ -1187,7 +953,7 @@ describe("RigGraph click-through to focus", () => {
   it("click node without binding -> 'not bound' message, no focus fetch", async () => {
     mockFetch.mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n2']")).not.toBeNull();
@@ -1217,7 +983,7 @@ describe("RigGraph click-through to focus", () => {
       .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: false, code: "unavailable" }) });
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
@@ -1238,7 +1004,7 @@ describe("RigGraph click-through to focus", () => {
       .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
       .mockResolvedValueOnce({ ok: false, status: 500 });
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
@@ -1259,7 +1025,7 @@ describe("RigGraph click-through to focus", () => {
       .mockResolvedValueOnce(mockGraphResponse(sampleNodes(), sampleEdges()))
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="my-rig-id" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="my-rig-id" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
@@ -1282,7 +1048,7 @@ describe("RigGraph click-through to focus", () => {
     const nodes = [...sampleNodes(), nodeWithBindingNoSurface()];
     mockFetch.mockResolvedValueOnce(mockGraphResponse(nodes, sampleEdges()));
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n3']")).not.toBeNull();
@@ -1314,7 +1080,7 @@ describe("RigGraph click-through to focus", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: false, code: "unavailable" }) });
 
-    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" /></QueryWrapper>);
+    const { container } = render(<QueryWrapper><RigGraph rigId="rig-1" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(container.querySelector("[data-testid='rf__node-n1']")).not.toBeNull();
@@ -1366,7 +1132,7 @@ describe("RigGraph click-through to focus", () => {
     ];
 
     mockFetch.mockResolvedValue(mockGraphResponse(nodesWithPkgs, []));
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-badge-1" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-badge-1" /></QueryWrapper>);
 
     await waitFor(() => {
       const badge = screen.getByTestId("package-badge");
@@ -1379,7 +1145,7 @@ describe("RigGraph click-through to focus", () => {
   it("node without packageRefs has no badge", async () => {
     // sampleNodes() have no packageRefs
     mockFetch.mockResolvedValue(mockGraphResponse(sampleNodes(), sampleEdges()));
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-badge-2" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-badge-2" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.getAllByTestId("rig-node").length).toBeGreaterThan(0);
@@ -1407,7 +1173,7 @@ describe("RigGraph click-through to focus", () => {
     ];
 
     mockFetch.mockResolvedValue(mockGraphResponse(nodesWithPkgs, []));
-    render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-badge-3" /></QueryWrapper>);
+    render(<QueryWrapper><RigGraph rigId="rig-badge-3" /></QueryWrapper>);
 
     await waitFor(() => {
       expect(screen.getByTestId("package-badge")).toBeDefined();
@@ -1428,46 +1194,6 @@ describe("RigGraph click-through to focus", () => {
       (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/focus")
     );
     expect(focusCalls.length).toBe(0);
-  });
-});
-
-describe("RigGraph discovery integration", () => {
-  it("discovered sessions appear as dashed nodes when showDiscovered=true", async () => {
-    // Mock both graph and discovery endpoints
-    mockFetch.mockImplementation(async (url: string) => {
-      if (typeof url === "string" && url.includes("/api/discovery")) {
-        return {
-          ok: true,
-          json: async () => [
-            { id: "ds-1", tmuxSession: "organic", tmuxPane: "%0", runtimeHint: "claude-code", confidence: "high", cwd: "/tmp", status: "active" },
-          ],
-        };
-      }
-      // Graph endpoint
-      return {
-        ok: true,
-        json: async () => ({ nodes: sampleNodes(), edges: sampleEdges() }),
-      };
-    });
-
-    render(
-      <QueryWrapper>
-        <RigGraph showDiscovered={true} rigId="rig-1" />
-      </QueryWrapper>
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("graph-view")).toBeTruthy();
-    });
-
-    // Wait for discovered node to appear
-    await waitFor(() => {
-      expect(screen.getByTestId("discovered-graph-node")).toBeTruthy();
-    });
-
-    // Discovered node should have dashed border
-    const discoveredNode = screen.getByTestId("discovered-graph-node");
-    expect(discoveredNode.className).toContain("border-dashed");
   });
 });
 
@@ -1499,7 +1225,7 @@ describe("RigGraph node selection (P5.1-2 navigate)", () => {
 
     const { container } = render(
       <QueryWrapper>
-        <RigGraph showDiscovered={false} rigId="rig-1" />
+        <RigGraph rigId="rig-1" />
       </QueryWrapper>
     );
 
@@ -1559,7 +1285,7 @@ describe("RigGraph node selection (P5.1-2 navigate)", () => {
 
     const { container } = render(
       <QueryClientProvider client={qc}>
-        <RigGraph showDiscovered={false} rigId="rig-1" />
+        <RigGraph rigId="rig-1" />
       </QueryClientProvider>
     );
 
