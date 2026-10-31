@@ -18,7 +18,7 @@ describe("#707 local tiles run the hc the daemon resolves", () => {
   it("a provider PATH without hc fails the bare command; the resolved path attaches, keeping --observe", () => {
     const root = mkdtempSync(join(tmpdir(), "openrig-707-"));
     const narrow = join(root, "provider-path"); // the provider's PATH: no hc here
-    const elsewhere = join(root, "elsewhere"); // where the daemon found hc
+    const elsewhere = join(root, "else where"); // where the daemon found hc (a space: the path must be quoted)
     mkdirSync(narrow);
     mkdirSync(elsewhere);
     const hc = join(elsewhere, "hc");

@@ -84,7 +84,7 @@ describe("shared kernel TUI", () => {
     });
 
     it("says hc could not be read, for a failed or malformed listing", async () => {
-      await expect(resolveSharedTerminal("k", { list: async () => ({ code: 1, stdout: "" }) })).rejects.toThrow("Cannot list hc terminals");
+      await expect(resolveSharedTerminal("k", { list: async () => ({ code: 1, stdout: listing("t1").stdout }) })).rejects.toThrow("Cannot list hc terminals");
       await expect(resolveSharedTerminal("k", { list: async () => ({ code: 0, stdout: "not json" }) })).rejects.toThrow("Cannot list hc terminals");
       await expect(resolveSharedTerminal("k", { list: async () => ({ code: 0, stdout: "{}" }) })).rejects.toThrow("Cannot list hc terminals");
     });
