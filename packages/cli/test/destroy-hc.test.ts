@@ -204,6 +204,13 @@ describe("executeDestroy with hc seats", () => {
     expect(killHcSeat).not.toHaveBeenCalled();
   });
 
+  it("ends no hc seat for a --state plan even if one is handed in", async () => {
+    const killHcSeat = vi.fn(async () => "killed" as const);
+    const result = await executeDestroy(plan({ scope: "state", managedHcSeats: ["a@r"] }), deps({ killHcSeat }));
+    expect(killHcSeat).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ hcKilled: 0, hcMissing: 0, hcUnconfirmed: [], stateRecreated: true });
+  });
+
   it("ends no seat while the daemon is still up or not local", async () => {
     const killHcSeat = vi.fn(async () => "killed" as const);
     await executeDestroy(plan({ managedHcSeats: ["a@r"] }), deps({ killHcSeat, inspectListener: async () => ({ kind: "other_http" }) }));
