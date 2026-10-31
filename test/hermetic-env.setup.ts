@@ -50,6 +50,17 @@ for (const key of [
   delete process.env[`RIGGED_${key}`];
 }
 
+// (1b) hc cutover W8: scrub the herdr-core (`hc`) selectors. After the cutover the suites run inside seats whose env
+// carries the seat's own core (HC_SOCKET, HC_SESSION, HC_SCOPE, HC_TERMINAL_ID, HC_TERMINAL_SOCKET), and
+// `new HcClient()` defaults to `resolveHcSocket(process.env)`: a test that builds a default client inside a seat would
+// reach THAT SEAT'S core and could send keys to, read or stop its terminals. Every `HC_`-prefixed name goes (a positional
+// predicate, not a list: a selector added by a later hc release is covered too). A test that needs a core gets a private
+// one from packages/daemon/test/helpers/hc-scratch.ts, whose env is built, not copied. The core socket also follows
+// XDG_RUNTIME_DIR before any state dir (hc-client.ts resolveHcSocket), so that is dropped below with the other XDG paths.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("HC_")) delete process.env[key];
+}
+
 // (2) FORCE a fixture-scoped home — BEFORE importing openrig-compat (whose
 // OPENRIG_HOME const is eager). Node builtins above do not load it; the dynamic
 // imports below run only AFTER this assignment, so the const captures the fixture.
@@ -96,6 +107,9 @@ if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
   fs.mkdirSync(userHome, { recursive: true });
   process.env["HOME"] = userHome;
   delete process.env["CODEX_HOME"];
+  // resolveHcSocket prefers XDG_RUNTIME_DIR (a seat on Linux has /run/user/<uid>) over the state dir set below, which
+  // would name the host's default core even with HC_* gone. Dropped, the socket path falls to the fixture state dir.
+  delete process.env["XDG_RUNTIME_DIR"];
   for (const [key, suffix] of Object.entries({
     XDG_CONFIG_HOME: ".config", XDG_STATE_HOME: ".local/state",
     XDG_DATA_HOME: ".local/share", XDG_CACHE_HOME: ".cache",
