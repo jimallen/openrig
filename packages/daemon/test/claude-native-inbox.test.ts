@@ -172,6 +172,14 @@ describe("OF-191: a re-registration of the process that already passed keeps its
     expect(e.ok).toBe(true);
   });
 
+  it("a kept pass still records the new transcript and socket facts of this registration (a /clear moves the transcript)", async () => {
+    const s = await passedThen();
+    s.unreadable();
+    const r = await s.f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: SOCK,
+      transcriptPath: "/fake/after-clear.jsonl", claudePid: 4242, execPath: null });
+    expect([r?.probe_result, r?.transcript_path, s.f.inbox.endpointFor("node-a")?.transcript_path]).toEqual(["pass", "/fake/after-clear.jsonl", "/fake/after-clear.jsonl"]);
+  });
+
   it.each([
     ["--version came back empty (timed out under load)", { version: null, literal: true, replacedSinceStart: false }],
     ["the file was replaced after the process started", { version: "2.1.316", literal: true, replacedSinceStart: true }],

@@ -601,3 +601,28 @@ describe("OF-180 N7: failOverToTmux sends a wake group once and settles every ro
     expect(x.recorded).toEqual([["qitem-a", "verified"], ["qitem-b", "verified"]]);
   });
 });
+
+// OF-191: the daemon keeps a proven process's pass only through this start-time lookup; without it wired in startup the
+// fix is inert in production (the inbox then keeps nothing).
+describe("OF-191: the start-time lookup the daemon wires into the inbox", () => {
+  it("processStart reports when a live process began: this test process, started before now and after 2020", async () => {
+    const { processStart } = await import("../src/adapters/native-inbox-os.js");
+    const started = await processStart(process.pid);
+    expect(started).toBeInstanceOf(Date);
+    expect(started!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(started!.getTime()).toBeGreaterThan(Date.parse("2020-01-01T00:00:00Z"));
+  });
+
+  it("processStart of a pid that does not exist is null (a missing start time keeps nothing)", async () => {
+    const { processStart } = await import("../src/adapters/native-inbox-os.js");
+    expect(await processStart(2147483646)).toBeNull();
+  });
+
+  it("startup.ts passes processStart to the ClaudeNativeInbox it constructs", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(fileURLToPath(new URL("../src/startup.ts", import.meta.url)), "utf8");
+    const construction = /new ClaudeNativeInbox\(\{[\s\S]*?\n  \}\);/.exec(source)?.[0] ?? "";
+    expect(construction).toContain("resolveExecPath: resolveClaudeExecPath");
+    expect(construction).toContain("processStartedAt: processStart,");
+  });
+});
