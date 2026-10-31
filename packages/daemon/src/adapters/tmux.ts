@@ -20,8 +20,7 @@ interface TmuxShellCommandOptions {
 /**
  * Argv exec: run the multiplexer WITHOUT a shell (execFile-style — the
  * binary is argv[0], the rest are verbatim arguments, no quoting layer).
- * The daemon wires it on every platform: no shell process per call, and on
- * Windows/psmux no POSIX quoting or `/dev/null` redirections to depend on.
+ * The daemon wires it: no shell process per call.
  * When absent every method uses the legacy shell-string path unchanged.
  */
 export type ArgvExecFn = (argv: string[]) => Promise<string>;
@@ -524,7 +523,7 @@ export class TmuxAdapter {
       if ((await this.probeSession(probeName)).state !== "transport_unavailable") return { ok: true };
       // tmux -D keeps an empty server alive. Stays on the shell-string path
       // deliberately: detach + stdio redirection have no argv equivalent,
-      // and server bootstrap is POSIX-specific (psmux auto-starts its own).
+      // and server bootstrap is POSIX-specific.
       // Native socket ownership arbitrates
       // concurrent starts; the readback below, not shell exit, proves availability.
       await this.exec("tmux -D </dev/null >/dev/null 2>&1 &");
@@ -1352,8 +1351,7 @@ export class TmuxAdapter {
     // The entire pipe command is passed as a single argument to tmux,
     // which executes it via sh -c. We use shellQuote on the path.
     // The sink travels as ONE argv unit: the multiplexer runs it via a
-    // shell, so its inner quoting stays POSIX here (psmux documents the same
-    // `cat >` server-side form for its own path).
+    // shell, so its inner quoting stays POSIX here.
     const sink = "cat >> " + shellQuote(outputPath);
     const target = exactTarget(sessionName, "pane");
     try {

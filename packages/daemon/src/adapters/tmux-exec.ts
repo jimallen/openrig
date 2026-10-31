@@ -77,8 +77,7 @@ export const execCommand: ExecFn = async (cmd: string): Promise<string> => {
  * Production ArgvExecFn for TmuxAdapter.
  * Runs argv[0] directly via execFile: no shell, no quoting layer. On POSIX
  * argv[0] is started by its resolved path: with a bare name, libuv tries each
- * PATH entry with a spawn on the event loop. psmux ships a `tmux` alias on
- * PATH, so Windows passes the bare name to the spawn.
+ * PATH entry with a spawn on the event loop.
  */
 export const execArgvCommand: ArgvExecFn = async (argv: string[]): Promise<string> => {
   const [bin, ...args] = argv;
@@ -88,7 +87,6 @@ export const execArgvCommand: ArgvExecFn = async (argv: string[]): Promise<strin
   const opts = { windowsHide: true, maxBuffer: TMUX_MAX_BUFFER };
   const run = (file: string | null) => file ? execFileAsync(file, args, opts) : execFileAsync("/bin/sh", ["-c", 'exec "$0" "$@"', bin, ...args], opts);
   try {
-    if (process.platform === "win32") return (await execFileAsync(bin, args, opts)).stdout;
     const file = resolvedOnPath(bin);
     try {
       return (await run(file)).stdout;
