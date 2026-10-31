@@ -14,9 +14,13 @@ let available = process.platform !== "win32";
 for (const [bin, flag] of [["tmux", "-V"], ["zsh", "--version"]] as const) {
   try { execFileSync(bin, [flag], { stdio: "ignore" }); } catch { available = false; }
 }
+// A condition wait: it resolves the moment `f` holds. The ceiling only bounds a genuine hang (the old 5 s one was overrun on a loaded host).
 async function until(f: () => boolean, what: string) {
-  for (let i = 0; i < 200; i++) { if (f()) return; await new Promise(r => setTimeout(r, 25)); }
-  throw new Error(`timed out waiting for ${what}`);
+  const deadline = Date.now() + 30_000;
+  while (!f()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise(r => setTimeout(r, 25));
+  }
 }
 
 // OF-64: a zsh loading zsh-autopair rewrote the typed `( . '/tmp/x' )` launch line to
@@ -24,15 +28,16 @@ async function until(f: () => boolean, what: string) {
 // for ANY keystroke-rewriting widget with one that inserts a closing `)` after every typed `(`.
 // The line is sent while .zshrc is still running (a pane whose zsh has not yet enabled bracketed
 // paste, the state a seat launch races): tmux then delivers it as plain keystrokes that the line
-// editor reads, widgets and all, once the prompt appears.
-describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widget", () => {
+// editor reads, widgets and all, once the prompt appears. .zshrc holds there until the test opens a
+// gate file after its send returns (a fixed 1.5 s hold ended before a send on a loaded host).
+describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widget", { timeout: 60_000 }, () => {
   async function pane() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "of64-widget-"));
     const socket = path.join(root, "sock"), zdot = path.join(root, "zdot");
-    const started = path.join(root, "started"), ready = path.join(root, "ready"), marker = path.join(root, "marker");
+    const started = path.join(root, "started"), ready = path.join(root, "ready"), marker = path.join(root, "marker"), gate = path.join(root, "gate");
     fs.mkdirSync(zdot);
     fs.writeFileSync(path.join(zdot, ".zshrc"), [
-      `: > ${q(started)}`, "zmodload zsh/zselect", "zselect -t 150", "PS1='READY> '",
+      `: > ${q(started)}`, "zmodload zsh/zselect", `until [[ -e ${q(gate)} ]]; do zselect -t 5; done`, "PS1='READY> '",
       "_open_pair() { LBUFFER+='('; RBUFFER=\")$RBUFFER\" }", "zle -N _open_pair", "bindkey '(' _open_pair",
       `: > ${q(ready)}`, "",
     ].join("\n"));
@@ -48,7 +53,7 @@ describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widg
     const zshPath = execFileSync("sh", ["-c", "command -v zsh"], { encoding: "utf8" }).trim();
     await tm(["new-session", "-d", "-s", "pane", "-x", "200", "-y", "50", `${q(zshPath)} -d -i`]);
     await until(() => fs.existsSync(started), "zsh startup");
-    return { root, marker, ready, tm, adapter, close: async () => { await stopOwnedTmuxServer(socket, env); fs.rmSync(root, { recursive: true, force: true }); } };
+    return { root, marker, ready, tm, adapter, release: () => fs.writeFileSync(gate, ""), close: async () => { await stopOwnedTmuxServer(socket, env); fs.rmSync(root, { recursive: true, force: true }); } };
   }
 
   it("control: the widget does break the old typed form `( . 'file' )`", async () => {
@@ -58,8 +63,9 @@ describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widg
       fs.writeFileSync(script, `: > ${q(p.marker)}\n`);
       await p.adapter.sendText("pane", `( . ${q(script)} )`);
       await p.adapter.sendKeys("pane", ["Enter"]);
+      p.release();
       await until(() => fs.existsSync(p.ready), "zsh prompt");
-      await new Promise(r => setTimeout(r, 1000));
+      await expect.poll(() => p.tm(["capture-pane", "-p", "-t", "pane"]), { timeout: 30_000 }).toContain("parse error");
       expect(fs.existsSync(p.marker)).toBe(false);
       expect(await p.tm(["capture-pane", "-p", "-t", "pane"])).toContain("parse error");
     } finally { await p.close(); }
@@ -69,6 +75,7 @@ describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widg
     const p = await pane();
     try {
       expect(await p.adapter.sendShellCommand("pane", `LEAK=1; : > ${q(p.marker)}`, undefined, { sourceInPane: true })).toEqual({ ok: true });
+      p.release();
       await until(() => fs.existsSync(p.marker), "launch marker");
       await until(() => fs.existsSync(p.ready), "zsh prompt");
       const leak = path.join(p.root, "leak");
@@ -83,6 +90,7 @@ describe.skipIf(!available)("launch line survives a keystroke-rewriting zsh widg
     const p = await pane();
     try {
       expect(await p.adapter.sendShellCommand("pane", `: > ${q(p.marker)}`)).toEqual({ ok: true });
+      p.release();
       await until(() => fs.existsSync(p.marker), "launch marker");
     } finally { await p.close(); }
   });

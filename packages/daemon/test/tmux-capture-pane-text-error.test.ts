@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { execArgvCommand } from "../src/adapters/tmux-exec.js";
 import { stopOwnedTmuxServer } from "./helpers/orphan-reaper.js";
@@ -76,14 +76,16 @@ describe("chained capture error classification, listing first", () => {
 
 describe.skipIf(!nativeAvailable)("chained capture error classification, real tmux", { timeout: 60_000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-panetext-native-"));
-  const sock = path.join(home, "sock");
+  // One private server per row. Each row ends by killing its last session, which makes tmux exit; the next row's
+  // `new-session` on the same socket then races that exit and fails with "server exited unexpectedly" on a loaded host.
+  let sock = path.join(home, "sock");
+  let rows = 0;
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, TMUX_TMPDIR: home };
   delete env.TMUX;
   const tmux = async (...args: string[]) => (await exec("tmux", ["-f", "/dev/null", "-S", sock, ...args], { env, timeout: 10_000 })).stdout;
-  afterAll(async () => {
-    await stopOwnedTmuxServer(sock, env);
-    fs.rmSync(home, { recursive: true, force: true });
-  });
+  beforeEach(() => { sock = path.join(home, `sock-${++rows}`); });
+  afterEach(async () => { await stopOwnedTmuxServer(sock, env); });
+  afterAll(() => { fs.rmSync(home, { recursive: true, force: true }); });
   /** The production argv transport against this test's private server; `tail` extends every chain, never a single capture. */
   const adapter = (tail: string[] = []) => {
     const calls: string[][] = [];
