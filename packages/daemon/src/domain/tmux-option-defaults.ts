@@ -68,6 +68,10 @@ export class TmuxOptionDefaultsApplier {
    * over a cosmetic option).
    */
   async applyToFreshSession(sessionName: string): Promise<string[]> {
+    // A seat on herdr-core has no tmux session or server to configure: `mouse`, `status` and `detach-on-destroy` are
+    // tmux built-ins with no hc counterpart, so the hc adapter refuses them by design (hc-identity `unsupported_option`).
+    // Applying them anyway made every hc launch report three "option not set" warnings for options that cannot exist.
+    if (this.tmuxAdapter.hostKind === "hc") return [];
     const warnings: string[] = [];
 
     const mouse = await this.tmuxAdapter.setSessionOption(sessionName, "mouse", "on");

@@ -9,6 +9,8 @@ import {
   TmuxOptionDefaultsApplier,
   resolveCopyCommand,
 } from "../src/domain/tmux-option-defaults.js";
+import { HcAdapter } from "../src/adapters/hc-adapter.js";
+import { HcClient } from "../src/adapters/hc-client.js";
 
 const OK: TmuxResult = { ok: true };
 
@@ -106,6 +108,17 @@ describe("TmuxOptionDefaultsApplier", () => {
     const warnings = await applier.applyToFreshSession("sess-x");
     expect(warnings.some((w) => w.includes("mouse") && w.includes("boom"))).toBe(true);
     expect(warnings.some((w) => w.includes("set-clipboard") && w.includes("no server"))).toBe(true);
+  });
+});
+
+describe("TmuxOptionDefaultsApplier on an hc seat host", () => {
+  it("reports no warnings: tmux built-in options have no hc counterpart, so none are applied", async () => {
+    // The real hc adapter, pointed at a socket nothing listens on: `mouse`, `status` and `detach-on-destroy` are refused by
+    // the adapter before any call to the core (a launch reported three "option not set" warnings for every hc seat).
+    const adapter = new HcAdapter(new HcClient("/nonexistent/w17-option-defaults.sock"));
+    const warnings = await new TmuxOptionDefaultsApplier({ tmuxAdapter: adapter, platform: "linux", hasCommand: () => false })
+      .applyToFreshSession("dev-a@rig");
+    expect(warnings).toEqual([]);
   });
 });
 
