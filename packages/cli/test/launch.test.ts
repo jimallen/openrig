@@ -2,9 +2,10 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { launchCommand } from "../src/commands/launch.js";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 function mockClient(responses: Record<string, { status: number; data: unknown }>) {
   return {
@@ -81,7 +82,7 @@ describe("rig launch --seats", () => {
   });
 
   it("posts an explicit original member retry to the existing single-node route", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "first-start-cli-"));
+    const directory = mkTemp(join(tmpdir(), "first-start-cli-"));
     const fragment = join(directory, "member.yaml");
     writeFileSync(fragment, "member:\n  id: pi\n  runtime: pi\n  agent_ref: local:agent\n  profile: default\n  cwd: /project\n");
     const deps = makeDeps({ "dev.pi/launch": { status: 201, data: { ok: true, nodeId: "same-node", logicalId: "dev.pi", status: "launched" } } });
@@ -101,7 +102,7 @@ describe("rig launch --seats", () => {
   });
 
   it("keeps retry refusal nonzero and does not claim launch", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "first-start-cli-"));
+    const directory = mkTemp(join(tmpdir(), "first-start-cli-"));
     const fragment = join(directory, "member.json");
     writeFileSync(fragment, JSON.stringify({ id: "pi" }));
     const deps = makeDeps({ "dev.pi/launch": { status: 409, data: { ok: false, code: "first_start_retry_refused", message: "Seat is still bound" } } });

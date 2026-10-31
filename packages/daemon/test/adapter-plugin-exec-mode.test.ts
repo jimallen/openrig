@@ -18,6 +18,7 @@ import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/clau
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
 import type { NodeBinding } from "../src/domain/types.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function mockTmux() {
   return {
@@ -89,7 +90,7 @@ function perm(p: string): number { return fs.statSync(p).mode & 0o777; }
 
 describe("CWD plugin projection preserves executable mode (skills-vendoring QA blocker)", () => {
   it("Claude: nested exec helper keeps 0755, non-exec neighbor stays 0644", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "execmode-claude-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "execmode-claude-"));
     const src = nodePath.join(base, "src");
     const rel = seedPluginTree(src);
     const cwd = nodePath.join(base, "cwd");
@@ -105,7 +106,7 @@ describe("CWD plugin projection preserves executable mode (skills-vendoring QA b
   });
 
   it("Codex: nested exec helper keeps 0755, non-exec neighbor stays 0644", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "execmode-codex-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "execmode-codex-"));
     const src = nodePath.join(base, "src");
     const rel = seedPluginTree(src);
     const cwd = nodePath.join(base, "cwd");
@@ -121,7 +122,7 @@ describe("CWD plugin projection preserves executable mode (skills-vendoring QA b
   });
 
   it("Claude: re-projection reconciles mode even when content is byte-identical (idempotence-skip path)", async () => {
-    const base = fs.mkdtempSync(nodePath.join(os.tmpdir(), "execmode-claude-idem-"));
+    const base = mkTemp(nodePath.join(os.tmpdir(), "execmode-claude-idem-"));
     const src = nodePath.join(base, "src");
     const rel = seedPluginTree(src);
     const cwd = nodePath.join(base, "cwd");

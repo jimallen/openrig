@@ -13,6 +13,7 @@ import { ClassifierLeaseError, type ClassifierLease } from "../../daemon/src/dom
 import { ClassificationAttemptError } from "../../daemon/src/domain/classification-attempts.js";
 import { classifierOccupant, sourceHash } from "../../daemon/src/domain/classification-sources.js";
 import { JEV_MODEL, setExperiment } from "../src/commands/project-jev.js";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", () => ({ getDaemonStatus: async () => ({running: true}), daemonStatusGuard: () => true, getDaemonUrl: () => "http://offline.invalid" }));
 vi.mock("../src/commands/daemon.js", () => ({ realDeps: () => { throw Error("real lifecycle forbidden"); } }));
@@ -22,7 +23,7 @@ vi.mock("../src/commands/daemon.js", () => ({ realDeps: () => { throw Error("rea
 function fixture() {
   vi.stubEnv("OPENRIG_SESSION_NAME", "classifier@fixture");
   vi.stubEnv("OPENRIG_URL", ""); vi.stubEnv("RIGGED_URL", "");
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "worker-entry-")));
+  const root = fs.realpathSync(mkTemp(path.join(os.tmpdir(), "worker-entry-")));
   fs.mkdirSync(path.join(root,"missions/not-the-id/slices/not-the-slice-id"), {recursive:true});
   fs.writeFileSync(path.join(root,"project.yaml"), "id: FIX\n");
   fs.writeFileSync(path.join(root,"SPEC.md"), "---\nid: FIX\n---\nFixture project\n");

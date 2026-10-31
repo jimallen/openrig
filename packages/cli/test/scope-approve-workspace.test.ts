@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 vi.mock("../src/daemon-lifecycle.js", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../src/daemon-lifecycle.js");
@@ -49,7 +50,7 @@ vi.mock("../src/client.js", async () => {
 const { scopeCommand } = await import("../src/commands/scope.js");
 
 function mktemp(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "rig-approve-ws-"));
+  return mkTemp(path.join(os.tmpdir(), "rig-approve-ws-"));
 }
 
 /** A workspace holding one mission at the same relative path as every other. */

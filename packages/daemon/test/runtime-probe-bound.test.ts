@@ -12,12 +12,13 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RuntimeVerifier, probeTimeoutOutcome } from "../src/domain/runtime-verifier.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 // A fake runtime: logs each start's pid and process group, then per mode for --version and --help.
 // "hang" ignores stdin, HUP and TERM and leaves a child in its group that ignores them too.
 type Mode = "ok" | "fail" | "hang";
 function fakeRuntime(name: string, version: Mode, help: Mode): { dir: string; log: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-probe-bound-"));
+  const dir = mkTemp(path.join(os.tmpdir(), "runtime-probe-bound-"));
   const log = path.join(dir, "starts.log");
   fs.writeFileSync(path.join(dir, name), `#!${process.execPath}
 const fs = require("node:fs");
@@ -108,7 +109,7 @@ describe("boundedProbeExec where a process group can't be signalled, and with a 
   });
 
   it("a probe that prints and exits 0 while a descendant keeps its output open answers at once; the descendant is ended", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-probe-bound-holder-"));
+    const dir = mkTemp(path.join(os.tmpdir(), "runtime-probe-bound-holder-"));
     const log = path.join(dir, "pids");
     const script = path.join(dir, "holder");
     // Prints its version, leaves a child (same group, inheriting stdout) that ignores TERM, and exits 0.
@@ -130,7 +131,7 @@ process.stdout.write("holder 4.5.6\\n", () => process.exit(0));
 
 describe("boundedProbeExec reads everything the probe wrote before closing the pipes", () => {
   it("a probe that writes a large version output just before exiting, while a descendant holds stdout, is read in full", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-probe-bound-late-"));
+    const dir = mkTemp(path.join(os.tmpdir(), "runtime-probe-bound-late-"));
     const log = path.join(dir, "pids");
     const script = path.join(dir, "late");
     const SIZE = 300_000; // larger than a pipe buffer: much of it is still in the pipe when the probe exits
@@ -150,7 +151,7 @@ process.stdout.write("late 1.0.0 " + "x".repeat(${SIZE}) + "\\n", () => process.
   });
 
   it("output written in the last instant before the pipes close (a descendant's final line on TERM) is still read", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-probe-bound-tail-"));
+    const dir = mkTemp(path.join(os.tmpdir(), "runtime-probe-bound-tail-"));
     const script = path.join(dir, "tail");
     // The probe prints its version and exits 0; its descendant holds stdout, and on TERM writes a final line and exits.
     fs.writeFileSync(script, `#!${process.execPath}
@@ -166,7 +167,7 @@ process.stdout.write("tail 2.0.0\\n", () => process.exit(0));
 
 describe("boundedProbeExec leaves a descendant that closed its stdio alone, as main does", () => {
   it("a probe that exits 0 leaving a descendant with its stdio closed answers at once, and the descendant keeps running", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-probe-bound-bg-"));
+    const dir = mkTemp(path.join(os.tmpdir(), "runtime-probe-bound-bg-"));
     const log = path.join(dir, "pids");
     const script = path.join(dir, "updater");
     // Prints its version, starts a background child (same group, stdio closed: like an updater without setsid), exits 0.
@@ -248,7 +249,7 @@ describe("RuntimeVerifier with a bounded probe", () => {
     onPath(fake.dir);
     expect(await verifier().verifyCodex()).toMatchObject({ status: "verified", version: null });
     expect(starts(fake.log).map((s) => s.arg)).toEqual(["--version", "--help"]);
-    process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-probe-bound-empty-"));
+    process.env.PATH = mkTemp(path.join(os.tmpdir(), "runtime-probe-bound-empty-"));
     expect(await verifier().verifyCodex()).toMatchObject({ status: "not_found", error: "codex not found" });
   });
 

@@ -9,6 +9,7 @@ import type { NodeBinding, ResolvedStartupFile } from "../src/domain/runtime-ada
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { claudePostureFlag } from "../src/adapters/yolo-mode.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function mockTmux(): TmuxAdapter {
   return mockShellCommand({
@@ -466,7 +467,7 @@ describe("Claude Code runtime adapter", () => {
   // an unguarded probe lands the entry in ProjectionResult.failed and it is never
   // projected. This drives project() through a real-fs-backed listFiles.
   it("projects file-shaped subagent when listFiles throws ENOTDIR (production readdirSync semantics)", async () => {
-    const tempRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-claude-projection-"));
+    const tempRoot = mkTemp(nodePath.join(os.tmpdir(), "openrig-claude-projection-"));
     const srcFile = nodePath.join(tempRoot, "agents", "base", "subagents", "reviewer.yaml");
     fs.mkdirSync(nodePath.dirname(srcFile), { recursive: true });
     fs.writeFileSync(srcFile, "name: reviewer");

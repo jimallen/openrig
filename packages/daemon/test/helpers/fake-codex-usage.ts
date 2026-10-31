@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mkTemp } from "./temp-roots.js";
 
 export interface FakeCodexPlan {
   /** ok: answer both reads; rpc_error: error on account/rateLimits/read; hang: never answer it;
@@ -55,7 +56,7 @@ export interface FakeCodex {
 }
 
 export function makeFakeCodex(): FakeCodex {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fake-codex-usage-"));
+  const root = mkTemp(path.join(os.tmpdir(), "fake-codex-usage-"));
   const binDir = path.join(root, "bin");
   const codexHome = path.join(root, "codex-home");
   fs.mkdirSync(binDir);

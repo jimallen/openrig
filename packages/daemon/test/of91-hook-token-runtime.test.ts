@@ -8,14 +8,15 @@
 // The expected values below are written out literally; nothing here imports the rule it pins.
 
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
-const dir = mkdtempSync(join(tmpdir(), "of91-"));
+const dir = mkTemp(join(tmpdir(), "of91-"));
 const ompFile = join(dir, "claim-omp.jsonl");
 writeFileSync(ompFile, "{}\n");
 

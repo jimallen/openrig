@@ -4,12 +4,13 @@
 // real pane or real time.
 
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { walkCommand, parsePaceMs, type WalkDeps } from "../src/commands/walk.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -52,7 +53,7 @@ function makeCmd(deps: WalkDeps): Command {
 }
 
 function tmpFile(name: string, content: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "walk-piece-"));
+  const dir = mkTemp(join(tmpdir(), "walk-piece-"));
   const p = join(dir, name);
   writeFileSync(p, content);
   return p;

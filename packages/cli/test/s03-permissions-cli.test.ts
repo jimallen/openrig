@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { policyCommand } from "../src/commands/policy.js";
 import { seatCommand } from "../src/commands/seat.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 afterEach(() => vi.restoreAllMocks());
 async function capture(command: Command, args: string[]) {
@@ -18,7 +19,7 @@ async function capture(command: Command, args: string[]) {
 }
 describe("S03 policy permissions compatibility", () => {
   it.each(["list", "show", "current", "apply"])("%s alias retains exact JSON, exit and file effect", async verb => {
-    const root = mkdtempSync(join(tmpdir(), "s03-policy-")); const file = join(root, "rig.yaml");
+    const root = mkTemp(join(tmpdir(), "s03-policy-")); const file = join(root, "rig.yaml");
     const preimage = "# retained comment\nname: inert\npods: []\n";
     const args = [verb, ...(["show", "apply"].includes(verb) ? ["standard"] : []), "--spec", file, "--json"];
     writeFileSync(file, preimage); const old = await capture(policyCommand(), ["policy", ...args]); const oldBytes = readFileSync(file, "utf8");

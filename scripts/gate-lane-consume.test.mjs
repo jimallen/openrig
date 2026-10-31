@@ -1,7 +1,7 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,18 @@ function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
 
+// Remove exactly the roots this file minted; the file-level after hook also runs after failed tests.
+const roots = [];
+after(() => {
+  const minted = roots.length;
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  const leftovers = roots.filter(root => existsSync(root));
+  assert.ok(minted > 0, "positive control: the file minted temp roots");
+  assert.deepEqual(leftovers, [], "temp roots left behind by gate-lane-consume fixtures");
+});
+
 function makeRepo() {
-  const root = mkdtempSync(join(tmpdir(), "gate-consume-"));
+  const root = mkdtempSync(join(tmpdir(), "gate-consume-")); roots.push(root);
   write(join(root, "tracked.txt"), "one\n");
   git(root, "init", "-q");
   git(root, "config", "user.email", "gate@example.invalid");

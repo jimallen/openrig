@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mkTemp } from "./temp-roots.js";
 
 export interface FakeClaudePlan {
   /** One `auth status` answer per call (the last repeats); `null` means exit 1 with no output; "hang" never answers. */
@@ -72,7 +73,7 @@ export interface FakeClaude {
 }
 
 export function makeFakeClaude(): FakeClaude {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fake-claude-usage-"));
+  const root = mkTemp(path.join(os.tmpdir(), "fake-claude-usage-"));
   const binDir = path.join(root, "bin");
   const configDir = path.join(root, "claude-config");
   fs.mkdirSync(binDir);

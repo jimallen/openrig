@@ -12,13 +12,14 @@ import { CodexUsageWindows } from "../src/domain/provider/codex-usage-windows.js
 import { codexUsageReader } from "../src/domain/provider/codex-usage-reader.js";
 import { providerRoutes } from "../src/routes/provider.js";
 import { ACCOUNT_ANSWER, makeFakeCodex, rateLimitsAnswer } from "./helpers/fake-codex-usage.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 const ASOF = "2026-10-12T20:00:00.000Z";
 
 function setup(opts: { enabled: boolean | (() => boolean); withWindows?: boolean }) {
   const fake = makeFakeCodex();
   fake.setPlan({ mode: "ok", account: ACCOUNT_ANSWER, rateLimits: rateLimitsAnswer({ secondaryUsed: 100 }) });
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "usage-svc-home-"));
+  const home = mkTemp(path.join(os.tmpdir(), "usage-svc-home-"));
   const windows = new CodexUsageWindows({
     now: () => ASOF,
     read: codexUsageReader({ launchPath: `${fake.binDir}${path.delimiter}${process.env.PATH}`, home, codexHome: fake.codexHome, deadlineMs: 5_000, graceMs: 200, now: () => ASOF }),
@@ -128,7 +129,7 @@ describe("usage windows with the Claude reader alongside Codex", () => {
     const base = setup({ enabled });
     const fakeClaude = makeFakeClaude();
     fakeClaude.setPlan({ auth: [CLAUDE_AUTH] });
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "usage-svc-home-"));
+    const home = mkTemp(path.join(os.tmpdir(), "usage-svc-home-"));
     // All migrations, so usage_samples (062) exists as in a running daemon.
     const { createDb } = await import("../src/db/connection.js");
     const { migrate } = await import("../src/db/migrate.js");

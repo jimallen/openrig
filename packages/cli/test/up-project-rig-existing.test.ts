@@ -11,6 +11,7 @@ import { Command } from "commander";
 import { upCommand } from "../src/commands/up.js";
 import { DaemonClient } from "../src/client.js";
 import { STATE_FILE, type LifecycleDeps, type DaemonState } from "../src/daemon-lifecycle.js";
+import { mkTemp } from "../../daemon/test/helpers/temp-roots.js";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -111,7 +112,7 @@ describe("rig up — project rig with an existing stopped rig", () => {
     seatPosts = [];
     ambiguous = false;
     awaiting = false;
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "up-project-rig-"));
+    tmp = mkTemp(path.join(os.tmpdir(), "up-project-rig-"));
     spec = path.join(tmp, "rig.yaml");
     fs.writeFileSync(spec, "version: \"0.2\"\nname: team\nproject_rig: true\npods: []\nedges: []\n");
   });

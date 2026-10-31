@@ -8,6 +8,7 @@ import { seedCodexThreads } from "./helpers/codex-state.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { mkTemp } from "./helpers/temp-roots.js";
 
 function mockTmux(overrides?: Partial<TmuxAdapter>): TmuxAdapter {
   return {
@@ -189,7 +190,7 @@ describe("ResumeMetadataRefresher", () => {
   });
 
   it("refreshes missing Codex resume token from the child process home directory", async () => {
-    const tempRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "rigged-codex-refresh-"));
+    const tempRoot = mkTemp(nodePath.join(os.tmpdir(), "rigged-codex-refresh-"));
     const actualHome = nodePath.join(tempRoot, "actual-home");
     createCodexLogsDb(actualHome, 901, "019d45c3-e909-7152-b52e-34edab4070ed");
 
@@ -231,7 +232,7 @@ describe("ResumeMetadataRefresher", () => {
   });
 
   it("refreshes missing Codex resume token from the current versioned logs database", async () => {
-    const tempRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "rigged-codex-refresh-"));
+    const tempRoot = mkTemp(nodePath.join(os.tmpdir(), "rigged-codex-refresh-"));
     const actualHome = nodePath.join(tempRoot, "actual-home");
     createCodexLogsDb(actualHome, 901, "019d45c3-e909-7152-b52e-34edab4070ed", "logs_2.sqlite");
 

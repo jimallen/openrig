@@ -2,9 +2,9 @@
 // valid help under load, and still end a hung query at a bounded timeout. Drives the real
 // ClaudeManagedLaunch.prepare() and real execFile against private fake executables; no
 // provider, tmux, daemon or credentials. Minimal tables as in s03-bound-launch.test.ts.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
@@ -14,10 +14,23 @@ const WITHOUT_AUTO = '  --permission-mode <mode>   Permission mode to use for th
 const QUERY_FAILED = "Claude managed capability query failed; no fallback was selected.";
 
 const open: Database.Database[] = [];
-afterEach(() => { for (const db of open.splice(0)) db.close(); });
+// Each fixture() mints its own temp root. Remove exactly the roots this run minted (never a name match in the
+// shared temp dir) once the test, and its database, are finished.
+const roots: string[] = [];
+afterEach(() => {
+  for (const db of open.splice(0)) db.close();
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+// Check: no root this file minted is still in the temp dir (afterAll runs after failed tests too).
+afterAll(() => {
+  const leftovers = roots.filter(root => existsSync(root));
+  for (const root of leftovers) rmSync(root, { recursive: true, force: true });
+  expect(roots.length, "positive control: the file minted temp roots").toBeGreaterThan(0);
+  expect(leftovers, "temp roots left behind by claude-help-timeout fixtures").toEqual([]);
+});
 
 function fixture(script: string) {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "claude-help-timeout-")));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "claude-help-timeout-"))); roots.push(root);
   const cwd = path.join(root, "seat"); const bin = path.join(root, "bin"); const calls = path.join(root, "calls");
   mkdirSync(cwd); mkdirSync(bin); mkdirSync(path.join(root, "home"));
   writeFileSync(path.join(bin, "claude"), `#!/bin/sh\necho call >> '${calls}'\n${script}\n`);
