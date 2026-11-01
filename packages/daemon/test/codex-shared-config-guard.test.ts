@@ -427,9 +427,12 @@ describe("OF-187 start-up wiring, from an npm-shaped layout", () => {
   // reaches the real account: a fixed passwd home that is no real folder.
   const PASSWD_HOME = "/home/passwd-fixture";
   const passwdHome = () => PASSWD_HOME;
-  let userInfoSpy: ReturnType<typeof vi.spyOn> | undefined;
-  beforeEach(() => { userInfoSpy = vi.spyOn(os, "userInfo").mockReturnValue({ homedir: PASSWD_HOME } as os.UserInfo<string>); });
-  afterEach(() => { userInfoSpy?.mockRestore(); });
+  let restoreUserInfo: (() => void) | undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(os, "userInfo").mockReturnValue({ homedir: PASSWD_HOME } as os.UserInfo<string>);
+    restoreUserInfo = () => spy.mockRestore();
+  });
+  afterEach(() => { restoreUserInfo?.(); });
 
   it("the start-up module dir `dist/` resolves to the daemon package root: installed on the host's OPENRIG_HOME", () => {
     const lines: string[] = [];
