@@ -201,4 +201,26 @@ describe.skipIf(!HC)("the compaction sequence across a daemon crash, on a privat
     await received(f, COMPLIANCE);
     expect(f.seatLog()).toEqual([`agent ${RESTORE}`, `agent ${COMPLIANCE}`]);
   }, 120_000);
+
+  // A message queued before the boot is on its row when the pump's first pass runs, and startup.ts starts that pass before it builds the enforcer, so
+  // the hold the enforcer takes for a restored sequence (restoreStages) comes after the pass. MEASURED (real daemon, private core, stub agent; the
+  // hop log reads `claimed m0` before `booted`): the message is neither lost nor doubled. The agent's gate records it once, and it has one attempt. It is
+  // only early: it lands ahead of the sequence's first prompt, where the hold would have put it after the last. So this row pins what the guarantee
+  // needs (each id reaches the agent once, the sequence stays in order) and deliberately NOT where m0 falls: the hold cannot be observed through m0 here.
+  it("a message queued before the boot is delivered once, and so is each prompt of the restored sequence, in order", async () => {
+    const f = await fixture();
+    f.acceptContent("m0");
+    daemon(f);
+    await hopSaw(f, "booted");
+    await poll(f, "triggered");
+    await received(f, RESTORE);
+    await poll(f, "triggered");
+    await received(f, COMPLIANCE);
+    await received(f, "m0");
+    await poll(f, "triggered");
+    const agent = f.seatLog().filter((l) => l.startsWith("agent "));
+    expect(agent.filter((l) => l === "agent m0")).toHaveLength(1);
+    expect(agent.filter((l) => l !== "agent m0")).toEqual([`agent ${RESTORE}`, `agent ${COMPLIANCE}`]);
+    expect(f.read("m0")).toMatchObject({ message_state: "received" });
+  }, 120_000);
 });
