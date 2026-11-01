@@ -176,11 +176,24 @@ describe("executeDestroy with hc seats", () => {
     expect(d.removePath).not.toHaveBeenCalled();
   });
 
-  it("does not let a foreign-labelled terminal block the state, and warns", async () => {
-    const d = deps({ killHcSeat: async () => "refused" });
-    const result = await executeDestroy(plan({ managedHcSeats: ["a@r"] }), d);
-    expect(result).toMatchObject({ hcRefused: ["a@r"], hcKilled: 0, stateRecreated: true });
+  it("keeps the state when a seat's terminal carries a different seat label, ends the other seats, and warns", async () => {
+    const killHcSeat = vi.fn(async (seat: string) => (seat === "a@r" ? "refused" : "killed") as HcSeatOutcome);
+    const d = deps({ killHcSeat });
+    const result = await executeDestroy(plan({ managedHcSeats: ["a@r", "b@r"] }), d);
+    expect(killHcSeat.mock.calls.map((c) => c[0])).toEqual(["a@r", "b@r"]);
+    expect(result).toMatchObject({ hcRefused: ["a@r"], hcKilled: 1, hcUnconfirmed: [], stateRecreated: false });
+    expect(d.removePath).not.toHaveBeenCalled();
+    expect(d.renamePath).not.toHaveBeenCalled();
+    expect(d.mkdirp).not.toHaveBeenCalled();
     expect(result.warnings.join("\n")).toContain("different seat label");
+  });
+
+  it("keeps the state for a refused seat even when others were unconfirmed or missing", async () => {
+    const outcomes: Record<string, HcSeatOutcome> = { "a@r": "refused", "b@r": "unconfirmed", "c@r": "missing" };
+    const d = deps({ killHcSeat: async (seat: string) => outcomes[seat]! });
+    const result = await executeDestroy(plan({ managedHcSeats: ["a@r", "b@r", "c@r"] }), d);
+    expect(result).toMatchObject({ hcRefused: ["a@r"], hcUnconfirmed: ["b@r"], hcMissing: 1, stateRecreated: false });
+    expect(d.removePath).not.toHaveBeenCalled();
   });
 
   it("does not touch hc for --state", async () => {

@@ -297,7 +297,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
     }
   }
 
-  // An unreachable core is not "the seat is gone". The state still names the seats; deleting it would orphan them
+  // An unreachable core is not "the seat is gone", and a terminal we refused to end is still running. The state still names the seats; deleting it would orphan them
   // with nothing left to say which terminals were ours. Stop here, state untouched, so the run can be repeated.
   if (hcUnconfirmed.length > 0) {
     warnings.push(
@@ -305,9 +305,10 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
     );
   }
   for (const seat of hcRefused) {
-    warnings.push(`The hc terminal named for seat ${seat} carries a different seat label; it was left untouched.`);
+    warnings.push(`The hc terminal named for seat ${seat} carries a different seat label; it was left untouched, and so was the state that names the seat. Relabel or end that terminal yourself, then repeat.`);
   }
-  if (hcUnconfirmed.length > 0) {
+  // A refused seat is alive: deleting the state that names it would orphan it, as an unconfirmed one would be.
+  if (hcUnconfirmed.length > 0 || hcRefused.length > 0) {
     return {
       scope: plan.scope,
       backup: plan.backup,

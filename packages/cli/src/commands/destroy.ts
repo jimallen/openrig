@@ -160,7 +160,7 @@ function printResult(result: Awaited<ReturnType<typeof executeDestroy>>): void {
   if (result.scope === "all") {
     console.log(`  hc seats ended: ${result.hcKilled}`);
     if (result.hcMissing > 0) console.log(`  hc seats missing/already gone: ${result.hcMissing}`);
-    if (result.hcRefused.length > 0) console.log(`  hc seats left untouched (foreign label): ${result.hcRefused.length}`);
+    if (result.hcRefused.length > 0) console.log(`  hc seats left untouched (foreign label), state kept: ${result.hcRefused.length}`);
     if (result.hcUnconfirmed.length > 0) console.log(`  hc seats NOT confirmed ended: ${result.hcUnconfirmed.length}`);
   }
   if (result.backupPaths.length > 0) {
@@ -214,7 +214,7 @@ export function destroyCommand(depsOverride?: DestroyCommandDeps): Command {
       plan.warnings = [...warnings, ...plan.warnings];
       const result = await executeDestroy(plan, deps.destroyDeps);
       printResult(result);
-      if (!result.portCleared || result.hcUnconfirmed.length > 0) {
+      if (!result.portCleared || result.hcUnconfirmed.length > 0 || result.hcRefused.length > 0) {
         process.exitCode = 1;
       }
     });
