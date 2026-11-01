@@ -31,7 +31,8 @@ function ackServer(handler: (body: string, reply: (json: string) => void) => voi
       let body = "";
       req.on("data", (c: Buffer) => { body += c.toString(); });
       req.on("end", () => {
-        if (req.url === "/api/activity/native-ack") { acks.push(body); handler(body, (json) => res.end(json)); } else res.end("{}");
+        if (req.url === "/api/activity/native-ack") acks.push(body);
+        handler(body, (json) => res.end(json));
       });
     });
     server.listen(0, "127.0.0.1", () => {
@@ -126,9 +127,10 @@ describe("the seat gate when its store cannot be written", () => {
     mkdirSync(seenDir(s), { recursive: true });
     chmodSync(seenDir(s), 0o500);
     cleanups.push(() => { chmodSync(seenDir(s), 0o700); });
-    const run = submit(s, `x\n\n${marker("m-1")}`, { env: { OPENRIG_URL: server.url, OPENRIG_ACTIVITY_HOOK_TOKEN: "t" } });
-    expect(run).toMatchObject({ blocked: true, ran: false });
-    expect(run.reason).toMatch(/could not record/);
+    // Async: a spawnSync would hold this process's event loop, and the stub daemon with it, so no ack could ever be counted.
+    const run = await firstStdout(s, `x\n\n${marker("m-1")}`, { OPENRIG_URL: server.url, OPENRIG_ACTIVITY_HOOK_TOKEN: "t" });
+    await run.exited;
+    expect(JSON.parse(run.text)).toMatchObject({ decision: "block", reason: expect.stringMatching(/could not record/) });
     expect(server.acks).toEqual([]);
   });
 
@@ -150,7 +152,7 @@ describe("the seat gate when its store cannot be written", () => {
 });
 
 describe("the gate runs first in the relay", () => {
-  it("prints a repeat's block before it waits on a daemon that never answers", async () => {
+  it("prints a repeat's block before it waits on a daemon that answers no route at all", async () => {
     const s = seat();
     const server = await ackServer(() => { /* never replies */ });
     submit(s, `x\n\n${marker("m-1")}`);
@@ -158,6 +160,14 @@ describe("the gate runs first in the relay", () => {
     expect(JSON.parse(seen.text)).toMatchObject({ decision: "block" });
     expect(seen.ms).toBeLessThan(1_000);
     await seen.exited;
+  });
+
+  it("the control for the two pins that count acks: a first copy is acked", async () => {
+    const s = seat();
+    const server = await ackServer((_body, reply) => reply('{"block":false}'));
+    const seen = await firstStdout(s, `x\n\n${marker("m-1")}`, { OPENRIG_URL: server.url, OPENRIG_ACTIVITY_HOOK_TOKEN: "t" });
+    await seen.exited;
+    expect(server.acks).toHaveLength(1);
   });
 
   it("still acks a repeat, so an ack lost the first time is made good", async () => {
