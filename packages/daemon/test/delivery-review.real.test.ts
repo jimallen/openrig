@@ -206,6 +206,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     it("/outbox/list does not hand out the nonce", async () => {
       const s = fixture(); await s.launch();
       s.accept("m1"); daemon(s); await state(s, "m1", "received");
+      await hopSaw(s, "booted");
       const { text: body } = http(s, `/api/queue/outbox/list?senderSession=${encodeURIComponent(s.lead)}`);
       expect(body).toContain("m1");
       expect(s.read("m1").native_nonce).not.toBeNull();
@@ -242,6 +243,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       const s = fixture(["hold"]); await s.launch();
       s.accept("stuck"); s.accept("next"); daemon(s);
       await hopSaw(s, "claimed stuck");
+      await hopSaw(s, "booted");  // the pump starts inside createDaemon, before the port is bound: an attempt proves nothing about the listener
       expect(http(s, `/api/transport/cancel-message/${encodeURIComponent(s.name)}/stuck`, {}).status).toBe(400);
       expect(http(s, `/api/transport/cancel-message/${encodeURIComponent("other@rig")}/stuck`, { reason: "x" }).status).toBe(404);
       expect(http(s, `/api/transport/cancel-message/${encodeURIComponent(s.name)}/stuck`, { reason: "poison" }).status).toBe(200);
