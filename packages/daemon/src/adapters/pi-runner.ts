@@ -26,6 +26,7 @@ import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
 import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
+import { installPaneGuard, paneGuard, sanitizeForPane } from "./runner-pane-guard.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
@@ -741,6 +742,9 @@ export class RunnerCore {
       // has to act, so the seat shows attention rather than idle.
       if (this.runtime === "omp") this.raiseAttention("runtime_error");
     }
+    // QA A2: `compaction_start` is `active` (working) and `compaction_end` maps to nothing, so a compaction outside a run left hc
+    // at `working` until the next run ended. Its end returns the seat to idle, but never inside a run: that run's own Stop ends it.
+    if ((event.type === "compaction_end" || event.type === "auto_compaction_end") && !this.streaming) this.io.reportHcStatus?.("idle");
     if (!mapped.activity) return;
     // hc status follows the run, not the attention: a Stop dropped below for an operator-action notice still ends the run.
     const hcState = hcStateForActivity(mapped.activity.hookEvent);
@@ -1196,16 +1200,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }).then(interpretChargesReply, () => false as const).finally(() => clearTimeout(timeout));
     },
     schedule: (fn, ms) => { setTimeout(fn, ms).unref(); },
-    notice: (line) => { process.stdout.write(`${line}\n`); },
+    notice: (line) => { process.stdout.write(`${sanitizeForPane(line)}\n`); },
   });
 
   const io: RunnerIo = {
     sendRpc: (cmd) => {
       try { child.stdin.write(`${JSON.stringify(cmd)}\n`); } catch { /* exit handler reports */ }
     },
-    mirrorLine: (line) => process.stdout.write(`${line}\n`),
-    mirrorAppend: (text) => process.stdout.write(text),
-    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { process.stdout.write(text); }, runtime === "omp" ? "omp-runner" : "pi-runner"),
+    mirrorLine: (line) => process.stdout.write(`${sanitizeForPane(line)}\n`),
+    mirrorAppend: (text) => process.stdout.write(sanitizeForPane(text)),
+    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { paneGuard.statusWrite(text); }, runtime === "omp" ? "omp-runner" : "pi-runner"),
     postActivity: (payload) => {
       if (!endpoint || typeof fetch !== "function") return;
       const controller = new AbortController();
@@ -1292,7 +1296,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let reportedPiCapability = false;
   readline.createInterface({ input: child.stderr }).on("line", (line) => {
     if (!line.trim()) return;
-    process.stdout.write(`[${runtime}:err] ${line}\n`);
+    process.stdout.write(`[${runtime}:err] ${sanitizeForPane(line)}\n`);
     stderrTail.push(line.length > OMP_STDERR_TAIL_CHARS ? `${line.slice(0, OMP_STDERR_TAIL_CHARS)}...` : line);
     if (stderrTail.length > OMP_STDERR_TAIL_LINES) stderrTail.shift();
     if (runtime === "pi" && !core.isReady() && !reportedPiCapability) {
@@ -1305,7 +1309,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       });
       if (detail) {
         reportedPiCapability = true;
-        process.stdout.write(`[pi-runner] ${detail}\n`);
+        process.stdout.write(`[pi-runner] ${sanitizeForPane(detail)}\n`);
       }
     }
   });
@@ -1379,5 +1383,6 @@ const invokedDirectly = (() => {
   }
 })();
 if (invokedDirectly) {
+  installPaneGuard();
   void main();
 }

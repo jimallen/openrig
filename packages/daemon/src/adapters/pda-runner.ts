@@ -33,6 +33,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
+import { installPaneGuard, paneGuard } from "./runner-pane-guard.js";
 import {
   PDA_RUNNER_ERROR_MARKER, PDA_RUNNER_EXIT_MARKER, PDA_RUNNER_LABEL, PDA_RUNNER_READY_MARKER, PDA_RUNTIME,
   isPdaLoopbackBaseUrl, parsePdaRunnerLock, parsePdaRunnerState, pdaAgentNameProblem, pdaRunnerLockLive, pdaSeatPaths, processPidAlive, sanitizeForPane,
@@ -1330,7 +1331,7 @@ async function runLocked(args: PdaRunnerArgs, paths: PdaSeatPaths): Promise<void
     readToken: trackedSource, secrets,
     write: (text) => { process.stdout.write(text); },
     postActivity: createActivityPoster(endpoint),
-    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { process.stdout.write(text); }, "pda-runner"),
+    reportHcStatus: createRunnerHcStatusSink(process.env, (text) => { paneGuard.statusWrite(text); }, "pda-runner"),
     fs: nodeRunnerFs,
     usage,
     onStop: () => stopCalls.abort(),
@@ -1359,6 +1360,7 @@ const invokedDirectly = (() => {
   } catch { return false; }
 })();
 if (invokedDirectly) {
+  installPaneGuard();
   // After main() has closed everything, anything still holding the event loop (a request that ignored its abort) must
   // not keep the process, and so the seat's runner.lock, alive past the launch's wait.
   void main().then(() => { setTimeout(() => process.exit(process.exitCode ?? 0), 1000).unref(); });

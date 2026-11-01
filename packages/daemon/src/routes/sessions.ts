@@ -27,8 +27,7 @@ import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
 import { launchStatusIsRunning } from "../domain/restore-orchestrator.js";
-import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
-import type { MiddlewareHandler } from "hono";
+import { terminalAuthGuard } from "../middleware/terminal-auth-guard.js";
 import type { EventBus } from "../domain/event-bus.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import type { PermissionDriftReader } from "../domain/permission-drift-observer.js";
@@ -43,14 +42,6 @@ import { registeredPaneOf } from "../domain/binding-pane.js";
 
 const generationCensus = new ProcessCensus({ freshnessMs: 0 }); // coalesce concurrent receipts; recheck each later read
 const generationThreadIds = new CodexThreadIdResolver({ codexHome: process.env.CODEX_HOME || undefined });
-
-function terminalAuthGuard(): MiddlewareHandler {
-  return async (c, next) => {
-    const token = (c.get("terminalBearerToken" as never) as string | null | undefined) ?? null;
-    const mw = authBearerTokenMiddleware({ expectedToken: token });
-    return mw(c, next);
-  };
-}
 
 export const sessionsRoutes = new Hono();
 export const nodesRoutes = new Hono();

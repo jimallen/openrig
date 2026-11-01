@@ -17,7 +17,7 @@
 // exit 0 unless the daemon is unreachable.
 
 import { Command } from "commander";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, terminalAuthHeaders } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -118,7 +118,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
           ...(opts.expectedPlan !== undefined ? { expectedPlan: opts.expectedPlan } : {}),
           ...(columns !== undefined && Number.isSafeInteger(columns) && columns > 0 ? { viewportColumns: columns } : {}),
         };
-        const res = await client.post<OpenViewResult>("/api/terminal/open", body, { timeoutMs: TERMINAL_OPEN_TIMEOUT_MS });
+        const res = await client.post<OpenViewResult>("/api/terminal/open", body, { timeoutMs: TERMINAL_OPEN_TIMEOUT_MS, headers: terminalAuthHeaders() });
         if (!Array.isArray(res.data?.opened)) {
           printResult(opts.json ?? false, res.data, res.status);
           return;

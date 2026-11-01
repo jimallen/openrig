@@ -93,6 +93,26 @@ describe("the Pi runner core", () => {
     r.ready();
     expect(r.states).toEqual(["working"]);
   });
+  it("QA A2: a compaction outside a run returns the seat to idle at its end (it was left working until the next run)", () => {
+    const r = pi();
+    r.ready();
+    r.feed({ type: "compaction_start" }, { type: "compaction_end" });
+    expect(r.states).toEqual(["idle", "working", "idle"]);
+  });
+  it("QA A2: a compaction inside a run does not end the run: the run's own Stop does", () => {
+    const r = pi();
+    r.ready();
+    r.feed({ type: "agent_start" }, { type: "compaction_start" }, { type: "compaction_end" });
+    expect(r.states).toEqual(["idle", "working"]);
+    r.feed({ type: "agent_end", messages: [], willRetry: false });
+    expect(r.states).toEqual(["idle", "working", "idle"]);
+  });
+  it("QA A2: OMP's automatic compaction outside a run likewise ends idle", () => {
+    const r = pi("omp");
+    r.ready();
+    r.feed({ type: "auto_compaction_start" }, { type: "auto_compaction_end" });
+    expect(r.states).toEqual(["idle", "working", "idle"]);
+  });
   it("is not reported when the host has no sink (reportHcStatus absent)", () => {
     const io: RunnerIo = { sendRpc: () => undefined, mirrorLine: () => undefined, mirrorAppend: () => undefined, postActivity: () => undefined, writeSidecar: () => undefined, now: () => "t" };
     const core = new RunnerCore(io, { sessionName: "s" });
