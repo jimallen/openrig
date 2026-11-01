@@ -140,6 +140,20 @@ for (const [name, send] of METHODS) {
       expect(f.delivered()).toBe(1);
       f.db.close();
     });
+    it("goes by the launch's node when a stale row of another node still resolves the name", async () => {
+      const NAME = "name-another-row-still-holds";
+      const f = fixture(term(NAME, { [SEAT_LABEL]: NAME }));
+      f.db.exec(`DELETE FROM bindings WHERE node_id = 'h';
+        INSERT INTO nodes(id,rig_id,logical_id) VALUES ('o','r','old');
+        INSERT INTO bindings(id,node_id,attachment_type,tmux_session,terminal_address) VALUES ('bo','o','hc','${NAME}','t1');`);
+      expect(resolveGuardTarget(f.db, NAME)?.nodeId).toBe("o");  // positive control: the guard alone would name the other node
+      f.lifecycle.noteLaunched(NAME, "h");
+      await expect(send(f.input, NAME)).resolves.toMatchObject({ ok: false, code: "guard_target_changed" });
+      expect(f.delivered()).toBe(0);
+      await expect(f.guard.lifecycle(["h"], () => send(f.input, NAME))).resolves.toMatchObject({ ok: true });
+      expect(f.delivered()).toBe(1);
+      f.db.close();
+    });
     it("stays refused where no admission is wired (the terminal WebSocket has none)", async () => {
       const f = fixture(probeTerminal(), { admission: false });
       await f.lifecycle.createProbeSession(PROBE);
