@@ -90,7 +90,8 @@ export class HcLifecycle {
         // Revalidate after the asynchronous read.
         guard.checkInput(identity);
         if (current === null) return act(noTarget);
-        if (current.labels[SEAT_LABEL] !== (fresh ? target : bound.session)) {
+        const seat = fresh ? target : bound.session;
+        if (current.labels[SEAT_LABEL] !== seat || current.name !== hcTerminalName(seat)) {
           throw new DeliveryGuardError("guard_target_changed", `${target}: the terminal is not the managed seat's; nothing was done.`);
         }
         return guard.input(identity, () => act(() => guard.checkInput(identity)));
