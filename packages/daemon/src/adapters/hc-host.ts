@@ -1,6 +1,7 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
 import { sessionEnvLabels } from "./hc-identity.js";
+import { refusedLaunch } from "./hc-launch-refusal.js";
 import type { SeatLaunchHints, SessionProbe, TmuxResult } from "./tmux.js";
 
 export { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
@@ -40,6 +41,8 @@ export class HcHost {
         return { ok: false, code: "duplicate_session", message: `duplicate session: ${name}` };
       }
       // The kind, never the core's text: this call carried the seat's credentials.
+      const refused = await refusedLaunch(this.client, err, name);
+      if (refused) return refused;
       if (err instanceof HcError) return { ok: false, code: "unknown", message: `hc refused ${name}: ${err.kind}` };
       if (err instanceof HcUnavailableError) return { ok: false, code: "transport_unavailable", message: `hc core unavailable: ${name}` };
       if (err instanceof HcOutcomeUnknownError) {

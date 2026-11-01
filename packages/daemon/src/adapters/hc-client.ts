@@ -110,6 +110,11 @@ export class HcClient {
   /** Why calls are refused now, or null. */
   get refusedBecause(): string | null { return this.refusal; }
 
+  private launchBlock: string | null = null;
+  /** A launch was refused because the core has no holder (hc-launch-refusal.ts). Read by `rig health`; the next launch that succeeds clears it. */
+  noteLaunchBlocked(message: string): void { this.launchBlock = message; }
+  get launchBlockedBecause(): string | null { return this.launchBlock; }
+
   private refuseIfRefused(): void {
     if (this.refusal !== null) throw new HcUnavailableError(`the hc core is refused: ${this.refusal}`);
   }
@@ -128,7 +133,9 @@ export class HcClient {
     const conn = await this.open();
     try {
       await this.greet(conn);
-      return await conn.request<T>(method, params, options.timeoutMs ?? this.defaultTimeoutMs);
+      const result = await conn.request<T>(method, params, options.timeoutMs ?? this.defaultTimeoutMs);
+      if (method === "terminal.run") this.launchBlock = null;
+      return result;
     } finally {
       conn.close();
     }
