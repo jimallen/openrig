@@ -234,7 +234,7 @@ without opening a window or putting the view in another session.
 On Linux, a local graphical display and a supported hosting terminal are required
 (Ghostty, GNOME Terminal, Konsole or xterm). Linux reports a window request; verify
 what actually appeared. SSH, headless, CI and unsupported Linux hosts have no Herdr app open, so the command fails with
-`herdr_unavailable` and the reason ("nothing was opened. Start the Herdr app, then run this again"); it prints no command for the person
+`herdr_unavailable` and the reason, which names the fix (install or open the Herdr app) and prints each seat's `hc attach` command for the person
 to run. Attach to a seat with the seat's own command instead (`hc attach -- <terminal>` for a seat in an hc terminal).
 
 OpenRig's Herdr launch and its printed manual command keep your personal Herdr
@@ -350,7 +350,7 @@ own machine, connect over SSH with the known host and account, then attach:
 - **the operator's conversation**, with the command in
   [Talk to the operator in any terminal](#talk-to-the-operator-in-any-terminal);
 - **the Herdr view**: `rig terminal open saved:kernel --provider herdr --json` selects the view in a Herdr app that is open
-  on that machine; with no app open it fails with `herdr_unavailable` and prints no command.
+  on that machine; with no app open it fails with `herdr_unavailable`, names the fix and prints each seat's `hc attach` command.
 
 No new account or credential provisioning is part of this. **Agents:** the `rigs` skill gives the person this as one
 filled-in command.
