@@ -5,6 +5,7 @@ import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parentSessionEnvKeys } from "../domain/parent-session-env.js";
 import { partitionLaunchEnv, renderSecretEnvScript } from "./tmux-launch-env-channel.js";
+import type { SeatLaunchHints } from "./hc-remote-control-env.js";
 
 export type ExecFn = (cmd: string) => Promise<string>;
 
@@ -79,11 +80,7 @@ export function defaultTmuxFileOps(): TmuxFileOps {
   };
 }
 
-/** What a launch knows about a seat that its env does not say. The tmux host ignores these: seats there get the daemon's env. */
-export interface SeatLaunchHints {
-  /** The seat declared `remote_control: true`, so the host keeps the names that switch it off away from the seat. */
-  remoteControl?: boolean;
-}
+export type { SeatLaunchHints };
 
 export type TmuxResult =
   | { ok: true; warnings?: string[] }

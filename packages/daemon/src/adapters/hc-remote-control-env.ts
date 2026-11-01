@@ -1,5 +1,11 @@
 // A leaf: it imports nothing, because hc-seat.ts needs it and hc-seat.ts is on the small surface the CLI loads (hc-surface.ts).
 
+/** What a launch knows about a seat that its env does not say. The tmux host ignores these: seats there get the daemon's env. */
+export interface SeatLaunchHints {
+  /** The seat declared `remote_control: true`, so the host keeps the names that switch it off away from the seat. */
+  remoteControl?: boolean;
+}
+
 // ── Claude Code: Remote Control must survive a new launch path ───────────────────────────────────────────────────
 // `--remote-control=<seat name>` is argv built by claude-remote-control.ts, so it does not depend on tmux. What can
 // switch Remote Control off is the environment (code.claude.com remote-control, "Requirements"). Under hc a seat's

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { PARENT_SESSION_ENV_KEYS, removeParentSessionEnv } from "../domain/parent-session-env.js";
-import { REMOTE_CONTROL_ENV_NAMES, remoteControlEnvWarnings } from "./hc-remote-control-env.js";
-import type { SeatLaunchHints } from "./tmux.js";
+import { REMOTE_CONTROL_ENV_NAMES, remoteControlEnvWarnings, type SeatLaunchHints } from "./hc-remote-control-env.js";
 
 /** Label holding a seat's canonical name; hc's own name cannot hold it (`verify-qa@eztrack` is refused). */
 export const SEAT_LABEL = "openrig.seat";
