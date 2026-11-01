@@ -19,7 +19,7 @@ import { resolveStartupProof } from "./startup-resolver.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { RigRepository } from "./rig-repository.js";
-import { SessionTransport, inspectStartupStagedText } from "./session-transport.js";
+import { SessionTransport, inspectStartupStagedText, type SendOpts } from "./session-transport.js";
 import { startupOwnCollapsedPaste, startupSubmissionEvidence, type StartupSubmissionDiagnostic } from "./startup-submission-evidence.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
@@ -30,6 +30,8 @@ import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProce
 import { isResumeGoneCode, paneForegroundState, RESUME_SETTLE_MS, type PaneForegroundState, type PresentMemo } from "./resume-settle.js";
 import { readStoredJsonObject } from "./stored-json.js";
 import { registeredPaneOf } from "./binding-pane.js";
+import { SEAT_MESSAGE_ID_PREFIX } from "./outbox-handler.js";
+import { messageId, type MessageId } from "./seat-messaging/ports.js";
 
 // Expanded startup text can put the current input marker above 50 scrollback lines.
 const STARTUP_SUBMIT_CAPTURE_LINES = 200;
@@ -37,6 +39,15 @@ const STARTUP_SUBMIT_CAPTURE_LINES = 200;
 // still showed that paste collapsed. Only that transient is looked at again, 200 ms apart, up to this many
 // times: about 5 s of waiting per send, plus capture time. Nothing is typed meanwhile.
 const STARTUP_SUBMIT_SETTLE_LOOKS = 25;
+
+/**
+ * How long one piece of startup text may take to reach the seat's gate. Each waits for the last, and a gate records a text only when the agent takes
+ * it, so this covers the first turn the text before it started. A guess until M7 is measured on real agents.
+ */
+export const STARTUP_TEXT_WAIT_MS = 5 * 60_000;
+/** Inside that wait, how often the row is read, a pass is made under this startup's lease, and a staged paste is looked for. */
+const STARTUP_TEXT_LOOK_MS = 500;
+const STARTUP_TEXT_SENDER = "startup@system";
 
 /** Pending context belongs to this occupant and is consumed before delivery starts. */
 export type FreshStartupPending = "pending" | "not_pending" | "unreadable";
@@ -173,6 +184,10 @@ type StartupDeliveryInput = StartupInput & {
   unreadableForegroundReads?: number;
   /** Claude only: whether the latest interactive send was observed submitted (a clear composer). */
   lastSubmissionConfirmed?: boolean;
+  /** The occupant this startup is for. Null: no tenure, so no row can be bound to it, and the text keeps the paste. */
+  occupantGeneration?: string | null;
+  /** Why the text before this one never reached the gate. Each waits for the last, so what follows does not go, and does not spend the wait again. */
+  pumpStopped?: string;
 };
 
 export type StartupResult = { warnings?: string[] } & (
@@ -197,6 +212,8 @@ interface StartupOrchestratorDeps {
   listProcesses?: NativeProcessLister;
   /** Wall clock for the guarded-send memo (R5); tests inject it. */
   now?: () => number;
+  /** How long one text may take to reach the seat's gate (tests shorten it). */
+  startupTextWaitMs?: number;
 }
 
 /**
@@ -232,6 +249,7 @@ export class StartupOrchestrator {
   private readinessSettings: Pick<SettingsStore, "resolveOne">;
   private listProcesses: NativeProcessLister | undefined;
   private now: () => number;
+  private startupTextWaitMs: number;
 
   constructor(deps: StartupOrchestratorDeps) {
     if (deps.db !== deps.sessionRegistry.db) throw new Error("StartupOrchestrator: sessionRegistry must share the same db handle");
@@ -245,6 +263,7 @@ export class StartupOrchestrator {
     this.readinessSettings = deps.readinessSettings ?? new SettingsStore();
     this.listProcesses = deps.listProcesses;
     this.now = deps.now ?? Date.now;
+    this.startupTextWaitMs = deps.startupTextWaitMs ?? STARTUP_TEXT_WAIT_MS;
     this.appliedLaunchStore = new AppliedLaunchObservationStore(deps.db);
     this.sessionTransport = new SessionTransport({
       db: deps.db,
@@ -275,8 +294,15 @@ export class StartupOrchestrator {
 
   async startNode(input: StartupInput): Promise<StartupResult> {
     const warnings: string[] = [];
-    const result = await this.startNodeWithWarnings(input, warnings);
-    return { ...result, ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}) };
+    // Nothing queued lands between two pieces of startup text, or ahead of the first. Taken before the lease, and on every path: a restore already holds its lease.
+    const seat = input.binding.tmuxSession;
+    const release = seat ? this.tmuxAdapter.messageHandOff?.holdContentLane(seat) : undefined;
+    try {
+      const result = await this.startNodeWithWarnings(input, warnings);
+      return { ...result, ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}) };
+    } finally {
+      release?.();
+    }
   }
 
   private async startNodeWithWarnings(input: StartupInput, warnings: string[]): Promise<StartupResult> {
@@ -318,6 +344,7 @@ export class StartupOrchestrator {
           : "fresh";
     let appliedLaunch: AppliedLaunchObservation | undefined;
     const launchGeneration = this.sessionRegistry.currentOccupantTenure(input.nodeId)?.generationUuid;
+    deliveryInput.occupantGeneration = launchGeneration ?? null;
 
     // 1. Mark pending
     this.sessionRegistry.updateStartupStatus(input.sessionId, "pending");
@@ -628,12 +655,12 @@ export class StartupOrchestrator {
     // 7. Deliver post-launch files (send_text → TUI, now that harness is ready)
     if (postLaunchFiles.length > 0) {
       try {
-        // Keep reads/provisioning and required/optional errors in the adapter. Claude's and Codex's
-        // already-partitioned interactive files use the same bounded check as startup actions.
-        const checkedSend = input.adapter.runtime === "claude-code" || input.adapter.runtime === "codex" ? async (content: string) => {
+        // Keep reads/provisioning and required/optional errors in the adapter. Every runtime's
+        // already-partitioned interactive files use the same send as startup actions.
+        const checkedSend = async (content: string) => {
           const failure = await this.sendInteractiveText(deliveryInput, content, "post_launch_file");
           if (failure) throw new Error(failure.error);
-        } : undefined;
+        };
         const deliveryResult = await input.adapter.deliverStartup(postLaunchFiles, input.binding, checkedSend);
         warnings.push(...(deliveryResult.warnings ?? []));
         // R4: the adapter turns an optional file's failed send into a warning. A stop that send recorded was swallowed
@@ -1007,6 +1034,8 @@ export class StartupOrchestrator {
     }
     const sendOrder = ++input.sendOrder;
     input.lastSubmissionConfirmed = false;
+    if (input.pumpStopped) return { error: input.pumpStopped };
+    if (input.occupantGeneration && this.tmuxAdapter.messageHandOff?.takes(tmuxSession)) return this.sendThroughPump(input, text, input.occupantGeneration, sendOrder);
     const textResult = await this.tmuxAdapter.sendText(tmuxSession, text);
     if (!textResult.ok) {
       return { error: (textResult as { message?: string }).message ?? "unknown" };
@@ -1049,13 +1078,7 @@ export class StartupOrchestrator {
       }
       phase = "guarded_retry";
       diagnostic.retry = "threw"; // Replaced when the transport returns normally.
-      const retry = await this.sessionTransport.send(tmuxSession, "", {
-        submitOnly: true,
-        expectedStagedText: text,
-        submitOnlyCaptureLines: STARTUP_SUBMIT_CAPTURE_LINES,
-        requireFullStagedText: true,
-        onStartupMismatch: (evidence) => { diagnostic.observations.push({ ...evidence, phase: "guarded_retry" }); },
-      });
+      const retry = await this.guardedEnter(tmuxSession, text, (evidence) => { diagnostic.observations.push({ ...evidence, phase: "guarded_retry" }); });
       diagnostic.retry = retry.ok ? "ok" : "refused_or_failed";
       phase = "after_retry";
       await this.sleep(200);
@@ -1084,6 +1107,59 @@ export class StartupOrchestrator {
     } finally {
       if (diagnostic.observations.length) input.submissionDiagnostics.push(diagnostic);
     }
+  }
+
+  /**
+   * The next text goes only once the seat's gate has recorded this one, and anything else fails the startup, so `ok` never means Enter was accepted.
+   * The row is the occupant's: the pump ends it if the seat has a new one by the time it is attempted, and a row this wait gave up on ends here, so
+   * nothing arrives after the failure. The id names the attempt too: a startup run again on the same occupant is new text for a new process.
+   * A daemon that dies during the wait leaves the row open, and the pump delivers it to that occupant, or ends it.
+   */
+  private async sendThroughPump(input: StartupDeliveryInput, text: string, occupantGeneration: string, sendOrder: number): Promise<StartupSendFailure | null> {
+    const handOff = this.tmuxAdapter.messageHandOff!;
+    const seat = input.binding.tmuxSession!;
+    const id = messageId(`${SEAT_MESSAGE_ID_PREFIX}startup-${occupantGeneration}-${input.startupAttemptId}-${sendOrder}`);
+    const accepted = handOff.accept({ id, seat, sender: STARTUP_TEXT_SENDER, body: text, messageClass: "lifecycle", occupantGeneration, identityProvenance: "transport:v1" });
+    if (accepted.kind === "conflict") return { error: `message ${id} already names other text` };
+    if (accepted.kind === "ended") return accepted.received ? null : { error: `message ${id} ended without arriving` };
+    let outcome = await this.awaitStartupText(input, id, text);
+    // A record can land between the wait's last read and this cancel; a cancel that finds the row closed asks again.
+    if (outcome === "open" && !handOff.cancel(id, "the startup stopped waiting for this text")) outcome = await handOff.awaitReceived(id, 0);
+    if (outcome === "received") { input.lastSubmissionConfirmed = true; return null; }
+    input.pumpStopped = outcome === "open" ? `the seat's gate did not record startup text within ${this.startupTextWaitMs} ms` : `message ${id} ended without arriving`;
+    return { error: input.pumpStopped };
+  }
+
+  private async awaitStartupText(input: StartupDeliveryInput, id: MessageId, text: string): ReturnType<NonNullable<TmuxAdapter["messageHandOff"]>["awaitReceived"]> {
+    const handOff = this.tmuxAdapter.messageHandOff!;
+    let enterLeft = input.adapter.runtime === "claude-code";
+    for (let left = this.startupTextWaitMs; ;) {
+      const look = Math.min(STARTUP_TEXT_LOOK_MS, left);
+      const outcome = await handOff.awaitReceived(id, look);
+      left -= look;
+      if (outcome !== "open" || left <= 0) return outcome;
+      // Claude collapses a paste, so the hop cannot tell ours from a person's and leaves it. Here the exact text is known.
+      const marker = enterLeft ? handOff.pastedMarker(id) : null;
+      if (marker !== null) enterLeft = !(await this.submitStagedPaste(input, `${text}\n${marker}`));
+      handOff.drive();
+    }
+  }
+
+  /** True when the guarded Enter went: one Enter, as on an ungated seat, and only onto exactly this text, which the transport checks. */
+  private async submitStagedPaste(input: StartupDeliveryInput, marked: string): Promise<boolean> {
+    const seat = input.binding.tmuxSession!;
+    const sent = await this.guardedEnter(seat, marked).catch((error: unknown) => {
+      input.warnings.push(`${seat}: the guarded Enter on staged startup text failed: ${(error as Error).message}`);
+      return null;
+    });
+    return sent?.ok === true;
+  }
+
+  /** One Enter, only onto exactly this text. */
+  private guardedEnter(seat: string, expectedStagedText: string, onStartupMismatch?: NonNullable<SendOpts["onStartupMismatch"]>) {
+    return this.sessionTransport.send(seat, "", {
+      submitOnly: true, expectedStagedText, submitOnlyCaptureLines: STARTUP_SUBMIT_CAPTURE_LINES, requireFullStagedText: true, ...(onStartupMismatch ? { onStartupMismatch } : {}),
+    });
   }
 
   /**

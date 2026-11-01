@@ -78,43 +78,32 @@ describe("StubRuntimeAdapter.checkReady — readiness honesty (RED: adapter abse
   });
 });
 
-// OF-160 (z5): the stub adapter runs the same runtime-agnostic startup-file delivery as the other
-// runtimes; its send_text leg types operator-authored file content into the pane. Strip both CSI
-// forms of the paste-end marker before sendText.
-describe("OF-160: StubRuntimeAdapter send_text startup files never carry the paste-end marker into the pane", () => {
-  it("strips the paste-end marker (both CSI forms) before the paste", async () => {
+// S4g: the stub adapter's send_text leg goes by the one send, the orchestrator's, which strips it (OF-160, OF-169: startup-pump.test.ts).
+describe("S4g: StubRuntimeAdapter send_text startup files go by the one send", () => {
+  const file = {
+    path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
+    deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"],
+  };
+  async function stub(tmux: ReturnType<typeof tmuxWith>) {
     const mod = await import(STUB_ADAPTER_MODULE) as { StubRuntimeAdapter: new (deps: unknown) => {
-      deliverStartup(files: unknown[], b: unknown): Promise<{ delivered: number; failed: unknown[] }> } };
-    const tmux = tmuxWith({ hasSession: true });
-    const adapter = new mod.StubRuntimeAdapter({
-      tmux, fsOps: memFs({ "/work/startup/pack.md": "alpha\u001b[201~beta \u009b201~gamma" }), sleep: async () => {},
-    });
-    const file = {
-      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
-      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"],
-    };
-    const result = await adapter.deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" });
-    expect(result.failed).toEqual([]);
-    expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith("dev-impl@test-rig", "alpha[201~beta 201~gamma");
-    expect(tmux.sendKeys).toHaveBeenCalledWith("dev-impl@test-rig", ["Enter"]);
-  });
-});
+      deliverStartup(files: unknown[], b: unknown, send?: (text: string) => Promise<void>): Promise<{ delivered: number; failed: unknown[] }> } };
+    return new mod.StubRuntimeAdapter({ tmux, fsOps: memFs({ "/work/startup/pack.md": "text" }), sleep: async () => {} });
+  }
 
-// OF-169: the stub adapter's send_text leg loses every control except TAB/LF/CR as well.
-describe("OF-169: StubRuntimeAdapter send_text startup files lose C0/C1 controls but keep tab, newline and CR", () => {
-  it("strips controls before the paste", async () => {
-    const mod = await import(STUB_ADAPTER_MODULE) as { StubRuntimeAdapter: new (deps: unknown) => {
-      deliverStartup(files: unknown[], b: unknown): Promise<{ delivered: number; failed: unknown[] }> } };
+  it("hands the text to it and types nothing itself", async () => {
     const tmux = tmuxWith({ hasSession: true });
-    const adapter = new mod.StubRuntimeAdapter({
-      tmux, fsOps: memFs({ "/work/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" }), sleep: async () => {},
-    });
-    const file = {
-      path: "startup/pack.md", absolutePath: "/work/startup/pack.md", ownerRoot: "/work",
-      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"],
-    };
-    await adapter.deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" });
-    expect(tmux.sendText).toHaveBeenCalledWith("dev-impl@test-rig", "AB[31mCDEFG\tH\nI\rJ");
+    const sent: string[] = [];
+    const result = await (await stub(tmux)).deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" }, async (text) => { sent.push(text); });
+    expect(result).toMatchObject({ delivered: 1, failed: [] });
+    expect(sent).toEqual(["text"]);
+    expect(tmux.sendText).not.toHaveBeenCalled();
+    expect(tmux.sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("with no send, a required file fails and nothing is typed", async () => {
+    const tmux = tmuxWith({ hasSession: true });
+    const result = await (await stub(tmux)).deliverStartup([file], { tmuxSession: "dev-impl@test-rig", cwd: "/work" });
+    expect(result.failed).toEqual([{ path: "startup/pack.md", error: expect.stringContaining("has no send") }]);
+    expect(tmux.sendText).not.toHaveBeenCalled();
   });
 });

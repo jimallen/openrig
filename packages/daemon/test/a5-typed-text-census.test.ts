@@ -16,15 +16,11 @@ import { fileURLToPath } from "node:url";
 
 type Row = { sendText: number; send: number; cls: string };
 const CLASSIFIED: Record<string, Row> = {
-  "adapters/claude-code-adapter.ts": { sendText: 1, send: 0, cls: "stripped" },
-  "adapters/codex-runtime-adapter.ts": { sendText: 1, send: 0, cls: "stripped" },
-  "adapters/pi-runtime-adapter.ts": { sendText: 1, send: 0, cls: "stripped" },
-  "adapters/stub-runtime-adapter.ts": { sendText: 1, send: 0, cls: "stripped" },
   "adapters/tmux.ts": { sendText: 1, send: 0, cls: "shell" },
   "domain/claude-compaction-enforcer.ts": { sendText: 0, send: 5, cls: "stripped (4 prompts) + constant (turn boundary)" },
   "domain/queue-repository.ts": { sendText: 0, send: 1, cls: "stripped envelope + person body" },
   "domain/resume-metadata-refresher.ts": { sendText: 1, send: 0, cls: "gated" },
-  "domain/seat-handover-service.ts": { sendText: 2, send: 0, cls: "handover" },
+  "domain/seat-handover-service.ts": { sendText: 1, send: 0, cls: "handover" },
   "domain/session-transport.ts": { sendText: 3, send: 0, cls: "impl" },
   // HcAdapter (the hc seat host, behind tmux's method names): `sendText` delegates to HcInput.sendText, the one sender, which
   // is `impl`. Its text arrives already stripped or classified by the caller of the adapter, as it does for TmuxAdapter.
@@ -68,7 +64,7 @@ describe("typed-text census (OF-169)", () => {
 
   it("positive control: the census sees the known senders (a wrong filter would read zero)", () => {
     const found = measure();
-    expect(Object.keys(found).length).toBeGreaterThanOrEqual(15);
+    expect(Object.keys(found).length).toBeGreaterThanOrEqual(11);
     expect(found["domain/startup-orchestrator.ts"]).toEqual({ sendText: 1, send: 1 });
   });
 });

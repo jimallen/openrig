@@ -6,6 +6,7 @@ import nodePath from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import type { NodeBinding, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
+import { NO_STARTUP_SEND } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { claudePostureFlag } from "../src/adapters/yolo-mode.js";
@@ -351,48 +352,31 @@ describe("Claude Code runtime adapter", () => {
       path: "startup/init.sh", absolutePath: "/rig/startup/init.sh", ownerRoot: "/rig",
       deliveryHint: "auto", required: true, appliesOn: ["fresh_start", "restore"],
     };
-    await adapter.deliverStartup([file], makeBinding());
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "echo hello");
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
+    const send = vi.fn(async () => undefined);
+    await adapter.deliverStartup([file], makeBinding(), send);
+    expect(send).toHaveBeenCalledWith("echo hello");
+    expect(tmux.sendText).not.toHaveBeenCalled();
+    expect(tmux.sendKeys).not.toHaveBeenCalled();
   });
 
-  // OF-160 (z5): the direct send_text leg (no orchestrator interactive callback — e.g. a caller
-  // that drives deliverStartup itself) pastes operator-authored file content; the paste-end marker
-  // is stripped first, in both CSI forms. The callback leg is stripped by the orchestrator's
-  // sendInteractiveText (pinned in startup-submit-confirmation.test.ts).
-  it("OF-160: a send_text startup file carrying the paste-end marker is stripped before the paste (direct leg)", async () => {
+  // S4g: startup text has one send, the orchestrator's, which strips it (OF-160, OF-169: startup-pump.test.ts and
+  // startup-submit-confirmation.test.ts). With none there is no direct leg to fall back on.
+  it("S4g: a send_text file with no send is not typed: a required one fails", async () => {
     const tmux = mockTmux();
-    const fs = mockFs({ "/rig/startup/pack.md": "alpha\u001b[201~beta\nsecond \u009b201~line" });
+    const fs = mockFs({ "/rig/startup/pack.md": "text" });
     const adapter = new ClaudeCodeAdapter({ tmux, fsOps: fs, sleep: async () => {} });
     const file: ResolvedStartupFile = {
       path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
       deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
     };
     const result = await adapter.deliverStartup([file], makeBinding());
-    expect(result.delivered).toBe(1);
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "alpha[201~beta\nsecond 201~line");
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
+    expect(result.failed).toEqual([{ path: "startup/pack.md", error: NO_STARTUP_SEND }]);
+    expect(tmux.sendText).not.toHaveBeenCalled();
   });
 
-  // OF-169: startup text typed into an agent loses every control except TAB/LF/CR (a bare ESC, ETX, DEL, a C1
-  // control would be read by the agent's input editor as a key). Tab, newline and carriage return are kept.
-  it("OF-169: a send_text startup file loses C0/C1 controls but keeps tab, newline and CR (direct leg)", async () => {
-    const tmux = mockTmux();
-    const fs = mockFs({ "/rig/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" });
-    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: fs, sleep: async () => {} });
-    const file: ResolvedStartupFile = {
-      path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
-      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
-    };
-    await adapter.deliverStartup([file], makeBinding());
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", "AB[31mCDEFG\tH\nI\rJ");
-  });
-
-  // OPR.0.3.3.16 - a >100KB send_text startup pack must still travel through the
-  // sendText -> sleep -> sendKeys(["Enter"]) sequence unchanged. The large-payload
-  // buffer mechanics live in TmuxAdapter; the adapter's job is to hand the full
-  // content to sendText and fire the single trailing submit.
-  it("delivers a large (>100KB) send_text startup file via sendText then submits with Enter", async () => {
+  // OPR.0.3.3.16 - a >100KB send_text startup pack reaches the one send whole. The large-payload
+  // buffer mechanics live in TmuxAdapter.
+  it("hands a large (>100KB) send_text startup file to the send whole", async () => {
     const tmux = mockTmux();
     const big = "L".repeat(120 * 1024);
     const fs = mockFs({ "/rig/startup/big-pack.md": big });
@@ -402,14 +386,12 @@ describe("Claude Code runtime adapter", () => {
       deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
     };
 
-    const result = await adapter.deliverStartup([file], makeBinding());
+    const send = vi.fn(async () => undefined);
+    const result = await adapter.deliverStartup([file], makeBinding(), send);
 
     expect(result.delivered).toBe(1);
     expect(result.failed).toEqual([]);
-    // The full payload is handed to sendText (TmuxAdapter routes it to the buffer path).
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", big);
-    // Single trailing submit preserved.
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-impl", ["Enter"]);
+    expect(send).toHaveBeenCalledWith(big);
   });
 
   // T6: duplicate delivery is idempotent

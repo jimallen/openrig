@@ -40,6 +40,7 @@ export interface GuardPreference {
 export class SeatDeliveryGuard {
   private readonly tails = new Map<string, Promise<void>>();
   private readonly scope = new AsyncLocalStorage<Map<string, Lease>>();
+  private readonly lifecycleLeases = new Map<string, Lease>();
   private readonly humanLeases = new Set<Lease>();
 
   constructor(
@@ -146,6 +147,14 @@ export class SeatDeliveryGuard {
     return lease?.active ? lease.origin : null;
   }
 
+  /** A lifecycle lease is running on this seat and the caller is not inside it. A wait behind it can last a whole startup, so a caller that can come
+   *  back, as the pump's passes can, asks this first rather than queue for it. */
+  heldByAnotherLifecycle(name: string): boolean {
+    const target = this.maybeTarget(name);
+    const lease = target ? this.lifecycleLeases.get(target.nodeId) : undefined;
+    return lease !== undefined && this.scope.getStore()?.get(target!.nodeId) !== lease;
+  }
+
   ownsLifecycle(nodeId: string): boolean {
     const lease = this.scope.getStore()?.get(nodeId);
     if (!lease?.active || !lease.lifecycle) return false;
@@ -163,7 +172,9 @@ export class SeatDeliveryGuard {
       return this.operation(id, async () => {
         const lease = this.scope.getStore()!.get(id)!;
         lease.lifecycle = true;
-        return acquire(index + 1);
+        this.lifecycleLeases.set(id, lease);
+        try { return await acquire(index + 1); }
+        finally { this.lifecycleLeases.delete(id); }
       });
     };
     return acquire(0);

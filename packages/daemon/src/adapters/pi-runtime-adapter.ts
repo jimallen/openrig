@@ -10,7 +10,6 @@
 // future contract, never a hidden mode here (BR-2).
 
 import { readGuardedStartupFile } from "../domain/culture-file-guard.js";
-import { inertStartupText } from "../domain/packet-text.js";
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
@@ -22,7 +21,7 @@ import type {
   HarnessLaunchResult, ForkSource, RunnerReadinessTarget,
 } from "../domain/runtime-adapter.js";
 import type { AgentActivity } from "../domain/types.js";
-import { resolveConcreteHint, RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON } from "../domain/runtime-adapter.js";
+import { NO_STARTUP_SEND, resolveConcreteHint, RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
@@ -168,7 +167,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
-  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding): Promise<StartupDeliveryResult> {
+  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
     const warnings: string[] = [];
     let delivered = 0;
     const failed: Array<{ path: string; error: string }> = [];
@@ -198,14 +197,9 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
           }
           case "send_text": {
             if (binding.tmuxSession) {
-              // The runner reads pane stdin and forwards as RPC prompt (FR-3).
-              // OF-160 (z5): strip the paste-end marker first — operator-authored file content
-              // travels inside a bracketed paste and must never close it early.
-              const textResult = await this.tmux.sendText(binding.tmuxSession, inertStartupText(content));
-              if (!textResult.ok) throw new Error(textResult.message);
-              await this.sleep(200);
-              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-              if (!submitResult.ok) throw new Error(submitResult.message);
+              // One send for every runtime: the orchestrator's, which strips the paste-end marker and picks the pump or the paste.
+              if (!sendInteractiveText) throw new Error(NO_STARTUP_SEND);
+              await sendInteractiveText(content);
             }
             break;
           }

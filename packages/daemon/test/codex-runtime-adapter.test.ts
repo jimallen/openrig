@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { mkTemp } from "./helpers/temp-roots.js";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import type { NodeBinding, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
+import { NO_STARTUP_SEND } from "../src/domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-planner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { seedCodexThreads } from "./helpers/codex-state.js";
@@ -385,7 +386,7 @@ describe("Codex runtime adapter", () => {
     expect(result.failed[0]!.error).toContain("Not found");
   });
 
-  it("submits send_text startup files after pasting", async () => {
+  it("hands send_text startup files to the one send, and types nothing itself", async () => {
     const tmux = mockTmux();
     const adapter = new CodexRuntimeAdapter({
       tmux,
@@ -397,53 +398,30 @@ describe("Codex runtime adapter", () => {
       deliveryHint: "auto", required: true, appliesOn: ["fresh_start", "restore"],
     };
 
-    await adapter.deliverStartup([file], makeBinding());
+    const send = vi.fn(async () => undefined);
+    await adapter.deliverStartup([file], makeBinding(), send);
 
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "echo hello");
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
+    expect(send).toHaveBeenCalledWith("echo hello");
+    expect(tmux.sendText).not.toHaveBeenCalled();
+    expect(tmux.sendKeys).not.toHaveBeenCalled();
   });
 
-  // OF-160 (z5): a send_text startup file is operator-authored prose typed into a bracketed paste;
-  // a paste-end marker in it would close the paste early and type the tail as keys. The adapter
-  // strips both CSI forms before sendText (same treatment as seat-handover's inertPacketText).
-  it("OF-160: a send_text startup file carrying the paste-end marker is stripped before the paste (both CSI forms)", async () => {
+  // S4g: the one send strips the text (OF-160, OF-169: startup-pump.test.ts). With none there is no direct leg.
+  it("S4g: a send_text file with no send is not typed: a required one fails", async () => {
     const tmux = mockTmux();
-    const poisoned = "Read this pack.\u001b[201~rm -rf ~\nsecond \u009b201~line";
-    const adapter = new CodexRuntimeAdapter({
-      tmux,
-      fsOps: mockFs({ "/rig/startup/pack.md": poisoned }),
-      sleep: async () => {},
-    });
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs({ "/rig/startup/pack.md": "text" }), sleep: async () => {} });
     const file: ResolvedStartupFile = {
       path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
       deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
     };
-
     const result = await adapter.deliverStartup([file], makeBinding());
-
-    expect(result.delivered).toBe(1);
-    expect(result.failed).toEqual([]);
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "Read this pack.[201~rm -rf ~\nsecond 201~line");
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
+    expect(result.failed).toEqual([{ path: "startup/pack.md", error: NO_STARTUP_SEND }]);
+    expect(tmux.sendText).not.toHaveBeenCalled();
   });
 
-  // OF-169: every control except TAB/LF/CR is removed from startup text, not only the paste-end marker.
-  it("OF-169: a send_text startup file loses C0/C1 controls but keeps tab, newline and CR", async () => {
-    const tmux = mockTmux();
-    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs({ "/rig/startup/pack.md": "A\u0003B\u001b[31mC\u0000D\u007fE\u0085F\u009bG\tH\nI\rJ" }), sleep: async () => {} });
-    const file: ResolvedStartupFile = {
-      path: "startup/pack.md", absolutePath: "/rig/startup/pack.md", ownerRoot: "/rig",
-      deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
-    };
-    await adapter.deliverStartup([file], makeBinding());
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", "AB[31mCDEFG\tH\nI\rJ");
-  });
-
-  // OPR.0.3.3.16 - a >100KB send_text startup pack must still travel through the
-  // sendText -> sleep -> sendKeys(["Enter"]) sequence unchanged. The large-payload
-  // buffer mechanics live in TmuxAdapter; the adapter hands the full content to
-  // sendText and fires the single trailing submit.
-  it("delivers a large (>100KB) send_text startup file via sendText then submits with Enter", async () => {
+  // OPR.0.3.3.16 - a >100KB send_text startup pack reaches the one send whole. The large-payload
+  // buffer mechanics live in TmuxAdapter.
+  it("hands a large (>100KB) send_text startup file to the send whole", async () => {
     const tmux = mockTmux();
     const big = "L".repeat(120 * 1024);
     const adapter = new CodexRuntimeAdapter({
@@ -456,14 +434,12 @@ describe("Codex runtime adapter", () => {
       deliveryHint: "send_text", required: true, appliesOn: ["fresh_start", "restore"],
     };
 
-    const result = await adapter.deliverStartup([file], makeBinding());
+    const send = vi.fn(async () => undefined);
+    const result = await adapter.deliverStartup([file], makeBinding(), send);
 
     expect(result.delivered).toBe(1);
     expect(result.failed).toEqual([]);
-    // The full payload is handed to sendText (TmuxAdapter routes it to the buffer path).
-    expect(tmux.sendText).toHaveBeenCalledWith("r01-qa", big);
-    // Single trailing submit preserved.
-    expect(tmux.sendKeys).toHaveBeenCalledWith("r01-qa", ["Enter"]);
+    expect(send).toHaveBeenCalledWith(big);
   });
 
   // T12: replay on restore is safe for already-projected content
