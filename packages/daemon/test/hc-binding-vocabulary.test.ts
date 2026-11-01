@@ -49,8 +49,8 @@ describe("hcAttachCommand", () => {
 });
 
 describe("migration 121 is registered", () => {
-  it("is in the canonical list, last, and a fully migrated database has the columns", () => {
-    expect(ALL_MIGRATIONS.at(-1)?.name).toBe(BINDING_TERMINAL_ADDRESS_MIGRATION_NAME);
+  it("is in the canonical list, and a fully migrated database has the columns", () => {
+    expect(ALL_MIGRATIONS.map((m) => m.name)).toContain(BINDING_TERMINAL_ADDRESS_MIGRATION_NAME);
     const db = createDb();
     migrate(db, ALL_MIGRATIONS);
     const columns = db.prepare<[], { name: string }>("PRAGMA table_info(bindings)").all().map((c) => c.name);

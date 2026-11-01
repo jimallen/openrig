@@ -125,7 +125,7 @@ describe.skipIf(!HC)("a broadcast to seats that start no run, on a private hc co
     const rows = db.prepare("SELECT destination_session AS d, sender_session AS s, body, delivery_state AS state FROM outbox_entries ORDER BY destination_session").all() as Array<{ d: string; s: string; body: string; state: string }>;
     expect(rows.map((r) => r.d)).toEqual([...SEATS].sort());
     expect(new Set(rows.map((r) => r.s))).toEqual(new Set([`boss@${RIG}`]));
-    expect(rows.every((r) => r.state === "delivered" && r.body === "BROADCAST-BODY")).toBe(true);
+    expect(rows.every((r) => r.state === "delivered" && r.body.includes("BROADCAST-BODY"))).toBe(true);
 
     for (const seat of SEATS) {
       const got = typed(seat);

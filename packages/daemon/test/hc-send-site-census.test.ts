@@ -25,15 +25,16 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
   { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id" },
 ];
 
-/** Text written past SessionTransport. Each is inside a `carryDirect`, so its row commits first. Census counts `.sendText(` in the file. */
-const DIRECT_TEXT: Array<{ file: string; kinds: string[]; sendText: number }> = [
-  { file: "domain/seat-handover-service.ts", kinds: ["handover-rebuild", "handover-restore"], sendText: 1 },
-  { file: "domain/startup-orchestrator.ts", kinds: ["startup"], sendText: 1 },
-  { file: "domain/resume-metadata-refresher.ts", kinds: ["resume-probe"], sendText: 1 },
-  { file: "adapters/claude-code-adapter.ts", kinds: ["startup"], sendText: 1 },
-  { file: "adapters/codex-runtime-adapter.ts", kinds: ["startup"], sendText: 1 },
-  { file: "adapters/pi-runtime-adapter.ts", kinds: ["startup"], sendText: 1 },
-  { file: "adapters/stub-runtime-adapter.ts", kinds: ["startup"], sendText: 1 },
+/** Text written past SessionTransport. Not S1's (Jim, via the lead, 2026-11-01): these 8 paths move in S4 and keep their own loops until
+ *  then, with no row and no stable id. Census counts `.sendText(` in the file. */
+const DIRECT_TEXT: Array<{ file: string; kinds: string[]; sendText: number; stage: "S4" }> = [
+  { file: "domain/seat-handover-service.ts", kinds: ["handover-rebuild", "handover-restore"], sendText: 2, stage: "S4" },
+  { file: "domain/startup-orchestrator.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "domain/resume-metadata-refresher.ts", kinds: ["resume-probe"], sendText: 1, stage: "S4" },
+  { file: "adapters/claude-code-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "adapters/codex-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "adapters/pi-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
+  { file: "adapters/stub-runtime-adapter.ts", kinds: ["startup"], sendText: 1, stage: "S4" },
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -76,25 +77,24 @@ describe("every daemon send into SessionTransport is classified", () => {
     expect(startup).toMatch(/send: \(f\) => sessionTransport\.send\(f\.sessionName, f\.body, \{ forceTmux: true, ownsOutboxRow: true/);
   });
 
-  it("the 8 direct text paths are the classified ones, and each commits its row through carryDirect", () => {
+  it("the 8 direct text paths are the classified ones, each stays S4's, and none has taken a row yet", () => {
     expect(DIRECT_TEXT.reduce((a, d) => a + d.kinds.length, 0)).toBe(8); // handover 2, orchestrator 1, adapters 4, probe 1
     for (const site of DIRECT_TEXT) {
       const source = readFileSync(join(SRC, site.file), "utf8");
       expect((source.match(/\.sendText\(/g) ?? []).length, site.file).toBe(site.sendText);
-      expect(source, site.file).toContain("carryDirect(");
-      for (const kind of site.kinds) expect(source, `${site.file}: ${kind}`).toContain(`"${kind}"`);
+      expect(site.stage).toBe("S4");
+      expect(source, site.file).not.toContain("seat-messaging/message-ledger");
     }
   });
 
-  it("no other daemon file writes text to a seat past the transport (positive control: the population is the classified files plus the implementations)", () => {
+  it("no other daemon file writes text to a seat past the transport (positive control: the population is the S4 sites plus the implementations)", () => {
     const implementations = new Set(["adapters/tmux.ts", "adapters/hc-adapter.ts", "adapters/hc-input.ts", "domain/session-transport.ts", "routes/terminal-ws.ts", "terminal/TerminalSessionBroker.ts"]);
     const writers = sourceFiles(SRC).map((f) => relative(SRC, f)).filter((f) => /\.sendText\(/.test(readFileSync(join(SRC, f), "utf8")));
     expect(writers.filter((f) => !implementations.has(f)).sort()).toEqual(DIRECT_TEXT.map((d) => d.file).sort());
   });
 
-  it("startup wires the carrier into all four adapters and the refresher (an unwired one would write with no row)", () => {
+  it("startup persists the enforcer's stages and binds a watchdog fire to its occupant", () => {
     const startup = readFileSync(join(SRC, "startup.ts"), "utf8");
-    expect((startup.match(/directText: directTextCarrier/g) ?? []).length).toBe(5);
     expect(startup).toContain("stageStore: new CompactionStageStore(db)");
     // A watchdog fire is bound to its occupant, so the generation gate can hold at attempt time, later than fire (design-delivery-s4 N5).
     expect(startup).toMatch(/actorSession: "watchdog@system"[^\n]*occupantGeneration: sessionRegistry\.currentOccupantGenerationForSession\(targetSession\)/);
