@@ -118,22 +118,22 @@ sweep() {
       tmux) if [ "$sig" = TERM ]; then tmux -S "$2" kill-server >/dev/null 2>&1 & fi; shift 2 ;;
       env)
         # Off Linux a terminal's program shows no environment: record the family while its holder is still alive, kill it by pid and start time.
-        if [ "$sig" = TERM ]; then family "$2" >> "$famfile"; fi
+        if [ "$sig" = TERM ]; then fam="$fam
+$(family "$2")"; fi
         for p in $(holders "$2"); do kill -$sig "$p" 2>/dev/null; done
-        while IFS='|' read -r p st; do
+        printf '%s\n' "$fam" | while IFS='|' read -r p st; do
           [ -n "$p" ] && [ "$(ps -o lstart= -p "$p" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$st" ] && kill -$sig "$p" 2>/dev/null
-        done < "$famfile"
+        done
         shift 2 ;;
       pid) if same "$2" "$3" "$4"; then kill -$sig "$2" 2>/dev/null; fi; shift 4 ;;
       *) shift ;;
     esac
   done
 }
-famfile=$(mktemp "\${TMPDIR:-/tmp}/reaper-family.XXXXXX")
+fam=
 sweep TERM "$@"
 sleep 3
 sweep KILL "$@"
-rm -f "$famfile"
 kill -KILL 0
 `;
 
