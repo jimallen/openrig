@@ -15,8 +15,15 @@
 // after the restore is a replacement (the seat was launched again), which is not told its conversation resumed. A daemon
 // restart inside the window re-derives the pending prompts from the event log (post-restart-wiring.ts). With the typing
 // guard on, the send comes back `retained`: the guard owns that row and it is final, so such a seat gets no prompt (pinned).
+//
+// Seat Messaging S4b: a seat the pump serves takes none of the above loop. Its prompt is committed at the restore under the same fixed id,
+// first attempt `firstDelayMs` out, bound to the occupant, and the pump carries it until the gate records it. The loop, the window and the
+// row written after the send are for a seat with no gate, until S5. A later occupant ends the row (`whyNoLongerWanted`), with no notice.
 import { labelForTmuxSend, type OutboxEntry, type OutboxRecordInput, type OutboxOutcomeLabel } from "./outbox-handler.js";
 import { inertStartupText } from "./packet-text.js";
+import type { MessageHandOff } from "./seat-messaging/hand-off.js";
+import { messageId } from "./seat-messaging/ports.js";
+import type { ObligedMessage } from "./seat-messaging/pump-ports.js";
 import type { RestoreNodeResult, RestoreResult } from "./types.js";
 
 export const POST_RESTART_SENDER = "restore@system";
@@ -45,7 +52,7 @@ export interface PostRestartDeps {
   sessionOf: (nodeId: string) => PostRestartSession | null;
   /** The rig's name, for the prompt. */
   rigNameOf: (rigId: string) => string | null;
-  send: (sessionName: string, text: string, opts: { deliveryId: string; actorSession: string; auditPointer: string; waitForIdleMs: number; keepRowOpenOnRefusal: boolean; freezeBody: boolean }) => Promise<PostRestartSendResult>;
+  send: (sessionName: string, text: string, opts: { deliveryId: string; actorSession: string; auditPointer: string; waitForIdleMs: number; keepRowOpenOnRefusal: boolean; freezeBody: boolean; occupantGeneration?: string | null }) => Promise<PostRestartSendResult>;
   outbox: {
     getById: (outboxId: string) => OutboxEntry | null;
     record: (input: OutboxRecordInput) => OutboxEntry;
@@ -53,6 +60,10 @@ export interface PostRestartDeps {
     markFailed: (outboxId: string, label?: OutboxOutcomeLabel) => OutboxEntry;
     markIndeterminate: (outboxId: string, label?: OutboxOutcomeLabel) => OutboxEntry;
   };
+  /** The pump's hand-off, read when a restore is handled: boot wires it after this notifier. Absent or null: the pump is off. */
+  handOff?: () => Pick<MessageHandOff, "takes" | "accept"> | null;
+  /** The seat's occupant now, or null when unknown. */
+  occupantGenerationOf?: (sessionName: string) => string | null;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   /** Before the first attempt: the resumed process settles and registers its hooks (default 20 s). */
@@ -67,7 +78,7 @@ export interface PostRestartDeps {
 }
 
 export type PostRestartOutcome =
-  | { nodeId: string; sessionName: string | null; outcome: "delivered" | "native_written" | "retained" | "already_sent" | "no_session" | "undelivered" | "replaced" | "unconfirmed"; attempts: number; detail?: string };
+  | { nodeId: string; sessionName: string | null; outcome: "accepted" | "delivered" | "native_written" | "retained" | "already_sent" | "no_session" | "undelivered" | "replaced" | "unconfirmed"; attempts: number; detail?: string };
 
 /** Who gets the prompt (see the header). */
 export function needsPostRestartPrompt(node: RestoreNodeResult): boolean {
@@ -123,6 +134,30 @@ export class PostRestartNotifier {
     return Promise.all(nodes.map((node) => this.deliverOne(event.seq, node.nodeId, rigName, restoredAtMs)));
   }
 
+  /** The pump's check, read at every attempt: the prompt says "your conversation resumed", which is false for a later occupant. So this row
+   *  ends, where other text bound to an occupant goes on labelled. Unknown proves nothing. */
+  readonly whyNoLongerWanted = (message: ObligedMessage): string | null => {
+    const bound = message.occupantGeneration;
+    const live = this.deps.occupantGenerationOf?.(message.seat) ?? null;
+    return bound !== null && live !== null && live !== bound ? `occupant ${bound} of ${message.seat} was replaced by ${live} after the restore` : null;
+  };
+
+  /** A seat the pump serves: the prompt's row commits here and it is the pump's, so nothing waits. Null: this notifier's own path applies. */
+  private acceptForPump(deliveryId: string, nodeId: string, rigName: string, restoredAtMs: number | null): PostRestartOutcome | null {
+    const session = this.deps.sessionOf(nodeId);
+    const handOff = this.deps.handOff?.() ?? null;
+    if (!session || !handOff?.takes(session.name)) return null;
+    if (restoredAtMs !== null && Date.parse(session.startedAt) > restoredAtMs) {
+      return { nodeId, sessionName: session.name, outcome: "replaced", attempts: 0, detail: `session started ${session.startedAt}` };
+    }
+    const accepted = handOff.accept({
+      id: messageId(deliveryId), seat: session.name, sender: POST_RESTART_SENDER, body: postRestartText({ rigName, restartedAt: session.startedAt }), freezeBody: true,
+      auditPointer: deliveryId, identityProvenance: "transport:v1", messageClass: "content", occupantGeneration: this.deps.occupantGenerationOf?.(session.name) ?? null,
+      firstAttemptAtMs: this.now().getTime() + this.firstDelayMs,
+    });
+    return { nodeId, sessionName: session.name, outcome: accepted.kind === "accepted" ? "accepted" : "already_sent", attempts: 0 };
+  }
+
   /** The row commits before the first attempt, so a row alone no longer means the prompt was sent: an open one (a refused attempt
    *  this loop retries, or one a crash left) is still to be delivered. */
   private settled(deliveryId: string): boolean {
@@ -135,6 +170,8 @@ export class PostRestartNotifier {
     if (this.inFlight.has(deliveryId) || this.settled(deliveryId)) {
       return { nodeId, sessionName: null, outcome: "already_sent", attempts: 0 };
     }
+    const taken = this.acceptForPump(deliveryId, nodeId, rigName, restoredAtMs);
+    if (taken) return taken;
     this.inFlight.add(deliveryId);
     try {
       const started = restoredAtMs ?? this.now().getTime();
@@ -156,7 +193,7 @@ export class PostRestartNotifier {
         if (session) {
           text = postRestartText({ rigName, restartedAt: session.startedAt });
           attempts++;
-          last = await this.deps.send(session.name, text, { deliveryId, actorSession: POST_RESTART_SENDER, auditPointer: deliveryId, waitForIdleMs: this.waitForIdleMs, keepRowOpenOnRefusal: true, freezeBody: true });
+          last = await this.deps.send(session.name, text, { deliveryId, actorSession: POST_RESTART_SENDER, auditPointer: deliveryId, waitForIdleMs: this.waitForIdleMs, keepRowOpenOnRefusal: true, freezeBody: true, occupantGeneration: this.deps.occupantGenerationOf?.(session.name) ?? null });
           if (last.path === "native") return { nodeId, sessionName, outcome: "native_written", attempts };
           if (last.outcome === "retained") return { nodeId, sessionName, outcome: "retained", attempts };
           if (last.ok) {

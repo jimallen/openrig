@@ -19,6 +19,8 @@ export interface PostRestartWiringOptions {
   eventBus: Pick<EventBus, "subscribe">;
   send: PostRestartDeps["send"];
   outbox: PostRestartDeps["outbox"];
+  handOff?: PostRestartDeps["handOff"];
+  occupantGenerationOf?: PostRestartDeps["occupantGenerationOf"];
   /** The `recovery.post_restart_prompt` setting. May throw. */
   readSwitch: () => boolean;
   log: (line: string) => void;
@@ -63,6 +65,8 @@ export function wirePostRestartPrompt(o: PostRestartWiringOptions): PostRestartW
     rigNameOf: (rigId) => (db.prepare("SELECT name FROM rigs WHERE id = ?").get(rigId) as { name: string } | undefined)?.name ?? null,
     send: o.send,
     outbox: o.outbox,
+    handOff: o.handOff,
+    occupantGenerationOf: o.occupantGenerationOf,
     log: o.log,
     ...o.timing,
   });

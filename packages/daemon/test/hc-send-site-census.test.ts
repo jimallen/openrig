@@ -13,7 +13,8 @@ const SEND_CALL = /\b(?:session)?[tT]ransport!?\.(?:send|broadcast)\(|this\.deps
 type Class =
   | "transport-commits-row"   // SessionTransport.send commits the row before the attempt and settles it after
   | "row-exists-first"        // a row exists before the send (queue wake, the native fallback's failed-over rows)
-  | "typed-nothing";          // no text is typed (an Enter-only retry), so there is no message
+  | "typed-nothing"           // no text is typed (an Enter-only retry), so there is no message
+  | "pump-owns-row";          // S4: on a gated seat the consumer commits the row and the pump carries it; the call counted here is the ungated path, until S5
 
 const SITES: Array<{ file: string; calls: number; class: Class; id: string; note: string }> = [
   { file: "routes/transport.ts", calls: 2, class: "transport-commits-row", id: "caller's (`rig send --id`), else minted once per request; a fan-out's is `<id>:<seat>`", note: "/send and /broadcast" },
@@ -21,7 +22,7 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
   { file: "domain/startup-orchestrator.ts", calls: 1, class: "typed-nothing", id: "none: submit-only, the text's row is the carried one", note: "submit-only Enter, empty text" },
   { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-commits-row", id: "seat-msg-compaction-<attempt>-<prep|compact|turn_boundary|restore_prompt|compliance_prompt>", note: "the three post-compact stages, prep, /compact (a Command: no message state, the enforcer keeps its retry)" },
   { file: "domain/session-transport.ts", calls: 1, class: "transport-commits-row", id: "<id>:<seat>, or minted per recipient", note: "broadcast's per-recipient send" },
-  { file: "domain/post-restart-notifier.ts", calls: 1, class: "transport-commits-row", id: "post-restart-<seq>-<node>; the row stays open between its own retries", note: "the wiring in startup.ts" },
+  { file: "domain/post-restart-notifier.ts", calls: 1, class: "pump-owns-row", id: "post-restart-<seq>-<node>; gated: accepted at the restore. ungated: the row stays open between its own retries", note: "the wiring in startup.ts" },
   { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id" },
 ];
 
@@ -63,7 +64,7 @@ describe("every daemon send into SessionTransport is classified", () => {
 
   it("every class is one the rule names", () => {
     const classes = new Set(SITES.map((s) => s.class));
-    expect([...classes].sort()).toEqual(["row-exists-first", "transport-commits-row", "typed-nothing"]);
+    expect([...classes].sort()).toEqual(["pump-owns-row", "row-exists-first", "transport-commits-row", "typed-nothing"]);
   });
 
   it("only the native fallback says ownsOutboxRow: its rows exist, and the sweeper settles them", () => {
@@ -100,8 +101,21 @@ describe("every daemon send into SessionTransport is classified", () => {
     expect(startup).toMatch(/actorSession: "watchdog@system"[^\n]*occupantGeneration: sessionRegistry\.currentOccupantGenerationForSession\(targetSession\)/);
   });
 
+  it("post-restart commits to the pump itself on a gated seat, and its check is registered before the pump starts", () => {
+    expect((readFileSync(join(SRC, "domain/post-restart-notifier.ts"), "utf8").match(/handOff\.accept\(/g) ?? []).length).toBe(1);
+    const startup = readFileSync(join(SRC, "startup.ts"), "utf8");
+    const started = startup.indexOf("messagePump.start();");
+    for (const prefix of ["post-restart-"]) {
+      const at = startup.indexOf(`messageObligations.register("${prefix}"`);
+      expect(at, prefix).toBeGreaterThan(0);
+      expect(at, prefix).toBeLessThan(started);
+    }
+    // Re-derived after the hand-off exists: before it, a gated seat's prompt would take the ungated loop.
+    expect(startup.indexOf("postRestart.rederiveFromLog()")).toBeGreaterThan(started);
+  });
+
   it("every retrying caller freezes its body, so a rebuilt stamp is not an identity conflict", () => {
-    const files: Array<[string, number]> = [["startup.ts", 2], ["domain/queue-repository.ts", 1], ["domain/post-restart-notifier.ts", 1], ["domain/claude-compaction-enforcer.ts", 3]];
+    const files: Array<[string, number]> = [["startup.ts", 2], ["domain/queue-repository.ts", 1], ["domain/post-restart-notifier.ts", 2], ["domain/claude-compaction-enforcer.ts", 3]];
     for (const [file, n] of files) expect((readFileSync(join(SRC, file), "utf8").match(/freezeBody: true/g) ?? []).length, file).toBe(n);
   });
 
