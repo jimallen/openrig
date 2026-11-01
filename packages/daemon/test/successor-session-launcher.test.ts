@@ -206,6 +206,9 @@ describe("SuccessorSessionLauncher", () => {
     const binding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
     if (remoteControl) expect(binding.remoteControl).toBe(true);
     else expect("remoteControl" in binding).toBe(false);
+    const opts = respawnPane.mock.calls[0]![2] as Record<string, unknown>;
+    if (remoteControl) expect(opts.remoteControl).toBe(true);
+    else expect("remoteControl" in opts).toBe(false);
   });
 
   it("CUTOVER: terminates the retiree then respawns (no -k) into the DEPARTING pane (preserved name, same pane id)", async () => {

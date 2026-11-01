@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { PARENT_SESSION_ENV_KEYS, removeParentSessionEnv } from "../domain/parent-session-env.js";
+import { REMOTE_CONTROL_ENV_NAMES, remoteControlEnvWarnings } from "./hc-runtime-requirements.js";
+import type { SeatLaunchHints } from "./tmux.js";
 
 /** Label holding a seat's canonical name; hc's own name cannot hold it (`verify-qa@eztrack` is refused). */
 export const SEAT_LABEL = "openrig.seat";
@@ -27,15 +29,19 @@ export interface SeatEnvironment {
   env: Record<string, string>;
   /** Names the launch wrapper removes: the API cannot unset a core variable, and the core's env is not the daemon's. */
   unset: string[];
+  /** Launch warnings, names only: what the seat's own env keeps that turns Remote Control off. Empty for a plain seat. */
+  warnings: string[];
 }
 
 /** A seat's env, stated rather than inherited: the core's env is whatever started it (the app, a first CLI call), while
- *  the daemon's is what seats get today, since the daemon starts the tmux server. Throws naming the key, never a value. */
-export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, daemon: NodeJS.ProcessEnv = process.env): SeatEnvironment {
+ *  the daemon's is what seats get today, since the daemon starts the tmux server. Throws naming the key, never a value.
+ *  A Remote Control seat loses the names that switch Remote Control off, stated and core alike, unless it set them itself. */
+export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, daemon: NodeJS.ProcessEnv = process.env, hints: SeatLaunchHints = {}): SeatEnvironment {
+  const remoteControlNames = hints.remoteControl === true ? REMOTE_CONTROL_ENV_NAMES : [];
   const inherited: Record<string, string | undefined> = { ...daemon };
   removeParentSessionEnv(inherited);
   for (const key of Object.keys(inherited)) {
-    if (key.startsWith("HC_") || HOST_ENV_KEYS.includes(key) || OPERATOR_SECRET_ENV_NAMES.includes(key)) delete inherited[key];
+    if (key.startsWith("HC_") || HOST_ENV_KEYS.includes(key) || OPERATOR_SECRET_ENV_NAMES.includes(key) || remoteControlNames.includes(key)) delete inherited[key];
   }
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(inherited)) if (value !== undefined) env[key] = value;
@@ -45,6 +51,6 @@ export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, dae
     if (!ENV_NAME.test(key)) throw new Error(`invalid environment name ${JSON.stringify(key)}`);  // hc accepts "A=B" and ""
     if (value.includes("\0")) throw new Error(`environment value of ${key} holds a NUL`);
   }
-  const candidates = [...PARENT_SESSION_ENV_KEYS, "CLAUDE_EFFORT", ...HOST_ENV_KEYS, ...OPERATOR_SECRET_ENV_NAMES];
-  return { env, unset: candidates.filter((key) => !(key in env)) };
+  const candidates = [...PARENT_SESSION_ENV_KEYS, "CLAUDE_EFFORT", ...HOST_ENV_KEYS, ...OPERATOR_SECRET_ENV_NAMES, ...remoteControlNames];
+  return { env, unset: candidates.filter((key) => !(key in env)), warnings: hints.remoteControl === true ? remoteControlEnvWarnings(env) : [] };
 }

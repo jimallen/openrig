@@ -184,6 +184,12 @@ describe("remote_control: plumbed across ALL node-creation paths and onto the la
     expect(row, `node ${logicalId} should exist`).toBeDefined();
     return row!.remote_control;
   };
+  // The hint the seat host got when the seat's session was made: on hc it decides which names the launch wrapper removes.
+  const hostHint = (sessionName: string): unknown => {
+    const call = vi.mocked(setup.tmuxAdapter.createSession).mock.calls.find((c) => c[0] === sessionName);
+    expect(call, `createSession was called for ${sessionName}`).toBeDefined();
+    return call![3];
+  };
   // The binding handed to launchHarness for a node (looked up by its db id).
   const launchedWith = (logicalId: string): NodeBinding => {
     const nodeId = (db.prepare("SELECT id FROM nodes WHERE logical_id = ?").get(logicalId) as { id: string }).id;
@@ -260,6 +266,7 @@ describe("remote_control: plumbed across ALL node-creation paths and onto the la
     expect(added.ok, JSON.stringify(added)).toBe(true);
     expect(column("dev.added")).toBe(1);
     expect(launchedWith("dev.added").remoteControl).toBe(true);
+    expect(hostHint("dev-added@rc-rig")).toEqual({ remoteControl: true });
   });
 
   // A launch from the spec writes the member's CURRENT declaration, so editing the spec takes effect on
@@ -282,6 +289,7 @@ describe("remote_control: plumbed across ALL node-creation paths and onto the la
     const binding = launchedWith("dev.cos");
     if (after) expect(binding.remoteControl).toBe(true);
     else expect("remoteControl" in binding).toBe(false);
+    expect(hostHint("dev-cos@rc-rig")).toEqual(after ? { remoteControl: true } : undefined);
   });
 
   it("PATH 4 - bootstrap instantiate-from-YAML (`rig up <spec>`): its OWN inline addNode persists it", async () => {
@@ -292,5 +300,7 @@ describe("remote_control: plumbed across ALL node-creation paths and onto the la
     expect(column("dev.plain")).toBeNull();
     expect(launchedWith("dev.cos").remoteControl).toBe(true);
     expect("remoteControl" in launchedWith("dev.plain")).toBe(false);
+    expect(hostHint("dev-cos@rc-rig")).toEqual({ remoteControl: true });
+    expect(hostHint("dev-plain@rc-rig")).toBeUndefined();
   });
 });

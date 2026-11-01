@@ -275,7 +275,7 @@ export class SuccessorSessionLauncher {
     // <old-token>`), which is exactly how the 2026-08-22 wave's "fresh" successors booted 14-day-old
     // contexts. An explicit shell also resets the pane's respawn default, self-healing the pane.
     const blankShell = (await this.tmuxAdapter.getDefaultShell()) ?? "/bin/sh";
-    const respawned = await this.tmuxAdapter.respawnPane(pane.id, blankShell, { cwd, env });
+    const respawned = await this.tmuxAdapter.respawnPane(pane.id, blankShell, { cwd, env, ...(input.node.remoteControl ? { remoteControl: true } : {}) });
     if (!respawned.ok) {
       return {
         ok: false,

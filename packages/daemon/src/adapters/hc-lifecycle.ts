@@ -1,7 +1,7 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { hcExactTerminalRef } from "./hc-identity.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
-import type { TmuxResult } from "./tmux.js";
+import type { SeatLaunchHints, TmuxResult } from "./tmux.js";
 
 /** Label a probe terminal carries instead of the seat label, so a probe is never read as a seat. */
 export const PROBE_LABEL = "openrig.probe";
@@ -59,11 +59,11 @@ export class HcLifecycle {
    *  creation command to re-run (tmux's KI-14 hazard cannot happen). The predecessor's scrollback stays readable at
    *  its old address, as a finished terminal, until someone removes it; it is no longer above the new program's output.
    *  Unlike `respawn-pane` without `-k`, a live program is ended here, not refused. */
-  async respawnPane(target: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<TmuxResult> {
+  async respawnPane(target: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> } & SeatLaunchHints): Promise<TmuxResult> {
     const daemon = this.options.daemonEnv ?? process.env;
     let launch: ReturnType<typeof seatEnvironment>;
     try {
-      launch = seatEnvironment(opts?.env, daemon);
+      launch = seatEnvironment(opts?.env, daemon, opts);
     } catch (err) {
       return { ok: false, code: "invalid_env", message: (err as Error).message };
     }
@@ -104,7 +104,7 @@ export class HcLifecycle {
       // The old program is already gone: say so, so the caller does not read "nothing happened".
       return result.ok ? result : { ...result, message: `${result.message} (the previous program had already ended)` };
     }
-    const warnings = await this.prunePredecessors(seat, [before.address, started.address]);
+    const warnings = [...launch.warnings, ...await this.prunePredecessors(seat, [before.address, started.address])];
     return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
   }
 
