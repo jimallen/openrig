@@ -44,7 +44,6 @@ async function fakeCore(answer: HcHello): Promise<{ path: string; asked: string[
 afterEach(async () => {
   for (const lift of lifts.splice(0)) lift();
   for (const { dir, server } of scratch.splice(0)) {
-    server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1,3 +1,4 @@
+import { mockTmuxAdapter } from "./helpers/test-app.js";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import fs from "node:fs";
 import { describe, it, expect, vi } from "vitest";
@@ -19,7 +20,7 @@ const oldVersion: CodexVersionCheck = { kind: "too_old", version: "0.158.0", min
 const unknownVersion: CodexVersionCheck = { kind: "unknown", detail: "codex --version failed: spawn codex ENOENT" };
 
 function mockTmux(hostKind: "tmux" | "hc"): TmuxAdapter {
-  return mockShellCommand({
+  return mockShellCommand(Object.assign(mockTmuxAdapter(), {
     hostKind,
     sendText: vi.fn(async () => ({ ok: true as const })),
     hasSession: vi.fn(async () => true),
@@ -30,7 +31,7 @@ function mockTmux(hostKind: "tmux" | "hc"): TmuxAdapter {
     listSessions: vi.fn(async () => []),
     listWindows: vi.fn(async () => []),
     listPanes: vi.fn(async () => []),
-  } as unknown as TmuxAdapter);
+  }));
 }
 const mockFs = (): CodexAdapterFsOps => ({ readFile: () => { throw new Error("not found"); }, writeFile: () => {}, exists: () => false, mkdirp: () => {}, listFiles: () => [] });
 const binding = (): NodeBinding => ({

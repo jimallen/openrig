@@ -1,3 +1,4 @@
+import { mockTmuxAdapter } from "./helpers/test-app.js";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -171,10 +172,10 @@ describe("NodeLauncher", () => {
     const rig = rigRepo.createRig("r01");
     rigRepo.addNode(rig.id, "dev1-impl", { runtime: "claude-code", ...(declared ? REMOTE_CONTROL : {}) });
     const calls: unknown[][] = [];
-    const tmuxAdapter = {
+    const tmuxAdapter = Object.assign(mockTmuxAdapter(), {
       createSession: async (...args: unknown[]) => { calls.push(args); return createResult; },
-      killSession: async () => ({ ok: true }), listPanes: async () => [],
-    } as unknown as TmuxAdapter;
+      killSession: async (): Promise<TmuxResult> => ({ ok: true }), listPanes: async () => [],
+    });
     const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus: new EventBus(db), tmuxAdapter });
     const result = await launcher.launchNode(rig.id, "dev1-impl");
     db.close();

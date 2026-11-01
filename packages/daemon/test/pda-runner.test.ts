@@ -765,10 +765,10 @@ describe("pda-runner: tool output stays in the pane (T32)", () => {
 
 // ── Input: one paste, one message; Ctrl-C; no slash commands ─────────────────
 
-function terminal(runner: PdaRunner) {
+function terminal(runner: Parameters<typeof wirePdaRunnerInput>[0], columns = 80) {
   const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false,
     setRawMode: vi.fn(function (this: { isRaw: boolean }, value: boolean) { this.isRaw = value; }) });
-  const output = Object.assign(new PassThrough(), { isTTY: true, columns: 80 });
+  const output = Object.assign(new PassThrough(), { isTTY: true, columns });
   let screen = "";
   output.on("data", (c) => { screen += c.toString(); });
   const editor = wirePdaRunnerInput(runner, input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
@@ -808,9 +808,7 @@ describe("pda-runner: input (T1, T2, T5, T5b wiring)", () => {
     // The editor's redraw clears from column 0 of the cursor's row; on a 200-column terminal a whole streamed row is that row.
     const calls: string[] = [];
     const stub = { submit: () => calls.push("submit"), interrupted: () => undefined, breakStreamedLine: () => calls.push("break") };
-    const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode: vi.fn() });
-    const output = Object.assign(new PassThrough(), { isTTY: true, columns: 200 });
-    const editor = wirePdaRunnerInput(stub, input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream);
+    const { input, editor } = terminal(stub, 200);
     try {
       input.write(START + "pasted" + END);
       expect(calls).toEqual(["break"]);
