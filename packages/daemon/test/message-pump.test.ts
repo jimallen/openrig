@@ -94,7 +94,7 @@ describe("the message pump", () => {
     it("attempts a new message at once, and sending alone settles nothing: only a gate record moves it to received", async () => {
       accept("m1");
       await pump.tick();
-      expect(w.hop.calls.map((c) => [c.id, c.seat, c.body])).toEqual([["m1", SEAT, "body of m1"]]);
+      expect(w.hop.calls.map((c) => [c.ids, c.seat, c.body, c.messageClass, c.lane])).toEqual([[["m1"], SEAT, "body of m1", "content", 2]]);
       expect(row(db, "m1")).toMatchObject({ message_state: "attempting", attempts: 1, delivery_state: "pending" });
 
       w.gate.record(messageId("m1"), "nonce-1");
@@ -117,7 +117,7 @@ describe("the message pump", () => {
       await pump.tick();
       w.now += ATTEMPT_BACKOFF_MS[0];
       await pump.tick();
-      expect(w.hop.calls.map((c) => [c.id, c.body])).toEqual([["m1", "body of m1"], ["m1", "body of m1"]]);
+      expect(w.hop.calls.map((c) => [c.ids[0], c.body])).toEqual([["m1", "body of m1"], ["m1", "body of m1"]]);
     });
 
     it("backs off 2, 5, then 15 minutes, and stays capped at 15", async () => {
@@ -151,7 +151,7 @@ describe("the message pump", () => {
       w.now += 60 * MIN;
       await pump.tick();  // m1's attempt has not returned, and its next time has passed
       expect(hop.calls).toHaveLength(1);
-      expect(other.calls.map((c) => c.id)).toEqual(["o1", "o1"]);
+      expect(other.calls.map((c) => c.ids[0])).toEqual(["o1", "o1"]);
       finish({ kind: "sent" });
       await first;
       await pump.tick();
@@ -164,11 +164,11 @@ describe("the message pump", () => {
       await pump.tick();
       w.now += 60 * MIN;
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["m1", "m1"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1", "m1"]);
       expect(row(db, "m2")).toMatchObject({ message_state: "accepted", attempts: 0 });
       w.gate.record(messageId("m1"));
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["m1", "m1", "m2"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1", "m1", "m2"]);
     });
 
     it("leaves a row that is not a message alone, and a seat with no gate alone", async () => {
@@ -195,7 +195,7 @@ describe("the message pump", () => {
         w.gate.record(messageId(id));
         await pump.tick();
       }
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["s1", "s2", "p1", "c1"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["s1", "s2", "p1", "c1"]);
     });
 
     it("content waits while a startup message is open, for as long as it takes", async () => {
@@ -204,7 +204,7 @@ describe("the message pump", () => {
       await pump.tick();
       w.now += 600 * MIN;
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["s1", "s1"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["s1", "s1"]);
       expect(row(db, "c1").attempts).toBe(0);
     });
 
@@ -220,7 +220,7 @@ describe("the message pump", () => {
       expect(id).toBe("m1");
       expect(row(db, "m1").message_state).not.toBeNull();
       await new Promise((r) => setImmediate(r));
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["m1"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1"]);
     });
 
     it("accept can name a first attempt later than now, kept across a restart", async () => {
@@ -363,7 +363,7 @@ describe("the message pump", () => {
         expect(row(b, "m1")).toMatchObject({ message_state: "attempting", attempts: 1, message_next_attempt_ms: T0 + 2 * MIN });
         w.now += 2 * MIN;
         await restarted.tick();
-        expect(w.hop.calls.map((c) => c.id)).toEqual(["m1"]);
+        expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1"]);
         expect(row(b, "m1").attempts).toBe(2);
         b.close();
       } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -381,14 +381,27 @@ describe("the message pump", () => {
 
     it("start ticks at once and stop ends the timer", async () => {
       accept("m1");
-      pump = new MessagePump({ ...w.deps(store), timing: { tickMs: 5 } });
-      pump.start();
+      pump = new MessagePump({ ...w.deps(store), timing: { tickMs: 3_600_000 } });
+      pump.start();  // no timer fires in this test: only the pass at start can have attempted
       await new Promise((r) => setTimeout(r, 30));
       pump.stop();
       expect(w.hop.calls).toHaveLength(1);
+    });
+
+    it("the timer keeps it going, and stop ends the timer and any pass", async () => {
+      accept("m1");
+      pump = new MessagePump({ ...w.deps(store), timing: { tickMs: 5 } });
+      pump.start();
+      await new Promise((r) => setTimeout(r, 30));
       w.gate.record(messageId("m1"));
       await new Promise((r) => setTimeout(r, 30));
-      expect(row(db, "m1").message_state).toBe("attempting");
+      expect(row(db, "m1").message_state).toBe("received");
+      pump.stop();
+      accept("m2");
+      await new Promise((r) => setTimeout(r, 30));
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m1"]);
+      expect(row(db, "m2").message_state).toBe("accepted");
     });
   });
 
@@ -398,13 +411,13 @@ describe("the message pump", () => {
       accept("m2");
       await pump.tick();
       expect(row(db, "h1")).toMatchObject({ delivery_state: "retained", message_state: null });
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["m2"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m2"]);
       w.gate.record(messageId("m2"));
       accept("m3");
 
       w.holds.set("n1", "lifted");
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["m2", "h1"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m2", "h1"]);
       expect(w.hop.calls[1]!.body).toBe("held h1");
       expect(row(db, "h1")).toMatchObject({ delivery_state: "retained", message_state: "attempting" });
       expect(row(db, "m3").attempts).toBe(0);
@@ -412,7 +425,7 @@ describe("the message pump", () => {
       w.gate.record(messageId("h1"));
       await pump.tick();
       expect(row(db, "h1")).toMatchObject({ delivery_state: "delivered", message_state: "received" });
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["m2", "h1", "m3"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["m2", "h1", "m3"]);
     });
 
     it("are not replayed to an occupant that did not hold them", async () => {
@@ -436,11 +449,11 @@ describe("the message pump", () => {
       accept("m2");
       w.holds.set("n1", "lifted");
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["h1"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["h1"]);
       new OutboxHandler(db).retire("h1", "jim", "not needed");
       w.now += 60 * MIN;
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.id)).toEqual(["h1", "m2"]);
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["h1", "m2"]);
       expect(row(db, "h1").delivery_state).toBe("retired");
     });
 
@@ -461,7 +474,7 @@ describe("the message pump", () => {
       await pump.tick();
       expect(row(db, "m1")).toMatchObject({ destination_session: "dev2@r", message_state: "attempting", attempts: 1, body: "body of m1" });
       await pump.tick();
-      expect(w.hop.calls.map((c) => [c.id, c.seat])).toEqual([["m1", SEAT], ["m1", "dev2@r"]]);
+      expect(w.hop.calls.map((c) => [c.ids[0], c.seat])).toEqual([["m1", SEAT], ["m1", "dev2@r"]]);
       expect(w.returned).toEqual([]);
     });
 
@@ -542,7 +555,7 @@ describe("the message pump", () => {
       accept("m3", "ok@r", { occupantGeneration: "g1" });
       w.fates.set("ok@r", { kind: "live", occupantGeneration: "g1" });
       await pump.tick();
-      expect(w.hop.calls.map((c) => [c.id, c.occupantGeneration])).toEqual([["m3", "g1"]]);
+      expect(w.hop.calls.map((c) => [c.ids[0], c.occupantGeneration])).toEqual([["m3", "g1"]]);
     });
   });
 });

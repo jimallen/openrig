@@ -27,10 +27,11 @@ const gate: SeatGate = {
 
 const hop: LastHop = {
   async attempt(message) {
-    note(`claimed ${message.id}`);
+    const id = message.ids[0];
+    note(`claimed ${id}`);
     if (crash === "before_bytes") return hang();
-    await client.call("terminal.send", { terminal: hcTerminalName(message.seat), text: `[openrig-msg id=${message.id}] ${message.body}` }, { timeoutMs: 8_000 });
-    note(`sent ${message.id}`);
+    await client.call("terminal.send", { terminal: hcTerminalName(message.seat), text: `[openrig-msg id=${id}] ${message.body}` }, { timeoutMs: 8_000 });
+    note(`sent ${id}`);
     if (crash === "after_bytes") return hang();
     return { kind: "sent" };
   },

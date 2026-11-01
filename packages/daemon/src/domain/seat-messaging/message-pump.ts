@@ -125,11 +125,10 @@ export class MessagePump {
     const lookup = gate ? await this.readGate(gate, message) : null;
     // First, ahead of the seat's fate: a record means the message arrived, whatever became of the seat since.
     if (gate && lookup?.kind === "seen") {
-      this.deps.store.recordReceived(lookup.record, gate.version);
-      return "next";
+      return this.deps.store.recordReceived(lookup.record, gate.version) ? "next" : "stop";
     }
     const fate = this.deps.directory.fate(message.seat);
-    const bound = message.occupantGeneration ?? null;
+    const bound = message.occupantGeneration;
     if (bound !== null) {
       // A lifecycle message belongs to one occupant: never a successor, never a new occupant.
       if (fate.kind === "successor" || fate.kind === "gone" || (fate.kind === "live" && fate.occupantGeneration !== null && fate.occupantGeneration !== bound)) {
@@ -137,8 +136,7 @@ export class MessagePump {
       }
       if (fate.kind === "live" && fate.occupantGeneration === null) return "stop";
     } else if (fate.kind === "successor") {
-      this.deps.store.moveToSuccessor(message.id, fate.seat);
-      return "next";
+      return this.deps.store.moveToSuccessor(message.id, fate.seat) ? "next" : "stop";
     } else if (fate.kind === "gone") {
       return this.end(message, fate.reason);
     }
@@ -170,7 +168,7 @@ export class MessagePump {
     if (!this.deps.store.claimAttempt(message, now + nextAttemptDelayMs(message.attempts + 1, this.timing.backoffMs))) return "stop";
     let result: LastHopResult;
     try {
-      result = await hop.attempt({ id: message.id, seat: message.seat, body: message.body, occupantGeneration: message.occupantGeneration ?? null });
+      result = await hop.attempt({ ids: [message.id], seat: message.seat, body: message.body, occupantGeneration: message.occupantGeneration, messageClass: message.messageClass, lane: message.lane });
     } catch (error) {
       result = { kind: "refused", reason: `the hop threw: ${(error as Error).message}` };
     }
@@ -189,8 +187,9 @@ export class MessagePump {
       return "stop";
     }
     const at = new Date(this.clock()).toISOString();
-    if (returned.kind === "returned") this.deps.store.recordUndeliverable(message.id, reason, returned.qitemId, at);
-    else this.deps.store.recordUndeliverable(message.id, `${reason}; not returned: ${returned.reason}`, null, at);
-    return "next";
+    const closed = returned.kind === "returned"
+      ? this.deps.store.recordUndeliverable(message.id, reason, returned.qitemId, at)
+      : this.deps.store.recordUndeliverable(message.id, `${reason}; not returned: ${returned.reason}`, null, at);
+    return closed ? "next" : "stop";
   }
 }

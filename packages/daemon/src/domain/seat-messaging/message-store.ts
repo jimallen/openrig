@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { OutboxHandler, OutboxHandlerError, type OutboxRecordInput } from "../outbox-handler.js";
-import { messageId, type GateRecord, type LastHopResult, type MessageId, type SeatMessage } from "./ports.js";
+import { messageId, type GateRecord, type LastHopResult, type MessageId, type SeatMessageClass, type SeatMessageLane } from "./ports.js";
 import type { HeldBinding } from "./pump-ports.js";
 
 /**
@@ -22,12 +22,16 @@ type HopPause = Extract<LastHopResult, { kind: "paused" }>["reason"];
 export type MessagePauseReason = HopPause | "gate_unavailable";
 
 /** FIFO's unit (S4 design, N4). The lowest open lane goes first, so nothing lands between restore stages or ahead of a startup packet. */
-export const MESSAGE_LANES = { startup: 0, compaction: 1, content: 2 } as const;
-export type MessageLane = (typeof MESSAGE_LANES)[keyof typeof MESSAGE_LANES];
+export const MESSAGE_LANES = { startup: 0, compaction: 1, content: 2 } as const satisfies Record<string, SeatMessageLane>;
 
-export interface StoredMessage extends SeatMessage {
+export interface StoredMessage {
+  readonly id: MessageId;
+  readonly seat: string;
+  readonly body: string;
+  readonly occupantGeneration: string | null;
   readonly sender: string;
-  readonly lane: number;
+  readonly lane: SeatMessageLane;
+  readonly messageClass: SeatMessageClass;
   readonly state: "accepted" | "attempting";
   readonly attempts: number;
   /** Null: never attempted, so it is due now. */
@@ -43,9 +47,9 @@ export interface MessageAcceptInput extends Pick<OutboxRecordInput, "urgency" | 
   sender: string;
   body: string;
   occupantGeneration?: string | null;
-  lane?: MessageLane;
-  /** S1's class. A `command` is refused here: it stays with its owner (`/compact` with the compaction enforcer). */
-  messageClass?: string | null;
+  lane?: SeatMessageLane;
+  /** Absent reads as content. A `command` is refused here: it stays with its owner (`/compact` with the compaction enforcer). */
+  messageClass?: SeatMessageClass;
   /** Null or absent: at once. */
   firstAttemptAtMs?: number | null;
 }
@@ -72,6 +76,7 @@ interface MessageRow {
   ts_dispatched: string;
   message_state: string;
   lane: number;
+  message_class: string | null;
   attempts: number;
   message_next_attempt_ms: number | null;
   message_pause_reason: string | null;
@@ -87,11 +92,16 @@ function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
 }
 
+/** Columns with no CHECK: a value this build does not know reads as the default, the lane and class nothing special happens on. */
+function laneOf(raw: number): SeatMessageLane { return raw === 0 || raw === 1 ? raw : 2; }
+function classOf(raw: string | null): SeatMessageClass { return raw === "nudge" || raw === "lifecycle" ? raw : "content"; }
+
 function toMessage(row: MessageRow): StoredMessage {
   return {
     id: messageId(row.outbox_id), seat: row.destination_session, sender: row.sender_session, body: row.body,
     occupantGeneration: row.occupant_generation,
-    state: row.message_state === "accepted" ? "accepted" : "attempting", lane: row.lane,
+    state: row.message_state === "accepted" ? "accepted" : "attempting",
+    lane: laneOf(row.lane), messageClass: classOf(row.message_class),
     attempts: row.attempts, nextAttemptAtMs: row.message_next_attempt_ms,
     pauseReason: pauseReasonOf(row.message_pause_reason), lastRefusal: row.message_last_refusal, acceptedAt: row.ts_dispatched,
   };
