@@ -263,6 +263,7 @@ describe("Chatroom CLI", () => {
     function fakeHc(result: Partial<HcRunResult> = {}) {
       const calls: string[][] = [];
       const deps: ChatroomHcDeps = {
+        coreListening: async () => true,
         runHc: (args) => { calls.push(args); return { status: 0, stdout: "{}", stderr: "", ...result }; },
         selfArgv: () => ["/abs/node", "/abs/rig.js"],
       };
@@ -302,6 +303,17 @@ describe("Chatroom CLI", () => {
       const help = chatroomCommand(runningDeps(port), viaTmux.deps).commands.find((c) => c.name() === "watch")!.helpInformation();
       expect(help).toContain("--terminal");
       expect(help).not.toContain("--tmux");
+    });
+
+    it("--terminal with no hc core listening refuses and never runs hc (F6: `hc run` would start a core in this shell's env)", async () => {
+      const { calls, deps } = fakeHc();
+      const { logs, exitCode } = await captureLogs(async () => {
+        await watchCmd({ ...deps, coreListening: async () => false }).parseAsync(["node", "rig", "chatroom", "watch", "my-rig", "--terminal"]);
+      });
+      expect(calls).toEqual([]);
+      expect(logs.join("\n")).toContain("No hc core is running");
+      expect(logs.join("\n")).not.toContain("Started");
+      expect(exitCode).toBe(1);
     });
 
     it("a plain watch never calls hc", async () => {
