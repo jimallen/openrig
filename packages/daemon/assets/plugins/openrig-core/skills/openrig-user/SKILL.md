@@ -897,7 +897,7 @@ rig chatroom history <rig> [--topic <name>] [--after <id>] [--since <ts>] [--sen
 rig chatroom wait <rig> [--after <id>] [--topic <name>] [--sender <name>] [--timeout <seconds>] [--json]
 rig chatroom clear <rig>
 rig chatroom topic <rig> <topic-name> [--body <text>] [--sender <name>]
-rig chatroom watch <rig> [--tmux]
+rig chatroom watch <rig> [--terminal]
 ```
 
 **Key commands:**
@@ -927,7 +927,7 @@ That's the whole reflex. **Don't** decide where it goes or who it's for — the 
 on; the value is the habit, not the polish. **Don't overdo it, either:** stream real signal, not
 narration — a good observation beats ten noisy ones. It's a passing thought you externalize, not a chore.
 - `topic` — set a topic marker
-- `watch` — SSE or tmux-based live stream
+- `watch` — live stream; `--terminal` runs it in its own terminal that outlives the command
 
 **Roundtable protocol:**
 1. Inspect old room: `rig chatroom history my-rig --limit 5`
@@ -1167,136 +1167,7 @@ rig package list
 rig package rollback <installId>
 ```
 
-## Discovery and Topology Mutation
-
-### Discover unmanaged tmux sessions
-
-```bash
-rig discover
-rig discover --json
-rig discover --draft
-```
-
-### Bind a discovered session
-
-```bash
-rig bind <discoveredId> --rig <rigId> --node <logicalId>
-rig bind <discoveredId> --rig <rigId> --pod <namespace> --member <name>
-```
-
-There is no shipped top-level `rig claim` command.
-The current adoption surface is `discover`, `bind`, `adopt`, and `unclaim`.
-
-### Self-attach the current shell or agent
-
-```bash
-rig attach --self --rig <rigId> --node <logicalId>
-rig attach --self --rig <rigId> --node <logicalId> --print-env
-rig attach --self --rig <rigId> --pod <namespace> --member <name> --runtime <runtime>
-```
-
-Use `rig attach --self` when the current agent should attach itself directly instead of going through `discover` + `bind`.
-
-Current proven behavior:
-- inside `tmux`: attaches as a normal tmux-backed node, preserving inbound `rig send` / `rig capture`
-- outside `tmux`: attaches as `external_cli`
-- `--print-env` prints the `OPENRIG_NODE_ID` and `OPENRIG_SESSION_NAME` exports for the current shell
-
-Recommended flow:
-
-```bash
-rig attach --self --rig <rigId> --node <logicalId> --print-env > /tmp/openrig-self-attach.env
-. /tmp/openrig-self-attach.env
-rig whoami --json
-```
-
-Notes:
-- for tmux-backed self-attach, `rig whoami --json` is the right verification
-- for raw/external self-attach, `rig ps --nodes --json` is currently the more reliable verification surface
-- if the current shell is outside tmux, pass `--display-name <name>` when you want a stable human session label recorded
-
-### Adopt a topology and bind live sessions
-
-```bash
-rig adopt <path> --bind <logicalId=tmuxSessionOrDiscoveryId>
-rig adopt <path> --bind <logicalId=...> --bind <logicalId=...> --json
-rig adopt <path> --bindings-file <bindings.yaml>
-rig adopt <path> --bind <logicalId=...> --target-rig <rigId> --rig-root <root>
-```
-
-Use `rig adopt` when the sessions already exist and you want OpenRig to start managing them.
-
-A bindings file is the durable map from authored logical IDs to live sessions. Shape:
-
-```yaml
-bindings:
-  dev1.impl2: dev1.impl2@rigged-buildout
-  dev1.qa: dev1.qa@rigged-buildout
-```
-
-Spec + bindings is the proven recovery pair for adopted rigs.
-Spec gives OpenRig the intended topology. Bindings tells OpenRig which discovered live session belongs in each logical node.
-
-### Proven adopted-rig recovery workflow
-
-This workflow is proven for the case where the external tmux sessions are still alive:
-
-```bash
-rig release <rigId> --delete
-rig discover --json
-rig adopt <spec.yaml> --bindings-file <bindings.yaml>
-```
-
-What this does:
-- removes OpenRig management without killing the sessions
-- re-discovers those same sessions as unmanaged
-- re-attaches them to the topology defined by the spec + bindings
-
-Important limits:
-- this is for `sessions still alive`
-- spec alone is not enough for adopted rigs; you also need bindings
-- this does not yet mean OpenRig can recreate dead external sessions from nothing
-
-### Add unmanaged pods into an existing rig
-
-This is the proven workflow when a rig is already managed, but a new pod was created outside OpenRig and you want to add it later:
-
-```bash
-rig adopt <pod-fragment.yaml> --bindings-file <pod.bindings.yaml> --target-rig <rigId>
-```
-
-Use this when:
-- the target rig already exists
-- the new sessions are live and visible in `rig discover --json`
-- you want additive topology growth, not a full rebuild
-
-What to prepare:
-- a pod fragment spec with only the new pod
-- a bindings file mapping the new logical IDs to the live session names
-
-Verification loop:
-
-```bash
-rig discover --json
-rig adopt <fragment.yaml> --bindings-file <bindings.yaml> --target-rig <rigId>
-rig ps --nodes --rig <rigId>   # the target rig's nodes (--nodes alone = your current rig)
-rig export <rigId> -o rig.yaml
-```
-
-Success looks like:
-- the new sessions stop appearing in `rig discover`
-- the new logical IDs appear in `rig ps --nodes --rig <rigId>`
-- `rig export` includes the new pod
-
-### Mixed-origin rigs are allowed
-
-One rig can contain both:
-- adopted nodes bound from already-running sessions
-- OpenRig-launched nodes created later with `rig expand` / `rig launch`
-
-Current safety rule:
-- `rig release` is for claimed/adopted-only rigs
-- if a rig contains launched nodes, `rig release` fails with `contains_launched_nodes`
+## Topology Mutation
 
 ### Manager-assisted recovery
 
@@ -1304,7 +1175,7 @@ The proven operator pattern is:
 - keep one OpenRig manager session outside the rig it manages
 - address the target by rig name, not cached rig ID
 - find the target rig with bare `rig ps` (lists all rigs), then resolve its owner from `rig ps --nodes --rig <target>` (a bare `--nodes` read is your current rig only, not the target's)
-- send the manager the spec path, bindings path, and verification steps with `rig send`
+- send the manager the spec path and verification steps with `rig send`
 
 This lets ordinary agents ask the manager for OpenRig help instead of every agent needing to be an OpenRig expert.
 
@@ -1317,7 +1188,6 @@ rig launch <rigId> <nodeRef> [--json]
 rig launch <rigId> --seats <a,b,c> [--hold-reason <text>] [--json]
 rig remove <rigId> <nodeRef> [--json]
 rig shrink <rigId> <podRef> [--json]
-rig unclaim <sessionRef> [--json]
 ```
 
 `rig grow` is the simplest way to add seats: no YAML, the default agent spec, and one

@@ -406,7 +406,7 @@ OpenRig performs best-effort deterministic runtime configuration for managed ses
 
 Two important caveats:
 - these writes are best-effort and should still be paired with startup guidance so the local agent can verify and repair them if needed
-- already-running adopted sessions may need restart before they pick up newly written config
+- already-running seats may need restart before they pick up newly written config
 
 Permission mode and runtime resource projection are separate. A selected fragment
 can affect native configuration, but OpenRig's launch flags can override those

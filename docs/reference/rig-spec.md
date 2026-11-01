@@ -638,7 +638,7 @@ including declarations overridden later. These actions declare policy and are
 never typed into a terminal.
 
 An authenticated selection challenges only a fresh or fresh-fallback managed
-agent launch. Resumed, forked, rebuilt, and adopted sessions receive no new
+agent launch. Resumed, forked, and rebuilt sessions receive no new
 challenge; terminal nodes never receive one. `applies_on` follows the requested
 startup context, so a fresh fallback during restore uses `restore` selections.
 Keep the default `[fresh_start, restore]` to cover both fresh launch paths.

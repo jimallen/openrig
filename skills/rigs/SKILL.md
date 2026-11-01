@@ -96,11 +96,6 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
 - **Check it's ready before you say so:** `rig ps --nodes --rig <rig>`. If an agent is stopped at a prompt or a menu,
   read it with `rig capture <seat>@<rig>` and answer with the key that screen shows (`rig send --help` says how to
   send a digit, a letter or Escape), or ask the person. Capture it again before sending anything more.
-- **Join this session to the team, if that helps:**
-  `rig attach --self --rig <rigId> --pod <pod> --member <name> --runtime <claude-code|codex> --print-env` adds this
-  session as a new member of a pod. `--node <logicalId>` binds it to an existing seat instead. Attach once, and keep
-  the variables it prints (`OPENRIG_NODE_ID` and `OPENRIG_SESSION_NAME`). Each command may run in a fresh shell, so put
-  them in front of every later `rig` command. Check with `rig whoami --json`.
 - **Replies:** other agents can't type into this session. Read work sent to you with
   `rig queue list --destination <your address>` and `rig queue show <id> --full`, and read an agent's screen with
   `rig capture <seat>@<rig>`.

@@ -46,7 +46,7 @@ The footprint counts use non-test TypeScript files under each package's `src/`
 | Files in `routes/` | **68**, of which **65** create a Hono router | `git ls-files packages/daemon/src/routes \| wc -l`; `git grep -l 'new Hono' -- packages/daemon/src/routes \| wc -l` |
 | `app.route(...)` mounts in `server.ts` | **69** | `grep -c 'app.route(' packages/daemon/src/server.ts` |
 | Top-level `rig` commands | **87** | `grep -c 'program.addCommand(' packages/cli/src/index.ts` |
-| MCP tools | **18**, all named `rig_*` | `grep -c 'server.tool(' packages/cli/src/mcp-server.ts` |
+| MCP tools | **16**, all named `rig_*` | `grep -c 'server.tool(' packages/cli/src/mcp-server.ts` |
 | Runtime adapter classes | **5**: Claude Code, Codex, Pi, Stub, Terminal | `git grep -l 'implements RuntimeAdapter' packages/daemon/src \| wc -l` |
 
 `OmpRuntimeAdapter` (Oh My Pi) extends `PiRuntimeAdapter`, so the daemon wires

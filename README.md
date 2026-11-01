@@ -70,10 +70,9 @@ rig terminal open saved:kernel --window
 `--window` opens a new terminal tab or window itself, or a space in your current
 Herdr session. Below 120 measured columns,
 the **operator** fills the first page; from 120, the dashboard and operator share
-it equally. The advisor has a separate tab or tmux window.
+it equally. The advisor has a separate tab.
 An installing agent can run it from its shell on the daemon's
-desktop; the person copies nothing. It uses Herdr when installed, otherwise
-the same layout in plain tmux, and preserves existing conversations. `rig tui`
+desktop; the person copies nothing. It needs the Herdr app, and preserves existing conversations. `rig tui`
 is the team dashboard. Installation is finished when you are talking to the
 operator; if you choose to talk later, that handoff remains pending.
 
@@ -161,7 +160,7 @@ using a published package, since repository guidance can be ahead of npm.
 | **npm installation** | Installs the CLI (`rig` and `openrig-tui`), bundled components and dependencies under your npm prefix (with Bun, under Bun's global directory). OpenRig's postinstall checks the Node.js version and that the SQLite module loads; Bun may block this script. It does not run daemon or provider setup. |
 | **`rig setup`** | Attempts missing tools and writes an OpenRig block in `~/.tmux.conf` for mouse support and scrollback. Installs herdr by default on macOS and Linux unless declined with `--no-herdr`; an unavailable herdr install is a warning. On macOS the installing agent offers Ghostty, and `--ghostty` attempts it after acceptance. Existing cmux settings are left unchanged. `--full` adds workstation tools. `--dry-run` shows setup's plan without applying it. |
 | **Daemon startup** | Creates/updates instance state under `OPENRIG_HOME` (normally `~/.openrig`), including its database and managed plugin resources. Seeds the `openrig-skills` discovery skill, the `refocusing` skill and the person-facing `rigs` skill in `~/.claude/skills` and `~/.agents/skills`, subject to existing version ownership. With `runtime.codex.hooks_enabled` enabled (the default), writes Codex hook configuration and trust records as described below—even before a rig launches. |
-| **Rig/seat launch and attachment** | Creates tmux sessions, supplies seat identity and daemon connection environment, and projects selected guidance, skills, plugins and runtime resources into the workspace. Managed startup pre-trusts the workspace. Claude context collection can also be provisioned for attached sessions and refreshed during monitoring. In a Git repository, newly created files under `.codex/plugins/shared:openrig-core/` (or the unqualified `.codex/plugins/openrig-core/`) are added to the repository's Git `info/exclude` inside an `# BEGIN OpenRig generated files` block; new `AGENTS.md`, `CLAUDE.md` and `CLAUDE.local.md` files stay visible with a warning. |
+| **Rig/seat launch and attachment** | Starts each seat in an hc terminal, supplies seat identity and daemon connection environment, and projects selected guidance, skills, plugins and runtime resources into the workspace. Managed startup pre-trusts the workspace. Claude context collection can also be provisioned for attached sessions and refreshed during monitoring. In a Git repository, newly created files under `.codex/plugins/shared:openrig-core/` (or the unqualified `.codex/plugins/openrig-core/`) are added to the repository's Git `info/exclude` inside an `# BEGIN OpenRig generated files` block; new `AGENTS.md`, `CLAUDE.md` and `CLAUDE.local.md` files stay visible with a warning. |
 | **Bundle install** (`rig bundle install`, or `rig up` with a `.rigbundle` or GitHub link) | Writes the bundle's files into the install target: `--target`, or the current directory for `rig up` and for a GitHub link. `rig bundle install` with a local archive needs `--target`. Routes its declared skills, plugins and context packs into your libraries. A GitHub link's archive is kept under `OPENRIG_HOME/bundle-imports/`, and installs are recorded in `OPENRIG_HOME/bundle-audit.jsonl`. A bundle that carries a project creates it under `workspace.projects_root` and records it, with the rig's association, in the workspace catalog. |
 | **Explicit permission configuration** | The built-in bootstrap does **not** add `rig` command allow rules to your settings files; a team seat with no permission policy, per-seat choice or (for Codex) named profile gets the per-launch [team default](docs/reference/rig-spec.md#team-launch-defaults) instead. Agent-guided setup recommends keeping it and requires your actual answer before the agent [adds remembered rules at your chosen scope](docs/reference/getting-started.md#have-your-agent-configure-permissions). No/no answer keeps the team default and preserves settings; existing choices and stricter rules remain relevant. Broader access is separate. |
 
@@ -261,16 +260,15 @@ startup effect.
 OpenRig is a multi-agent harness — it manages the system that coding agents form when you run them together. Not the agents themselves, but the team they create: which sessions are running, how they relate, how to recover after a reboot, and how to stop it from becoming terminal sprawl.
 
 - **Define** topologies in YAML (RigSpec) with pods, edges, and continuity policies
-- **Boot** everything with `rig up` — tmux sessions, harnesses, startup files, readiness checks
+- **Boot** everything with `rig up` — hc terminals, harnesses, startup files, readiness checks
 - **See** rigs, pods, and seats in the TUI topology table and graph; inspect projects, specs, feeds, and instance health
-- **Discover** existing Claude Code and Codex sessions in tmux and adopt them into a managed rig
 - **Snapshot** the topology with `rig down --snapshot`, restore by name with `rig up <name>`
 - **Communicate** across agents with `rig send`, `rig broadcast`, and `rig chatroom`
 - **Protect** a seat where you type by hand: `rig seat set-typing-guard <seat> --enabled true --reason <text>` holds automatic messages and wakes instead of typing them into that seat (off by default; see `rig seat set-typing-guard --help`)
 - **Connect** Slack through an app you create in your own workspace; the experimental `rig slack manifest` prints that app's manifest ([setup guide](docs/reference/slack-app-setup.md))
 - **Evolve** running topologies with `rig grow`, `rig shrink`, `rig launch`, `rig remove`
 
-Every agent runs in a tmux session you can attach to, inspect, and work with directly.
+Every agent runs in its own hc terminal; `rig terminal open <rig>` opens a viewer on it.
 
 ## Teams
 
@@ -328,7 +326,7 @@ With herdr installed and connected, open the starter's terminals together:
 rig terminal open starter --provider herdr
 ```
 
-For cmux, use `--provider cmux`. In the TUI, a rig's detail view has an `Open terminals ▸ rig <name>` link that opens a terminal view of the running seats of that rig (in a new window or tab, or the current Herdr session), laid out with herdr when installed, otherwise plain tmux; with herdr that is up to 16 seats per tab, in a workspace named after the rig. A seat it can't attach is reported as absent or degraded. The underlying sessions remain accessible through tmux. See the [terminal workspace guide](docs/reference/getting-started.md#share-the-dashboard-and-return-to-it) for setup and returning to an existing view.
+For cmux, use `--provider cmux`. In the TUI, a rig's detail view has an `Open terminals ▸ rig <name>` link that opens a terminal view of the running seats of that rig (in a new window or tab, or the current Herdr session), laid out in Herdr; that is up to 16 seats per tab, in a workspace named after the rig. A seat it can't attach is reported as absent or degraded. See the [terminal workspace guide](docs/reference/getting-started.md#share-the-dashboard-and-return-to-it) for setup and returning to an existing view.
 
 ## Key Concepts
 
@@ -336,7 +334,6 @@ For cmux, use `--provider cmux`. In the TUI, a rig's detail view has an `Open te
 - **AgentSpec**: Reusable agent blueprint with skills, guidance, hooks, profiles, and startup contracts.
 - **Seat**: A stable role and address in a rig, such as `dev-build@starter`. The conversation occupying it can change while its identity and authored context remain.
 - **Pod**: A group of related seats with shared guidance and context. Each agent still has its own context window.
-- **Discovery**: `rig discover` fingerprints existing tmux sessions. `rig adopt` brings them under management.
 - **Snapshot/Restore**: `rig down --snapshot` captures full state. `rig up <name>` restores from latest snapshot. Restore reports per-node outcomes: resumed, fresh-primed, awaiting-decision (the original conversation can't resume; start that seat fresh with `rig seat launch '<seat>@<rig>' --fresh --reason "<why>"`), attention_required, or failed.
 - **RigBundle**: Portable archive with vendored AgentSpecs and SHA-256 integrity. Share topologies across machines. `rig up`, `rig bundle create`, `inspect` and `install` also take a GitHub folder link, `rig bundle check` checks a folder before you share it, and `rig bundle inspect` shows what a bundle will do before you install it. See [publishing a rig bundle](docs/reference/publishing-a-rig-bundle.md).
 - **Culture**: A rig's `CULTURE.md` (its `culture_file`) sets coordination norms for the group, on top of OpenRig's default culture, which every seat receives.
@@ -445,7 +442,7 @@ Both commands support `--json` for agent-driven workflows.
 
 Before setup or managed launch, review [what OpenRig changes on your machine](#what-openrig-changes-on-your-machine), including provider trust, hooks and selected runtime resources.
 
-Already-running adopted sessions may need restart before they pick up newly written runtime config.
+Already-running seats may need restart before they pick up newly written runtime config.
 
 **For agents:** First ask which available provider(s) the user wants, reusing an explicit choice, and pass it to setup (`rig setup --providers claude`, `codex` or `both`). Recommend the working account they already have and follow the selected-provider guide above. Offer core setup (`rig setup`) or the fuller workstation path (`rig setup --full`) only when they want those additional tools. Inspect the result with `--json` and use `rig doctor` to finish any remaining machine-specific issues. Starting OpenRig and opening its view are the last steps of installing, not extras, so do them without stopping to ask whether to go on: start the daemon if it is stopped, open the OpenRig TUI and operator for them (say so, then run `rig terminal open saved:kernel --window --json`; no commands for the person to copy), and hand the person's goal and project folder to the kernel operator ([installing-agent handoff](docs/reference/getting-started.md#installing-agent-handoff)). Installation is finished when the person is talking to the operator; don't implement the project yourself. When OpenRig itself misbehaves, read [docs/reference/help.md](docs/reference/help.md) (installed agents can run `rig context get help`; the same text is at [openrig.dev/help/agents](https://www.openrig.dev/help/agents)): it covers the next step, known problems, and how to reach the team if you're still stuck.
 

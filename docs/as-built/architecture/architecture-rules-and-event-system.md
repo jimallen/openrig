@@ -104,7 +104,8 @@ system-level invariants.
     `claude -p --resume`, `packages/cli/src/ask-wake.ts:58`–`60`).
 23. Spec library truth is YAML on disk; daemon owns the structured
     review/index/cache layer.
-24. Adopted-session parity is tmux-metadata parity, not fake env-var parity.
+24. Retired with the tmux host: adopted-session parity. A seat's identity is its projected
+    `OPENRIG_NODE_ID` / `OPENRIG_SESSION_NAME`, or its hc terminal's `openrig.seat` label.
 25. Human-readable IDs are UI-only presentation helpers. CLI/API/MCP/backend
     keep full canonical ids.
 

@@ -123,7 +123,7 @@ At commit `c750304f`. Run these from the repository root to refresh them.
 | `app.route(...)` mounts in `server.ts` | 69 | `grep -c 'app.route(' packages/daemon/src/server.ts` |
 | Top-level `rig` commands | 87 | `grep -c 'program.addCommand(' packages/cli/src/index.ts` |
 | Runtime adapters | 6 (`claude-code`, `codex`, `pi`, `omp`, `terminal`, `stub`); the command counts 5 because `OmpRuntimeAdapter` extends `PiRuntimeAdapter` | `git grep -l 'implements RuntimeAdapter' packages/daemon/src \| wc -l` |
-| MCP tools | 18 | `grep -c 'server.tool(' packages/cli/src/mcp-server.ts` |
+| MCP tools | 16 | `grep -c 'server.tool(' packages/cli/src/mcp-server.ts` |
 | Daemon `exports` subpaths | 21 | `node -p 'Object.keys(require("./packages/daemon/package.json").exports).length'` |
 | Library scenarios | 15 | `grep -l '^scenario:' packages/test-system/scenarios/*.yaml \| wc -l` |
 

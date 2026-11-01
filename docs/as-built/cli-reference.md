@@ -24,12 +24,14 @@ The registration inventory (the tables, the counts and the stamp) was re-derived
 snippet below and reconciling every row. The authored prose between the tables was last read against `e8f0ab340db773392ec8be75b072d1c0f3068a50`
 and was not re-read then.
 
-There are **89 top-level registrations**, **367 registered command objects**
+There are **86 top-level registrations**, **364 registered command objects**
 below `rig` (including groups and the hidden `restore apply` command), and
-**1,141 explicitly registered option objects**, including the root version
+**1,120 explicitly registered option objects**, including the root version
 option. Aliases do not add command objects; short/long spellings of one
 option do not add option objects. Commander-generated help is additional.
-These are source counts, not a claim about a deployed release.
+These are source counts, not a claim about a deployed release. The three counts were re-measured with the snippet below at
+`ec23d93c74e4f38ae3d254a30742221feb6d43bc` after `rig adopt`, `bind`, `discover`, `attach` and `unclaim` were removed; the tables
+still carry the older stamp and do not yet list `rig human`, `rig rsi` or the hidden `rig restore apply` command.
 
 ## Reading this reference
 
@@ -253,30 +255,6 @@ Root: `rig`; declared option: `-V, --version`.
 | Invocation | Aliases | Declared options |
 |---|---|---|
 | `rig requirements <spec>` | — | `--json` |
-
-### discover
-
-| Invocation | Aliases | Declared options |
-|---|---|---|
-| `rig discover` | — | `--json`<br>`--draft` |
-
-### attach
-
-| Invocation | Aliases | Declared options |
-|---|---|---|
-| `rig attach` | — | `--self` **required**<br>`--rig <rigId>` **required**<br>`--node <logicalId>`<br>`--pod <namespace>`<br>`--member <name>`<br>`--runtime <runtime>`<br>`--cwd <path>`<br>`--display-name <name>`<br>`--print-env`<br>`--json` |
-
-### bind
-
-| Invocation | Aliases | Declared options |
-|---|---|---|
-| `rig bind <discoveredId>` | — | `--rig <rigId>` **required**<br>`--node <logicalId>`<br>`--pod <namespace>`<br>`--member <name>` |
-
-### adopt
-
-| Invocation | Aliases | Declared options |
-|---|---|---|
-| `rig adopt <path>` | — | `--bind <logicalId=tmuxSessionOrDiscoveryId>` (repeatable)<br>`--bindings-file <path>`<br>`--target-rig <rigId>`<br>`--rig-root <root>`<br>`--json` |
 
 ### bundle
 
@@ -541,7 +519,7 @@ Root: `rig`; declared option: `-V, --version`.
 | `rig chatroom` | — | — |
 | `rig chatroom send <rig> <message>` | — | `--sender <name>` |
 | `rig chatroom history <rig>` | — | `--topic <name>`<br>`--after <id>`<br>`--since <timestamp>`<br>`--sender <name>`<br>`--limit <n>`<br>`--json` |
-| `rig chatroom watch <rig>` | — | `--tmux` |
+| `rig chatroom watch <rig>` | — | `--terminal`<br>`--tmux` (hidden alias of `--terminal`) |
 | `rig chatroom topic <rig> <topic-name>` | — | `--body <text>`<br>`--sender <name>` |
 | `rig chatroom wait <rig>` | — | `--after <id>`<br>`--topic <name>`<br>`--sender <name>`<br>`--timeout <seconds>`<br>`--json` |
 | `rig chatroom clear <rig>` | — | — |
@@ -800,12 +778,6 @@ Relative paths differ by flag: `--culture` is taken from the directory the comma
 | `rig env status <rig>` | — | `--json` |
 | `rig env logs <rig> [service]` | — | `--tail <n>` |
 | `rig env down <rig>` | — | `--volumes` |
-
-### unclaim
-
-| Invocation | Aliases | Declared options |
-|---|---|---|
-| `rig unclaim <sessionRef>` | — | `--json` |
 
 ### release
 

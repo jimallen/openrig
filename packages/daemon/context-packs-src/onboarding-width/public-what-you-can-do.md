@@ -34,7 +34,6 @@ one command away. Your memory of the fleet is a claim about the past.
   **`rig ps --resources`** shows this host's load and transcript capture cost.
 - **`rig ps --all-hosts --nodes -A`** — the same across every registered machine. Rollup-only
   unless you ask for nodes.
-- **`rig discover`** — what is running on this box that OpenRig is *not* managing.
 - **`rig queue whoami`** — what the daemon thinks you are holding. Not what you remember holding.
   When the seat's typed rows name exactly one work node, its JSON also carries `currentWork` with
   the mission, slice, and path the refocus hook uses.
@@ -385,20 +384,11 @@ not have to tear one down to change it, and you rarely have to start from nothin
   from nothing. Cheaper than it sounds, and the usual right answer when you want *almost* this.
 - **`rig archive` / `unarchive`** — get a finished rig out of your default view without losing
   anything about it.
-- **`rig attach`** — you are an agent or shell running *outside* any rig: put **yourself** under
-  management, so you have an identity, an address and routing.
-- **`rig discover` → `rig bind`** — something live that OpenRig found but does not manage; wire it
-  to a node. **`rig adopt`** does the whole thing at once: create the structure and bind the
-  running sessions into it.
 - **`rig reconcile-session`** — you resumed a seat by hand and the daemon still shows it down; make
   the system see the live process **without launching anything**.
-- **`rig unclaim` / `rig release`** — stop managing one adopted session, or all of them,
-  **without killing the process or the agent inside it**. Handing something back to its human is a
-  first-class move, not an abandonment.
+- **`rig release`** — stop managing a rig's claimed sessions **without killing the process or the agent inside it**.
+  A rig with launched nodes is refused.
 
-> **Two words that mean different things at different altitudes.** `unclaim` and `release` each
-> exist both here — *stop managing a live session* — and in the queue — *put a work row back down*.
-> Same verb, very different blast radius. Check which altitude you are at before running either.
 
 ## When something is broken
 

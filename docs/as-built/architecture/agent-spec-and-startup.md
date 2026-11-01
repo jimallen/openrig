@@ -7,7 +7,7 @@ domains: [engineering-advisor, operating-advisor]
 applies-when: |
   Need to know the canonical AgentSpec/RigSpec/pod-aware reboot types, how
   profile resolution and additive startup layering work, the StartupOrchestrator
-  pre-launch-vs-interactive delivery split, or how whoami/materialize/bind/adopt
+  pre-launch-vs-interactive delivery split, or how whoami/materialize
   resolve and preserve identity.
 siblings: [daemon-core.md, adapters-and-runtimes.md, lifecycle-snapshot-restore.md, packaging-bootstrap-bundles.md]
 prerequisite-reads: [../README.md, daemon-core.md]
@@ -265,50 +265,31 @@ helper powers local `rig spec validate` without contacting the daemon
 (`packages/cli/src/commands/rig.ts:204–207`); it selects the pod-aware or legacy
 validator and distinguishes YAML parse failures from validator exceptions.
 
-## 6. Identity: whoami, materialize, bind, adopt
+## 6. Identity: whoami and materialize
 
 **Whoami resolution** — the daemon owns the truth surface through
-`/api/whoami` (`routes/whoami.ts`); tmux metadata is an adopted-session
-anchor, not sovereign truth. `whoami-service.ts:8` declares
+`/api/whoami` (`routes/whoami.ts`). `whoami-service.ts:8` declares
 `resolvedBy: "node_id" | "session_name"`. The route requires `nodeId` or
 `sessionName` (`routes/whoami.ts:19`–`23`). The CLI resolves identity
-(`packages/cli/src/commands/whoami.ts:142`–`148`) in this order: explicit
-`--node-id` → explicit `--session` → env vars (`OPENRIG_NODE_ID` /
-`OPENRIG_SESSION_NAME`, or the legacy `RIGGED_NODE_ID` /
-`RIGGED_SESSION_NAME`, `whoami.ts:158`) → tmux metadata → raw tmux
-session-name fallback.
+(`resolveIdentitySource` in `packages/cli/src/commands/whoami.ts`) in this
+order: explicit `--node-id` → explicit `--session` → env vars
+(`OPENRIG_NODE_ID` / `OPENRIG_SESSION_NAME`, or the legacy `RIGGED_NODE_ID` /
+`RIGGED_SESSION_NAME`) → the hc terminal's `openrig.seat` label, read through
+`HC_TERMINAL_ID` → failure. A terminal with no such label, a missing or
+unreachable hc, or an id that is not an address falls through to the failure.
 
-- Managed sessions prefer projected `OPENRIG_NODE_ID` /
-  `OPENRIG_SESSION_NAME`, set when the tmux session is created
-  (`node-launcher.ts:143`–`144`).
-- Adopted sessions use tmux-owned metadata written at bind time.
+- Managed seats prefer the projected `OPENRIG_NODE_ID` /
+  `OPENRIG_SESSION_NAME`.
+- A seat with no such env is found by the seat's hc terminal label.
 
-  The tmux metadata keys use the `@rigged_` prefix:
-  `ClaimService.setRiggedMetadata` writes `@rigged_node_id` /
-  `@rigged_session_name` / `@rigged_rig_id` / `@rigged_rig_name` /
-  `@rigged_logical_id` (`claim-service.ts:182`–`186`), called from `bind`,
-  `reconcileSession` and `createAndBindToPod`;
-  `RigLifecycleService.unclaimSession` clears the same five keys
-  (`rig-lifecycle-service.ts:209`–`213`); and `rig whoami` reads
-  `@rigged_node_id` and `@rigged_session_name`
-  (`packages/cli/src/commands/whoami.ts:173`, `:179`). MCP tool names use a
-  different prefix, `rig_*` (`packages/cli/src/mcp-server.ts`).
+MCP tool names use a different prefix, `rig_*`
+(`packages/cli/src/mcp-server.ts`).
 
-**Materialize / bind / adopt**: `POST /api/rigs/import/materialize`
+**Materialize**: `POST /api/rigs/import/materialize`
 (`routes/rigspec.ts:176`) creates a pod-aware topology without launching
-sessions and refuses a legacy spec (`routes/rigspec.ts:189`);
-`POST /api/discovery/:id/bind` (`routes/discovery.ts:77`) attaches a
-discovered live session to an existing logical node (`logicalId`), or creates
-a member in a pod (`podNamespace` + `memberName`) and binds it;
-`POST /api/discovery/:id/adopt` (`routes/discovery.ts:139`) is the composite
-route (bind to existing node, or create a new member in a target pod and bind
-immediately). On the CLI, `rig bind` calls the bind route
-(`packages/cli/src/commands/bind.ts:56`), and `rig adopt` materializes the
-topology and then calls the bind route for each session
-(`packages/cli/src/commands/adopt.ts:163`, `:212`). Authored pod namespace is
-preserved through adoption so logical ids stay `${podNamespace}.${memberName}`
-(`claim-service.ts:663`). Adopted-session parity is tmux-metadata parity, not
-fake env-var parity.
+sessions and refuses a legacy spec (`routes/rigspec.ts:189`). Adoption of
+existing sessions (`rig bind`, `rig adopt` and the `/api/discovery` routes)
+was removed in the hc cutover.
 
 ## 7. Specialist rosters
 

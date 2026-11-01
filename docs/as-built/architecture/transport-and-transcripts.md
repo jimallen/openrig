@@ -33,23 +33,24 @@ blanket-replaced: `rigged` → `rig` is a per-occurrence question, not a global
 substitution.
 
 **Axis 1 — MCP tool names are `rig_*`.** `packages/cli/src/mcp-server.ts`
-registers **18** tools, all named `rig_*`
+registers **16** tools, all named `rig_*`
 (`grep -c 'server.tool(' packages/cli/src/mcp-server.ts`), including
-`rig_rig_nodes` (`mcp-server.ts:288`), `rig_send` (`:305`),
-`rig_capture` (`:339`), `rig_chatroom_send` (`:364`) and `rig_chatroom_watch`
-(`:400`). No `rigged_*` name other than the tmux keys below remains in product
+`rig_rig_nodes`, `rig_send`, `rig_capture`, `rig_chatroom_send` and
+`rig_chatroom_watch`. No `rigged_*` name other than the tmux keys below remains in product
 source: **0** hits
 (`git grep -n 'rigged_' -- ':(glob)packages/*/src/**' | grep -v -c '@rigged_'`).
 
 **Axis 2 — tmux metadata keys are `@rigged_*`, and are correct as-is.** The
-tmux metadata keys written at claim/bind time are a separate thing from MCP
-tool names and were not renamed. `setRiggedMetadata` in
-`packages/daemon/src/domain/claim-service.ts:182`–`186` writes exactly **5**
-keys (`grep -c '@rigged_' packages/daemon/src/domain/claim-service.ts`):
+tmux metadata keys are a separate thing from MCP tool names and were not
+renamed. `SessionReconciler.setRiggedMetadata` in
+`packages/daemon/src/domain/session-reconciler.ts` writes exactly **5**
+keys (`grep -c '@rigged_' packages/daemon/src/domain/session-reconciler.ts`),
+only when the reconciler has a tmux adapter; `rig whoami` no longer reads them
+(it falls back to the hc terminal's `openrig.seat` label):
 `@rigged_node_id`, `@rigged_session_name`, `@rigged_rig_id`,
 `@rigged_rig_name`, `@rigged_logical_id`. Do not blanket-sed `rigged` → `rig`.
-The metadata-key axis is detailed in `agent-spec-and-startup.md` (identity:
-whoami, bind, adopt).
+The identity chain is described in `agent-spec-and-startup.md` (identity:
+whoami, materialize).
 
 ## 2. Transport and communication domain services
 
@@ -309,8 +310,8 @@ The intentional limits in this layer (numbered as in
 
 - `daemon-core.md` — the route-mount surface these routes sit in, and the MCP
   tool count.
-- `agent-spec-and-startup.md` — the tmux `@rigged_*` metadata-key axis detail
-  (whoami/adopt).
+- `agent-spec-and-startup.md` — the identity chain
+  (whoami/materialize).
 - `lifecycle-snapshot-restore.md` — restore-side transcript boundary
   markers.
 - `coordination-primitive.md` — cross-host queue routing (the two-sided

@@ -73,11 +73,7 @@ Stop if identity, token, model, authority, custody, or staged-input evidence dis
 
 ## Phase 2: Quiesce The Temporary Successor
 
-Use supported lifecycle surfaces. The correct detach verb depends on the current
-session origin:
-
-- `claimed` or `adopted`: use `rig unclaim` as prescribed by the CLI;
-- `launched`: use `rig seat stop <successor-seat>`; `rig unclaim` will correctly refuse.
+Use supported lifecycle surfaces: `rig seat stop <successor-seat>`.
 
 Run `rig seat clean` only if a remaining managed record actually needs cleaning. A
 `nothing_to_clean` result after a successful stop is acceptable.
@@ -185,17 +181,9 @@ After a clean self-check:
 
 ## Phase 8: Verify Herder Views
 
-Clients follow the physical tmux session and pane, not the logical binding. The default
-physical-seat cutover should leave every recorded client attached to the same canonical
-pane. Read the attachments back. If a repair fallback already renamed the session, retarget
-each affected client explicitly:
-
-```bash
-rig seat switch-client <target-seat> --client <tty> --json
-```
-
-Read back all client attachments. A correct cutover can otherwise still look wrong in
-the grid or focus tab.
+`rig seat switch-client` is refused on seats hosted by hc (`not_supported_on_host`): hc has no
+attached clients to retarget. A viewer is opened, not switched: use `rig terminal open <rig>`, or
+find the seat by its label in the Herdr app. Read back that the viewer shows the target seat.
 
 ## Completion Proof
 

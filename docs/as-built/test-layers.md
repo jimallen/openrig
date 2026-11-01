@@ -483,12 +483,7 @@ Before you start, two honest constraints:
 | presentation | `ui` | Open the URL through a fake browser executable and read a local UI route. Rendering is out of scope. |
 | presentation | `tui` | Drive the TUI command bar and socket over two stub rigs. select, mutate and back show exact identities. |
 | presentation | `terminal` | open/status/views against a fake terminal-app endpoint. Correct target and layout arguments. |
-| adoption | `discover` | One unmanaged and one owned scratch tmux session. Only the intended candidate is discovered. |
-| adoption | `attach` | Attach to the intended seat. `whoami` reports it without duplicating the process. |
-| adoption | `bind` | Bind one discovered pane. A different, already-occupied identity is refused. |
-| adoption | `adopt` | Adopt two scratch sessions. PIDs and history are preserved, and the identities become addressable. |
 | adoption | `reconcile-session` | Rebind a hand-resumed provider-shaped fixture without starting or typing into another process. |
-| adoption | `unclaim` | Release an adopted seat. The tmux process and its history stay alive. |
 | adoption | `release` | Release one rig's claimed sessions. Processes survive, and a sibling rig is unchanged. |
 | identity | `archive` | Archive an old same-name generation. The current one stays routable, and the old data is kept. |
 | identity | `unarchive` | Unarchive a retained generation without taking over another live seat. |
