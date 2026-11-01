@@ -14,6 +14,7 @@ import { ConfigStore } from "../config-store.js";
 import { compactOutputEnabled } from "../queue-receipt.js";
 import { shellQuote } from "../cross-host-executor.js";
 import { SEAT_LABEL } from "@openrig/daemon/hc";
+import { hcCoreListeningSync } from "../hc-core-probe.js";
 
 interface WhoamiCliOptions {
   nodeId?: string;
@@ -166,7 +167,9 @@ export type HcLabelsFn = (terminalId: string) => Record<string, string>;
 
 /** `hc get <id> --json` in this seat's own env: hc sets `HC_SESSION`, `HC_TERMINAL_SOCKET` and `HC_TERMINAL_ID` for a
  *  seat, so the call reaches the core that holds the seat. No shell, so the id is never interpreted. */
-const defaultHcLabels: HcLabelsFn = (terminalId) => {
+export const defaultHcLabels: HcLabelsFn = (terminalId) => {
+  // `hc get` starts a core when none runs, in this caller's env. Never let a read do that: no listener, no read (F6).
+  if (!hcCoreListeningSync()) throw new Error("no hc core is listening; not starting one to read a label");
   const out = execFileSync("hc", ["get", terminalId, "--json"], { encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
   const labels = (JSON.parse(out) as { labels?: unknown }).labels;
   if (!labels || typeof labels !== "object" || Array.isArray(labels)) return {};

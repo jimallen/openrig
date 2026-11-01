@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { DaemonClient } from "./client.js";
+import { hcCoreListening } from "./hc-core-probe.js";
 
 interface SharedTuiClient {
   readonly baseUrl?: string;
@@ -89,7 +90,9 @@ export async function attachSharedTui(target: string, deps: SharedAttachDeps = {
   });
 }
 
-function runHc(hc: string, args: string[]): Promise<{ code: number; stdout: string }> {
+/** `hc ls` starts a core when none runs, in this caller's env (F6): with no listener it is not run, and reads as a failed list. */
+async function runHc(hc: string, args: string[]): Promise<{ code: number; stdout: string }> {
+  if (!(await hcCoreListening())) return { code: 1, stdout: "" };
   return new Promise((resolve) => {
     execFile(hc, args, { encoding: "utf8", timeout: 10_000 }, (error, stdout) => {
       const code = error ? (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 1) : 0;
