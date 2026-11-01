@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-seat.js";
 import {
-  KERNEL_RIG, KERNEL_TAB, SPACE_LABEL, TAB_LABEL, placementLabels, planKernelTabs, planLabels, planRigTabs,
+  KERNEL_RIG, SPACE_LABEL, TAB_LABEL, placementLabels, planKernelTabs, planLabels, planRigTabs,
 } from "../src/adapters/hc-placement.js";
 
 /**
@@ -78,7 +78,7 @@ describe.skipIf(!python)("hc-placement.ts and rig-here place seats by the same s
     // rig-here `tile_kernel` shows [("human", [KERNEL_HUMAN])] in rig "kernel" (not in the copy: it calls the app).
     const human = "operator-human@kernel";
     const mine = Object.fromEntries(planLabels(KERNEL_RIG, planKernelTabs(human)));
-    expect(mine).toEqual({ [human]: fromRigHere({ op: "labels", rig: KERNEL_RIG, tab: KERNEL_TAB }).labels });
+    expect(mine).toEqual({ [human]: fromRigHere({ op: "labels", rig: KERNEL_RIG, tab: "human" }).labels });
     expect(mine[human]?.["herdr.tab"]).toBe("rig:kernel/human");
   });
 
