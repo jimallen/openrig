@@ -63,9 +63,14 @@ export interface RunnerInputOptions {
   beforeInput?: () => void;
 }
 
+/** The part of a tty's input stream the editor uses. `setRawMode` is reached only when both ends report a tty. */
+export type RunnerInputStream = NodeJS.ReadableStream & { isTTY?: boolean; isRaw: boolean; setRawMode(mode: boolean): unknown };
+/** The part of a tty's output stream the editor and readline use. */
+export type RunnerOutputStream = NodeJS.WritableStream & { isTTY?: boolean; columns?: number };
+
 export function createRunnerInput(
-  input: NodeJS.ReadStream,
-  output: NodeJS.WriteStream,
+  input: RunnerInputStream,
+  output: RunnerOutputStream,
   onSubmit: (block: string) => void,
   options: RunnerInputOptions = {},
 ): readline.Interface {

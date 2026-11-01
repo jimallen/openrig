@@ -87,6 +87,8 @@ export interface PiRunnerState {
    *  closed without the line being cleared, so a `rig send` would be appended to the stale text. Written only when true,
    *  trusted only alongside a live `aliveAt`, absent from an older runner (today's behaviour). */
   pasteLeftover?: boolean;
+  /** S2: the seat gate this runner carries (SEAT_GATE_VERSION). Absent from a runner with none. */
+  seatGate?: number;
 }
 
 /** OF-119: how often a ready runner rewrites its sidecar, and how old `aliveAt` may be before the sidecar is no answer. */

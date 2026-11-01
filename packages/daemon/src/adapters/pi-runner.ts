@@ -27,6 +27,8 @@ import { stripVTControlCharacters } from "node:util";
 import { createRunnerInput, resolveActivityEndpoint } from "./runner-pane-io.js";
 import { createRunnerHcStatusSink, hcStateForActivity, type RunnerHcState } from "./runner-hc-status.js";
 import { installPaneGuard, paneGuard, sanitizeForPane } from "./runner-pane-guard.js";
+import { SEAT_GATE_VERSION, splitMarkedBlock } from "./seat-gate-marker.js";
+import { SeatGateStore, seatGateLogPath, userMessageText, type GateIntent } from "./seat-gate-store.js";
 import { credentialTaint, judgeChargeProvenance, piCredentialEvidence, piCredentialNotice, type PiCredentialEvidence } from "./pi-readiness.js";
 import { extractPiUsageFacts, parsePiSessionHeader, tiesPiForkHeader, type PiSessionBoundary, type PiUsageFact } from "../domain/pi-usage-facts.js";
 import { chunkUsagePost } from "../domain/usage-post-limits.js";
@@ -371,13 +373,21 @@ export class RunnerCore {
   private usagePostRerun = false;
   private readonly loggedUnsafeCountEntryIds = new Set<string>();
   private readonly unhandledEventTypes = new Set<string>();
+  /** S2: what a killed runner left open is settled once the session is known; marked blocks wait for that. */
+  private gateSettled = false;
+  private gateWaiting: string[] = [];
+  /** S2: the RPC id of each marked command Pi has not answered yet. */
+  private readonly gateSends = new Map<string, GateIntent>();
+  private gateSendCount = 0;
 
   constructor(
     private io: RunnerIo,
     private identity: { sessionName: string; nodeId?: string; launchId?: string; generation?: string },
     private opts: { catchUpSince?: string; runtime?: RunnerRuntime; usageFacts?: boolean; openRouterCharge?: boolean;
       /** K4: the credential observation taken before Pi was spawned. */
-      launchCredentialEvidence?: PiCredentialEvidence } = {},
+      launchCredentialEvidence?: PiCredentialEvidence;
+      /** S2: the seat gate. Absent in a test that isn't about it; every launch from main() has one. */
+      gate?: SeatGateStore } = {},
   ) {
     // The durable cursor seeds from the carried-over value (FR-5) so this
     // instance's own sidecar writes never regress it to undefined before a
@@ -434,28 +444,91 @@ export class RunnerCore {
 
   private get runtime(): RunnerRuntime { return this.opts.runtime ?? "pi"; }
 
-  /** One aggregated paste block from pane stdin. */
+  /** One aggregated paste block from pane stdin. A block with a marker goes through the seat gate first (S2): a durable intent, then
+   *  the text alone to Pi, then a record when Pi shows the message. A repeat of an id stops here. */
   handleUserBlock(block: string): void {
+    const gate = this.opts.gate;
+    const { text, markers } = gate ? splitMarkedBlock(block) : { text: block, markers: [] };
+    if (!gate || markers.length === 0) { this.sendBlock(block, undefined); return; }
+    if (!this.gateSettled) { this.gateWaiting.push(block); return; }
+    const label = `[${this.runtime}-runner]`;
+    if (text.trim().length === 0) { this.io.mirrorLine(`${label} a marker with no message; dropped`); return; }
+    let intent: GateIntent | null;
+    try {
+      // The intent's text is what Pi will show in message_start: without the /followup prefix.
+      intent = gate.admit(markers, text.startsWith("/followup ") ? text.slice("/followup ".length) : text, this.sessionFile ?? null);
+    } catch {
+      this.io.mirrorLine(`${label} ERROR the seat gate could not record the message; it was NOT sent`);
+      return;
+    }
+    if (intent === null) { this.io.mirrorLine(`${label} repeat dropped: ${markers.map((m) => m.id).join(" ").slice(0, 200)}`); return; }
+    this.sendBlock(text, intent);
+  }
+
+  /** The block as Pi takes it. A marked one carries an RPC id, so Pi's answer can be tied to its intent. */
+  private sendBlock(block: string, intent: GateIntent | undefined): void {
     if (block === "/abort") {
       this.io.sendRpc({ type: "abort" });
       this.io.mirrorLine("[pi-runner] abort sent");
+      if (intent) this.gateSeen(intent, "command"); // a command starts no message: this is all that will ever show
       return;
+    }
+    let id: { id?: string } = {};
+    if (intent) {
+      const rpcId = `pi-runner-gate-${++this.gateSendCount}`;
+      this.gateSends.set(rpcId, intent);
+      id = { id: rpcId };
     }
     if (block.startsWith("/followup ")) {
       const message = block.slice("/followup ".length);
-      this.io.sendRpc({ type: "follow_up", message });
+      this.io.sendRpc({ type: "follow_up", message, ...id });
       this.io.mirrorLine(`you (follow-up) ▸ ${message}`);
       return;
     }
     if (this.streaming) {
       // Mid-stream: steer delivers after the current turn's tool calls,
       // before the next model call (Pi's documented semantics).
-      this.io.sendRpc({ type: "steer", message: block });
+      this.io.sendRpc({ type: "steer", message: block, ...id });
       this.io.mirrorLine(`you (steer) ▸ ${block}`);
       return;
     }
-    this.io.sendRpc({ type: "prompt", message: block });
+    this.io.sendRpc({ type: "prompt", message: block, ...id });
     this.io.mirrorLine(`you ▸ ${block}`);
+  }
+
+  /** A failed record costs nothing the restart cannot recover: the session file still says the message landed. */
+  private gateSeen(intent: GateIntent, via: string): void {
+    try { this.opts.gate?.seen(intent, via); } catch { this.gateWriteFailed(); }
+  }
+
+  private gateWriteFailed(): void {
+    this.io.mirrorLine(`[${this.runtime}-runner] ERROR the seat gate could not write its log; restart the seat to repair it`);
+  }
+
+  /** Pi answered a marked command. A refusal means no message will come, so the id is open again. `handled` means an extension or
+   *  input handler consumed it: no message_start follows, and that answer is the record. */
+  private settleGateSend(record: Record<string, unknown>): void {
+    const intent = typeof record.id === "string" ? this.gateSends.get(record.id) : undefined;
+    if (!intent) return;
+    this.gateSends.delete(record.id as string);
+    try {
+      if (record.success === false || record.error != null) this.opts.gate?.clear(intent, "refused_by_runtime");
+      else if ((record.data as { disposition?: unknown } | undefined)?.disposition === "handled") this.opts.gate?.seen(intent, "handled");
+    } catch { this.gateWriteFailed(); }
+  }
+
+  /** The session is known: settle what a killed runner left open, then let the marked blocks that waited through the gate. */
+  private settleGate(): void {
+    const gate = this.opts.gate;
+    if (!gate || this.gateSettled) return;
+    try {
+      const unsettled = gate.reconcile();
+      if (unsettled > 0) this.io.mirrorLine(`[${this.runtime}-runner] ERROR the seat gate could not read the session file for ${unsettled} message(s); they stay in flight until a restart can`);
+    } catch { this.gateWriteFailed(); }
+    this.gateSettled = true;
+    const waiting = this.gateWaiting;
+    this.gateWaiting = [];
+    for (const block of waiting) this.handleUserBlock(block);
   }
 
   /** Child process exit — honest, loud, durable. */
@@ -469,6 +542,7 @@ export class RunnerCore {
   }
 
   private handleResponse(record: Record<string, unknown>): void {
+    this.settleGateSend(record);
     if (record.success === false || record.error != null) {
       const detail = typeof record.error === "string" ? record.error : "request failed";
       const message = detail + (this.runtime === "pi" ? piCredentialHint(detail) : "");
@@ -502,6 +576,7 @@ export class RunnerCore {
         return;
       }
       this.writeSidecar({});
+      this.settleGate();
       this.io.mirrorLine(`${this.runtime === "omp" ? "[omp-runner] READY" : PI_RUNNER_READY_MARKER} session=${this.sessionFile ?? "unknown"}`);
       // Ready and not mid-run: a seat that has said nothing yet is `silent` to hc, which no send can be tied to.
       if (!this.streaming) this.io.reportHcStatus?.("idle");
@@ -677,6 +752,12 @@ export class RunnerCore {
       return;
     }
     const message = event.message as Record<string, unknown> | undefined;
+    if (event.type === "message_start" && message?.role === "user") {
+      const shown = userMessageText(message);
+      if (shown !== null) {
+        try { this.opts.gate?.seenByText(shown, "message_start"); } catch { this.gateWriteFailed(); }
+      }
+    }
     if (event.type === "agent_start" || (event.type === "message_start" && message?.role === "assistant")) {
       this.assistantErrorShown = false;
     }
@@ -817,6 +898,7 @@ export class RunnerCore {
       aliveAt: this.io.now(),
       ...(this.pasteOpen ? { pasteOpen: true } : {}),
       ...(this.pasteLeftover ? { pasteLeftover: true } : {}),
+      ...(this.opts.gate ? { seatGate: SEAT_GATE_VERSION } : {}),
       ...patch,
     });
   }
@@ -1271,7 +1353,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     sessionName: args.sessionName, nodeId: process.env.OPENRIG_NODE_ID, launchId: args.launchId,
     // Carry the emitting tenure; never infer it from a later daemon read or Pi event.
     generation: process.env.OPENRIG_OCCUPANT_GENERATION,
-  }, { catchUpSince, runtime, usageFacts: args.usageFacts === true, openRouterCharge: args.openRouterCharge === true, launchCredentialEvidence });
+  }, { catchUpSince, runtime, usageFacts: args.usageFacts === true, openRouterCharge: args.openRouterCharge === true, launchCredentialEvidence, gate: SeatGateStore.open(seatGateLogPath(paths.seatRoot)) });
 
   let transportUp = runtime === "pi";
   readline.createInterface({ input: child.stdout }).on("line", (line) => {

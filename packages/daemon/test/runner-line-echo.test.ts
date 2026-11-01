@@ -15,7 +15,7 @@ function terminal(options?: RunnerInputOptions) {
   const blocks: string[] = [];
   let screen = "";
   output.on("data", (chunk) => { screen += chunk.toString(); });
-  const editor = createRunnerInput(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream, (s) => blocks.push(s), options);
+  const editor = createRunnerInput(input, output, (s) => blocks.push(s), options);
   return { input, editor, blocks, screen: () => screen };
 }
 const escCount = (s: string) => s.split(ESC).length - 1;
