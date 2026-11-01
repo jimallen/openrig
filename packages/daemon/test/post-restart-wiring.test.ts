@@ -145,13 +145,24 @@ describe("OF-184: a daemon restart inside the window does not lose the prompt", 
     expect(w.sent).toHaveLength(1);
   });
 
-  it("one already delivered (an outbox row exists under its delivery id) is not sent again", async () => {
+  it("one already delivered (its outbox row is settled) is not sent again", async () => {
     const w = world();
     const ev = w.emitRestore();
     w.outbox.record({ outboxId: postRestartDeliveryId(ev.seq, w.node.id), senderSession: "restore@system", destinationSession: "dev-impl@wired-rig", body: "x", auditPointer: "x", identityProvenance: "transport:v1" });
+    w.outbox.markDelivered(postRestartDeliveryId(ev.seq, w.node.id));
     const out = await w.wiring().rederiveFromLog();
     expect(out.map((o) => o.outcome)).toEqual(["already_sent"]);
     expect(w.sent).toHaveLength(0);
+  });
+
+  it("one whose row is still open (the row commits first, then the daemon died) is delivered on boot, under the same id", async () => {
+    const w = world();
+    const ev = w.emitRestore();
+    const id = postRestartDeliveryId(ev.seq, w.node.id);
+    w.outbox.record({ outboxId: id, senderSession: "restore@system", destinationSession: "dev-impl@wired-rig", body: "x", auditPointer: id, identityProvenance: "transport:v1" });
+    const out = await w.wiring().rederiveFromLog();
+    expect(out.map((o) => o.outcome)).toEqual(["delivered"]);
+    expect(w.sent).toHaveLength(1);
   });
 
   it("a restore older than the window is left alone", async () => {

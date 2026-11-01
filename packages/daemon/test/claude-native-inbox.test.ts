@@ -641,6 +641,7 @@ describe("review F2 at the inbox: a repeated delivery id", () => {
     const again = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });
     expect([again.kind, again.outboxIds, f.writes.length]).toEqual(["written", ["guard-watchdog-job1.r1"], 2]);
     expect(row(f.db, "guard-watchdog-job1.r1")).toMatchObject({ state: "sending", path: "native", evidence: "native_written" });
+    expect(f.db.prepare("SELECT message_id AS m FROM outbox_entries WHERE outbox_id = 'guard-watchdog-job1.r1'").get()).toEqual({ m: "guard-watchdog-job1" }); // the attempt keeps the message's id
     // D4: a second repeat after .r1 settled is .r2, not .r1 again
     f.inbox.ack({ nodeId: "node-a", sessionName: SEAT, markers: [{ id: "guard-watchdog-job1.r1", nonce: row(f.db, "guard-watchdog-job1.r1")!.nonce! }] });
     const third = await f.inbox.deliver({ sessionName: SEAT, senderSession: "watchdog@system", text: "wake", endpoint: ep, deliveryId: "guard-watchdog-job1" });

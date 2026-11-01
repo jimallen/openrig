@@ -23,6 +23,7 @@ import type {
 } from "../domain/runtime-adapter.js";
 import type { AgentActivity } from "../domain/types.js";
 import { resolveConcreteHint, RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON } from "../domain/runtime-adapter.js";
+import type { DirectTextCarrier } from "../domain/seat-messaging/message-ledger.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
@@ -47,6 +48,8 @@ export interface PiAdapterFsOps {
 
 export interface PiRuntimeAdapterDeps {
   tmux: TmuxAdapter;
+  /** Seat Messaging: commits a row before startup text is typed. */
+  directText?: DirectTextCarrier;
   seatLaunchEnvironment?: SeatLaunchEnvironment;
   fsOps: PiAdapterFsOps;
   /** Root under which every Pi seat gets its isolated state dir (FR-7).
@@ -75,6 +78,7 @@ export interface PiRuntimeAdapterDeps {
 export class PiRuntimeAdapter implements RuntimeAdapter {
   readonly runtime: RunnerRuntime = "pi";
   private tmux: TmuxAdapter;
+  private directText?: DirectTextCarrier;
   private seatLaunchEnvironment?: SeatLaunchEnvironment;
   private fs: PiAdapterFsOps;
   protected stateRoot: string;
@@ -93,6 +97,7 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
     this.openRouterChargeEnabled = deps.openRouterChargeEnabled ?? (() => false);
     this.envPassthroughFor = deps.envPassthroughFor ?? (() => []);
     this.tmux = deps.tmux;
+    this.directText = deps.directText;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
     this.fs = deps.fsOps;
     this.stateRoot = deps.stateRoot;
@@ -201,11 +206,16 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
               // The runner reads pane stdin and forwards as RPC prompt (FR-3).
               // OF-160 (z5): strip the paste-end marker first — operator-authored file content
               // travels inside a bracketed paste and must never close it early.
-              const textResult = await this.tmux.sendText(binding.tmuxSession, inertStartupText(content));
-              if (!textResult.ok) throw new Error(textResult.message);
-              await this.sleep(200);
-              const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
-              if (!submitResult.ok) throw new Error(submitResult.message);
+              const seat = binding.tmuxSession;
+              const body = inertStartupText(content);
+              const write = async (): Promise<{ ok: boolean; message?: string }> => {
+                const textResult = await this.tmux.sendText(seat, body);
+                if (!textResult.ok) return textResult;
+                await this.sleep(200);
+                return this.tmux.sendKeys(seat, ["Enter"]);
+              };
+              const written = await (this.directText?.carryDirect({ kind: "startup", seat, body, messageClass: "lifecycle" }, write) ?? write());
+              if (!written.ok) throw new Error(written.message);
             }
             break;
           }

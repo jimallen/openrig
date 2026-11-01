@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { readSeatEffort } from "./seat-effort.js";
+import { MessageLedger } from "./seat-messaging/message-ledger.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { ulid } from "ulid";
 import type { RigRepository } from "./rig-repository.js";
@@ -832,17 +833,24 @@ export class SeatHandoverService {
     if (info.emptyChainReason) {
       lines.push("", `The durable chain is EMPTY: ${info.emptyChainReason}. You start from seat identity alone — say so in your first status report.`);
     }
-    const sent = await this.tmuxAdapter.sendText(successorSession, inertPacketText(lines.join("\n")));
-    if (!sent.ok) {
-      return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
-    }
-    // Same spike-proven 200ms settle as the restore packet (staged-not-consumed class).
-    await this.sleep(200);
-    const submit = await this.tmuxAdapter.sendKeys(successorSession, ["Enter"]);
-    if (!submit.ok) {
-      return { ok: false, message: (submit as { message?: string }).message ?? "submit failed" };
-    }
-    return { ok: true };
+    return this.deliverPacket("handover-rebuild", successorSession, inertPacketText(lines.join("\n")));
+  }
+
+  /** One packet into the successor, its row first: paste, the settle, Enter. */
+  private async deliverPacket(kind: "handover-rebuild" | "handover-restore", successorSession: string, body: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const written = await new MessageLedger(this.db, { resolveOccupantGeneration: (seat) => this.sessionRegistry.currentOccupantGenerationForSession?.(seat) ?? null })
+      .carryDirect({ kind, seat: successorSession, body, messageClass: "lifecycle" }, async (): Promise<{ ok: boolean; message?: string }> => {
+        const sent = await this.tmuxAdapter.sendText(successorSession, body);
+        if (!sent.ok) return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
+        // The transport's spike-proven 200 ms settle between send_text and Enter (session-transport.ts, "Wait 200ms"). Without it a
+        // multi-KB packet sat STAGED-UNSENT as collapsed paste blocks in the successor's input box (r2 measured 46 s until a manual
+        // Enter): the handover committed complete while the packet was never consumed.
+        await this.sleep(200);
+        const submit = await this.tmuxAdapter.sendKeys(successorSession, ["Enter"]);
+        if (!submit.ok) return { ok: false, message: (submit as { message?: string }).message ?? "submit failed" };
+        return { ok: true };
+      });
+    return written.ok ? { ok: true } : { ok: false, message: written.message ?? "send_text failed" };
   }
 
   /** Deliver the captured restore packet to a fresh successor via the shipped
@@ -865,21 +873,7 @@ export class SeatHandoverService {
     },
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
-    const sent = await this.tmuxAdapter.sendText(successorSession, inertPacketText(packet));
-    if (!sent.ok) {
-      return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
-    }
-    // B16 rework (r2 live door finding): the SHARED paste-then-submit sequencing — the transport's
-    // spike-proven 200ms settle between send_text and Enter (session-transport.ts, "Wait 200ms").
-    // Without it the multi-KB packet sat STAGED-UNSENT as collapsed paste blocks in the successor's
-    // input box (r2 measured 46s until a manual Enter) — the handover committed complete while the
-    // packet was never consumed: the staged-not-consumed class, shipped by the product itself.
-    await this.sleep(200);
-    const submit = await this.tmuxAdapter.sendKeys(successorSession, ["Enter"]);
-    if (!submit.ok) {
-      return { ok: false, message: (submit as { message?: string }).message ?? "submit failed" };
-    }
-    return { ok: true };
+    return this.deliverPacket("handover-restore", successorSession, inertPacketText(packet));
   }
 
   private checkRuntimeMismatch(nodeRuntime: string | null, discoveredRuntime: string): SeatHandoverResult | null {

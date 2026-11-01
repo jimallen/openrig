@@ -35,13 +35,14 @@ export class OutboxUnsettledSource extends RsiFindingSource {
   protected query({ db, now, limit }: SourceContext): SourceResult {
     const stale = hoursBefore(now, OUTBOX_UNSETTLED_MIN_AGE_HOURS).toISOString();
     const lookback = hoursBefore(now, OUTBOX_UNSETTLED_LOOKBACK_HOURS).toISOString();
+    // A row the pump may still carry is not "never settles": it is `pending` for as long as a busy seat keeps it (design-delivery-s4 N7).
     const known = OUTBOX_DELIVERY_STATES.map((state) => `'${state}'`).join(", ");
     const rows = db.prepare(`SELECT coalesce(identity_provenance, '(unattributed)') AS prov,
         CASE WHEN delivery_state IN (${known}) THEN delivery_state ELSE 'other' END AS state,
         CASE WHEN ts_dispatched >= ? THEN CASE WHEN ts_dispatched < ? THEN 'window' ELSE 'young' END ELSE 'legacy' END AS band,
         count(*) AS n, min(rowid) AS first_id, max(rowid) AS last_id, min(ts_dispatched) AS first_seen, max(ts_dispatched) AS last_seen,
         sum(CASE WHEN tags IS NOT NULL AND NOT json_valid(tags) THEN 1 ELSE 0 END) AS damaged
-      FROM outbox_entries WHERE retired_at IS NULL
+      FROM outbox_entries WHERE retired_at IS NULL AND message_state IS NULL
         AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) WHERE value = ?)
       GROUP BY prov, state, band`).all(lookback, stale, OUTBOX_ORIGIN_MANUAL_RECORD_TAG) as OutboxRow[];
 

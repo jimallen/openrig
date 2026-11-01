@@ -212,7 +212,7 @@ describe("SessionTransport.send to an hc seat", () => {
       bindAs("hc");
       await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "audit prompt");
       expect(rows()).toHaveLength(1);
-      expect(rows()[0]!.senderSession).toBe("unattributed@transport");
+      expect(rows()[0]!.senderSession).toBe("unknown");
       expect(db.prepare("SELECT identity_provenance AS p FROM outbox_entries").get()).toEqual({ p: "origin-unknown:v1" });
     });
 
@@ -248,14 +248,16 @@ describe("SessionTransport.send to an hc seat", () => {
       expect(rows()).toEqual([]);
     });
 
-    it("writes nothing for a delivered send, a definite refusal, or a tmux seat", async () => {
+    it("a delivered send settles delivered and a definite refusal failed: neither is an unconfirmed row", async () => {
       bindAs("hc");
       await transport(mockTmux().tmux, hcDelivery(delivered())).send(SEAT, "hello");
       await transport(mockTmux().tmux, hcDelivery({ state: "not_delivered", reason: "blocked", code: "seat_blocked", message: "blocked" })).send(SEAT, "hello");
-      expect(count()).toBe(0);
+      expect(count()).toBe(2);
+      expect(rows()).toHaveLength(0);
+      expect(db.prepare("SELECT delivery_state AS s FROM outbox_entries ORDER BY rowid").all()).toEqual([{ s: "delivered" }, { s: "failed" }]);
     });
 
-    it("a row that cannot be written never changes the send's result", async () => {
+    it("a schema with no outbox table has nothing to commit to: the send's result is its own", async () => {
       bindAs("hc");
       db.exec("DROP TABLE outbox_entries");
       const result = await transport(mockTmux().tmux, hcDelivery(waiting)).send(SEAT, "hello");

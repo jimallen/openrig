@@ -30,6 +30,13 @@ describe("D8 outbox state never settles", () => {
     expect(below.records(source(below))).toEqual([]);
   });
 
+  it("does not count a row the pump may still carry: it is `pending` for as long as a busy seat keeps it (design-delivery-s4 N7)", () => {
+    const f = fixture();
+    const ids = pending(f, 10, 30);
+    f.db.prepare("UPDATE outbox_entries SET message_state = 'attempting' WHERE rowid = ?").run(ids[0]);
+    expect(f.records(source(f))).toEqual([]);
+  });
+
   it("counts a pending row only after 24 hours, so young pending rows never make up the threshold", () => {
     const f = fixture();
     pending(f, 9, 25);

@@ -18,7 +18,8 @@ import {
   stripComposerPromptGlyph,
 } from "./composer-prompts.js";
 export { inspectStartupStagedText } from "./startup-submission-evidence.js";
-import { OutboxHandler, isUnconfirmedHcSend, labelForTmuxSend } from "./outbox-handler.js";
+import { OutboxHandler, WAKE_INTENT_PREFIX, type SeatMessageClass, type SeatMessageLane } from "./outbox-handler.js";
+import { MessageLedger, mintMessageId } from "./seat-messaging/message-ledger.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
@@ -1005,6 +1006,18 @@ export interface SendOpts {
    *  so the transport does not record an unconfirmed hc send for it. Every other send that ends unconfirmed on an hc seat is recorded
    *  here, `indeterminate` with its pending record, so a sweep can settle it and `rig health` can name it. Never client-supplied. */
   ownsOutboxRow?: boolean;
+  /** Internal: this caller rebuilds its text per attempt (a stamp, a clock), so a row already under `deliveryId` wins over `text`:
+   *  every attempt carries the first body. Without it, a different body under an id is `delivery_identity_conflict`. Never client-supplied. */
+  freezeBody?: boolean;
+  /** Internal: this caller retries a refused attempt itself and reads the open row as "not settled yet", so a refusal leaves the row
+   *  open rather than `failed`. Never client-supplied. */
+  keepRowOpenOnRefusal?: boolean;
+  /** Internal: how this message is carried (default content). Never client-supplied. */
+  messageClass?: SeatMessageClass;
+  /** Internal: the delivery lane, when the class's default is not it. Never client-supplied. */
+  lane?: SeatMessageLane;
+  /** Internal: the occupant a lifecycle message is bound to. Never client-supplied. */
+  occupantGeneration?: string | null;
   verify?: boolean;
   force?: boolean;
   waitForIdleMs?: number;
@@ -1598,37 +1611,52 @@ export class SessionTransport {
    * With verification requested, compare rendered message counts, excluding
    * agent input; a confirmed render does not prove agent consumption. */
   /**
-   * A send to an hc seat the core may still deliver (or whose reply was lost) is neither delivered nor failed, and the caller that
-   * got it back moves on: the compaction enforcer advances its stage, the watchdog banks its receipt. If the core then restarts while
-   * it holds the text, the text is gone and nothing says so. So every such send leaves an `indeterminate` row carrying the pending
-   * record (the same row /send and /broadcast write), which the sweep settles and `rig health` lists.
+   * Seat Messaging invariant 1: the message's row commits before anything is written to the seat, so a crash at any later point leaves
+   * it. Every attempt carries the same id (invariant 2). What delivery does is unchanged: the row only records it.
    *
-   * Not written when the caller owns the row: the queue's wake (committed ids, or a delivery id whose row exists), the routes and
-   * the native fallback (`ownsOutboxRow`). A stable delivery id makes the row idempotent (a send repeated under it finds it).
-   * A failed write never changes the send's result: the send happened.
+   * No row of its own: a submit-only Enter (no text, so no message), and a send whose rows already exist (the queue's committed wake
+   * rows; `ownsOutboxRow`, the native fallback, whose rows the sweeper settles). A refused attempt settles `failed`; the sender
+   * was told, and the next attempt under the id opens the row again. An hc send the core may still deliver settles `indeterminate`
+   * with its pending record, which the sweep settles and `rig health` lists. A row that cannot be committed refuses the send.
    */
-  private recordUnconfirmedHcSend(sessionName: string, text: string, refused: SendResult, opts?: SendOpts): void {
-    if (!isUnconfirmedHcSend(refused) || opts?.submitOnly || opts?.ownsOutboxRow || (opts?.committedOutboxIds && opts.committedOutboxIds.length > 0)) return;
-    try {
-      const outbox = new OutboxHandler(this.db);
-      const id = opts?.deliveryId ?? `hc-unconfirmed-${randomUUID()}`;
-      if (outbox.getById(id)) return;
-      outbox.record({
-        outboxId: id, senderSession: opts?.actorSession ?? "unattributed@transport", destinationSession: sessionName, body: text,
-        ...(opts?.auditPointer ? { auditPointer: opts.auditPointer } : {}),
-        identityProvenance: opts?.actorSession ? "transport:v1" : "origin-unknown:v1",
-      });
-      outbox.markIndeterminate(id, labelForTmuxSend(refused));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!/no such table/i.test(message)) console.warn(`[session-transport] could not record an unconfirmed hc send to ${sessionName}: ${message}`);
-    }
-  }
-
   async send(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
     // OF-148: before any wait, hold or retention. `--dangerously-interact` is exempt here only because it may turn out to
     // send unbracketed key input; sendUnguarded refuses again at the bracketed delivery if it did not.
     if (!opts?.dangerouslyInteract && containsPasteTerminator(text)) return pasteTerminatorRefusal(sessionName);
+    if (opts?.submitOnly || opts?.ownsOutboxRow || opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX)) return this.attempt(sessionName, text, opts);
+    if (opts?.committedOutboxIds && opts.committedOutboxIds.length > 0) {
+      for (const id of opts.committedOutboxIds) new OutboxHandler(this.db).countAttempt(id);
+      return this.attempt(sessionName, text, opts);
+    }
+    const ledger = new MessageLedger(this.db);
+    const sender = opts?.actorSession ?? "unknown";
+    let accepted;
+    try {
+      accepted = ledger.accept({
+        id: opts?.deliveryId ?? mintMessageId(), seat: sessionName, body: text, sender,
+        identityProvenance: opts?.actorSession ? "transport:v1" : "origin-unknown:v1", auditPointer: opts?.auditPointer,
+        messageClass: opts?.messageClass ?? "content", lane: opts?.lane, occupantGeneration: opts?.occupantGeneration ?? null, freezeBody: opts?.freezeBody,
+      });
+    } catch (error) {
+      return { ok: false, sessionName, sent: false, reason: "message_not_recorded", error: `The message's row could not be written, so nothing was sent: ${(error as Error).message}` };
+    }
+    if (accepted.kind === "conflict") {
+      return { ok: false, sessionName, sent: false, reason: "delivery_identity_conflict", error: "Delivery ID names different content/identity." };
+    }
+    ledger.beginAttempt(accepted.id);
+    let result: SendResult;
+    try {
+      result = await this.attempt(sessionName, accepted.body, { ...opts, deliveryId: accepted.id });
+    } catch (error) {
+      ledger.settleThrown(accepted.id, this.hcDelivery ? "hc" : "tmux");
+      throw error;
+    }
+    ledger.settle(accepted.id, result, { keepOpenOnRefusal: opts?.keepRowOpenOnRefusal });
+    return result;
+  }
+
+  /** One attempt: the guards, the native inbox or the typing guard, then the write. */
+  private async attempt(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
     // Native comms step 3: a daemon or agent message to an eligible Claude seat goes to its inbox socket. It types nothing
     // into the pane, so the typing guard and the prompt refusal do not apply (a queued message cannot approve a prompt and
     // waits for it, measured). Any doubt, or nothing written, falls through to the tmux path below.
@@ -1639,7 +1667,7 @@ export class SessionTransport {
     const guard = this.tmuxAdapter.deliveryGuard;
     if (!guard) return this.sendUnguarded(sessionName, text, opts);
     const outbox = new OutboxHandler(this.db);
-    const ids = opts?.committedOutboxIds ?? [opts?.deliveryId ?? `guard-send-${randomUUID()}`];
+    const ids = opts?.committedOutboxIds ?? [opts?.deliveryId ?? mintMessageId()];
     const retainedResult = (): SendResult => ({ ok: true, sessionName, outcome: "retained", sent: false, verified: false,
       outboxIds: ids, reason: "typing_guard_enabled", warning: `Retained, not delivered. Inspect with rig seat held-messages ${sessionName}; disabling does not replay held messages.` });
     try {
@@ -1705,7 +1733,7 @@ export class SessionTransport {
           for (const id of ids) {
             const prior = opts?.committedOutboxIds ? outbox.getById(id) : null;
             if (opts?.committedOutboxIds && (!prior || prior.destinationSession !== sessionName)) throw new Error("Committed wake target/ID mismatch");
-            outbox.retain(prior ? { ...prior, outboxId: id, tags: prior.tags ?? undefined, auditPointer: prior.auditPointer ?? undefined } : {
+            outbox.retain(prior ? { ...prior, outboxId: id, tags: prior.tags ?? undefined, auditPointer: prior.auditPointer ?? undefined, messageClass: prior.messageClass ?? undefined, messageState: prior.messageState ?? undefined } : {
               outboxId: id, senderSession: opts?.actorSession ?? "unknown", destinationSession: sessionName, body: text, auditPointer: opts?.auditPointer,
             }, target, !!opts?.committedOutboxIds);
           }
@@ -1876,7 +1904,10 @@ export class SessionTransport {
     } catch {
       return null; // a row that cannot be claimed (held, retired, already settled) keeps today's path
     }
-    if (delivered.kind === "fallback") return null;
+    if (delivered.kind === "fallback") {
+      if (!opts?.committedOutboxIds && opts?.deliveryId) new OutboxHandler(this.db).returnToPending(opts.deliveryId);
+      return null;
+    }
     if (delivered.kind === "pending") {
       // Review F2: the same id is already a native write awaiting its ack; this repeat is coalesced onto it.
       return { ok: true, sessionName, sent: false, path: "native", outboxIds: delivered.outboxIds, verified: false, outcome: "rendered-unconfirmed",
@@ -2362,10 +2393,7 @@ export class SessionTransport {
         (result) => result.state === "delivered" ? "ok" : "failed",
       );
       const refused = hcRefusal(sessionName, hcOutcome, waitMode ? waitEvidence : {});
-      if (refused) {
-        this.recordUnconfirmedHcSend(sessionName, text, refused, opts);
-        return observe(refused);
-      }
+      if (refused) return observe(refused);
       hcVerified = hcOutcome.state === "delivered" && hcOutcome.verified;
     }
 
@@ -3054,7 +3082,8 @@ export class SessionTransport {
       // OPR.0.4.3.30 — per-recipient From/To envelope for `rig send` fan-out, rendered daemon-side (the CLI can't wrap per recipient
       // because it doesn't know each resolved seat). Ruling 03c35295: the To line projects the SCALE + a Sent stamp, so a recipient
       // tells DM from broadcast header-alone (anti-storm). Raw paths (--raw / --dangerously-interact) still deliver unwrapped.
-      ? wrapPaneEnvelope(opts.envelopeSender, sessionName, text, { scope, stampISO, genUuid })
+      // A fan-out under a caller's id carries no Sent stamp: a repeat under the id must be the same bytes (invariant 2).
+      ? wrapPaneEnvelope(opts.envelopeSender, sessionName, text, { scope, stampISO: opts.deliveryId ? undefined : stampISO, genUuid })
       : text;
     const results: SendResult[] = new Array(resolved.sessions.length);
     const groups = new Map<string, number[]>();

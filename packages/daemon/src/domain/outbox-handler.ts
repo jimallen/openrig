@@ -3,6 +3,7 @@ import { RowColumnReader } from "./unreadable-row.js";
 import { namedRows } from "./named-rows.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { HC_UNSETTLED_ESCALATE_AFTER_MS } from "./hc-unsettled-health.js";
+import type { SeatMessageClass, SeatMessageLane } from "./seat-messaging/ports.js";
 
 /**
  * The EXECUTABLE wake-intent namespace. A durable wake intent is written by the
@@ -16,6 +17,9 @@ import { HC_UNSETTLED_ESCALATE_AFTER_MS } from "./hc-unsettled-health.js";
  */
 export const WAKE_INTENT_PREFIX = "wake-intent-";
 
+/** Ids the daemon mints for a seat message (see domain/seat-messaging/message-ledger.ts). */
+export const SEAT_MESSAGE_ID_PREFIX = "seat-msg-";
+
 /**
  * Outbox id prefixes the daemon itself writes (wake intents; guard-claim-, guard-nudge-,
  * guard-watchdog-, guard-send-, guard-model- deliveries). `POST /outbox/record` refuses a caller
@@ -23,7 +27,7 @@ export const WAKE_INTENT_PREFIX = "wake-intent-";
  * the later daemon row returned unchanged, carrying the manual-record origin marker that hides it
  * from RSI D8 (OF-77, u16 review N1).
  */
-export const DAEMON_OUTBOX_ID_PREFIXES = [WAKE_INTENT_PREFIX, "guard-"] as const;
+export const DAEMON_OUTBOX_ID_PREFIXES = [WAKE_INTENT_PREFIX, "guard-", SEAT_MESSAGE_ID_PREFIX] as const;
 
 // `delivered` has TWO meanings in this table, keyed on the id prefix (OF-74 / review F1):
 //  - `wake-intent-*` rows (drained by QueueRepository): `delivered` = the render was CONFIRMED;
@@ -131,6 +135,14 @@ function labelForHcSend(res: { ok: boolean; verified?: boolean; outcome?: string
   return { path: "hc", ...label };
 }
 
+/** How a row's message is carried and what a repeat of it costs (design part 2, "Content versus nudge"). */
+export const SEAT_MESSAGE_CLASSES = ["content", "nudge", "lifecycle", "command"] as const satisfies readonly SeatMessageClass[];
+export type { SeatMessageClass, SeatMessageLane };
+
+/** A message's own state (migration 122). Separate from `delivery_state`, whose vocabulary an older build must be able to read. */
+export const SEAT_MESSAGE_STATES = ["accepted", "attempting", "received", "undeliverable"] as const;
+export type SeatMessageState = (typeof SEAT_MESSAGE_STATES)[number];
+
 export interface OutboxEntry {
   outboxId: string;
   senderSession: string;
@@ -157,6 +169,15 @@ export interface OutboxEntry {
   nativeNonce?: string | null;
   nativeWrittenAt?: string | null;
   nativeTranscriptPath?: string | null;
+  /** Seat Messaging (migration 122): the id every attempt of this message carries. Differs from `outboxId` only on a native
+   *  repeat's per-attempt row (`<id>.r<n>`). Older rows have none: their `outboxId` is their message id. */
+  messageId?: string;
+  messageClass?: SeatMessageClass | null;
+  lane?: SeatMessageLane | null;
+  attempts?: number;
+  occupantGeneration?: string | null;
+  /** Null: a row the pump never touches (legacy, settled, a wake row, a Command). Never written into `delivery_state`. */
+  messageState?: SeatMessageState | null;
 }
 
 interface OutboxEntryRow {
@@ -180,6 +201,12 @@ interface OutboxEntryRow {
   native_nonce?: string | null;
   native_written_at?: string | null;
   native_transcript_path?: string | null;
+  message_id?: string | null;
+  class?: string | null;
+  lane?: number | null;
+  attempts?: number;
+  occupant_generation?: string | null;
+  message_state?: string | null;
 }
 
 /**
@@ -204,6 +231,13 @@ export interface OutboxRecordInput {
   identityProvenance?: string | null;
   /** Set only by the manual audit route; stamps OUTBOX_ORIGIN_MANUAL_RECORD_TAG onto the row. */
   origin?: "manual-record";
+  /** Seat Messaging (migration 122). `messageId` defaults to the row's id. All are dropped on a database before 122. A row with a
+   *  `messageState` is one the pump may carry: only the message ledger sets it. */
+  messageId?: string;
+  messageClass?: SeatMessageClass;
+  lane?: SeatMessageLane | null;
+  occupantGeneration?: string | null;
+  messageState?: SeatMessageState;
 }
 
 export class OutboxHandlerError extends Error {
@@ -233,6 +267,7 @@ export class OutboxHandler {
    *  era-stamp column, so the writer degrades (omits it) instead of throwing. */
   private readonly hasIdentityProvenanceColumn: boolean;
   private readonly hasOutcomeLabelColumns: boolean;
+  private readonly hasSeatMessageColumns: boolean;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -242,6 +277,9 @@ export class OutboxHandler {
     this.hasOutcomeLabelColumns = (
       this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>
     ).some((col) => col.name === "ack_evidence");
+    this.hasSeatMessageColumns = (
+      this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>
+    ).some((col) => col.name === "message_id");
   }
 
   /** The SET fragment and its values for an outcome label; empty when the database predates migration 117 or no label
@@ -298,8 +336,52 @@ export class OutboxHandler {
           input.auditPointer ?? null
         );
     }
+    if (this.hasSeatMessageColumns) {
+      this.db.prepare("UPDATE outbox_entries SET message_id = ?, class = ?, lane = ?, occupant_generation = ?, message_state = ? WHERE outbox_id = ?")
+        .run(input.messageId ?? id, input.messageClass ?? null, input.lane ?? null, input.occupantGeneration ?? null, input.messageState ?? null, id);
+    }
 
     return this.getByIdOrThrow(id);
+  }
+
+  /**
+   * One more attempt at a message whose row exists. The attempt is counted, and a row the last attempt left `failed` is open again, so
+   * this attempt's outcome can settle it. A row a native sweep failed over is not reopened: its tmux copy is in flight and
+   * `settleFallback` owns it. A settled row keeps its state. A Command never gets a message state: the enforcer owns its retry.
+   */
+  beginAttempt(outboxId: string): void {
+    if (!this.hasSeatMessageColumns) return;
+    this.db.prepare(`UPDATE outbox_entries SET attempts = attempts + 1,
+        delivery_state = CASE WHEN delivery_state = 'failed' AND ack_evidence IS NOT 'native_unconfirmed' THEN 'pending' ELSE delivery_state END,
+        message_state = CASE
+          WHEN class IS 'command' THEN NULL
+          WHEN delivery_state IN ('pending', 'sending', 'retained') OR (delivery_state = 'failed' AND ack_evidence IS NOT 'native_unconfirmed') THEN 'attempting'
+          ELSE message_state END
+      WHERE outbox_id = ?`).run(outboxId);
+  }
+
+  /** A committed wake row's attempt: counted only. The drain owns the row, so it takes no message state. */
+  countAttempt(outboxId: string): void {
+    if (!this.hasSeatMessageColumns) return;
+    this.db.prepare("UPDATE outbox_entries SET attempts = attempts + 1 WHERE outbox_id = ?").run(outboxId);
+  }
+
+  /** A row settled by today's paths is out of the pump's hands. */
+  private closedMessage(): string {
+    return this.hasSeatMessageColumns ? ", message_state = NULL" : "";
+  }
+
+  /** The row is no longer the pump's to carry: today's paths settled it, or a native sweep owns it. `received` is never set here. */
+  closeMessageState(outboxId: string): void {
+    if (!this.hasSeatMessageColumns) return;
+    this.db.prepare("UPDATE outbox_entries SET message_state = NULL WHERE outbox_id = ? AND message_state IN ('accepted', 'attempting')").run(outboxId);
+  }
+
+  /** A native claim released with nothing written leaves an adopted row `sending` with no label. A message row not owned by a drain
+   *  goes back to `pending`: the tmux attempt that follows settles it, and a crash before that leaves it open, not claimed. */
+  returnToPending(outboxId: string): void {
+    this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'pending'
+      WHERE outbox_id = ? AND delivery_state = 'sending'${this.hasOutcomeLabelColumns ? " AND ack_evidence IS NULL" : ""}`).run(outboxId);
   }
 
   /** Retention shares the existing outbox ID. Committed wakes preserve each member,
@@ -407,7 +489,7 @@ export class OutboxHandler {
     const result = this.db
       .prepare(
         `UPDATE outbox_entries
-           SET delivery_state = 'delivered', delivered_at = ?${set.sql}
+           SET delivery_state = 'delivered', delivered_at = ?${set.sql}${this.closedMessage()}
          WHERE outbox_id = ? AND delivery_state = 'pending'`
       )
       .run(ts, ...set.values, outboxId);
@@ -613,7 +695,7 @@ export class OutboxHandler {
     const result = this.db
       .prepare(
         `UPDATE outbox_entries
-           SET delivery_state = 'failed'${set.sql}
+           SET delivery_state = 'failed'${set.sql}${this.closedMessage()}
          WHERE outbox_id = ? AND delivery_state = 'pending'`
       )
       .run(...set.values, outboxId);
@@ -638,7 +720,7 @@ export class OutboxHandler {
     const result = this.db
       .prepare(
         `UPDATE outbox_entries
-           SET delivery_state = 'indeterminate'${set.sql}
+           SET delivery_state = 'indeterminate'${set.sql}${this.closedMessage()}
          WHERE outbox_id = ? AND delivery_state = 'pending'`
       )
       .run(...set.values, outboxId);
@@ -776,6 +858,14 @@ export class OutboxHandler {
     const labels = new RowColumnReader("outbox_entries", row.outbox_id);
     const deliveryPath = labels.oneOf("delivery_path", OUTBOX_DELIVERY_PATHS, row.delivery_path);
     const ackEvidence = labels.oneOf("ack_evidence", OUTBOX_ACK_EVIDENCE, row.ack_evidence);
+    const message = row.attempts !== undefined ? {
+      messageId: row.message_id ?? row.outbox_id,
+      messageClass: labels.oneOf("class", SEAT_MESSAGE_CLASSES, row.class),
+      lane: row.lane === 0 || row.lane === 1 || row.lane === 2 ? (row.lane as SeatMessageLane) : null,
+      attempts: row.attempts,
+      occupantGeneration: row.occupant_generation ?? null,
+      messageState: labels.oneOf("message_state", SEAT_MESSAGE_STATES, row.message_state),
+    } : {};
     const unreadable = [...columns.unreadable, ...labels.unreadable];
     return {
       outboxId: row.outbox_id,
@@ -795,6 +885,7 @@ export class OutboxHandler {
         retirementReason: row.retirement_reason ?? null,
       } : {}),
       ...(row.ack_evidence !== undefined ? { deliveryPath, ackEvidence, ackDetail: row.ack_detail ?? null } : {}),
+      ...message,
       ...(row.native_nonce !== undefined ? { nativeNonce: row.native_nonce ?? null, nativeWrittenAt: row.native_written_at ?? null, nativeTranscriptPath: row.native_transcript_path ?? null } : {}),
       ...(unreadable.length > 0 ? { unreadable } : {}),
     };
