@@ -12,6 +12,9 @@ import { CompactionStageStore } from "../src/domain/compaction-stage-store.js";
 import type { SessionTransport } from "../src/domain/session-transport.js";
 import type { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 
+/** The same object, read as the narrow part of `T` the test gives it. */
+const view = <T,>(fake: object): T => Object.assign(fake);
+
 const SEAT = "writer@demo";
 const tick = { sessionName: SEAT, runtime: "claude-code" as const, usedPercentage: 10 };
 
@@ -21,9 +24,9 @@ describe("compaction stages across a restart", () => {
   let generation: string;
   let clock: number;
   const send = vi.fn();
-  const settings = { resolveClaudeCompactionPolicy: () => ({ enabled: true, thresholdPercent: 80, preCompactInstruction: "", compactInstruction: "", messageInline: "", messageFilePath: "", postRestoreAuditInstruction: "" }) } as unknown as SettingsStore;
+  const settings = view<SettingsStore>({ resolveClaudeCompactionPolicy: () => ({ enabled: true, thresholdPercent: 80, preCompactInstruction: "", compactInstruction: "", messageInline: "", messageFilePath: "", postRestoreAuditInstruction: "" }) });
 
-  const enforcer = () => new ClaudeCompactionEnforcer(settings, { send } as unknown as SessionTransport, {
+  const enforcer = () => new ClaudeCompactionEnforcer(settings, view<SessionTransport>({ send }), {
     openrigHome: home, now: () => clock, sleep: async () => {}, resolveOccupantGeneration: () => generation, stageStore: new CompactionStageStore(db), dedupWindowMs: 0,
   });
   const ids = () => send.mock.calls.map((c) => (c[2] as { deliveryId?: string })?.deliveryId);
@@ -71,8 +74,8 @@ describe("compaction stages across a restart", () => {
 
   it("an operator's manual sequence keeps its exemption from the disabled policy across the restart", async () => {
     seed("restore_prompt", { stage: "compact-sent", updatedAt: 1, operatorInitiated: true });
-    const off = { resolveClaudeCompactionPolicy: () => ({ enabled: false, thresholdPercent: 80 }) } as unknown as SettingsStore;
-    const e = new ClaudeCompactionEnforcer(off, { send } as unknown as SessionTransport, { openrigHome: home, resolveOccupantGeneration: () => generation, stageStore: new CompactionStageStore(db), sleep: async () => {} });
+    const off = view<SettingsStore>({ resolveClaudeCompactionPolicy: () => ({ enabled: false, thresholdPercent: 80 }) });
+    const e = new ClaudeCompactionEnforcer(off, view<SessionTransport>({ send }), { openrigHome: home, resolveOccupantGeneration: () => generation, stageStore: new CompactionStageStore(db), sleep: async () => {} });
     await e.drainPendingPostCompactStage(tick);
     expect(send).toHaveBeenCalledTimes(1);
   });
