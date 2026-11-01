@@ -74,13 +74,17 @@ describe.skipIf(!HC)("hermetic scaffold: a real private core", () => {
     expect(existsSync(root)).toBe(false);
   });
 
-  it("OPENRIG_HC_NO_START_CORE is the caller's: kept when set, absent when not (a test that wants the daemon to start a core omits it)", () => {
-    const kept = scaffold({ PATH, OPENRIG_HC_NO_START_CORE: "1" });
-    kept.startHcCore();
-    expect(kept.env.OPENRIG_HC_NO_START_CORE).toBe("1");
-    const absent = scaffold({ PATH });
-    absent.startHcCore();
-    expect("OPENRIG_HC_NO_START_CORE" in absent.env).toBe(false);
+  it("the daemon env says not to start a core of its own (it would carry the private env, and nothing would stop it), unless the test relies on that", () => {
+    const set = scaffold({ PATH });
+    set.startHcCore();
+    expect(set.env.OPENRIG_HC_NO_START_CORE).toBe("1");
+    // An inherited value is no say in it: the scaffold sets the one it means.
+    const inherited = scaffold({ PATH, OPENRIG_HC_NO_START_CORE: "0" });
+    inherited.startHcCore();
+    expect(inherited.env.OPENRIG_HC_NO_START_CORE).toBe("1");
+    const relies = scaffold({ PATH, OPENRIG_HC_NO_START_CORE: "1" });
+    relies.startHcCore({ daemonMayStartCore: true });
+    expect("OPENRIG_HC_NO_START_CORE" in relies.env).toBe(false);
   });
 
   it("two scaffolds get two cores", () => {

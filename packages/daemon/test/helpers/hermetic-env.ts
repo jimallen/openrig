@@ -290,11 +290,12 @@ export interface HermeticScaffold {
    * Start the scaffold's private core (helpers/hc-scratch.ts) and point `env` at it: `HC_SESSION` and the two XDG paths that
    * locate its socket (`XDG_RUNTIME_DIR` on Linux, `XDG_STATE_HOME` on macOS). Idempotent. FAIL-CLOSED: it refuses an ambient
    * `HC_SOCKET`, and throws (stopping the core it started) unless `resolveHcSocket(env)` is exactly the private core's
-   * socket, so a daemon spawned with this env cannot reach any other core. `OPENRIG_HC_NO_START_CORE` is left as the caller
-   * had it: the core is already up, and a daemon that finds it gone must not start another one on its own.
+   * socket, so a daemon spawned with this env cannot reach any other core. `OPENRIG_HC_NO_START_CORE=1` is set: the core is
+   * already up, and a daemon that finds it gone (a teardown stopping it, a test killing it) must not start another one with
+   * this env, which nothing would stop. A test that relies on the daemon starting the core passes `daemonMayStartCore`.
    * `cleanup()` stops the core and verifies it gone, before the root is removed.
    */
-  startHcCore(): HcScratch;
+  startHcCore(options?: { daemonMayStartCore?: boolean }): HcScratch;
   /**
    * Stop the scaffold's own tmux server (the scenario daemon starts one on `tmuxSocketPath`) and VERIFY it is gone, then
    * remove the scaffold root. Idempotent. Throws, keeping the root, when the server cannot be verified stopped.
@@ -434,7 +435,7 @@ process.exit(result.status ?? 1);
   for (const [name, value] of Object.entries(env)) if (value !== undefined) tmuxEnv[name] = value;
   tmuxEnv.PATH = originalPath;
   let hcCore: HcScratch | null = null;
-  const startHcCore = (): HcScratch => {
+  const startHcCore = (options: { daemonMayStartCore?: boolean } = {}): HcScratch => {
     if (hcCore) return hcCore;
     // Refuses an ambient HC_SOCKET before anything is created; the core's own env is BUILT (PATH only from the caller).
     const core = startHcScratch({ baseEnv });
@@ -442,12 +443,13 @@ process.exit(result.status ?? 1);
       env.HC_SESSION = core.env.HC_SESSION;
       env.XDG_RUNTIME_DIR = core.env.XDG_RUNTIME_DIR;
       env.XDG_STATE_HOME = core.env.XDG_STATE_HOME;
+      if (options.daemonMayStartCore) delete env.OPENRIG_HC_NO_START_CORE; else env.OPENRIG_HC_NO_START_CORE = "1";
       const resolved = resolveHcSocket(env as NodeJS.ProcessEnv, home);
       if (resolved !== core.socketPath) {
         throw new Error(`hermetic env refused: the daemon env resolves the hc socket to ${resolved}, not the private core's ${core.socketPath}`);
       }
     } catch (error) {
-      delete env.HC_SESSION; delete env.XDG_RUNTIME_DIR;
+      delete env.HC_SESSION; delete env.XDG_RUNTIME_DIR; delete env.OPENRIG_HC_NO_START_CORE;
       env.XDG_STATE_HOME = join(home, ".local", "state");
       try { core.cleanup(); } catch { /* the original refusal is the one to report; the core's guard stays armed if it could not verify */ }
       throw error;
