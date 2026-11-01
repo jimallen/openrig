@@ -39,6 +39,7 @@ class FakeClient extends HcClient {
   }
 }
 
+const warningsOf = (result: TmuxResult): string[] => (result.ok ? result.warnings ?? [] : [`refused: ${result.code}`]);
 const unsetIn = (run: Record<string, unknown>): string[] => {
   const argv = run.argv as string[];
   return argv.flatMap((word, i) => (word === "-u" ? [argv[i + 1]!] : []));
@@ -120,8 +121,8 @@ describe("HcHost.createSession", () => {
   it("launches, and warns, when the seat kept a blocking name", async () => {
     const { result } = await launch(REMOTE_CONTROL, { DISABLE_GROWTHBOOK: "1" });
     expect(result.ok).toBe(true);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings![0]).toContain("DISABLE_GROWTHBOOK");
+    expect(warningsOf(result)).toHaveLength(1);
+    expect(warningsOf(result)[0]).toContain("DISABLE_GROWTHBOOK");
   });
 });
 
@@ -142,13 +143,13 @@ describe("HcLifecycle.respawnPane", () => {
   it("warns by name for what the seat kept, alongside a prune warning", async () => {
     const result = await new HcLifecycle(new FakeClient(true), { daemonEnv }).respawnPane("qa@rig", "/bin/sh", { env: { DISABLE_GROWTHBOOK: "1" }, remoteControl: true });
     expect(result.ok).toBe(true);
-    expect(result.warnings).toHaveLength(2);
-    expect(result.warnings!.some((w) => w.includes("DISABLE_GROWTHBOOK"))).toBe(true);
-    expect(result.warnings!.some((w) => w.includes("older finished terminals"))).toBe(true);
+    expect(warningsOf(result)).toHaveLength(2);
+    expect(warningsOf(result).some((w) => w.includes("DISABLE_GROWTHBOOK"))).toBe(true);
+    expect(warningsOf(result).some((w) => w.includes("older finished terminals"))).toBe(true);
   });
   it("warns with nothing to prune, too", async () => {
     const result = await new HcLifecycle(new FakeClient(), { daemonEnv }).respawnPane("qa@rig", "/bin/sh", { env: { DISABLE_GROWTHBOOK: "1" }, remoteControl: true });
-    expect(result.warnings).toHaveLength(1);
+    expect(warningsOf(result)).toHaveLength(1);
   });
 });
 

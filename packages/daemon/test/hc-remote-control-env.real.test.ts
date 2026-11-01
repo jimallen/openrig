@@ -45,10 +45,10 @@ describe.skipIf(!HC)("the Remote Control names on a private hc core", () => {
 
   it("a Remote Control seat that set one keeps its own value, and is warned by name", async () => {
     const result = await host.createSession("own@rig", core.root, { DISABLE_GROWTHBOOK: "seat-value" }, { remoteControl: true });
-    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
     expect(result.warnings).toHaveLength(1);
-    expect(result.warnings![0]).toContain("DISABLE_GROWTHBOOK");
-    expect(result.warnings![0]).not.toContain("seat-value");
+    expect(result.warnings?.[0]).toContain("DISABLE_GROWTHBOOK");
+    expect(result.warnings?.[0]).not.toContain("seat-value");
     const env = await seen("own@rig");
     expect(env.get("DISABLE_GROWTHBOOK")).toBe("seat-value");
     expect(env.has("DO_NOT_TRACK")).toBe(false);
