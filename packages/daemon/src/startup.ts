@@ -216,6 +216,8 @@ interface DaemonOptions {
   seatMessagingPorts?: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
   /** Seat Messaging: a crash test's hold on the real ports, so it can hang an attempt at a named point. */
   wrapSeatMessagingPorts?: (ports: import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts) => import("./domain/seat-messaging/pump-ports.js").SeatMessagingPorts;
+  /** Seat Messaging: gives a crash test the daemon's own inbox, so a new Claude process's registration is the real one. */
+  onClaudeInboxReady?: (inbox: ClaudeNativeInbox) => void;
   /** Seat Messaging: gives a crash test the closure a Codex seat's restart runs, so the test runs that very closure. */
   onCodexReconcileReady?: (reconcile: (sessionName: string, threadId: string | null) => void) => void;
   /** Seat Messaging S3: a test's shorter schedule. */
@@ -2231,6 +2233,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         nativeSweepRunning = false;
       }
     };
+    opts?.onClaudeInboxReady?.(claudeNativeInbox);
     nativeNotice.send = (to, text) => sessionTransport.send(to, text, { forceTmux: true, actorSession: "daemon@kernel" }).catch(() => undefined);
     void nativeSweep();
     const nativeSweepTimer = setInterval(() => { void nativeSweep(); }, 15_000);

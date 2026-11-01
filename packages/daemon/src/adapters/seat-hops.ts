@@ -18,6 +18,8 @@ export interface HopRows {
   senderOf(id: MessageId): string | null;
   lastSocketWriteMs(id: MessageId): number | null;
   recordSocketWrite(id: MessageId, atMs: number): void;
+  hasPasted(id: MessageId): boolean;
+  markPasted(id: MessageId, atIso: string): void;
 }
 
 export interface HopGuard {
@@ -124,12 +126,25 @@ export class ClaudeSeatHop implements LastHop {
       const seat = await readSeat(this.deps.client, message.seat);
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
+      const id = message.ids[0];
       const step = decideClaudeRetry({
-        text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: false,
+        text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: false, pastedBefore: this.deps.rows.hasPasted(id),
         atRest: seat.status !== null && AT_REST.has(seat.status), composer: readClaudeComposer(seat.screen),
       });
+      const paste = async () => {
+        this.deps.rows.markPasted(id, new Date(this.now()).toISOString());
+        return sentOrRefused(await this.deps.input.submitText(message.seat, text));
+      };
       switch (step.kind) {
-        case "paste": return sentOrRefused(await this.deps.input.submitText(message.seat, text));
+        case "paste": return paste();
+        case "clear_and_resend": {
+          const cleared = await this.deps.input.sendKeys(message.seat, ["C-c"]);
+          if (!cleared.ok) return { kind: "refused", reason: cleared.code };
+          const after = await readSeat(this.deps.client, message.seat);
+          // The key must have emptied it, or the paste would join whatever is there.
+          if ("kind" in after) return after;
+          return readClaudeComposer(after.screen) === "" ? paste() : { kind: "paused", reason: "guard_held" };
+        }
         case "enter_only": return sentOrRefused(await this.deps.input.sendKeys(message.seat, ["Enter"]));
         case "paused": return { kind: "paused", reason: step.reason };
         default: return { kind: "paused", reason: "busy" };
@@ -145,7 +160,7 @@ export class ClaudeSeatHop implements LastHop {
       const seat = await readSeat(this.deps.client, message.seat);
       if ("kind" in seat) return seat;
       const step = decideClaudeRetry({
-        text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: true,
+        text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: true, pastedBefore: this.deps.rows.hasPasted(message.ids[0]),
         atRest: seat.status !== null && AT_REST.has(seat.status), composer: readClaudeComposer(seat.screen),
       });
       if (step.kind === "clear_composer") await this.deps.input.sendKeys(message.seat, ["C-c"]);
@@ -155,15 +170,17 @@ export class ClaudeSeatHop implements LastHop {
 }
 
 export interface CodexHopDeps {
-  rows: Pick<HopRows, "nonceOf">;
+  rows: Pick<HopRows, "nonceOf" | "hasPasted" | "markPasted">;
   guard: HopGuard;
   client: HopClient;
   input: HcHopInput;
+  now?: () => number;
 }
 
 export class CodexSeatHop implements LastHop {
   private readonly hop: CodexPasteHop;
-  constructor(private readonly deps: CodexHopDeps) { this.hop = new CodexPasteHop(deps.client, deps.input); }
+  constructor(private readonly deps: CodexHopDeps) { const now = deps.now ?? Date.now;
+    this.hop = new CodexPasteHop(deps.client, deps.input, { hasPasted: (id) => deps.rows.hasPasted(id), markPasted: (id) => deps.rows.markPasted(id, new Date(now()).toISOString()) }); }
 
   attempt(message: SeatMessage): Promise<LastHopResult> {
     const text = markedText(message, this.deps.rows);

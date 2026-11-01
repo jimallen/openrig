@@ -12,7 +12,10 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { MessageLedger } from "../src/domain/seat-messaging/message-ledger.js";
+import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { messageId } from "../src/domain/seat-messaging/ports.js";
 import { SEAT_MESSAGE_ROLLBACK_SQL } from "../src/db/migrations/122_seat_message.js";
+import { SEAT_MESSAGE_STATE_ROLLBACK_SQL } from "../src/db/migrations/123_seat_message_state.js";
 import { transportRoutes } from "../src/routes/transport.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
@@ -258,12 +261,40 @@ describe("a seat message's row", () => {
         db.prepare("UPDATE outbox_entries SET attempts = ? WHERE outbox_id = ?").run(attempts, id);
       };
       open("c-tried", 1, "content"); open("c-new", 0, "content"); open("l", 1, "lifecycle"); open("wake-intent-w", 1, "nudge");
-      db.exec(`BEGIN; ${SEAT_MESSAGE_ROLLBACK_SQL} COMMIT;`);
+      db.exec(`BEGIN; ${SEAT_MESSAGE_STATE_ROLLBACK_SQL} ${SEAT_MESSAGE_ROLLBACK_SQL} COMMIT;`);
       const state = (id: string) => db.prepare("SELECT delivery_state AS d, ack_evidence AS e, message_state AS m FROM outbox_entries WHERE outbox_id = ?").get(id);
       expect(state("c-tried")).toEqual({ d: "indeterminate", e: "crash_reconciled", m: null });
       expect(state("c-new")).toEqual({ d: "failed", e: "send_failed", m: null });
       expect(state("l")).toEqual({ d: "failed", e: "superseded", m: null });
       expect(state("wake-intent-w")).toEqual({ d: "pending", e: null, m: null });
+    });
+
+    it("a held row the pump took goes back to the guard, so the old build holds it and the second forward can judge it again", async () => {
+      const store = new MessageStore(db);
+      outbox.retain({ outboxId: "h", senderSession: "lead@rig", destinationSession: SEAT, body: "held" }, { nodeId: "n", session: SEAT, occupant: "g1", pane: null });
+      expect(store.adoptHeld(messageId("h"), "1970-01-01T00:00:00.000Z", "g1")).toBe(true);
+      store.claimAttempt(store.headOf(SEAT)!, 5_000);
+      store.markPasted(messageId("h"), "1970-01-01T00:00:00.000Z");
+      store.recordSocketWrite(messageId("h"), 1);
+      db.exec(`BEGIN; ${SEAT_MESSAGE_STATE_ROLLBACK_SQL} ${SEAT_MESSAGE_ROLLBACK_SQL} COMMIT;`);
+      expect(outbox.heldForNode("n").items.map((e) => e.outboxId)).toEqual(["h"]);  // what the old build lists
+      expect(db.prepare("SELECT message_state, message_hold_released_at, message_previous_occupant, next_attempt_at, message_pasted_at, message_socket_written_ms, delivery_state FROM outbox_entries WHERE outbox_id = 'h'").get())
+        .toEqual({ message_state: null, message_hold_released_at: null, message_previous_occupant: null, next_attempt_at: null, message_pasted_at: null, message_socket_written_ms: null, delivery_state: "retained" });
+      expect(store.listHeld().map((r) => r.id)).toEqual(["h"]);  // at the second forward the pump sees it again
+      expect(store.headOf(SEAT)).toBeNull();
+    });
+
+    it("an open row's schedule and pause do not outlive the rollback; a closed row's record does", () => {
+      const store = new MessageStore(db);
+      store.accept({ id: messageId("o"), seat: SEAT, sender: "lead@rig", body: "x" });
+      store.claimAttempt(store.headOf(SEAT)!, 5_000);
+      store.recordHopPause(messageId("o"), "busy", 9_000);
+      store.accept({ id: messageId("r"), seat: SEAT, sender: "lead@rig", body: "y" });
+      store.recordReceived({ id: messageId("r"), recordedAt: "1970-01-01T00:00:00.000Z", nonce: null }, 1);
+      db.exec(`BEGIN; ${SEAT_MESSAGE_STATE_ROLLBACK_SQL} ${SEAT_MESSAGE_ROLLBACK_SQL} COMMIT;`);
+      const row = (id: string) => db.prepare("SELECT message_state AS m, message_pause_reason AS p, next_attempt_at AS n, gate_recorded_at AS g FROM outbox_entries WHERE outbox_id = ?").get(id);
+      expect(row("o")).toEqual({ m: null, p: null, n: null, g: null });
+      expect(row("r")).toEqual({ m: "received", p: null, n: null, g: "1970-01-01T00:00:00.000Z" });
     });
   });
 });

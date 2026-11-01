@@ -1,7 +1,8 @@
 // The real daemon for the census crash table: createDaemon with its real RuntimeSeatPorts, real hop, real gate reader and real hook-store
 // layout. The only additions are a short schedule, and MPD_CRASH, which hangs one attempt at a named point so the parent can SIGKILL there.
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ClaudeNativeInbox } from "../../src/domain/claude-native-inbox.js";
 import type { LastHop } from "../../src/domain/seat-messaging/ports.js";
 import { createDaemon } from "../../src/startup.js";
 
@@ -23,8 +24,10 @@ const noted = (hop: LastHop): LastHop => ({
 });
 
 let reconcileSeat: ((sessionName: string, threadId: string | null) => void) | undefined;
+let inbox: ClaudeNativeInbox | undefined;
 const daemon = await createDaemon({
   dbPath: db,
+  onClaudeInboxReady: (ready) => { inbox = ready; },
   onCodexReconcileReady: (reconcile) => { reconcileSeat = reconcile; },
   wrapSeatMessagingPorts: (ports) => ({ gateFor: (seat) => ports.gateFor(seat), hopFor: (seat) => { const hop = ports.hopFor(seat); return hop ? noted(hop) : null; } }),
   messagePumpTiming: { tickMs: 40, pauseRecheckMs: 80, backoffMs: [300, 300, 300] },
@@ -43,5 +46,14 @@ setInterval(() => {
   reconcileSeat?.(seat, null);
   note("reconciled");
   appendFileSync(reconcile + ".done", "x");
+}, 50).unref();
+// A new Claude process on the seat: the daemon's own registration, as the relay's SessionStart makes it.
+const register = join(dir, "register-claude");
+let registered = false;
+setInterval(() => {
+  if (registered || !existsSync(register)) return;
+  registered = true;
+  const input = JSON.parse(readFileSync(register, "utf8")) as { nodeId: string; sessionName: string; transcriptPath: string };
+  void inbox?.registerEndpoint({ ...input, generation: null, socketPath: join(dir, "no.sock"), claudePid: process.pid, execPath: null }).then(() => note("registered"));
 }, 50).unref();
 setInterval(() => undefined, 60_000);

@@ -3,13 +3,14 @@
 //   - M1: Claude drops a socket line identical to the one before it, inside a window of 25 to 40 s, before any hook, and a write returns
 //     the same either way. So a completed write proves nothing, and only the gate confirms. A retry inside the window would be swallowed
 //     with no trace, so it waits.
-//   - M3: a multi-line paste shows as `[Pasted text #N +L lines]`, which carries no id, so a staged multi-line paste cannot be told from a
-//     person's: it holds, and shows on health. A paste is appended to a person's draft, and a blocked paste comes back to the
+//   - M3: a multi-line paste shows as `[Pasted text #N +L lines]`, which carries no id, so a staged multi-line paste is told from a person's
+//     only by the row's own record that it was pasted. A paste is appended to a person's draft, and a blocked paste comes back to the
 //     composer. Only `ctrl+c` clears it, only at rest, and only when the composer holds exactly that text. `esc esc` on an empty
 //     composer opens the rewind picker, so it is never used.
 //   - M10: a slash command on the socket is text, so a command goes by paste and carries no marker.
 
 export const CLAUDE_SOCKET_REPEAT_WINDOW_MS = 40_000;
+const PLACEHOLDER = /^\[Pasted text #\d+ \+(\d+) lines\]$/;
 
 export type ClaudeRetryStep =
   | { readonly kind: "socket" }
@@ -20,6 +21,8 @@ export type ClaudeRetryStep =
   | { readonly kind: "enter_only" }
   /** A blocked copy sits in the composer. */
   | { readonly kind: "clear_composer"; readonly key: "ctrl+c" }
+  /** This message's collapsed copy is staged with its Enter lost: clear it and paste again under the same id. */
+  | { readonly kind: "clear_and_resend"; readonly key: "ctrl+c" }
   /** The composer holds text that may be a person's. */
   | { readonly kind: "paused"; readonly reason: "guard_held" | "busy" };
 
@@ -34,12 +37,15 @@ export interface ClaudeRetryInput {
   readonly atRest: boolean;
   /** The composer's text, null when it could not be read. */
   readonly composer: string | null;
+  /** This message was pasted into an empty composer before: the row's own record. Absent or false: a placeholder is not ours. */
+  readonly pastedBefore?: boolean;
 }
 
-/** Only the exact text proves it is this message. A collapsed paste shows a line count, which a person's paste can match, and Enter would
- *  send their words while `ctrl+c` would lose them: so a placeholder is never ours to touch. */
-function holdsThisMessage(composer: string, text: string): boolean {
-  return composer === text;
+/** A placeholder shows only a line count, which a person's paste can match, so it is this message only if the row says it pasted into an
+ *  empty composer. Enter is never pressed on one: clearing and pasting again sends exactly this text, whatever is really there. */
+function collapsedCopy(composer: string, text: string, pastedBefore: boolean): boolean {
+  const lines = PLACEHOLDER.exec(composer)?.[1];
+  return pastedBefore && lines !== undefined && Number(lines) === text.split("\n").length;
 }
 
 export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {
@@ -51,6 +57,8 @@ export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {
   if (input.composer === null) return { kind: "paused", reason: "guard_held" };
   const composer = input.composer.trim();
   if (composer === "") return { kind: "paste" };
-  if (!holdsThisMessage(composer, input.text.trim())) return { kind: "paused", reason: "guard_held" };
-  return input.gateSeen ? { kind: "clear_composer", key: "ctrl+c" } : { kind: "enter_only" };
+  const text = input.text.trim();
+  if (composer === text) return input.gateSeen ? { kind: "clear_composer", key: "ctrl+c" } : { kind: "enter_only" };
+  if (!collapsedCopy(composer, text, input.pastedBefore === true)) return { kind: "paused", reason: "guard_held" };
+  return input.gateSeen ? { kind: "clear_composer", key: "ctrl+c" } : { kind: "clear_and_resend", key: "ctrl+c" };
 }

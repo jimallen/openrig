@@ -6,6 +6,7 @@
 // wiring and the pump, not a runtime; a P1 is the program ignoring its first Enter, not a raced core kill (s0 M8 measured the race).
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CHILD = resolve(here, "helpers/message-pump-census-daemon.ts");
 
 /** Plays Codex. Files in its folder steer it: `hold` keeps stdin unread until `go`; `lose-enter` ignores the first Enter, leaving the text
- *  staged; `compacting` refuses a prompt with nothing recorded; `die-after-record` records, then dies before the prompt is durable. */
+ *  staged (over 1000 chars it shows collapsed, marker hidden, as Codex does); `compacting` refuses a prompt with nothing recorded; `die-after-record` records, then dies before the prompt is durable. */
 const SEAT_PROGRAM = `
 import hashlib, json, os, re, sys, time, tty
 base, seen = sys.argv[1], sys.argv[2]
@@ -39,7 +40,10 @@ lost = False
 def status(state):
     os.write(1, b"\\x1b]7501;state=" + state + b":app=stub\\x1b\\\\")
 def draw():
-    lines = composer.decode("utf8", "replace").split("\\n")
+    shown = composer.decode("utf8", "replace")
+    if len(shown) > 1000:
+        shown = "[Pasted Content %d chars]" % len(shown)
+    lines = shown.split("\\n")
     text = "\\x1b[2J\\x1b[H\\r\\n"
     text += "\\u203a " + lines[0] if composer else "\\u203a Ask Codex to do anything"
     for line in lines[1:]:
@@ -85,6 +89,10 @@ while True:
     chunk = os.read(0, 65536)
     if not chunk:
         break
+    if b"\\x15" in chunk:
+        log.write(b"ctrl-u\\n")
+        composer = b""
+        chunk = chunk.split(b"\\x15", 1)[1]
     chunk = chunk.replace(b"\\x1b[200~", b"").replace(b"\\x1b[201~", b"")
     while chunk:
         before, sep, chunk = chunk.partition(b"\\r")
@@ -114,9 +122,9 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
   afterEach(() => { for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); children = []; });
   afterAll(() => core.stop());
 
-  interface Seat { dir: string; db: string; name: string; seen: string; read(id: string): Record<string, unknown>; log(): string[]; hop(): string[]; accept(id: string): void; flag(name: string): void; launch(): Promise<void> }
+  interface Seat { dir: string; db: string; name: string; nodeId: string; acceptBody(id: string, body: string): void; seen: string; read(id: string): Record<string, unknown>; log(): string[]; hop(): string[]; accept(id: string): void; flag(name: string): void; launch(): Promise<void> }
 
-  async function seatFixture(flags: string[] = []): Promise<Seat> {
+  async function seatFixture(flags: string[] = [], runtime = "codex"): Promise<Seat> {
     const dir = mkdtempSync(join(core.root, "w-"));
     for (const flag of flags) writeFileSync(join(dir, flag), "");
     writeFileSync(join(dir, "seat.py"), SEAT_PROGRAM);
@@ -128,7 +136,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     const handle = createDb(db);
     migrate(handle, ALL_MIGRATIONS);
     const rigs = new RigRepository(handle);
-    const node = rigs.addNode(rigs.createRig(`cr${id}`).id, `cx${id}`, { role: "worker", runtime: "codex" });
+    const node = rigs.addNode(rigs.createRig(`cr${id}`).id, `cx${id}`, { role: "worker", runtime });
     const sessions = new SessionRegistry(handle);
     sessions.updateStatus(sessions.registerSession(node.id, name).id, "running");
     sessions.updateBinding(node.id, { attachmentType: "hc", tmuxSession: name });
@@ -145,7 +153,8 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     await launch();
     const lines = (file: string) => readFileSync(join(dir, file), "utf8").split("\n").filter(Boolean);
     return {
-      dir, db, name, seen, launch, log: () => lines("seat.log"), hop: () => lines("hop.log"), flag: (f) => writeFileSync(join(dir, f), ""),
+      dir, db, name, nodeId: node.id, seen, launch,
+      acceptBody: (key, body) => { const h = createDb(db); try { new MessageStore(h).accept({ id: messageId(key), seat: name, sender: "lead@cr", body }); } finally { h.close(); } }, log: () => lines("seat.log"), hop: () => lines("hop.log"), flag: (f) => writeFileSync(join(dir, f), ""),
       read: (key) => { const h = createDb(db); try { return h.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(key) as Record<string, unknown>; } finally { h.close(); } },
       accept: (key) => { const h = createDb(db); try { new MessageStore(h).accept({ id: messageId(key), seat: name, sender: "lead@cr", body: `body of ${key}` }); } finally { h.close(); } },
     };
@@ -210,6 +219,33 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       agentOnce(s, "m1");
       expect(lines(s, "dropped")).toEqual([]);  // Enter alone: no second copy was typed
     }, 90_000);
+
+    it("P1, staged and collapsed with its Enter lost: the row knows it pasted, so the restart clears it and resends under the same id, once", async () => {
+      const s = await seatFixture(["lose-enter"]);
+      s.acceptBody("long", "x".repeat(1500));
+      const first = daemon(s, "after_bytes");
+      await hopSaw(s, "sent long");
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[Pasted Content"), "the collapsed copy");
+      await kill(first);
+      daemon(s);
+      await received(s, "long");
+      expect(lines(s, "ctrl-u")).toHaveLength(1);
+      agentOnce(s, "long");
+      expect(lines(s, "dropped")).toEqual([]);
+    }, 90_000);
+
+    it("a person's collapsed paste of exactly that size, with no paste of ours behind it, is left alone", async () => {
+      const s = await seatFixture();
+      const size = `${"x".repeat(1500)}\n[openrig-msg long:${"0".repeat(32)}]`.length;
+      expect(await new HcInput(core.client, new HcAttach(core.socketPath)).sendText(s.name, "y".repeat(size), undefined, { bracketed: true })).toMatchObject({ ok: true });
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[Pasted Content"), "their paste");
+      s.acceptBody("long", "x".repeat(1500));
+      daemon(s);
+      await hopSaw(s, "paused:guard_held long");
+      await settleLook();
+      expect(s.log()).toEqual([]);
+      expect((await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text).toContain("[Pasted Content");
+    }, 60_000);
 
     it("P2, landed and recorded: the restart reads the record and sends nothing", async () => {
       const s = await seatFixture();
@@ -316,6 +352,26 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       agentOnce(s, "m1");
     }, 90_000);
   });
+
+  it("Claude: a new process reconciles through the daemon's own onGateCleared, and a row recorded but never durable opens again", async () => {
+    const s = await seatFixture([], "claude-code");
+    s.accept("m1");
+    daemon(s);
+    await hopSaw(s, "claimed m1");
+    const nonce = await until(() => s.read("m1").native_nonce, Boolean, "the row's nonce") as string;
+    const transcript = join(s.dir, "transcript.jsonl");
+    writeFileSync(transcript, "");
+    const gone = spawnSync("/usr/bin/true").pid;
+    mkdirSync(s.seen, { recursive: true });
+    const name = createHash("sha256").update(`m1:${nonce}`).digest("hex");
+    writeFileSync(join(s.seen, name), JSON.stringify({ id: "m1", nonce, recordedAt: "1999-01-01T00:00:00.000Z", via: "hook", agentPid: gone, transcriptPath: transcript, durable: false }));
+    await received(s, "m1");
+    writeFileSync(join(s.dir, "register-claude"), JSON.stringify({ nodeId: s.nodeId, sessionName: s.name, transcriptPath: transcript }));
+    await hopSaw(s, "registered");
+    await until(() => s.read("m1"), (r) => r.delivery_state === "pending" && r.message_state === "attempting", "the row reopened");
+    expect(s.read("m1").native_nonce).toBe(nonce);
+    expect(existsSync(join(s.seen, name))).toBe(false);
+  }, 60_000);
 
   describe("compaction", () => {
     it("M6: refused while compacting, nothing recorded: the pump's next attempt lands, once", async () => {

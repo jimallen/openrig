@@ -174,6 +174,15 @@ export class MessageStore {
     this.db.prepare("UPDATE outbox_entries SET message_socket_written_ms = ? WHERE outbox_id = ?").run(atMs, id);
   }
 
+  /** Committed before the paste: from here a collapsed copy of this message's size can be this message's own. */
+  markPasted(id: MessageId, atIso: string): void {
+    this.db.prepare("UPDATE outbox_entries SET message_pasted_at = ? WHERE outbox_id = ?").run(atIso, id);
+  }
+
+  hasPasted(id: MessageId): boolean {
+    return (this.db.prepare("SELECT message_pasted_at AS at FROM outbox_entries WHERE outbox_id = ?").get(id) as { at: string | null } | undefined)?.at != null;
+  }
+
   lastSocketWriteMs(id: MessageId): number | null {
     return (this.db.prepare("SELECT message_socket_written_ms AS at FROM outbox_entries WHERE outbox_id = ?").get(id) as { at: number | null } | undefined)?.at ?? null;
   }

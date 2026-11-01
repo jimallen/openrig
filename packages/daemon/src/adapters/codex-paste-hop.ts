@@ -3,19 +3,22 @@
 //
 // A core restart between the paste and the Enter leaves the text staged, and a second paste would put a second copy behind it. s0 M8
 // measured the window (0.2 to 0.4 s) and that Enter alone completes it with one turn. So a staged copy of THIS message gets Enter
-// only, when its marker shows. A paste over about 1000 characters collapses to `› [Pasted Content 1610 chars]`, marker hidden (s0 M4):
-// that placeholder could be a person's paste of the same length, so it is held, and shows on health.
+// only, when its marker shows. A paste over about 1000 characters collapses to `› [Pasted Content 1610 chars]`, marker hidden (s0 M4), and
+// a length proves nothing alone: Enter on a person's paste of that length would send their words. So a collapsed copy is ours only when the
+// row records that this message was pasted into an empty composer, and then it is cleared with `ctrl+u` (the key s0 M4 measured on a
+// placeholder) and pasted again under the same id, which the gate dedupes.
 //
 // Anything else in the composer is a person's draft, or something unknown. Enter would submit it and a paste would join it, so the
 // attempt pauses. An attempt never clears the composer.
 
 import { HcError, HcOutcomeUnknownError, HcUnavailableError, type HcClient, type HcTerminal } from "./hc-client.js";
 import { hcTerminalName } from "./hc-host.js";
-import type { LastHop, LastHopResult, SeatMessage } from "../domain/seat-messaging/ports.js";
+import type { LastHop, LastHopResult, MessageId, SeatMessage } from "../domain/seat-messaging/ports.js";
 
 const PROMPT_LINE = /^\s*› ?(.*)$/;
 /** Codex's empty composer (0.166.0, s0 M4). */
 const EMPTY_COMPOSER = "Ask Codex to do anything";
+const COLLAPSED_PASTE = /^\[Pasted Content (\d+) chars\]$/;
 const AT_REST = new Set(["idle", "done"]);
 
 export type ComposerRead =
@@ -52,12 +55,26 @@ export function composerHoldsMessage(lines: readonly string[], body: string): bo
   return marker !== null && lines.some((line) => line.trim() === marker);
 }
 
-export type StagedDecision = "paste" | "enter_only" | "hold";
+export type StagedDecision = "paste" | "enter_only" | "clear_and_resend" | "hold";
 
-export function decideStagedAttempt(composer: ComposerRead, body: string): StagedDecision {
+/** One placeholder of exactly this message's size. Codex's count of a non-ASCII paste is unmeasured, so each count the text has is accepted. */
+function isCollapsedCopy(lines: readonly string[], body: string): boolean {
+  const shown = lines.length === 1 ? COLLAPSED_PASTE.exec(lines[0]!)?.[1] : undefined;
+  if (shown === undefined) return false;
+  return [body.length, [...body].length, Buffer.byteLength(body)].includes(Number(shown));
+}
+
+export function decideStagedAttempt(composer: ComposerRead, body: string, pastedBefore = false): StagedDecision {
   if (composer.kind === "empty") return "paste";
   if (composer.kind === "unreadable") return "hold";
-  return composerHoldsMessage(composer.lines, body) ? "enter_only" : "hold";
+  if (composerHoldsMessage(composer.lines, body)) return "enter_only";
+  return pastedBefore && isCollapsedCopy(composer.lines, body) ? "clear_and_resend" : "hold";
+}
+
+/** The row's own record of a paste, keyed by message id. */
+export interface PasteRecord {
+  hasPasted(id: MessageId): boolean;
+  markPasted(id: MessageId): void;
 }
 
 export interface CodexPasteInput {
@@ -67,7 +84,7 @@ export interface CodexPasteInput {
 }
 
 export class CodexPasteHop implements LastHop {
-  constructor(private readonly client: Pick<HcClient, "call">, private readonly input: CodexPasteInput) {}
+  constructor(private readonly client: Pick<HcClient, "call">, private readonly input: CodexPasteInput, private readonly pastes?: PasteRecord) {}
 
   async attempt(message: SeatMessage): Promise<LastHopResult> {
     const terminal = hcTerminalName(message.seat);
@@ -86,8 +103,17 @@ export class CodexPasteHop implements LastHop {
     if (status === "blocked") return { kind: "paused", reason: "blocked" };
     if (status === null || !AT_REST.has(status)) return { kind: "paused", reason: "busy" };
 
-    const decision = decideStagedAttempt(readCodexComposer(screen), message.body);
+    const id = message.ids[0];
+    const decision = decideStagedAttempt(readCodexComposer(screen), message.body, this.pastes?.hasPasted(id) === true);
     if (decision === "hold") return { kind: "paused", reason: "guard_held" };
+    if (decision === "clear_and_resend") {
+      const cleared = await this.input.sendKeys(message.seat, ["C-u"]);
+      if (!cleared.ok) return { kind: "refused", reason: cleared.code };
+      // The key must have emptied it, or the paste below would join whatever is there.
+      const after = await this.client.call<{ text: string }>("terminal.read", { terminal, lines: 200 });
+      if (readCodexComposer(after.text).kind !== "empty") return { kind: "paused", reason: "guard_held" };
+    }
+    if (decision !== "enter_only") this.pastes?.markPasted(id);
     const sent = decision === "enter_only" ? await this.input.sendKeys(message.seat, ["Enter"]) : await this.input.submitText(message.seat, message.body);
     if (sent.ok) return { kind: "sent" };
     // The gate is what says whether it landed. Only a refusal the core gave outright is a reason not to come back.
