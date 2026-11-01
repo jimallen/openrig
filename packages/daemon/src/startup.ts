@@ -2259,6 +2259,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       });
       // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
       tmuxAdapter.messageHandOff = new PumpHandOff(seatMessages, messagePump, seatMessagingPorts);
+      queueRepoInstance.attachMessagePump(tmuxAdapter.messageHandOff, messageObligations);
       messagePump.start();
     }
     queueRepoInstance.attachActivityReader((session) => {
