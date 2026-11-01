@@ -21,7 +21,7 @@ export type ClaudeRetryStep =
   /** A blocked copy sits in the composer. */
   | { readonly kind: "clear_composer"; readonly key: "ctrl+c" }
   /** The composer holds text that may be a person's. */
-  | { readonly kind: "paused"; readonly reason: "guard_held" | "busy" | "draft" };
+  | { readonly kind: "paused"; readonly reason: "screen_unreadable" | "busy" | "draft" };
 
 export interface ClaudeRetryInput {
   /** The message's text as an attempt would carry it, marker included. */
@@ -47,7 +47,7 @@ export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {
     return input.nowMs < notBefore ? { kind: "wait", notBefore } : { kind: "socket" };
   }
   if (!input.atRest) return { kind: "paused", reason: "busy" };
-  if (input.composer === null) return { kind: "paused", reason: "guard_held" };
+  if (input.composer === null) return { kind: "paused", reason: "screen_unreadable" };
   const composer = input.composer.trim();
   if (composer === "") return { kind: "paste" };
   // Only this exact text is ours. Anything else, a collapsed placeholder included, may be a person's draft (Jim's rule): it is never pressed,

@@ -359,10 +359,10 @@ process writing directly to the terminal. Disable deliberately before lifecycle 
     .action(async (seat: string, id: string, opts: {reason: string; json?: boolean}) => {
       await guardRequest("POST", `/api/seat/retire-held-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, { reason: opts.reason }, opts.json);
     });
-  cmd.command("read-message").argument("<seat>").argument("<id>").option("--json")
-    .description("Print a message too long to paste into its seat; the seat's copy names this command. Reading changes nothing.")
-    .action(async (seat: string, id: string, opts: { json?: boolean }) => {
-      await guardRequest("GET", `/api/transport/read-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, undefined, opts.json, opts.json ? undefined : (data) => String(data["body"]));
+  cmd.command("read-message").argument("<seat>").argument("<id>").option("--json").option("--operator", "Read it from a shell with no seat identity. This does not deliver it.")
+    .description("Print a message that reached its seat as a pointer. Run by that seat, this is what delivers it.")
+    .action(async (seat: string, id: string, opts: { json?: boolean; operator?: boolean }) => {
+      await guardRequest("GET", `/api/transport/read-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}${opts.operator ? "?operator=1" : ""}`, undefined, opts.json, opts.json ? undefined : (data) => String(data["body"]));
     });
 
   cmd.command("cancel-message").argument("<seat>").argument("<id>").requiredOption("--reason <text>")

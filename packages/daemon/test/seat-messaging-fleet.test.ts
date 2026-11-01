@@ -195,6 +195,37 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("a1");
     });
 
+    it("says a pointer landed and nobody read it: that is not delivered", () => {
+      const store = new MessageStore(db);
+      accept("p1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.markPointer(messageId("p1"));
+      const row = reasons();
+      expect(row).toHaveLength(1);
+      expect(row[0]).toContain("has not read it");
+      expect(store.recordPointerRead(messageId("p1"), new Date(NOW.getTime() - 10).toISOString())).toBe(true);
+      expect(reasons()[0]).toBe("1 message(s) received and 0 returned to their senders as undeliverable, in the last 24 h.");
+      expect(store.recordPointerRead(messageId("p1"), "1999-01-01T00:00:00.000Z")).toBe(false);
+    });
+
+    it("a read settles only a pointer row", () => {
+      const store = new MessageStore(db);
+      accept("n1");
+      expect(store.recordPointerRead(messageId("n1"), "1999-01-01T00:00:00.000Z")).toBe(false);
+      expect(store.outcomeOf(messageId("n1"))).toBe("open");
+    });
+
+    it("names a screen with no composer, and a stopped terminal, at once", () => {
+      const store = new MessageStore(db);
+      accept("s1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("s1"), "screen_unreadable", 2);
+      expect(reasons()[0]).toContain("shows no composer");
+      store.claimAttempt(store.headOf("dev@r")!, 3);
+      store.recordHopPause(messageId("s1"), "seat_stopped", 4);
+      expect(reasons()[0]).toContain("its terminal is not running");
+    });
+
     it("names a dialog at once: nothing moves until a person answers it", () => {
       const store = new MessageStore(db);
       accept("b1");

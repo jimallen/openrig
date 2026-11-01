@@ -200,7 +200,7 @@ describe("the hops", () => {
     it("no composer on the screen proves nothing", async () => {
       eligible = false;
       screen = "Welcome\n";
-      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
+      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "screen_unreadable" });
     });
     it("a busy seat pauses, and a dialog pauses as blocked", async () => {
       eligible = false;
@@ -300,7 +300,28 @@ describe("the hops", () => {
       expect(Buffer.byteLength(sent)).toBeLessThanOrEqual(CODEX_PASTE_LIMIT);
       expect(sent).not.toContain("yyy");
       expect(sent).toContain(`rig seat read-message ${SEAT} m-1`);
-      expect(splitMarkedBlock(sent).markers).toEqual([{ id: "m-1", nonce: store.nonceOf(ID) }]);
+      expect(splitMarkedBlock(sent).markers).toEqual([{ id: "m-1.p1", nonce: store.nonceOf(ID) }]);
+      expect(store.isPointer(ID)).toBe(true);
+    });
+    it("each pointer has its own attempt id, so a resend is not a repeat at the gate", async () => {
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      const long = { ...message, body: "y".repeat(CODEX_PASTE_LIMIT) };
+      await codex().attempt(long);
+      store.claimAttempt(store.headOf(SEAT)!, 0);
+      await codex().attempt(long);
+      expect(calls.map((c) => splitMarkedBlock(c.replace("paste:", "")).markers[0]!.id)).toEqual(["m-1.p1", "m-1.p2"]);
+    });
+    it("a short message is no pointer row", async () => {
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      await codex().attempt(message);
+      expect(store.isPointer(ID)).toBe(false);
+    });
+    it("a staged pointer of an earlier attempt is this message's: Enter alone, never a draft", async () => {
+      store.markPointer(ID);
+      screen = `› A message too long to paste is waiting for you.\n  [openrig-msg m-1.p1:${store.nonceOf(ID)}]\n${FOOTER}`;
+      store.claimAttempt(store.headOf(SEAT)!, 0);
+      await expect(codex().attempt({ ...message, body: "y".repeat(CODEX_PASTE_LIMIT) })).resolves.toEqual({ kind: "sent" });
+      expect(calls).toEqual(["keys:Enter"]);
     });
     it("at the limit it goes whole; a multi-byte body is judged by its bytes", async () => {
       screen = `› Ask Codex to do anything\n${FOOTER}`;

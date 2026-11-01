@@ -227,14 +227,14 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       s.acceptBody("long", "x".repeat(1500));
       const first = daemon(s, "after_bytes");
       await hopSaw(s, "sent long");
-      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[openrig-msg long:"), "the staged marker");
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[openrig-msg long.p1:"), "the staged marker");
       await kill(first);
       expect(s.log()).toEqual([]);
       daemon(s);
-      await received(s, "long");
-      agentOnce(s, "long");
+      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p")), "the pointer", 30_000);
       expect(lines(s, "ctrl-u")).toEqual([]);
       expect(lines(s, "dropped")).toEqual([]);
+      expect(s.read("long").message_state).toBe("attempting");  // only reading it delivers it
     }, 90_000);
 
     it("a person's collapsed paste of exactly that size, with no paste of ours behind it, is left alone", async () => {

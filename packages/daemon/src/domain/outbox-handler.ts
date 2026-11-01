@@ -99,6 +99,8 @@ export const OUTBOX_ACK_EVIDENCE = [
   "send_gone",
   // Seat Messaging S3: the seat's gate recorded the id (the only thing that makes a Message `received`); the seat is gone for good.
   "gate_seen", "seat_gone",
+  // Seat Messaging: a message that went as a pointer, and its seat read the body.
+  "pointer_read",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 

@@ -36,6 +36,9 @@ def status(state):
     os.write(1, b"\x1b]7501;state=" + state + b":app=stub\x1b\\")
 def draw():
     lines = composer.decode("utf8", "replace").split("\n")
+    if flag("no-composer"):
+        os.write(1, b"\x1b[2J\x1b[H  Select a model\r\n  1. one\r\n  2. two\r\n")
+        return
     if runtime == "codex":
         if len(composer) > 1000:
             text = "\x1b[2J\x1b[H\r\n› [Pasted Content %d chars]" % len(composer)

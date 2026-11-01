@@ -45,6 +45,6 @@ describe("the paste hop, where a seat is ineligible", () => {
     expect(decideClaudeRetry({ ...paste, composer: "[Pasted text #2 +7 lines]", gateSeen: true })).toEqual({ kind: "paused", reason: "draft" });
   });
   it("an unreadable composer proves nothing, so nothing is typed", () => {
-    expect(decideClaudeRetry({ ...paste, composer: null })).toEqual({ kind: "paused", reason: "guard_held" });
+    expect(decideClaudeRetry({ ...paste, composer: null })).toEqual({ kind: "paused", reason: "screen_unreadable" });
   });
 });

@@ -17,6 +17,7 @@ import type { Migration } from "../migrate.js";
  *    wait must survive a daemon restart.
  *  - `message_pump_owned`: the pump took this row: accepted, adopted from a drain, or released from a guard. S1's send path also writes
  *    `message_state`, on seats the pump does not serve, and a row of that kind left open by a crash may have landed.
+ *  - `message_pointer`: this message went as a short pointer, so it is `received` only when its seat reads the body.
  *
  * The row's nonce is `native_nonce` (migration 118), minted at the first attempt and never changed: (id, nonce) is the gate's identity.
  */
@@ -27,7 +28,7 @@ import type { Migration } from "../migrate.js";
  * `native_nonce` stays: it belongs to rows the old build still reads. */
 export const SEAT_MESSAGE_STATE_ROLLBACK_SQL = `
 UPDATE outbox_entries SET message_hold_released_at=NULL, message_previous_occupant=NULL, message_pump_owned=NULL WHERE delivery_state='retained' AND message_hold_released_at IS NOT NULL;
-UPDATE outbox_entries SET message_pause_reason=NULL, message_last_refusal=NULL, message_socket_written_ms=NULL, next_attempt_at=NULL, message_pump_owned=NULL WHERE message_state IN ('accepted','attempting');
+UPDATE outbox_entries SET message_pause_reason=NULL, message_last_refusal=NULL, message_socket_written_ms=NULL, next_attempt_at=NULL, message_pump_owned=NULL, message_pointer=NULL WHERE message_state IN ('accepted','attempting');
 `;
 
 export const seatMessageStateSchema: Migration = {
@@ -42,6 +43,7 @@ export const seatMessageStateSchema: Migration = {
     ALTER TABLE outbox_entries ADD COLUMN message_previous_occupant TEXT;
     ALTER TABLE outbox_entries ADD COLUMN message_socket_written_ms INTEGER;
     ALTER TABLE outbox_entries ADD COLUMN message_pump_owned INTEGER;
+    ALTER TABLE outbox_entries ADD COLUMN message_pointer INTEGER;
     CREATE INDEX idx_outbox_message_open ON outbox_entries(destination_session, message_state)
       WHERE message_state IN ('accepted', 'attempting');
   `,

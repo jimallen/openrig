@@ -53,12 +53,14 @@ export function composerHoldsMessage(lines: readonly string[], body: string): bo
   const marker = lastMarkerLine(body);
   if (marker === null) return false;
   // Whole lines only: a draft quoting a marker mid-line is a person's. Lines join only to undo a narrow seat's wrap.
-  const whole = marker.replace(/\s+/g, "");
+  // A pointer's marker carries its attempt (`<id>.p<n>`), and a staged one may be an earlier attempt's: it is still this message.
+  const anyAttempt = (text: string) => text.replace(/\.p\d+:/, ":");
+  const whole = anyAttempt(marker.replace(/\s+/g, ""));
   return lines.some((_, start) => {
     let joined = "";
     for (const line of lines.slice(start)) {
       joined += line.replace(/\s+/g, "");
-      if (joined.length >= whole.length) return joined === whole;
+      if (anyAttempt(joined).length >= whole.length) return anyAttempt(joined) === whole;
     }
     return false;
   });
@@ -100,7 +102,7 @@ export class CodexPasteHop implements LastHop {
 
     const decision = decideStagedAttempt(readCodexComposer(screen), message.body);
     if (decision === "draft") return { kind: "paused", reason: "draft" };
-    if (decision === "unreadable") return { kind: "paused", reason: "guard_held" };
+    if (decision === "unreadable") return { kind: "paused", reason: "screen_unreadable" };
     const sent = decision === "enter_only" ? await this.input.sendKeys(message.seat, ["Enter"]) : await this.input.submitText(message.seat, message.body);
     if (sent.ok) return { kind: "sent" };
     // The gate is what says whether it landed. Only a refusal the core gave outright is a reason not to come back.

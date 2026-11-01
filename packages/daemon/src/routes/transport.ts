@@ -198,13 +198,24 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     return c.json(answer);
   });
 
-  // The body of a message too long to paste into its seat: the seat's copy names this (rig seat read-message). Reading changes nothing.
+  // The body of a message that went as a pointer (rig seat read-message). Its seat reading it is what delivers it, so the seat is the only caller who
+  // settles anything: its identity is required, and anyone else is refused. A person from a shell with no seat identity may read with --operator,
+  // which changes nothing. Any other row is not here: this is no general way to read a seat's messages.
   router.get("/read-message/:seat/:id", (c) => {
     const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
     if (!outbox) return c.json({ error: "Outbox unavailable" }, 503);
-    const entry = outbox.getById(c.req.param("id"));
-    if (entry?.destinationSession !== c.req.param("seat")) return c.json({ error: `No message ${c.req.param("id")} for ${c.req.param("seat")}` }, 404);
-    return c.json({ id: entry.outboxId, seat: entry.destinationSession, sender: entry.senderSession, body: entry.body });
+    const seat = c.req.param("seat");
+    const id = messageId(c.req.param("id"));
+    const store = new MessageStore(outbox.db);
+    const entry = outbox.getById(id);
+    if (entry?.destinationSession !== seat || !store.isPointer(id)) return c.json({ error: `No message ${id} to read for ${seat}` }, 404);
+    const caller = transportSenderSession(c);
+    const operator = caller === undefined && c.req.query("operator") === "1";
+    if (caller !== seat && !operator) {
+      return c.json({ error: `Only ${seat} can read this message. From a shell with no seat identity, an operator can read it with --operator, which does not deliver it.` }, 403);
+    }
+    if (!operator) store.recordPointerRead(id, new Date().toISOString());
+    return c.json({ id: entry.outboxId, seat, sender: entry.senderSession, body: entry.body });
   });
 
   // The operator's end of a message nothing can deliver (rig seat cancel-message): by id, naming its seat, with a reason. No state of the pump

@@ -72,6 +72,11 @@ describe("rig seat read-message", () => {
     expect(JSON.parse(out[0]!)).toMatchObject({ id: "m1", body: "x" });
   });
 
+  it("--operator asks as an operator, so the daemon knows the read settles nothing", async () => {
+    await run(["seat", "read-message", "dev@my-rig", "m1", "--operator"], { status: 200, data: { id: "m1", body: "x" } });
+    expect(calls).toEqual([{ method: "GET", path: "/api/transport/read-message/dev%40my-rig/m1?operator=1" }]);
+  });
+
   it("a refusal is not printed as a body", async () => {
     await run(["seat", "read-message", "dev@my-rig", "m1"], { status: 404, data: { error: "No message m1 for dev@my-rig" } });
     expect(out.join("\n")).toContain("No message m1");

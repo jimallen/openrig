@@ -48,6 +48,19 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: it is waiting on a dialog (oldest ${seat.oldestId}). Nothing is typed into a dialog; they go when it is answered.`));
         continue;
       }
+      if (seat.unreadPointer) {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} are not delivered: a pointer to the oldest (${seat.oldestId}) reached the seat ${seat.attempts} time(s), and it has not read it. OpenRig sends the pointer again until it does.`));
+        continue;
+      }
+      // So is a picker or anything else with no composer: it is the same wait as a dialog, and it has no status to say so.
+      if (seat.pauseReason === "screen_unreadable") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its screen shows no composer, such as a picker (oldest ${seat.oldestId}). Nothing is typed there; they go when it is closed.`));
+        continue;
+      }
+      if (seat.pauseReason === "seat_stopped") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its terminal is not running (oldest ${seat.oldestId}). They go when the seat is back, or return to their senders if it is archived.`));
+        continue;
+      }
       // So is a seat with no agent: nothing restarts it from here, so "keeps trying" alone would hide that a person or a restore must act.
       if (seat.pauseReason === "agent_absent") {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its agent is not running in its terminal (oldest ${seat.oldestId}). Nothing is typed there; they go when the agent is back, or return to their senders if the seat is archived.`));

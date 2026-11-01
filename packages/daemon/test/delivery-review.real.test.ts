@@ -29,7 +29,8 @@ const SHIM = resolve(here, "helpers/delivery-relay-delay.cjs");
 const RUNNER = resolve(here, "../src/adapters/pi-runner.ts");
 const TOKEN = "delivery-token";
 let serial = 0;
-let port = 21100 + (process.pid % 500);
+/** A port the OS says is free. A number derived from the pid collides with another run on the same host, and the child then dies of EADDRINUSE. */
+const freePort = (): number => Number(spawnSync(process.execPath, ["-e", "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"], { encoding: "utf8" }).stdout.trim());
 
 describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   const core = new PrivateCore("dr");
@@ -66,14 +67,14 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     const gateDir = join(seatGateRoot(HOME), seatGateFolder(name));
     const seen = join(gateDir, "seen");
     const address = hcTerminalName(name);
-    const qport = ++port;
+    const qport = freePort();
     const launch = async (ackDelay: number | null = null) => {
       const env = [...(ackDelay !== null ? [`NODE_OPTIONS=--require ${SHIM}`, `DELIVERY_ACK_DELAY_MS=${ackDelay}`, `DELIVERY_ACK_LOG=${join(dir, "ack.log")}`] : []),
         `OPENRIG_SESSION_NAME=${name}`, `OPENRIG_RUNTIME=${runtime}`, `OPENRIG_HOME=${HOME}`, `OPENRIG_NODE_ID=${node.id}`, `OPENRIG_URL=http://127.0.0.1:${qport}`, `OPENRIG_ACTIVITY_HOOK_TOKEN=${TOKEN}`];
       const launcher = join(dir, "openrig-tmux-send-stub");  // a real Codex seat's foreground: our launch script, with the agent its child
       writeFileSync(launcher, `/usr/bin/python3 -I ${runtime === "codex" ? CODEX_SEAT : CLAUDE_SEAT} "$@"\n:\n`);
       await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/bin/sh", launcher, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
-      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes(runtime === "codex" ? "Ask Codex" : "❯"), "first paint");
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes(flags.includes("no-composer") ? "Select a model" : runtime === "codex" ? "Ask Codex" : "❯"), "first paint");
       await until(() => existsSync(join(gateDir, "gate.json")), Boolean, "the relay's declaration");
     };
     const lines = (f: string) => readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean);
@@ -96,7 +97,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     children.push(child);
     return child;
   }
-  const failed = (s: F) => { if (existsSync(join(s.dir, "child-failed"))) throw new Error(`daemon died: ${readFileSync(join(s.dir, "child-failed"), "utf8").slice(0, 700)}`); };
+  const failed = (s: F) => { if (existsSync(join(s.dir, "child-failed"))) throw new Error(`daemon died: ${readFileSync(join(s.dir, "child-failed"), "utf8").slice(-1800)}`); };
   const hopSaw = async (s: F, line: string, ms = 20_000) => { await until(() => { failed(s); return s.hop(); }, (l) => l.includes(line), `hop ${line}`, ms); };
   const state = (s: F, id: string, want: string, ms = 20_000) => until(() => { failed(s); return s.read(id); }, (r) => r?.message_state === want, `${id} ${want}`, ms);
   const agent = (s: F, id: string) => s.log().filter((l) => l.startsWith(`agent ${id} `));
@@ -105,10 +106,10 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   const screen = async (s: F) => (await core.client.call<{ text: string }>("terminal.read", { terminal: s.address })).text;
   const queueItems = (s: F) => s.withDb((c) => c.prepare("SELECT destination_session AS d, body FROM queue_items").all() as Array<{ d: string; body: string }>);
   /** curl, a real client: the suite's guard refuses fetch to a port it did not register. */
-  const http = (s: F, path: string, body?: unknown) => {
+  const http = (s: F, path: string, body?: unknown, as: string | null = s.lead) => {
     const bodyFile = join(s.dir, "req.json");
     if (body !== undefined) writeFileSync(bodyFile, JSON.stringify(body));
-    const out = spawnSync("/usr/bin/curl", ["-s", "-w", "\n%{http_code}", ...(body === undefined ? [] : ["-X", "POST", "-H", "content-type: application/json", "-H", `x-openrig-session: ${s.lead}`, "--data-binary", `@${bodyFile}`]), `http://127.0.0.1:${s.qport}${path}`], { encoding: "utf8", maxBuffer: 1 << 26 }).stdout;
+    const out = spawnSync("/usr/bin/curl", ["-s", "-w", "\n%{http_code}", ...(as === null ? [] : ["-H", `x-openrig-session: ${as}`]), ...(body === undefined ? [] : ["-X", "POST", "-H", "content-type: application/json", "--data-binary", `@${bodyFile}`]), `http://127.0.0.1:${s.qport}${path}`], { encoding: "utf8", maxBuffer: 1 << 26 }).stdout;
     const at = out.lastIndexOf("\n");
     return { status: Number(out.slice(at + 1)), text: out.slice(0, at) };
   };
@@ -384,6 +385,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     // The launch `hc-input.ts` types for a sourced seat: `( . cmd )`, so the agent runs inside a forked subshell, whose argv is the login shell's.
     // Live seats on Sparky show this: claude pgid 2149701 tpgid 2149701, under a zsh of that pid, under the login zsh.
     const shellSeat = async (s: F, shell: string, runtime: string) => {
+      writeFileSync(join(core.root, "h", ".zshrc"), "");  // an empty HOME gets zsh's new-user install screen on Linux, not a prompt
       const seatEnv = { PATH: `${dirname(HC)}:/usr/bin:/bin`, HOME: join(core.root, "h"), OPENRIG_SESSION_NAME: s.name, OPENRIG_RUNTIME: runtime, OPENRIG_HOME: HOME, OPENRIG_NODE_ID: s.nodeId, OPENRIG_URL: `http://127.0.0.1:${s.qport}`, OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN };
       await core.client.call("terminal.run", { argv: [shell, "-l"], name: s.address, cwd: s.dir, env: seatEnv, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
       await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground, Boolean, "the shell");
@@ -485,26 +487,91 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     }, 40_000);
   });
 
-  describe("a long Codex message never collapses", () => {
-    it("it goes as a short paste with its marker, the body reads back by command, and a lost Enter is finished with Enter alone", async () => {
-      const s = fixture(["lose-enter"]); await s.launch();
+  describe("a long Codex message goes by pointer, and only reading it delivers it", () => {
+    const read = (s: F, id: string, as: string | null, operator = false) => http(s, `/api/transport/read-message/${encodeURIComponent(s.name)}/${id}${operator ? "?operator=1" : ""}`, undefined, as);
+
+    it("the pointer landing is an attempt: the row stays open, health says so, the pointer is resent past the gate, and the seat's own read settles it", async () => {
+      const s = fixture(); await s.launch();
       const body = "x".repeat(1500);
-      s.accept("long", body); daemon(s);
-      await state(s, "long", "received", 30_000);
-      await until(() => agent(s, "long"), (l) => l.length > 0, "the agent's copy");
-      expect(agent(s, "long")).toHaveLength(1);
-      const seen = agent(s, "long")[0]!;
+      s.accept("long", body); s.accept("next"); daemon(s);
+      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p1 ")), "the first pointer");
+      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p2 ")), "a resend, past the gate", 20_000);
+      const seen = s.log().find((x) => x.startsWith("agent long.p1 "))!;
       expect(seen.length).toBeLessThan(600);
       expect(seen).not.toContain("xxxx");
       expect(seen).toContain(`rig seat read-message ${s.name} long`);
       expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      expect(s.read("long")).toMatchObject({ message_state: "attempting", delivery_state: "pending", message_pointer: 1 });
+      expect(s.hop()).not.toContain("claimed next");  // FIFO holds
       await hopSaw(s, "booted");
-      const read = http(s, `/api/transport/read-message/${encodeURIComponent(s.name)}/long`);
-      expect(read.status).toBe(200);
-      expect((JSON.parse(read.text) as { body: string }).body).toBe(body);
-      expect(http(s, `/api/transport/read-message/${encodeURIComponent("other@rig")}/long`).status).toBe(404);
-      expect(read.text).not.toContain(String(s.read("long").native_nonce));
+      expect(http(s, "/api/health").text).toContain("has not read it");
+
+      const answer = read(s, "long", s.name);
+      expect(answer.status).toBe(200);
+      expect((JSON.parse(answer.text) as { body: string }).body).toBe(body);
+      expect(s.read("long")).toMatchObject({ message_state: "received", delivery_state: "delivered", ack_evidence: "pointer_read" });
+      expect(answer.text).not.toContain(String(s.read("long").native_nonce));
+      await hopSaw(s, "claimed next");
+      const attempts = s.read("long").attempts;
+      await wait(700);
+      expect(s.read("long").attempts).toBe(attempts);  // the pump has stopped
+      expect(read(s, "long", s.name).status).toBe(200);  // a second read is the same answer
+    }, 70_000);
+
+    it("anyone else is refused and settles nothing; an operator reads, and that settles nothing either", async () => {
+      const s = fixture(); await s.launch();
+      s.accept("long", "x".repeat(1500)); daemon(s);
+      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p1 ")), "the pointer");
+      await hopSaw(s, "booted");
+      const refused = read(s, "long", "other@rig");
+      expect(refused.status).toBe(403);
+      expect(refused.text).not.toContain("xxxx");
+      expect(read(s, "long", "other@rig", true).status).toBe(403);  // the flag is not a way round a seat's identity
+      expect(read(s, "long", null).status).toBe(403);
+      const operator = read(s, "long", null, true);
+      expect(operator.status).toBe(200);
+      expect((JSON.parse(operator.text) as { body: string }).body).toHaveLength(1500);
+      expect(s.read("long").message_state).toBe("attempting");
     }, 60_000);
+
+    it("only a pointer row can be read: a short message, and another seat's row, are not there", async () => {
+      const s = fixture(); await s.launch();
+      s.accept("short"); daemon(s);
+      await state(s, "short", "received");
+      await hopSaw(s, "booted");
+      expect(read(s, "short", s.name).status).toBe(404);
+      expect(read(s, "short", null, true).status).toBe(404);
+      expect(http(s, `/api/transport/read-message/${encodeURIComponent("other@rig")}/short`, undefined, "other@rig").status).toBe(404);
+    }, 60_000);
+
+    it("a pointer staged with its Enter lost is finished with Enter alone, though its attempt number has moved on", async () => {
+      const s = fixture(["lose-enter"]); await s.launch();
+      s.accept("long", "x".repeat(1500)); daemon(s);
+      await until(() => s.log(), (l) => l.some((x) => x.startsWith("agent long.p1 ")), "Enter alone on the first pointer", 20_000);
+      expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      expect(s.read("long").message_pause_reason).not.toBe("draft");
+    }, 60_000);
+  });
+
+  describe("a seat that cannot take a message right now is named at once", () => {
+    it("a screen with no composer, such as a picker: nothing is typed, and health says what it is", async () => {
+      const s = fixture(["no-composer"]); await s.launch();
+      s.accept("m1"); daemon(s);
+      await hopSaw(s, "paused:screen_unreadable m1");
+      await hopSaw(s, "booted");
+      expect(s.log()).toEqual([]);
+      expect(http(s, "/api/health").text).toContain("shows no composer");
+    }, 50_000);
+
+    it("a terminal that has gone, in a rig still live: health says so at once", async () => {
+      const s = fixture(); await s.launch();
+      await core.client.call("terminal.kill", { terminal: s.address });
+      await until(async () => (await core.client.call<{ state: string }>("terminal.get", { terminal: s.address })).state, (v) => v !== "live", "the terminal gone");
+      s.accept("m1"); daemon(s);
+      await hopSaw(s, "paused:seat_stopped m1");
+      await hopSaw(s, "booted");
+      expect(http(s, "/api/health").text).toContain("its terminal is not running");
+    }, 50_000);
   });
 
   describe("a real approval dialog", () => {

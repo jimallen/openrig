@@ -19,6 +19,8 @@ export interface HopRows {
   senderOf(id: MessageId): string | null;
   lastSocketWriteMs(id: MessageId): number | null;
   recordSocketWrite(id: MessageId, atMs: number): void;
+  markPointer(id: MessageId): void;
+  attemptsOf(id: MessageId): number;
 }
 
 export interface HopGuard {
@@ -199,7 +201,7 @@ export class ClaudeSeatHop implements LastHop {
 }
 
 export interface CodexHopDeps {
-  rows: Pick<HopRows, "nonceOf">;
+  rows: Pick<HopRows, "nonceOf" | "markPointer" | "attemptsOf">;
   guard: HopGuard;
   client: HopClient;
   input: HcHopInput;
@@ -211,10 +213,12 @@ export interface CodexHopDeps {
  *  byte count is never under a character count. */
 export const CODEX_PASTE_LIMIT = 1000;
 
-/** A long message's stand-in: short, with its marker, naming the command that prints its body. The gate sees the same id and nonce. */
-function codexPointer(message: SeatMessage, text: string): string {
+/** A long message's stand-in: short, with a marker, naming the command that prints its body. */
+function codexPointer(message: SeatMessage, nonce: string, attempt: number): string {
   const id = message.ids[0];
-  const markers = text.slice(message.body.length + 1);
+  // A marker of its own per attempt. The gate drops a repeat of an (id, nonce), and an unread pointer must reach the agent again. So the row's own
+  // id is never recorded by a pointer: its arrival is the seat reading the body, and nothing else.
+  const markers = nativeMarker(`${id}.p${attempt}`, nonce);
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL} ` : "";
   return `${label}A message too long to paste is waiting for you. Read it with: rig seat read-message ${message.seat} ${id}\n${markers}`;
 }
@@ -229,7 +233,10 @@ export class CodexSeatHop implements LastHop {
     return guarded(this.deps.guard, message.seat, async () => {
       const seat = await readSeat(this.deps.client, message.seat, "codex", this.deps.foregroundGroup);
       if ("kind" in seat) return seat;
-      return this.hop.attempt({ ...message, body: Buffer.byteLength(text) > CODEX_PASTE_LIMIT ? codexPointer(message, text) : text });
+      if (Buffer.byteLength(text) <= CODEX_PASTE_LIMIT) return this.hop.attempt({ ...message, body: text });
+      const id = message.ids[0];
+      this.deps.rows.markPointer(id);
+      return this.hop.attempt({ ...message, body: codexPointer(message, this.deps.rows.nonceOf(id)!, this.deps.rows.attemptsOf(id)) });
     });
   }
 }

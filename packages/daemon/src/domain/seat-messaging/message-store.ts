@@ -71,6 +71,8 @@ export interface OpenSeatSummary {
   pauseReason: string | null;
   lastRefusal: string | null;
   state: string;
+  /** The oldest open message went as a pointer that has landed at least once and has not been read. */
+  unreadPointer: boolean;
 }
 
 interface MessageRow {
@@ -94,7 +96,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "gate_unavailable"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "screen_unreadable", "gate_unavailable"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
@@ -176,6 +178,26 @@ export class MessageStore {
   /** Recorded before the write, so a crash after it still waits (M1). */
   recordSocketWrite(id: MessageId, atMs: number): void {
     this.db.prepare("UPDATE outbox_entries SET message_socket_written_ms = ? WHERE outbox_id = ?").run(atMs, id);
+  }
+
+  /** Committed before the paste: from here this row ends only when its seat reads the body. */
+  markPointer(id: MessageId): void {
+    this.db.prepare("UPDATE outbox_entries SET message_pointer = 1 WHERE outbox_id = ?").run(id);
+  }
+
+  isPointer(id: MessageId): boolean {
+    return this.db.prepare("SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND message_pointer = 1").get(id) !== undefined;
+  }
+
+  attemptsOf(id: MessageId): number {
+    return (this.db.prepare("SELECT attempts FROM outbox_entries WHERE outbox_id = ?").get(id) as { attempts: number } | undefined)?.attempts ?? 0;
+  }
+
+  /** A pointer row's arrival: the seat read the body. A pointer's own gate record says only that the pointer landed. False for any other row. */
+  recordPointerRead(id: MessageId, atIso: string): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = 'received', gate_recorded_at = ?, next_attempt_at = NULL, message_pause_reason = NULL,
+        delivery_state = 'delivered', delivered_at = ?, delivery_path = NULL, ack_evidence = 'pointer_read', ack_detail = NULL
+      WHERE outbox_id = ? AND message_pointer = 1 AND ${OPEN}`).run(atIso, atIso, id).changes === 1;
   }
 
   lastSocketWriteMs(id: MessageId): number | null {
@@ -289,7 +311,7 @@ export class MessageStore {
     return rows.map((r) => {
       const head = this.headOf(r.seat)!;
       return { seat: r.seat, open: r.open, oldestId: head.id, oldestAcceptedAt: head.acceptedAt, attempts: head.attempts,
-        pauseReason: head.pauseReason, lastRefusal: head.lastRefusal, state: head.state };
+        pauseReason: head.pauseReason, lastRefusal: head.lastRefusal, state: head.state, unreadPointer: head.attempts > 0 && this.isPointer(head.id) };
     });
   }
 
