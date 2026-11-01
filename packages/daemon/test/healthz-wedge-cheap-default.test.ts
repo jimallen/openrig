@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { attachAgentActivity } from "../src/domain/node-inventory.js";
 import type { AgentActivity } from "../src/domain/types.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 /**
  * OPR.0.4.3 healthz-wedge amplification fix — proof that attachAgentActivity is
@@ -15,7 +16,7 @@ import type { AgentActivity } from "../src/domain/types.js";
 // A capture-counting tmux adapter — capturePaneContent is the expensive call.
 function mkTmux(counter: { captures: number }) {
   return {
-    hasSession: async () => true,
+    probeSession: probeSessionFromHasSession, hasSession: async () => true,
     getPaneCommand: async () => "claude",
     capturePaneContent: async () => {
       counter.captures++;

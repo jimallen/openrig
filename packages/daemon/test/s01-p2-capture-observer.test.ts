@@ -16,7 +16,7 @@ import {
   type Observation,
   type ObservationInput,
 } from "../src/domain/capture-observer.js";
-import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
+import type { SessionProbe, TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 
 /**
  * 0.6.0 S01/S02 P2 — read-only capture observer.
@@ -318,7 +318,7 @@ describe("S01/S02 P2 capture observer", () => {
       const o = new CaptureObserver();
       let release!: () => void;
       const t = terminal();
-      t.adapter.hasSession = () => new Promise<boolean>((r) => { release = () => r(true); });
+      t.adapter.probeSession = () => new Promise<SessionProbe>((r) => { release = () => r({ state: "present" }); });
       const binding = { nodeId: "original", occupant: "original-occupant", pane: "%7" };
       const pending = probeSessionActivity({ sessionName: "s@r", runtime: "codex", attachmentType: "tmux", tmuxAdapter: t.adapter, captureObserver: o, binding });
       binding.nodeId = "successor"; binding.occupant = "successor-occupant"; binding.pane = "%99";

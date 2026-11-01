@@ -57,7 +57,7 @@ it.each(["valid", "unknown path", "wrong token", "no token", "PID reused", "logi
     };
     const sendText = vi.fn(), sendKeys = vi.fn();
     const tmux = {
-      hasSession: async () => true, listSessions: async () => [{ name }], listPanes: async () => [{ id: "%1" }],
+      hasSession: async () => true, probeSession: async () => ({ state: "present" as const }), listSessions: async () => [{ name }], listPanes: async () => [{ id: "%1" }],
       getPanePid: async () => 10, getPaneCommand: async () => "zsh",
       readAllPaneProcesses: async () => new Map([["%1", { pid: 10, command: "zsh" }]]),
       capturePaneContent: async () => mode === "login required" ? "Not logged in · Run /login" : "Restored conversation\n❯\n⏵⏵ accept edits on",

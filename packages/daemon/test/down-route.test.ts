@@ -34,6 +34,9 @@ describe("POST /api/down route", () => {
   it("returns 409 when delete is blocked by kill failures", async () => {
     const tmux = mockTmuxAdapter();
     (tmux.killSession as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false, message: "kill failed" });
+    // The session is live, so teardown has something to kill and the kill fails. (The default double answers 'absent' to the
+    // classified probe, in which case there is nothing to kill and the delete rightly goes ahead.)
+    (tmux.hasSession as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     const db = createFullTestDb();
     const { app, rigRepo, sessionRegistry } = createTestApp(db, { tmux });
 

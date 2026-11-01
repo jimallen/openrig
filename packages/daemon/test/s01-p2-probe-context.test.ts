@@ -1,20 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { probeSessionActivity } from "../src/domain/session-transport.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import type { SessionProbe, TmuxAdapter } from "../src/adapters/tmux.js";
 import type { ObservationInput } from "../src/domain/capture-observer.js";
 
 // Leaf-only regression: no test-app, startup, DB, terminal or provider effects.
 describe("P2 probe capture uses its entry context", () => {
   for (const mutation of ["target", "adapter", "all"] as const) {
-    it.each([true, false])(`${mutation} changes during hasSession (observer=%s)`, async (enabled) => {
+    it.each([true, false])(`${mutation} changes during the session probe (observer=%s)`, async (enabled) => {
       const calls: unknown[][] = [];
       const observations: ObservationInput[] = [];
       const successor: ObservationInput[] = [];
-      let release!: (value: boolean) => void;
+      let release!: (value: SessionProbe) => void;
       const originalAdapter = {
-        hasSession: (name: string) => {
-          calls.push(["hasSession", name]);
-          return new Promise<boolean>((resolve) => { release = resolve; });
+        // The probe asks the classified probe (hc cutover N4), not hasSession.
+        probeSession: (name: string) => {
+          calls.push(["probeSession", name]);
+          return new Promise<SessionProbe>((resolve) => { release = resolve; });
         },
         capturePaneContent: async (name: string, lines: number) => {
           calls.push(["originalCapture", name, lines]);
@@ -40,9 +41,9 @@ describe("P2 probe capture uses its entry context", () => {
         input.binding = { nodeId: "n-new", occupant: "o-new", pane: "%99" };
         input.captureObserver = { record: (r) => { successor.push(r); } };
       }
-      release(true);
+      release({ state: "present" });
       const value = await pending;
-      expect(calls).toEqual([["hasSession", "original@rig"], ["originalCapture", "original@rig", 20]]);
+      expect(calls).toEqual([["probeSession", "original@rig"], ["originalCapture", "original@rig", 20]]);
       expect(value).toMatchObject({ sampledAt: new Date(0).toISOString(), reason: "idle_prompt" });
       expect(successor).toHaveLength(0);
       expect(observations).toHaveLength(enabled ? 1 : 0);

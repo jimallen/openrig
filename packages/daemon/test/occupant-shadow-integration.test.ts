@@ -74,7 +74,7 @@ describe("disabled-by-default production observer ports",()=>{
   it("separate inventory probe uses the same entry snapshot; cheap inventory takes no capture",async()=>{
     const rows:Observation[]=[];const shadow=new ShadowCapture(config,async()=>({append:async text=>{rows.push(JSON.parse(text));},close:async()=>{}}));
     const f=terminal(shadow);let release!:(x:boolean)=>void;
-    f.tmux.hasSession=()=>new Promise(resolve=>{release=resolve;});
+    f.tmux.probeSession=()=>new Promise(resolve=>{release=(x:boolean)=>resolve(x?{state:"present" as const}:{state:"absent" as const});});
     const entry={nodeId:"node",canonicalSessionName:"seat@rig",runtime:"codex",attachmentType:"tmux"} as NodeInventoryEntry;
     const options={tmuxAdapter:f.tmux,...inventoryCaptureOptions(f.db,shadow)};
     await attachAgentActivity([entry],options);expect(f.counts().captures).toBe(0);
