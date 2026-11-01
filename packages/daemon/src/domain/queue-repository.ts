@@ -480,6 +480,11 @@ export class QueueRepositoryError extends Error {
  *  (one item, tagged in its own create — never a second item, never a
  *  post-create tag rewrite). The queue still mints ids for every caller
  *  that does not preallocate. */
+/** What a wake's `last_nudge_result` says when no write happened: a durable row holds it, either the typing guard's or the pump's. */
+export function retainedNudgeResult(reason: string | undefined): string {
+  return reason === "handed_to_pump" ? "retained:pump" : "retained:typing_guard";
+}
+
 export function newQitemId(): string {
   const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
   const hex = Math.floor(Math.random() * 0xffffffff)
@@ -1515,7 +1520,7 @@ export class QueueRepository {
           : { classified: "native-pending", nudgeResult: "native-ack-pending", label: { path: "native", evidence: "native_written" } };
       }
       const label = labelForTmuxSend(res);
-      if (res.outcome === "retained") return { classified: "retained", nudgeResult: res.reason === "handed_to_pump" ? "retained:pump" : "retained:typing_guard", label };
+      if (res.outcome === "retained") return { classified: "retained", nudgeResult: retainedNudgeResult(res.reason), label };
       if (res.ok && label.evidence !== "send_failed") {
         return res.verified
           ? { classified: "verified", nudgeResult: "verified", label }

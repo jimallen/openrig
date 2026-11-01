@@ -8,9 +8,10 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { retainedNudgeResult } from "../src/domain/queue-repository.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { SessionTransport } from "../src/domain/session-transport.js";
+import { HANDED_TO_PUMP, SessionTransport } from "../src/domain/session-transport.js";
 import { PumpHandOff } from "../src/domain/seat-messaging/hand-off.js";
 import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
@@ -19,6 +20,13 @@ import { NO_SEAT_MESSAGING_PORTS } from "../src/domain/seat-messaging/pump-ports
 import { tmuxStub } from "./helpers/tmux-stub.js";
 
 const SEAT = "dev@hr";
+
+describe("a wake's record", () => {
+  it("names whose hands it is in", () => {
+    expect(retainedNudgeResult(HANDED_TO_PUMP)).toBe("retained:pump");
+    expect(retainedNudgeResult("typing_guard_enabled")).toBe("retained:typing_guard");
+  });
+});
 
 describe("SessionTransport and the pump", () => {
   let db: Database.Database;
