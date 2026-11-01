@@ -1,7 +1,7 @@
-import net from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// A real open is several app round trips, so `rig terminal open` runs on its own budget (45 s), not the client's 5 s read
+// default. Real pieces: the CLI command, DaemonClient over HTTP, the daemon's terminal route, the app provider and the composer.
+// Faked: the app (an AppPort whose every command takes 450 ms, as a loaded app might), so the 17-seat, two-page open takes
+// longer than the 5 s default and still completes. The positive control is the elapsed time itself.
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { Command } from "commander";
@@ -9,58 +9,42 @@ import { describe, expect, it, vi } from "vitest";
 import { DaemonClient } from "../src/client.js";
 import { terminalCommand } from "../src/commands/terminal.js";
 import type { TerminalDeps } from "../src/commands/terminal.js";
-import { HerdrAdapter, HERDR_PANES_PER_PAGE } from "../../daemon/src/domain/terminal/herdr-adapter.js";
-import { createHerdrSocketRpc, createHerdrSocketTransport } from "../../daemon/src/domain/terminal/herdr-transport.js";
+import type { AppLs, AppPort } from "../../daemon/src/adapters/hc-placement.js";
+import { HERDR_APP_PANES_PER_PAGE, HerdrAppProvider } from "../../daemon/src/domain/terminal/herdr-app-provider.js";
 import { composeView } from "../../daemon/src/domain/terminal/view-composer.js";
 import { terminalRoutes } from "../../daemon/src/routes/terminal.js";
 
 describe("terminal open request budget", () => {
-  it.skipIf(process.platform === "win32")("waits for two healthy page applications instead of abandoning a delivered open", async () => {
-    const owned = mkdtempSync(join(tmpdir(), "or-terminal-"));
-    const socketPath = join(owned, "provider.sock");
-    const methods: string[] = [];
-    const connections = new Set<net.Socket>();
-    const timers = new Set<ReturnType<typeof setTimeout>>();
-    let page = 0;
-    const socketServer = net.createServer(socket => {
-      connections.add(socket);
-      socket.on("close", () => connections.delete(socket));
-      let input = "";
-      socket.setEncoding("utf8");
-      socket.on("data", chunk => {
-        input += chunk;
-        if (!input.includes("\n")) return;
-        const request = JSON.parse(input.slice(0, input.indexOf("\n")));
-        methods.push(request.method);
-        let result: Record<string, unknown> = { type: request.method };
-        if (request.method === "ping") result = { type: "pong", version: "0.7.1", protocol: 1 };
-        if (request.method === "workspace.create") result = { type: "workspace_create", workspace: { workspace_id: "owned-workspace" } };
-        if (request.method === "layout.apply") result = { type: "layout_apply", layout: { tab_id: `owned-tab-${++page}` } };
-        if (request.method === "pane.list") result = { type: "pane_list", panes: [] };
-        const reply = () => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
-        if (request.method === "layout.apply") {
-          // Each 2.8s response is within the real socket transport's 5s bound.
-          // The sequential two-page operation legitimately exceeds the HTTP
-          // client's read-class default of 5s.
-          const timer = setTimeout(() => { timers.delete(timer); reply(); }, 2800);
-          timers.add(timer);
-        } else reply();
-      });
-    });
-    await new Promise<void>(resolve => socketServer.listen(socketPath, resolve));
-    const adapter = new HerdrAdapter({
-      transportFactory: createHerdrSocketTransport(createHerdrSocketRpc(socketPath)),
-    });
+  it("waits for a slow multi-page open instead of abandoning a delivered one", async () => {
+    const commands: string[] = [];
+    const spaces: AppLs["spaces"] = [];
+    let seq = 0;
+    const slow = () => new Promise<void>(resolve => setTimeout(resolve, 450));
+    const appPort: AppPort = {
+      ls: async () => ({ spaces: structuredClone(spaces) }),
+      do: async (command, args) => {
+        commands.push(command);
+        await slow();
+        const id = ++seq;
+        if (command === "space.new" || command === "tab.new") {
+          let space = spaces.find(s => s.id === args["space"]);
+          if (!space) { space = { id: `sp${id}`, name: String(args["name"]), tabs: [] }; spaces.push(space); }
+          space.tabs.push({ id: `tb${id}`, name: "t", terminals: [{ terminal: `t${id}`, pane: `pn${id}` }] });
+          return { space: space.id, tab: `tb${id}`, terminal: `t${id}` };
+        }
+        return { pane: `pn${id}` };
+      },
+    };
+    const provider = new HerdrAppProvider(appPort);
     const view = composeView("rig:owned-rig", Array.from({ length: 17 }, (_, index) => ({
       seat: `agent-${index}@owned-rig`, label: `Agent ${index}`, tmuxSession: `owned-${index}`,
       host: null, alive: true, readOnly: false,
-    })), { resolveHost: () => null, panesPerPage: HERDR_PANES_PER_PAGE });
+    })), { resolveHost: () => null, panesPerPage: HERDR_APP_PANES_PER_PAGE });
     const app = new Hono();
     app.use("*", async (c, next) => {
       c.set("terminalService" as never, {
-        openView: () => adapter.openView(view),
-        previewView: () => ({ planId: "owned-plan", composed: view, status: { launch: { socketPath } } }),
-        status: () => ({ providers: [{ liveness: { alive: true } }] }),
+        openView: () => provider.openView(view),
+        status: async () => ({ providers: [{ liveness: await provider.liveness() }] }),
       } as never);
       await next();
     });
@@ -76,38 +60,29 @@ describe("terminal open request budget", () => {
         fetch: async () => ({ ok: true }),
       } as TerminalDeps["lifecycleDeps"],
       clientFactory: baseUrl => new DaemonClient(baseUrl),
-      // Exercise default window routing without launching a native terminal in CI.
-      windowDeps: {
-        platform: "linux", env: { DISPLAY: ":fixture", TERM_PROGRAM: "ghostty" }, exists: () => false,
-        exec: async (file, args) => file === "/usr/bin/env" && args.at(-1) === "list"
-          ? JSON.stringify({ result: { workspaces: [] } })
-          : args.includes("--version") ? "herdr 0.9.3" : "/fixture/bin/herdr",
-        launch: async () => {}, sleep: async () => {}, id: () => "owned-budget",
-        herdrConfig: () => "/fixture/private herdr.toml",
-      },
+      columns: async () => undefined,
     };
     const command = new Command();
     command.addCommand(terminalCommand(deps));
     const originalExit = process.exitCode;
     process.exitCode = undefined;
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const startedAt = Date.now();
     try {
       await command.parseAsync(["terminal", "open", "owned-rig", "--json"], { from: "user" });
+      const elapsed = Date.now() - startedAt;
       expect(process.exitCode).toBeUndefined();
       const result = JSON.parse(String(log.mock.calls[0]?.[0]));
       expect(result.opened).toHaveLength(17);
       expect(result.pages).toBe(2);
-      expect(methods.filter(method => method === "workspace.create")).toHaveLength(1);
-      expect(methods.filter(method => method === "layout.apply")).toHaveLength(2);
+      expect(commands.filter(c => c === "space.new")).toHaveLength(1);
+      expect(commands.filter(c => c === "tab.new")).toHaveLength(1);
+      expect(elapsed, "longer than the client's 5 s read default, or the budget is not what is tested").toBeGreaterThan(5_000);
     } finally {
       process.exitCode = originalExit;
       log.mockRestore();
       httpServer.closeAllConnections();
       await new Promise<void>(resolve => httpServer.close(() => resolve()));
-      for (const timer of timers) clearTimeout(timer);
-      for (const socket of connections) socket.destroy();
-      await new Promise<void>(resolve => socketServer.close(() => resolve()));
-      rmSync(owned, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });

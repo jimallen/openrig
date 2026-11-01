@@ -141,7 +141,8 @@ export class HerdrAppProvider implements TerminalProvider {
     const tabs: string[] = [];
     for (let index = 0; index < view.pages.length; index++) {
       const page = view.pages[index]!;
-      const tabName = view.pages.length === 1 ? "view" : `view ${index + 1}`;
+      // A named view (the default kernel view) names its tabs for what they show: "dashboard · operator". Others: "view", "view 2".
+      const tabName = view.spaceLabel ? page.map((pane) => pane.label).join(" · ") : view.pages.length === 1 ? "view" : `view ${index + 1}`;
       const made = await this.makeTab(page, space, base, tabName, degraded, opened, notes);
       if (made) {
         space = made.space;
@@ -153,6 +154,9 @@ export class HerdrAppProvider implements TerminalProvider {
       try { await this.app.do("tab.select", { id: tabs[0] }); }
       catch (err) { notes.push(`the app did not focus the first tab: ${err instanceof Error ? err.message : String(err)}`); }
     }
+    // Splits make panes out of reading order; the result lists seats in the composed view's order, as every provider did.
+    const place = new Map(view.opened.map((pane, i) => [pane.seat, i]));
+    opened.sort((a, b) => (place.get(a) ?? 0) - (place.get(b) ?? 0));
     return {
       provider: this.name, ok: opened.length > 0 || view.opened.length === 0, opened, absent, degraded, pages: tabs.length,
       ...(notes.length ? { notes } : {}),

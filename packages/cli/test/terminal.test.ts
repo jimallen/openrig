@@ -1,7 +1,7 @@
 // OPR.0.4.6.02 C3 — the `rig terminal` CLI family. Pins arg parsing, the daemon
 // path/body each subcommand hits, the --json shape, and the open exit
 // semantics for an explicit provider (partial-with-names = exit 0; zero-pane = non-zero).
-// The default desktop path is exercised in terminal-open-window-default.test.ts.
+// The default (no --provider) and --window go through the same POST: terminal-open-daemon-route.test.ts.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { TerminalDeps } from "../src/commands/terminal.js";
@@ -65,27 +65,6 @@ describe("rig terminal CLI", () => {
     const cmd = program.commands.find((c) => c.name() === "terminal");
     expect(cmd).toBeDefined();
     expect(cmd!.commands.map((c) => c.name()).sort()).toEqual(["open", "status", "views"]);
-  });
-
-  it("--window uses local desktop handling and reports a headless refusal without a provider POST", async () => {
-    const previewPath = "/api/terminal/preview?view=saved%3Akernel&provider=herdr";
-    const pane = { seat: "operator", label: "operator", paneCommand: "hc attach operator" };
-    const { deps, calls } = makeDeps({ routes: { [`GET ${previewPath}`]: { status: 200, data: {
-      planId: "headless-plan", status: { launch: { socketPath: "/fixture/herdr.sock" } }, composed: { opened: [pane], pages: [[pane]], absent: [], degraded: [] },
-    } } } });
-    const factory = deps.clientFactory;
-    deps.clientFactory = url => Object.assign(factory(url), { baseUrl: "http://localhost:7433" });
-    deps.windowDeps = { platform: "linux", env: {}, exists: () => false, exec: vi.fn(async (file: string, args: string[]) => args.includes("--version") ? "herdr 0.9.3" : file === "/bin/sh" ? "/fixture/bin/herdr" : (() => { throw new Error(`unexpected ${file}`); })()), herdrConfig: () => "/fixture/private.toml", launch: vi.fn(), sleep: vi.fn(), id: () => "unused" };
-    const program = createProgram({ terminalDeps: deps });
-    program.exitOverride();
-    await program.parseAsync(["node", "rig", "terminal", "open", "saved:kernel", "--window", "--json"]);
-    expect(process.exitCode).toBe(1);
-    expect(JSON.parse(logs[0]!)).toMatchObject({ ok: false, opened: [], code: "terminal_window_failed", windowAttempted: false });
-    expect(JSON.parse(logs[0]!).error).toContain("HERDR_SOCKET_PATH='/fixture/herdr.sock' HERDR_CONFIG_PATH='/fixture/private.toml' '/fixture/bin/herdr'");
-    expect(calls).toEqual([{ method: "GET", path: previewPath }]);
-    expect(calls.some(call => call.method === "POST")).toBe(false);
-    expect(deps.windowDeps.launch).not.toHaveBeenCalled();
-    expect(vi.mocked(deps.windowDeps.exec).mock.calls.some(([file]) => file === "/usr/bin/osascript" || file === "/usr/bin/open")).toBe(false);
   });
 
   it("open POSTs /api/terminal/open with view + provider", async () => {

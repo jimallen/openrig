@@ -80,7 +80,7 @@ export const USAGE_LINES = [
   "",
   "  rig              open the status dashboard (interactive terminal only; not agent chat)",
   "  rig tui          open the same status dashboard",
-  "  rig terminal open saved:kernel --window   open the OpenRig TUI and operator in a new terminal tab/window",
+  "  rig terminal open saved:kernel --window   open the OpenRig TUI and operator in the running Herdr app",
   "                   After install, and whenever the person wants their agents: the agent runs it on the daemon desktop and checks the result",
   "  rig tui --shared dashboard-only fallback if that window cannot open",
   "  rig --help       full command list",

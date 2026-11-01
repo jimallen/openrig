@@ -90,10 +90,12 @@ describe("HerdrAppProvider.openView", () => {
     expect(String(made[0]!.args["name"]).startsWith("rig:"), "rig-here owns rig:<rig> spaces and closes a duplicate").toBe(false);
   });
 
-  it("the kernel view keeps its own space label", async () => {
+  it("the kernel view keeps its own space label and names each tab for what it shows", async () => {
     const f = fakeApp();
-    await new HerdrAppProvider(f.app).openView(view([[pane("a@r")]], { spaceLabel: "openrig kernel" }));
-    expect(f.calls.find((c) => c.command === "space.new")!.args["name"]).toBe("openrig kernel");
+    await new HerdrAppProvider(f.app).openView(view([[pane("a@r"), pane("b@r")], [pane("c@r")]], { spaceLabel: "openrig kernel" }));
+    const made = f.calls.filter((c) => c.command === "space.new" || c.command === "tab.new");
+    expect(made[0]!.args).toMatchObject({ name: "openrig kernel", tab: "a@r · b@r" });
+    expect(made[1]!.args).toMatchObject({ name: "c@r" });
   });
 
   it("three seats: splits in rig-here's order, each pane running its own command, all reported opened", async () => {
@@ -107,6 +109,13 @@ describe("HerdrAppProvider.openView", () => {
     // the first split is of the lead's pane (found through ls), the second of the pane the first split made
     expect(splits[0]!.args["pane"]).toBe("pn1");
     expect(splits[1]!.args["pane"]).toBe("pn2");
+  });
+
+  it("lists the opened seats in the composed view's order, though splits make the panes out of it", async () => {
+    const f = fakeApp();
+    const seats = ["a@r", "b@r", "c@r", "d@r", "e@r"];
+    const result = await new HerdrAppProvider(f.app).openView(view([seats.map((s) => pane(s))]));
+    expect(result.opened).toEqual(seats);
   });
 
   it("two pages: the first page makes the space, the second a tab in it, and the first tab is selected again", async () => {

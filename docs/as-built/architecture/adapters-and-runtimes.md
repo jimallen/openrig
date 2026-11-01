@@ -300,7 +300,7 @@ maps (`startup.ts:989`, `:1259`); see `daemon-core.md` §4 "Startup sequence".
 
 Opening a seat in a terminal app goes through `TerminalProvider`s under
 `packages/daemon/src/domain/terminal/`, served by `/api/terminal`:
-`HerdrAdapter` (`herdr-adapter.ts:351`), the default
+`HerdrAppProvider` (`herdr-app-provider.ts`, driving the Herdr app through `herdr-app`), the default
 (`terminal-service.ts`), and the only provider: the cmux provider was removed
 with the hc cutover. A request that names no provider uses Herdr
 (`providerNameFor`, `terminal-service.ts`); a named provider that is not

@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
-import { planHerdrLayout } from "../src/domain/terminal/herdr-adapter.js";
+import { buildGridRoot } from "../src/domain/terminal/terminal-grid.js";
 import { TerminalService, type TerminalServiceDeps } from "../src/domain/terminal/terminal-service.js";
 import type {
   ComposedView,
@@ -22,6 +22,9 @@ import type { LiveSeatRow, SavedView } from "../src/domain/terminal/terminal-vie
 
 /** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
 const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
+
+/** The tab name a named (kernel) view's page gets in the app: its panes' names in reading order. */
+const tabLabels = (view: ComposedView): string[] => view.pages.map(page => page.map(pane => pane.label).join(" · "));
 
 /** A provider that records the composed view it was handed and reports success. */
 class RecordingProvider implements TerminalProvider {
@@ -275,17 +278,17 @@ describe("one terminal catalog inventory", () => {
   });
 });
 
-describe("Herdr reuse plan labels", () => {
+describe("Herdr plan ids", () => {
   async function rendered(service: TerminalService, provider: RecordingProvider, view: string) {
     const preview = await service.previewView({ view });
     if (!("composed" in preview)) throw new Error("expected preview");
     expect((await service.openView({ view, expectedPlan: preview.planId })).ok).toBe(true);
-    const label = planHerdrLayout(provider.lastView!, "fixed").pages[0]!.tabLabel;
-    expect(label).toBe(`openrig:${preview.composed.id}#${preview.planId.slice(0, 16)}#fixed`);
-    return label;
+    // the provider is handed the previewed plan, so a changed plan id is a changed open
+    expect(provider.lastView!.planId).toBe(preview.planId);
+    return preview.planId;
   }
 
-  it.each(["membership", "target"])("changes the reuse label when saved view %s changes", async change => {
+  it.each(["membership", "target"])("changes the plan id when saved view %s changes", async change => {
     const saved: SavedView = { id: "team", name: "Team", members: [{ seat: "lead", tmuxSession: "original" }] };
     const { deps, herdr } = makeDeps({ viewsStore: { list: () => [saved], get: () => saved } });
     const service = new TerminalService(deps);
@@ -302,8 +305,8 @@ describe("Herdr reuse plan labels", () => {
     const service = new TerminalService(deps);
     const before = await rendered(service, herdr, "saved:rig:acme-build");
     const after = await rendered(service, herdr, "rig:acme-build");
-    expect(before).toMatch(/^openrig:rig:acme-build#/);
-    expect(after).toMatch(/^openrig:rig:acme-build#/);
+    expect(before).toMatch(/^[0-9a-f]{64}$/);
+    expect(after).toMatch(/^[0-9a-f]{64}$/);
     expect(after).not.toBe(before);
   });
 });
@@ -332,15 +335,15 @@ describe("default saved kernel conversations", () => {
     const service = new TerminalService(deps);
     const before = await service.openView({ view: "saved:kernel" });
     expect(before.opened).toEqual(["tui-bound", "advisor-bound"]);
-    const oldLabel = planHerdrLayout(herdr.lastView!, "fixed").pages[0]!.tabLabel;
+    const oldLabel = tabLabels(herdr.lastView!)[0];
     operatorReady = true;
     const preview = await service.previewView({ view: "saved:kernel" });
     if (!("composed" in preview)) throw new Error("expected preview");
     expect((await service.openView({ view: "saved:kernel", expectedPlan: preview.planId })).opened).toEqual(["operator-bound", "tui-bound", "advisor-bound"]);
-    const newLabel = planHerdrLayout(herdr.lastView!, "fixed").pages[0]!.tabLabel;
+    const newLabel = tabLabels(herdr.lastView!)[0];
     expect(oldLabel).toBe("dashboard");
     expect(newLabel).toBe("operator");
-    expect(planHerdrLayout(herdr.lastView!, "fixed").workspaceLabel).toBe("openrig kernel");
+    expect(herdr.lastView!.spaceLabel).toBe("openrig kernel");
   });
 
   it.each([false, true])("keeps the default kernel handoff distinct from a team (provider unavailable=%s)", async unavailable => {
@@ -399,7 +402,7 @@ describe("default saved kernel conversations", () => {
     const result = await service.openView({ view: "saved:kernel", expectedPlan: preview.planId });
     expect(result.ok).toBe(true);
     expect(herdr.lastView).toEqual({ ...preview.composed, planId: preview.planId });
-    expect(planHerdrLayout(herdr.lastView!, "fixed").pages.map(page => page.root)).toEqual(preview.grids.map(grid => grid.root));
+    expect(herdr.lastView!.pages.map(page => buildGridRoot(page, herdr.lastView!.columns).root)).toEqual(preview.grids.map(grid => grid.root));
   });
 
   it.each([
@@ -419,11 +422,11 @@ describe("default saved kernel conversations", () => {
       type: "split", direction: "right", ratio: 0.5,
       first: { type: "pane", label: "dashboard" }, second: { type: "pane", label: "operator" },
     });
-    expect(planHerdrLayout({ ...preview.composed, planId: preview.planId }, "fixed").pages.map(page => page.tabLabel)).toEqual(wide
+    expect(tabLabels(preview.composed)).toEqual(wide
       ? ["dashboard · operator", "advisor"] : ["operator", "dashboard", "advisor"]);
     expect(preview.grids.every(grid => grid.blanks === 0)).toBe(true);
     expect((await service.openView({ view: "saved:kernel", viewportColumns, expectedPlan: preview.planId })).ok).toBe(true);
-    expect(planHerdrLayout(herdr.lastView!, "fixed").pages.map(page => page.root)).toEqual(preview.grids.map(grid => grid.root));
+    expect(herdr.lastView!.pages.map(page => buildGridRoot(page, herdr.lastView!.columns).root)).toEqual(preview.grids.map(grid => grid.root));
   });
 
   it.each(["operator.agent", "operator.human"])("keeps the advisor separate at 160 columns when %s is absent", async missing => {
@@ -463,7 +466,7 @@ describe("default saved kernel conversations", () => {
     expect(preview.composed.columns).toBeUndefined();
     expect(preview.grids[0]).toMatchObject({ columns: 2, rows: 2, blanks: 1 });
     expect((await service.openView({ view, viewportColumns: 174, expectedPlan: preview.planId })).ok).toBe(true);
-    expect(planHerdrLayout(herdr.lastView!, "fixed").pages.map(page => page.root)).toEqual(preview.grids.map(grid => grid.root));
+    expect(herdr.lastView!.pages.map(page => buildGridRoot(page, herdr.lastView!.columns).root)).toEqual(preview.grids.map(grid => grid.root));
   });
 
   it("kernel geometry caps partial views to available panes while retaining named absences", async () => {
@@ -481,7 +484,7 @@ describe("default saved kernel conversations", () => {
     const result = await service.openView({ view: "saved:kernel", expectedPlan: preview.planId });
     expect(result.opened).toEqual(["tui-bound", "advisor-bound"]);
     expect(result.absent.map(member => member.seat)).toEqual(["operator.agent"]);
-    expect(planHerdrLayout(herdr.lastView!, "fixed").pages.map(page => page.root)).toEqual(preview.grids.map(grid => grid.root));
+    expect(herdr.lastView!.pages.map(page => buildGridRoot(page, herdr.lastView!.columns).root)).toEqual(preview.grids.map(grid => grid.root));
   });
 
   it("kernel geometry keeps auto-grid on each page without treating map indexes as columns", async () => {
@@ -500,7 +503,7 @@ describe("default saved kernel conversations", () => {
       provider: "herdr", composed: preview.composed, grids: preview.grids,
     })).digest("hex"));
     expect((await service.openView({ view: "saved:custom", expectedPlan: preview.planId })).ok).toBe(true);
-    expect(planHerdrLayout(provider.lastView!, "fixed").pages.map(page => page.root)).toEqual(preview.grids.map(grid => grid.root));
+    expect(provider.lastView!.pages.map(page => buildGridRoot(page, provider.lastView!.columns).root)).toEqual(preview.grids.map(grid => grid.root));
   });
 
   it.each([["claude-code", "codex"], ["claude-code", "claude-code"], ["codex", "codex"]])("resolves the %s/%s layout from installed bindings without saving it", async (advisorRuntime, operatorRuntime) => {

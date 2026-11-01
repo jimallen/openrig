@@ -21,9 +21,12 @@ import { DaemonClient } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
-import { openTerminalWindow, type WindowDeps } from "../terminal-window.js";
+import { measureHostingColumns } from "../terminal-columns.js";
 
-export interface TerminalDeps extends StatusDeps { windowDeps?: WindowDeps }
+export interface TerminalDeps extends StatusDeps {
+  /** The width of the terminal the person is typing in (default: measured); undefined when unknown. */
+  columns?: () => Promise<number | undefined>;
+}
 
 /** The one shared open-result shape (mirrors the daemon `OpenViewResult`). */
 export interface OpenViewResult {
@@ -36,10 +39,6 @@ export interface OpenViewResult {
   error?: string;
   code?: string;
   notes?: string[];
-  window?: { app: string; surface: string };
-  reusedWorkspace?: { id: string; tabId: string; view: string };
-  /** On window failures, false means no desktop launch was attempted. */
-  windowAttempted?: boolean;
 }
 
 // Opening applies pages through several bounded provider round trips; it is
@@ -67,16 +66,11 @@ function humanOpen(r: OpenViewResult): string {
   const lines: string[] = [];
   const tiled = r.opened.length;
   lines.push(
-    r.code === "terminal_window_failed" && r.error
-      ? r.error
-      : r.ok && r.reusedWorkspace
-        ? `Terminal window requested. Reused herdr workspace ${r.reusedWorkspace.id} for view ${JSON.stringify(r.reusedWorkspace.view)}.`
-        : tiled > 0
-          ? `${r.window ? "Terminal window requested. " : ""}Prepared ${tiled} tile(s) in ${r.provider}${r.pages > 1 ? ` across ${r.pages} page(s)` : ""}.`
-          : `No tiles opened in ${r.provider}.`,
+    tiled > 0
+      ? `Opened ${tiled} tile(s) in ${r.provider}${r.pages > 1 ? ` across ${r.pages} page(s)` : ""}.`
+      : `No tiles opened in ${r.provider}.`,
   );
-  if (r.window) lines.push(`  Terminal: ${r.window.app} (${r.window.surface}).`);
-  if (r.error && r.code !== "terminal_window_failed") lines.push(`  provider: ${r.error}${r.code ? ` (${r.code})` : ""}`);
+  if (r.error) lines.push(`  provider: ${r.error}${r.code ? ` (${r.code})` : ""}`);
   for (const seat of r.opened) lines.push(`  ● ${seat}`);
   for (const a of r.absent) lines.push(`  ○ ${a.seat} — absent: ${a.reason}`);
   for (const d of r.degraded) lines.push(`  ▲ ${d.seat} — skipped (${d.host}): ${d.reason}`);
@@ -84,14 +78,13 @@ function humanOpen(r: OpenViewResult): string {
   return lines.join("\n");
 }
 
-/** A successful existing-workspace selection also needs no new panes. */
 function printOpen(json: boolean, r: OpenViewResult, status: number): void {
   if (json) {
     console.log(JSON.stringify(r));
   } else {
     console.log(humanOpen(r));
   }
-  if (status >= 400 || (r.opened.length === 0 && !(r.ok && r.reusedWorkspace))) {
+  if (status >= 400 || r.opened.length === 0) {
     process.exitCode = status >= 500 ? 2 : 1;
   }
 }
@@ -99,7 +92,7 @@ function printOpen(json: boolean, r: OpenViewResult, status: number): void {
 export function terminalCommand(depsOverride?: TerminalDeps): Command {
   const cmd = new Command("terminal").description(
     "Open the OpenRig view and agent conversations in terminal tiles",
-  ).addHelpText("after", "\nThe OpenRig TUI and operator (after install, and whenever the person wants their agents):\n  rig terminal open saved:kernel --window\n  Opens the window itself on the daemon's desktop; an agent can run it from its shell.\n  Needs the Herdr app; seats show in it by label. There is no other viewer.\n  Herdr needs a terminal the person can see; TUI navigation does not open one.\n  Over headless SSH, give the exact connection/attach command for a new terminal/tab.\n  Only if the window cannot open: rig tui --shared is the dashboard-only fallback.\n  On a desktop, the agent opens the view; it does not finish by printing a command to copy.\n");
+  ).addHelpText("after", "\nThe OpenRig TUI and operator (after install, and whenever the person wants their agents):\n  rig terminal open saved:kernel\n  Opens the view in the running Herdr app, one tab per page, each pane a viewer of a seat (hc attach).\n  Closing a viewer leaves its seat running. The app must already be open: nothing starts it.\n  Over headless SSH there is no app to show it in: give the exact attach command (hc attach -- <terminal>) for a new terminal.\n  Only if the app cannot open: rig tui --shared is the dashboard-only fallback.\n  On a desktop, the agent opens the view; it does not finish by printing a command to copy.\n");
 
   const getDeps = (): TerminalDeps =>
     depsOverride ?? {
@@ -110,22 +103,21 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
   cmd
     .command("open")
     .argument("<view>", "a rig name, mission:<id>, slice:<id>, or a saved-view id")
-    .description("Open a desktop terminal showing the view's live agents as interactive tiles")
-    .option("--provider <name>", "herdr: use an existing workspace without opening a window")
-    .option("--window", "Open a new desktop terminal tab/window (the default when --provider is omitted)")
+    .description("Open the view's live agents as viewer tiles in the running Herdr app")
+    .option("--provider <name>", "the terminal provider (herdr, the default)")
+    .option("--window", "Accepted for older callers and scripts: the view always opens in the running Herdr app, never in a new window")
     .option("--expected-plan <id>", "Open only if the view still matches this preview")
     .option("--json", "JSON output for agents")
     .action(async (view: string, opts: { provider?: string; json?: boolean; window?: boolean; expectedPlan?: string }) => {
       const deps = getDeps();
       await withClient(deps, async (client) => {
-        // Herdr's control socket can answer with no desktop client attached.
-        // The default requests a desktop; an explicit provider reuses its workspace.
-        if (opts.window || !opts.provider) {
-          const result = await openTerminalWindow(client, view, opts.provider, deps.windowDeps, opts.expectedPlan);
-          printOpen(opts.json ?? false, result, 200);
-          return;
-        }
-        const body = { view, ...(opts.provider ? { provider: opts.provider } : {}), ...(opts.expectedPlan !== undefined ? { expectedPlan: opts.expectedPlan } : {}) };
+        const columns = await (deps.columns ?? measureHostingColumns)().catch(() => undefined);
+        const body = {
+          view,
+          ...(opts.provider ? { provider: opts.provider } : {}),
+          ...(opts.expectedPlan !== undefined ? { expectedPlan: opts.expectedPlan } : {}),
+          ...(columns !== undefined && Number.isSafeInteger(columns) && columns > 0 ? { viewportColumns: columns } : {}),
+        };
         const res = await client.post<OpenViewResult>("/api/terminal/open", body, { timeoutMs: TERMINAL_OPEN_TIMEOUT_MS });
         if (!Array.isArray(res.data?.opened)) {
           printResult(opts.json ?? false, res.data, res.status);

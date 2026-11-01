@@ -33,7 +33,7 @@
 import { composeView, type ViewMemberInput } from "./view-composer.js";
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { buildGridRoot } from "./herdr-adapter.js";
+import { buildGridRoot } from "./terminal-grid.js";
 // deriveViewMembers is a VALUE exported by the views store (not the composer).
 import { deriveViewMembers } from "./terminal-views-store.js";
 import type {

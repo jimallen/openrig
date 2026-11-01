@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { TerminalService } from "../../daemon/src/domain/terminal/terminal-service.js";
-import { HerdrAdapter } from "../../daemon/src/domain/terminal/herdr-adapter.js";
+import { HerdrAppProvider } from "../../daemon/src/domain/terminal/herdr-app-provider.js";
 import { terminalRoutes } from "../../daemon/src/routes/terminal.js";
 import { DaemonClient } from "../src/daemon-client.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
@@ -16,14 +16,16 @@ let snap: FleetSnapshot, view: ViewStateStore, client: DaemonClient, service: Te
 let effects: Array<{ method: string; params: any }>, requests: string[], alive: boolean, providerAlive: boolean, failPage: boolean;
 beforeEach(() => {
   effects = []; requests = []; alive = true; providerAlive = true; failPage = false;
-  const provider = new HerdrAdapter({ transportFactory: () => ({
-    probe: async () => ({ alive: providerAlive, version: "fixture", protocol: 1 }),
-    request: async (method, params) => {
-      effects.push({ method, params });
-      if (failPage && method === "layout.apply") throw new Error("fixture layout refused");
-      return { type: "fixture", workspace: { workspace_id: "own-fixture" } };
+  let seq = 0;
+  const provider = new HerdrAppProvider({
+    ls: async () => { if (!providerAlive) throw new Error("the Herdr app is not running"); return { spaces: [{ id: "sp", name: "s", tabs: [{ id: "tb", name: "t", terminals: Array.from({ length: 60 }, (_, i) => ({ terminal: `t${i + 1}`, pane: `p${i + 1}` })) }] }] }; },
+    do: async (command, params) => {
+      effects.push({ method: command, params });
+      if (failPage && (command === "space.new" || command === "tab.new")) throw new Error("fixture layout refused");
+      const id = ++seq;
+      return { space: "own-fixture", tab: `tb${id}`, terminal: `t${id}`, pane: `p${id}` };
     },
-  }) });
+  });
   const saved = { id: "fixture", name: "Reading room", members: [
     ...Array.from({ length: 19 }, (_, i) => ({ seat: `member-${i + 1}`, tmuxSession: `member-${i + 1}`, readOnly: i === 0 })),
     { seat: "missing", tmuxSession: "missing" }, { seat: "remote-http", host: "http" },
@@ -84,8 +86,8 @@ describe("terminal browser → preview → explicit Open", () => {
     const result = await client.openTerminal(open.view, open.expectedPlan);
     expect(result.opened).toEqual(preview.composed.opened.map(m => m.seat));
     expect(result.absent).toHaveLength(1); expect(result.degraded).toHaveLength(1);
-    expect(effects.map(e => e.method)).toEqual(["workspace.create", "layout.apply", "layout.apply"]);
-    expect(effects.filter(e => e.method === "layout.apply").map(e => e.params.root)).toEqual((preview.grids as any[]).map(g => g.root));
+    const pageSizes = preview.composed.pages.map(p => p.length);
+    expect(effects.map(e => e.method)).toEqual(["space.new", ...Array(pageSizes[0]! - 1).fill("pane.split"), "tab.new", ...Array(pageSizes[1]! - 1).fill("pane.split"), "tab.select"]);
     view.dispatch({ type: "back" }); await refresh();
     expect(view.get().terminalView).toBe(before.terminalView);
     expect(view.get().selection).toBe(before.selection);
@@ -122,7 +124,7 @@ describe("terminal browser → preview → explicit Open", () => {
   it("keeps the selected daemon explicit in desktop guidance for remote members", async () => {
     providerAlive = false;
     const remote = { id: "remote view", name: "Remote", members: [{ seat: "quoted-seat", tmuxSession: "seat with spaces", host: "remote", readOnly: true }] };
-    const provider = new HerdrAdapter({ transportFactory: () => ({ probe: async () => ({ alive: false, version: null, protocol: null }), request: async () => { throw new Error("must remain passive"); } }) });
+    const provider = new HerdrAppProvider({ ls: async () => { throw new Error("must remain passive: no window"); }, do: async () => { throw new Error("must remain passive"); } });
     service = new TerminalService({ resolveProvider: () => provider, viewsStore: { get: () => remote, list: () => [remote] }, listRigNames: () => [], listRigSeats: () => null, listPodSeats: () => null, listScopeSeats: () => null, resolveHost: () => ({ id: "remote", transport: "ssh", target: "other.example", user: "viewer" }) as any, hasSession: () => { throw new Error("remote is not a local session"); } });
     client = new DaemonClient({ baseUrl: "http://selected.example:7654", fetchImpl: (async (url, init) => {
       const u = new URL(String(url));
@@ -146,7 +148,7 @@ describe("terminal browser → preview → explicit Open", () => {
   it("preserves a failed Open as failure, without a success notice", async () => {
     const p = await client.previewTerminal("saved:fixture"); failPage = true;
     await expect(client.openTerminal(p.view, p.planId)).rejects.toThrow("fixture layout refused");
-    expect(effects.filter(e => e.method === "layout.apply")).toHaveLength(2);
+    expect(effects.filter(e => e.method === "space.new")).toHaveLength(2);
   });
 
   it("keeps wrapped partial/failure receipts readable across layout and refresh", async () => {

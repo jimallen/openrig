@@ -34,24 +34,12 @@ import {
   type LiveSeatRow,
 } from "../src/domain/terminal/terminal-views-store.js";
 import {
-  planHerdrLayout,
   buildGridRoot,
   autoGridCols,
-  extractWorkspaceId,
-  HerdrAdapter,
   type HerdrLayoutNode,
   type HerdrPaneNode,
   type HerdrSplitNode,
-} from "../src/domain/terminal/herdr-adapter.js";
-import {
-  createHerdrSocketTransport,
-  resolveHerdrSocketPath,
-  parseHerdrVersion,
-  unwrapHerdrResponse,
-  type HerdrResult,
-  type HerdrSocketRpc,
-  type HerdrTransport,
-} from "../src/domain/terminal/herdr-transport.js";
+} from "../src/domain/terminal/terminal-grid.js";
 import type { HostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
 import type { ComposedView } from "../src/domain/terminal/terminal-provider.js";
 
@@ -289,7 +277,7 @@ describe("terminal-views store — round-trip byte-stable + atomic write + A3", 
   });
 });
 
-describe("herdr layout plan — fresh-tab-on-relaunch (BR-5) + equal auto-grid root + labels", () => {
+describe("grid description of a page (preview grids, plan id) — equal auto-grid root", () => {
   const view: ComposedView = {
     id: "acme-build",
     opened: [
@@ -306,21 +294,8 @@ describe("herdr layout plan — fresh-tab-on-relaunch (BR-5) + equal auto-grid r
     ],
   };
 
-  it("re-launching the same view mints a DIFFERENT tab label (not-replace-idempotent)", () => {
-    const first = planHerdrLayout(view, "l1");
-    const second = planHerdrLayout(view, "l2");
-    expect(first.pages[0]!.tabLabel).toBe("openrig:acme-build#l1");
-    expect(second.pages[0]!.tabLabel).toBe("openrig:acme-build#l2");
-    expect(first.pages[0]!.tabLabel).not.toBe(second.pages[0]!.tabLabel);
-    // Same token → deterministic (same label). OPR.0.6.0.8: the workspace is named for
-    // people (the view id here; the rig name for a rig: view); tabs keep the token.
-    expect(planHerdrLayout(view, "l1").pages[0]!.tabLabel).toBe(first.pages[0]!.tabLabel);
-    expect(first.workspaceLabel).toBe("acme-build");
-    expect(second.workspaceLabel).toBe("acme-build");
-  });
-
   it("one grid root per page (N=2 → 2×1) — pane leaves carry <agent> · <slice> AND the composed shell command via sh -c", () => {
-    const plan = planHerdrLayout(view, "l1");
+    const plan = { pages: view.pages.map((page) => buildGridRoot(page)) };
     expect(plan.pages).toHaveLength(1);
     expect(plan.pages[0]!.blanks).toBe(0);
     // N=2 is a single equal right strip at ratio 1/2 (argv command shape
@@ -408,19 +383,7 @@ describe("herdr layout plan — fresh-tab-on-relaunch (BR-5) + equal auto-grid r
     }
   });
 
-  it("multi-page views get one fresh tab label per page", () => {
-    const many: ComposedView = {
-      ...view,
-      pages: [view.pages[0]!, view.pages[0]!],
-    };
-    const plan = planHerdrLayout(many, "l9");
-    expect(plan.pages.map((p) => p.tabLabel)).toEqual([
-      "openrig:acme-build#l9/1",
-      "openrig:acme-build#l9/2",
-    ]);
-  });
-
-  it("kernel geometry uses the composed three columns for the herdr open plan", () => {
+  it("kernel geometry uses the composed three columns for the preview grid", () => {
     const panes = ["TUI", "advisor", "operator"].map(label => ({ seat: label, label, paneCommand: `attach ${label}`, readOnly: false }));
     const grid = buildGridRoot(panes, 3);
     expect(grid).toMatchObject({ columns: 3, rows: 1, blanks: 0 });
@@ -429,222 +392,7 @@ describe("herdr layout plan — fresh-tab-on-relaunch (BR-5) + equal auto-grid r
       second: { type: "split", direction: "right", ratio: 1 / 2,
         first: { type: "pane", label: "advisor" }, second: { type: "pane", label: "operator" } },
     });
-    const plan = planHerdrLayout({ id: "kernel", opened: panes, pages: [panes], absent: [], degraded: [], columns: 3 }, "fixed");
-    expect(plan.pages[0]!.root).toEqual(grid.root);
-    expect(plan.pages[0]!.blanks).toBe(0);
     expect(buildGridRoot(panes)).toMatchObject({ columns: 2, rows: 2, blanks: 1 });
     expect(buildGridRoot(panes.slice(0, 2), 3)).toMatchObject({ columns: 2, rows: 1, blanks: 0 });
-  });
-});
-
-describe("herdr adapter — socket ping probe + workspace.create → layout.apply (FB4)", () => {
-  function fakeSocketTransport(opts?: {
-    alive?: boolean;
-    respond?: (method: string, params: unknown) => Promise<HerdrResult>;
-  }): { transport: HerdrTransport; requests: Array<{ method: string; params: unknown }> } {
-    const requests: Array<{ method: string; params: unknown }> = [];
-    const transport: HerdrTransport = {
-      async probe() {
-        return { alive: opts?.alive ?? true, version: "0.7.1", protocol: 14 };
-      },
-      async request(method, params) {
-        requests.push({ method, params });
-        if (opts?.respond) return opts.respond(method, params);
-        if (method === "workspace.create") return { type: "workspace_created", workspace_id: "wG" };
-        return { type: "layout_apply", layout: { workspace_id: "wG", tab_id: "wG:t2" } };
-      },
-    };
-    return { transport, requests };
-  }
-
-  const pane = { seat: "a@r", label: "pod.a · s02", paneCommand: "tmux attach -t 'a@r'", readOnly: false };
-  const view: ComposedView = { id: "v", opened: [pane], absent: [], degraded: [], pages: [[pane]] };
-
-  it("liveness = the socket ping (alive when the socket answers; honest detail when not)", async () => {
-    const { transport } = fakeSocketTransport();
-    const adapter = new HerdrAdapter({ transportFactory: () => transport });
-    expect((await adapter.liveness()).alive).toBe(true);
-    const dead = new HerdrAdapter({
-      transportFactory: () => fakeSocketTransport({ alive: false }).transport,
-    });
-    const live = await dead.liveness();
-    expect(live.alive).toBe(false);
-    expect(live.detail).toContain("ping");
-  });
-
-  it("status reflects the ping probe (available + version), honestly down when unreachable", async () => {
-    const { transport } = fakeSocketTransport();
-    const adapter = new HerdrAdapter({ transportFactory: () => transport });
-    const status = await adapter.status();
-    expect(status.available).toBe(true);
-    expect(status.version).toBe("0.7.1");
-    const down = new HerdrAdapter({
-      transportFactory: () => fakeSocketTransport({ alive: false }).transport,
-    });
-    expect((await down.status()).available).toBe(false);
-  });
-
-  it("openView refuses herdr_unavailable when the socket is dead — and sends NOTHING", async () => {
-    const { transport, requests } = fakeSocketTransport({ alive: false });
-    const adapter = new HerdrAdapter({ transportFactory: () => transport });
-    const res = await adapter.openView(view);
-    expect(res.ok).toBe(false);
-    expect(res.code).toBe("herdr_unavailable");
-    expect(requests).toEqual([]);
-  });
-
-  it("openView = fresh workspace.create then ONE atomic layout.apply per page (capture-verified params)", async () => {
-    const { transport, requests } = fakeSocketTransport();
-    const adapter = new HerdrAdapter({ transportFactory: () => transport, newLaunchToken: () => "tok" });
-    const res = await adapter.openView(view);
-    expect(res.ok).toBe(true);
-    expect(res.opened).toEqual(["a@r"]);
-    expect(res.pages).toBe(1);
-    // OPR.0.6.0.8: after the page is applied, its tab is focused (no blank-tab close here:
-    // this create reply carries no default tab id).
-    // #707: the applied page is followed by one pane.list read (this fake's reply has no panes, so nothing changes).
-    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "layout.apply", "pane.list", "tab.focus"]);
-    expect(requests[0]!.params).toEqual({ focus: false, label: "v" });
-    expect(requests[2]!.params).toEqual({ workspace_id: "wG" });
-    expect(requests[3]!.params).toEqual({ tab_id: "wG:t2" });
-    expect(requests[1]!.params).toEqual({
-      workspace_id: "wG",
-      tab_label: "openrig:v#tok",
-      focus: true,
-      root: { type: "pane", label: "pod.a · s02", command: ["sh", "-c", "tmux attach -t 'a@r'"] },
-    });
-  });
-
-  it("REGRESSION (the VM-RED class): only socket methods ever — the absent CLI `herdr layout apply` cannot pass again", async () => {
-    const { transport, requests } = fakeSocketTransport();
-    const adapter = new HerdrAdapter({ transportFactory: () => transport });
-    await adapter.openView(view);
-    await adapter.status();
-    await adapter.liveness();
-    for (const r of requests) {
-      // A socket method token, never a shell command line.
-      expect(r.method).toMatch(/^[a-z_]+(\.[a-z_]+)*$/);
-      expect(r.method.startsWith("herdr")).toBe(false);
-      expect(r.method).not.toContain("--help");
-      expect(r.method).not.toContain(" ");
-    }
-    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "layout.apply", "pane.list", "tab.focus"]);
-  });
-
-  it("a labeled workspace.create failure falls back ONCE to a bare create (uncaptured-param defense)", async () => {
-    const { transport, requests } = fakeSocketTransport({
-      respond: async (method, params) => {
-        if (method === "workspace.create") {
-          if ((params as Record<string, unknown>)["label"] != null) throw new Error("unknown param: label");
-          return { type: "workspace_created", workspace_id: "wH" };
-        }
-        return { type: "layout_apply" };
-      },
-    });
-    const adapter = new HerdrAdapter({ transportFactory: () => transport, newLaunchToken: () => "t" });
-    const res = await adapter.openView(view);
-    expect(res.ok).toBe(true);
-    expect(res.opened).toEqual(["a@r"]);
-    // OPR.0.6.0.8: before the bare fallback it checks for a same-named workspace (none here).
-    expect(requests.map((r) => r.method)).toEqual(["workspace.create", "workspace.list", "workspace.create", "layout.apply"]);
-    expect((requests[3]!.params as Record<string, unknown>)["workspace_id"]).toBe("wH");
-    expect(res.notes?.join(" ")).toContain('refused the workspace name "v"');
-  });
-
-  it("total workspace.create failure degrades EVERY pane honestly (herdr_workspace_failed)", async () => {
-    const { transport } = fakeSocketTransport({
-      respond: async (method) => {
-        if (method === "workspace.create") throw new Error("boom");
-        return { type: "layout_apply" };
-      },
-    });
-    const adapter = new HerdrAdapter({ transportFactory: () => transport });
-    const res = await adapter.openView(view);
-    expect(res.ok).toBe(false);
-    expect(res.code).toBe("herdr_workspace_failed");
-    expect(res.opened).toEqual([]);
-    expect(res.pages).toBe(0);
-    expect(res.degraded).toHaveLength(1);
-    expect(res.degraded[0]).toMatchObject({ seat: "a@r", host: "herdr" });
-    expect(res.degraded[0]!.reason).toContain("workspace.create failed");
-  });
-
-  it("a failed page degrades its seats; other pages still open (honest-partial)", async () => {
-    const paneB = { seat: "b@r", label: "pod.b · s02", paneCommand: "tmux attach -t 'b@r'", readOnly: false };
-    const two: ComposedView = {
-      id: "v",
-      opened: [pane, paneB],
-      absent: [],
-      degraded: [],
-      pages: [[pane], [paneB]],
-    };
-    let applies = 0;
-    const { transport } = fakeSocketTransport({
-      respond: async (method) => {
-        if (method === "workspace.create") return { type: "workspace_created", workspace_id: "wG" };
-        applies += 1;
-        if (applies === 2) throw new Error("herdr error: bad tree");
-        return { type: "layout_apply" };
-      },
-    });
-    const adapter = new HerdrAdapter({ transportFactory: () => transport });
-    const res = await adapter.openView(two);
-    expect(res.ok).toBe(true); // page 1 opened → partial success with disclosure
-    expect(res.opened).toEqual(["a@r"]);
-    expect(res.degraded.map((d) => d.seat)).toEqual(["b@r"]);
-    expect(res.degraded[0]!.reason).toContain("layout.apply failed");
-  });
-});
-
-describe("herdr socket transport — ping probe, envelope unwrap, socket path (FB4)", () => {
-  it("createHerdrSocketTransport probes via the socket `ping` method (never a CLI --help)", async () => {
-    const sent: Array<{ id: string; method: string; params: unknown }> = [];
-    const rpc: HerdrSocketRpc = async (req) => {
-      sent.push(req);
-      return { type: "pong", version: "0.7.1", protocol: 14 };
-    };
-    const t = createHerdrSocketTransport(rpc)();
-    const probe = await t.probe();
-    expect(probe).toEqual({ alive: true, version: "0.7.1", protocol: 14 });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.method).toBe("ping");
-    expect(sent[0]!.id).toBeTruthy();
-  });
-
-  it("probe is honestly dead when the socket is unreachable or answers garbage", async () => {
-    const dead = createHerdrSocketTransport(async () => {
-      throw new Error("connect ENOENT herdr.sock");
-    })();
-    expect((await dead.probe()).alive).toBe(false);
-    const weird = createHerdrSocketTransport(async () => ({ type: "nope" }))();
-    expect((await weird.probe()).alive).toBe(false);
-  });
-
-  it("unwrapHerdrResponse accepts wrapped {id,result:{type}} AND bare {type}; error/shapeless throw", () => {
-    expect(unwrapHerdrResponse({ id: "x", result: { type: "layout_apply", layout: {} } })).toEqual({
-      type: "layout_apply",
-      layout: {},
-    });
-    expect(unwrapHerdrResponse({ type: "pong", version: "0.7.1" })).toEqual({ type: "pong", version: "0.7.1" });
-    expect(() => unwrapHerdrResponse({ id: "x", error: "unknown method" })).toThrow(/herdr error/);
-    expect(() => unwrapHerdrResponse({ id: "x" })).toThrow(/unrecognized/);
-    expect(() => unwrapHerdrResponse("junk")).toThrow(/unrecognized/);
-  });
-
-  it("extractWorkspaceId tries the defensive homes in order (uncaptured workspace.create envelope)", () => {
-    expect(extractWorkspaceId({ type: "w", workspace_id: "w1" })).toBe("w1");
-    expect(extractWorkspaceId({ type: "w", workspace: { workspace_id: "w2" } })).toBe("w2");
-    expect(extractWorkspaceId({ type: "w", workspace: { id: "w3" } })).toBe("w3");
-    expect(extractWorkspaceId({ type: "w", layout: { workspace_id: "w4" } })).toBe("w4");
-    expect(extractWorkspaceId({ type: "w", id: "w5" })).toBe("w5");
-    expect(extractWorkspaceId({ type: "w" })).toBeNull();
-  });
-
-  it("resolveHerdrSocketPath: env override → per-session → the default; version parse", () => {
-    expect(resolveHerdrSocketPath({ HERDR_SOCKET_PATH: "/x/h.sock" })).toBe("/x/h.sock");
-    expect(resolveHerdrSocketPath({ HERDR_SESSION: "s1" })).toContain(path.join("sessions", "s1", "herdr.sock"));
-    expect(resolveHerdrSocketPath({})).toContain(path.join(".config", "herdr", "herdr.sock"));
-    expect(parseHerdrVersion("herdr 0.7.1")).toBe("0.7.1");
-    expect(parseHerdrVersion(undefined)).toBeNull();
   });
 });

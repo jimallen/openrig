@@ -115,7 +115,6 @@
   "test/rigspec-schema.test.ts": 1,
   "test/rsi-slow-op-file-source.test.ts": 1,
   "test/running-name-guard.test.ts": 1,
-  "test/s08-open-rig-herdr.test.ts": 1,
   "test/s23-silent-erasure.test.ts": 1,
   "test/scenario-container.test.ts": 1,
   "test/seat-activity-retirement-hooks.test.ts": 1,
