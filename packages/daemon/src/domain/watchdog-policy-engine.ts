@@ -101,6 +101,8 @@ interface WatchdogPolicyEngineDeps {
   historyLog: WatchdogHistoryLog;
   eventBus: EventBus;
   deliver: DeliveryFn;
+  /** The pump serves this seat, so a wake is durable once `deliver` commits its row. Absent: none is. */
+  pumpCarries?: (session: string) => boolean;
   parseSpec?: PolicyContextParser;
   now?: () => Date;
   /**
@@ -212,6 +214,7 @@ export class WatchdogPolicyEngine {
   private readonly historyLog: WatchdogHistoryLog;
   private readonly eventBus: EventBus;
   private readonly deliver: DeliveryFn;
+  private readonly pumpCarries?: (session: string) => boolean;
   private readonly parseSpec: PolicyContextParser;
   private readonly now: () => Date;
   private readonly policies: Map<string, Policy>;
@@ -226,6 +229,7 @@ export class WatchdogPolicyEngine {
     this.historyLog = deps.historyLog;
     this.eventBus = deps.eventBus;
     this.deliver = deps.deliver;
+    this.pumpCarries = deps.pumpCarries;
     this.resolveTargetGeneration = deps.resolveTargetGeneration;
     this.resolvePreDeliveryTerminalReason = deps.resolvePreDeliveryTerminalReason;
     this.onWakeAttempt = deps.onWakeAttempt;
@@ -521,8 +525,11 @@ export class WatchdogPolicyEngine {
 
     // Plain wakes retain the proven at-most-once ordering. Structured
     // continuity custody is retry-safe by deterministic qitem id, so its
-    // receipt waits until the durable action has completed.
-    if (isContextUsageThreshold && occupantGeneration && !continuityAction) {
+    // receipt waits until the durable action has completed. So does a wake
+    // the pump carries: a crash before its row commits must leave the
+    // condition open, and a repeat is free.
+    const carried = this.pumpCarries?.(outcome.target.session) === true;
+    if (isContextUsageThreshold && occupantGeneration && !continuityAction && !carried) {
       this.jobsRepo.recordThresholdFire(job.jobId, occupantGeneration, evaluatedAt);
     }
     const delivery = await this.deliver(
@@ -536,8 +543,7 @@ export class WatchdogPolicyEngine {
     if (
       isContextUsageThreshold &&
       occupantGeneration &&
-      continuityAction &&
-      delivery.continuityActionCompleted === true
+      (continuityAction ? delivery.continuityActionCompleted === true : carried && delivery.status === "ok")
     ) {
       this.jobsRepo.recordThresholdFire(job.jobId, occupantGeneration, evaluatedAt);
     }
@@ -562,7 +568,7 @@ export class WatchdogPolicyEngine {
       this.jobsRepo.recordEvaluation(job.jobId, evaluatedAt, true);
     }
     // OPR.0.5.8.1 S2 — a policy's condition receipt is banked ONLY on positive
-    // delivery. `status` is "ok" | "failed"; anything that is not a definite ok
+    // delivery (a wake the pump took is `ok` at commit). `status` is "ok" | "failed"; anything that is not a definite ok
     // leaves the receipt untouched so the next scan retries. EXCEPT `unconfirmed` (hc): the text may still land, and a retry types
     // it again, so it banks like an ok. A policy that does
     // not propose a receipt is untouched by this, so no other policy's

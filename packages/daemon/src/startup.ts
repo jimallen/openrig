@@ -38,7 +38,7 @@ import { messageId } from "./domain/seat-messaging/ports.js";
 import { RuntimeSeatPorts } from "./domain/seat-messaging/runtime-ports.js";
 import { MessageObligations, NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
-import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
+import { watchdogDeliveryOutcome, watchdogWakeObligation } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
@@ -2215,6 +2215,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       timing: opts?.postRestartTiming,
     });
     messageObligations.register("post-restart-", postRestart.notifier.whyNoLongerWanted);
+    messageObligations.register("guard-watchdog-", watchdogWakeObligation({
+      db, liveGenerationOf: (s) => sessionRegistry.currentOccupantGenerationForSession(s),
+      targetGenerationOf: (jobId) => watchdogJobsRepoInstance.getById(jobId)?.targetGeneration ?? null,
+    }));
     // Native comms step 3: the deadline sweeper (§8.1 R3). It reads the database, so rows a restart left `sending` are
     // settled too: delivered when the marker is in the seat's transcript, failed over to tmux after a proven non-take,
     // indeterminate (never re-sent) when no boundary came by the hard deadline. One sweep at a time.
@@ -2273,6 +2277,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       jobsRepo: watchdogJobsRepoInstance,
       historyLog: watchdogHistoryLogInstance,
       eventBus,
+      pumpCarries: (session) => tmuxAdapter.messageHandOff?.takes(session) === true,
       deliver: async ({ targetSession, message, continuityAction }, source) => {
         let continuityActionCompleted = false;
         try {

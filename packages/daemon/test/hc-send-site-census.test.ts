@@ -18,7 +18,7 @@ type Class =
 
 const SITES: Array<{ file: string; calls: number; class: Class; id: string; note: string }> = [
   { file: "routes/transport.ts", calls: 2, class: "transport-commits-row", id: "caller's (`rig send --id`), else minted once per request; a fan-out's is `<id>:<seat>`", note: "/send and /broadcast" },
-  { file: "startup.ts", calls: 6, class: "transport-commits-row", id: "sendVerify probe, native notice: minted, one attempt. post-restart: post-restart-<seq>-<node>. watchdog: guard-watchdog-<occurrence>. model monitor: guard-model-<occurrence>-<target>. native fallback: row-exists-first, its rows' ids", note: "sendVerify probe, post-restart wiring, native fallback (ownsOutboxRow), native notice, watchdog, model monitor" },
+  { file: "startup.ts", calls: 6, class: "transport-commits-row", id: "sendVerify probe, native notice: minted, one attempt. post-restart: post-restart-<seq>-<node>. watchdog: guard-watchdog-<occurrence>, handed to the pump on a gated seat, which is `ok` at commit. model monitor: guard-model-<occurrence>-<target>. native fallback: row-exists-first, its rows' ids", note: "sendVerify probe, post-restart wiring, native fallback (ownsOutboxRow), native notice, watchdog, model monitor" },
   { file: "domain/startup-orchestrator.ts", calls: 1, class: "typed-nothing", id: "none: submit-only, the text's row is the carried one", note: "submit-only Enter, empty text" },
   { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-commits-row", id: "seat-msg-compaction-<attempt>-<prep|compact|turn_boundary|restore_prompt|compliance_prompt>", note: "the three post-compact stages, prep, /compact (a Command: no message state, the enforcer keeps its retry)" },
   { file: "domain/session-transport.ts", calls: 1, class: "transport-commits-row", id: "<id>:<seat>, or minted per recipient", note: "broadcast's per-recipient send" },
@@ -101,17 +101,19 @@ describe("every daemon send into SessionTransport is classified", () => {
     expect(startup).toMatch(/actorSession: "watchdog@system"[^\n]*occupantGeneration: sessionRegistry\.currentOccupantGenerationForSession\(targetSession\)/);
   });
 
-  it("post-restart commits to the pump itself on a gated seat, and its check is registered before the pump starts", () => {
+  it("post-restart commits to the pump itself on a gated seat, and the two consumers' checks are registered before the pump starts (S4b, S4c)", () => {
     expect((readFileSync(join(SRC, "domain/post-restart-notifier.ts"), "utf8").match(/handOff\.accept\(/g) ?? []).length).toBe(1);
     const startup = readFileSync(join(SRC, "startup.ts"), "utf8");
     const started = startup.indexOf("messagePump.start();");
-    for (const prefix of ["post-restart-"]) {
+    for (const prefix of ["post-restart-", "guard-watchdog-"]) {
       const at = startup.indexOf(`messageObligations.register("${prefix}"`);
       expect(at, prefix).toBeGreaterThan(0);
       expect(at, prefix).toBeLessThan(started);
     }
     // Re-derived after the hand-off exists: before it, a gated seat's prompt would take the ungated loop.
     expect(startup.indexOf("postRestart.rederiveFromLog()")).toBeGreaterThan(started);
+    // Dropped, a threshold fire is recorded ahead of the commit again, and a crash between them loses it with no test to say so.
+    expect(startup).toContain("pumpCarries: (session) => tmuxAdapter.messageHandOff?.takes(session) === true,");
   });
 
   it("every retrying caller freezes its body, so a rebuilt stamp is not an identity conflict", () => {
