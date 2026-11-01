@@ -66,7 +66,7 @@ rig ps --nodes --rig <rig> --json
    written.
 8. Inspect the successor pane and durable outbox for staged-but-unsent input. Record a
    disposition for every such input before stopping the seat.
-9. Record all Herder/tmux clients currently attached to the incumbent session.
+9. Record all clients (Herdr tiles, `hc attach` viewers) currently attached to the incumbent session.
 10. Take a bounded rig snapshot and record its ID.
 
 Stop if identity, token, model, authority, custody, or staged-input evidence disagrees.
@@ -96,7 +96,7 @@ PATH=<managed-runtime-bin>:<required-system-paths>
 ```
 
 Launch the provider with the exact model, token, and canonical name. Put `PATH` in the
-provider process environment itself. Setting tmux session environment alone is not
+provider process environment itself. Setting the terminal's environment alone is not
 sufficient because an intervening login shell can replace it.
 
 Register or discover the candidate and record its discovery ID. Before committing,
@@ -132,13 +132,13 @@ Do not rename panes before this commit is durable.
 
 ## Phase 5: Preserve The Physical Seat, Reconcile, And Preserve Memory
 
-The canonical tmux session, window, and pane are part of the stable seat when humans or
-agents have attached clients. Do not make those clients chase a renamed session.
+The canonical hc terminal is part of the stable seat when humans or
+agents have attached clients. Do not make those clients chase a renamed terminal.
 
-1. In the original canonical pane, stop only the incumbent provider process. Keep the tmux
-   session, window, and pane unchanged.
+1. In the original canonical pane, stop only the incumbent provider process. Keep the hc
+   terminal unchanged.
 2. Keep the incumbent's exact provider token in the lineage ledger as the cold-advisor
-   handle. It need not retain a permanently renamed tmux pane.
+   handle. It need not retain a permanently renamed terminal.
 3. Stop the staged successor process only after its accepted token is durable, then resume
    that exact successor token inside the original canonical pane with the canonical name,
    model, cwd, environment, and managed `PATH`.

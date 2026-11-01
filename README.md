@@ -20,7 +20,7 @@ Not setting this up today? Get the next walkthrough and occasional OpenRig updat
 
 ## Install and first run
 
-Requires Node.js 22 or 24 and tmux, on macOS or Linux. On Linux, the distribution's own Node.js can be older (Ubuntu 24.04's is 18); install a supported version with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`) or NodeSource. On a Mac with Apple silicon, use Node.js 22 ([compatibility history](docs/releases/v0.5.15.md#known-compatibility-limitation)). On Windows, use WSL2, the Windows route OpenRig supports; native Windows isn't supported. OpenRig's automated tests don't run on WSL2 yet; see [one user's working setup](docs/reference/getting-started.md#wsl2-a-reported-working-setup). Launching a rig writes provider hooks and workspace trust settings. Before running the commands below, read [what OpenRig changes on your machine](#what-openrig-changes-on-your-machine) and back up the relevant files.
+Requires Node.js 22 or 24 and hc (herdr-core, the terminal host for agent seats), on macOS or Linux; `rig setup` installs the pinned hc when it is absent. tmux is no longer required: keep it installed through the soak, for rollback only. On Linux, the distribution's own Node.js can be older (Ubuntu 24.04's is 18); install a supported version with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`) or NodeSource. On a Mac with Apple silicon, use Node.js 22 ([compatibility history](docs/releases/v0.5.15.md#known-compatibility-limitation)). On Windows, use WSL2, the Windows route OpenRig supports; native Windows isn't supported. OpenRig's automated tests don't run on WSL2 yet; see [one user's working setup](docs/reference/getting-started.md#wsl2-a-reported-working-setup). Launching a rig writes provider hooks and workspace trust settings. Before running the commands below, read [what OpenRig changes on your machine](#what-openrig-changes-on-your-machine) and back up the relevant files.
 
 **One command.** This runs OpenRig's install script from the `v0.6.8` release. It checks Node.js and npm, installs the latest published `@openrig/cli` with `npm install -g`, runs the Node.js and SQLite check, then runs `rig setup --dry-run` and `rig setup`. The first line prints that plan and changes nothing:
 
@@ -52,7 +52,7 @@ and [non-interruptive mode](docs/reference/non-interruptive-mode.md): its agents
 bypass permission prompts and supported harness warning dialogs. The listing
 and before-install view explain that access before you choose it.
 
-Check `tmux -V` and only your selected CLI/login: `claude --version` plus
+Check `hc --version` and only your selected CLI/login: `claude --version` plus
 `claude auth status`, or `codex --version` plus `codex login status`. If needed,
 sign in once with `claude auth login` or `codex login`; do not install or log in
 to an unused provider.
@@ -158,7 +158,7 @@ using a published package, since repository guidance can be ahead of npm.
 | When | What changes and why |
 | --- | --- |
 | **npm installation** | Installs the CLI (`rig` and `openrig-tui`), bundled components and dependencies under your npm prefix (with Bun, under Bun's global directory). OpenRig's postinstall checks the Node.js version and that the SQLite module loads; Bun may block this script. It does not run daemon or provider setup. |
-| **`rig setup`** | Attempts missing tools and writes an OpenRig block in `~/.tmux.conf` for mouse support and scrollback. Installs herdr by default on macOS and Linux unless declined with `--no-herdr`; an unavailable herdr install is a warning. On macOS the installing agent offers Ghostty, and `--ghostty` attempts it after acceptance. Existing cmux settings are left unchanged. `--full` adds workstation tools. `--dry-run` shows setup's plan without applying it. |
+| **`rig setup`** | Attempts missing tools, including the pinned hc, and writes no tmux configuration. Installs herdr by default on macOS and Linux unless declined with `--no-herdr`; an unavailable herdr install is a warning. On macOS the installing agent offers Ghostty, and `--ghostty` attempts it after acceptance. Existing cmux settings are left unchanged. `--full` adds workstation tools. `--dry-run` shows setup's plan without applying it. |
 | **Daemon startup** | Creates/updates instance state under `OPENRIG_HOME` (normally `~/.openrig`), including its database and managed plugin resources. Seeds the `openrig-skills` discovery skill, the `refocusing` skill and the person-facing `rigs` skill in `~/.claude/skills` and `~/.agents/skills`, subject to existing version ownership. With `runtime.codex.hooks_enabled` enabled (the default), writes Codex hook configuration and trust records as described below—even before a rig launches. |
 | **Rig/seat launch and attachment** | Starts each seat in an hc terminal, supplies seat identity and daemon connection environment, and projects selected guidance, skills, plugins and runtime resources into the workspace. Managed startup pre-trusts the workspace. Claude context collection can also be provisioned for attached sessions and refreshed during monitoring. In a Git repository, newly created files under `.codex/plugins/shared:openrig-core/` (or the unqualified `.codex/plugins/openrig-core/`) are added to the repository's Git `info/exclude` inside an `# BEGIN OpenRig generated files` block; new `AGENTS.md`, `CLAUDE.md` and `CLAUDE.local.md` files stay visible with a warning. |
 | **Bundle install** (`rig bundle install`, or `rig up` with a `.rigbundle` or GitHub link) | Writes the bundle's files into the install target: `--target`, or the current directory for `rig up` and for a GitHub link. `rig bundle install` with a local archive needs `--target`. Routes its declared skills, plugins and context packs into your libraries. A GitHub link's archive is kept under `OPENRIG_HOME/bundle-imports/`, and installs are recorded in `OPENRIG_HOME/bundle-audit.jsonl`. A bundle that carries a project creates it under `workspace.projects_root` and records it, with the rig's association, in the workspace catalog. |
@@ -295,7 +295,7 @@ rig specs ls
 
 ## How It Works
 
-OpenRig is a local daemon + CLI + terminal UI + MCP server, built on tmux. The older React web UI remains in maintenance mode with best-effort support.
+OpenRig is a local daemon + CLI + terminal UI + MCP server, built on hc (herdr-core) terminals. The older React web UI remains in maintenance mode with best-effort support.
 
 ```
 CLI / TUI / MCP
@@ -304,7 +304,7 @@ Hono HTTP daemon
       |
   Domain services
       |
-  SQLite + tmux + runtime adapters
+  SQLite + hc terminals + runtime adapters
 ```
 
 - **CLI**: Commands for both humans and agents to launch teams, inspect state, send messages, track owned work, and manage context.
@@ -423,7 +423,7 @@ seat, plugin, and release lifecycle actions remain agent-owned.
 - Node.js 22 or 24 (the supported versions in this release). Node 20 is no
   longer supported. Node 26 and other versions are untested. On a Mac with Apple
   silicon, use Node.js 22: see the [compatibility history](docs/releases/v0.5.15.md#known-compatibility-limitation).
-- tmux
+- hc (herdr-core), installed by `rig setup` at the pinned version. tmux is not required; keep it installed through the soak, for rollback only.
 - macOS or Linux. On Windows, use WSL2, the Windows route OpenRig supports; native
   Windows isn't supported. OpenRig's automated tests don't run on WSL2 yet; one user's
   working setup is in the [getting-started guide](docs/reference/getting-started.md#wsl2-a-reported-working-setup)
@@ -434,7 +434,7 @@ Optional:
 
 ## Setup and Troubleshooting
 
-- `rig setup` attempts core machine preparation: it installs a missing Claude Code or Codex and writes tmux defaults. It installs Herdr by default on macOS and Linux; use `--no-herdr` if you decline it. On macOS it also installs a missing tmux with an existing Homebrew; elsewhere install tmux yourself (setup only checks it). On a Mac, the installing agent offers Ghostty once; accepting uses `rig setup --ghostty`, and declining leaves Terminal.app available. Existing cmux settings are preserved. It reports what it tried and what actually succeeded. If something fails, it gives the local agent enough context to finish the job.
+- `rig setup` attempts core machine preparation: it installs a missing Claude Code or Codex and the pinned hc, and writes no tmux configuration. It installs Herdr by default on macOS and Linux; use `--no-herdr` if you decline it. On a Mac, the installing agent offers Ghostty once; accepting uses `rig setup --ghostty`, and declining leaves Terminal.app available. Existing cmux settings are preserved. It reports what it tried and what actually succeeded. If something fails, it gives the local agent enough context to finish the job.
 - `rig setup --full` attempts a broader operator workstation setup (jq, gh, via Homebrew, so macOS only) on top of core.
 - `rig doctor` inspects current system health and helps diagnose problems after setup. Use it when something stops working or after machine changes. It shares setup's local provider login checks. These do not prove provider acceptance or a working agent; also inspect `rig ps --nodes --rig <rig>`.
 

@@ -31,7 +31,9 @@ option. Aliases do not add command objects; short/long spellings of one
 option do not add option objects. Commander-generated help is additional.
 These are source counts, not a claim about a deployed release. The three counts were re-measured with the snippet below at
 `ec23d93c74e4f38ae3d254a30742221feb6d43bc` after `rig adopt`, `bind`, `discover`, `attach` and `unclaim` were removed; the tables
-still carry the older stamp and do not yet list `rig human`, `rig rsi` or the hidden `rig restore apply` command.
+still carry the older stamp. `rig human` and `rig rsi` were added to them afterwards, from their command source and from the same
+walk at `ebdfdd959314167c615354fbe11d3ffe3dc069df` (86, 364 and 1,120 again; no top-level command is hidden); the hidden
+`rig restore apply` command is still not listed.
 
 ## Reading this reference
 
@@ -646,6 +648,24 @@ Root: `rig`; declared option: `-V, --version`.
 |---|---|---|
 | `rig whoami` | — | `--node-id <id>`<br>`--session <name>`<br>`--host <id>`<br>`--all-hosts`<br>`--hosts <ids>`<br>`--json`<br>`--full`<br>`--verbose`<br>`--all-peers` |
 
+### human
+
+| Invocation | Aliases | Declared options |
+|---|---|---|
+| `rig human` | — | — |
+
+Runs `rig-here kernel` to show the kernel's human seat in the Herdr app; it passes `rig-here`'s exit code through
+([`humanCommand`](../../packages/cli/src/commands/human.ts)).
+
+### rsi
+
+| Invocation | Aliases | Declared options |
+|---|---|---|
+| `rig rsi` | — | — |
+
+Runs `rig-here rsi` to show the RSI inbox in the Herdr app; a `rig-here` without that mode reports it itself and the
+exit code passes through ([`rsiCommand`](../../packages/cli/src/commands/rsi.ts)).
+
 ### config
 
 | Invocation | Aliases | Declared options |
@@ -770,6 +790,11 @@ Relative paths differ by flag: `--culture` is taken from the directory the comma
 |---|---|---|
 | `rig reconcile-session <session>` | — | `--rig <rigId>`<br>`--node <logicalId>`<br>`--no-launch`<br>`--json` |
 
+Still ships, and works on hc (measured at `ebdfdd959314167c615354fbe11d3ffe3dc069df`; `hc-reconcile-binding.test.ts` drives the real
+`SessionReconciler`): it re-binds a live, hand-resumed seat to its own persisted node without launching or typing, and an hc
+seat's binding gets the terminal's address, never a tmux pane. It is not an adoption command, so it stayed when `rig adopt`,
+`bind`, `discover`, `attach` and `unclaim` were removed; crash-cart and topology converge reuse the same code.
+
 ### env
 
 | Invocation | Aliases | Declared options |
@@ -784,6 +809,11 @@ Relative paths differ by flag: `--culture` is taken from the directory the comma
 | Invocation | Aliases | Declared options |
 |---|---|---|
 | `rig release <rigId>` | — | `--delete`<br>`--json` |
+
+Still ships, and works on hc: it detaches the rig's `claimed` sessions (marks them detached, clears the binding and the
+`@rigged_*` labels, which an hc seat holds as terminal labels) and kills nothing; a rig whose latest session is `launched` is
+refused (`contains_launched_nodes`, use `rig down`). Claimed sessions are still created by `rig reconcile-session` and by a handover
+onto a discovered successor, so the command has input; it no longer pairs with `rig adopt`, which is gone.
 
 ### launch
 

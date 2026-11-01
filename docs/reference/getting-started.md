@@ -15,7 +15,7 @@ operator in the OpenRig view.
 
 ## Before you start
 
-You need Node.js 22 or 24 and tmux, on macOS or Linux. On Linux, the
+You need Node.js 22 or 24 and hc (herdr-core, the terminal host for agent seats), on macOS or Linux; `rig setup` installs the pinned hc when it is absent. tmux is no longer required: keep it installed through the soak, for rollback only. On Linux, the
 distribution's own Node.js can be older (Ubuntu 24.04's is 18); install a
 supported version with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`)
 or NodeSource. On a Mac with Apple
@@ -125,7 +125,7 @@ Ask: **“Which working account do you want this team to use: Claude Code, Codex
 or both?”** Reuse an explicit choice already made. Recommend the account the
 user already has working; a second subscription is not a prerequisite.
 
-Install OpenRig (`npm install -g @openrig/cli`) and check `tmux -V`. With npm 11 or later, an `npm warn install-scripts` line for `@openrig/cli` is expected: only the postinstall Node.js and SQLite check was skipped, and `node "$(npm root -g)/@openrig/cli/scripts/check-abi.mjs"` runs it. Check **only the selected providers**:
+Install OpenRig (`npm install -g @openrig/cli`) and check `hc --version`. With npm 11 or later, an `npm warn install-scripts` line for `@openrig/cli` is expected: only the postinstall Node.js and SQLite check was skipped, and `node "$(npm root -g)/@openrig/cli/scripts/check-abi.mjs"` runs it. Check **only the selected providers**:
 
 - Claude Code: `claude --version` and `claude auth status`. If sign-in is missing,
   ask once: “Please run `claude auth login` in your launch environment.”
@@ -140,10 +140,10 @@ completes it. `rig setup --dry-run` previews the broader setup; applying
 `rig setup` checks **both** harnesses and installs a missing one with npm, unless
 you pass the person's choice: `rig setup --providers claude` (or `codex`) leaves
 the other out, so it reads not selected instead of failed. On
-macOS it uses an existing Homebrew (it does not install Homebrew) to install a
-missing tmux (elsewhere tmux is checked, not installed). Herdr installs on
-macOS and Linux; pass `--no-herdr` to decline it. Setup also
-writes an OpenRig-managed block (mouse on, a longer history) into `~/.tmux.conf`.
+macOS it checks for Homebrew (it does not install Homebrew), which installs the optional jq and gh in the full profile.
+It installs the pinned hc when hc is absent; an hc already installed at another version is never replaced, and setup
+reports the fix instead. Herdr installs on macOS and Linux; pass `--no-herdr` to decline it. Setup writes no tmux
+configuration.
 It is optional for this selected-provider path, not a requirement to fix an unused
 provider.
 
@@ -189,12 +189,13 @@ when it starts the daemon.
 
 This is the **OpenRig view**, in a new terminal window or tab.
 Below 120 measured columns, the operator fills the first page; from 120, the dashboard and operator share it equally.
-The advisor always has a separate tab or tmux window.
+The advisor always has a separate Herdr tab.
 **Agents:** the `rigs` skill says when to open it, what to check, what to do when it can't open, and how to hand the
 person's goal to the operator; [Install and sign in](#install-and-sign-in) says how to load it.
 
 `rig setup` installs Herdr by default on macOS and Linux. If the person declines
-Herdr, use `rig setup --no-herdr`; the OpenRig view can use plain tmux. Setup
+Herdr, use `rig setup --no-herdr`; without Herdr there is no OpenRig view (`rig terminal open --window` stops with
+"Herdr is not installed. Run rig setup."), and the seats keep running in hc terminals. Setup
 checks both PATH and the installer's default `~/.local/bin/herdr` location. It
 leaves existing cmux settings alone and does not open a view during setup.
 
@@ -244,8 +245,8 @@ uses the collapsed default. If private settings cannot be prepared, OpenRig
 reports why and keeps the ordinary launch or manual command with Herdr's usual settings.
 
 The command runs Herdr when installed, using the daemon's configured session and
-socket. Otherwise it creates a plain tmux viewing session. Explicitly choose the
-latter with `--provider tmux --window`. Neither route types into or replaces the
+socket. Without Herdr it stops with "Herdr is not installed. Run rig setup."; the tmux viewer is gone, and
+`--provider tmux` is refused. The command does not type into or replace the
 installing agent's terminal. Existing conversations continue in their original
 sessions.
 
@@ -270,8 +271,7 @@ For Claude-only, Codex-only and mixed kernels, the default `saved:kernel` layout
 uses the viewing terminal's measured width. Below 120 columns (or when width is
 unknown), **the operator** fills the first page, followed by dashboard and advisor
 pages. From 120 columns, dashboard and operator share the first page equally, with
-the advisor on a separate page. Select a Herdr tab to switch; in plain tmux, press
-**Ctrl-b, then w** and choose a `view-*` window; `view-1` is the OpenRig view's first page.
+the advisor on a separate page. Select a Herdr tab to switch.
 Missing roles are reported rather than filled with another conversation. The queue worker remains
 reachable through the dashboard. The composition uses the installed kernel's current
 bindings; no YAML edit, seat launch or daemon restart is needed. A custom saved
@@ -298,20 +298,18 @@ different points in the same journey:
 | What you see | Why and what to do next |
 | --- | --- |
 | Codex offers to switch to a cheaper model near a rate limit | This is Codex's own menu. Ask the person to choose in the seat's terminal; do not silently change the team's configured model. OpenRig disables Codex's startup update check for managed launches, but does not answer this model-choice menu. |
-| A missing Node.js, npm or tmux; an install download or command fails | The named prerequisite or install step did not finish. Read its error and the [platform and provider instructions](#install-and-sign-in), resolve that step, then recheck it. `FAILED [4/4]` with only selected-provider sign-ins outstanding means the package installed but those logins still need the person. |
+| A missing Node.js, npm or hc; an install download or command fails | The named prerequisite or install step did not finish. Read its error and the [platform and provider instructions](#install-and-sign-in), resolve that step, then recheck it. `FAILED [4/4]` with only selected-provider sign-ins outstanding means the package installed but those logins still need the person. |
 | The installing harness refuses a tool call or asks for permission | Its native rules, sandbox or automatic permission decision apply before OpenRig can run. Claude Code's [auto mode can deny calls](https://code.claude.com/docs/en/auto-mode-config) as well as approve them. Show the specific refusal and ask the person to review it in the harness permission controls or run that named step themselves. Keep their chosen restrictions; a refused call does not prove the OpenRig command failed. |
-| Herdr or Ghostty installation is unavailable or declined | Herdr is optional for the view: `--window` uses plain tmux when Herdr is absent, and its install failure is a warning. On macOS, Terminal.app is the fallback when supported Ghostty is absent. An explicitly requested Ghostty install can fail setup; resolve that install or decline it with `--no-ghostty`, preserving earlier choices. Address separate required-tool or login failures. Existing cmux remains supported. |
+| Herdr or Ghostty installation is unavailable or declined | Herdr is required for the view: without it `--window` stops with "Herdr is not installed. Run rig setup.", and its install failure at setup is a warning. On macOS, Terminal.app is the fallback when supported Ghostty is absent. An explicitly requested Ghostty install can fail setup; resolve that install or decline it with `--no-ghostty`, preserving earlier choices. Address separate required-tool or login failures. Existing cmux remains supported. |
 | macOS asks for Automation access, or the window action is denied | The command asks the desktop terminal app to open a new surface. Let the person answer the system prompt. Read the error and inspect any new window before retrying an uncertain action; do not silently switch apps and open a duplicate. |
 | No local display, or the configured daemon is remote | `--window` needs the daemon's desktop. An SSH shell or remote daemon address alone does not give the agent that desktop. Explain the limit and use the [manual](#talk-to-the-operator-in-any-terminal) or [SSH handoff](#headless-or-ssh-handoff) with the actual operator binding. |
 | Herdr shows its introduction or agent-integration panel | These are Herdr's first-run panels. Follow the displayed controls: Return continues the intro and Esc closes the integration panel. Opening this view does not require installing Herdr's agent integrations or changing your Claude/Codex settings. |
 | A saved layout is cramped in an 80×24 window | The default kernel view gives each role a full-width page. A custom saved `kernel` view still controls its own layout; adjust that saved view if needed. Changing or restarting the team is unnecessary. |
 | The command returned, but visibility is unconfirmed | With authorized desktop tools, inspect the new window and a screenshot of its contents. A window listing alone proves only that a window exists. If the agent has only shell access, report what the command confirmed and ask the person to confirm the visible operator and that the dashboard and advisor tabs or windows are available. Do not report visual success without seeing it. |
 
-After a failure, inspect any newly opened surface before retrying. A tmux failure
-may name a newly created viewing session for inspection. Do not replace a failed
+After a failure, inspect any newly opened surface before retrying. Do not replace a failed
 local desktop action with commands for the person to copy; finish or explain the
-failed action. Close only the viewing window, or use **Ctrl-b, then d** in plain
-tmux, to leave the underlying conversations running.
+failed action. Close only the viewing window to leave the underlying conversations running.
 
 ### Existing provider workspaces
 
@@ -336,24 +334,16 @@ For an explicitly requested manual attachment, inspect the current bindings:
 rig ps --nodes --rig kernel --json --fields logicalId,canonicalSessionName,tmuxAttachCommand
 ```
 
-Find `logicalId: operator.agent` and run its `tmuxAttachCommand`, after `env -u TMUX`, in a new
-terminal on the same host and account:
+Find `logicalId: operator.agent` and run its `tmuxAttachCommand` in a new
+terminal on the same host and account. The field keeps its name; for a seat in an hc terminal its value is
+`hc attach -- <terminal>`, with the default core and nothing else to name:
 
 ```sh
-env -u TMUX <tmuxAttachCommand>
+<tmuxAttachCommand>
 ```
 
-When the daemon was started inside tmux on a non-default socket, its sessions live on that
-server, and `tmuxAttachCommand` names it (`tmux -L <name> …` or `tmux -S <path> …`). The installing
-agent fills in the actual command. This optional manual route
+The installing agent fills in the actual command. This optional manual route
 is separate from the first-install desktop action above.
-
-### Plain terminal: a new viewing session
-
-`rig terminal open saved:kernel --provider tmux --window --json` creates and opens
-the same width-based OpenRig view layout, with the advisor in a separate window. It reuses
-the daemon's composition and preserves existing sessions. The result names the viewing session. No pane names or shell
-commands need to be assembled by the person.
 
 ### Headless or SSH handoff
 
@@ -498,7 +488,7 @@ fallback. Explain the window failure and help with this fallback if chosen;
 it does not show the advisor or operator conversation.
 
 A fresh kernel runs the ordinary TUI in its existing `operator-human` terminal.
-This command attaches another client to that terminal. **Ctrl-b, then d**
+This command attaches another client to that terminal. **Ctrl+\**
 detaches without quitting the TUI; return with the same command and the view
 stays where it was. Another authorized agent can capture or operate that same
 pane. It should tell you before changing your view. The terminal is not a
@@ -573,8 +563,8 @@ for each one you want stopped. Include `kernel` last if you want its operator,
 advisor and queue worker stopped too; its operator cannot continue helping
 after its own session ends. Check each result before calling the shutdown done.
 
-`rig daemon stop` stops only the background service and preserves agent tmux
-sessions. If you also want that service stopped, run it after stopping the rigs.
+`rig daemon stop` stops only the background service and preserves the agents' hc terminals
+(the hc core keeps running). If you also want that service stopped, run it after stopping the rigs.
 If the operator is handling this full shutdown and kernel is included, it gives you this
 last step before running `rig down kernel`: once kernel is down, run
 `rig daemon stop` in your own shell and check the result. The operator's session
@@ -590,28 +580,17 @@ the lifecycle API without booting a new kernel, then stop the remaining rigs.
 | "Startup attention" or "Startup details" names a prompt | Answer the login, trust or bypass prompt in that seat's terminal, then run the `rig seat continue <seat>` it shows. |
 | "Readiness timeout after 30s — harness did not become interactive" | The harness took longer than the readiness window. Raise it for the next launch with `rig config set runtime.readiness_timeout_seconds <1-600>`, then relaunch that seat. |
 | Daemon is healthy, kernel is still starting | Read `rig status` and `rig ps --nodes --rig kernel`; kernel readiness is separate. |
-| Kernel seats fail within a second of the first start, and tmux reports "server exited unexpectedly" | Check that your tmux can capture a pane, then start the failed seats again; see the tmux check below this table. |
+| Kernel seats fail within a second of the first start, and `rig preflight` fails its hc check | The hc check names a missing hc, a version other than the pinned one, or a core this build can't speak to. Fix that, then start the failed seats again; see the recovery below this table. |
 | Shared terminal is absent | Inspect the existing kernel binding and recovery state; use standalone `rig tui` while resolving it. |
 | Viewing terminal was closed | Open the conversations again with `rig terminal open saved:kernel --window`; `rig tui --shared` is only the dashboard fallback if that window cannot open. Do not relaunch the team. |
-| Daemon restarted but tmux survived | Re-read `rig status` and the existing queue; a daemon restart is not a fresh project. |
-| Host reboot lost tmux sessions | Open `rig`, start the daemon if needed (press **S** if it opens on the work views), and select the existing rig and seats. Resume is the default; a fresh conversation needs a separate decision. |
+| Daemon restarted but the hc core survived | Re-read `rig status` and the existing queue; a daemon restart is not a fresh project. |
+| Host reboot stopped the hc core's terminals | Open `rig`, start the daemon if needed (press **S** if it opens on the work views), and select the existing rig and seats. Resume is the default; a fresh conversation needs a separate decision. |
 | Launch reports no usable snapshot | Inspect the existing rig and retained project files, then follow the same-seat recovery below. |
 | Work is waiting on a prompt or decision | Read the row, transition and named prompt; preserve the obligation until the missing decision arrives. |
 
-**When the kernel's seats all fail at the first start.** A report on Oracle Linux 10
-([#980](https://github.com/mvschwarz/openrig/issues/980)) traced this to the distribution's packaged tmux, whose
-`tmux -V` prints `next-3.4`: its server exited on every `capture-pane -p`, also outside OpenRig. To check your tmux on
-a throwaway socket, without touching your own sessions:
-
-```sh
-tmux -L "openrig-check-$$" -f /dev/null new-session -d -s check
-tmux -L "openrig-check-$$" capture-pane -p -t check >/dev/null && echo "capture-pane works"
-tmux -L "openrig-check-$$" kill-server
-```
-
-If the second command fails because the server exited, put a tmux that passes this check first on your `PATH`; the
-reporter built tmux 3.5a into `/usr/local/bin`. Then, from a shell where `tmux -V` shows that tmux, restart the daemon
-and start the failed seats again, as the reporter did:
+**When the kernel's seats all fail at the first start.** Run `rig preflight` and `rig doctor` first: their hc check
+names a missing hc, a version other than the pinned one, or a core this build can't speak to. Fix that, then stop the
+daemon and start the failed seats again:
 
 ```sh
 rig daemon stop
@@ -673,7 +652,7 @@ decision for that named seat; **Esc** declines without launching it. A confirmed
 fresh conversation receives the configured context and retains the old history,
 but does not resume that history. Authentication or runtime failures require
 repair of that prerequisite. **o** opens the existing native terminal here; detach
-to return (tmux defaults to Ctrl-b, then d). Decide native trust/auth prompts
+to return (`hc attach` detaches with ctrl+\). Decide native trust/auth prompts
 there. If a fresh start paused before context delivery, **c** finishes that
 delivery to the same occupant (from a shell, `rig seat continue <seat>` does the
 same). **r** reads actual state again; **d** expands details.

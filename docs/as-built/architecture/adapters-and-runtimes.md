@@ -6,7 +6,7 @@ topics: [agent-runtime, runtime-control]
 domains: [engineering-advisor, operating-advisor]
 applies-when: |
   Need the runtime-adapter contract — how OpenRig launches and resumes a
-  Claude Code, Codex, Pi, Oh My Pi, stub or terminal harness inside tmux, what
+  Claude Code, Codex, Pi, Oh My Pi, stub or terminal harness inside an hc terminal, what
   the five required adapter methods do, or how the daemon honestly assesses
   whether a harness actually resumed vs fresh-launched (the resume-honesty
   layer).
@@ -44,7 +44,7 @@ string (`runtime-adapter.ts:146`) and implements five required methods
 | `listInstalled` | `(binding)` `:153` | List currently installed/projected resources for a node. |
 | `project` | `(plan, binding)` `:156` | Project resources from a `ProjectionPlan` to the runtime's target locations. |
 | `deliverStartup` | `(files, binding, sendInteractiveText?)` `:160` | Deliver resolved startup files to the runtime. The startup orchestrator passes the optional third argument for Claude Code only, so Claude's `send_text` files go through the checked send described in `agent-spec-and-startup.md`. |
-| `launchHarness` | `(binding, opts)` `:170` | Launch the harness inside the bound tmux session; return a resume token. |
+| `launchHarness` | `(binding, opts)` `:170` | Launch the harness inside the seat's bound terminal (the field names still say tmux session); return a resume token. |
 | `checkReady` | `(binding)` `:176` | Probe whether the harness is responsive and ready. |
 
 The interface also has two optional members: `claudeManagedLaunch` (`:145`)
@@ -177,7 +177,7 @@ permission mode keeps `--permission-mode acceptEdits` and gets
 `--settings` (`kernel-authority.ts:64–66`):
 `TEAM_CLAUDE_ALLOW` (`:25`) is `Skill`, `Read(./**)`, `Glob`, `Grep`,
 `Bash(rig:*)`, eight read-only shell commands and 17 test-runner commands, and
-`TEAM_CLAUDE_ASK` (`:32`) asks before 41 `rig` lifecycle commands such as `up`,
+`TEAM_CLAUDE_ASK` (`:32`) asks before 39 `rig` lifecycle commands such as `up`,
 `down`, `seat stop` and `bundle install`. The settings carry the allow list and a
 `PreToolUse` Bash hook, `packages/daemon/assets/claude-team-permissions.cjs`, that applies
 both lists (`kernel-authority.ts:43–53`): it asks before a lifecycle command unless the
@@ -228,7 +228,7 @@ resume launches (`codex-runtime-adapter.ts:378`, `codex-resume.ts:103`).
   writing only when a flag is missing (`provisionManagedBootstrap`, `:697`).
   It writes no permission settings. The Codex adapter does the same for
   project trust in its `config.toml` (`codex-runtime-adapter.ts:736`).
-- **Readiness** (`checkReady`, `:356`): verifies tmux session alive (`:361`),
+- **Readiness** (`checkReady`, `:356`): verifies the seat's terminal session alive (`:361`),
   captures the pane command and 40 pane lines, and assesses them with
   `assessNativeResumeProbe` (§3) through `assessManagedProbe` (called `:368`,
   defined `:386`); ready only when probe `status === "resumed"`. The
@@ -287,7 +287,7 @@ resume launches (`codex-runtime-adapter.ts:378`, `codex-resume.ts:103`).
 - `StubRuntimeAdapter` (`stub-runtime-adapter.ts:69`), `runtime` defaulting to
   `"stub"` (`:81`).
 
-Pi and stub launch an OpenRig runner inside the seat's tmux pane (header
+Pi and stub launch an OpenRig runner inside the seat's hc terminal (header
 comments `pi-runtime-adapter.ts:1–10`, `stub-runtime-adapter.ts:1–14`). Pi
 and Oh My Pi support fork and report `pi_session_file` or `omp_session_file`
 resume tokens; the stub refuses fork and reports `stub_session`.
@@ -306,8 +306,8 @@ Opening a seat in a terminal app goes through `TerminalProvider`s under
 `cmux_unavailable` when cmux is not connected. A request that names no
 provider takes the first of Herdr, then cmux, that is available and alive,
 and stays on Herdr when neither is (`providerNameFor`,
-`terminal-service.ts:175`); a named provider is used as named. These place existing tmux
-sessions in views; they do not launch harnesses.
+`terminal-service.ts:175`); a named provider is used as named. These place existing seat
+terminals in views; they do not launch harnesses.
 
 ## 3. Resume honesty
 
@@ -362,7 +362,7 @@ exactly. `refresh(sessions, opts?)` (`:124`) works in two modes:
   id captured. For a Claude session with a token, it first reads Claude's live
   per-process session file, and only if that read fails runs
   `probeClaudeResume` (`:216`) — a real launch of the resume command in a
-  throwaway probe tmux session (`rigged-refresh-<name>-<ts>`, `:301`),
+  throwaway probe session (`rigged-refresh-<name>-<ts>`, `:301`),
   returning `"resumable" | "not_resumable" | "inconclusive"`. The probe result
   is recorded without clearing the token.
 - **`fillNullOnly`** (`:127`): a missing Claude token is filled from the

@@ -256,7 +256,7 @@ If validation fails, fix the errors. Do not try to launch an invalid spec — it
 
 ### Agent can't coordinate with peers
 
-**Symptom:** Agent tries raw tmux commands instead of `rig send`, doesn't know peer session names.
+**Symptom:** Agent tries raw terminal commands instead of `rig send`, doesn't know peer session names.
 **Root cause:** Agent didn't receive `openrig-user` skill or `openrig-start` overlay.
 **Fix:** Ensure the agent's profile `uses.skills` includes `openrig-user`. Verify via `rig ps --nodes` that the agent shows expected startup status; check installed skills via direct startup/capture/transcript evidence or the UI node detail (the `rig ps --nodes` projection does not expose installed-resource counts).
 

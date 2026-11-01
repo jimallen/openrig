@@ -6,7 +6,7 @@ topics: [coordination, observability]
 domains: [engineering-advisor, operating-advisor]
 applies-when: |
   Need to know how rig send/capture/broadcast works, how transcript capture
-  (periodic tmux capture-pane) and rg/grep search behave, how durable rig chat
+  (a periodic terminal capture) and rg/grep search behave, how durable rig chat
   (SQLite + SSE) is modeled, what rig ask gathers, or the exact MCP-tool-name
   vs tmux-metadata-key naming distinction.
 siblings: [daemon-core.md, lifecycle-snapshot-restore.md]
@@ -17,9 +17,9 @@ last-updated: 2026-10-08
 
 # Transport, Transcripts, Chat, Ask
 
-The communication-and-history layer: tmux is transport, not truth. Send/
-capture/broadcast wrap tmux with honest errors; transcripts are bounded
-`tmux capture-pane` snapshots written to files; chat is daemon-backed SQLite;
+The communication-and-history layer: the seat host is transport, not truth. Send/
+capture/broadcast wrap the seat's hc terminal with honest errors; transcripts are bounded
+terminal-capture snapshots written to files; chat is daemon-backed SQLite;
 the daemon's `rig ask` service gathers evidence and never calls an LLM.
 
 > Verified against source at main `e8f0ab340db773392ec8be75b072d1c0f3068a50`. Each count below sits beside the
@@ -87,8 +87,8 @@ Routes: `packages/daemon/src/routes/{transport,transcripts,ask,chat,whoami}.ts`
 
 1. Resolve the session name (`resolveBySessionName`,
    `session-transport.ts:963`): not found → 404; the same name in more than
-   one rig → 409. A tmux probe of the session can also refuse it as missing or
-   tmux as unavailable (`:1317`–`1334`). Pod, rig, global and `--to` list
+   one rig → 409. A probe of the session on the seat host can also refuse it as missing or
+   the host as unavailable (`:1317`–`1334`). Pod, rig, global and `--to` list
    targets go through `POST /api/transport/broadcast`, which resolves them
    with `resolveSessions` and sends to each recipient in turn.
 2. Take the seat's delivery lease. Every write runs under a per-seat,
@@ -109,7 +109,7 @@ Routes: `packages/daemon/src/routes/{transport,transcripts,ask,chat,whoami}.ts`
    `:311–315`) or an `unknown` one proceeds with an advisory `warning` (`:1495`,
    `:1503`). `--force` has no effect on this path, and combining it with
    `--wait-for-idle` is refused with 400 (`routes/transport.ts:66`–`73`).
-4. Two-step tmux send: a unique file/buffer pasted with `paste-buffer -d -r -p`
+4. Two-step send (tmux implementation): a unique file/buffer pasted with `paste-buffer -d -r -p`
    (`packages/daemon/src/adapters/tmux.ts:625`) → ~200ms delay
    (`session-transport.ts:1558`) → separate named `Enter` (`session-transport.ts:1573–1578`). The paste
    targets the seat's registered pane ID, not the session name, and is refused
@@ -142,9 +142,15 @@ The sender comes from the `X-OpenRig-Session` header; an unsigned send gets an
 unknown-sender notice. The CLI adds a From/To envelope, and the daemon appends
 a delivered-latency note for delays of 10 s or more.
 
-Architecture rule 18 (`architecture-rules-and-event-system.md`): tmux is
-transport, not truth — `send/capture/broadcast` wrap tmux reliably with honest
+Architecture rule 18 (`architecture-rules-and-event-system.md`): the seat host is
+transport, not truth — `send/capture/broadcast` wrap the hc terminal reliably with honest
 errors.
+
+At the hc cutover the seat host is hc: `HcAdapter` overrides the tmux adapter's send, capture and identity
+methods (`HcInput`, `HcCapture`, `HcIdentity`), and no runtime path selects the tmux implementation. The tmux-specific
+mechanics below (paste buffers, `capture-pane`, argv exec of the tmux binary) describe the retained `tmux.ts`, kept
+through the soak for rollback only; they were not re-measured against hc and the line citations are those of the
+stamped source.
 
 The daemon runs tmux without a shell: argv straight to the tmux binary found on
 `PATH`. `OPENRIG_TMUX_SHELL=1` at daemon start runs every tmux call through
@@ -218,8 +224,8 @@ remote daemon's ordinary local routes; the cross-host logic is in the CLI.
 
 ## 4. Transcript flow
 
-1. `NodeLauncher` starts transcript rotation right after tmux session
-   creation, before the harness boots
+1. `NodeLauncher` starts transcript rotation right after the seat's terminal
+   is created, before the harness boots
    (`NodeLauncher`, `startTranscriptRotation`).
 2. Each rotation tick captures the trailing lines and atomically overwrites
    (temp file + rename in `startTranscriptRotation`)
@@ -281,7 +287,7 @@ Claude or Codex session (`claude -p --resume` / `codex exec resume`,
    (`git grep -l 'RigChatPanel' -- packages/ui/src | wc -l`).
 5. MCP: **`rig_chatroom_send` + `rig_chatroom_watch`** (`mcp-server.ts:364`,
    `:400`).
-6. Source of truth: daemon-backed SQLite (`chat_messages` table), NOT tmux
+6. Source of truth: daemon-backed SQLite (`chat_messages` table), NOT terminal
    scrollback.
 
 **ChatMessage** type (`chat-repository.ts:6`): durable rig-scoped message —

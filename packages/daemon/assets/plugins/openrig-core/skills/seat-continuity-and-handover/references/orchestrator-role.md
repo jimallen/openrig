@@ -36,5 +36,5 @@ Create an owned mechanic baton; awareness-only is not custody. The baton may pre
 but it never auto-rebinds.
 
 After the mechanic reports effect, verify READY from source: canonical seat identity, current
-model, current generation, canonical tmux pane, queue census, duty acceptance, and usable width.
+model, current generation, canonical hc terminal, queue census, duty acceptance, and usable width.
 Only then unfreeze authority.

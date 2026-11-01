@@ -43,8 +43,8 @@ Examples:
   rig reconcile-session dev-impl@my-rig --rig <rig-id> --node dev.impl --no-launch
   rig reconcile-session dev-impl@my-rig --json
 
-Use after manually resuming a seat (claude --resume / codex resume) inside its
-canonical tmux session: the daemon still shows the seat down. Reconcile binds
+Use after manually resuming a seat (claude --resume / codex resume) in its
+canonical hc terminal (hc attach): the daemon still shows the seat down. Reconcile binds
 the live process to its OWN persisted node (same node id - no re-key) and
 updates the projection so rig ps / topology / send / capture / queue routing
 work again. It NEVER launches, relaunches, kills, replays startup, presses

@@ -18,7 +18,7 @@ machine and have things happen.
 - **operator.human** is the shared mission-control terminal. A fresh kernel
   starts `rig tui` there. When the person wants to see their agents or OpenRig in a terminal, run
   `rig terminal open saved:kernel --window`: below 120 measured columns, operator first; from 120,
-  dashboard and operator equally side by side. The advisor keeps a separate tab or tmux window. Only if
+  dashboard and operator equally side by side. The advisor keeps a separate Herdr tab. Only if
   the window cannot open, `rig tui --shared` is the dashboard-only fallback;
   detaching preserves navigation. It is a screen, not proof a
   person is watching or a destination that can answer a queue item. Use the
@@ -64,8 +64,8 @@ The kernel stays closed, so a modal here would sit unseen and block your session
   - *Subsequent daemon-restarts*: the kernel rig record persists in
     SQLite. The daemon's kernel-boot path short-circuits
     `already-managed` — no re-instantiation, no fresh agents. Member
-    tmux sessions survive a daemon-restart-only and the reconciler
-    marks them healthy. A HOST reboot drops tmux entirely; the
+    terminals survive a daemon-restart-only (they live in the hc core) and the reconciler
+    marks them healthy. A HOST reboot stops the hc core's terminals; the
     reconciler then marks the kernel's member sessions detached, and
     the operator pod owns the agent-restart workflow ("bring my
     sessions back online") per the openrig-operator skill.
@@ -123,7 +123,7 @@ change role responsibilities or authorize work the user has not selected.
 Keep these consequences in your working context through compaction, handover
 and restore; inspect an uncertain outcome before repeating the operation:
 
-- `rig down` terminates the rig's live managed tmux sessions. A daemon-only
+- `rig down` terminates the rig's live managed terminals. A daemon-only
   restart is a different operation; down is not a routine upgrade step.
 - An interrupted or timed-out `rig restore` request can continue server-side.
   Read its attempt/events: it can finish or fail after the client goes away.
@@ -135,6 +135,6 @@ and restore; inspect an uncertain outcome before repeating the operation:
   existing completion event or wake to repeated turns over unchanged output.
 - Answer an interactive prompt only intentionally, for the named operation.
   An operations grant is not consent to answer a peer's prompt.
-- After a host event, inspect the daemon/listener and actual tmux processes,
+- After a host event, inspect the daemon/listener and the actual hc terminals and processes,
   native identity and retained history. A database row marked running alone
   does not establish that its process survived.

@@ -5,7 +5,7 @@ description: Use when a person in their own Claude Code or Codex session mention
 
 # rigs: your route into OpenRig
 
-OpenRig runs a team of coding agents (Claude Code, Codex and others) side by side in tmux. A local daemon keeps their
+OpenRig runs a team of coding agents (Claude Code, Codex and others) side by side in terminals (hc, herdr-core). A local daemon keeps their
 tasks, messages and state, so the team keeps working across restarts. This skill gets OpenRig installed, gets a team
 working on what the person wants, and shows how to work with that team from here.
 
@@ -22,9 +22,9 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
 ## 1. Install OpenRig, if it isn't installed
 
 - **Check first:** `rig --version`. If it prints a version, go to step 2.
-- **What it needs:** macOS or Linux, Node.js 22 or 24, tmux, and Claude Code or Codex signed in. Check only what's
-  missing: `node --version`, `tmux -V`, `claude auth status` or `codex login status`.
-- **Install:** `npm install -g @openrig/cli`, then `rig preflight` (Node, tmux, the daemon port and state folders)
+- **What it needs:** macOS or Linux, Node.js 22 or 24, hc (herdr-core; `rig setup` installs the pinned version), and Claude Code or Codex signed in. Check only what's
+  missing: `node --version`, `hc --version`, `claude auth status` or `codex login status`.
+- **Install:** `npm install -g @openrig/cli`, then `rig preflight` (Node, hc, the daemon port and state folders)
   and `rig doctor`.
 - **Then go on to step 2:** say it's installed and ask what they want worked on, and in which repository. A plain
   "install OpenRig" includes this. Stop here only if they say not to start a team.
@@ -40,7 +40,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
   you're opening it, then run `rig terminal open saved:kernel --window` on the daemon's desktop. This is the next step
   after installing or starting OpenRig, and the way back whenever they want their agents or OpenRig again. Don't wait
   to be asked or for particular words. If they've said not now, give them that command for later. It opens a view
-  itself, using herdr when installed or plain tmux otherwise:
+  itself, using herdr (required for the view: without it the command stops with “Herdr is not installed. Run rig setup.”):
   - **Inside Herdr** (you run in a Herdr pane): it switches the person's Herdr to an `openrig kernel` space, reusing a live
     one. No new window and no macOS prompt; their own spaces stay in the sidebar.
   - **In Terminal or Ghostty:** a new tab or window the size of theirs.
@@ -50,7 +50,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
     `tmux` with `com.apple.Terminal` or `com.mitchellh.ghostty`, mean no macOS prompt, so don't mention one. `tmux`
     with anything else (iTerm, VS Code) can prompt, so say Allow is fine first.
   - **Layout:** under 120 columns the operator fills the first page; from 120, the dashboard and operator share it. The
-    advisor has its own tab or tmux window.
+    advisor has its own Herdr tab.
 
   Then tell the person in a sentence or two where it opened and that the operator is ready for what they want to
   build. Don't list agents or statuses (the TUI shows them), and don't suggest a command for them to type.
@@ -70,8 +70,8 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
     If a note asks you to place the view once Herdr starts, run that `rig terminal open` yourself after they start it.
   - **If it printed no command:** find `operator.agent` in
     `rig ps --nodes --rig kernel --json --fields logicalId,canonicalSessionName,tmuxAttachCommand` and give
-    `env -u TMUX` followed by its `tmuxAttachCommand`, exactly as listed (never a guessed name), for the operator's
-    conversation. That command names the daemon's tmux server when it isn't the default one.
+    its `tmuxAttachCommand`, exactly as listed (never a guessed name), for the operator's
+    conversation. The field keeps its name; for a seat in an hc terminal it is `hc attach -- <terminal>`.
 
   For any other failure, the table under "What can interrupt installation and the OpenRig view" in
   `rig context get reference/getting-started.md#open-the-kernel-conversations` says why and what to do next.

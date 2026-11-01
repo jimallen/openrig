@@ -15,5 +15,5 @@ the named owner remains the gate.
    fence, derive, quiesce, realize the exact token, commit provenance, self-check READY, then
    unfreeze only after the effect receipt.
 6. Preserve the predecessor's verbatim reach-back handle and pre-formed questions. Report
-   current seat identity, current generation, canonical tmux pane, duty acceptance, and usable
+   current seat identity, current generation, canonical hc terminal, duty acceptance, and usable
    post-restore width in the final receipt.

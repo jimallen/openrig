@@ -41,9 +41,9 @@ restart:
    already exists in the `rigs` table, the path short-circuits
    `already-managed` — no fresh instantiation, no new agents.
 2. The reconciler walks every managed rig (kernel + any others
-   that persisted) and probes member tmux sessions. If a session
+   that persisted) and probes member terminals. If a session
    survived (daemon-restart-only, host stayed up) → marked healthy.
-   If tmux is gone (host reboot) → marked detached.
+   If the hc core is gone (host reboot) → marked detached.
 
 After a host reboot, a person can type bare `rig` to open the same TUI,
 start the daemon only, and select the existing kernel operator or other seats.
@@ -73,7 +73,7 @@ use the applicable lifecycle help for an authorized agent-driven operation.
 - Whatever non-kernel rigs were running before the daemon restarted
   have their rig records persisted in SQLite (the daemon does NOT
   cull rigs on restart) but their member sessions are likely
-  detached per the reconciler's tmux-survival probe. They sit in
+  detached per the reconciler's terminal-survival probe. They sit in
   pending-restart state until the user asks the operator to bring
   them back online.
 

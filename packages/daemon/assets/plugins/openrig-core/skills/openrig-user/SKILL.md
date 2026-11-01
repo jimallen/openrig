@@ -381,10 +381,10 @@ hero. The fresh-user boot hero remains `rig up <team>` (typically
 `rig up starter` for a first change, or `rig up factory`). Reach for `rig start` after a host reboot, daemon
 restart, or any "bring my rigs back" moment.
 
-### `rig reconcile-session` — no-launch adopt of a hand-resumed session
+### `rig reconcile-session` — no-launch re-bind of a hand-resumed seat
 
-When an operator has externally resumed an agent session (e.g. attached a
-shell, restarted a runtime by hand) and you want OpenRig to reconcile its
+When an operator has externally resumed an agent session (e.g. attached to the seat's hc terminal with `hc attach` and restarted a
+runtime by hand) and you want OpenRig to reconcile its
 lifecycle state without re-launching or sending input, use:
 
 ```bash
@@ -394,7 +394,7 @@ rig reconcile-session <session> --no-launch
 rig reconcile-session <session> --json
 ```
 
-This is a no-launch, no-input adopt. `--rig`/`--node` disambiguate when the
+This is a no-launch, no-input re-bind of the seat's own node; on hc it registers the terminal's address, not a tmux pane. `--rig`/`--node` disambiguate when the
 canonical session name does not uniquely resolve. `--no-launch` is accepted
 for explicitness (it is the only mode this command has).
 
@@ -726,7 +726,7 @@ JSON form exposes `peersNote` directly for programmatic consumers.
 Each `peers[]` entry also carries an additive `reachable` boolean. `false` means the
 peer has no session, or its session is registered but not running (still starting,
 exited, detached, superseded), or the seat identity reconciler's last verdict (refreshed
-every ~5s; whoami does not probe tmux) confirmed its tmux session is gone although the
+every ~5s; whoami does not probe the seat host) confirmed its terminal is gone although the
 row still says running. A stale verdict is ignored, so a peer killed within the last
 ~5s can still read `true`. `sessionName` can still hold that last known name, so
 check `reachable` before `rig send` / `rig capture`. The human output marks such a
@@ -1128,7 +1128,7 @@ rig release <rigId> --delete
 rig release <rigId> --json
 ```
 
-Use `rig release` for adopted/claimed-session rigs when you want OpenRig to stop managing the rig but leave the tmux sessions alive.
+Use `rig release` for a rig whose sessions OpenRig only claimed (origin `claimed`: a seat re-bound with `rig reconcile-session`, or a handover onto a discovered successor) when you want OpenRig to stop managing the rig but leave the terminals alive: it marks those sessions detached, clears the seat's binding and its `@rigged_*` hc labels, and kills nothing.
 This is the safe recovery/reset surface for the "sessions still exist, management is broken or stale" case.
 If the rig contains OpenRig-launched nodes, `rig release` refuses loudly instead of pretending the mixed rig is safe to detach.
 
@@ -1300,14 +1300,14 @@ Specific operator rules:
 If you hit the unified-exec warning, inspect for stale one-shot helpers before touching live seats:
 
 ```bash
-ps -axo pid,ppid,command | rg 'tmux send-keys|rig queue create|tmux attach|codex|claude'
+ps -axo pid,ppid,command | rg 'tmux send-keys|rig queue create|tmux attach|hc attach|codex|claude'
 ```
 
 Safe cleanup target:
 - orphaned one-shot wrappers like `tmux send-keys ...`
 
 Do not mass-kill:
-- `tmux attach ...`
+- `tmux attach ...` or `hc attach ...`
 - `codex ...`
 - `claude ...`
 

@@ -88,7 +88,7 @@ not only daemon-unit evidence. The minimum useful matrix covers:
 |---|---|
 | Clean start | Boot from spec into known state |
 | Warm resume | `rig down` → `rig up <name>` resumes seats |
-| Host reboot / tmux socket absence | Recovery from lost tmux connection |
+| Host reboot / hc core absence | Recovery from a lost hc core |
 | Provider auth loss | Codex/Claude auth refusal handled honestly |
 | Partial boot / partial failure | Some seats up, some failed; honest reporting |
 | Intentional operator recovery | Operator-initiated restore from snapshot |

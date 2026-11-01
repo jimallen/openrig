@@ -228,7 +228,7 @@ message-passing closure (never 2PC).**
 
 - **Origin-owns-the-record.** The qitem lives in the TARGET host's DB; that
   row is THE record. The target daemon wakes the destination on ITS local
-  tmux: its own `create` stages a durable wake intent and delivers it after
+  seat host: its own `create` stages a durable wake intent and delivers it after
   commit (§2; the forwarded body carries the `nudge` flag) — the sending
   daemon never reaches across a host boundary. Before forwarding, the
   forwarding daemon stamps its own host id, when it has one, onto the source

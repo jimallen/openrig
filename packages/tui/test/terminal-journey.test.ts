@@ -111,7 +111,7 @@ describe("terminal browser → preview → explicit Open", () => {
     expect(lines.some(l => l.action?.type === "back")).toBe(true);
     const narrow = terminalLines(view.get(), snap, 54).map(line => line.text).join(" ").replace(/\s+/g, " ");
     expect(narrow).toContain("On a desktop");
-    expect(narrow).toContain("otherwise the same layout in plain tmux");
+    expect(narrow).toContain("Without Herdr it stops and tells you to run rig setup");
     const screen = draw(80, 24);
     expect(screen.lines.join("\n")).toContain("Open terminals");
     expect(screen.contentTargets.some(t => t.action.type === "act" && t.action.act === "open-terminal")).toBe(true);

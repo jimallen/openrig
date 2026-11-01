@@ -81,9 +81,9 @@ system-level invariants.
     `snapshot create`: what happened + current state + next action.
 17. Session naming: `{pod}-{member}@{rig}` — human-authored,
     system-validated. No generation, no slugification.
-18. Communication: tmux is transport, not truth. `send/capture/broadcast`
-    wrap tmux reliably with honest errors.
-19. Transcripts: bounded capture — a periodic `tmux capture-pane` snapshot of
+18. Communication: the seat host (hc) is transport, not truth. `send/capture/broadcast`
+    wrap the hc terminal reliably with honest errors.
+19. Transcripts: bounded capture — a periodic terminal capture snapshot of
     the trailing lines (default 1000, every 2 s for an active seat) replaces
     the transcript file, replacing pipe-pane (`transcript-rotation.ts:3`,
     `:27`–`28`; started at `node-launcher.ts:181`). An idle seat is captured

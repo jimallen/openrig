@@ -10,7 +10,7 @@
 
 OpenRig runs a team of coding agents on your machine as one system. A local daemon keeps the team's
 state in SQLite and runs each agent as an ordinary Claude Code or Codex session (or a plain
-terminal, a Pi or Oh My Pi (OMP) runner, or a scripted test stub) inside tmux. People and agents drive it through the
+terminal, a Pi or Oh My Pi (OMP) runner, or a scripted test stub) inside an hc terminal. People and agents drive it through the
 `rig` CLI, a terminal UI (TUI) and an MCP server, all of which talk to the daemon over local HTTP.
 The agents themselves are unmodified. What OpenRig adds is the coordination around them: launching
 and restoring agents, delivering messages, keeping durable work in a queue, and giving each agent
@@ -54,7 +54,7 @@ and fails the build on a specifier with no `exports` entry. To share new daemon 
                                 |
   packages/daemon/src/domain/        services, repositories, orchestrators, event bus
               /                 |                  \
-     SQLite (db/)       tmux (adapters/tmux.ts)    runtime adapters (adapters/*-adapter.ts)
+     SQLite (db/)       hc terminals (adapters/hc-*.ts)    runtime adapters (adapters/*-adapter.ts)
                                                      claude-code, codex, pi, omp, terminal, stub
 ```
 
@@ -79,7 +79,7 @@ and fails the build on a specifier with no `exports` entry. To share new daemon 
   `seat-delivery-guard.ts`) and events (`event-bus.ts`). Larger areas have their own
   subdirectories, such as `gateway/`, `provider/`, `policies/`, `scope/`, `context-packs/` and
   `mission-control/`.
-- **`adapters/`.** The outside world. `tmux.ts` wraps tmux. The six `RuntimeAdapter`
+- **`adapters/`.** The outside world. `hc-adapter.ts`, `hc-client.ts` and their neighbours drive hc terminals, the seat host; `tmux.ts` is the base class they extend and the retained tmux implementation, kept through the soak for rollback only. The six `RuntimeAdapter`
   implementations (OMP's extends Pi's) launch each runtime and project skills and files into it. `cmux.ts` and
   `compose-services-adapter.ts` cover other integrations.
 - **`db/`.** `connection.ts`, `migrate.ts`, `all-migrations.ts` and `migrations/`.

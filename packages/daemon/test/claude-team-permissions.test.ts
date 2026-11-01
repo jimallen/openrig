@@ -64,6 +64,16 @@ describe("Claude team command permissions", () => {
   it("rig seat set-mcp asks", () => {
     expect(decide("rig seat set-mcp verify-ops@eztrack lsp on --reason pilot", policy)).toBe("ask");
   });
+  // `rig adopt`, `bind`, `attach` and `unclaim` left the CLI with the adoption surface. An ask rule for a command that does not
+  // exist protects nothing and tells a reader the command is still there. `release` and `reconcile-session` still ship (the
+  // claimed-session release and the no-launch reconcile both work on hc), so their rules stay; they are the positive control
+  // that this list is not simply empty of these words.
+  it.each(["adopt", "bind", "attach", "unclaim"])("rig %s was removed, so no ask rule names it", (removed) => {
+    expect(TEAM_CLAUDE_ASK).not.toContain(`Bash(rig ${removed}:*)`);
+  });
+  it.each(["release", "reconcile-session"])("rig %s still ships, so its ask rule stays", (kept) => {
+    expect(TEAM_CLAUDE_ASK).toContain(`Bash(rig ${kept}:*)`);
+  });
   for (const rule of TEAM_CLAUDE_ASK) {
     const command = rule.slice(5, -3);
     it(`${command}: real action asks, help does not`, () => {

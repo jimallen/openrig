@@ -78,7 +78,7 @@ exist or nothing is added. The `rig_add` MCP tool takes the same thing as
 
 ## Failure modes (3)
 
-1. **A newly created seat lacks the queue, startup context, or role files it needs to operate.** Topology mutation creates the seat, but the seat needs more than a tmux session to be useful.
+1. **A newly created seat lacks the queue, startup context, or role files it needs to operate.** Topology mutation creates the seat, but the seat needs more than a terminal to be useful.
 2. **Edges and permissions are not updated when a seat is added or removed.** Topology references go stale; later workflows route to nonexistent seats.
 3. **Shrink/remove leaves stale topology references that later workflows route into.** Cleanup is part of the operation, not an afterthought.
 

@@ -138,7 +138,7 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   `restoring` (`:777–791` — `SELECT status FROM continuity_state …` at
   `:780`; if `status === "restoring"` the node is skipped with a warning and
   reported as `fresh`, `:783–785`; `degraded` only adds a warning).
-- Reuses the seat's durably bound tmux session name when the prior binding
+- Reuses the seat's durably bound session name when the prior binding
   has a usable one (`:840`), and otherwise falls back to the derived name
   with a warning (`:869`).
 - Replays restore-safe startup using persisted startup context;
@@ -165,7 +165,7 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   the transcript store is enabled.
 - Refuses to restore over live sessions (`:259–262` — `rig_not_stopped`: "Rig …
   has live sessions. Stop the rig with 'rig down' before restoring, or use the
-  latest auto-pre-down snapshot."). A tmux probe that fails also blocks it
+  latest auto-pre-down snapshot."). A seat-host probe that fails also blocks it
   (`classifyRunningSessions`, `:612`).
 - Checks that the harness actually resumed. The resume adapters judge the
   pane with `assessNativeResumeProbe` (`domain/native-resume-probe.ts:84`). A
@@ -180,7 +180,7 @@ Restore behavior, each point checked in `restore-orchestrator.ts`:
   launch flags.
 
 `launchNodeSubset` (`:392`) and `launchSingleNode` restore chosen seats rather
-than the whole rig; unlike a full restore, a failed tmux probe there proceeds
+than the whole rig; unlike a full restore, a failed seat-host probe there proceeds
 with a `liveness_probe_unknown` warning (`:517`).
 
 **Restore-honesty rules** (texts in `architecture-rules-and-event-system.md`;

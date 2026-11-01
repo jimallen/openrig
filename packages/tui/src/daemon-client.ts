@@ -406,7 +406,7 @@ export class DaemonClient {
     return await this.get("/api/terminal/views") as { saved: Array<{ id: string; name: string; members: Array<{ seat: string }> }>; rigs: string[] };
   }
   /** The preview behind "Open terminals". That action opens through `rig terminal open --window`, which composes with
-   *  Herdr's layout and falls back to plain tmux without Herdr, so preview the same composition: its planId is the
+   *  Herdr's layout (without Herdr it stops: the tmux viewer is gone), so preview the same composition: its planId is the
    *  window opener's expected plan. A provider-less preview may pick cmux, whose plan the window opener never matches. */
   async previewTerminal(view: string): Promise<import("./terminals/terminal-model.js").TerminalPreview> {
     // The interactive TUI has a TTY; measure each preview again after a resize. Unknown stays narrow.

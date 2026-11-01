@@ -19,7 +19,7 @@ metadata:
 
 OpenRig decides **which** agents make up a view (a rig, a pod, a mission, a slice, or a saved
 group); **herdr** renders the pixels. A view opens as live, interactive terminal tiles — each tile
-is a nested `tmux attach` to a daemon-owned agent session, so you get the real session, not a
+is an `hc attach` to a daemon-owned agent terminal, so you get the real terminal, not a
 snapshot. OpenRig owns the semantics; herdr owns the surface. You drive it entirely through the
 `rig terminal` CLI, which rides the installed herdr binary at arm's length — never link, embed, or
 plugin it.
@@ -70,47 +70,44 @@ Read `--json` to branch on the partition programmatically; the exit code alone t
 
 ## Read-only — who's interactive, who's watch-only
 
-Read-only is composed into the pane at open time — a read-only tile is a `tmux attach -r`, the client
-reports `readonly=1`, and it **physically cannot send input**. The current policy, by view kind:
+Read-only is composed into the pane at open time — a read-only tile is an `hc attach --observe`, which never types and never resizes,
+so it **cannot send input**. The current policy, by view kind:
 
 - **A rig view or a `pod:` view is interactive** — you asked for that rig (or pod) directly, so you
   can drive its agents.
 - **`mission:` and `slice:` views are read-only by construction** — these derived views cut across
   rigs; you watch and scroll, you don't keystroke into them.
 - **A saved view is per-member** — each member carries its own `readOnly` (omit = interactive;
-  `true` = `attach -r`).
+  `true` = `attach --observe`).
 
 So you don't have to remember to be careful: the view kind (and, for a saved view, the per-member
 flag) sets it at open time.
 
 ## Safety rails (hard — the fleet-safety rail)
 
-- A tile is a **view** (a nested `tmux attach`) of a daemon-owned session. **Never** move, join, kill,
-  or re-parent a daemon-owned pane. Closing a tile detaches one tmux client — the daemon's session is
+- A tile is a **view** (an `hc attach`) of a daemon-owned terminal. **Never** move, join, kill,
+  or re-parent a daemon-owned terminal. Closing a tile detaches one hc client — the daemon's terminal is
   untouched and its addressing (send/capture/nudge) is unaffected.
 - Host-local read-only viewing mutates nothing. Anything that would change a **live** daemon session's
-  shared state (e.g. flipping a tmux option on a running seat) is a config/design change — prove it in
+  shared state (e.g. changing a label or option on a running seat) is a config/design change — prove it in
   an isolated environment, never live-flip in production.
 
 ## Scroll + copy work out of the box
 
 On a freshly-launched agent tile the mouse wheel scrolls the pane's history and a drag-select copies
-to your **system** clipboard — with no tmux commands typed. This rides the daemon's terminal defaults
-(a per-session scroll option set at launch, plus the daemon tmux server's clipboard defaults). Honest
-timing: agents that were already running before this shipped pick up wheel-scroll at their **next
-natural relaunch** (the scroll default is per-session and running seats are never retro-flipped);
-system-clipboard copy works immediately (it's server-wide).
+to your **system** clipboard — with no commands typed. OpenRig sets no tmux scroll or clipboard
+options for an hc seat (the tmux server and window option setters are no-ops on hc, and a built-in tmux option
+is refused); scrolling and copying are Herdr's own.
 
 ## Limits — state them, don't paper over them
 
 - **Tile chrome v1 = a plain label** (agent + slice). Rich per-tile status is roadmap.
 - **Duplicate / multi-view membership** (the same agent live in two views at once) works — put the
-  duplicates in **same-size panes**. Different-sized duplicate panes have an inherent tmux
-  multi-client resize mismatch (tmux clamps to the smallest client); it is **documented, not fixed** —
-  don't expect a setting to remove it.
-- **Inner tmux status bar** is hidden by default (herdr provides the chrome); one config key
-  (`terminal.status_bar`) flips it back on for raw-tmux / no-provider surfaces, and the flip applies
-  to **future launches only**.
+  duplicates in **same-size panes**. A writable `hc attach` resizes the program to its tile at once and, with
+  two writable viewers, the last to attach wins (measured on a private hc 0.1.15 core); an `--observe` tile never
+  resizes. It is **documented, not fixed** — don't expect a setting to remove it.
+- **There is no inner tmux status bar** on an hc seat (herdr provides the chrome). The `terminal.status_bar` key is
+  still accepted, but it sets tmux options, which are no-ops on hc.
 
 ## Saved views — the library (`terminal-views.yaml`)
 
@@ -137,8 +134,8 @@ views:
         host: some-host-id      # optional — STRUCTURED host id (NEVER a `member@rig@host` string);
                                 #            omit for local. ssh-registered hosts tile;
                                 #            http-registered hosts honest-degrade (named + skipped, with reason)
-        tmuxSession: sessname   # optional — defaults to `seat`
-        readOnly: true          # optional — omit = interactive; true = `tmux attach -r`
+        tmuxSession: sessname   # optional — the session name the hc terminal is derived from; defaults to `seat`
+        readOnly: true          # optional — omit = interactive; true = `hc attach --observe`
 ```
 
 An agent composing a saved view on request **writes this YAML** and then opens the id:

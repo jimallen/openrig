@@ -77,11 +77,11 @@ threshold you can see coming; fall back to compaction only when a transition was
    The incumbent retains authority until the owner-worded cutover; do not retire
    it merely to free a name while waiting for that decision.
 5. **Preserve the physical seat at cutover** — follow the portable SOP linked from
-   `seat-continuity-and-handover`. Keep the canonical tmux session, window and pane;
+   `seat-continuity-and-handover`. Keep the canonical hc terminal;
    resume the exact accepted successor history there and reconcile binding,
    environment, queue identity and attached clients. Preserve the incumbent's
    exact token as a cold-advisor handle when that is the selected disposition.
-   Renaming tmux sessions is a repair fallback, not the default sequence.
+   Renaming the terminal is a repair fallback, not the default sequence.
 6. **Write the lineage-ledger row and tombstone** (below). Record the actual
    outcomes and transfer each standing duty explicitly. Complete the successor's
    post-cutover self-check before unfreezing authority.
@@ -195,7 +195,7 @@ question can answer, and act, as if it still held the seat. Two rules close it:
 - **Verify identity across surfaces.** Canonical binding, provider history,
   process environment, queue identity and attached clients must agree. Correct a
   staged identity residue through the supported cutover/reconciliation path;
-  renaming a tmux session alone is not proof that those surfaces agree.
+  renaming a terminal alone is not proof that those surfaces agree.
 - **Keep incomplete evidence explicit.** Flag unavailable activity telemetry as
   unavailable, and mark a tombstone written by someone else as approximate.
 - **Coordinate the maintenance window.** Tell the routing/monitoring owner the

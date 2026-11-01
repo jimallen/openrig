@@ -15,7 +15,7 @@ When the person wants to see their agents or OpenRig in a terminal, in any words
 `rig terminal open saved:kernel --window` on the daemon's desktop. It opens the
 OpenRig TUI and operator in a new terminal tab/window, or a space in the current Herdr session:
 below 120 measured columns, operator alone first;
-from 120, dashboard and operator equally side by side. The advisor has a separate tab or tmux window. Inspect its result and visible content, or state what you cannot confirm. On a desktop, do
+from 120, dashboard and operator equally side by side. The advisor has a separate Herdr tab. Inspect its result and visible content, or state what you cannot confirm. On a desktop, do
 not end by showing a table or suggesting a command for the person to type. Herdr is visible
 only inside a terminal the person can see; changing the shared TUI to `:terminals`
 does not open one. Over headless SSH, explain that limitation, ask the person to
@@ -115,10 +115,10 @@ configurations, as below; do not take the pin from a cached page summary.
 4. **Show the real spec, before anything starts.** Find the shared TUI's
    `canonicalSessionName` on the kernel's `operator.human` member with
    `rig ps --nodes --rig kernel --json`, then capture that pane with
-   `tmux capture-pane -p -t '=<session>:'`, substituting that canonical name
-   for `<session>` and keeping the trailing colon. When it shows
+   `rig capture <session>`, substituting that canonical name
+   for `<session>`. When it shows
    the TUI's normal view and an empty command line, type the TUI command
-   `spec starter` and Enter with `tmux send-keys -t '=<session>:'`. A rig spec
+   `spec starter` and Enter with `rig send <session> --raw 'spec starter'`. A rig spec
    opens on its graph tab; capture again and confirm the named spec and its graph
    are visible while you explain its roles. Do the same with `spec workshop`
    and `spec factory` as you present those choices. These are TUI commands,
@@ -221,10 +221,10 @@ configurations, as below; do not take the pin from a cached page summary.
 8. **Show them the team.** Capture the shared TUI: its session is the
    `operator.human` member's `canonicalSessionName` in
    `rig ps --nodes --rig kernel --json`. Use
-   `tmux capture-pane -p -t '=<session>:'`, substituting that canonical name
-   for `<session>` and keeping the trailing colon. Only when the capture shows
+   `rig capture <session>`, substituting that canonical name
+   for `<session>`. Only when the capture shows
    the TUI's own view, type the TUI command `rig <team>` and Enter into that pane
-   with `tmux send-keys -t '=<session>:'`, and capture again to confirm it shows
+   with `rig send <session> --raw 'rig <team>'`, and capture again to confirm it shows
    the team's table.
    At a shell prompt, run `rig tui` there first or tell them the command; if a
    startup view or another mode holds the keys, leave it and tell them the
@@ -233,10 +233,10 @@ configurations, as below; do not take the pin from a cached page summary.
    creates its own workspace and leaves their terminal alone. If it opens,
    tell them where to look. If it cannot open, relay the complete, filled-in
    attach commands from the result's notes to run in new terminals on the
-   team's host. Copy them unchanged, including `env -u TMUX`, executable paths
+   team's host. Copy them unchanged, including executable paths
    and quoting; do not shorten them. If no commands were returned, get them from
    `rig ps --nodes --rig <team> --json --fields canonicalSessionName,tmuxAttachCommand`
-   and prepend `env -u TMUX` if absent. Explain that the dashboard is the
+   (the field keeps its name; for an hc seat it is `hc attach -- <terminal>`). Explain that the dashboard is the
    overview and the lead's pane is where the work happens. For either route,
    ask whether they can see the team: a new workspace or your own capture is
    not proof of what the person sees.
@@ -315,7 +315,7 @@ grants do not change role responsibilities or authorize unselected work.
 Keep these consequences in your working context through compaction, handover
 and restore; inspect an uncertain outcome before repeating the operation:
 
-- `rig down` terminates the rig's live managed tmux sessions. A daemon-only
+- `rig down` terminates the rig's live managed terminals. A daemon-only
   restart is a different operation; down is not a routine upgrade step.
 - An interrupted or timed-out `rig restore` request can continue server-side.
   Read its attempt/events: it can finish or fail after the client goes away.
@@ -327,7 +327,7 @@ and restore; inspect an uncertain outcome before repeating the operation:
   existing completion event or wake to repeated turns over unchanged output.
 - Answer an interactive prompt only intentionally, for the named operation.
   An operations grant is not consent to answer a peer's prompt.
-- After a host event, inspect the daemon/listener and actual tmux processes,
+- After a host event, inspect the daemon/listener and the actual hc terminals and processes,
   native identity and retained history. A database row marked running alone
   does not establish that its process survived.
 

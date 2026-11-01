@@ -9,7 +9,7 @@ The view reports available CPU count, host load averages (1/5/15 minutes),
 load divided by CPU count, running seats, the number of rotating seats and how
 many of them are backed off, and transcript capture attempts, failures, UTF8
 bytes and elapsed capture time for currently rotating seats.
-Load is not CPU utilization; capture elapsed time includes waiting for tmux,
+Load is not CPU utilization; capture elapsed time includes waiting for the hc core,
 and is not daemon CPU time. Load averages are unavailable on Windows, rather
 than reported as zero. Counters reset when a rotation is restarted/stopped or
 the daemon restarts, so they are observations rather than a durable billing log.
@@ -19,26 +19,25 @@ unavailable (`null` in JSON), not zero.
 ## Reduce idle capture cost
 
 Transcript rotation still captures the bounded trailing buffer. When successive
-captures are unchanged and tmux exposes an unchanged current-window activity
+captures are unchanged and the seat host reports an unchanged terminal activity
 hint, capture backs off exponentially to a derived ceiling. With the default
 2-second active interval and 1-second settings timer, the effective ceiling is
 3 seconds: the 10-second freshness window minus the 1-second activity-hint
 deadline, 5-second capture-result deadline and 1-second timer spacing. The
 ceiling is capped at 6 seconds but never below the configured active interval.
 This scheduling budget is not a CPU or child-process lifetime bound; the result
-deadline does not cancel an unfinished capture. One shared tmux
+deadline does not cancel an unfinished capture. One shared
 activity read wakes idle rotations; a changed hint restores the active cadence.
 Missing/failed hints retain the configured full-capture cadence. A hint read
 that takes longer than one second becomes unknown without starting additional
 metadata probes while its underlying call is still pending. Periodic full
-capture reconciles output even when a hint fails to change (tmux timestamps have
-one-second resolution). Longer configured active intervals retain that interval
+capture reconciles output even when a hint fails to change. Longer configured active intervals retain that interval
 instead of silently increasing capture frequency.
 
 This does not change provider readiness, delivery guards, seat activity or queue
 state. Capture activity is not proof an agent is healthy or finished. As before,
 transcripts are bounded trailing snapshots, not lossless terminal archives: an
-output burst larger than retained tmux scrollback or the configured line limit
+output burst larger than the terminal's retained scrollback or the configured line limit
 can exceed the saved trail. Interactive terminal streaming is unchanged.
 
 ## Change capture settings without restarting

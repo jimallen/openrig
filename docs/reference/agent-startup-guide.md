@@ -109,7 +109,7 @@ This is the agent's identity document. Every agent should have one.
 **Rig culture (`CULTURE.md`)**
 
 The rig-wide constitution. Applied to ALL agents in the rig:
-- Communication norms (use `rig send`/chatroom, not raw tmux)
+- Communication norms (use `rig send`/chatroom, not raw terminal commands)
 - Coordination protocol (how work flows between pods)
 - Quality standards (what "done" means)
 - Commit/merge policy
@@ -191,7 +191,7 @@ After the files, OpenRig sends a session-identity message (rig, pod, member, log
 | `auto` | Depends on the file | Resolved per file: a `SKILL.md` (or content starting `# SKILL`) is `skill_install`, any other `.md` is `guidance_merge`, and any other file is `send_text` | Default — let OpenRig decide |
 | `guidance_merge` | Before harness boot | Merged as a managed block into `AGENTS.md` (Codex, Pi) or `CLAUDE.md` (Claude; `CLAUDE.local.md` with the rig's `managed_blocks: { claude-code: CLAUDE.local.md }`) | Role guidance, culture, project context |
 | `skill_install` | Before harness boot | Copied to runtime's skill directory | Skills |
-| `send_text` | After harness is ready | Sent as text to agent's terminal via tmux | Boot-time grounding, identity hints, instructions to read skills |
+| `send_text` | After harness is ready | Sent as text to the agent's hc terminal | Boot-time grounding, identity hints, instructions to read skills |
 
 ### Delivery Timing Matters
 
@@ -293,7 +293,7 @@ JSON: that seat gets no copy, the rest of the rig is captured, and the capture w
 warnings and exits 2). If no snapshot holds a valid copy, the saved row has to be repaired outside restore.
 
 **Preview before replacing a seat.** `rig seat launch <seat> --fresh --plan` inspects the selected
-seat without starting tmux, stopping or launching a process, projecting startup files, or changing
+seat without starting a terminal, stopping or launching a process, projecting startup files, or changing
 lifecycle/queue records. Add `--json` for structured output. `--fresh` is still required;
 `--reason` is optional for the preview and required when executing. Pass `--stop` to preview the
 intended replacement of a live managed occupant. Adopted and unmanaged occupants remain blocked.
@@ -304,7 +304,7 @@ a new command through the runtime adapter using current settings; it does not re
 wrapper command. The seat's launch environment and managed executable selection still apply.
 The plan does not construct or display the launch command.
 
-A preview is a snapshot, not a reservation or a native-readiness check. Unreadable tmux produces
+A preview is a snapshot, not a reservation or a native-readiness check. An unreadable seat host (the hc core) produces
 `complete: false` and `launchable: null` (unknown), unless a known blocker already proves
 `launchable: false`. A successful preview exits 0, including blocked or incomplete plans; scripts
 must inspect `launchable === true` before deciding to execute. Request failures still exit nonzero.

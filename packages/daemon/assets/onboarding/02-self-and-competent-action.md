@@ -53,9 +53,9 @@ while agents finish starting; report their actual state and use the guide's exis
 Right after OpenRig is installed or started, and whenever the person wants to see their agents or OpenRig again,
 open the OpenRig TUI and operator for them: say so, then run `rig terminal open saved:kernel --window --json` on the
 daemon's desktop. Don't wait for particular words. The command opens a new terminal tab/window using
-installed herdr, otherwise plain tmux; inside Herdr it opens a space there. It preserves existing conversations. The default view
+installed herdr (without it the command stops with “Herdr is not installed. Run rig setup.”); inside Herdr it opens a space there. It preserves existing conversations. The default view
 needs no YAML edit. Below 120 measured columns (or unknown width), show the operator alone first; from 120,
-show dashboard and operator equally side by side. The advisor always has a separate tab or tmux window.
+show dashboard and operator equally side by side. The advisor always has a separate Herdr tab.
 This applies to Claude-only, Codex-only and mixed kernels.
 Keep the queue worker off the first view and accessible through the TUI. Reuse existing conversations and accounts.
 Inspect the result and visible content using authorized desktop tools, or report that visibility is unconfirmed.
@@ -68,9 +68,9 @@ Over headless SSH, explain that no visible terminal opened; tell the person to o
 tab and give one complete connection and attachment command using the current Herdr endpoint, as in the guide.
 No, SSH and headless use are valid background outcomes. If the person chooses a manual operator attachment after
 a failure, find the `operator.agent` row with
-`rig ps --nodes --rig kernel --json --fields logicalId,canonicalSessionName,tmuxAttachCommand`. Give `env -u TMUX` followed by
-that row's `tmuxAttachCommand`, exactly as listed (it names the daemon's tmux server when that isn't the default
-one), for a new terminal on the same host and user (over SSH, connect there first). Ctrl-b, then d detaches without stopping it.
+`rig ps --nodes --rig kernel --json --fields logicalId,canonicalSessionName,tmuxAttachCommand`. Give
+that row's `tmuxAttachCommand`, exactly as listed (for a seat in an hc terminal it is `hc attach -- <terminal>`),
+for a new terminal on the same host and user (over SSH, connect there first). Ctrl+\ detaches without stopping it.
 Ask the person's goal and project folder, then hand them to the ready operator; do not implement the project yourself.
 Find the `operator.agent` row with `rig ps --nodes --rig kernel --json` and use its `canonicalSessionName` with
 `rig send <canonicalSessionName> 'This is the agent that installed OpenRig. The person will answer in your pane. Goal: <goal>. Project folder: <absolute path>.'`,

@@ -70,7 +70,7 @@ change role responsibilities or authorize work the user has not selected.
 Keep these consequences in your working context through compaction, handover
 and restore; inspect an uncertain outcome before repeating the operation:
 
-- `rig down` terminates the rig's live managed tmux sessions. A daemon-only
+- `rig down` terminates the rig's live managed terminals. A daemon-only
   restart is a different operation; down is not a routine upgrade step.
 - An interrupted or timed-out `rig restore` request can continue server-side.
   Read its attempt/events: it can finish or fail after the client goes away.
@@ -82,7 +82,7 @@ and restore; inspect an uncertain outcome before repeating the operation:
   existing completion event or wake to repeated turns over unchanged output.
 - Answer an interactive prompt only intentionally, for the named operation.
   An operations grant is not consent to answer a peer's prompt.
-- After a host event, inspect the daemon/listener and actual tmux processes,
+- After a host event, inspect the daemon/listener and the actual hc terminals and processes,
   native identity and retained history. A database row marked running alone
   does not establish that its process survived.
 

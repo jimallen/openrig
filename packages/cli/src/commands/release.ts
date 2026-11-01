@@ -5,7 +5,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 
 export function releaseCommand(depsOverride?: StatusDeps): Command {
-  const cmd = new Command("release").description("Release claimed sessions from a rig without killing tmux sessions");
+  const cmd = new Command("release").description("Release a rig's claimed sessions (detach them, clear their hc labels) without killing their terminals");
   const getDeps = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
   async function getClient(deps: StatusDeps): Promise<DaemonClient | null> {

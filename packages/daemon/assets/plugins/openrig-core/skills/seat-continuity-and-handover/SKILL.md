@@ -93,7 +93,7 @@ A seat stays `Stable` even if multiple candidate-occupants were produced and dis
 ## Failure modes (5)
 
 1. **Candidate creation failed** — `rebuild` couldn't synthesize from artifacts; `fork` couldn't resolve `session_source`; `fresh` couldn't launch. **Action**: bind operation does not begin; seat unchanged; provenance records the failed candidate-creation step.
-2. **Old occupant cannot be detached cleanly** — runtime hung, tmux locked, etc. **Action**: bind halts mid-flight; seat enters `Binding` state with explicit "halted" sub-status; operator alerted. **Do NOT auto-rollback by reattaching old-occupant if detach didn't complete cleanly.**
+2. **Old occupant cannot be detached cleanly** — runtime hung, terminal locked, etc. **Action**: bind halts mid-flight; seat enters `Binding` state with explicit "halted" sub-status; operator alerted. **Do NOT auto-rollback by reattaching old-occupant if detach didn't complete cleanly.**
 3. **Bind succeeded but provenance write failed** — disk/db error. **Action**: not durable until provenance writes; treat as `Binding` halted, not `Bound`.
 4. **Old occupant disposition unfulfillable** — operator requested `advise` (keep alive as advisor) but runtime can't keep old alive. **Action**: degrade to `retire` with explicit notification, OR fail if operator passed strict-disposition flag.
 5. **Concurrent handover attempts** — two operations target the same seat. **Action**: serialize by seat-id lock; second attempt refuses with clear error.

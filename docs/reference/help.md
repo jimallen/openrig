@@ -50,7 +50,7 @@ rather than treating a newer command as installed.
 Supported platforms are macOS and Linux, and WSL2 on Windows; native Windows isn't supported. OpenRig's automated tests
 don't run on WSL2 yet; one user's [reported working setup](getting-started.md#wsl2-a-reported-working-setup) lists what
 mattered. OpenRig needs
-Node.js 22 or 24 and tmux. A Linux distribution's own Node.js can be older; check `node --version`. With npm 11 or
+Node.js 22 or 24 and hc (herdr-core; `rig setup` installs the pinned version). A Linux distribution's own Node.js can be older; check `node --version`. With npm 11 or
 later, an `npm warn install-scripts` line for `@openrig/cli` means only the postinstall Node.js and SQLite check was
 skipped; `node "$(npm root -g)/@openrig/cli/scripts/check-abi.mjs"` runs it. A WSL error needs its actual versions,
 commands and error text; don't assume a Windows-related pull request fixes it.
@@ -79,8 +79,8 @@ Claude Code's [auto mode can deny calls](https://code.claude.com/docs/en/auto-mo
 refusal and let the person review that step in their harness controls or run it themselves, within their chosen
 permissions. Do not silently claim installation failed or completed from a refused call.
 
-For missing tools, downloads or selected logins, use the specific setup hint. A Herdr install warning leaves plain
-tmux available. A requested Ghostty install can fail setup; resolve it or decline with `--no-ghostty` and keep the
+For missing tools, downloads or selected logins, use the specific setup hint. A Herdr install warning leaves the seats running in hc terminals, but with no OpenRig view until
+Herdr is installed (`rig setup`). A requested Ghostty install can fail setup; resolve it or decline with `--no-ghostty` and keep the
 earlier choices. Terminal.app remains available; required tools and logins still matter. macOS may ask for
 Automation permission; a missing display or remote daemon needs the documented headless/manual route.
 Herdr may show an intro (Return to continue) and an agent-integration panel (Esc to close); the view does not
@@ -140,9 +140,8 @@ issue's current status; a similar symptom alone is not a diagnosis.
 - A Codex seat on the default `workspace-write` sandbox starts without network access, so it can't reach the local
   daemon, when its Codex configuration sets network access off, a managed requirement could restrict it, or Codex
   doesn't answer OpenRig's configuration read in time: [#275](https://github.com/mvschwarz/openrig/issues/275).
-- Kernel seats fail within a second of the first start on a distribution tmux whose server exits on `capture-pane`
-  (`tmux -V` prints `next-3.4`): [#980](https://github.com/mvschwarz/openrig/issues/980). The check and recovery
-  are in [Incomplete setup and restart](getting-started.md#incomplete-setup-and-restart).
+- Kernel seats fail within a second of the first start: `rig preflight` names a missing or mismatched hc. The check and
+  recovery are in [Incomplete setup and restart](getting-started.md#incomplete-setup-and-restart).
 
 For everything else, search [open issues](https://github.com/mvschwarz/openrig/issues).
 

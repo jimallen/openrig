@@ -10,7 +10,7 @@ already does it, or two verbs crossed already answer it. **You cannot look up a 
 not know exists.** So the point of what follows is not skill. It is recognition: that when a task
 lands, something rhymes, and you go check instead of building.
 
-Eighty-seven top-level verbs ship (capability canon refreshed through
+Eighty-six top-level verbs ship (capability canon refreshed through
 `capability-delta-v0.6.10`). This marker describes the pack's teaching, not publication or live
 adoption. Read this once for shape, and let it make you suspicious that a thing already exists.
 Model-divergence proclamations are live product (trust them; pins use canonical
@@ -29,7 +29,7 @@ one command away. Your memory of the fleet is a claim about the past.
 - **`rig ps`** — what rigs exist. **`rig ps --nodes -A`** — the state of every seat everywhere,
   *including the broken ones*. **The bare form is the question you usually want:** `--active`
   filters to running and **hides detached, exited and attention states** — which are exactly the
-  cells you were scanning for. A seat whose tmux session is confirmed gone reads `detached`
+  cells you were scanning for. A seat whose terminal is confirmed gone reads `detached`
   (activity reason `session_missing`), and `rig ps --nodes` says to restore or relaunch it.
   **`rig ps --resources`** shows this host's load and transcript capture cost.
 - **`rig ps --all-hosts --nodes -A`** — the same across every registered machine. Rollup-only
@@ -126,7 +126,7 @@ unseen — which makes messages the one delivery channel that never gets skipped
   default. **Opening `rig terminal open saved:kernel --window` is the step after install or start**:
   say you're opening it, run it on the daemon's desktop, then tell the person where it opened. Don't
   wait for a phrase like “show me my agents”; the same command brings their agents back later. No
-  YAML, herdr when installed or plain tmux. The layout follows the terminal's width: on a narrow
+  YAML, in herdr (without it the command stops with “Herdr is not installed. Run rig setup.”). The layout follows the terminal's width: on a narrow
   one the operator gets the first tab; on a wide one the dashboard and operator sit side by side
   and the advisor gets its own tab. A `kernel` view the person saved still wins. Inside herdr it
   opens a focused `openrig kernel` space. It opens where the caller is: Terminal gets a window and
@@ -134,9 +134,8 @@ unseen — which makes messages the one delivery channel that never gets skipped
   window, and only then say that clicking macOS's Allow is fine. Herdr is visible only in a
   terminal the person can see; switching the shared TUI to `:terminals` does not open one. Over
   SSH, in CI or with no display, the command returns a definite no-window result with the reason
-  and an attach command: relay that command exactly. When the daemon runs on a non-default tmux
-  server, attach commands carry `-L <name>` or `-S <path>`; from inside tmux run them as
-  `env -u TMUX <tmuxAttachCommand>`. Inspect the result and visible content, or
+  and an attach command: relay that command exactly (for a seat in an hc terminal it is
+  `hc attach -- <terminal>`). Inspect the result and visible content, or
   say what cannot be verified. On a desktop, do not finish by printing a command for the person to
   type. Only if the window cannot open, `rig tui --shared` is the dashboard-only fallback; explain
   the failure. `--provider herdr` or `--provider cmux` adds tiles inside a workspace that is
@@ -145,8 +144,7 @@ unseen — which makes messages the one delivery channel that never gets skipped
   In the TUI, **TERMINALS** keeps Saved views prominent and Derived groups collapsed until
   expanded. Names load before detailed readiness. Select a view to inspect its members,
   layout and pages; preview is passive. Saved membership requires deliberate setup.
-  **Open terminals ▸** opens the inspected plan through the same desktop launcher, herdr or plain
-  tmux, so the TUI must run on the daemon's desktop; when no window was attempted it shows the
+  **Open terminals ▸** opens the inspected plan through the same desktop launcher, herdr, so the TUI must run on the daemon's desktop; when no window was attempted it shows the
   preview and attach commands. Help or a side trip returns to the same preview.
 - **`rig walk <seat> --through <files> --pace <n>`** — deliver context pieces through
   file-backed terminal paste. When the current native generation record resolves, the complete
@@ -795,7 +793,7 @@ your circumstances is configuration, and the ones that are not, another agent ca
   stop them without killing the rig.
 - **`rig setup`** — what OpenRig would change about this machine, shown before it touches anything.
   It installs herdr by default on macOS and Linux (`--no-herdr` declines; if the install fails,
-  views fall back to plain tmux) and on a Mac offers Ghostty once (`--ghostty` / `--no-ghostty`).
+  there is no view until herdr is installed) and on a Mac offers Ghostty once (`--ghostty` / `--no-ghostty`).
   It no longer installs cmux; an existing cmux still works. `--providers claude`, `codex` or
   `both` sets which harnesses it installs and checks; one not chosen reads `skipped`, never failed.
 - **`rig usage series`** — what a seat's token curve has looked like over time: climbing steadily,
@@ -922,6 +920,6 @@ deliberate writing.
 
 **`rig --help`**, then `rig <verb> --help`.
 
-Eighty-seven verbs ship, and this page named most of them once. **You will not remember which — you
+Eighty-six verbs ship, and this page named most of them once. **You will not remember which — you
 are meant to remember only that the list is long enough to be worth reading before you build
 anything.** The question is never *how do I write this*; it is **does this already exist**.

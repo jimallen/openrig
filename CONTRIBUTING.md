@@ -8,7 +8,7 @@ change in with the least friction on both sides.
 ## Before you start
 
 - **Bugs:** open an issue with the bug template. Include your OpenRig version (`rig --version`),
-  OS, Node and tmux versions, which harnesses are involved (or none), and the relevant command and output.
+  OS, Node and hc versions, which harnesses are involved (or none), and the relevant command and output.
   Reports are public: remove credentials, private prompts, personal details and private paths
   before posting. Share a small reproduction rather than a full transcript or instance dump.
 - **Features and behaviour changes:** open an issue or a Discussion in *Ideas* first. Search issues

@@ -42,7 +42,7 @@ enough to be useful — not to replace the canonical docs.
 
 OpenRig is a **local control plane for multi-agent coding topologies**. You
 declare a topology of agents in YAML, boot it with one command, and OpenRig
-manages tmux sessions, harness lifecycles, transcripts, snapshots, and
+manages seat terminals (hc), harness lifecycles, transcripts, snapshots, and
 restoration. When the system goes down, OpenRig snapshots; when it comes
 back, agents resume their conversations.
 
@@ -113,7 +113,7 @@ read only the pieces a task needs.
 | **Profile** | A named configuration within an AgentSpec. The rig spec's member field selects which profile to use. |
 | **Culture** | Rig-wide constitution — how the team communicates, what "done" means, escalation rules. File: `CULTURE.md`. |
 | **Snapshot** | Point-in-time capture of a rig — sessions, conversations, state. Restorable. |
-| **Session name** | `{pod}-{member}@{rig}`. The canonical address for tmux sessions and agent-to-agent messaging. |
+| **Session name** | `{pod}-{member}@{rig}`. The canonical address for seat terminals (an hc terminal is named from it) and agent-to-agent messaging. |
 
 The session-name format `{pod}-{member}@{rig}` is your address. When you
 run `rig whoami --json`, you get back your full topology context: rig name,

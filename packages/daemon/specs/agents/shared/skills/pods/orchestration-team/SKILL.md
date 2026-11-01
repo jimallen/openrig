@@ -241,7 +241,7 @@ Rules:
 ## Destructive operations — hard rules
 
 NEVER run without human approval:
-- `rig down --delete --force` (kills tmux sessions)
+- `rig down --delete --force` (kills the seats' terminals)
 - `rig down --force` on adopted/claimed rigs
 - `npm publish`
 - `git push --force`

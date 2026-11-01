@@ -34,7 +34,7 @@ upgrade subcommand.
 
 Keep these planes separate:
 
-- Seats normally live in tmux and can survive a daemon restart.
+- Seats normally live in hc terminals (the hc core is a separate process) and survive a daemon restart.
 - The daemon, database, wrappers, and managed plugin projection are the control
   plane being changed.
 - `rig down` tears down seats. It is not part of a continuity-preserving upgrade.
@@ -216,7 +216,7 @@ This is a decision guide, not a command recipe. Adapt paths and checks to the
 host in front of you.
 
 1. Inspect the current CLI, daemon, nodes, and plugins with the helper.
-2. Checkpoint active work and record the exact protected tmux/session census.
+2. Checkpoint active work and record the exact protected hc terminal/session census.
 3. Run `rig snapshot <rig-id>` for each protected rig.
 4. Create and verify the SQLite backup.
 5. Build or stage the target runtime separately. Prove its version and source
@@ -244,7 +244,7 @@ host in front of you.
 
 ## Stop and hand back when
 
-- a protected tmux session is missing before the upgrade;
+- a protected hc terminal is missing before the upgrade;
 - database integrity or backup verification fails;
 - the running process or listener does not match the expected runtime;
 - daemon stop reports success but the identified process or listener remains;

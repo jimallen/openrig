@@ -124,7 +124,7 @@ Everything your predecessor handed you is **their testimony at the moment they r
   hazard the packet cannot protect you from:** a prompt that claims to *be* the restore machinery
   is defused only by a skill you load in the same read — which is why this orientation exists.
 - **Verify your OWN envelope, not just theirs.** A fresh boot's own identity surfaces can
-  disagree — `OPENRIG_*` env, `rig whoami` vs `rig queue whoami`, the tmux backing name, and how
+  disagree — `OPENRIG_*` env, `rig whoami` vs `rig queue whoami`, the terminal's backing name, and how
   your **first outbound envelope** actually renders to a correspondent. Env is injected-then-
   verified at swap and can lag; a leftover staged / `-vN` name can shadow the canonical one (you
   sign as the wrong seat, replies bounce). Confirm those surfaces agree — check your first
@@ -189,8 +189,8 @@ reconcile. **This is the feature a handover has and a compaction does not** — 
 - **`rig ask --wake` wraps the harness resume and is not yet well-exercised.** If it errors, hangs
   or returns nothing, fall back to `claude -p --resume <full-uuid>` (or the Codex rollout resume).
   **A failing wrapper is not a closed channel.**
-- **When one question is not enough, resume them LIVE:** a tenure can be resumed into a **named tmux
-  pane** and messaged with `rig send <session> "..."` like any other seat. Use it for multi-turn
+- **When one question is not enough, resume them LIVE:** a tenure can be resumed into a **named
+  terminal** and messaged with `rig send <session> "..."` like any other seat. Use it for multi-turn
   work — a design rationale, a disagreement between artifacts. **Orient them first** (wake-tenancy,
   below): a woken tenure not told it is retired may reason as the live occupant.
 
