@@ -588,6 +588,10 @@ export interface ConnectHcCoreOptions {
   startCore?: () => Promise<void>;
   pin?: Pick<HcCorePin, "versions">;
   firstAttemptMs?: number;
+  /** The daemon's own client. A refusal after the first attempt (a core upgraded, swapped or restarted onto another version
+   *  under a running daemon) makes its calls fail as an unavailable core instead of going on talking to a core this build was
+   *  not written for. */
+  client?: Pick<HcClient, "refuseCore">;
 }
 
 /** The daemon's link to the seat host: pins the core's generation and version at startup and keeps watching. A refused core
@@ -601,7 +605,11 @@ export async function connectHcCore(options: ConnectHcCoreOptions): Promise<HcCo
     socketPath: options.socketPath,
     ...(startCore ? { startCore } : {}),
     ...(options.pin ? { pin: options.pin } : {}),
-    onNotice: (notice) => log(JSON.stringify(notice)),
+    onNotice: (notice) => {
+      if (notice.kind === "refused") options.client?.refuseCore(notice.refusal.message);
+      // A refusal is not a loss of the core and a loss is not "gone": the log line says which.
+      log(JSON.stringify(notice.kind === "refused" ? { kind: "refused", why: notice.refusal.message, refusalKind: notice.refusal.kind } : notice));
+    },
   });
   let timer: NodeJS.Timeout | undefined;
   const firstAttemptOver = new Promise<void>((resolve) => { timer = setTimeout(resolve, options.firstAttemptMs ?? 15_000); });

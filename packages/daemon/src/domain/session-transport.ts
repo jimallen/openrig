@@ -24,6 +24,7 @@ import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } 
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { HcDeliveryOutcome, HcPendingSend } from "../adapters/hc-delivery.js";
+import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
 import { findLatestSessionNameMatch } from "./latest-session-name-match.js";
@@ -2313,10 +2314,15 @@ export class SessionTransport {
     const hcPath = hcSeat ? { path: "hc" as const } : {};
     let hcVerified = false;
     if (viaHc) {
-      if (observed) observed.sentHash = hashSentText(text);
+      // Exactly once: an agent seat's message carries a short token derived from its delivery identity, so a send whose reply
+      // was lost is settled by finding it on the screen and a retry of the same message finds its first landing (see
+      // hc-delivery-token). Other seats (a plain terminal) take the text as it is.
+      const hcToken = opts?.deliveryToken ?? (carriesDeliveryToken(runtime) ? deliveryTokenFor(deliveryKeyOf(opts)) : undefined);
+      const hcText = hcToken && opts?.deliveryToken === undefined ? withDeliveryToken(text, hcToken) : text;
+      if (observed) observed.sentHash = hashSentText(hcText);
       const hcOutcome = await this.runStage(
         "session_transport.hc_submit",
-        () => { opts?.beforeWrite?.(); return this.hcDelivery!.deliver(sessionName, text, { ...(opts?.deliveryToken ? { token: opts.deliveryToken } : {}), ...(opts?.beforeWrite ? { beforeInput: opts.beforeWrite } : {}) }); },
+        () => { opts?.beforeWrite?.(); return this.hcDelivery!.deliver(sessionName, hcText, { ...(hcToken ? { token: hcToken } : {}), ...(opts?.beforeWrite ? { beforeInput: opts.beforeWrite } : {}) }); },
         (result) => result.state === "delivered" ? "ok" : "failed",
       );
       const refused = hcRefusal(sessionName, hcOutcome, waitMode ? waitEvidence : {});

@@ -49,6 +49,27 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
     });
   }
 
+  it("keeps the core watch it starts on hc, and has none on an injected tmux exec", async () => {
+    const hcDaemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+    try {
+      expect(hcDaemon.hcCoreWatch).toBeDefined();
+      expect(hcDaemon.hcCoreWatch!.state()).not.toBe("stopped");
+      hcDaemon.hcCoreWatch!.stop();
+      expect(hcDaemon.hcCoreWatch!.state()).toBe("stopped");
+    } finally {
+      hcDaemon.hcCoreWatch?.stop();
+      hcDaemon.eventLoopMonitor.stop();
+      hcDaemon.db.close();
+    }
+    const tmuxDaemon = await createDaemon({ dbPath: ":memory:", cmuxFactory, argvExec: async () => "" });
+    try {
+      expect(tmuxDaemon.hcCoreWatch).toBeUndefined();
+    } finally {
+      tmuxDaemon.eventLoopMonitor.stop();
+      tmuxDaemon.db.close();
+    }
+  });
+
   it("OPENRIG_TMUX_SHELL=1 does not move the daemon off hc", async () => {
     vi.stubEnv("OPENRIG_TMUX_SHELL", "1");
     const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });

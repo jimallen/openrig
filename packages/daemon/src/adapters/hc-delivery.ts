@@ -16,9 +16,17 @@ import type { SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
  *
  * `delivery_outcome_unknown` therefore means VERIFY, never resend. This module is the one place that decides. It reads
  * the terminal before the send (state, status, turn, and the core's start time), sends, and on silence reads again and
- * settles by evidence in this order: a token already or now on the screen, the turn advanced, the core restarted after
- * the send was issued. Silence the evidence does not settle is `waiting`: the send is still the core's, and nobody
- * resends. The `pending` record it returns is everything a later check needs, so a daemon restart loses nothing.
+ * settles by evidence in this order: a token already or now on the screen, the turn advanced, then proof that the text
+ * never reached the program. Silence the evidence does not settle is `waiting`: the send may still be the core's, or may
+ * have landed, and nobody resends. The `pending` record it returns is everything a later check needs, so a daemon
+ * restart loses nothing.
+ *
+ * A core restart alone is NOT proof that a send is gone. A queued send does not survive a restart, but a send that was
+ * delivered and then lost its reply does, and "the core started after the send was issued" is true of both. So the
+ * restart only says "gone" when the program also shows it never took the text (`neverReachedProgram`): it reports
+ * status, it was at rest before the send, it is at rest now and its turn did not move. Anything else is `waiting`, which
+ * the daemon surfaces to a person after a while (hc-unsettled-health): a lost message a person resends costs one nudge, a
+ * message delivered twice cannot be taken back.
  */
 
 /** Shorter than the core's own start-up and a connect, so a restart that merely overlaps the send is never read as
@@ -151,10 +159,14 @@ export class HcDelivery {
     if (evidence) {
       return { state: "delivered", evidence, verified: false, started: null, status: terminal.status?.state ?? null, turn: terminal.turn ?? null };
     }
+    if (coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS && neverReachedProgram(pending, terminal)) {
+      // A newer core began after the send was issued, so a send still queued in the old one is gone (spike 1+2, 2.2). That
+      // alone does not say the text never landed (it may have been delivered first), so the program has to show it too.
+      return { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: `the hc core restarted after the send to ${pending.seat} was issued, and ${pending.seat} reports no turn started since: the queued send did not survive the restart. Nothing was delivered, so sending again is safe.` };
+    }
     if (coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS) {
-      // The core that was asked began before the send was issued and a newer one began after it. A queued send does not
-      // survive a core restart (spike 1+2, 2.2), so it is gone and nothing else holds it.
-      return { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: `the hc core restarted after the send to ${pending.seat} was issued; the queued send did not survive it. Nothing was delivered, so sending again is safe.` };
+      // Restarted, and the program cannot say it never took the text: delivered before the restart, or lost with it. Not told apart.
+      return { state: "waiting", reason: "waiting_on_person", pending, message: `the hc core restarted after the send to ${pending.seat} was issued, and the text was either delivered before the restart or lost with it; ${pending.seat} reports nothing that tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.` };
     }
     return { state: "waiting", reason: "waiting_on_person", pending, message: `the text for ${pending.seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.` };
   }
@@ -211,6 +223,24 @@ export class HcDelivery {
       message: `${seat} ${seen.kind === "absent" ? "was not found" : `has finished (${seen.detail})`}; nothing was typed.`,
     };
   }
+}
+
+/** Statuses of a program at rest: not mid-turn, not on a dialog, not failed. */
+const AT_REST = new Set(["idle", "done"]);
+
+/**
+ * The one way, short of a token, to tell a send that never reached the program from one that did and lost its reply: a
+ * program that reports status and takes a prompt starts a turn. At rest before the send, at rest now, and the same turn
+ * counter, it did not take the text. Needs all three: a program that reports nothing says nothing (null status), one that
+ * was working or on a dialog would have changed state for other reasons, and a counter that differs (or went back, as it
+ * would if a core forgot it; measured: it survives `hc server restart`) is not a measure of this send. A prompt the program swallows without a turn (a slash command) looks like "never reached"; that is
+ * the residual this rule cannot exclude, and the reason it asks for a status at all.
+ */
+export function neverReachedProgram(pending: HcPendingSend, now: HcTerminal): boolean {
+  // `preStatus` is null for a program that reports none, so a status on both sides is also "reports status".
+  return pending.preStatus !== null && AT_REST.has(pending.preStatus)
+    && now.status != null && AT_REST.has(now.status.state)
+    && (now.turn ?? 0) === pending.preTurn;
 }
 
 /** The refusals after which nothing was typed, by the code HcInput gives them. Anything else is silence. */

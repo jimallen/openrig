@@ -222,6 +222,68 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     expect(core.landed).toEqual(["hello"]);
   });
 
+  describe("a restart alone does not prove a send gone: the text may have been delivered first (QA B2)", () => {
+    /** Issue a send whose reply is lost, then restart the core well after it, and ask. */
+    async function afterRestart(arrange: (core: FakeCore) => void, after: (core: FakeCore) => void = () => undefined) {
+      const core = new FakeCore();
+      arrange(core);
+      const { delivery, send } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello");
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      after(core);
+      return { verdict: await delivery.verify(pendingOf(first)), core, send };
+    }
+
+    it("a program that reports no status cannot show the text never landed: waiting, and the message says why", async () => {
+      const { verdict, send } = await afterRestart((c) => { c.reported = false; c.status = null; });
+      expect(verdict).toMatchObject({ state: "waiting", reason: "waiting_on_person" });
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+      expect(verdict.state === "waiting" && verdict.message).toMatch(/delivered before the restart or lost with it/);
+      expect(send.sent).toHaveLength(1);
+    });
+
+    it("a seat that was mid-turn before the send could have turned for other work: waiting", async () => {
+      const { verdict } = await afterRestart((c) => { c.status = "working"; }, (c) => { c.status = "idle"; });
+      expect(verdict).toMatchObject({ state: "waiting" });
+    });
+
+    it("a seat that was blocked on a dialog before the send (an answer typed into it) leaves the dialog without a turn: waiting", async () => {
+      const core = new FakeCore();
+      core.status = "blocked";
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "y", { blocked: "allow" });
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      core.status = "idle";  // the dialog was answered by the text that landed: no turn started
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting" });
+    });
+
+    it("a seat that is blocked on a dialog now is not at rest: waiting", async () => {
+      const { verdict } = await afterRestart(() => undefined, (c) => { c.status = "blocked"; });
+      expect(verdict).toMatchObject({ state: "waiting" });
+    });
+
+    it("a turn counter that moved is delivery, not gone; one that went back (a core that forgot it) is waiting", async () => {
+      const moved = await afterRestart(() => undefined, (c) => { c.turn += 1; });
+      expect(moved.verdict).toMatchObject({ state: "delivered", evidence: "turn_advanced" });
+      const back = await afterRestart((c) => { c.turn = 5; }, (c) => { c.turn = 0; });
+      expect(back.verdict).toMatchObject({ state: "waiting" });
+    });
+
+    it("a seat that is at rest before and after, with the same turn, is the one proof of gone (a program that took the text would have turned)", async () => {
+      const { verdict } = await afterRestart(() => undefined);
+      expect(verdict).toMatchObject({ state: "not_delivered", reason: "core_restarted_send_gone" });
+    });
+
+    it("done counts as at rest, both before and after", async () => {
+      const { verdict } = await afterRestart((c) => { c.status = "done"; }, (c) => { c.status = "done"; });
+      expect(verdict).toMatchObject({ state: "not_delivered", reason: "core_restarted_send_gone" });
+    });
+  });
+
   it("does not call a restart proof when it overlaps the send, or came before it", async () => {
     const overlapping = new FakeCore();
     const a = build(overlapping, "silent");

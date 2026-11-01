@@ -91,6 +91,35 @@ describe("SeatSwitchClientService", () => {
     expect(probes.switchClient).toHaveBeenCalledWith("/dev/ttys003", "=dev-impl@seat-rig:0");
   });
 
+  describe("on hc (QA N5)", () => {
+    it("is refused as not supported on this host: it probes nothing, and never reads as a tmux probe failure", async () => {
+      seedLiveSeat();
+      const { adapter, probes, mutators } = spyTmux({ clients: [client("/dev/ttys003", "wrong-view")] });
+      const hc = Object.assign(adapter, { hostKind: "hc" as const });
+      const result = await new SeatSwitchClientService({ rigRepo, tmuxAdapter: hc }).switchClient({ seatRef: "dev-impl@seat-rig" });
+      expect(result).toMatchObject({ ok: false, code: "not_supported_on_host" });
+      if (result.ok) throw new Error("expected a refusal");
+      expect(result.message).not.toMatch(/probe failed|list-clients/);
+      expect(result.guidance).toContain("hc attach -- ");
+      expect(result.guidance).not.toMatch(/reconcile-session/);
+      for (const fn of [...Object.values(probes), ...Object.values(mutators)]) expect(fn).not.toHaveBeenCalled();
+    });
+
+    it("still resolves the seat first: an unknown seat is not found, not unsupported", async () => {
+      const { adapter } = spyTmux();
+      const hc = Object.assign(adapter, { hostKind: "hc" as const });
+      const result = await new SeatSwitchClientService({ rigRepo, tmuxAdapter: hc }).switchClient({ seatRef: "ghost@seat-rig" });
+      expect(result).toMatchObject({ ok: false, code: "seat_not_found" });
+    });
+
+    it("control: the same seat on a tmux host still retargets", async () => {
+      seedLiveSeat();
+      const { adapter } = spyTmux({ clients: [client("/dev/ttys003", "wrong-view")] });
+      const result = await new SeatSwitchClientService({ rigRepo, tmuxAdapter: adapter }).switchClient({ seatRef: "dev-impl@seat-rig" });
+      expect(result.ok).toBe(true);
+    });
+  });
+
   it("remaining: a session disappearing before listWindows cannot supply its sibling's window", async () => {
     seedLiveSeat();
     const { adapter, probes } = spyTmux({ clients: [client("client", "home")] });

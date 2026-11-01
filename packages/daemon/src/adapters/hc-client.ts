@@ -83,7 +83,21 @@ interface RpcReply { id?: number; result?: unknown; error?: { code: number; mess
 /** One short-lived connection per call: a queued send can block for as long as a person types, and must never hold up
  *  a liveness read. Reaching the core and hearing it are kept apart: see the two error classes. */
 export class HcClient {
+  private refusal: string | null = null;
+
   constructor(readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS) {}
+
+  /** The core watch found the core wrong for this build (another generation, version or core id) after the daemon started.
+   *  From here every call fails as an UNAVAILABLE core, which no caller reads as a seat that is gone. The watch stops at a
+   *  refusal and nothing retries a generation or a version, so this holds until the daemon restarts. Calls already in
+   *  flight are not touched. */
+  refuseCore(reason: string): void { this.refusal = reason; }
+  /** Why calls are refused now, or null. */
+  get refusedBecause(): string | null { return this.refusal; }
+
+  private refuseIfRefused(): void {
+    if (this.refusal !== null) throw new HcUnavailableError(`the hc core is refused: ${this.refusal}`);
+  }
 
   async hello(): Promise<HcHello> {
     const conn = await this.open();
@@ -95,6 +109,7 @@ export class HcClient {
   }
 
   async call<T>(method: string, params: Record<string, unknown> = {}, options: { timeoutMs?: number } = {}): Promise<T> {
+    this.refuseIfRefused();
     const conn = await this.open();
     try {
       await this.greet(conn);
