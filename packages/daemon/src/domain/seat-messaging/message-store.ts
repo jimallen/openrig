@@ -228,12 +228,14 @@ export class MessageStore {
       WHERE outbox_id = ? AND ${OPEN}`).run(reason, atIso, returnQitem, id).changes === 1;
   }
 
-  /** S4: ends a row nobody should still deliver (an unwound handover, a superseded reminder), with no notice to the sender. A record
-   *  that arrives later changes nothing. */
-  cancel(id: MessageId, reason: string, atIso: string): boolean {
+  /** S4: ends a row nobody should still deliver (an unwound handover, a superseded reminder, an operator's cancel), with no notice to the
+   *  sender. A record that arrives later changes nothing. `actor` is whoever asked for it by hand; it is written to the same columns a
+   *  hand-retired row uses (`retired_by`, `retired_at`, `retirement_reason`), so no schema moves. The daemon's own cancels pass none. */
+  cancel(id: MessageId, reason: string, atIso: string, actor: string | null = null): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'undeliverable', message_closed_reason = ?, message_closed_at = ?, next_attempt_at = NULL,
-        message_pause_reason = NULL, delivery_state = 'failed', delivery_path = 'none', ack_evidence = 'superseded', ack_detail = NULL
-      WHERE outbox_id = ? AND ${OPEN}`).run(reason, atIso, id).changes === 1;
+        message_pause_reason = NULL, delivery_state = 'failed', delivery_path = 'none', ack_evidence = 'superseded', ack_detail = NULL,
+        retired_by = coalesce(?, retired_by), retired_at = coalesce(?, retired_at), retirement_reason = coalesce(?, retirement_reason)
+      WHERE outbox_id = ? AND ${OPEN}`).run(reason, atIso, actor, actor === null ? null : atIso, actor === null ? null : reason, id).changes === 1;
   }
 
   /** Where a message stands now. A retired held row is not open and never arrived, so it reads `undeliverable`. */
