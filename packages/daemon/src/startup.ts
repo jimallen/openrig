@@ -31,6 +31,7 @@ import { NodeLauncher } from "./domain/node-launcher.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
+import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
 import { connectHcCore } from "./adapters/hc-core-watch.js";
@@ -2017,6 +2018,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
     deps.terminalService = new TerminalService({
       resolveProvider: (name) => providerMap[name] ?? null,
+      resolveLocalHc: () => resolveOnPath("hc", process.env.PATH),
       viewsStore: new TerminalViewsStore(),
       listRigSeatsBatch: (names) => {
         const rigs = rigRepo.listRigs();
