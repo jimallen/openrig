@@ -18,10 +18,8 @@ import {
 } from "./TopologyViewModeTabs.js";
 import { TopologyTableView } from "./TopologyTableView.js";
 import { ErrorBoundary } from "../ui/ErrorBoundary.js";
-// OPR.0.4.6.2 (FR-5): the shipped rig-scope "Launch in CMUX" button generalizes
-// to a provider + view picker (herdr primary, cmux best-effort). Same tab-bar
-// trailing slot; LaunchCmuxButton.tsx stays (its graph/detail affordances are
-// untouched), superseded HERE by TerminalLauncher.
+// OPR.0.4.6.2 (FR-5): the rig-scope terminal launcher is a view picker
+// (herdr). It takes the tab-bar trailing slot.
 import { TerminalLauncher } from "./TerminalLauncher.js";
 import { TopologyTerminalView } from "./TopologyTerminalView.js";
 import { SectionHeader } from "../ui/section-header.js";
@@ -264,15 +262,15 @@ export function RigScopePage() {
           active={active}
           onSelect={setActive}
           testIdPrefix="topology-rig"
-          // OPR.0.4.6.MH2 rev1-r2 B1 — Launch-in-CMUX is a LOCAL action
-          // (bare local open-cmux POST); no cross-host mutation affordance
+          // OPR.0.4.6.MH2 rev1-r2 B1 — The terminal launcher is a LOCAL action;
+          // no cross-host mutation affordance
           // on remote views (FR-7).
           trailing={rigScopeActionsAllowed ? <TerminalLauncher rigId={rigId} rigName={rig?.name ?? null} /> : null}
         />
       }
     >
       {/* OPR.0.4.3.22 — rig-status + launch/recovery control near the rig title.
-          Terminal-surface actions (Launch in CMUX) render SEPARATELY in the tab
+          Terminal-surface actions (the terminal launcher) render SEPARATELY in the tab
           bar (trailing, above) and never restore or fresh-prime.
           OPR.0.4.6.MH2 rev1-r2 re-verdict B1: the whole control is a LOCAL
           restore/launch surface (bare /api/rigs/:id/status read + launch-plan

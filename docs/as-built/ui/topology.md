@@ -39,8 +39,8 @@ Components in `packages/ui/src/components/topology/`:
 - `HostMultiRigGraph.tsx` — host-level hybrid React Flow graph (multi-rig
   single canvas). Also mounted on the `/project` workspace Workflow tab.
 - `HybridTopologyNodes.tsx` — exports `HybridAgentNode` (compact agent cards:
-  runtime badges, context %, token totals, activity state, terminal preview,
-  per-card CMUX open via `useCmuxLaunch`) and `HybridPodGroupNode` (soft
+  runtime badges, context %, token totals, activity state, terminal preview)
+  and `HybridPodGroupNode` (soft
   dashed pod frames).
 - `RigGroupNode.tsx` — soft rig frames with registration marks + aggregate
   activity.
@@ -62,12 +62,10 @@ Components in `packages/ui/src/components/topology/`:
   above the graph. On the graph and table it is `progressive`: a static
   mirror first, click to go live, under a page-wide live-terminal cap.
 - `TerminalLauncher.tsx` — the rig-scope tab-bar launcher: choose a
-  provider (herdr or cmux) and a view (this rig, a pod, a mission's or
+  provider (herdr) and a view (this rig, a pod, a mission's or
   slice's agents, a saved view), then open it via
   `POST /api/terminal/open`. Shown only when the selected host is local.
-- `LaunchCmuxButton.tsx` — the older rig-scope "Launch in CMUX" button.
-  `TerminalLauncher` replaced it in the tab bar, and no production
-  component imports it now (tests still do).
+cmux was removed (the hc cutover): `LaunchCmuxButton`, the per-seat Open-in-cmux buttons and the cmux focus click-through are gone.
 - `ScopePages.tsx` — host/rig/pod/seat scope page wrappers.
 - `topology-overlay-context.tsx` — `TopologyOverlayProvider`: expanded-rig
   state, the rig named in the URL auto-expanded, and the Explorer mode
@@ -89,8 +87,8 @@ On narrow viewports the graph tab falls back to the table.
 > primitives (`HostMultiRigGraph`, `HybridAgentNode`, `HybridPodGroupNode`,
 > `RigGroupNode`, `ActivityRing`, `HotPotatoEdge`, `TerminalPreviewPopover`,
 > `TopologyTableView`, `TopologyTerminalView`); all are present in source.
-> `TopologyTreeView`, `TopologyViewModeTabs`, `TerminalLauncher` and
-> `LaunchCmuxButton` exist in source but are not in DESIGN.md's primitive
+> `TopologyTreeView`, `TopologyViewModeTabs`, and
+> `TerminalLauncher` exist in source but are not in DESIGN.md's primitive
 > list (a scope difference, not drift).
 
 ## 2. Topology contracts
@@ -116,7 +114,7 @@ Re-confirmed against source:
   `TerminalPreviewPopover` escapes React Flow stacking contexts (portaled
   to `document.body`) and stays within the viewport.
 - With a non-local host selected, the host graph fetch carries the host
-  parameter; terminal-preview and CMUX buttons are hidden on cards and in
+  parameter; the terminal-preview button is hidden on cards and in
   the table; and the rig page shows a read-only marker instead of the
   launcher.
 

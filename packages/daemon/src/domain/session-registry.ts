@@ -38,8 +38,6 @@ interface BindingFields {
   tmuxPane?: string;
   terminalAddress?: string;
   externalSessionName?: string;
-  cmuxWorkspace?: string;
-  cmuxSurface?: string;
 }
 
 /** OF-162: the probe status of a resume id the runtime has not yet proved it persisted. Claude writes a transcript only
@@ -822,8 +820,6 @@ export class SessionRegistry {
               tmux_pane = ?,
               ${withAddress ? "terminal_address = ?," : ""}
               external_session_name = ?,
-              cmux_workspace = ?,
-              cmux_surface = ?,
               updated_at = datetime('now')
             WHERE node_id = ?`
           )
@@ -834,16 +830,14 @@ export class SessionRegistry {
             fields.tmuxPane ?? existing.tmux_pane,
             ...(withAddress ? [fields.terminalAddress ?? existing.terminal_address ?? null] : []),
             fields.externalSessionName ?? existing.external_session_name,
-            fields.cmuxWorkspace ?? existing.cmux_workspace,
-            fields.cmuxSurface ?? existing.cmux_surface,
             nodeId
           );
       } else {
         const id = ulid();
         this.db
           .prepare(
-            `INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_window, tmux_pane, ${withAddress ? "terminal_address, " : ""}external_session_name, cmux_workspace, cmux_surface)
-             VALUES (?, ?, ?, ?, ?, ?, ${withAddress ? "?, " : ""}?, ?, ?)`
+            `INSERT INTO bindings (id, node_id, attachment_type, tmux_session, tmux_window, tmux_pane, ${withAddress ? "terminal_address, " : ""}external_session_name)
+             VALUES (?, ?, ?, ?, ?, ?, ${withAddress ? "?, " : ""}?)`
           )
           .run(
             id,
@@ -853,9 +847,7 @@ export class SessionRegistry {
             fields.tmuxWindow ?? null,
             fields.tmuxPane ?? null,
             ...(withAddress ? [fields.terminalAddress ?? null] : []),
-            fields.externalSessionName ?? null,
-            fields.cmuxWorkspace ?? null,
-            fields.cmuxSurface ?? null
+            fields.externalSessionName ?? null
           );
       }
     });
@@ -903,8 +895,6 @@ export class SessionRegistry {
       tmuxPane: row.tmux_pane,
       terminalAddress: row.terminal_address ?? null,
       externalSessionName: row.external_session_name ?? null,
-      cmuxWorkspace: row.cmux_workspace,
-      cmuxSurface: row.cmux_surface,
       updatedAt: row.updated_at,
     };
   }
@@ -942,7 +932,5 @@ interface BindingRow {
   /** Absent on a database that stops before migration 121. */
   terminal_address?: string | null;
   external_session_name: string | null;
-  cmux_workspace: string | null;
-  cmux_surface: string | null;
   updated_at: string;
 }

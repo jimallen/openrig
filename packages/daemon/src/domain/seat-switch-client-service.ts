@@ -6,7 +6,7 @@ import { hcAttachCommand, tmuxAttachCommand } from "../adapters/tmux-server.js";
 /**
  * OPR.0.4.3.26 — seat-recovery switch-client VIEW retarget.
  *
- * Points an already-attached tmux client (a human terminal / CMUX tile) at the
+ * Points an already-attached tmux client (a human terminal) at the
  * seat's canonical session/window. It is deliberately VIEW-ONLY: the only
  * dependencies are `rigRepo` (read, via SeatStatusService) and `tmuxAdapter`
  * (probe + switch). It holds NO SessionRegistry write surface, NO SessionReconciler,
@@ -20,7 +20,7 @@ const RECONCILE_GUIDANCE =
   "Repair routing first (rig reconcile-session <session>, or rig seat handover <seat> ...), then re-run switch-client. switch-client only retargets a client's view; it never repairs routing.";
 
 function attachGuidance(session: string): string {
-  return `Attach a client first: ${tmuxAttachCommand(session)} (or open the seat in CMUX), then re-run switch-client. switch-client never opens a new terminal.`;
+  return `Attach a client first: ${tmuxAttachCommand(session)}, then re-run switch-client. switch-client never opens a new terminal.`;
 }
 
 export interface SeatSwitchClientRequest {

@@ -54,7 +54,7 @@ export const READ_THROUGH_ALLOWLIST = [
   // OPR.0.4.6.MH2 rev1-r2 B2 + arch ruling (qitem-…c5402960): seat detail
   // is the LEAF of the FR-2 hierarchy — same read class as its /nodes
   // sibling. STRICT SEGMENT-SHAPE match only (the arch tooth): the deeper
-  // ACTION routes under this prefix (…/:logicalId/focus, …/open-cmux)
+  // ACTION routes under this prefix (…/:logicalId/<action>)
   // must stay REFUSED — pinned by named negatives.
   "/api/rigs/:rigId/nodes/:logicalId",
   "/api/ps",

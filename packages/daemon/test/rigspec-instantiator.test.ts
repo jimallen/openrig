@@ -77,7 +77,7 @@ describe("RigInstantiator", () => {
   function createInstantiator(opts?: { tmux?: TmuxAdapter }) {
     const tmux = opts?.tmux ?? mockTmux();
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
-    const preflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "", cmuxExec: async () => "" });
+    const preflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "" });
     return new RigInstantiator({ db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight });
   }
 
@@ -258,7 +258,7 @@ describe("RigInstantiator", () => {
     expect(() => new RigInstantiator({
       db, rigRepo: otherRepo, sessionRegistry, eventBus,
       nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
-      preflight: new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "", cmuxExec: async () => "" }),
+      preflight: new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "" }),
     })).toThrow(/same db handle/);
     otherDb.close();
   });
@@ -267,7 +267,7 @@ describe("RigInstantiator", () => {
     const otherDb = setupDb();
     const otherRepo = new RigRepository(otherDb);
     const tmux = mockTmux();
-    const otherPreflight = new RigSpecPreflight({ rigRepo: otherRepo, tmuxAdapter: tmux, exec: async () => "", cmuxExec: async () => "" });
+    const otherPreflight = new RigSpecPreflight({ rigRepo: otherRepo, tmuxAdapter: tmux, exec: async () => "" });
     expect(() => new RigInstantiator({
       db, rigRepo, sessionRegistry, eventBus,
       nodeLauncher: new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux }),
@@ -541,7 +541,7 @@ describe("RigInstantiator", () => {
       return result;
     });
 
-    const preflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "", cmuxExec: async () => "" });
+    const preflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "" });
     const inst = new RigInstantiator({ db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight });
     const result = await inst.instantiate(validSpec());
 

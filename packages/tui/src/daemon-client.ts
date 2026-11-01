@@ -407,7 +407,7 @@ export class DaemonClient {
   }
   /** The preview behind "Open terminals". That action opens through `rig terminal open --window`, which composes with
    *  Herdr's layout (without Herdr it stops: the tmux viewer is gone), so preview the same composition: its planId is the
-   *  window opener's expected plan. A provider-less preview may pick cmux, whose plan the window opener never matches. */
+   *  window opener's expected plan. */
   async previewTerminal(view: string): Promise<import("./terminals/terminal-model.js").TerminalPreview> {
     // The interactive TUI has a TTY; measure each preview again after a resize. Unknown stays narrow.
     const columns = process.stdout.isTTY ? process.stdout.columns : undefined;

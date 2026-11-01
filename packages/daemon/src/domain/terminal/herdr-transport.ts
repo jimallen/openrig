@@ -2,7 +2,7 @@
 //
 // herdr is an AGPL terminal multiplexer. OpenRig integrates it at ARM'S LENGTH:
 // we talk to its local unix-domain CONTROL SOCKET (a runtime IPC endpoint the
-// operator's installed herdr exposes) exactly the way we shell out to tmux/cmux
+// operator's installed herdr exposes) exactly the way we shell out to tmux
 // — a local IPC client, NEVER importing, linking, embedding, or vendoring herdr
 // code. This file only frames JSON on a socket the operator's herdr owns.
 //

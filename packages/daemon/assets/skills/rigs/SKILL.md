@@ -22,7 +22,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
 ## 1. Install OpenRig, if it isn't installed
 
 - **Check first:** `rig --version`. If it prints a version, go to step 2.
-- **What it needs:** macOS or Linux, Node.js 22 or 24, hc (herdr-core; `rig setup` installs the pinned version), and Claude Code or Codex signed in. Check only what's
+- **What it needs:** macOS or Linux, Node.js 22 or 24, hc (herdr-core, the pinned version; `rig setup` checks it and points to https://herdr.dev/core/ if it is missing), and Claude Code or Codex signed in. Check only what's
   missing: `node --version`, `hc --version`, `claude auth status` or `codex login status`.
 - **Install:** `npm install -g @openrig/cli`, then `rig preflight` (Node, hc, the daemon port and state folders)
   and `rig doctor`.
@@ -58,7 +58,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
   open, point them to it rather than opening another. Only if the window cannot open, `rig tui --shared` is the
   dashboard-only fallback; explain the failure and help with the chosen fallback. Herdr is visible only in a terminal
   the person can see; switching the shared TUI to `:terminals` does not open one. No and headless/SSH use are valid
-  background outcomes. Provider-only `--provider herdr` or `--provider cmux` is for an existing provider workspace,
+  background outcomes. Provider-only `--provider herdr` is for an existing provider workspace,
   not the first desktop window.
 - **If the window can't open, or over headless SSH:** say plainly that no visible terminal was opened, and ask the
   person to open a new terminal window or tab on the daemon's host. Over SSH, that's a new SSH session to it with the

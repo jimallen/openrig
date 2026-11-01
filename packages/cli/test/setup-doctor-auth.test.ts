@@ -25,7 +25,6 @@ function fixture(options: {
     }
     if (options.missingLogin?.includes(command)) throw new Error("Not logged in");
     if (command === "hc --version") return `hc ${HC_PINNED_VERSION}`;
-    if (command === "cmux capabilities --json") return '{"capabilities":[]}';
     return "available";
   };
   const common = { exec, readFile, exists: () => true, platform: "linux" as const, env: { HOME: "/fixture", CODEX_HOME: "/fixture/codex", ...options.env } };

@@ -73,7 +73,7 @@ function fixture(target: "absent" | "identical" | "edited", runtime = "codex", f
   });
   const binding: NodeBinding = {
     id: "binding", nodeId: "node", tmuxSession: null, tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: config.cwd,
+    updatedAt: "", cwd: config.cwd,
   };
   return { files, writes, plan, resolveTargetPath: resolveTargetPath!, project: () => adapter.project(plan, binding) };
 }

@@ -476,12 +476,6 @@ profile-load issues are detected, the failure is honest and actionable
 (named error + remediation pointer) instead of a silent partial launch that
 would later look like an attention_required seat with no explanation.
 
-### cmux launch readiness
-
-cmux-backed launches no longer produce silent partial workspace state. When
-parts of the workspace are missing, the launch surfaces partial state
-honestly and the UI exposes a one-click open-missing affordance.
-
 (See also `## Token-Efficient Defaults (v0.4.0+)` below for the compact-by-default read-command surface that lands in 0.4.0.)
 
 ## Token-Efficient Defaults (v0.4.0+)

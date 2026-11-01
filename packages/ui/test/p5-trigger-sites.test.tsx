@@ -26,8 +26,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // SubSpecPreview internally uses TanStack Link when entryId is present; in
 // these tests we don't render SubSpecPreview directly (only its trigger).
-// FeedCard renders AuthorAgentTag → useCmuxLaunch (useMutation) and a Link,
-// so it needs both a QueryClientProvider and a TanStack Router context.
+// FeedCard renders AuthorAgentTag (a Link),
+// so it needs a TanStack Router context (and a QueryClientProvider for its other queries).
 
 import { DrawerSelectionContext } from "../src/components/AppShell.js";
 
@@ -48,7 +48,7 @@ function renderWithDrawerCtx(
 }
 
 // Wrapper for components that touch TanStack Router (Link) + React Query.
-// FeedCard does both via the AuthorAgentTag → useCmuxLaunch path.
+// FeedCard touches both.
 function renderWithRouterAndQuery(
   ui: React.ReactNode,
 ): { setSelection: ReturnType<typeof vi.fn> } & ReturnType<typeof render> {

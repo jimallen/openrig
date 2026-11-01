@@ -4,7 +4,7 @@ import type { RigGraphInput } from "../src/domain/graph-projection.js";
 import type { Pod, RigWithRelations, Session } from "../src/domain/types.js";
 
 function makeRig(
-  nodes: { id: string; logicalId: string; role?: string; runtime?: string; bindingTmux?: string; cmuxSurface?: string }[],
+  nodes: { id: string; logicalId: string; role?: string; runtime?: string; bindingTmux?: string }[],
   edges: { id: string; sourceId: string; targetId: string; kind: string }[] = [],
   sessions: Session[] = [],
   pods: Pod[] = []
@@ -27,8 +27,6 @@ function makeRig(
             tmuxSession: n.bindingTmux,
             tmuxWindow: null,
             tmuxPane: null,
-            cmuxWorkspace: null,
-            cmuxSurface: n.cmuxSurface ?? null,
             updatedAt: "2026-03-23",
           }
         : null,
@@ -108,14 +106,13 @@ describe("projectRigToGraph", () => {
 
   it("node with binding -> binding data in node.data", () => {
     const input = makeRig([
-      { id: "n1", logicalId: "worker", bindingTmux: "r01-worker", cmuxSurface: "s-1" },
+      { id: "n1", logicalId: "worker", bindingTmux: "r01-worker" },
     ]);
 
     const result = projectRigToGraph(input);
     const data = result.nodes[0]!.data;
     expect(data.binding).not.toBeNull();
     expect(data.binding.tmuxSession).toBe("r01-worker");
-    expect(data.binding.cmuxSurface).toBe("s-1");
   });
 
   it("node without binding -> binding: null in node.data", () => {

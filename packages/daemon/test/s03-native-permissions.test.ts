@@ -55,7 +55,7 @@ function fixture(runtime = "codex", file = ":memory:") {
 }
 const input = (mode: string) => ({ seatRef: "dev-owner@permissions", mode, reason: "deliberate operator choice", actor: "operator@permissions" });
 const lineage = (db: Database.Database) => JSON.stringify(["nodes", "sessions", "occupant_tenures", "node_startup_context"].map(t => db.prepare(`SELECT * FROM ${t}`).all()));
-const binding = (nodeId = "node"): NodeBinding => ({ id: "binding", nodeId, attachmentType: "tmux", tmuxSession: "seat", tmuxWindow: null, tmuxPane: "%1", cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/inert/project" });
+const binding = (nodeId = "node"): NodeBinding => ({ id: "binding", nodeId, attachmentType: "tmux", tmuxSession: "seat", tmuxWindow: null, tmuxPane: "%1", updatedAt: "", cwd: "/inert/project" });
 
 describe("S03 future native permission selections (offline; no native effect claim)", () => {
   it("migration 088 preserves prior launch observations and histories and applies only once", () => {

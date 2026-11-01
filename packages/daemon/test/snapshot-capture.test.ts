@@ -56,7 +56,7 @@ describe("SnapshotCapture", () => {
     const n1 = rigRepo.addNode(rig.id, "orchestrator", { role: "orchestrator", runtime: "claude-code" });
     const n2 = rigRepo.addNode(rig.id, "worker", { role: "worker", runtime: "codex" });
     rigRepo.addEdge(rig.id, n1.id, n2.id, "delegates_to");
-    sessionRegistry.updateBinding(n1.id, { tmuxSession: "r99-demo1-lead", cmuxSurface: "s-1" });
+    sessionRegistry.updateBinding(n1.id, { tmuxSession: "r99-demo1-lead" });
     return { rig, n1, n2 };
   }
 

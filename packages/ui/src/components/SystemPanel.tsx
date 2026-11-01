@@ -1,36 +1,18 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { ServerCog } from "lucide-react";
 import { LogFeedList } from "./ActivityFeed.js";
 import { SettingsTab } from "./system/SettingsTab.js";
 import type { ActivityEvent } from "../hooks/useActivityFeed.js";
-import { ToolMark } from "./graphics/RuntimeMark.js";
 // OPR.0.4.3.21 — the ONE daemon-health source (shared with the live terminal's
 // control-plane-unhealthy disambiguation) instead of a panel-local /healthz poll.
 import { useDaemonHealth } from "../hooks/useDaemonHealth.js";
 
 type SystemTab = "log" | "status" | "settings";
 
-async function fetchCmux(): Promise<{ available: boolean }> {
-  const res = await fetch("/api/adapters/cmux/status");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 interface SystemPanelProps {
   onClose: () => void;
   events: ActivityEvent[];
   initialTab?: SystemTab;
-}
-
-function statusTone(ok: boolean | null): string {
-  if (ok === null) return "text-on-surface-variant";
-  return ok ? "text-green-600" : "text-amber-600";
-}
-
-function statusLabel(ok: boolean | null, positive: string, negative: string, unknown = "unknown"): string {
-  if (ok === null) return unknown;
-  return ok ? positive : negative;
 }
 
 // OPR.0.4.3.21 forward-fix — the daemon health surface is honest about the
@@ -67,13 +49,6 @@ export function SystemPanel({ onClose, events, initialTab = "log" }: SystemPanel
 
   const { query: healthQuery, signal: healthSignal } = useDaemonHealth();
 
-  const cmuxQuery = useQuery({
-    queryKey: ["daemon", "cmux"],
-    queryFn: fetchCmux,
-    refetchInterval: 30_000,
-    retry: false,
-  });
-
   // OPR.0.4.3.21 forward-fix — derive from isSuccess AND the event-loop verdict.
   // The healthy/connected path is unchanged when eventLoop.healthy !== false.
   const eventLoopUnhealthy = healthQuery.isSuccess && healthSignal.evidence?.healthy === false;
@@ -82,10 +57,6 @@ export function SystemPanel({ onClose, events, initialTab = "log" }: SystemPanel
     : healthQuery.isSuccess ? "connected"
     : healthQuery.isError ? "unavailable"
     : "unknown";
-  // cmux status is only meaningful once the daemon answered (present), whether
-  // or not its event loop is starved.
-  const daemonResponded = healthQuery.isSuccess;
-  const cmuxAvailable = daemonResponded ? (cmuxQuery.data?.available ?? null) : null;
 
   return (
     <aside
@@ -154,17 +125,6 @@ export function SystemPanel({ onClose, events, initialTab = "log" }: SystemPanel
                     </div>
                   )}
                   <div className="text-on-surface-variant">Controls the local OpenRig daemon connection.</div>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <ToolMark tool="cmux" size="sm" className={`mt-[1px] ${statusTone(cmuxAvailable)}`} />
-                <div className="min-w-0">
-                  <div className="text-on-surface">cmux control</div>
-                  <div data-testid="system-cmux-status" className={statusTone(cmuxAvailable)}>
-                    {statusLabel(cmuxAvailable, "available", "unavailable")}
-                  </div>
-                  <div className="text-on-surface-variant">OpenRig can control cmux surfaces for node open-or-focus.</div>
                 </div>
               </div>
             </div>

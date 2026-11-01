@@ -123,7 +123,7 @@ export interface TmuxCursorPosition {
 }
 
 /**
- * An attached tmux client — the human's terminal/CMUX tile. `name` is the
+ * An attached tmux client — the human's terminal. `name` is the
  * client identifier accepted by `switch-client -c` (the client tty by default);
  * `session` is the session the client is CURRENTLY viewing (may be the wrong or
  * a dead view, which is exactly the recovery case OPR.0.4.3.26 retargets).
@@ -1746,7 +1746,7 @@ export class TmuxAdapter {
   }
 
   /**
-   * OPR.0.4.3.26 — list the tmux clients (human terminals / CMUX tiles) attached
+   * OPR.0.4.3.26 — list the tmux clients (human terminals) attached
    * to the server. VIEW-ONLY probe: it never mutates routing, bindings, or
    * sessions. Mirrors the read/parse/error-swallow shape of `listSessions`:
    * a "no server running" / socket-absent server yields `[]` (no attachable

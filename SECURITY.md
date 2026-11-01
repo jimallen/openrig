@@ -12,8 +12,7 @@ OpenRig runs a local daemon, drives coding agents in hc (herdr-core) terminals o
 configuration for those harnesses, including workspace trust records and executable hooks: for
 example `~/.claude.json`, skills under `~/.claude`, `$CODEX_HOME/config.toml` (default `~/.codex`),
 and, in the project, `.claude/settings.local.json`, `.mcp.json` and managed blocks in `CLAUDE.md`,
-`CLAUDE.local.md` or `AGENTS.md`. `rig setup` also installs the pinned hc when it is absent and, on macOS, edits cmux's
-settings. OpenRig's own state lives under `$OPENRIG_HOME` (default `~/.openrig`). The README
+`CLAUDE.local.md` or `AGENTS.md`. `rig setup` also checks that hc is installed but does not install it. OpenRig's own state lives under `$OPENRIG_HOME` (default `~/.openrig`). The README
 section [What OpenRig changes on your machine](README.md#what-openrig-changes-on-your-machine)
 describes these effects and the trust/permission choices. Unexpected access, disclosure or
 permission changes are useful reports; include what you expected and what you observed.

@@ -1,6 +1,6 @@
 ---
 kind: as-built
-title: Adapters and Runtimes — Claude/Codex/Pi/Stub/Terminal, tmux/cmux, Resume Honesty
+title: Adapters and Runtimes — Claude/Codex/Pi/Stub/Terminal, tmux, Resume Honesty
 status: active
 topics: [agent-runtime, runtime-control]
 domains: [engineering-advisor, operating-advisor]
@@ -301,12 +301,10 @@ maps (`startup.ts:989`, `:1259`); see `daemon-core.md` §4 "Startup sequence".
 Opening a seat in a terminal app goes through `TerminalProvider`s under
 `packages/daemon/src/domain/terminal/`, served by `/api/terminal`:
 `HerdrAdapter` (`herdr-adapter.ts:351`), the default
-(`terminal-service.ts:55–58`), and `CmuxProviderAdapter`
-(`cmux-provider-adapter.ts:52`), which is best effort and refuses with
-`cmux_unavailable` when cmux is not connected. A request that names no
-provider takes the first of Herdr, then cmux, that is available and alive,
-and stays on Herdr when neither is (`providerNameFor`,
-`terminal-service.ts:175`); a named provider is used as named. These place existing seat
+(`terminal-service.ts`), and the only provider: the cmux provider was removed
+with the hc cutover. A request that names no provider uses Herdr
+(`providerNameFor`, `terminal-service.ts`); a named provider that is not
+Herdr gets `unknown_provider`. These place existing seat
 terminals in views; they do not launch harnesses.
 
 ## 3. Resume honesty

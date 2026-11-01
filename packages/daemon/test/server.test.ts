@@ -13,7 +13,7 @@ import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { PackageRepository } from "../src/domain/package-repository.js";
 import { InstallRepository } from "../src/domain/install-repository.js";
 import { createApp } from "../src/server.js";
-import { mockTmuxAdapter, unavailableCmuxAdapter } from "./helpers/test-app.js";
+import { mockTmuxAdapter } from "./helpers/test-app.js";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
@@ -36,7 +36,6 @@ function createAppWithUiDist(db: ReturnType<typeof createFullTestDb>, uiDistDir:
     eventBus: fullSetup.eventBus,
     nodeLauncher: fullSetup.nodeLauncher,
     tmuxAdapter: (fullSetup as any).tmuxAdapter ?? mockTmuxAdapter(),
-    cmuxAdapter: (fullSetup as any).cmuxAdapter ?? unavailableCmuxAdapter(),
     snapshotCapture: fullSetup.snapshotCapture,
     snapshotRepo: fullSetup.snapshotRepo,
     restoreOrchestrator: fullSetup.restoreOrchestrator,

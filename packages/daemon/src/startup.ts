@@ -15,7 +15,6 @@ import { readHealthArtifact, healthAuthority, healthHumanReadiness } from "./dom
 import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type { ArgvExecFn, ExecFn } from "./adapters/tmux.js";
-import type { CmuxTransportFactory } from "./adapters/cmux.js";
 import { createDb } from "./db/connection.js";
 import { migrate } from "./db/migrate.js";
 // P8: apply the CANONICAL migration list — the single source of truth (db/all-migrations.ts),
@@ -38,11 +37,9 @@ import { connectHcCore, pinCallsToCore, type HcCoreWatch } from "./adapters/hc-c
 import { HcDelivery } from "./adapters/hc-delivery.js";
 import { TmuxAdapter } from "./adapters/tmux.js";
 import { setDaemonTmuxServer, tmuxServerArgs } from "./adapters/tmux-server.js";
-import { CmuxAdapter } from "./adapters/cmux.js";
 import { execArgvCommand, execCommand } from "./adapters/tmux-exec.js";
 import { boundedProbeExec } from "./adapters/bounded-probe-exec.js";
 import { execPreflightCommand } from "./adapters/preflight-exec.js";
-import { createCmuxCliTransport } from "./adapters/cmux-transport.js";
 import { SnapshotRepository } from "./domain/snapshot-repository.js";
 import { CheckpointStore } from "./domain/checkpoint-store.js";
 import { SnapshotCapture } from "./domain/snapshot-capture.js";
@@ -161,7 +158,6 @@ import { AgentImageLibraryService } from "./domain/agent-images/agent-image-libr
 import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
 import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
 import { WhoamiService } from "./domain/whoami-service.js";
-import { NodeCmuxService } from "./domain/node-cmux-service.js";
 import { createAppWithWebSocket, type AppDeps } from "./server.js";
 import { ProviderServiceImpl } from "./domain/provider/provider-service-impl.js";
 import { collectClaudeSignalsFromProviderUsageDirectory } from "./domain/provider/claude-usage-reader.js";
@@ -211,9 +207,6 @@ interface DaemonOptions {
   tmuxExec?: ExecFn;
   /** Optional shell-free tmux executor; the default unless tmuxExec is injected. */
   argvExec?: ArgvExecFn;
-  cmuxExec?: ExecFn;
-  cmuxFactory?: CmuxTransportFactory;
-  cmuxTimeoutMs?: number;
   tmuxOptionPlatform?: NodeJS.Platform;
   slowOpRecorder?: SlowOperationInstrumentation;
   /** Where the default slow-operation recorder writes, and where the RSI slow-op source reads. */
@@ -563,13 +556,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     db,
     tmux: tmuxAdapter,
   });
-  // cmuxFactory takes precedence (for tests), then cmuxExec-based CLI transport, then default
-  const cmuxFactory = opts?.cmuxFactory
-    ?? createCmuxCliTransport(opts?.cmuxExec ?? execCommand);
-  const cmuxAdapter = new CmuxAdapter(
-    cmuxFactory,
-    { timeoutMs: opts?.cmuxTimeoutMs ?? 5000 }
-  );
 
   // Read transcript config from env (passed by CLI via PNS-T02 config surface)
   const transcriptsEnabled = readOpenRigEnv("OPENRIG_TRANSCRIPTS_ENABLED", "RIGGED_TRANSCRIPTS_ENABLED") !== "false";
@@ -759,9 +745,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     },
   });
 
-  // Connect to cmux at startup — degrades gracefully if absent
-  await cmuxAdapter.connect();
-
   // Reconcile all managed rigs — marks stale sessions as detached.
   // Capture aggregate counts and log a compact summary so cold-start truth
   // repair is visible in daemon output instead of silently swallowed.
@@ -829,7 +812,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const podRepo = new PodRepository(db);
   const rigSpecExporter = new RigSpecExporter({ rigRepo, sessionRegistry, podRepo });
   const rigSpecPreflight = new RigSpecPreflight({
-    rigRepo, tmuxAdapter, exec: opts?.tmuxExec ?? execPreflightCommand, cmuxExec: opts?.cmuxExec ?? execCommand,
+    rigRepo, tmuxAdapter, exec: opts?.tmuxExec ?? execPreflightCommand,
   });
   const rigInstantiator = new RigInstantiator({
     db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight: rigSpecPreflight, tmuxAdapter,
@@ -1298,7 +1281,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
 
   // (ContextUsageStore is constructed above, ahead of SessionReconciler, for FR-3.)
   const whoamiService = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore });
-  const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmuxAdapter, tmuxAdapter);
   // W2a-1 — producer wiring: the live occupant generation resolves synchronously from the shipped
   // occupant-tenure ledger. generation_uuid CHANGES for a new occupant and persists only within one
   // tenure (a same-session relaunch is a continuation with no new generation); node_id is the stable-
@@ -1396,7 +1378,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     codexConfigWritePolicy,
     sessionEnv: launchSessionEnv,
     runtimeSessionEnv,
-    cmuxAdapter,
     snapshotCapture,
     snapshotRepo,
     // Slice-04 OPR.0.5.0.4: production provider service — getReadModel over the codex-auth reader
@@ -1551,7 +1532,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       });
     })(),
     whoamiService,
-    nodeCmuxService,
     agentActivityStore,
     claudeNativeInbox,
     seatAttentionReconciler,
@@ -1986,8 +1966,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const { createHerdrSocketRpc, createHerdrSocketTransport, resolveHerdrSocketPath } = await import(
       "./domain/terminal/herdr-transport.js"
     );
-    const { CmuxProviderAdapter } = await import("./domain/terminal/cmux-provider-adapter.js");
-    const { CmuxLayoutService } = await import("./domain/cmux-layout-service.js");
     const { TerminalViewsStore } = await import("./domain/terminal/terminal-views-store.js");
     const { getNodeInventory, getNodeInventoryForRigs } = await import("./domain/node-inventory.js");
     const { loadHostRegistry, resolveHost: resolveHostInRegistry } = await import(
@@ -2017,15 +1995,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       transportFactory: createHerdrSocketTransport(createHerdrSocketRpc(herdrSocketPath)),
       launch: { socketPath: herdrSocketPath, ...(process.env["HERDR_SESSION"] ? { session: process.env["HERDR_SESSION"] } : {}) },
     });
-    const cmuxProvider = new CmuxProviderAdapter({
-      cmuxAdapter,
-      // One gridded workspace per composed page — the same grid machinery as
-      // the rig-scope /cmux/launch endpoint, never one window per seat.
-      layoutService: new CmuxLayoutService(cmuxAdapter),
-    });
-    const providerMap: Record<string, typeof herdrProvider | typeof cmuxProvider> = {
+    const providerMap: Record<string, typeof herdrProvider> = {
       herdr: herdrProvider,
-      cmux: cmuxProvider,
     };
 
     deps.terminalService = new TerminalService({

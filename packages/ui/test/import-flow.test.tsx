@@ -112,7 +112,7 @@ describe("ImportFlow", () => {
   it("preflight shows warnings and errors with correct colors", async () => {
     mockFetch
       .mockResolvedValueOnce({ ok: true, json: async () => ({ valid: true, errors: [] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: true, errors: [], warnings: ["cmux unavailable", "cwd not found"] }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: true, errors: [], warnings: ["layout hint ignored", "cwd not found"] }) });
     await renderImportFlow();
 
     fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: VALID_YAML } });
@@ -122,7 +122,7 @@ describe("ImportFlow", () => {
 
     await waitFor(() => {
       const warningsEl = screen.getByTestId("preflight-warnings");
-      expect(warningsEl.textContent).toContain("cmux unavailable");
+      expect(warningsEl.textContent).toContain("layout hint ignored");
       expect(warningsEl.textContent).toContain("cwd not found");
       // Warnings should use text-warning class
       expect(warningsEl.querySelector(".text-warning")).toBeDefined();
@@ -226,7 +226,7 @@ describe("ImportFlow", () => {
   it("preflight warnings are displayed to user", async () => {
     mockFetch
       .mockResolvedValueOnce({ ok: true, json: async () => ({ valid: true, errors: [] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: true, errors: [], warnings: ["cmux unavailable"] }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: true, errors: [], warnings: ["layout hint ignored"] }) });
     await renderImportFlow();
 
     fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: VALID_YAML } });
@@ -235,7 +235,7 @@ describe("ImportFlow", () => {
     fireEvent.click(screen.getByTestId("preflight-btn"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("preflight-warnings").textContent).toContain("cmux unavailable");
+      expect(screen.getByTestId("preflight-warnings").textContent).toContain("layout hint ignored");
     });
   });
 
@@ -302,7 +302,7 @@ describe("ImportFlow", () => {
   it("preflight with both warnings and errors shows warnings above errors", async () => {
     mockFetch
       .mockResolvedValueOnce({ ok: true, json: async () => ({ valid: true, errors: [] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: false, errors: ["rig name exists"], warnings: ["cmux unavailable"] }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: false, errors: ["rig name exists"], warnings: ["layout hint ignored"] }) });
     await renderImportFlow();
 
     fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: VALID_YAML } });
@@ -316,7 +316,7 @@ describe("ImportFlow", () => {
       expect(errEl.textContent).toContain("rig name exists");
       // Warnings should also be shown (above errors)
       const warnEl = screen.getByTestId("error-warnings");
-      expect(warnEl.textContent).toContain("cmux unavailable");
+      expect(warnEl.textContent).toContain("layout hint ignored");
     });
   });
 
@@ -441,7 +441,7 @@ describe("ImportFlow", () => {
   it("preflight warnings allow instantiate", async () => {
     mockFetch
       .mockResolvedValueOnce({ ok: true, json: async () => ({ valid: true, errors: [] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: true, errors: [], warnings: ["cmux unavailable"] }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ready: true, errors: [], warnings: ["layout hint ignored"] }) });
     await renderImportFlow();
 
     fireEvent.change(screen.getByTestId("yaml-input"), { target: { value: VALID_YAML } });

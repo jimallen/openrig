@@ -42,7 +42,7 @@ function mockFs(files?: Record<string, string>): ClaudeAdapterFsOps {
 function makeBinding(cwd = "/project"): NodeBinding {
   return {
     id: "b1", nodeId: "n1", tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd,
+    updatedAt: "", cwd,
   };
 }
 

@@ -138,7 +138,7 @@ unseen — which makes messages the one delivery channel that never gets skipped
   `hc attach -- <terminal>`). Inspect the result and visible content, or
   say what cannot be verified. On a desktop, do not finish by printing a command for the person to
   type. Only if the window cannot open, `rig tui --shared` is the dashboard-only fallback; explain
-  the failure. `--provider herdr` or `--provider cmux` adds tiles inside a workspace that is
+  the failure. `--provider herdr` adds tiles inside a workspace that is
   already visible, without opening a window; in `--json` output, `reusedWorkspace` with no new
   tiles means an existing view was reused, which is success.
   In the TUI, **TERMINALS** keeps Saved views prominent and Derived groups collapsed until
@@ -345,7 +345,7 @@ fresh, since a web tool's cached copy can be older. The built-in shelf also hold
 `docs/reference/topology-naming.md`: name the rig for its purpose, pods for domains,
 and members for their roles. Verify prerequisites (Node 22 or 24) and actual runtime readiness
 before work. The starter's Codex model `gpt-6-astra` needs a Codex newer than 0.145; when a Codex
-seat reports that, the operator offers to update Codex and restart that seat. Existing Herdr/cmux
+seat reports that, the operator offers to update Codex and restart that seat. Existing Herdr
 terminals can present the managed team through `rig terminal open`.
 
 **Need a small team now, without authoring YAML?** Start with `rig create`, then use `rig grow`
@@ -794,7 +794,7 @@ your circumstances is configuration, and the ones that are not, another agent ca
 - **`rig setup`** — what OpenRig would change about this machine, shown before it touches anything.
   It installs herdr by default on macOS and Linux (`--no-herdr` declines; if the install fails,
   there is no view until herdr is installed) and on a Mac offers Ghostty once (`--ghostty` / `--no-ghostty`).
-  It no longer installs cmux; an existing cmux still works. `--providers claude`, `codex` or
+  `--providers claude`, `codex` or
   `both` sets which harnesses it installs and checks; one not chosen reads `skipped`, never failed.
 - **`rig usage series`** — what a seat's token curve has looked like over time: climbing steadily,
   reset, or stopped reporting entirely. The last one is a signal, not a gap.

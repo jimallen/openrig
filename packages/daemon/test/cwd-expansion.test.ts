@@ -153,7 +153,7 @@ describe("cwd resolution: an existing literal path wins, otherwise the expansion
       migrate(db, [coreSchema, bindingsSessionsSchema, nodeSpecFieldsSchema, rigArchiveSchema]);
       try {
         const tmuxAdapter = { hasSession: async () => false } as unknown as TmuxAdapter;
-        const pf = new RigSpecPreflight({ rigRepo: new RigRepository(db), tmuxAdapter, exec: async () => "", cmuxExec: async () => "" });
+        const pf = new RigSpecPreflight({ rigRepo: new RigRepository(db), tmuxAdapter, exec: async () => "" });
         const result = await pf.check({ schemaVersion: 1, name: "r99", version: "1.0.0", nodes: [{ id: "worker", runtime: "claude-code", cwd }], edges: [] });
         return result.errors.filter((e) => e.includes("cwd"));
       } finally { db.close(); }

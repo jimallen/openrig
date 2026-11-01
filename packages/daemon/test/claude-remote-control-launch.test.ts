@@ -42,7 +42,7 @@ const fsOps = {
 
 const binding = (extra: Partial<NodeBinding> = {}): NodeBinding => ({
   id: "b1", nodeId: "n1", tmuxSession: SEAT, tmuxWindow: null, tmuxPane: null,
-  cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/project", ...extra,
+  updatedAt: "", cwd: "/project", ...extra,
 });
 const adapterWith = (tmux: TmuxAdapter) => new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, sessionIdFactory: () => "sess-1" });
 const sent = (tmux: TmuxAdapter): string => {

@@ -1,8 +1,8 @@
-// V1 polish slice Phase 5.1 P5.1-7: TopologyTableView CMUX column +
+// V1 polish slice Phase 5.1 P5.1-7: TopologyTableView actions column +
 // row click navigation regression guard.
 //
-// The table requires a cmux launch affordance and row-click
-// navigation to the agent detail page.
+// The table has no cmux launch affordance (cmux was removed) and keeps
+// row-click navigation to the agent detail page.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, fireEvent, cleanup, waitFor } from "@testing-library/react";
@@ -28,9 +28,6 @@ beforeEach(() => {
   mockFetch.mockImplementation(async (url: string) => {
     if (url.includes("/api/rigs/summary")) {
       return new Response(JSON.stringify([{ id: "rig-1", name: "test-rig" }]));
-    }
-    if (url.includes("/open-cmux")) {
-      return new Response(JSON.stringify({ ok: true, action: "created_new" }));
     }
     if (url.includes("/api/rigs/rig-1/nodes")) {
       return new Response(
@@ -77,13 +74,12 @@ function withQueryClient(ui: React.ReactNode) {
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
-describe("TopologyTableView P5.1-7 CMUX column + row click", () => {
-  it("renders the actions column with a CMUX button per agent row", async () => {
-    const { findByTestId } = withQueryClient(<TopologyTableView />);
-    const cmux = await findByTestId("topology-table-cmux-orch.lead");
-    expect(cmux).toBeTruthy();
-    expect((cmux as HTMLButtonElement).textContent).toContain("CMUX");
-    expect((cmux as HTMLButtonElement).className).not.toContain("opacity-0");
+describe("TopologyTableView P5.1-7 actions column + row click", () => {
+  it("renders the actions column per agent row with no CMUX button (cmux was removed)", async () => {
+    const { findByTestId, queryByTestId } = withQueryClient(<TopologyTableView />);
+    const actions = await findByTestId("topology-table-actions-orch.lead");
+    expect(actions.textContent ?? "").not.toMatch(/cmux/i);
+    expect(queryByTestId("topology-table-cmux-orch.lead")).toBeNull();
   });
 
   it("renders context percentage and token total from node inventory", async () => {
@@ -95,29 +91,7 @@ describe("TopologyTableView P5.1-7 CMUX column + row click", () => {
     expect(tokens.getAttribute("title")).toContain("Tokens: 134,000");
   });
 
-  it("CMUX button click POSTs to /api/rigs/.../open-cmux (open-or-create launcher)", async () => {
-    const { findByTestId } = withQueryClient(<TopologyTableView />);
-    const cmux = await findByTestId("topology-table-cmux-orch.lead");
-    fireEvent.click(cmux);
-    await waitFor(() => {
-      const openCall = mockFetch.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/open-cmux"),
-      );
-      expect(openCall).toBeDefined();
-      expect(openCall![0]).toBe("/api/rigs/rig-1/nodes/orch.lead/open-cmux");
-    });
-  });
-
-  it("CMUX button click does NOT trigger row navigation (stopPropagation)", async () => {
-    const { findByTestId } = withQueryClient(<TopologyTableView />);
-    const cmux = await findByTestId("topology-table-cmux-orch.lead");
-    fireEvent.click(cmux);
-    // Allow one tick for any propagation that wasn't stopped.
-    await new Promise((r) => setTimeout(r, 10));
-    expect(navigateSpy).not.toHaveBeenCalled();
-  });
-
-  it("row click (away from action button) navigates to /topology/seat/$rigId/$logicalId", async () => {
+  it("row click navigates to /topology/seat/$rigId/$logicalId", async () => {
     const { findByTestId } = withQueryClient(<TopologyTableView />);
     const row = await findByTestId("topology-table-row-orch.lead");
     fireEvent.click(row);

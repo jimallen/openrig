@@ -48,7 +48,7 @@ describe("the rigs skill installed globally", () => {
     vi.spyOn(os, "homedir").mockReturnValue(root);
     vi.spyOn(PluginVendorService.prototype, "attemptAutoFetch").mockResolvedValue();
 
-    const { db } = await createDaemon({ dbPath: ":memory:", tmuxExec: async () => "", cmuxFactory: async () => { throw new Error("inert fixture"); } });
+    const { db } = await createDaemon({ dbPath: ":memory:", tmuxExec: async () => "" });
     try {
       const claude = join(root, ".claude/skills/rigs");
       expect(readFileSync(join(claude, "SKILL.md"))).toEqual(readFileSync(join(PACKAGED, "SKILL.md")));

@@ -229,7 +229,7 @@ configurations, as below; do not take the pin from a cached page summary.
    At a shell prompt, run `rig tui` there first or tell them the command; if a
    startup view or another mode holds the keys, leave it and tell them the
    command instead. Then open the team's terminals as a new space with
-   `rig terminal open <team> --provider herdr` (or `--provider cmux`); it
+   `rig terminal open <team> --provider herdr`; it
    creates its own workspace and leaves their terminal alone. If it opens,
    tell them where to look. If it cannot open, relay the complete, filled-in
    attach commands from the result's notes to run in new terminals on the

@@ -7,12 +7,6 @@ import { resolveDaemonPath } from "../daemon-lifecycle.js";
 import { formatDaemonHostForUrl } from "../client.js";
 import { ConfigStore } from "../config-store.js";
 import { buildWritableHomeCheck } from "../system-preflight.js";
-import {
-  CMUX_SETTINGS_DISCLOSURE_PATH,
-  isCmuxSocketControlCompatible,
-  readCmuxSocketControlModeFromText,
-  resolveCmuxSettingsPath,
-} from "../cmux-config.js";
 import { HC_GENERATION, buildHcHostFailure, classifyHcCore, probeHcInstall, readHcHello, type HcHelloOutcome } from "../tmux-health.js";
 import { parse as parseYaml } from "yaml";
 import { compareSpecToLive, topologyFromRigSpec, topologyFromLiveLogicalIds } from "@openrig/daemon/spec-conformance";
@@ -70,7 +64,6 @@ function defaultCheckPort(port: number, host: string): Promise<boolean> {
 
 export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] = checkProviderReadiness(deps)): { checks: DoctorCheck[]; portCheck: Promise<DoctorCheck>; asyncChecks: Promise<DoctorCheck>[] } {
   const checks: DoctorCheck[] = [...providerChecks];
-  const platform = deps.platform ?? process.platform;
 
   // 1. Daemon dist
   const daemonPath = resolveDaemonPath(deps.baseDir, deps.exists);
@@ -141,46 +134,6 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     });
   }
 
-  // 5. cmux shell check (optional but recommended for Open CMUX workflows)
-  let shellCmuxPassed = false;
-  try {
-    deps.exec("cmux capabilities --json");
-    shellCmuxPassed = true;
-    checks.push({
-      name: "cmux_shell",
-      status: "pass",
-      message: "cmux shell control available.",
-    });
-  } catch (err) {
-    try {
-      deps.exec("cmux --help");
-      const socketMode = platform === "darwin" ? readCmuxSocketControlMode(deps) : null;
-      const modeHint = socketMode?.error
-        ? ` Likely cause on macOS: ${CMUX_SETTINGS_DISCLOSURE_PATH} is unreadable (${socketMode.error}).`
-        : socketMode && !isCmuxSocketControlCompatible(socketMode.mode) && socketMode.source === "default"
-        ? ` Likely cause on macOS: cmux is still using its default automation.socketControlMode '${socketMode.mode}'.`
-        : socketMode && !isCmuxSocketControlCompatible(socketMode.mode)
-        ? ` Likely cause on macOS: automation.socketControlMode is '${socketMode.mode}' in ${CMUX_SETTINGS_DISCLOSURE_PATH}.`
-        : "";
-      checks.push({
-        name: "cmux_shell",
-        status: "warn",
-        message: "cmux installed, but control unavailable right now.",
-        reason: "OpenRig can run without cmux, but Open CMUX actions and cmux-aware node control will be unavailable until cmux control works.",
-        fix: `Open the cmux app, verify control access/socket sharing is enabled for OpenRig, then rerun 'rig doctor'. If you are running this for someone else, tell the user that cmux is optional but required for Open CMUX. If you do not need cmux features, you can ignore this warning.${modeHint}`,
-      });
-    } catch {
-      checks.push({
-        name: "cmux_shell",
-        status: "warn",
-        message: "cmux not found.",
-        reason: "OpenRig can run without cmux, but Open CMUX actions and surface control will be unavailable.",
-        fix: "Install and launch cmux if you want Open CMUX support. If you are running this for someone else, tell the user that cmux is optional and only needed for Open CMUX workflows.",
-      });
-    }
-    void err;
-  }
-
   // 6. Writable state paths (shared with preflight)
   const config = deps.configStore.resolve();
   const writableCheck = buildWritableHomeCheck(config, path.dirname(config.db.path), {
@@ -197,7 +150,7 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
 
   // 7. Port availability (async) — daemon already running on that port counts as OK.
   // OPR.0.4.7 slice-05 item-4b: resolve the daemon host+port ONCE from config and use
-  // BOTH for checkPort, healthz, the cmux URL, and messages (a daemon on a non-default
+  // BOTH for checkPort, healthz, and messages (a daemon on a non-default
   // configured host/port must not be reported missing). Defaults stay 127.0.0.1:7433.
   const daemonHost = config.daemon.host ?? "127.0.0.1";
   const daemonPort = config.daemon.port ?? DEFAULT_PORT;
@@ -223,34 +176,7 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
     };
   });
 
-  // 8. Daemon cmux control (async, only when shell cmux passed)
   const asyncChecks: Promise<DoctorCheck>[] = [portCheck];
-  if (shellCmuxPassed) {
-    const daemonCmuxCheck = (async (): Promise<DoctorCheck> => {
-      try {
-        const healthRes = await fetchFn(`${daemonBase}/healthz`);
-        if (!healthRes.ok) {
-          return { name: "cmux_daemon", status: "skipped", message: "Daemon healthz not ok. Skipping daemon cmux check." };
-        }
-      } catch {
-        return { name: "cmux_daemon", status: "skipped", message: "Daemon not reachable. Skipping daemon cmux check." };
-      }
-
-      try {
-        const cmuxRes = await fetchFn(`${daemonBase}/api/adapters/cmux/status`);
-        if (cmuxRes.ok && cmuxRes.json) {
-          const data = (await cmuxRes.json()) as { available?: boolean };
-          if (data.available) {
-            return { name: "cmux_daemon", status: "pass", message: "Daemon cmux control available." };
-          }
-          return buildCmuxDaemonWarning(deps, platform);
-        }
-      } catch { /* fetch failed */ }
-
-      return buildCmuxDaemonWarning(deps, platform);
-    })();
-    asyncChecks.push(daemonCmuxCheck);
-  }
 
   if (hcProbe.available) asyncChecks.push(buildHcCoreCheck(deps));
   asyncChecks.push(buildSpecConformanceCheck(deps));
@@ -340,48 +266,9 @@ async function buildSpecConformanceCheck(deps: DoctorDeps): Promise<DoctorCheck>
   };
 }
 
-function readCmuxSocketControlMode(deps: DoctorDeps) {
-  return readCmuxSocketControlModeFromText(deps.readFile(resolveCmuxSettingsPath()));
-}
-
-function buildCmuxDaemonWarning(deps: DoctorDeps, platform: NodeJS.Platform): DoctorCheck {
-  const socketMode = platform === "darwin" ? readCmuxSocketControlMode(deps) : null;
-
-  if (platform === "darwin" && socketMode?.error) {
-    return {
-      name: "cmux_daemon",
-      status: "warn",
-      message: "Shell cmux works, but the daemon cannot control cmux.",
-      reason: `${CMUX_SETTINGS_DISCLOSURE_PATH} is unreadable: ${socketMode.error}`,
-      fix: `Repair ${CMUX_SETTINGS_DISCLOSURE_PATH} or remove it so cmux can regenerate the template, then rerun \`rig setup\` or \`rig doctor\`.`,
-    };
-  }
-
-  if (platform === "darwin" && socketMode && !isCmuxSocketControlCompatible(socketMode.mode)) {
-    const reason = socketMode.source === "default"
-      ? `cmux is still using its default automation.socketControlMode '${socketMode.mode}', so the daemon cannot attach as an external cmux client yet.`
-      : `automation.socketControlMode is '${socketMode.mode}' in ${CMUX_SETTINGS_DISCLOSURE_PATH}, so the daemon cannot attach as an external cmux client yet.`;
-    return {
-      name: "cmux_daemon",
-      status: "warn",
-      message: "Shell cmux works, but the daemon cannot control cmux.",
-      reason,
-      fix: `Run \`rig setup\` to set automation.socketControlMode to "automation" in ${CMUX_SETTINGS_DISCLOSURE_PATH}, then restart the daemon with \`rig daemon start\`.`,
-    };
-  }
-
-  return {
-    name: "cmux_daemon",
-    status: "warn",
-    message: "Shell cmux works, but the daemon cannot control cmux.",
-    reason: "The daemon inherited a terminal/session environment that broke cmux adapter initialization.",
-    fix: "Restart the daemon with `rig daemon start` after setup. If it still fails, inspect the daemon log with `rig daemon logs`.",
-  };
-}
-
 export function doctorCommand(depsOverride?: DoctorDeps): Command {
   const cmd = new Command("doctor")
-    .description("Check installation, provider authentication, writable paths, port/daemon and conditional cmux control")
+    .description("Check installation, provider authentication, writable paths, port/daemon and the hc core")
     .addHelpText("after", "\nWith --spec, compares declared and live topology. This is not an end-to-end readiness check.\nReports Claude and Codex authentication using setup's checks, including configured Codex credential variables. No agent task or provider request is tested.\nInspect your team with rig ps --nodes --rig <rig> and rig capture <seat> --lines 30.");
 
   cmd

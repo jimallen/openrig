@@ -46,7 +46,7 @@ function fixture() {
   writeFileSync(rc, `export OPENRIG_HOME=/wrong OPENRIG_URL=http://127.0.0.1:1 OPENRIG_NODE_ID=wrong OPENRIG_OCCUPANT_GENERATION=wrong\nexport PATH=${shellQuote(userBin + ":" + bin + ":/usr/bin:/bin")}\nexport HOME=/user/home CODEX_HOME=/user/codex CLAUDE_CONFIG_DIR=/user/claude USER_VALUE=keep\n`);
   const launch = new SeatLaunchEnvironment(tmux, env, root, path.join(bin, "rig"));
   const commands: string[] = [];
-  const binding: NodeBinding = { id: "b", nodeId: "node-current", tmuxSession: "seat@rig", tmuxPane: "%1", tmuxWindow: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: path.join(root, "workspace") };
+  const binding: NodeBinding = { id: "b", nodeId: "node-current", tmuxSession: "seat@rig", tmuxPane: "%1", tmuxWindow: null, updatedAt: "", cwd: path.join(root, "workspace") };
   const send = async (_session: string, command: string) => { commands.push(command); return { ok: true as const }; };
   vi.spyOn(tmux, "sendText").mockImplementation(send);
   vi.spyOn(tmux, "sendShellCommand").mockImplementation(send);

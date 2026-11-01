@@ -19,7 +19,6 @@ import { createDaemon } from "../src/startup.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import type { AppDeps } from "../src/server.js";
-import type { CmuxTransportFactory } from "../src/terminal/cmux-transport.js";
 import type { ExecFn } from "../src/domain/tmux-adapter.js";
 import type Database from "better-sqlite3";
 import type { ContextMonitor } from "../src/domain/context-monitor.js";
@@ -41,14 +40,11 @@ beforeAll(async () => {
   delete process.env.OPENRIG_URL;
   delete process.env.OPENRIG_PORT;
   process.env.OPENRIG_NO_KERNEL = "1";
-  const cmuxFactory: CmuxTransportFactory = async () => {
-    throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-  };
   const tmuxExec: ExecFn = async () => "";
   // production passes the RESOLVED file dbPath (index.ts) — :memory: is the
   // test-friendly default that deliberately skips the slow-op recorder; the
   // wiring pin must compose like production.
-  const result = await createDaemon({ cmuxFactory, tmuxExec, dbPath: process.env.OPENRIG_DB! });
+  const result = await createDaemon({ tmuxExec, dbPath: process.env.OPENRIG_DB! });
   db = result.db;
   deps = result.deps;
   contextMonitor = result.contextMonitor;

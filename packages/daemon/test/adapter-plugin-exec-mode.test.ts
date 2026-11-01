@@ -56,7 +56,7 @@ function realFsOps() {
 function makeBinding(cwd: string): NodeBinding {
   return {
     id: "b1", nodeId: "n1", tmuxSession: "test", tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd,
+    updatedAt: "", cwd,
   };
 }
 

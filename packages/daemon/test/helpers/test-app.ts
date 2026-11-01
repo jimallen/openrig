@@ -115,17 +115,14 @@ import { StartupOrchestrator } from "../../src/domain/startup-orchestrator.js";
 import type { RuntimeAdapter } from "../../src/domain/runtime-adapter.js";
 import { ClaudeResumeAdapter } from "../../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../../src/adapters/codex-resume.js";
-import { CmuxAdapter } from "../../src/adapters/cmux.js";
 import type { TmuxAdapter } from "../../src/adapters/tmux.js";
 import type { ExecFn } from "../../src/adapters/tmux.js";
 import { probeSessionFromHasSession } from "./probe-from-has-session.js";
-import type { CmuxTransportFactory } from "../../src/adapters/cmux.js";
 import { PackageRepository } from "../../src/domain/package-repository.js";
 import { InstallRepository } from "../../src/domain/install-repository.js";
 import { InstallEngine } from "../../src/domain/install-engine.js";
 import { InstallVerifier } from "../../src/domain/install-verifier.js";
 import { PodBundleSourceResolver } from "../../src/domain/bundle-source-resolver.js";
-import { NodeCmuxService } from "../../src/domain/node-cmux-service.js";
 import { AgentActivityStore } from "../../src/domain/agent-activity-store.js";
 import { SeatAttentionReconciler } from "../../src/domain/seat-attention-reconciler.js";
 import { createApp, createAppWithWebSocket } from "../../src/server.js";
@@ -232,13 +229,6 @@ export function mockTmuxAdapterProbing(state: "present" | "absent"): TmuxAdapter
   return { ...mockTmuxAdapter(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => state === "present") } as unknown as TmuxAdapter;
 }
 
-export function unavailableCmuxAdapter(): CmuxAdapter {
-  const factory: CmuxTransportFactory = async () => {
-    throw Object.assign(new Error("no socket"), { code: "ENOENT" });
-  };
-  return new CmuxAdapter(factory, { timeoutMs: 50 });
-}
-
 function readyRuntimeAdapter(runtime: string): RuntimeAdapter {
   return {
     runtime,
@@ -253,7 +243,6 @@ function readyRuntimeAdapter(runtime: string): RuntimeAdapter {
 export function createTestApp(
   db: Database.Database,
   opts?: {
-    cmux?: CmuxAdapter;
     tmux?: TmuxAdapter;
     adapters?: Partial<Record<string, RuntimeAdapter>>;
     activityHookToken?: string;
@@ -312,7 +301,6 @@ export function createTestApp(
   const eventBus = new EventBus(db);
   const queueRepo = new QueueRepository(db, eventBus);
   const tmux = opts?.tmux ?? mockTmuxAdapter();
-  const cmux = opts?.cmux ?? unavailableCmuxAdapter();
   const transcriptStore = new TranscriptStore("/tmp/openrig-test-transcripts");
   const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
   const snapshotRepo = new SnapshotRepository(db);
@@ -328,7 +316,7 @@ export function createTestApp(
   const podRepo = new PodRepository(db);
   const rigSpecExporter = new RigSpecExporter({ rigRepo, sessionRegistry, podRepo });
   const exec: ExecFn = async () => "";
-  const rigSpecPreflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec, cmuxExec: exec });
+  const rigSpecPreflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: exec });
   const rigInstantiator = new RigInstantiator({ db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight: rigSpecPreflight });
 
   // Phase 4: Package install services
@@ -398,8 +386,6 @@ export function createTestApp(
     contextUsageStore,
   }));
   const whoamiService = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore });
-  const cmuxTmux = { ...tmux, probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
-  const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmux, cmuxTmux);
   const agentActivityStore = new AgentActivityStore({
     db,
     eventBus,
@@ -430,7 +416,7 @@ export function createTestApp(
   const upRouter = new UpCommandRouter({ fsOps: upRouterFs });
 
   const testAppDeps = {
-    rigRepo, sessionRegistry, eventBus, nodeLauncher, startupOrchestrator, tmuxAdapter: tmux, cmuxAdapter: cmux,
+    rigRepo, sessionRegistry, eventBus, nodeLauncher, startupOrchestrator, tmuxAdapter: tmux,
     snapshotCapture, snapshotRepo, restoreOrchestrator,
     rigSpecExporter, rigSpecPreflight, rigInstantiator,
     packageRepo, installRepo, installEngine, installVerifier,
@@ -445,7 +431,6 @@ export function createTestApp(
     contextUsageStore,
     healthProjection,
     whoamiService,
-    nodeCmuxService,
     agentActivityStore,
     seatAttentionReconciler,
     seatStructuralActivityService: opts?.seatStructuralActivityService,
@@ -481,7 +466,7 @@ export function createTestApp(
     psProjectionService: new PsProjectionService({ db }),
     upRouter,
     teardownOrchestrator: new RigTeardownOrchestrator({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, snapshotCapture, eventBus }),
-    podInstantiator, podBundleSourceResolver, db, tmuxAdapter: tmux, cmuxAdapter: cmux,
+    podInstantiator, podBundleSourceResolver, db, tmuxAdapter: tmux,
     agentActivityStore,
     startupOrchestrator,
   };

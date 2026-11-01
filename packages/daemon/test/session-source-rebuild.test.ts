@@ -319,7 +319,7 @@ describe("StartupOrchestrator rebuild integration", () => {
       rigId: s.rigId,
       nodeId: s.nodeId,
       sessionId: s.sessionId,
-      binding: { id: "b1", nodeId: s.nodeId, tmuxSession: "r01-writer", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." },
+      binding: { id: "b1", nodeId: s.nodeId, tmuxSession: "r01-writer", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "." },
       adapter: makeStubAdapter(),
       plan: emptyPlan(),
       resolvedStartupFiles: [],

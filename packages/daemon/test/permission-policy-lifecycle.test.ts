@@ -321,7 +321,7 @@ describe("F4 — REAL adapter command pins (floor + full_bypass on every launch 
     } as ClaudeAdapterFsOps;
   }
   function binding(posture?: "floor" | "full_bypass"): NodeBinding {
-    return { id: "b1", nodeId: "n1", tmuxSession: "s1", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/project", ...(posture ? { launchPosture: posture } : {}) } as NodeBinding;
+    return { id: "b1", nodeId: "n1", tmuxSession: "s1", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "/project", ...(posture ? { launchPosture: posture } : {}) } as NodeBinding;
   }
 
   it("Claude FRESH: binding full_bypass emits the bypass flag; binding floor pins acceptEdits even under env YOLO", async () => {
@@ -470,7 +470,7 @@ describe("GF1 — READABLE but malformed/unusable custom content uses the PERSIS
 
 describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () => {
   function binding2(posture?: "floor" | "full_bypass"): NodeBinding {
-    return { id: "b1", nodeId: "n1", tmuxSession: "s1", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/project", ...(posture ? { launchPosture: posture } : {}) } as NodeBinding;
+    return { id: "b1", nodeId: "n1", tmuxSession: "s1", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "/project", ...(posture ? { launchPosture: posture } : {}) } as NodeBinding;
   }
 
   it("POD-AWARE restore: the reconstructed binding's posture reaches the REAL adapter's harness command", { timeout: 30000 }, async () => {

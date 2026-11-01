@@ -67,7 +67,7 @@ function fixture() {
     sendKeys: vi.fn(async () => ({ ok: true as const })), getPaneCommand: async () => "claude", capturePaneContent: async () => "Claude Code\n>" } as unknown as TmuxAdapter;
   const adapter = new ClaudeCodeAdapter({ tmux, fsOps, claudeManagedLaunch: managed, sessionIdFactory: () => "fresh-id" });
   const binding: NodeBinding = { id: "binding", nodeId: "node", cwd, attachmentType: "tmux", tmuxSession: "seat", tmuxPane: "%1",
-    tmuxWindow: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", permissionMode: "auto", model: "model's choice" };
+    tmuxWindow: null, updatedAt: "", permissionMode: "auto", model: "model's choice" };
   const eventBus = { db, persistWithinTransaction: (event: unknown) => { db.prepare("INSERT INTO events VALUES (?)").run(JSON.stringify(event)); return event; }, notifySubscribers: vi.fn() };
   const deps: Record<string,unknown> = { rigRepo: { db }, sessionRegistry: { db }, eventBus, tmuxAdapter: tmux, runtimeAdapters: { "claude-code": adapter } };
   // Use the production route constructor and its actual adapter/service wiring.

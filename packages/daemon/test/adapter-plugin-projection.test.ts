@@ -63,7 +63,7 @@ function mockCodexFs(files?: Record<string, string>): CodexAdapterFsOps & { _sto
 function makeBinding(cwd = "/cwd"): NodeBinding {
   return {
     id: "b1", nodeId: "n1", tmuxSession: "test", tmuxWindow: null, tmuxPane: null,
-    cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd,
+    updatedAt: "", cwd,
   };
 }
 

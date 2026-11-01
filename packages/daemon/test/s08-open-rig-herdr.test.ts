@@ -6,9 +6,8 @@ import { describe, expect, it } from "vitest";
 import { TerminalService, type TerminalServiceDeps } from "../src/domain/terminal/terminal-service.js";
 import { HerdrAdapter, HERDR_PANES_PER_PAGE, HERDR_PANES_UNCONFIRMED_NOTE, planHerdrLayout } from "../src/domain/terminal/herdr-adapter.js";
 import { PANES_PER_PAGE } from "../src/domain/terminal/view-composer.js";
-import { MAX_COLS, MAX_PER_WORKSPACE } from "../src/domain/cmux-layout-service.js";
 import type { HerdrResult, HerdrTransport } from "../src/domain/terminal/herdr-transport.js";
-import type { ComposedView, OpenViewResult, TerminalProvider } from "../src/domain/terminal/terminal-provider.js";
+import type { ComposedView, TerminalProvider } from "../src/domain/terminal/terminal-provider.js";
 
 /** The hc terminal name of a seat, restated here (`s-` + the first 24 hex digits of sha-256 of the canonical name) so the pin does not import the recipe it pins. */
 const hcName = (seat: string): string => `s-${createHash("sha256").update(seat).digest("hex").slice(0, 24)}`;
@@ -58,20 +57,9 @@ function herdrTransport(respond?: (method: string, params: Record<string, unknow
   };
 }
 
-class RecordingCmux implements TerminalProvider {
-  readonly name = "cmux";
-  last: ComposedView | null = null;
-  async status() { return { provider: this.name, available: true, capabilities: { layout: true } }; }
-  async liveness() { return { alive: true }; }
-  async openView(view: ComposedView): Promise<OpenViewResult> {
-    this.last = view;
-    return { provider: this.name, ok: true, opened: view.opened.map((p) => p.seat), absent: view.absent, degraded: view.degraded, pages: view.pages.length };
-  }
-}
-
-function service(herdr: TerminalProvider, cmux = new RecordingCmux()): { svc: TerminalService; cmux: RecordingCmux } {
+function service(herdr: TerminalProvider): { svc: TerminalService } {
   const deps: TerminalServiceDeps = {
-    resolveProvider: (n) => (n === "herdr" ? herdr : n === "cmux" ? cmux : null),
+    resolveProvider: (n) => (n === "herdr" ? herdr : null),
     viewsStore: { get: () => null, list: () => [] },
     listRigSeats: (r) => (r === RIG ? rows : null),
     listPodSeats: () => null,
@@ -80,7 +68,7 @@ function service(herdr: TerminalProvider, cmux = new RecordingCmux()): { svc: Te
     resolveHost: () => null,
     hasSession: () => true,
   } as TerminalServiceDeps;
-  return { svc: new TerminalService(deps), cmux };
+  return { svc: new TerminalService(deps) };
 }
 
 const cellSeats = (root: unknown): string[] => {
@@ -291,15 +279,10 @@ describe("S08 correction — catalog pages match the Herdr open", () => {
   }
 });
 
-describe("S08 — cmux is unchanged", () => {
-  it("cmux still pages at the default 9 and keeps its 12-per-workspace and 2-column limits", async () => {
-    const { transport } = herdrTransport();
-    const { svc, cmux } = service(new HerdrAdapter({ transportFactory: () => transport }));
-    await svc.openView({ view: `rig:${RIG}`, provider: "cmux" });
-    expect(cmux.last!.pages.map((p) => p.length)).toEqual([9, 8]);
+describe("S08 — the composer default page size", () => {
+  it("stays 9 for a provider that declares none, while Herdr declares 16", () => {
     expect(PANES_PER_PAGE).toBe(9);
-    expect(MAX_PER_WORKSPACE).toBe(12);
-    expect(MAX_COLS).toBe(2);
+    expect(HERDR_PANES_PER_PAGE).toBe(16);
   });
 
   it("the workspace name rule is Herdr-only: a mission/slice/saved view keeps its view id", () => {

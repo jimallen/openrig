@@ -30,7 +30,7 @@ async function fixture(herdrAvailable: boolean) {
       return { provider: name, ok: true, opened: view.opened.map(p => p.seat), absent: view.absent, degraded: view.degraded, pages: view.pages.length };
     },
   });
-  const providers: Record<string, TerminalProvider> = { herdr: provider("herdr", herdrAvailable, HERDR_PANES_PER_PAGE), cmux: provider("cmux", true) };
+  const providers: Record<string, TerminalProvider> = { herdr: provider("herdr", herdrAvailable, HERDR_PANES_PER_PAGE) };
   const saved = { id: "fixture", name: "Fixture", members: seats.map(seat => ({ seat, tmuxSession: seat })) };
   const service = new TerminalService({
     resolveProvider: name => providers[name] ?? null,
@@ -60,7 +60,7 @@ async function fixture(herdrAvailable: boolean) {
   return { baseUrl, saved, deps, launched, providerOpens };
 }
 
-it("with no Herdr and a live cmux, Open terminals opens no window and no other viewer", async () => {
+it("with no Herdr, Open terminals opens no window and no other viewer", async () => {
   const f = await fixture(false);
   const preview = await new TuiClient({ baseUrl: f.baseUrl }).previewTerminal("saved:fixture");
   const result = await openTerminalWindow(new CliClient(f.baseUrl), "saved:fixture", undefined, f.deps, preview.planId);
@@ -101,10 +101,10 @@ it("a view that really changed after the preview is still refused, without a win
   expect(f.providerOpens).toEqual([]);
 });
 
-it("a provider-less open that isn't a window still chooses cmux when Herdr isn't available", async () => {
+it("a provider-less open that isn't a window stays on herdr when Herdr isn't available (there is no other provider)", async () => {
   const f = await fixture(false);
   const response = await fetch(`${f.baseUrl}/api/terminal/open`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ view: "saved:fixture" }) });
   const result = await response.json() as { provider: string; ok: boolean };
-  expect(result).toMatchObject({ provider: "cmux", ok: true });
-  expect(f.providerOpens).toEqual(["cmux"]);
+  expect(result).toMatchObject({ provider: "herdr", ok: true });
+  expect(f.providerOpens).toEqual(["herdr"]);
 });

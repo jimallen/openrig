@@ -303,8 +303,6 @@ export class ContextMonitor {
         tmuxSession: session.session_name,
         tmuxWindow: null,
         tmuxPane: null,
-        cmuxWorkspace: null,
-        cmuxSurface: null,
         updatedAt: "",
         cwd: session.cwd ?? "",
       });

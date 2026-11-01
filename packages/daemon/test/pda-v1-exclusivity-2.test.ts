@@ -131,7 +131,7 @@ function pda(mode: RunnerMode, opts?: { readLockThrows?: boolean; oldRunnerWaitM
 }
 
 const nodeBinding = (s: { nodeId: string; sessionName: string }): NodeBinding => ({
-  id: "b", nodeId: s.nodeId, tmuxSession: s.sessionName, tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+  id: "b", nodeId: s.nodeId, tmuxSession: s.sessionName, tmuxWindow: null, tmuxPane: null,
   updatedAt: "", cwd: "/work", pda: { agent: `own-${s.nodeId.slice(-4)}`, baseUrl: PORT },
 });
 const launch = (p: ReturnType<typeof pda>, s: { nodeId: string; sessionName: string }, token: string) =>

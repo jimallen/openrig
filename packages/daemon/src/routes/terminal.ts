@@ -14,7 +14,7 @@
 // tells the truth (ok / opened / degraded), never an error status.
 //
 // No new auth/trust surface (PRD "no new auth surface v1"): these routes mirror
-// the shipped cmux launch route's posture (which does not gate on the terminal
+// the shipped view routes' posture (which do not gate on the terminal
 // bearer token) — composing a view reads inventory and returns attach commands
 // the provider runs client-side; it mutates no daemon state.
 

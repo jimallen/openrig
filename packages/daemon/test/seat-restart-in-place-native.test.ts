@@ -145,7 +145,7 @@ describe.runIf(runnable)("in-place restart, native (private hc core, stub codex)
     const override = new NativePermissionStore(db).launchOverride(node.id, "codex");
     const built = await adapter.buildResumeCommand({
       id: "", nodeId: node.id, attachmentType: "hc", tmuxSession: seat, tmuxWindow: null, tmuxPane: null,
-      cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: work, launchPosture: "floor",
+      updatedAt: "", cwd: work, launchPosture: "floor",
       kernelAuthority: override.kernelAuthority, teamPermissionDefault: override.teamPermissionDefault,
       nonInterruptive: setupApp.rigRepo.getRigNonInterruptive(rig.id),
     }, { name: seat, resumeToken: TOKEN, ...(opts.running ? { running: opts.running } : {}) });

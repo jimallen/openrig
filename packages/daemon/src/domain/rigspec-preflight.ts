@@ -20,7 +20,6 @@ interface RigSpecPreflightDeps {
   rigRepo: RigRepository;
   tmuxAdapter: TmuxAdapter;
   exec: ExecFn;
-  cmuxExec: ExecFn;
 }
 
 // TODO: AS-T12 — rename to LegacyRigSpecPreflight when routes are migrated
@@ -29,14 +28,12 @@ export class RigSpecPreflight {
   private rigRepo: RigRepository;
   private tmuxAdapter: TmuxAdapter;
   private exec: ExecFn;
-  private cmuxExec: ExecFn;
 
   constructor(deps: RigSpecPreflightDeps) {
     this.db = deps.rigRepo.db;
     this.rigRepo = deps.rigRepo;
     this.tmuxAdapter = deps.tmuxAdapter;
     this.exec = deps.exec;
-    this.cmuxExec = deps.cmuxExec;
   }
 
   async check(spec: RigSpec): Promise<PreflightResult> {
@@ -114,16 +111,6 @@ export class RigSpecPreflight {
           if (node.runtime === "pi") errors.push(...piAvailabilityFailure(err, warnings));
           else errors.push(`Runtime '${node.runtime}' not available (${cmd} failed: ${runtimeProbeFailure(err)})`);
         }
-      }
-    }
-
-    // cmux layout hints: warning if cmux unavailable and spec uses hints
-    const hasLayoutHints = spec.nodes.some((n) => n.surfaceHint || n.workspace);
-    if (hasLayoutHints) {
-      try {
-        await this.cmuxExec("cmux capabilities --json");
-      } catch {
-        warnings.push("cmux is not available; layout hints (surfaceHint/workspace) cannot be applied");
       }
     }
 

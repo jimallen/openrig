@@ -64,7 +64,7 @@ function emptyPlan(): ProjectionPlan {
 }
 
 function makeBinding(): NodeBinding {
-  return { id: "b1", nodeId: "n1", tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "." };
+  return { id: "b1", nodeId: "n1", tmuxSession: "r01-impl", tmuxWindow: null, tmuxPane: null, updatedAt: "", cwd: "." };
 }
 
 function makeAction(overrides?: Partial<StartupAction>): StartupAction {

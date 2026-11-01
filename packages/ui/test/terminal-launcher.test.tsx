@@ -223,7 +223,7 @@ describe("TerminalLauncher — mounts with its live hooks (collapsed)", () => {
     window.history.replaceState(
       {},
       "",
-      `/topology/rig/${rigId}?launcher=open&provider=cmux&view=${encodeURIComponent(`rig:${rigId}`)}`,
+      `/topology/rig/${rigId}?launcher=open&provider=herdr&view=${encodeURIComponent(`rig:${rigId}`)}`,
     );
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 

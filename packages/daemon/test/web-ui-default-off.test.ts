@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
 import { serve, type ServerType } from "@hono/node-server";
-import { createFullTestDb, createTestApp, mockTmuxAdapter, unavailableCmuxAdapter } from "./helpers/test-app.js";
+import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 import { createApp, createAppWithWebSocket, WEB_UI_OFF_MESSAGE, type AppDeps } from "../src/server.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 
@@ -26,7 +26,7 @@ function appDeps(db: ReturnType<typeof createFullTestDb>, uiDistDir: string, ext
   const s = createTestApp(db) as unknown as Record<string, unknown>;
   return {
     rigRepo: s.rigRepo, sessionRegistry: s.sessionRegistry, eventBus: s.eventBus, nodeLauncher: s.nodeLauncher,
-    tmuxAdapter: s.tmuxAdapter ?? mockTmuxAdapter(), cmuxAdapter: s.cmuxAdapter ?? unavailableCmuxAdapter(),
+    tmuxAdapter: s.tmuxAdapter ?? mockTmuxAdapter(),
     snapshotCapture: s.snapshotCapture, snapshotRepo: s.snapshotRepo, restoreOrchestrator: s.restoreOrchestrator,
     rigSpecExporter: s.rigSpecExporter, rigSpecPreflight: s.rigSpecPreflight, rigInstantiator: s.rigInstantiator,
     packageRepo: s.packageRepo, installRepo: s.installRepo, installEngine: s.installEngine, installVerifier: s.installVerifier,

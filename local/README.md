@@ -32,9 +32,8 @@ rig up ~/.openrig/specs/jims-team/rig.yaml --cwd "$PWD"   # from the target repo
 | `rig` | PATH shim: runs the real CLI (and thus its daemon child) under Homebrew `node@22` — required while the published package pins better-sqlite3 11.x (no Node 26 prebuilds); drops out once the v13 N-API bump ships |
 | `rig-claude` | `claude` with `CLAUDE_CONFIG_DIR=~/.rig/claude` (personas + skills as subagents; state separate from `~/.claude`) |
 | `rig-codex` | `codex` with `CODEX_HOME=~/.rig/codex` (auth.json symlinked from personal; everything else isolated) |
-| `rig-cmux` | Tile a rig's seats in cmux via the daemon API directly (CLI's hardcoded 5s timeout is too short for multi-tile layout applies) + auto-names the tab `<rig> · <repo>` |
 | `rig-herdr` | Tile a rig's seats in herdr via the socket protocol directly, with a weighted layout (lead seat 50% width full-height, rest gridded right) and a repo-named tab — openrig's adapter only does the equal auto-grid |
-| `rig-here` | Open tiles for whichever rig runs in the current directory (`--rig <name>` disambiguates; `cmux` arg switches provider); when no rig lives there it launches a per-directory `jims-team-<dirname>` instance from the library spec and tiles it |
+| `rig-here` | Open tiles for whichever rig runs in the current directory (`--rig <name>` disambiguates); when no rig lives there it launches a per-directory `jims-team-<dirname>` instance from the library spec and tiles it |
 | `claude` | Selective shim: jims-team's CoS seat (`--name exec-cos@jims-team*`) boots via `ollama launch claude --model $JIMS_COS_MODEL` (default `kimi-k3:cloud`); everything else passes through to the real binary. NB: Claude Code's `--name` flag hangs the ollama path — the shim strips it; seat identity lives in the tmux session name anyway |
 
 ## Ops notes

@@ -11,7 +11,6 @@ metadata:
   openrig:
     stage: candidate
     sibling_skills:
-      - openrig-cmux
       - openrig-user
 ---
 
@@ -27,7 +26,7 @@ plugin it.
 ## The whole surface — three verbs
 
 ```bash
-rig terminal open <view> [--provider herdr|cmux] [--json]   # herdr is the default provider
+rig terminal open <view> [--provider herdr] [--json]   # herdr is the default provider
 rig terminal views [--json]                                 # list openable views (saved + derived)
 rig terminal status [--provider] [--json]                   # provider liveness / health
 ```
@@ -139,8 +138,7 @@ views:
 ```
 
 An agent composing a saved view on request **writes this YAML** and then opens the id:
-`rig terminal open my-view-id` (add `--provider cmux` for cmux). The library is provider-agnostic —
-the same saved view opens in herdr or cmux.
+`rig terminal open my-view-id`.
 
 ## AGPL / clean-room
 

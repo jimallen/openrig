@@ -155,7 +155,6 @@ describe("SessionTransport stage timing", () => {
         if (command.includes("list-panes")) return `${pane}|0|/fixture|80|24|1`;
         return "";
       },
-      cmuxExec: async () => "",
       slowOpRecorder: timer,
     } as never);
     try {

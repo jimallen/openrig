@@ -117,9 +117,9 @@ describe("READ_THROUGH_ALLOWLIST matcher (arch P1 — the named closed set)", ()
       "/api/rigs/x/graph/extra",
       // THE ARCH TOOTH on the first parameterized seat-detail entry: strict
       // segment-shape only — the deeper ACTION routes under the same prefix
-      // stay refused (these are exactly rev1-r2 B1's local action endpoints).
+      // stay refused (rev1-r2 B1's local action endpoints).
       "/api/rigs/x/nodes/y/focus",
-      "/api/rigs/x/nodes/y/open-cmux",
+      "/api/rigs/x/nodes/y/open-terminal",
       "/api/rigs/x/nodes/y/anything/deeper",
     ];
     for (const p of negatives) expect(isReadThroughPath(p), p).toBe(false);

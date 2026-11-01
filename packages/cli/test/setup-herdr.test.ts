@@ -58,7 +58,7 @@ describe("setup Herdr default", () => {
     expect(result.steps).toContainEqual(expect.objectContaining({
       id: "herdr_install", status: "warn",
       message: expect.stringContaining(failure === "install" ? "install timeout" : "could not be verified"),
-      reason: expect.stringContaining("Existing cmux workflows remain available."), fixHint: expect.stringContaining("herdr.dev"),
+      reason: expect.stringContaining("there is no view to open"), fixHint: expect.stringContaining("herdr.dev"),
     }));
     expect(result.steps).toContainEqual(expect.objectContaining({ id: "claude_auth", status: "pass" }));
   });

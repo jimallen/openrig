@@ -435,9 +435,8 @@ describe("Restore response contract", () => {
 describe("Startup mount regression", () => {
   it("createDaemon app: POST snapshot returns 201", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
-    const { app, db, deps } = await createDaemon({ tmuxExec, cmuxExec });
+    const { app, db, deps } = await createDaemon({ tmuxExec });
     const rig = deps.rigRepo.createRig("r99");
 
     const res = await app.request(`/api/rigs/${rig.id}/snapshots`, {
@@ -451,9 +450,8 @@ describe("Startup mount regression", () => {
 
   it("createDaemon app: GET snapshots returns 200", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
-    const { app, db, deps } = await createDaemon({ tmuxExec, cmuxExec });
+    const { app, db, deps } = await createDaemon({ tmuxExec });
     const rig = deps.rigRepo.createRig("r99");
 
     const res = await app.request(`/api/rigs/${rig.id}/snapshots`);
@@ -463,9 +461,8 @@ describe("Startup mount regression", () => {
 
   it("createDaemon app: POST restore route returns valid response", async () => {
     const tmuxExec: ExecFn = async () => "";
-    const cmuxExec: ExecFn = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
-    const { app, db, deps } = await createDaemon({ tmuxExec, cmuxExec });
+    const { app, db, deps } = await createDaemon({ tmuxExec });
     const rig = deps.rigRepo.createRig("r99");
 
     // Nonexistent snapshot -> 404 proves the route is mounted and handling requests

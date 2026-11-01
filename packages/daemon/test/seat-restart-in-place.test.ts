@@ -687,7 +687,7 @@ describe("#1196 round 1: launch choices come from the running Codex (LOW-1); ver
       prepareTeamWorkspace: () => { probes.push("team-workspace"); return []; },
     });
     const binding = { id: "", nodeId: "n", attachmentType: "tmux", tmuxSession: SEAT, tmuxWindow: null, tmuxPane: "%1",
-      cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/work", codexConfigProfile: "prof", teamPermissionDefault: true } as NodeBinding;
+      updatedAt: "", cwd: "/work", codexConfigProfile: "prof", teamPermissionDefault: true } as NodeBinding;
     const built = await adapter.buildResumeCommand(binding, { name: SEAT, resumeToken: TOKEN, running: { networkOverride: false, daemonOptOut: true, addDirs: ["/a b"] } });
     expect(probes).toEqual([]);
     expect(built).toMatchObject({ ok: true, core: expect.stringContaining("--no-daemon") });

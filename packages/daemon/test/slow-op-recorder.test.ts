@@ -139,7 +139,6 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     const daemon = await createTestDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
       slowOpRecorder: degraded,
     } as never);
     try {
@@ -560,7 +559,6 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     const daemon = await createTestDaemon({
       dbPath: ":memory:",
       tmuxExec: async () => "",
-      cmuxExec: async () => "",
       slowOpRecorder: recorder,
       tmuxOptionPlatform: "linux",
     } as never);

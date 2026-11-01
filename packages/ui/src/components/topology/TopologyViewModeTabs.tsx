@@ -26,7 +26,7 @@ interface TopologyViewModeTabsProps<T extends string> {
   /**
    * Slice 24 — optional trailing slot rendered with ml-auto inside the
    * tab-bar flex container. Used by RigScopePage to render the
-   * "Launch in CMUX" button at the tab-bar far right per README §Button
+   * terminal launcher at the tab-bar far right per README §Button
    * placement Option C (persistent across all rig-scope view-mode tabs).
    */
   trailing?: ReactNode;
