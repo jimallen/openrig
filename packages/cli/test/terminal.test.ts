@@ -16,6 +16,8 @@ vi.mock("../src/daemon-lifecycle.js", async () => {
   };
 });
 
+const TEST_COLUMNS = 127;
+
 interface StubResponse { status: number; data: unknown }
 
 function makeDeps(opts?: { routes?: Record<string, StubResponse> }): {
@@ -28,6 +30,8 @@ function makeDeps(opts?: { routes?: Record<string, StubResponse> }): {
     calls,
     deps: {
       lifecycleDeps: {} as TerminalDeps["lifecycleDeps"],
+      // The width the CLI sends is the runner's own terminal width unless the test sets it (a TTY gave 127 on a Mac run).
+      columns: async () => TEST_COLUMNS,
       clientFactory: () => ({
         get: vi.fn(async (path: string) => {
           calls.push({ method: "GET", path });
@@ -75,7 +79,7 @@ describe("rig terminal CLI", () => {
     program.exitOverride();
     await program.parseAsync(["node", "rig", "terminal", "open", "acme-build", "--provider", "herdr", "--json"]);
     const call = calls.find((c) => c.path === "/api/terminal/open");
-    expect(call!.body).toEqual({ view: "acme-build", provider: "herdr" });
+    expect(call!.body).toEqual({ view: "acme-build", provider: "herdr", viewportColumns: TEST_COLUMNS });
   });
 
   it("open with a partial (some opened, some named) is a SUCCESS — exit 0", async () => {

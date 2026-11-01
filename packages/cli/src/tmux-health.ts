@@ -172,8 +172,9 @@ export async function probeHcHostAsync(
   if (install.code !== "pinned") return install;
   const core = classifyHcCore(await readHello());
   const result = core.version === null ? { ...core, version: install.version } : core;
-  // The install's warning stands when the core says nothing of its own (no core yet); a core that answers brings its own.
-  return result.warning === undefined && core.version === null && install.warning !== undefined ? { ...result, warning: install.warning } : result;
+  // Each is judged on its own, so an untested install under a tested core (or the reverse) still warns: the warnings of both are kept.
+  const warnings = [...new Set([install.warning, core.warning].filter((w): w is string => w !== undefined))];
+  return result.available && warnings.length > 0 ? { ...result, warning: warnings.join("; ") } : result;
 }
 
 export function buildHcHostFailure(code: HcProbeResult["code"], detail: string): { message: string; reason: string; fix: string } {

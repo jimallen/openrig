@@ -113,11 +113,41 @@ describe("census: no test reaches the account's real home or a hard-coded scratc
 
   it("every private-core maker takes its base from hcScratchBase, at the line that makes the folder", () => {
     const makers: Array<[string, RegExp]> = [
-      ["packages/daemon/test/helpers/hc-scratch.ts", /mkdtempSync\(join\(options\.baseDir \?\? hcScratchBase\(baseEnv\), "hcs-"\)\)/],
+      ["packages/daemon/test/helpers/hc-scratch.ts", /mkdtempSync\(join\(options\.baseDir \?\? hcScratchBase\(scratchRootEnv\(baseEnv\)\), "hcs-"\)\)/],
       ["packages/daemon/test/helpers/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), "hcp-"\)\)/],
+      ["packages/daemon/test/hc-placement.real.test.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), "hcp-"\)\)/],
       ["packages/daemon/test/hc-private-core.ts", /mkdtempSync\(join\(hcScratchBase\(process\.env, tmpdir\(\)\), `hc-\$\{tag\}-`\)\)/],
     ];
     for (const [f, line] of makers) expect(text(join(repoRoot, f)), f).toMatch(line);
+  });
+
+  // Census (instrument: a text scan of every .ts under the test trees for a mkdtempSync whose name argument starts a private-core root).
+  // MacOS run at 99a9f7d6 left /tmp/hcs-UQxEVs and /tmp/hcs-6iSiOM: the hermetic scaffold's startHcCore passed its caller's narrow baseEnv
+  // (PATH, TERM, SHELL: no OPENRIG_TEST_SCRATCH_ROOT) to startHcScratch, which read the root from that env and fell back to /tmp.
+  it("no file but the four makers makes a private-core root, and no caller of startHcScratch names a base folder of its own outside tests", () => {
+    const MAKES_ROOT = /mkdtempSync\(.{0,120}?(?:"(?:hcs|hcp)-"|`hc-\$\{)/;
+    const makers = files.filter((f) => rel(f) !== self && MAKES_ROOT.test(text(f))).map(rel).sort();
+    expect(makers).toEqual(["packages/daemon/test/hc-placement.real.test.ts", "packages/daemon/test/hc-private-core.ts", "packages/daemon/test/helpers/hc-private-core.ts", "packages/daemon/test/helpers/hc-scratch.ts"]);
+    const helperCallers = files.filter((f) => !/\.test\.[cm]?ts$/.test(f) && rel(f) !== self && /startHcScratch\(/.test(text(f)) && !/export function startHcScratch/.test(text(f)));
+    expect(helperCallers.map(rel)).toEqual(["packages/daemon/test/helpers/hermetic-env.ts"]);
+    for (const f of helperCallers) expect(text(f), rel(f)).not.toMatch(/startHcScratch\([^)]*baseDir/);
+  });
+
+  it("a caller whose baseEnv does not carry the variable still lands under the run's root (the scaffold's startHcCore did not)", () => {
+    const base = join(mkdtempSync(join(tmpdir(), "iso-")), "x".repeat(HC_SOCKET_PATH_LIMIT));
+    mkdirSync(base, { recursive: true });
+    const saved = process.env[HC_SCRATCH_ROOT_ENV];
+    process.env[HC_SCRATCH_ROOT_ENV] = base;
+    try {
+      startHcScratch({ baseEnv: { PATH: process.env.PATH, TERM: "xterm-256color", SHELL: "/bin/bash" }, hcBin: ["/usr/bin/false", "/bin/false"].find((p) => existsSync(p)) ?? "/usr/bin/false" });
+      expect.unreachable("a root too deep for a socket must be refused");
+    } catch (error) {
+      expect(error).toBeInstanceOf(HcSocketTooLongError);
+      expect((error as HcSocketTooLongError).path.startsWith(`${base}/hcs-`)).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env[HC_SCRATCH_ROOT_ENV]; else process.env[HC_SCRATCH_ROOT_ENV] = saved;
+      rmSync(dirname(base), { recursive: true, force: true });
+    }
   });
 });
 

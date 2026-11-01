@@ -69,6 +69,16 @@ export function hcScratchBase(env: EnvLike = process.env, fallback = "/tmp"): st
   return typeof named === "string" && isAbsolute(named) ? named : fallback;
 }
 
+/**
+ * The env the run's scratch root is read from. The root belongs to the RUN, not to the env a caller hands the core: a caller (the
+ * hermetic scaffold's `startHcCore`, with the narrow `baseEnv` its test built) that does not carry `OPENRIG_TEST_SCRATCH_ROOT` would
+ * otherwise send its core to `/tmp`, outside the run root (macOS run at 99a9f7d6: /tmp/hcs-UQxEVs, /tmp/hcs-6iSiOM). A caller that
+ * names a root of its own in `baseEnv` still wins.
+ */
+export function scratchRootEnv(baseEnv: EnvLike): EnvLike {
+  return baseEnv[HC_SCRATCH_ROOT_ENV] !== undefined ? baseEnv : process.env;
+}
+
 export class HcForeignCoreError extends Error {
   constructor(readonly varName: string, readonly value: string) {
     super(
@@ -234,7 +244,7 @@ export function startHcScratch(options: StartHcScratchOptions = {}): HcScratch {
   const hcBin = options.hcBin ?? findHc(baseEnv);
   if (!hcBin) throw new Error("hc scratch: no hc binary on PATH");
 
-  const root = mkdtempSync(join(options.baseDir ?? hcScratchBase(baseEnv), "hcs-"));
+  const root = mkdtempSync(join(options.baseDir ?? hcScratchBase(scratchRootEnv(baseEnv)), "hcs-"));
   // On the run's list before anything else can fail: the end-of-run tripwire (test/hc-scratch-tripwire.ts) looks at exactly these roots.
   registerHcScratchRoot(root, askingTestFile());
   const session = `s${basename(root).slice(-6).toLowerCase().replace(/[^a-z0-9]/g, "0")}`;

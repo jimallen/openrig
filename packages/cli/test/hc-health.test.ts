@@ -120,6 +120,11 @@ describe("probeHcHostAsync", () => {
     expect(both).toMatchObject({ code: "available", version: "0.1.99" });
     expect(both.warning).toContain("0.1.99");
     expect((await probeHcHostAsync(hc("0.1.16"), hello(good))).warning).toBeUndefined();
+    // An untested install under a tested core still warns (each is judged on its own); both untested name both.
+    expect((await probeHcHostAsync(hc("0.1.99"), hello(good))).warning).toContain("0.1.99");
+    const bothUntested = (await probeHcHostAsync(hc("0.1.15"), hello({ kind: "hello", generation: 1, version: "0.1.99" }))).warning;
+    expect(bothUntested).toContain("0.1.15");
+    expect(bothUntested).toContain("0.1.99");
   });
 
   it("reports the core's version when the core is the one that differs", async () => {
