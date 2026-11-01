@@ -16,6 +16,9 @@ import { SEAT_MESSAGE_ROLLBACK_SQL } from "../src/db/migrations/122_seat_message
 import { transportRoutes } from "../src/routes/transport.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
+/** The same object, read as the narrow part of `T` the test gives it. */
+const view = <T,>(fake: object): T => Object.assign(fake);
+
 const SEAT = "dev@rig";
 
 interface Row { delivery_path?: string | null; outbox_id: string; delivery_state: string; message_state: string | null; attempts: number; body: string; class: string | null; lane: number | null; message_id: string | null }
@@ -29,14 +32,14 @@ describe("a seat message's row", () => {
   const rows = () => db.prepare("SELECT * FROM outbox_entries ORDER BY rowid").all() as Row[];
 
   function transport(): SessionTransport {
-    const tmux = {
+    const tmux = view<TmuxAdapter>({
       hasSession: async () => true,
       probeSession: async () => ({ state: "present" }),
       capturePaneContent: async () => "idle\n❯ ",
       getPaneCommand: async () => "bash",
       sendText: async () => { atWrite.push(rows()); return sendTextResult; },
       sendKeys: async () => ({ ok: true }),
-    } as unknown as TmuxAdapter;
+    });
     const rigRepo = new RigRepository(db);
     const sessionRegistry = new SessionRegistry(db);
     const rig = rigRepo.createRig("rig");
@@ -44,7 +47,7 @@ describe("a seat message's row", () => {
     const session = sessionRegistry.registerSession(node.id, SEAT);
     sessionRegistry.updateStatus(session.id, "running");
     sessionRegistry.updateBinding(node.id, { tmuxSession: SEAT, tmuxPane: "%1" });
-    return new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, sleep: async () => {} } as unknown as ConstructorParameters<typeof SessionTransport>[0]);
+    return new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux });
   }
 
   beforeEach(() => {
@@ -98,7 +101,7 @@ describe("a seat message's row", () => {
 
     it("an attempt that throws is neither delivered nor failed: bytes may have left", async () => {
       const t = transport();
-      vi.spyOn(t as unknown as { attempt: () => Promise<never> }, "attempt").mockRejectedValueOnce(new Error("boom"));
+      vi.spyOn(view<{ attempt: () => Promise<never> }>(t), "attempt").mockRejectedValueOnce(new Error("boom"));
       await expect(t.send(SEAT, "hello", { deliveryId: "m1" })).rejects.toThrow("boom");
       expect(rows()[0]).toMatchObject({ delivery_state: "indeterminate", message_state: null });
     });
@@ -133,7 +136,7 @@ describe("a seat message's row", () => {
       const t = transport();
       sendTextResult = { ok: false, code: "send_failed", message: "no" };
       const seen: string[] = [];
-      const spy = vi.spyOn(t as unknown as { attempt: (s: string, text: string) => Promise<unknown> }, "attempt").mockImplementation(async (s, text) => { seen.push(text); return { ok: false, sessionName: s, reason: "send_failed" }; });
+      const spy = vi.spyOn(view<{ attempt: (s: string, text: string) => Promise<unknown> }>(t), "attempt").mockImplementation(async (s, text) => { seen.push(text); return { ok: false, sessionName: s, reason: "send_failed" }; });
       await t.send(SEAT, "stamped 1", { deliveryId: "m1", freezeBody: true });
       await t.send(SEAT, "stamped 2", { deliveryId: "m1", freezeBody: true });
       spy.mockRestore();
@@ -156,7 +159,7 @@ describe("a seat message's row", () => {
   describe("a native attempt", () => {
     /** The inbox's own claim and release on the accepted row, with nothing written: what a failed socket write does. */
     const fallingBack = (t: SessionTransport) => {
-      Object.assign(t as unknown as { nativeInbox: unknown }, { nativeInbox: {
+      Object.assign(t, { nativeInbox: {
         eligibility: async () => ({ ok: true, endpoint: {} }),
         deliver: async (input: { deliveryId: string }) => {
           outbox.claimNative(input.deliveryId, "ab".repeat(8), new Date().toISOString());
@@ -175,7 +178,7 @@ describe("a seat message's row", () => {
 
     it("that wrote hands the row to the native sweep, out of the pump's hands", async () => {
       const t = transport();
-      Object.assign(t as unknown as { nativeInbox: unknown }, { nativeInbox: {
+      Object.assign(t, { nativeInbox: {
         eligibility: async () => ({ ok: true, endpoint: {} }),
         deliver: async (input: { deliveryId: string }) => { outbox.claimNative(input.deliveryId, "ab".repeat(8), new Date().toISOString()); return { kind: "written", write: "all", outboxIds: [input.deliveryId], acked: false }; },
       } });
@@ -208,6 +211,16 @@ describe("a seat message's row", () => {
       await ledger().carryDirect({ kind: "resume-probe", seat: "probe", body: "cmd", messageClass: "command" }, async () => { during = rows()[0]; return { ok: true }; });
       expect(during).toMatchObject({ class: "command", message_state: null, lane: null, attempts: 1 });
     });
+  });
+
+  it("a Command the daemon died on before its first attempt is still not the pump's", () => {
+    new MessageLedger(db).accept({ id: "seat-msg-compaction-a-compact", seat: SEAT, body: "/compact", sender: "daemon@kernel", identityProvenance: "transport:v1", messageClass: "command" });
+    expect(rows()[0]).toMatchObject({ class: "command", message_state: null, attempts: 0 });
+  });
+
+  it("a message the daemon died on before its first attempt reads accepted, 0 attempts: it certainly never went out", () => {
+    new MessageLedger(db).accept({ id: "m1", seat: SEAT, body: "x", sender: "a@rig", identityProvenance: "transport:v1" });
+    expect(rows()[0]).toMatchObject({ message_state: "accepted", attempts: 0, delivery_state: "pending" });
   });
 
   describe("the route", () => {
