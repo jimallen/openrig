@@ -136,6 +136,7 @@ import { envRoutes } from "./routes/env.js";
 import type { RigLifecycleService } from "./domain/rig-lifecycle-service.js";
 import { seatRoutes } from "./routes/seat.js";
 import { createRouteTimingMiddleware } from "./domain/route-timing-recorder.js";
+import { installNativeNonceRedaction } from "./middleware/native-nonce-redaction.js";
 import { browserBoundary, type BrowserBoundaryOptions } from "./middleware/browser-boundary.js";
 
 export interface AppDeps {
@@ -497,6 +498,8 @@ export function createApp(deps: CreateAppDeps): Hono {
   }
 
   const app = new Hono();
+  // First, so it is outside every other middleware and route: no answer carries a message's native nonce (middleware/native-nonce-redaction.ts).
+  installNativeNonceRedaction(app);
   if (deps.requestPhaseObserver) app.use("*", deps.requestPhaseObserver.middleware());
   // A malformed request body is a 400, not the default 500.
   app.use("*", trackJsonBodyParseErrors);

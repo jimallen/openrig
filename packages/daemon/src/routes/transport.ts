@@ -6,6 +6,7 @@ import { DAEMON_OUTBOX_ID_PREFIXES, OutboxHandlerError, type OutboxHandler } fro
 import { mintMessageId } from "../domain/seat-messaging/message-ledger.js";
 import { MessageStore } from "../domain/seat-messaging/message-store.js";
 import { messageId } from "../domain/seat-messaging/ports.js";
+import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
 // S2 (OPR.0.5.4.3) — the sender-side half of two-ended honesty: appended to any
@@ -36,6 +37,12 @@ function refusedMessageId(id: unknown): string | null {
 
 /** Recorded as `retired_by` when the close came from a shell with no seat identity (no X-OpenRig-Session header). */
 export const UNATTRIBUTED_OPERATOR = "operator (no seat identity)";
+
+/** The seat `workspace.operator_seat_name` names, or null when none is set. */
+function operatorSeatName(c: { get: (key: never) => unknown }): string | null {
+  const value = (c.get("settingsStore" as never) as SettingsStore | undefined)?.resolveOne("workspace.operator_seat_name").value;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
   const router = new Hono();
@@ -200,7 +207,15 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     if (typeof body.reason !== "string" || !body.reason.trim()) return c.json({ error: "A reason is required" }, 400);
     const id = messageId(c.req.param("id"));
     if (outbox.getById(id)?.destinationSession !== c.req.param("seat")) return c.json({ error: `No message ${id} for ${c.req.param("seat")}` }, 404);
-    const cancelled = new MessageStore(outbox.db).cancel(id, body.reason, new Date().toISOString());
+    // Whose close this is. A plain shell has no seat identity: that is the person at the keyboard, the one this verb exists for, and it is
+    // recorded as such (as retire-unsettled does). A named seat must be the message's sender or the configured operator seat: any other
+    // seat could otherwise end a message it did not send, with nothing on the row to say who.
+    const store = new MessageStore(outbox.db);
+    const actor = transportSenderSession(c) ?? UNATTRIBUTED_OPERATOR;
+    if (actor !== UNATTRIBUTED_OPERATOR && actor !== store.senderOf(id) && actor !== operatorSeatName(c)) {
+      return c.json({ error: `${actor} did not send message ${id} and is not the operator seat; only the sender or the operator may cancel it. Nothing was changed.` }, 403);
+    }
+    const cancelled = store.cancel(id, body.reason, new Date().toISOString(), actor);
     return cancelled ? c.json({ ok: true, id }) : c.json({ error: `Message ${id} is not open; nothing was changed.` }, 409);
   });
 
