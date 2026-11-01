@@ -210,6 +210,16 @@ describe("a seat message's row", () => {
     });
   });
 
+  it("a Command the daemon died on before its first attempt is still not the pump's", () => {
+    new MessageLedger(db).accept({ id: "seat-msg-compaction-a-compact", seat: SEAT, body: "/compact", sender: "daemon@kernel", identityProvenance: "transport:v1", messageClass: "command" });
+    expect(rows()[0]).toMatchObject({ class: "command", message_state: null, attempts: 0 });
+  });
+
+  it("a message the daemon died on before its first attempt reads accepted, 0 attempts: it certainly never went out", () => {
+    new MessageLedger(db).accept({ id: "m1", seat: SEAT, body: "x", sender: "a@rig", identityProvenance: "transport:v1" });
+    expect(rows()[0]).toMatchObject({ message_state: "accepted", attempts: 0, delivery_state: "pending" });
+  });
+
   describe("the route", () => {
     function app(t: SessionTransport) {
       const hono = new Hono();
