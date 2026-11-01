@@ -19,11 +19,9 @@ class FakeClient extends HcClient {
   calls: string[] = [];
   terminal: HcTerminal | Error;
   keysReply: unknown = {};
-  onCall?: (method: string) => void;
   constructor(terminal: HcTerminal | Error) { super("/nonexistent"); this.terminal = terminal; }
   override async call<T>(method: string): Promise<T> {
     this.calls.push(method);
-    this.onCall?.(method);
     if (method === "terminal.run") return { address: "t7" } as T;
     if (method === "terminal.get") { if (this.terminal instanceof Error) throw this.terminal; return this.terminal as T; }
     if (this.keysReply instanceof Error) throw this.keysReply;
@@ -44,7 +42,12 @@ function fixture(terminal: HcTerminal | Error, opts: { admission?: boolean } = {
     INSERT INTO bindings(id,node_id,attachment_type,tmux_session,tmux_pane,terminal_address) VALUES ('bh','h','hc','${SEAT}',NULL,'t7');
     INSERT INTO sessions(id,node_id,session_name,status) VALUES ('sh','h','${SEAT}','running');
     INSERT INTO occupant_tenures(id,node_id,generation_ordinal,generation_uuid,kind) VALUES ('gh','h',1,'g1','fresh');`);
-  const guard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
+  // `claimProbeAt`: the Nth time the guard is asked about the probe, a managed record names it.
+  const claim = { at: Infinity, asked: 0 };
+  const guard = new SeatDeliveryGuard(db, (name) => {
+    if (name === PROBE && ++claim.asked >= claim.at) return { nodeId: "h", session: SEAT, occupant: "g1", pane: "t7" };
+    return resolveGuardTarget(db, name);
+  });
   const client = new FakeClient(terminal);
   const lifecycle = new HcLifecycle(client, { guard, daemonEnv: { SHELL: "/bin/sh" } });
   const writes: string[] = [];
@@ -57,7 +60,7 @@ function fixture(terminal: HcTerminal | Error, opts: { admission?: boolean } = {
   const fileOps = { tmpName: () => "/tmp/x", writeFile: async () => {}, unlink: async () => {} } as never;
   const input = new HcInput(client, opener, { guard, fileOps, paintSettleMs: 1, paintMaxMs: 5, paintFirstMs: 50, ...(opts.admission === false ? {} : { admission: lifecycle }) });
   const delivered = () => writes.length + client.calls.filter((m) => m === "terminal.send" || m === "terminal.keys").length;
-  return { db, guard, client, lifecycle, input, delivered };
+  return { db, guard, client, lifecycle, input, delivered, claim };
 }
 
 const METHODS = [
@@ -90,15 +93,19 @@ for (const [name, send] of METHODS) {
       expect(f.delivered()).toBe(0);
       f.db.close();
     });
-    it("refuses a probe a managed record claims after it was read, at the last check", async () => {
+    it("refuses a probe a managed record claims after it was admitted, at the last check", async () => {
       const f = fixture(probeTerminal());
       await f.lifecycle.createProbeSession(PROBE);
-      let reads = 0;
-      f.client.onCall = (method) => {
-        if (method === "terminal.get" && ++reads === 1) f.db.exec(`INSERT INTO nodes(id,rig_id,logical_id) VALUES ('c','r','${PROBE}');`);
-      };
-      const result = await send(f.input, PROBE);
-      expect(result).toMatchObject({ ok: false, code: "guard_target_managed" });
+      f.claim.at = 3;  // needsAdmission, the admission's own look, then the check before the write
+      await expect(send(f.input, PROBE)).resolves.toMatchObject({ ok: false, code: "guard_target_managed" });
+      expect(f.delivered()).toBe(0);
+      f.db.close();
+    });
+    it("refuses a probe a managed record claims while it is being read", async () => {
+      const f = fixture(probeTerminal());
+      await f.lifecycle.createProbeSession(PROBE);
+      f.claim.at = 2;
+      await expect(send(f.input, PROBE)).resolves.toMatchObject({ ok: false });
       expect(f.delivered()).toBe(0);
       f.db.close();
     });
