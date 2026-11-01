@@ -124,6 +124,7 @@ export class SeatGateStore {
     const store = new SeatGateStore(path, now);
     try {
       fs.mkdirSync(nodePath.dirname(path), { recursive: true });
+      fs.closeSync(fs.openSync(path, "a", 0o600));  // the file exists from here, so a reader can tell "nothing yet" from "cannot read"
       const text = fs.existsSync(path) ? fs.readFileSync(path, "utf8") : "";
       const whole = Buffer.byteLength(text.slice(0, text.lastIndexOf("\n") + 1));
       if (whole !== Buffer.byteLength(text)) fs.truncateSync(path, whole);

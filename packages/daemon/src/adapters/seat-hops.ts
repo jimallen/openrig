@@ -82,12 +82,11 @@ export function readClaudeComposer(screen: string): string | null {
   let start = lines.length - 1;
   while (start >= 0 && !lines[start]!.trimStart().startsWith("❯")) start -= 1;
   if (start < 0) return null;
-  const block = [lines[start]!.trimStart().slice(1).trim()];
-  for (const line of lines.slice(start + 1)) {
-    if (RULE_LINE.test(line.trim())) break;
-    block.push(line.trim());
-  }
-  return block.join("\n").trim();
+  // Down to the screen's last rule: a body may hold a rule-like line of its own.
+  let end = lines.length;
+  while (end > start + 1 && !RULE_LINE.test(lines[end - 1]!.trim())) end -= 1;
+  const below = end > start + 1 ? lines.slice(start + 1, end - 1) : lines.slice(start + 1);
+  return [lines[start]!.trimStart().slice(1).trim(), ...below.map((line) => line.trim())].join("\n").trim();
 }
 
 export interface ClaudeHopDeps {
@@ -216,7 +215,7 @@ export class PiSeatHop implements LastHop {
       if (state.pasteLeftover) {
         // Staged text with its Enter lost (M8): this message's marker on the line means Enter alone. Anything else is not ours to send.
         const lastMarker = text.split("\n").pop()!;
-        if (!seat.screen.includes(lastMarker)) return { kind: "paused", reason: "guard_held" };
+        if (!seat.screen.replace(/\s+/g, "").includes(lastMarker.replace(/\s+/g, ""))) return { kind: "paused", reason: "guard_held" };
         return sentOrRefused(await this.deps.input.sendKeys(message.seat, ["Enter"]));
       }
       return sentOrRefused(await this.deps.input.submitText(message.seat, text));

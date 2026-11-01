@@ -9,6 +9,7 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { retainedNudgeResult } from "../src/domain/queue-repository.js";
+import { classifyWakeResult } from "../src/domain/queue-wake-ladder.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { HANDED_TO_PUMP, SessionTransport } from "../src/domain/session-transport.js";
@@ -22,6 +23,11 @@ import { tmuxStub } from "./helpers/tmux-stub.js";
 const SEAT = "dev@hr";
 
 describe("a wake's record", () => {
+  it("the ladder leaves a wake the pump owns, and still retries one the typing guard holds", () => {
+    expect(classifyWakeResult("retained:pump")).toBeNull();
+    expect(classifyWakeResult("retained:typing_guard")).toBe("failed");
+  });
+
   it("names whose hands it is in", () => {
     expect(retainedNudgeResult(HANDED_TO_PUMP)).toBe("retained:pump");
     expect(retainedNudgeResult("typing_guard_enabled")).toBe("retained:typing_guard");
@@ -155,6 +161,16 @@ describe("SessionTransport and the pump", () => {
     it("an id no marker can carry stays direct", async () => {
       expect((await transport.send(SEAT, "text", { deliveryId: "has space" })).reason).not.toBe("handed_to_pump");
       expect(writes.join("")).toContain("text");
+    });
+
+    it("a person's answer to a prompt writes no row: it can be a credential", async () => {
+      await transport.send(SEAT, "password: x", { deliveryId: "p1", dangerouslyInteract: true, reason: "answer", actorSession: "jim@hr" });
+      expect(row("p1")).toBeUndefined();
+    });
+
+    it("!text stays a single send: it runs in Codex's composer with no hook, so a resend would run it again", async () => {
+      expect((await transport.send(SEAT, "!sleep 20", { deliveryId: "b1", actorSession: "lead@hr" })).reason).not.toBe("handed_to_pump");
+      expect(hopCalls).toEqual([]);
     });
 
     it("what is not a message stays direct: a submit-only Enter, and a person's answer to a prompt", async () => {

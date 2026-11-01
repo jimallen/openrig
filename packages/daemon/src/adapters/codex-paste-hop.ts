@@ -23,7 +23,9 @@ const AT_REST = new Set(["idle", "done"]);
 
 export type ComposerRead =
   | { kind: "empty" }
-  | { kind: "text"; lines: string[] }
+  /** `lines`: the composer's own block. `below`: everything under the prompt line, which is where a body's blank lines, its ` · ` lines
+   *  and its unindented lines put its marker, so the marker check reads this. */
+  | { kind: "text"; lines: string[]; below: string[] }
   /** No composer on the screen: nothing can be said about what is staged. */
   | { kind: "unreadable" };
 
@@ -40,7 +42,7 @@ export function readCodexComposer(screen: string): ComposerRead {
     if (line.trim() === "" || line.includes(" · ") || !line.startsWith("  ")) break;
     block.push(line.trim());
   }
-  return first === "" && block.length === 1 ? { kind: "empty" } : { kind: "text", lines: block };
+  return first === "" && block.length === 1 ? { kind: "empty" } : { kind: "text", lines: block, below: [first, ...lines.slice(start + 1).map((line) => line.trim())] };
 }
 
 function lastMarkerLine(body: string): string | null {
@@ -52,7 +54,17 @@ function lastMarkerLine(body: string): string | null {
  *  and Enter would send their words, so it is held. */
 export function composerHoldsMessage(lines: readonly string[], body: string): boolean {
   const marker = lastMarkerLine(body);
-  return marker !== null && lines.some((line) => line.trim() === marker);
+  if (marker === null) return false;
+  // Whole lines only: a draft quoting a marker mid-line is a person's. Lines join only to undo a narrow seat's wrap.
+  const whole = marker.replace(/\s+/g, "");
+  return lines.some((_, start) => {
+    let joined = "";
+    for (const line of lines.slice(start)) {
+      joined += line.replace(/\s+/g, "");
+      if (joined.length >= whole.length) return joined === whole;
+    }
+    return false;
+  });
 }
 
 export type StagedDecision = "paste" | "enter_only" | "clear_and_resend" | "hold";
@@ -67,7 +79,7 @@ function isCollapsedCopy(lines: readonly string[], body: string): boolean {
 export function decideStagedAttempt(composer: ComposerRead, body: string, pastedBefore = false): StagedDecision {
   if (composer.kind === "empty") return "paste";
   if (composer.kind === "unreadable") return "hold";
-  if (composerHoldsMessage(composer.lines, body)) return "enter_only";
+  if (composerHoldsMessage(composer.below, body)) return "enter_only";
   return pastedBefore && isCollapsedCopy(composer.lines, body) ? "clear_and_resend" : "hold";
 }
 

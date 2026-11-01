@@ -25,6 +25,9 @@ export function piSeatGate(deps: PiSeatGateDeps): SeatGate {
       try {
         text = fs.readFileSync(seatGateLogPath(piSeatPaths(deps.stateRoot, seat).seatRoot), "utf8");
       } catch (err) {
+        // No log yet: nothing has been marked at this seat, so nothing has arrived. Unavailable here would be a deadlock, because the first
+        // marked block is what writes a log from an older runner, and the pump sends nothing while a gate cannot be read.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "not_seen" };
         return { kind: "unavailable", cause: (err as NodeJS.ErrnoException).code ?? "unreadable" };
       }
       const nonce = deps.nonceOf(id);

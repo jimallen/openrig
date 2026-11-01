@@ -204,14 +204,31 @@ function buildNativeEndpointPayload(providerPayload, env = process.env) {
 const NATIVE_DUPLICATE_BLOCK_REASON =
   "OpenRig: this message was already delivered; duplicate suppressed. If you pasted it on purpose, delete the [openrig-msg ...] line and send it again.";
 
-const NATIVE_MARKER_RE = /\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]/g;
+const MARKER_LINE = /^\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]$/;
+const WRAPPER_CLOSE = /^<\/(?:cross-session-message|pasted_content(?: id="[^"]*")?)>$/;
+
+// A prompt's markers: its trailing lines only, read through a closing wrapper (adapters/seat-gate-marker.ts `trailingMarkers`, same rule).
+// A marker quoted anywhere else is that message's text, and confirms and blocks nothing.
+function trailingMarkers(prompt) {
+  const lines = prompt.split("\n").map((line) => line.replace(/\r$/, ""));
+  let end = lines.length;
+  while (end > 0 && (lines[end - 1].trim() === "" || WRAPPER_CLOSE.test(lines[end - 1].trim()))) end -= 1;
+  const markers = [];
+  while (end > 0) {
+    const match = MARKER_LINE.exec(lines[end - 1].trim());
+    if (!match) break;
+    markers.unshift({ id: match[1], nonce: match[2] });
+    end -= 1;
+  }
+  return markers;
+}
 
 // Native comms step 3, UserPromptSubmit of a Claude seat: the markers of native messages in the prompt.
 function buildNativeAckPayload(providerPayload, env = process.env) {
   if (hookEventOf(providerPayload) !== "UserPromptSubmit") return null;
   const runtime = firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME);
   if (runtime !== "claude-code" || typeof providerPayload.prompt !== "string") return null;
-  const markers = [...providerPayload.prompt.matchAll(NATIVE_MARKER_RE)].map((m) => ({ id: m[1], nonce: m[2] }));
+  const markers = trailingMarkers(providerPayload.prompt);
   if (markers.length === 0) return null;
   return {
     sessionName: firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME),
@@ -269,7 +286,7 @@ function recordSeen(seenDir, marker, record) {
 // must not be acked: a resend has to find this message unrecorded.
 function runSeatGate(providerPayload, env = process.env, now = () => new Date()) {
   if (hookEventOf(providerPayload) !== "UserPromptSubmit" || typeof providerPayload.prompt !== "string") return "pass";
-  const markers = [...providerPayload.prompt.matchAll(NATIVE_MARKER_RE)].map((m) => ({ id: m[1], nonce: m[2] }));
+  const markers = trailingMarkers(providerPayload.prompt);
   const dir = markers.length > 0 ? seatGateDir(env) : null;
   if (!dir) return "pass";
   const seenDir = path.join(dir, "seen");
@@ -301,7 +318,9 @@ function declareSeatGate(providerPayload, env = process.env) {
   if (!dir) return;
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(dir, "gate.json"), JSON.stringify({ version: SEAT_GATE_VERSION }), { mode: 0o600 });
+    // The file this seat's prompts land in: the daemon may have no other way to it, and a hook that crashes leaves only the prompt there.
+    const transcriptPath = firstString(providerPayload.transcript_path);
+    fs.writeFileSync(path.join(dir, "gate.json"), JSON.stringify({ version: SEAT_GATE_VERSION, ...(transcriptPath ? { transcriptPath } : {}) }), { mode: 0o600 });
   } catch { /* no declaration: the daemon treats the seat as ungated */ }
 }
 
@@ -384,10 +403,11 @@ async function main() {
   if (endpoint) await postNativeJson("/api/activity/native-endpoint", endpoint);
   const ack = gate === "unrecorded" ? null : buildNativeAckPayload(providerPayload);
   if (ack) {
-    // A late duplicate of a message already delivered another way is suppressed (measured: a UserPromptSubmit block
-    // stops a socket-injected copy cleanly). No reply lets the prompt through: the gate above has already decided.
+    // A copy the gate recorded is the first, and the agent must have it, even if the daemon read the record meanwhile and calls the row
+    // delivered: a block here would lose the message with the row saying received. On a seat with no gate the daemon's word is the only
+    // dedupe (measured: a UserPromptSubmit block stops a socket-injected copy cleanly). No reply lets the prompt through.
     const reply = await postNativeJson("/api/activity/native-ack", ack);
-    if (reply && reply.block === true && gate === "pass") writeBlock(NATIVE_DUPLICATE_BLOCK_REASON);
+    if (reply && reply.block === true && gate === "pass" && seatGateDir(process.env) === null) writeBlock(NATIVE_DUPLICATE_BLOCK_REASON);
   }
 }
 

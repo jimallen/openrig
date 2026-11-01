@@ -17,6 +17,25 @@ export function seatMarkerKey(marker: SeatMarker): string {
   return `${marker.id}:${marker.nonce}`;
 }
 
+/** What a provider wraps a prompt in, closing after the marker: Claude's socket envelope and its multi-line paste (s0 M3). */
+const WRAPPER_CLOSE = /^<\/(?:cross-session-message|pasted_content(?: id="[^"]*")?)>$/;
+
+/** The markers a prompt carries: its trailing lines only, read through a closing wrapper. A marker quoted anywhere else is that message's
+ *  text, by a person or a model, and confirms and blocks nothing. activity-relay.cjs holds the same rule, in CommonJS. */
+export function trailingMarkers(prompt: string): SeatMarker[] {
+  const lines = prompt.split("\n").map((line) => line.replace(/\r$/, ""));
+  let end = lines.length;
+  while (end > 0 && (lines[end - 1]!.trim() === "" || WRAPPER_CLOSE.test(lines[end - 1]!.trim()))) end -= 1;
+  const markers: SeatMarker[] = [];
+  while (end > 0) {
+    const match = MARKER_LINE.exec(lines[end - 1]!.trim());
+    if (!match) break;
+    markers.unshift({ id: match[1]!, nonce: match[2]! });
+    end -= 1;
+  }
+  return markers;
+}
+
 /** The text a gate passes on, and the markers it found. Only the block's trailing lines count: a marker quoted inside a message is
  *  that message's text, and stays. A block with no trailing marker comes back whole, `markers` empty. */
 export function splitMarkedBlock(block: string): { text: string; markers: SeatMarker[] } {

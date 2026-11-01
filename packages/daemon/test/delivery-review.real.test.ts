@@ -1,0 +1,372 @@
+// The combined reviews' findings, on a real daemon (createDaemon with its real RuntimeSeatPorts and HTTP routes), a private core, the REAL
+// relay run as a process for every event, and, for Pi and OMP, the REAL runner. Only the agent is a stub. The kit is the QA reviewer's.
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { hcTerminalName } from "../src/adapters/hc-seat.js";
+import { seatGateFolder, seatGateRoot } from "../src/adapters/hook-seen-store.js";
+import { createDb } from "../src/db/connection.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { OutboxHandler } from "../src/domain/outbox-handler.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
+import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { messageId } from "../src/domain/seat-messaging/ports.js";
+import { fakePi } from "./helpers/fake-pi.js";
+import { HC, PrivateCore, until } from "./hc-private-core.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const CHILD = resolve(here, "helpers/delivery-daemon.ts");
+const SEATPY = resolve(here, "helpers/delivery-seat.py");
+const RELAY = resolve(here, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs");
+const SHIM = resolve(here, "helpers/delivery-relay-delay.cjs");
+const RUNNER = resolve(here, "../src/adapters/pi-runner.ts");
+const TOKEN = "delivery-token";
+let serial = 0;
+let port = 21100 + (process.pid % 500);
+
+describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
+  const core = new PrivateCore("dr");
+  let children: ChildProcess[] = [];
+  const HOME = join(core.root, "h", "openrig");
+  beforeAll(() => {
+    expect(Buffer.byteLength(core.socketPath)).toBeLessThan(103);
+    expect(core.socketPath.startsWith(`${core.root}/`)).toBe(true);
+    expect(Object.keys(core.env).filter((k) => k.startsWith("HC_") && k !== "HC_SESSION")).toEqual([]);
+    core.start();
+  });
+  afterEach(() => { for (const c of children) if (c.exitCode === null && c.signalCode === null) c.kill("SIGKILL"); children = []; });
+  afterAll(() => core.stop());
+
+  function fixture(flags: string[] = [], runtime = "codex") {
+    const dir = mkdtempSync(join(core.root, "w-"));
+    for (const f of flags) writeFileSync(join(dir, f), "");
+    writeFileSync(join(dir, "seat.log"), ""); writeFileSync(join(dir, "hop.log"), "");
+    const id = ++serial; const name = `cx${id}@dr${id}`; const db = join(dir, "d.sqlite");
+    const h = createDb(db); migrate(h, ALL_MIGRATIONS);
+    const rigs = new RigRepository(h); const rig = rigs.createRig(`dr${id}`);
+    const node = rigs.addNode(rig.id, `cx${id}`, { role: "worker", runtime });
+    const leadRig = rigs.createRig(`lead${id}`);
+    rigs.addNode(leadRig.id, "lead", { role: "worker", runtime: "terminal" });
+    const sessions = new SessionRegistry(h);
+    sessions.updateStatus(sessions.registerSession(node.id, name).id, "running");
+    sessions.updateBinding(node.id, { attachmentType: "hc", tmuxSession: name });
+    h.close();
+    const lead = `lead@lead${id}`;
+    const gateDir = join(seatGateRoot(HOME), seatGateFolder(name));
+    const seen = join(gateDir, "seen");
+    const address = hcTerminalName(name);
+    const qport = ++port;
+    const launch = async (ackDelay: number | null = null) => {
+      const env = [...(ackDelay !== null ? [`NODE_OPTIONS=--require ${SHIM}`, `DELIVERY_ACK_DELAY_MS=${ackDelay}`, `DELIVERY_ACK_LOG=${join(dir, "ack.log")}`] : []),
+        `OPENRIG_SESSION_NAME=${name}`, `OPENRIG_RUNTIME=${runtime}`, `OPENRIG_HOME=${HOME}`, `OPENRIG_NODE_ID=${node.id}`, `OPENRIG_URL=http://127.0.0.1:${qport}`, `OPENRIG_ACTIVITY_HOOK_TOKEN=${TOKEN}`];
+      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/usr/bin/python3", "-I", SEATPY, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes(runtime === "codex" ? "Ask Codex" : "❯"), "first paint");
+      await until(() => existsSync(join(gateDir, "gate.json")), Boolean, "the relay's declaration");
+    };
+    const lines = (f: string) => readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean);
+    const withDb = <T,>(fn: (c: ReturnType<typeof createDb>) => T): T => { const c = createDb(db); try { return fn(c); } finally { c.close(); } };
+    return { dir, db, name, lead, seen, gateDir, address, qport, rigId: rig.id, nodeId: node.id, launch, withDb,
+      log: () => lines("seat.log"), hop: () => lines("hop.log"), flag: (f: string, text = "") => writeFileSync(join(dir, f), text),
+      read: (key: string) => withDb((c) => c.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(key) as Record<string, unknown>),
+      accept: (key: string, body = `body of ${key}`, extra: { sender?: string; occupantGeneration?: string } = {}) => withDb((c) => { new MessageStore(c).accept({ id: messageId(key), seat: name, sender: extra.sender ?? lead, body, occupantGeneration: extra.occupantGeneration }); }),
+    };
+  }
+  type F = ReturnType<typeof fixture>;
+  function daemon(s: F, crash = "none", env: NodeJS.ProcessEnv = {}): ChildProcess {
+    const err: string[] = [];
+    const child = spawn(process.execPath, ["--import", "tsx", CHILD], { cwd: resolve(here, ".."), stdio: ["ignore", "ignore", "pipe"], env: {
+      ...core.env, PATH: `${dirname(HC)}:/usr/bin:/bin`, TMPDIR: join(core.root, "h"), OPENRIG_HOME: HOME, MPD_DB: s.db, MPD_DIR: s.dir, MPD_CRASH: crash,
+      CODEX_HOME: join(core.root, "h", "codex"), DELIVERY_PORT: String(s.qport), OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN, ...env,
+    } });
+    child.stderr?.on("data", (b: Buffer) => { err.push(b.toString()); if (err.length > 40) err.shift(); writeFileSync(join(s.dir, "stderr.log"), err.join("")); });
+    child.on("exit", (code) => { if (code) writeFileSync(join(s.dir, "child-failed"), err.join("")); });
+    children.push(child);
+    return child;
+  }
+  const failed = (s: F) => { if (existsSync(join(s.dir, "child-failed"))) throw new Error(`daemon died: ${readFileSync(join(s.dir, "child-failed"), "utf8").slice(0, 700)}`); };
+  const hopSaw = async (s: F, line: string, ms = 20_000) => { await until(() => { failed(s); return s.hop(); }, (l) => l.includes(line), `hop ${line}`, ms); };
+  const state = (s: F, id: string, want: string, ms = 20_000) => until(() => { failed(s); return s.read(id); }, (r) => r?.message_state === want, `${id} ${want}`, ms);
+  const agent = (s: F, id: string) => s.log().filter((l) => l.startsWith(`agent ${id} `));
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const kill = async (c: ChildProcess) => { expect(c.exitCode).toBeNull(); c.kill("SIGKILL"); await new Promise((r) => c.once("exit", r)); };
+  const screen = async (s: F) => (await core.client.call<{ text: string }>("terminal.read", { terminal: s.address })).text;
+  const queueItems = (s: F) => s.withDb((c) => c.prepare("SELECT destination_session AS d, body FROM queue_items").all() as Array<{ d: string; body: string }>);
+  /** curl, a real client: the suite's guard refuses fetch to a port it did not register. */
+  const http = (s: F, path: string, body?: unknown) => {
+    const bodyFile = join(s.dir, "req.json");
+    if (body !== undefined) writeFileSync(bodyFile, JSON.stringify(body));
+    const out = spawnSync("/usr/bin/curl", ["-s", "-w", "\n%{http_code}", ...(body === undefined ? [] : ["-X", "POST", "-H", "content-type: application/json", "-H", `x-openrig-session: ${s.lead}`, "--data-binary", `@${bodyFile}`]), `http://127.0.0.1:${s.qport}${path}`], { encoding: "utf8", maxBuffer: 1 << 26 }).stdout;
+    const at = out.lastIndexOf("\n");
+    return { status: Number(out.slice(at + 1)), text: out.slice(0, at) };
+  };
+  /** A Claude seat with an endpoint, so its prompts have a known transcript, as every registered seat has. */
+  const withEndpoint = async (s: F) => {
+    daemon(s); await hopSaw(s, "booted");
+    s.flag("register-claude", JSON.stringify({ nodeId: s.nodeId, sessionName: s.name, transcriptPath: join(s.dir, "transcript.jsonl") }));
+    await hopSaw(s, "registered");
+  };
+  const recordSeen = (s: F, id: string, nonce: string, extra: Record<string, unknown>) => {
+    mkdirSync(s.seen, { recursive: true });
+    writeFileSync(join(s.seen, createHash("sha256").update(`${id}:${nonce}`).digest("hex")), JSON.stringify({ id, nonce, recordedAt: "1999-01-01T00:00:00.000Z", via: "hook", durable: false, ...extra }));
+  };
+  const deadPid = () => spawnSync("/usr/bin/true").pid;
+  const userRecord = (text: string) => JSON.stringify({ parentUuid: null, isSidechain: false, type: "user", message: { role: "user", content: [{ type: "text", text }] }, uuid: "u", timestamp: "1999-01-01T00:00:00.000Z", sessionId: "s" });
+
+  describe("sec F1: a queued Claude message is not a received one", () => {
+    it("an enqueue line alone does not read as received; the hook and the user record do", async () => {
+      const s = fixture(["queued"], "claude-code"); await s.launch();
+      await withEndpoint(s);
+      s.accept("m1");
+      await until(() => s.log(), (l) => l.includes("enqueued m1"), "the enqueue");
+      await until(() => s.hop(), (l) => l.some((x) => /^(sent|refused|paused)/.test(x) && x.endsWith(" m1")), "the attempt's return", 30_000);
+      await wait(600);
+      expect(readFileSync(join(s.dir, "transcript.jsonl"), "utf8")).toContain("queue-operation");
+      expect(s.read("m1").message_state).toBe("attempting");
+      s.flag("take");
+      await state(s, "m1", "received");
+      await until(() => agent(s, "m1"), (l) => l.length > 0, "the agent's copy");
+      expect(agent(s, "m1")).toHaveLength(1);
+    }, 60_000);
+
+    it("a seat killed while it was queued: the row stays open, and the new process gets it once", async () => {
+      const s = fixture(["die-queued"], "claude-code"); await s.launch();
+      await withEndpoint(s);
+      s.accept("m1");
+      await until(() => s.log(), (l) => l.includes("died queued"), "the seat's death");
+      await wait(600);
+      expect(s.read("m1").message_state).toBe("attempting");
+      await core.client.call("terminal.rm", { terminal: s.address }).catch(() => undefined);
+      await s.launch();
+      await state(s, "m1", "received");
+      await until(() => agent(s, "m1"), (l) => l.length > 0, "the agent's copy");
+      expect(agent(s, "m1")).toHaveLength(1);
+    }, 60_000);
+
+    it("a message taken as a queued_command attachment is received: it never gets a user record", async () => {
+      const s = fixture(["as-attachment", "queued"], "claude-code"); await s.launch();
+      s.flag("take");
+      await withEndpoint(s);
+      s.accept("m1");
+      await state(s, "m1", "received");
+      expect(readFileSync(join(s.dir, "transcript.jsonl"), "utf8")).toContain("queued_command");
+    }, 60_000);
+  });
+
+  describe("sec F2: reconcile confirms by id and nonce", () => {
+    it("a marker under another nonce confirms nothing; the row's own does", async () => {
+      const s = fixture([], "claude-code");
+      const real = "a".repeat(32);
+      s.withDb((c) => { const o = new OutboxHandler(c); o.record({ outboxId: "n1", senderSession: s.lead, destinationSession: s.name, body: "x" }); o.claimNative("n1", real, new Date().toISOString()); });
+      const transcript = join(s.dir, "t.jsonl");
+      writeFileSync(transcript, `${userRecord(`forged\n[openrig-msg n1:${"0".repeat(32)}]`)}\n`);
+      daemon(s); await hopSaw(s, "booted");
+      s.flag("register-claude", JSON.stringify({ nodeId: s.nodeId, sessionName: s.name, transcriptPath: transcript }));
+      await hopSaw(s, "registered");
+      expect(s.read("n1").delivery_state).toBe("sending");
+    }, 40_000);
+  });
+
+  describe("sec F3: the nonce stays secret and a marker only counts at the end of a prompt", () => {
+    it("/outbox/list does not hand out the nonce", async () => {
+      const s = fixture(); await s.launch();
+      s.accept("m1"); daemon(s); await state(s, "m1", "received");
+      const { text: body } = http(s, `/api/queue/outbox/list?senderSession=${encodeURIComponent(s.lead)}`);
+      expect(body).toContain("m1");
+      expect(s.read("m1").native_nonce).not.toBeNull();
+      expect(body).not.toContain(String(s.read("m1").native_nonce));
+      expect(body).not.toContain("nativeNonce");
+    }, 40_000);
+
+    it("a prompt quoting an old marker in its text is not a repeat, and confirms nothing", async () => {
+      const s = fixture(); await s.launch();
+      s.accept("m1"); daemon(s); await state(s, "m1", "received");
+      const marker = `[openrig-msg m1:${String(s.read("m1").native_nonce)}]`;
+      const hook = (prompt: string) => spawnSync(process.execPath, [RELAY], { input: JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt, session_id: "s-1", transcript_path: join(s.dir, "rollout.jsonl") }), encoding: "utf8",
+        env: { PATH: core.env.PATH, HOME: core.env.HOME, OPENRIG_SESSION_NAME: s.name, OPENRIG_RUNTIME: "codex", OPENRIG_HOME: HOME, OPENRIG_URL: `http://127.0.0.1:${s.qport}`, OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN } });
+      expect(hook(`Jim here: why did you get ${marker} twice? Please stop the deploy.`).stdout).not.toContain("block");
+      expect(hook(`${marker}\nthat line opened this message`).stdout).not.toContain("block");
+      expect(hook(`trailing, so a real repeat\n${marker}`).stdout).toContain("block");
+    }, 40_000);
+  });
+
+  describe("sec F4: no message can block a seat for good", () => {
+    it("a body that is only a marker, or only space, is refused at the door, and the seat goes on", async () => {
+      const s = fixture(); await s.launch();
+      daemon(s); await hopSaw(s, "booted"); await wait(300);
+      for (const text of [`[openrig-msg z:${"0".repeat(16)}]`, "   \n  "]) {
+        const res = http(s, "/api/transport/send", { session: s.name, text });
+        expect(res.status).toBe(400);
+        expect((JSON.parse(res.text) as { reason: string }).reason).toBe("empty_message");
+      }
+      s.accept("m2");
+      await state(s, "m2", "received");
+    }, 40_000);
+
+    it("an operator can end a stuck message by id: rig seat cancel-message's route, and the seat goes on", async () => {
+      const s = fixture(["hold"]); await s.launch();
+      s.accept("stuck"); s.accept("next"); daemon(s);
+      await hopSaw(s, "claimed stuck");
+      expect(http(s, `/api/transport/cancel-message/${encodeURIComponent(s.name)}/stuck`, {}).status).toBe(400);
+      expect(http(s, `/api/transport/cancel-message/${encodeURIComponent("other@rig")}/stuck`, { reason: "x" }).status).toBe(404);
+      expect(http(s, `/api/transport/cancel-message/${encodeURIComponent(s.name)}/stuck`, { reason: "poison" }).status).toBe(200);
+      expect(s.read("stuck")).toMatchObject({ message_state: "undeliverable", message_closed_reason: "poison" });
+      await hopSaw(s, "claimed next");
+    }, 40_000);
+  });
+
+  describe("sec F5, QA F3: decision 1 on the real ports", () => {
+    const archive = (s: F) => s.withDb((c) => c.prepare("UPDATE rigs SET archived_at = ? WHERE id = ?").run(new Date().toISOString(), s.rigId));
+    it("a message to an archived rig's seat goes back to its sender", async () => {
+      const s = fixture(["hold"]); await s.launch();
+      s.accept("m1"); daemon(s); await hopSaw(s, "claimed m1");
+      archive(s);
+      await state(s, "m1", "undeliverable");
+      expect(queueItems(s).map((q) => q.d)).toEqual([s.lead]);
+      expect(queueItems(s)[0]!.body).toContain("body of m1");
+    }, 40_000);
+
+    it("a record beats the archive: a message that arrived is not returned", async () => {
+      const s = fixture(); await s.launch();
+      s.accept("m1"); daemon(s); await state(s, "m1", "received");
+      archive(s); await wait(400);
+      expect(queueItems(s)).toEqual([]);
+    }, 40_000);
+
+    it("a message to a seat whose record was deleted goes back too", async () => {
+      const s = fixture(["hold"]); await s.launch();
+      s.accept("m1"); daemon(s); await hopSaw(s, "claimed m1");
+      s.withDb((c) => { c.pragma("foreign_keys = OFF"); c.prepare("DELETE FROM bindings WHERE node_id = ?").run(s.nodeId); c.prepare("DELETE FROM nodes WHERE id = ?").run(s.nodeId); });
+      await state(s, "m1", "undeliverable");
+      expect(queueItems(s).map((q) => q.d)).toEqual([s.lead]);
+    }, 40_000);
+
+    it("a held message on an archived seat goes back, with the guard still on", async () => {
+      const s = fixture(); await s.launch();
+      s.withDb((c) => {
+        c.prepare("INSERT INTO seat_delivery_guards (node_id, desired, effective, actor, reason, changed_at) VALUES (?, 1, 1, 'a', 'r', 't')").run(s.nodeId);
+        new OutboxHandler(c).retain({ outboxId: "h1", senderSession: s.lead, destinationSession: s.name, body: "held" }, { nodeId: s.nodeId, session: s.name, occupant: null, pane: null });
+      });
+      daemon(s); await hopSaw(s, "booted"); await wait(300);
+      expect(s.read("h1").delivery_state).toBe("retained");
+      archive(s);
+      await state(s, "h1", "undeliverable");
+    }, 40_000);
+
+    it("a seat with no gate and a send path's crash-left row is still left alone when its rig is archived: nobody can know what reached it", async () => {
+      const s = fixture([], "terminal");
+      s.withDb((c) => { new OutboxHandler(c).record({ outboxId: "left", senderSession: s.lead, destinationSession: s.name, body: "x", messageState: "attempting" }); });
+      archive(s); daemon(s); await hopSaw(s, "booted"); await wait(400);
+      expect(s.read("left").message_state).toBe("attempting");
+      expect(queueItems(s)).toEqual([]);
+    }, 40_000);
+  });
+
+  describe("QA F1: the relay's ack never blocks a copy the gate passed", () => {
+    for (const delay of [0, 60, 200]) {
+      it(`ack ${delay} ms after the record, the pump reading first: the agent has it`, async () => {
+        const s = fixture([], "claude-code"); await s.launch(delay);
+        daemon(s, "fast_hop"); await hopSaw(s, "booted"); await wait(300);
+        s.accept("m1");
+        await state(s, "m1", "received");
+        await wait(1200);
+        expect(agent(s, "m1")).toHaveLength(1);
+        expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      }, 40_000);
+    }
+  });
+
+  describe("QA F2: a fresh Pi or OMP seat, the real runner", () => {
+    for (const runtime of ["pi", "omp"] as const) {
+      it(`${runtime}: the first message reaches the agent through the pump, text only; a refusal during compaction is retried; a marker-only row does not stop the seat`, async () => {
+        const s = fixture([], runtime);
+        const pi = fakePi(s.dir);
+        const root = join(HOME, "state", runtime);
+        const flags = runtime === "omp" ? ["--runtime", "omp", "--approval-mode", "yolo"] : ["--no-approve", "--model", "openrouter/fixture"];
+        await core.client.call("terminal.run", {
+          argv: [process.execPath, "--import", "tsx", RUNNER, "--session-name", s.name, "--state-root", root, "--cwd", s.dir, "--launch-id", "l1", ...flags], name: s.address, cwd: resolve(here, ".."),
+          env: { PATH: `${pi.bin}:${dirname(process.execPath)}:/usr/bin:/bin`, OPENRIG_HOME: join(s.dir, "home") }, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true,
+        });
+        await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: s.address })).text, (t) => t.includes(`[${runtime}-runner] READY`), "READY", 30_000);
+        const effects = () => readFileSync(pi.effects, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string);
+        s.accept("m1", "first");
+        daemon(s);
+        await state(s, "m1", "received", 30_000);
+        expect(effects()).toEqual(["first"]);
+
+        writeFileSync(pi.compacting, "");
+        s.accept("m2", "during compaction");
+        await hopSaw(s, "sent m2");
+        await wait(500);
+        expect(s.read("m2").message_state).not.toBe("received");
+        spawnSync("/bin/rm", ["-f", pi.compacting]);
+        await state(s, "m2", "received", 30_000);
+        expect(effects()).toEqual(["first", "during compaction"]);
+
+        s.accept("m3", `[openrig-msg z:${"0".repeat(16)}]`);
+        s.accept("m4", "after it");
+        await state(s, "m4", "received", 30_000);
+        expect(effects()).toEqual(["first", "during compaction", "after it"]);
+      }, 120_000);
+    }
+  });
+
+  describe("QA F4: a lost Enter never needs a person, whatever the body looks like", () => {
+    for (const [name, body] of [["a blank line", "para one\n\npara two"], ["a line with ' · '", "From: a@b\nSent: 11-01 · gen 12345678\n---\nhello"], ["an unindented look", "one\n\n\nthree\n\n· four"]] as const) {
+      it(`Codex, a body with ${name}: Enter alone`, async () => {
+        const s = fixture(["lose-enter"]); await s.launch();
+        s.accept("m1", body); daemon(s);
+        await state(s, "m1", "received");
+        expect(agent(s, "m1")).toHaveLength(1);
+        expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      }, 40_000);
+    }
+  });
+
+  describe("QA F5: reconcile has no gaps", () => {
+    it("a Claude seat that restarted while the daemon was down: the boot reconciles it, and the row opens again", async () => {
+      const s = fixture([], "claude-code");
+      const nonce = "b".repeat(32);
+      const transcript = join(s.dir, "t.jsonl");
+      writeFileSync(transcript, "");
+      s.withDb((c) => {
+        const store = new MessageStore(c);
+        store.accept({ id: messageId("m1"), seat: s.name, sender: s.lead, body: "x" });
+        c.prepare("UPDATE outbox_entries SET native_nonce = ? WHERE outbox_id = 'm1'").run(nonce);
+        store.recordReceived({ id: messageId("m1"), recordedAt: "1999-01-01T00:00:00.000Z", nonce }, 1);
+        c.prepare(`INSERT INTO seat_native_endpoints (node_id, session_name, socket_path, transcript_path, claude_pid, registered_at) VALUES (?, ?, ?, ?, ?, ?)`).run(s.nodeId, s.name, join(s.dir, "no.sock"), transcript, deadPid(), "1999-01-01T00:00:00.000Z");
+      });
+      recordSeen(s, "m1", nonce, { agentPid: deadPid(), transcriptPath: transcript });
+      mkdirSync(s.gateDir, { recursive: true }); writeFileSync(join(s.gateDir, "gate.json"), JSON.stringify({ version: 1 }));
+      daemon(s); await hopSaw(s, "booted");
+      await until(() => s.read("m1"), (r) => r.delivery_state === "pending", "the row reopened");
+    }, 40_000);
+  });
+
+  describe("QA F6: a hook that crashed, with the thread's rollout unknown", () => {
+    it("the path the relay declared finds the prompt: no second copy", async () => {
+      const s = fixture(["hook-crash"]); await s.launch();
+      s.accept("m1"); daemon(s);
+      await state(s, "m1", "received");
+      await wait(500);
+      expect(agent(s, "m1")).toHaveLength(1);
+      expect(s.hop().filter((l) => l === "claimed m1")).toHaveLength(1);
+    }, 40_000);
+  });
+
+  describe("sec F6, F7: what rests on disk", () => {
+    it("the database is the owner's alone, and a body past the limit is refused", async () => {
+      const s = fixture(); await s.launch();
+      daemon(s); await hopSaw(s, "booted"); await wait(300);
+      expect(statSync(s.db).mode & 0o777).toBe(0o600);
+      const res = http(s, "/api/transport/send", { session: s.name, text: "x".repeat(1024 * 1024 + 1) });
+      expect(res.status).toBe(413);
+      expect((JSON.parse(res.text) as { reason: string }).reason).toBe("message_too_large");
+      expect(s.withDb((c) => (c.prepare("SELECT count(*) AS n FROM outbox_entries").get() as { n: number }).n)).toBe(0);
+    }, 40_000);
+  });
+});

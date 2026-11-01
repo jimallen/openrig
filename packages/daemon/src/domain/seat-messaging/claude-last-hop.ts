@@ -48,6 +48,11 @@ function collapsedCopy(composer: string, text: string, pastedBefore: boolean): b
   return pastedBefore && lines !== undefined && Number(lines) === text.split("\n").length;
 }
 
+/** Whitespace goes: a narrow seat wraps the composer, and that is the only difference it makes. */
+function sameText(a: string, b: string): boolean {
+  return a.replace(/\s+/g, "") === b.replace(/\s+/g, "");
+}
+
 export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {
   if (input.socketEligible) {
     const notBefore = (input.lastSocketAttemptMs ?? Number.NEGATIVE_INFINITY) + CLAUDE_SOCKET_REPEAT_WINDOW_MS;
@@ -58,7 +63,7 @@ export function decideClaudeRetry(input: ClaudeRetryInput): ClaudeRetryStep {
   const composer = input.composer.trim();
   if (composer === "") return { kind: "paste" };
   const text = input.text.trim();
-  if (composer === text) return input.gateSeen ? { kind: "clear_composer", key: "ctrl+c" } : { kind: "enter_only" };
+  if (sameText(composer, text)) return input.gateSeen ? { kind: "clear_composer", key: "ctrl+c" } : { kind: "enter_only" };
   if (!collapsedCopy(composer, text, input.pastedBefore === true)) return { kind: "paused", reason: "guard_held" };
   return input.gateSeen ? { kind: "clear_composer", key: "ctrl+c" } : { kind: "clear_and_resend", key: "ctrl+c" };
 }

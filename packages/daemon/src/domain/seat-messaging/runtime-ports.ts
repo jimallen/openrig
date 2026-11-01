@@ -44,9 +44,12 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
   }
 
   private runtimeOf(seat: string): string | null {
-    const rows = this.deps.db.prepare(`SELECT n.runtime AS runtime FROM nodes n JOIN rigs r ON r.id = n.rig_id LEFT JOIN bindings b ON b.node_id = n.id
-      WHERE r.archived_at IS NULL AND (b.tmux_session = ? OR (b.tmux_session IS NULL AND replace(n.logical_id, '.', '-') || '@' || r.name = ?))`).all(seat, seat) as Array<{ runtime: string | null }>;
-    return rows.length === 1 ? rows[0]!.runtime : null;
+    const rows = this.deps.db.prepare(`SELECT n.runtime AS runtime, r.archived_at AS archivedAt FROM nodes n JOIN rigs r ON r.id = n.rig_id LEFT JOIN bindings b ON b.node_id = n.id
+      WHERE b.tmux_session = ? OR (b.tmux_session IS NULL AND replace(n.logical_id, '.', '-') || '@' || r.name = ?) ORDER BY r.created_at DESC`).all(seat, seat) as Array<{ runtime: string | null; archivedAt: string | null }>;
+    const live = rows.filter((row) => row.archivedAt === null);
+    if (live.length > 0) return live.length === 1 ? live[0]!.runtime : null;
+    // An archived rig's seat keeps its gate: a record beats the seat's end, and its messages go back to their senders through the pump.
+    return rows[0]?.runtime ?? null;
   }
 
   private stateRoot(runtime: string | null): string | null {
@@ -67,10 +70,10 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
       if (store.declaredVersion(seat) === null) return null;
       return hookSeatGate({
         store, nonceOf: nonce, fileIncludes: this.deps.fileIncludes,
-        transcriptsOf: (name) => { const path = this.deps.inbox().transcriptOf(name); return path === null ? [] : [path]; },
+        transcriptsOf: (name) => { const path = this.deps.inbox().transcriptOf(name) ?? store.declaredTranscript(name); return path === null ? [] : [path]; },
       });
     }
-    if (runtime === "codex") return store.declaredVersion(seat) === null ? null : codexSeatGate({ store, nonceOf: nonce, rolloutPathOf: this.deps.rolloutOf });
+    if (runtime === "codex") return store.declaredVersion(seat) === null ? null : codexSeatGate({ store, nonceOf: nonce, rolloutPathOf: (name) => this.deps.rolloutOf(name) ?? store.declaredTranscript(name) });
     const stateRoot = this.stateRoot(runtime);
     if (stateRoot === null || this.runnerState(seat)?.seatGate === undefined) return null;
     return piSeatGate({ stateRoot, nonceOf: nonce });

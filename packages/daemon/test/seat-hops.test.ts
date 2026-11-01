@@ -192,9 +192,9 @@ describe("the hops", () => {
       await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "seat_stopped" });
     });
     it("clears a blocked repeat after it arrived, only when the composer holds exactly this text", async () => {
-      screen = `❯ ${text().replace("\n", " ")}\n──────────────\n`;
+      screen = `❯ ${text()} and more\n──────────────\n`;
       await claude().afterReceived(message);
-      expect(calls).toEqual([]);  // not exact: it may be a person's
+      expect(calls).toEqual([]);  // not this text: it may be a person's
       screen = `❯ ${text().replace("\n", "\n  ")}\n──────────────\n`;
       await claude().afterReceived(message);
       expect(calls).toEqual(["keys:C-c"]);

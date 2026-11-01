@@ -22,6 +22,7 @@ import { OutboxHandler, WAKE_INTENT_PREFIX, type SeatMessageClass, type SeatMess
 import { MessageLedger, mintMessageId } from "./seat-messaging/message-ledger.js";
 import type { MessageHandOff } from "./seat-messaging/hand-off.js";
 import { messageId } from "./seat-messaging/ports.js";
+import { splitMarkedBlock } from "../adapters/seat-gate-marker.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } from "./session-name-matches.js";
@@ -997,6 +998,13 @@ function promptAnswerStaged(pane: string | null, answer: string, runtime: string
 }
 
 export const HANDED_TO_PUMP = "handed_to_pump";
+/** One limit, the held-message quota's: a row is stored, and a pumped one is retried until it arrives. */
+export const MESSAGE_MAX_BYTES = 1024 * 1024;
+
+/** `!cmd` runs in a Codex composer with no hook (s0 M7), so no gate records it and each resend would run it again. It stays a single send. */
+function startsLikeShellEscape(text: string): boolean {
+  return /^\s*!/.test(text);
+}
 
 /** Ids a gate marker can carry (`NATIVE_MARKER_RE`). */
 const MARKABLE_ID = /^[A-Za-z0-9._:-]+$/;
@@ -1007,7 +1015,7 @@ const MARKABLE_ID = /^[A-Za-z0-9._:-]+$/;
  *  is confirmed by its effect (M10). */
 function isPumpMessage(text: string, opts?: SendOpts): boolean {
   return !opts?.submitOnly && !opts?.dangerouslyInteract && !opts?.ownsOutboxRow && opts?.messageClass !== "command" && !opts?.beforeWrite && !opts?.onStartupMismatch
-    && !startsLikeCommand(text) && (opts?.deliveryId === undefined || MARKABLE_ID.test(opts.deliveryId));
+    && !startsLikeCommand(text) && !startsLikeShellEscape(text) && (opts?.deliveryId === undefined || MARKABLE_ID.test(opts.deliveryId));
 }
 
 export interface SendOpts {
@@ -1641,10 +1649,14 @@ export class SessionTransport {
     // OF-148: before any wait, hold or retention. `--dangerously-interact` is exempt here only because it may turn out to
     // send unbracketed key input; sendUnguarded refuses again at the bracketed delivery if it did not.
     if (!opts?.dangerouslyInteract && containsPasteTerminator(text)) return pasteTerminatorRefusal(sessionName);
+    if (Buffer.byteLength(text) > MESSAGE_MAX_BYTES) {
+      return { ok: false, sessionName, sent: false, reason: "message_too_large", error: `A message is limited to ${MESSAGE_MAX_BYTES} bytes, the most a held message may be: it is stored and retried until it arrives. Nothing was sent.` };
+    }
     if (opts?.pumpAttempt) return this.attempt(sessionName, text, opts);
     const handOff = this.tmuxAdapter.messageHandOff?.takes(sessionName) ? this.tmuxAdapter.messageHandOff : null;
     if (handOff && isPumpMessage(text, opts)) return this.handToPump(handOff, sessionName, text, opts);
-    if (opts?.submitOnly || opts?.ownsOutboxRow || opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX)) return this.attempt(sessionName, text, opts);
+    // A person's answer to a prompt writes no row: it can be a credential, and it is audited, not delivered.
+    if (opts?.submitOnly || opts?.dangerouslyInteract || opts?.ownsOutboxRow || opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX)) return this.attempt(sessionName, text, opts);
     if (opts?.committedOutboxIds && opts.committedOutboxIds.length > 0) {
       for (const id of opts.committedOutboxIds) new OutboxHandler(this.db).countAttempt(id);
       return this.attempt(sessionName, text, opts);
@@ -1685,9 +1697,12 @@ export class SessionTransport {
    */
   private handToPump(handOff: MessageHandOff, sessionName: string, text: string, opts?: SendOpts): SendResult {
     const handed = (ids: string[]): SendResult => ({ ok: true, sessionName, sent: false, verified: false, outcome: "retained", reason: HANDED_TO_PUMP, outboxIds: ids,
-      warning: "Accepted, not yet received: the pump carries it until the seat's gate records it." });
+      warning: "Accepted, not yet received: OpenRig carries it until the seat's gate records it." });
     const claimed = opts?.committedOutboxIds?.length ? opts.committedOutboxIds : opts?.deliveryId?.startsWith(WAKE_INTENT_PREFIX) ? [opts.deliveryId] : null;
     if (claimed) { handOff.adoptClaimed(claimed); return handed(claimed); }
+    if (splitMarkedBlock(text).text.trim() === "") {
+      return { ok: false, sessionName, sent: false, reason: "empty_message", error: "The message has no text once marker lines are set aside, so a gate could never pass it to the agent. Nothing was sent." };
+    }
     let accepted;
     try {
       accepted = handOff.accept({

@@ -359,6 +359,12 @@ process writing directly to the terminal. Disable deliberately before lifecycle 
     .action(async (seat: string, id: string, opts: {reason: string; json?: boolean}) => {
       await guardRequest("POST", `/api/seat/retire-held-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, { reason: opts.reason }, opts.json);
     });
+  cmd.command("cancel-message").argument("<seat>").argument("<id>").requiredOption("--reason <text>")
+    .description("End a message that will never arrive. It is not sent, and its seat's queue goes on.")
+    .action(async (seat: string, id: string, opts: { reason: string }) => {
+      await guardRequest("POST", `/api/transport/cancel-message/${encodeURIComponent(seat)}/${encodeURIComponent(id)}`, { reason: opts.reason });
+    });
+
   cmd.command("retire-unsettled-send").argument("<seat>").argument("<id>").requiredOption("--reason <text>").option("--json")
     .description("Close a send to an hc seat that was never confirmed delivered or lost, after looking at the seat; sends nothing")
     .addHelpText("after", `

@@ -13,7 +13,7 @@ import { requireSenderIdentity, resolveRecordedProvenance, ORIGIN_UNKNOWN_HEADER
 import { hostname as osHostname } from "node:os";
 import type { InboxHandler } from "../domain/inbox-handler.js";
 import { InboxHandlerError } from "../domain/inbox-handler.js";
-import { DAEMON_OUTBOX_ID_PREFIXES, type OutboxHandler } from "../domain/outbox-handler.js";
+import { DAEMON_OUTBOX_ID_PREFIXES, publicOutboxEntry, type OutboxHandler } from "../domain/outbox-handler.js";
 import { aggregateAttention } from "../domain/feed/attention-aggregator.js";
 import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
@@ -1238,7 +1238,7 @@ export function queueRoutes(): Hono {
     if (!senderSession) return c.json({ error: "senderSession is required" }, 400);
     const parsed = queryLimit(c);
     if (!parsed.ok) return parsed.response;
-    return c.json(getOutbox(c).listForSender(senderSession, parsed.limit));
+    return c.json(getOutbox(c).listForSender(senderSession, parsed.limit).map(publicOutboxEntry));
   });
 
   return app;

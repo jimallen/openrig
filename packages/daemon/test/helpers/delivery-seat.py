@@ -1,0 +1,119 @@
+# The stub agent for test/delivery-review.real.test.ts, from the QA reviewer's kit. Plays Codex or Claude on a real pty and runs the REAL relay
+# as a real process for every event, so what the relay decides is what the "agent" sees. Claude's transcript uses real record shapes (key
+# census of live transcripts, Claude 2.1.310 to 2.1.316): a queued message is `queue-operation`/`enqueue` first, with the prompt in `content`,
+# and the hook runs only when it is taken (s0 M7). Taken, it is a `user` record, or an `attachment` of type `queued_command`.
+import hashlib, json, os, re, signal, subprocess, sys, time, tty
+base, relay, node, runtime = sys.argv[1:5]
+tty.setraw(0)
+log = open(base + "/seat.log", "ab", buffering=0)
+rollout = base + "/rollout.jsonl"
+MARK = re.compile(rb"\n\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]\s*$")
+composer = b""
+lost = False
+flag = lambda n: os.path.exists(base + "/" + n)
+transcript = rollout if runtime == "codex" else base + "/transcript.jsonl"
+def hook(payload):
+    return subprocess.run([node, relay], input=json.dumps(payload).encode(), capture_output=True)
+def stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+def claude_line(record):
+    with open(transcript, "a") as f:
+        f.write(json.dumps(record) + "\n")
+def enqueue(text):
+    claude_line({"type": "queue-operation", "operation": "enqueue", "timestamp": stamp(), "sessionId": "s-1", "content": text})
+def taken(text):
+    common = {"parentUuid": None, "isSidechain": False, "uuid": "u-%d" % time.time_ns(), "timestamp": stamp(), "sessionId": "s-1", "userType": "external", "cwd": base, "version": "2.1.316"}
+    if flag("as-attachment"):
+        claude_line({**common, "type": "attachment", "attachment": {"type": "queued_command", "prompt": text, "commandMode": "prompt", "humanTurn": False}})
+    else:
+        claude_line({**common, "type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+def status(state):
+    os.write(1, b"\x1b]7501;state=" + state + b":app=stub\x1b\\")
+def draw():
+    lines = composer.decode("utf8", "replace").split("\n")
+    if runtime == "codex":
+        if len(composer) > 1000:
+            text = "\x1b[2J\x1b[H\r\n› [Pasted Content %d chars]" % len(composer)
+        else:
+            text = "\x1b[2J\x1b[H\r\n"
+            text += "› " + lines[0] if composer else "› Ask Codex to do anything"
+            for line in lines[1:]:
+                text += "\r\n  " + line
+        text += "\r\n\r\n  stub low · /work\r\n"
+    else:
+        text = "\x1b[2J\x1b[H\r\n" + "─" * 40 + "\r\n❯ "
+        text += ("[Pasted text #1 +%d lines]" % len(lines)) if len(lines) > 2 else composer.decode("utf8", "replace").replace("\n", "\r\n  ")
+        text += "\r\n" + "─" * 40 + "\r\n"
+    os.write(1, text.encode("utf8"))
+def submit():
+    global composer
+    found = MARK.search(composer)
+    if flag("compacting"):
+        log.write(b"refused\n"); composer = b""; return
+    if not found:
+        log.write(b"unmarked " + composer + b"\n"); composer = b""; return
+    mid = found.group(1)
+    text = composer[:found.start()].replace(b"\n", b"|")
+    prompt = composer.decode()
+    if runtime != "codex":
+        enqueue(prompt)
+    if flag("die-queued"):
+        os.remove(base + "/die-queued"); log.write(b"died queued\n"); os._exit(9)
+    if flag("queued"):
+        log.write(b"enqueued " + mid + b"\n")
+        while not flag("take"):
+            time.sleep(0.02)
+    if flag("hook-crash"):
+        os.remove(base + "/hook-crash")
+        log.write(b"agent " + mid + b" " + text + b"\n")
+        with open(rollout, "a") as f:
+            f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}}) + "\n")
+        composer = b""
+        return
+    ran = hook({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "transcript_path": transcript, "session_id": "s-1", "prompt_id": "p-%d" % time.time_ns()})
+    if flag("die-after-record"):
+        os.remove(base + "/die-after-record"); os._exit(9)
+    blocked = None
+    try:
+        blocked = json.loads(ran.stdout.decode().strip().split("\n")[-1]).get("decision") == "block"
+        reason = json.loads(ran.stdout.decode().strip().split("\n")[-1]).get("reason", "")
+    except Exception:
+        reason = ""
+    if blocked:
+        log.write(b"dropped " + mid + b" " + reason[:40].encode() + b"\n")
+        if runtime == "codex":
+            composer = b""
+        return
+    log.write(b"agent " + mid + b" " + text + b"\n")
+    if runtime == "codex":
+        with open(rollout, "a") as f:
+            f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": composer.decode()}]}}) + "\n")
+    else:
+        taken(prompt)
+    composer = b""
+hook({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s-1", "transcript_path": transcript})
+status(b"idle")
+draw()
+if flag("hold"):
+    while not flag("go"):
+        time.sleep(0.02)
+while True:
+    chunk = os.read(0, 65536)
+    if not chunk:
+        break
+    chunk = chunk.replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"")
+    if chunk in (b"\x03", b"\x15"):
+        composer = b""; draw(); continue
+    while chunk:
+        # inside a paste the CRs are newlines: a lone trailing CR after paste end is the Enter.
+        before, sep, chunk = chunk.partition(b"\r")
+        composer += before
+        if sep:
+            if chunk:   # more bytes after this CR: it was a line break of the paste
+                composer += b"\n"
+            elif flag("lose-enter") and not lost:
+                lost = True
+            else:
+                submit()
+    draw()
+    status(b"done")

@@ -505,7 +505,7 @@ describe("settlement: the queue write-back and the sender notice (review F3, R3)
 // Review M21: the relay process itself prints `decision: block` when the daemon answers block, and nothing otherwise.
 describe("relay process: the block answer reaches Claude's stdout", () => {
   const RELAY = fileURLToPath(new URL("../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs", import.meta.url));
-  async function runRelay(reply: unknown): Promise<{ stdout: string; acks: unknown[] }> {
+  async function runRelay(reply: unknown, seat: Record<string, string> = { OPENRIG_NODE_ID: "n1" }): Promise<{ stdout: string; acks: unknown[] }> {
     const acks: unknown[] = [];
     const server = createHttpServer((req, res) => {
       let body = ""; req.on("data", (c) => { body += c; });
@@ -520,19 +520,25 @@ describe("relay process: the block answer reaches Claude's stdout", () => {
     const home = mkdtempSync(join(tmpdir(), "nc3-relay-"));
     cleanups.push(() => { server.close(); rmSync(home, { recursive: true, force: true }); });
     const child = spawn(process.execPath, [RELAY], { env: { PATH: process.env.PATH ?? "", HOME: home, OPENRIG_HOME: home, OPENRIG_URL: `http://127.0.0.1:${port}`,
-      OPENRIG_ACTIVITY_HOOK_TOKEN: "tok", OPENRIG_RUNTIME: "claude-code", OPENRIG_SESSION_NAME: SEAT }, stdio: ["pipe", "pipe", "pipe"] });
+      OPENRIG_ACTIVITY_HOOK_TOKEN: "tok", OPENRIG_RUNTIME: "claude-code", ...seat }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = ""; child.stdout.on("data", (c) => { stdout += c; });
     child.stdin.end(JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt_id: "p-9", prompt: "hi\n\n[openrig-msg outbox-1:0123456789abcdef01234567]" }));
     await new Promise((r) => child.on("close", r));
     return { stdout, acks };
   }
 
-  it("block: true → one JSON object with decision block on stdout; the ack carried the marker and the prompt id", async () => {
+  it("on a seat with no gate, block: true → one JSON object with decision block on stdout; the ack carried the marker and the prompt id", async () => {
     const r = await runRelay({ ok: true, acked: [], block: true });
     expect(JSON.parse(r.stdout.trim())).toMatchObject({ decision: "block" });
     // OF-180 N6: a person who pasted the marker sees how to send the text anyway
     expect(JSON.parse(r.stdout.trim()).reason).toContain("If you pasted it on purpose, delete the [openrig-msg ...] line and send it again.");
     expect(r.acks).toEqual([expect.objectContaining({ promptId: "p-9", markers: [{ id: "outbox-1", nonce: "0123456789abcdef01234567" }] })]);
+  });
+
+  it("a copy the seat's gate recorded is never blocked by the ack: the daemon may have read the record first, and the agent must have it", async () => {
+    const r = await runRelay({ ok: true, acked: [], block: true }, { OPENRIG_SESSION_NAME: SEAT });
+    expect(r.stdout).toBe("");
+    expect(r.acks).toHaveLength(1);
   });
 
   it("control: block: false → nothing on stdout", async () => {

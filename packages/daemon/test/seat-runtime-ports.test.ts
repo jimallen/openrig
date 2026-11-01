@@ -93,11 +93,24 @@ describe("the seats the pump serves", () => {
     }
   });
 
-  it("a seat nobody knows, and an archived rig's seat, are not gated", () => {
+  it("a seat nobody knows is not gated; an archived rig's seat keeps its gate, because a record beats the seat's end", () => {
     expect(ports.gateFor("ghost@none")).toBeNull();
     const { name, rigId } = seat("claude-code");
     declareHook(name);
     db.prepare("UPDATE rigs SET archived_at = 'x' WHERE id = ?").run(rigId);
-    expect(ports.gateFor(name)).toBeNull();
+    expect(ports.gateFor(name)?.version).toBe(1);
+  });
+
+  it("a live seat beats an archived one of the same name, and two live ones prove nothing", () => {
+    const old = seat("pda");
+    db.prepare("UPDATE rigs SET archived_at = 'x' WHERE id = ?").run(old.rigId);
+    const rigs = new RigRepository(db);
+    const node = rigs.addNode(rigs.createRig("fresh").id, "dev", { role: "worker", runtime: "codex" });
+    new SessionRegistry(db).updateBinding(node.id, { attachmentType: "hc", tmuxSession: old.name });
+    declareHook(old.name);
+    expect(ports.gateFor(old.name)?.version).toBe(1);
+    const other = rigs.addNode(rigs.createRig("twin").id, "dev", { role: "worker", runtime: "codex" });
+    new SessionRegistry(db).updateBinding(other.id, { attachmentType: "hc", tmuxSession: old.name });
+    expect(ports.gateFor(old.name)).toBeNull();
   });
 });

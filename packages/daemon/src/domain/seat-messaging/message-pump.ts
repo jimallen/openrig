@@ -104,14 +104,16 @@ export class MessagePump {
   }
 
   /** No message stays held waiting for a person: it leaves the guard when the guard lifts, and at once when its seat is gone for good.
-   *  A seat with no gate keeps its held rows, as it keeps everything else. */
+   *  A seat with no gate keeps its held rows while it lives, as it keeps everything else. */
   private rejoinHeld(): void {
     const at = new Date(this.clock()).toISOString();
     for (const held of this.deps.store.listHeld()) {
+      const gone = this.deps.directory.fate(held.seat).kind === "gone";
+      if (gone) { this.deps.store.adoptHeld(held.id, at, null); continue; }
       if (!this.deps.ports.gateFor(held.seat)) continue;
       const status = this.deps.held.status(held.binding, held.seat);
       if (status === "occupant_changed") this.deps.store.adoptHeld(held.id, at, held.binding?.occupant ?? "unknown");
-      else if (status === "lifted" || this.deps.directory.fate(held.seat).kind === "gone") this.deps.store.adoptHeld(held.id, at, null);
+      else if (status === "lifted") this.deps.store.adoptHeld(held.id, at, null);
     }
   }
 
@@ -131,8 +133,12 @@ export class MessagePump {
 
   private async visit(message: StoredMessage): Promise<Visit> {
     const gate = this.deps.ports.gateFor(message.seat);
-    // A seat with no gate is not the pump's, in any fate: nothing here can know what reached it. It stays as it is, and shows on health.
-    if (!gate) return "stop";
+    if (!gate) {
+      // A row the pump took whose seat has no gate now: the seat's record went with its rig (decision 1). Any other row on a gateless seat is
+      // not the pump's, in any fate: nothing here can know what reached it. It stays as it is, and shows on health.
+      const fate = message.pumpOwned ? this.deps.directory.fate(message.seat) : null;
+      return fate?.kind === "gone" ? this.end(message, fate.reason) : "stop";
+    }
     const lookup = await this.readGate(gate, message);
     // First, ahead of the seat's fate: a record means the message arrived, whatever became of the seat since.
     if (lookup.kind === "seen") {
@@ -147,16 +153,14 @@ export class MessagePump {
       return this.end(message, `occupant ${message.previousOccupant} of ${message.seat} has ended`);
     }
     if (bound !== null) {
-      // A lifecycle message belongs to one occupant: never a successor, never a new occupant.
-      if (fate.kind === "successor" || fate.kind === "gone" || (fate.kind === "live" && fate.occupantGeneration !== null && fate.occupantGeneration !== bound)) {
-        return this.end(message, `occupant ${bound} of ${message.seat} has ended`);
-      }
+      const changed = fate.kind === "successor" || fate.kind === "gone" || (fate.kind === "live" && fate.occupantGeneration !== null && fate.occupantGeneration !== bound);
       if (fate.kind === "live" && fate.occupantGeneration === null) return "stop";
-    } else if (fate.kind === "successor") {
-      return this.deps.store.moveToSuccessor(message.id, fate.seat) ? "next" : "stop";
-    } else if (fate.kind === "gone") {
-      return this.end(message, fate.reason);
+      if (changed && message.messageClass === "lifecycle") return this.end(message, `occupant ${bound} of ${message.seat} has ended`);
+      // Only lifecycle text stays with its occupant (Jim's rule): the rest goes on, labelled.
+      if (changed && fate.kind !== "gone") return this.deps.store.rebindToNewOccupant(message.id, bound) ? "next" : "stop";
     }
+    if (fate.kind === "successor") return this.deps.store.moveToSuccessor(message.id, fate.seat) ? "next" : "stop";
+    if (fate.kind === "gone") return this.end(message, fate.reason);
     if (lookup.kind === "unavailable") {
       this.deps.store.recordGateUnavailable(message.id, this.clock() + this.timing.pauseRecheckMs);
       return "stop";

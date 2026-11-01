@@ -360,7 +360,7 @@ function hasPickupEvidence(db: Database.Database, row: Pick<QueueItem, "qitemId"
 
 type WakeMode = "failed" | "unconfirmed";
 
-function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
+export function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
   if (!lastNudgeResult) return null;
   if (lastNudgeResult.startsWith("failed:")) return "failed";
   // #344 follow-up — a typing-guard refusal (retained:) wrote NO pane input, so an
@@ -372,6 +372,8 @@ function classifyWakeResult(lastNudgeResult: string | null): WakeMode | null {
   // records a fresh attempt; later retries reuse the same delivery id, whose
   // retained readback returns `retained` again even after the guard has cleared —
   // so the row re-probes once and then escalates rather than looping probes.
+  // The pump owns a wake it was handed, and its row retries itself: the ladder has nothing to do but its notice.
+  if (lastNudgeResult === "retained:pump") return null;
   if (lastNudgeResult.startsWith("retained:")) return "failed";
   if (
     lastNudgeResult === "delivered-ack-pending" ||

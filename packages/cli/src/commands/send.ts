@@ -565,7 +565,7 @@ agent@rig@host is sugar for --host when the suffix is a REGISTERED host id
       }
 
       if (res.data["outcome"] === "retained") {
-        console.log(opts.json ? JSON.stringify(res.data) : `Retained, not delivered to ${session}. ${String(res.data["warning"] ?? "")}`);
+        console.log(opts.json ? JSON.stringify(res.data) : `${res.data["reason"] === "handed_to_pump" ? `Accepted for ${session} (${String(res.data["messageId"] ?? "")}).` : `Retained, not delivered to ${session}.`} ${String(res.data["warning"] ?? "")}`);
         return;
       }
 
@@ -970,7 +970,7 @@ async function runHttpHostSend(
   console.log(`[via host=${host.id} (${hostDisplayTarget(host)})]`);
   const data = (result.data ?? {}) as Record<string, unknown>;
   if (data["outcome"] === "retained") {
-    console.log(`Retained for ${session}; not delivered. ${data["warning"] ?? ""}`);
+    console.log(`${data["reason"] === "handed_to_pump" ? `Accepted for ${session} (${String(data["messageId"] ?? "")}).` : `Retained for ${session}; not delivered.`} ${data["warning"] ?? ""}`);
     return;
   }
   console.log(`Sent to ${session}`);

@@ -124,6 +124,7 @@ describe.each<RunnerRuntime>(["pi", "omp"])("the gate in RunnerCore, %s", (runti
 
   it("when the intent can't be made durable nothing is sent, and the pane says so", () => {
     ready();
+    fs.rmSync(log, { force: true });
     fs.mkdirSync(log);
     core.handleUserBlock(marked("hello"));
     expect(inputs()).toEqual([]);

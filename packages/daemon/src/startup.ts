@@ -129,7 +129,7 @@ import { CompactionStageStore } from "./domain/compaction-stage-store.js";
 import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
 import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
 import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
-import { HookSeenStore, nativeSeatGate, seatGateRoot } from "./adapters/hook-seen-store.js";
+import { HookSeenStore, nativeSeatGate, seatGateRoot, transcriptHasPrompt } from "./adapters/hook-seen-store.js";
 import { createNativeSettlementHandler, failOverToTmux } from "./domain/native-inbox-settlement.js";
 import { fileIncludes, listProcesses as listProcessesForNative, processIsAlive, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
@@ -1286,10 +1286,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const hcLaunchBlockedHealth = new HcLaunchBlockedHealthSource(() => hcClient?.launchBlockedBecause ?? null);
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
-  // Seat Messaging S3: one setting, read at boot, default off. Off, no pump and no health source exist, and every path is as it was.
+  // Seat Messaging: one setting, read at boot, default on. Off, no pump and no health source exist, and every path is as it was.
   const realSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
     db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
-    client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: (path, needle) => { try { return fileIncludes(path, needle); } catch { return null; } },
+    client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,
     rolloutOf: (seat) => {
       const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
       return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
@@ -1420,7 +1420,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     listProcesses: listProcessesForNative,
     socketExists,
     write: (path, lines) => writeSocketLines(path, lines),
-    fileIncludes: (path, needle) => fileIncludes(path, needle),
+    fileIncludes: (path, needle) => transcriptHasPrompt(path, needle) === true,
     probeBinary: probeClaudeBinary,
     resolveExecPath: resolveClaudeExecPath,
     processStartedAt: processStart,
@@ -2234,6 +2234,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       }
     };
     opts?.onClaudeInboxReady?.(claudeNativeInbox);
+    claudeNativeInbox.reconcileAtBoot();
     nativeNotice.send = (to, text) => sessionTransport.send(to, text, { forceTmux: true, actorSession: "daemon@kernel" }).catch(() => undefined);
     void nativeSweep();
     const nativeSweepTimer = setInterval(() => { void nativeSweep(); }, 15_000);

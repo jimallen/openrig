@@ -124,9 +124,9 @@ export const SETTINGS_VALID_KEYS = [
   "recovery.provider_auth_env_allowlist",
   // OF-182: tell a seat whose conversation a restore resumed that it was restarted and its background work killed (default on).
   "recovery.post_restart_prompt",
-  // Native comms step 3: deliver daemon and agent messages to Claude seats through the seat's inbox socket (default off).
+  // Native comms step 3: deliver messages to Claude seats through the seat's inbox socket (default on since S2).
   "transport.native_claude",
-  // Seat Messaging S3: the pump that resends until a seat's gate records the id (default off until a gate is wired).
+  // Seat Messaging: the pump that resends to a gated seat until its gate records the id (default on; a seat with no gate is unchanged).
   "transport.message_pump",
   // V1 attempt-3 Phase 4 - Advisor / Operator rail icon V1 placeholders
   // per universal-shell.md L82–L84. SC-29 EXCEPTION declared in

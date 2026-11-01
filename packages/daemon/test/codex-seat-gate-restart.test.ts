@@ -37,12 +37,11 @@ describe("every resume settles the seen store before it types", () => {
     expect(w.order.slice(0, 2)).toEqual([`reconcile:seat-1:${THREAD}`, "typed"]);
   });
 
-  it("a fresh launch has no conversation to settle", async () => {
+  it("a fresh launch settles too: the process before it may have died holding a recorded prompt, and a record names its own rollout", async () => {
     const w = world();
     const adapter = new CodexRuntimeAdapter({ tmux: w.tmux as never, fsOps: fsOps as never, sleep: async () => {}, listProcesses: () => [], reconcileSeatGate: w.reconcileSeatGate });
     await adapter.launchHarness(binding, { name: "dev@rig" });
-    expect(w.order.filter((step) => step.startsWith("reconcile"))).toEqual([]);
-    expect(w.order).toContain("typed");
+    expect(w.order.slice(0, 2)).toEqual(["reconcile:seat-1:null", "typed"]);
   });
 
   it("sendResumeCommand, the restart in place", async () => {

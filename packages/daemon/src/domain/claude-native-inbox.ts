@@ -18,15 +18,16 @@ import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import { WAKE_INTENT_PREFIX, type OutboxEntry, type OutboxHandler } from "./outbox-handler.js";
 import { nameEnvelope } from "./native-name-envelope.js";
+import { trailingMarkers } from "../adapters/seat-gate-marker.js";
 
 /** The marker line appended to a native message. `<id>` is the outbox row, `<nonce>` a per-row secret the sender never sees. */
 export const NATIVE_MARKER_RE = /\[openrig-msg ([A-Za-z0-9._:-]+):([a-f0-9]{16,64})\]/g;
 export function nativeMarker(outboxId: string, nonce: string): string {
   return `[openrig-msg ${outboxId}:${nonce}]`;
 }
-/** Every marker in a prompt, in order. */
+/** Every marker a prompt carries, in order: its trailing lines only. A marker quoted in its text confirms nothing. */
 export function parseNativeMarkers(prompt: string): Array<{ id: string; nonce: string }> {
-  return [...prompt.matchAll(NATIVE_MARKER_RE)].map((m) => ({ id: m[1]!, nonce: m[2]! }));
+  return trailingMarkers(prompt);
 }
 
 /** The literal the inject-format probe looks for in a claude binary: the user-message line its own help prints. */
@@ -235,6 +236,8 @@ export class ClaudeNativeInbox {
     try {
       const { received, cleared } = this.deps.gate.reconcile(sessionName, transcripts);
       for (const marker of received) {
+        // By id and nonce: a marker under any other nonce is forged, and confirms nothing.
+        if (this.deps.outbox.getById(marker.id)?.nativeNonce !== marker.nonce) continue;
         if (this.deps.outbox.settleNative(marker.id, "delivered", { path: "native", evidence: "native_transcript", detail: "no_seen_record" })) {
           this.notify(marker.id, { kind: "delivered", evidence: "native_transcript", detail: "no_seen_record" });
         }
@@ -245,6 +248,15 @@ export class ClaudeNativeInbox {
       }
     } catch (err) {
       console.warn(`[native-inbox] gate reconcile for ${sessionName} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** At boot: a seat that restarted while the daemon was down lost its SessionStart post, so nothing else reconciles it. A record stays
+   *  unless its process is proven dead, so this is safe for a seat that is still running. */
+  reconcileAtBoot(): void {
+    if (!this.deps.gate || !this.hasTables()) return;
+    for (const row of this.deps.db.prepare("SELECT session_name AS seat, transcript_path AS transcript FROM seat_native_endpoints WHERE session_name IS NOT NULL").all() as Array<{ seat: string; transcript: string | null }>) {
+      this.reconcileGate(row.seat, [row.transcript]);
     }
   }
 

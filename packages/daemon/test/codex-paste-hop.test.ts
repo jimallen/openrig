@@ -17,10 +17,10 @@ describe("reading the composer", () => {
     expect(readCodexComposer(EMPTY)).toEqual({ kind: "empty" });
   });
   it("a staged message, its lines down to the footer, not the history's", () => {
-    expect(readCodexComposer(screen(`› Reply with TWO\n  ${MARKER}`))).toEqual({ kind: "text", lines: ["Reply with TWO", MARKER] });
+    expect(readCodexComposer(screen(`› Reply with TWO\n  ${MARKER}`))).toMatchObject({ kind: "text", lines: ["Reply with TWO", MARKER] });
   });
   it("a footer directly under the composer is not the message", () => {
-    expect(readCodexComposer(`› half a thought\n${FOOTER}\n`)).toEqual({ kind: "text", lines: ["half a thought"] });
+    expect(readCodexComposer(`› half a thought\n${FOOTER}\n`)).toMatchObject({ kind: "text", lines: ["half a thought"] });
   });
   it("no prompt line is unreadable, never empty", () => {
     expect(readCodexComposer("Welcome to Codex\n")).toEqual({ kind: "unreadable" });
@@ -43,6 +43,8 @@ describe("what is staged", () => {
   });
   it("a draft holding the marker text mid-line is not a staged copy", () => {
     expect(composerHoldsMessage([`look at ${MARKER} here`], SHORT)).toBe(false);
+    expect(composerHoldsMessage(["look at", MARKER.slice(0, 20), MARKER.slice(20), "here"], SHORT)).toBe(true);  // wrapped across whole lines
+    expect(composerHoldsMessage([`look at ${MARKER.slice(0, 20)}`, MARKER.slice(20)], SHORT)).toBe(false);
   });
   it("another message's marker is not this one", () => {
     expect(composerHoldsMessage(["hello", "[openrig-msg m-2:0123456789abcdef0123]"], SHORT)).toBe(false);
@@ -52,8 +54,8 @@ describe("what is staged", () => {
   });
   it("decides paste on empty, Enter only on this message, hold on a draft or an unreadable screen", () => {
     expect(decideStagedAttempt({ kind: "empty" }, SHORT)).toBe("paste");
-    expect(decideStagedAttempt({ kind: "text", lines: ["Reply with TWO", MARKER] }, SHORT)).toBe("enter_only");
-    expect(decideStagedAttempt({ kind: "text", lines: ["my draft"] }, SHORT)).toBe("hold");
+    expect(decideStagedAttempt({ kind: "text", lines: ["Reply with TWO", MARKER], below: ["Reply with TWO", MARKER] }, SHORT)).toBe("enter_only");
+    expect(decideStagedAttempt({ kind: "text", lines: ["my draft"], below: ["my draft"] }, SHORT)).toBe("hold");
     expect(decideStagedAttempt({ kind: "unreadable" }, SHORT)).toBe("hold");
   });
 });

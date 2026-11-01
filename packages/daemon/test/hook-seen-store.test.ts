@@ -80,13 +80,51 @@ describe("seatGateFolder", () => {
   });
 });
 
+const userRecord = (text: string) => JSON.stringify({ parentUuid: null, isSidechain: false, type: "user", message: { role: "user", content: [{ type: "text", text }] }, uuid: "u", timestamp: "t", sessionId: "s" });
+
 describe("transcriptMarkers", () => {
   it("finds a marker that straddles two chunks", () => {
     const s = seat();
     const path = join(s.home, "t.jsonl");
     const text = marker("m-1");
-    writeFileSync(path, `${"x".repeat(64 - 5)}${text}${"y".repeat(100)}`);
+    writeFileSync(path, `${userRecord(`${"x".repeat(90)}\n${text}`)}\n`);
     expect([...transcriptMarkers(path, 64)!.values()]).toEqual([{ id: "m-1", nonce: NONCE }]);
+  });
+
+  // Real record shapes: a key census of live transcripts, Claude 2.1.310 to 2.1.316.
+  const prompt = `hello\n${marker("m-1")}`;
+  const enqueue = JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: "t", sessionId: "s", content: prompt });
+  const remove = JSON.stringify({ type: "queue-operation", operation: "remove", timestamp: "t", sessionId: "s", content: prompt, reason: "x", commandUuid: "c", deliveryId: "d" });
+  const blob = JSON.stringify({ type: "api-request-blob", sessionId: "s", hash: "h", message: { role: "user", content: [{ type: "text", text: prompt }] } });
+  const assistant = JSON.stringify({ type: "assistant", isSidechain: false, message: { role: "assistant", content: [{ type: "text", text: prompt }] } });
+  const toolResult = JSON.stringify({ type: "user", isSidechain: false, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: prompt }] } });
+  const sidechain = JSON.stringify({ type: "user", isSidechain: true, message: { role: "user", content: [{ type: "text", text: prompt }] } });
+  const attachment = JSON.stringify({ type: "attachment", isSidechain: false, attachment: { type: "queued_command", prompt, commandMode: "prompt" } });
+  const stringUser = JSON.stringify({ type: "user", isSidechain: false, message: { role: "user", content: prompt } });
+  const envelope = JSON.stringify({ type: "user", isSidechain: false, message: { role: "user", content: `<cross-session-message from-name="a@r">\n${prompt}\n</cross-session-message>` } });
+  const pasted = JSON.stringify({ type: "user", isSidechain: false, message: { role: "user", content: `\n\n<pasted_content id="3052">\n${prompt}\n</pasted_content id="3052">\n` } });
+  const quoted = JSON.stringify({ type: "user", isSidechain: false, message: { role: "user", content: `why ${marker("m-1")} twice?` } });
+
+  for (const [name, line] of [["a queue-operation enqueue", enqueue], ["a queue-operation remove", remove], ["an api-request-blob", blob], ["an assistant record", assistant], ["a tool result", toolResult], ["a subagent's record", sidechain], ["a marker quoted mid-text", quoted]] as const) {
+    it(`${name} is no prompt`, () => {
+      const path = join(seat().home, "t.jsonl");
+      writeFileSync(path, `${line}\n`);
+      expect(transcriptMarkers(path)!.size).toBe(0);
+    });
+  }
+
+  for (const [name, line] of [["a user record of text parts", userRecord(prompt)], ["a user record of a string", stringUser], ["a queued_command attachment", attachment], ["a sender's envelope", envelope], ["a multi-line paste's wrapper", pasted]] as const) {
+    it(`${name} is a prompt`, () => {
+      const path = join(seat().home, "t.jsonl");
+      writeFileSync(path, `${line}\n`);
+      expect([...transcriptMarkers(path)!.values()]).toEqual([{ id: "m-1", nonce: NONCE }]);
+    });
+  }
+
+  it("a torn last line is not durable yet", () => {
+    const path = join(seat().home, "t.jsonl");
+    writeFileSync(path, userRecord(prompt));
+    expect(transcriptMarkers(path)!.size).toBe(0);
   });
 
   it("no file is an empty answer; an unreadable one is no answer", () => {

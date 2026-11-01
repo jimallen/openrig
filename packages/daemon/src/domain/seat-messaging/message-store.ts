@@ -32,6 +32,8 @@ export interface StoredMessage {
   readonly occupantGeneration: string | null;
   /** Set when a held row went to a new occupant: the occupant that held it. Every attempt then carries the label. */
   readonly previousOccupant: string | null;
+  /** The pump took this row. Otherwise it is S1's bookkeeping on a seat the pump does not serve. */
+  readonly pumpOwned: boolean;
   readonly sender: string;
   readonly lane: SeatMessageLane;
   readonly messageClass: SeatMessageClass;
@@ -86,6 +88,7 @@ interface MessageRow {
   message_last_refusal: string | null;
   occupant_generation: string | null;
   message_previous_occupant: string | null;
+  message_pump_owned: number | null;
 }
 
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
@@ -106,7 +109,7 @@ function iso(ms: number | null): string | null { return ms === null ? null : new
 function toMessage(row: MessageRow): StoredMessage {
   return {
     id: messageId(row.outbox_id), seat: row.destination_session, sender: row.sender_session, body: row.body,
-    occupantGeneration: row.occupant_generation, previousOccupant: row.message_previous_occupant,
+    occupantGeneration: row.occupant_generation, previousOccupant: row.message_previous_occupant, pumpOwned: row.message_pump_owned === 1,
     state: row.message_state === "accepted" ? "accepted" : "attempting",
     lane: laneOf(row.lane), messageClass: classOf(row.class),
     attempts: row.attempts, nextAttemptAtMs: row.next_attempt_at === null ? null : Date.parse(row.next_attempt_at),
@@ -137,6 +140,7 @@ export class MessageStore {
       });
       this.db.prepare(`UPDATE outbox_entries SET message_state = 'accepted', message_id = coalesce(message_id, outbox_id), occupant_generation = ?, lane = ?, class = ?, next_attempt_at = ?
         WHERE outbox_id = ? AND message_state IS NULL`).run(input.occupantGeneration ?? null, input.lane ?? MESSAGE_LANES.content, input.messageClass ?? null, iso(input.firstAttemptAtMs ?? null), input.id);
+      this.db.prepare("UPDATE outbox_entries SET message_pump_owned = 1 WHERE outbox_id = ? AND message_state IN ('accepted', 'attempting')").run(input.id);
       return toMessage(this.read(input.id)!);
     })();
   }
@@ -192,7 +196,7 @@ export class MessageStore {
    *  only for the nonce the gate cleared. A row that is still open needs nothing: its next attempt now passes the gate. */
   reopenCleared(id: MessageId, nonce: string): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'attempting', delivery_state = 'pending', delivered_at = NULL, gate_recorded_at = NULL,
-        gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id)
+        gate_nonce = NULL, message_gate_version = NULL, delivery_path = NULL, ack_evidence = NULL, ack_detail = NULL, next_attempt_at = NULL, message_id = coalesce(message_id, outbox_id), message_pump_owned = 1
       WHERE outbox_id = ? AND native_nonce = ? AND delivery_state = 'delivered'`).run(id, nonce).changes === 1;
   }
 
@@ -250,6 +254,12 @@ export class MessageStore {
     return "open";
   }
 
+  /** Jim's rule: only lifecycle text stays with its occupant. Other text bound to one (a watchdog's fire) goes on to the new occupant,
+   *  labelled as sent to the previous one. */
+  rebindToNewOccupant(id: MessageId, previousOccupant: string): boolean {
+    return this.db.prepare(`UPDATE outbox_entries SET occupant_generation = NULL, message_previous_occupant = ? WHERE outbox_id = ? AND ${OPEN}`).run(previousOccupant, id).changes === 1;
+  }
+
   /** Decision 1: the same id and body, now for the successor. Attempt history stays with the message. */
   moveToSuccessor(id: MessageId, successor: string): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET destination_session = ?, next_attempt_at = NULL, message_pause_reason = NULL
@@ -268,14 +278,14 @@ export class MessageStore {
   /** Decision 4: a held message rejoins its seat's queue when the guard lifts. It keeps its rowid, so it stays ahead of anything
    *  newer, and stays `retained` until received (see the class note). `previousOccupant`: the seat changed hands, so it goes labelled. */
   adoptHeld(id: MessageId, atIso: string, previousOccupant: string | null): boolean {
-    return this.db.prepare(`UPDATE outbox_entries SET message_state = coalesce(message_state, 'accepted'), message_id = coalesce(message_id, outbox_id), message_hold_released_at = ?, message_previous_occupant = ?
+    return this.db.prepare(`UPDATE outbox_entries SET message_state = coalesce(message_state, 'accepted'), message_id = coalesce(message_id, outbox_id), message_hold_released_at = ?, message_previous_occupant = ?, message_pump_owned = 1
       WHERE outbox_id = ? AND delivery_state = 'retained' AND message_hold_released_at IS NULL`).run(atIso, previousOccupant, id).changes === 1;
   }
 
   /** A row a drain claimed or still holds moves to the pump, whole. A nudge in the content lane, unless the row says otherwise. */
   adoptClaimed(id: MessageId): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'pending', message_state = 'accepted', message_id = coalesce(message_id, outbox_id),
-        class = coalesce(class, 'nudge'), lane = coalesce(lane, ?)
+        class = coalesce(class, 'nudge'), lane = coalesce(lane, ?), message_pump_owned = 1
       WHERE outbox_id = ? AND delivery_state IN ('pending', 'sending') AND message_state IS NULL`).run(MESSAGE_LANES.content, id).changes === 1;
   }
 

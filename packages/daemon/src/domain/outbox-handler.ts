@@ -58,6 +58,12 @@ export type OutboxDeliveryState = (typeof OUTBOX_DELIVERY_STATES)[number];
  * narrowing unsound. We control every writer, so an unknown value is a real defect —
  * fail loud rather than fabricate a type.
  */
+/** An entry as a route may show it. The nonce is what lets a gate tell a real message from a forged one, so it never leaves the daemon. */
+export function publicOutboxEntry(entry: OutboxEntry): OutboxEntry {
+  const { nativeNonce: _nonce, ...shown } = entry;
+  return shown;
+}
+
 export function parseDeliveryState(raw: string): OutboxDeliveryState {
   if ((OUTBOX_DELIVERY_STATES as readonly string[]).includes(raw)) {
     return raw as OutboxDeliveryState;
@@ -554,6 +560,8 @@ export class OutboxHandler {
         destination_session AS dest, native_ack_prompt_id AS prompt FROM outbox_entries WHERE outbox_id = ?`).get(outboxId) as
       { state: string; path: string | null; evidence: string | null; detail: string | null; nonce: string | null; dest: string; prompt: string | null } | undefined;
     if (!row || row.nonce !== nonce || row.dest !== destinationSession) return "no_match";
+    // A row the pump carries is settled by the gate's record alone, so this path neither settles it nor calls a copy of it a duplicate.
+    if (this.isPumpOwned(outboxId)) return "no_match";
     const now = new Date().toISOString();
     const settle = (fromState: string, detail: string | null) => this.db.prepare(`UPDATE outbox_entries SET delivery_state = 'delivered', delivered_at = ?,
         delivery_path = 'native', ack_evidence = 'native_hook_delivered', ack_detail = ?, native_ack_prompt_id = ?
@@ -606,6 +614,12 @@ export class OutboxHandler {
       .sort((a, b) => a.n - b.n)
       .map((x) => x.entry);
   }
+
+  private isPumpOwned(outboxId: string): boolean {
+    this.pumpOwnedColumn ??= (this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "message_pump_owned");
+    return this.pumpOwnedColumn && this.db.prepare("SELECT 1 FROM outbox_entries WHERE outbox_id = ? AND message_pump_owned = 1").get(outboxId) !== undefined;
+  }
+  private pumpOwnedColumn: boolean | undefined;
 
   private hasMessageStateColumn(): boolean {
     this.messageStateColumn ??= (this.db.prepare("PRAGMA table_info(outbox_entries)").all() as Array<{ name: string }>).some((c) => c.name === "message_state");

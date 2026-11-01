@@ -452,7 +452,15 @@ export class RunnerCore {
     if (!gate || markers.length === 0) { this.sendBlock(block, undefined); return; }
     if (!this.gateSettled) { this.gateWaiting.push(block); return; }
     const label = `[${this.runtime}-runner]`;
-    if (text.trim().length === 0) { this.io.mirrorLine(`${label} a marker with no message; dropped`); return; }
+    if (text.trim().length === 0) {
+      // Nothing for the agent, but the marker is a message the daemon is waiting on: it is recorded, or it would hold the seat's queue for good.
+      this.io.mirrorLine(`${label} a marker with no message; dropped`);
+      try {
+        const empty = gate.admit(markers, text, this.sessionFile ?? null);
+        if (empty) gate.seen(empty, "empty_block");
+      } catch { this.gateWriteFailed(); }
+      return;
+    }
     let intent: GateIntent | null;
     try {
       // The intent's text is what Pi will show in message_start: without the /followup prefix.

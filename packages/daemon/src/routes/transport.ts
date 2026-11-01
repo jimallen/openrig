@@ -4,6 +4,8 @@ import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
 import { DAEMON_OUTBOX_ID_PREFIXES, OutboxHandlerError, type OutboxHandler } from "../domain/outbox-handler.js";
 import { mintMessageId } from "../domain/seat-messaging/message-ledger.js";
+import { MessageStore } from "../domain/seat-messaging/message-store.js";
+import { messageId } from "../domain/seat-messaging/ports.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 
 // S2 (OPR.0.5.4.3) — the sender-side half of two-ended honesty: appended to any
@@ -143,6 +145,9 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         guard_target_changed: 409,
         delivery_identity_conflict: 409,
         message_not_recorded: 500,
+        empty_message: 400,
+        message_too_large: 413,
+        message_already_ended: 409,
         retained_quota_full: 409,
         session_missing: 404,
         tmux_unavailable: 503,
@@ -172,7 +177,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         waiting_on_person: 202,
         delivery_outcome_unknown: 202,
       };
-      const status = (statusMap[result.reason ?? ""] ?? 500) as 202 | 400 | 404 | 409 | 500 | 502 | 503;
+      const status = (statusMap[result.reason ?? ""] ?? 500) as 202 | 400 | 404 | 409 | 413 | 500 | 502 | 503;
       return c.json(answer, status);
     }
 
@@ -184,6 +189,19 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     }
 
     return c.json(answer);
+  });
+
+  // The operator's end of a message nothing can deliver (rig seat cancel-message): by id, naming its seat, with a reason. No state of the pump
+  // needs this to move, but a message that will never pass a gate holds its seat's queue, and this is the way out.
+  router.post("/cancel-message/:seat/:id", async (c) => {
+    const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
+    if (!outbox) return c.json({ error: "Outbox unavailable" }, 503);
+    const body = await c.req.json<{ reason?: unknown }>().catch(() => ({} as { reason?: unknown }));
+    if (typeof body.reason !== "string" || !body.reason.trim()) return c.json({ error: "A reason is required" }, 400);
+    const id = messageId(c.req.param("id"));
+    if (outbox.getById(id)?.destinationSession !== c.req.param("seat")) return c.json({ error: `No message ${id} for ${c.req.param("seat")}` }, 404);
+    const cancelled = new MessageStore(outbox.db).cancel(id, body.reason, new Date().toISOString());
+    return cancelled ? c.json({ ok: true, id }) : c.json({ error: `Message ${id} is not open; nothing was changed.` }, 409);
   });
 
   // The operator's close of an unsettled hc send (rig seat retire-unsettled-send): the person has looked at the seat. Audited with

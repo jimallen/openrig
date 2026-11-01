@@ -136,7 +136,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // version-matched to the running daemon (NOT ${PLUGIN_ROOT}, NOT a per-cwd copy).
   private activityRelayPath?: string;
   // S2: settle the seat's seen store against its rollout. Called only with the old process gone, before the resume is typed.
-  private reconcileSeatGate?: (sessionName: string, threadId: string) => void;
+  private reconcileSeatGate?: (sessionName: string, threadId: string | null) => void;
   // OF-183: whether this daemon may change a given Codex config.toml. Startup always injects the real policy; absent
   // (unit tests, other embedders) keeps every write as it was.
   private configWritePolicy: CodexConfigWritePolicy;
@@ -151,7 +151,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     resolveHomeDirByPid?: ResolveHomeDirByPid;
     sleep?: (ms: number) => Promise<void>;
     activityRelayPath?: string;
-    reconcileSeatGate?: (sessionName: string, threadId: string) => void;
+    reconcileSeatGate?: (sessionName: string, threadId: string | null) => void;
     /** Explicit CODEX_HOME; absent preserves the legacy OS/PID home behavior. */
     codexHome?: string;
     /** Match the daemon's prerequisite probe even if the pane's login shell rewrites PATH. */
@@ -478,7 +478,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       ? this.resumeCore(prepared, opts.resumeToken, binding)
       : `codex${daemonArg}${postureArg}${networkArg}${mcpArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
 
-    if (opts.resumeToken) this.settleSeatGate(binding.tmuxSession, opts.resumeToken);
+    // On every launch, a fresh one too: the process before it may have died holding a recorded prompt (M5). With no thread, a record's own
+    // rollout path is still searched.
+    this.settleSeatGate(binding.tmuxSession, opts.resumeToken ?? null);
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
@@ -525,7 +527,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   }
 
   /** A store that cannot be settled must not stop the resume: its records stay, and the next restart settles them. */
-  private settleSeatGate(sessionName: string, threadId: string): void {
+  private settleSeatGate(sessionName: string, threadId: string | null): void {
     try {
       this.reconcileSeatGate?.(sessionName, threadId);
     } catch (err) {

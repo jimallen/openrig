@@ -594,14 +594,14 @@ describe("the message pump", () => {
       expect(row(db, "h1")).toMatchObject({ message_state: "undeliverable", delivery_state: "failed" });
     });
 
-    it("a held message bound to one occupant goes back too, whatever its class", async () => {
+    it("a held message bound to one occupant goes on labelled unless it is lifecycle text", async () => {
       hold("h1");
       db.prepare("UPDATE outbox_entries SET occupant_generation = 'g1' WHERE outbox_id = 'h1'").run();
       w.holds.set("n1", "occupant_changed");
       w.fates.set(SEAT, { kind: "live", occupantGeneration: "g2" });
       await pump.tick();
-      expect(w.hop.calls).toEqual([]);
-      expect(w.returned.map((r) => r.id)).toEqual(["h1"]);
+      expect(w.hop.calls.map((c) => c.body)).toEqual([`${PREVIOUS_OCCUPANT_LABEL} held h1`]);
+      expect(w.returned).toEqual([]);
     });
 
     it("a held message on a seat gone for good does not wait for its guard: it ends", async () => {
@@ -714,13 +714,22 @@ describe("the message pump", () => {
       expect(w.returned).toEqual([]);
     });
 
-    it("a seat with no gate is not the pump's in any fate: nothing here can know what reached it", async () => {
+    it("a row the pump never took is not its to end on a gateless seat, in any fate: nothing here can know what reached it", async () => {
+      new OutboxHandler(db).record({ outboxId: "m1", senderSession: "lead@r", destinationSession: SEAT, body: "x", messageState: "attempting" });
       w.ungated.add(SEAT);
-      accept("m1");
       w.fates.set(SEAT, { kind: "gone", reason: "archived" });
       await pump.tick();
-      expect(row(db, "m1").message_state).toBe("accepted");
+      expect(row(db, "m1").message_state).toBe("attempting");
       expect(w.returned).toEqual([]);
+    });
+
+    it("a row the pump took ends when its seat's record is gone and no gate can be found", async () => {
+      accept("m1");
+      w.ungated.add(SEAT);
+      w.fates.set(SEAT, { kind: "gone", reason: "archived" });
+      await pump.tick();
+      expect(row(db, "m1").message_state).toBe("undeliverable");
+      expect(w.returned.map((r) => r.id)).toEqual(["m1"]);
     });
 
     it("an unknown fate proves nothing", async () => {
@@ -733,18 +742,41 @@ describe("the message pump", () => {
     });
 
     it("a lifecycle message never reaches a successor or a new occupant", async () => {
-      accept("m1", SEAT, { occupantGeneration: "g1" });
+      const lifecycle = (id: string, seat: string) => store.accept({ id: messageId(id), seat, sender: "lead@r", body: id, occupantGeneration: "g1", messageClass: "lifecycle" });
+      lifecycle("m1", SEAT);
       w.fates.set(SEAT, { kind: "successor", seat: "dev2@r" });
       await pump.tick();
       expect(row(db, "m1")).toMatchObject({ message_state: "undeliverable", destination_session: SEAT });
-      accept("m2", "qa@r", { occupantGeneration: "g1" });
+      lifecycle("m2", "qa@r");
       w.fates.set("qa@r", { kind: "live", occupantGeneration: "g2" });
       await pump.tick();
       expect(row(db, "m2").message_state).toBe("undeliverable");
-      accept("m3", "ok@r", { occupantGeneration: "g1" });
+      lifecycle("m3", "ok@r");
       w.fates.set("ok@r", { kind: "live", occupantGeneration: "g1" });
       await pump.tick();
       expect(w.hop.calls.map((c) => [c.ids[0], c.occupantGeneration])).toEqual([["m3", "g1"]]);
+    });
+
+    it("other text bound to an occupant goes on to the new one, labelled: only lifecycle text stays bound", async () => {
+      accept("m1", SEAT, { occupantGeneration: "g1" });
+      w.fates.set(SEAT, { kind: "live", occupantGeneration: "g2" });
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.body)).toEqual([`${PREVIOUS_OCCUPANT_LABEL} body of m1`]);
+      expect(row(db, "m1")).toMatchObject({ message_previous_occupant: "g1", occupant_generation: null, message_state: "attempting" });
+      expect(w.returned).toEqual([]);
+    });
+
+    it("to a successor seat too, and it goes back to the sender if the seat is simply gone", async () => {
+      accept("m1", SEAT, { occupantGeneration: "g1" });
+      w.fates.set(SEAT, { kind: "successor", seat: "dev2@r" });
+      await pump.tick();
+      expect(row(db, "m1")).toMatchObject({ message_previous_occupant: "g1" });
+      await pump.tick();
+      accept("m2", "gone@r", { occupantGeneration: "g1" });
+      w.fates.set("gone@r", { kind: "gone", reason: "archived" });
+      await pump.tick();
+      expect(row(db, "m2").message_state).toBe("undeliverable");
+      expect(w.returned.map((r) => r.id)).toEqual(["m2"]);
     });
   });
 });
@@ -773,6 +805,13 @@ describe("the message store", () => {
   it("adopts a row the send path wrote and has not settled", () => {
     new OutboxHandler(db).record({ outboxId: "m1", senderSession: "lead@r", destinationSession: "dev@r", body: "x" });
     expect(store.accept(input).state).toBe("accepted");
+  });
+
+  it("a stale claim loses: one claim per attempt, even across two pumps on one database", () => {
+    store.accept(input);
+    const seenByBoth = store.headOf("dev@r")!;
+    expect(store.claimAttempt(seenByBoth, 1)).toBe(true);
+    expect(store.claimAttempt(seenByBoth, 1)).toBe(false);
   });
 
   it("a settled message does not reopen on a late accept", () => {

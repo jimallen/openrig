@@ -106,8 +106,14 @@ describe("SeatGateStore", () => {
     expect(() => SeatGateStore.open(log).admit([M], "x", null)).toThrow(/repair/);
   });
 
+  it("open makes the file, private, so a reader can tell nothing yet from cannot read", () => {
+    SeatGateStore.open(log);
+    expect(fs.statSync(log).mode & 0o777).toBe(0o600);
+  });
+
   it("a failed append poisons the store: nothing is admitted until it is reopened", () => {
     const store = SeatGateStore.open(log);
+    fs.rmSync(log);
     fs.mkdirSync(log);
     expect(() => store.admit([M], "x", null)).toThrow();
     fs.rmdirSync(log);
@@ -141,10 +147,13 @@ describe("the session file", () => {
 });
 
 describe("piSeatGate, the SeatGate port", () => {
-  it("is unavailable, not not_seen, when the log can't be read, and with no row nonce confirms nothing", async () => {
+  it("no log yet is not_seen (a fresh seat must get its first message), a log that can't be read is unavailable, and no row nonce confirms nothing", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "gate-"));
     const gate = piSeatGate({ stateRoot: root, nonceOf: (id) => (id === "m1" ? M.nonce : null) });
-    expect(await gate.lookup("seat", messageId("m1"))).toEqual({ kind: "unavailable", cause: "ENOENT" });
+    expect(await gate.lookup("seat", messageId("m1"))).toEqual({ kind: "not_seen" });
+    fs.mkdirSync(seatGateLogPath(path.join(root, "seat")), { recursive: true });
+    expect(await gate.lookup("seat", messageId("m1"))).toEqual({ kind: "unavailable", cause: "EISDIR" });
+    fs.rmdirSync(seatGateLogPath(path.join(root, "seat")));
     const store = SeatGateStore.open(seatGateLogPath(path.join(root, "seat")), () => "2026-02-03T04:05:06.000Z");
     store.seen(store.admit([M], "x", null)!, "t");
     expect(await gate.lookup("seat", messageId("m1"))).toEqual({ kind: "seen", record: { id: "m1", recordedAt: "2026-02-03T04:05:06.000Z", nonce: M.nonce } });

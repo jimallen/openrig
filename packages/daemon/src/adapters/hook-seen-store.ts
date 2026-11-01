@@ -11,8 +11,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import nodePath from "node:path";
-import { NATIVE_MARKER_RE } from "../domain/claude-native-inbox.js";
-import { seatMarkerKey, type SeatMarker } from "./seat-gate-marker.js";
+import { seatMarkerKey, trailingMarkers, type SeatMarker } from "./seat-gate-marker.js";
 
 export const SEEN_RECORD_NAME = /^[a-f0-9]{64}$/;
 
@@ -58,6 +57,14 @@ export class HookSeenStore {
     try {
       const value = JSON.parse(fs.readFileSync(nodePath.join(this.seatDir(seat), "gate.json"), "utf8")) as { version?: unknown };
       return typeof value.version === "number" ? value.version : null;
+    } catch { return null; }
+  }
+
+  /** Where the relay said this seat's prompts land: the daemon's way to a Codex rollout whose thread it never learned. */
+  declaredTranscript(seat: string): string | null {
+    try {
+      const value = JSON.parse(fs.readFileSync(nodePath.join(this.seatDir(seat), "gate.json"), "utf8")) as { transcriptPath?: unknown };
+      return typeof value.transcriptPath === "string" ? value.transcriptPath : null;
     } catch { return null; }
   }
 
@@ -109,10 +116,25 @@ export class HookSeenStore {
   }
 }
 
-/** Every marker in a transcript or rollout, read in chunks with an overlap so none is split: an empty set when the file does not exist
- *  (the agent writes it with the first prompt, M5), null when it cannot be read, which proves nothing either way. */
+/** The markers of the prompts Claude took. Only two records mean that (key census of real transcripts, Claude 2.1.310 to 2.1.316): a `user`
+ *  record, and an `attachment` of type `queued_command`, which is how a message taken mid-turn lands. `queue-operation`, `api-request-blob`
+ *  and the rest hold the same text and prove nothing: an enqueue line is written when a message is queued, before the hook, while it is
+ *  only in Claude's memory. A tool result quoting a marker is not a prompt either. */
+function claudeRecordMarkers(line: string): SeatMarker[] {
+  let record: { type?: unknown; isSidechain?: unknown; message?: { role?: unknown; content?: unknown }; attachment?: { type?: unknown; prompt?: unknown } };
+  try { record = JSON.parse(line) as typeof record; } catch { return []; }
+  if (record.isSidechain === true) return [];
+  if (record.type === "attachment") return record.attachment?.type === "queued_command" && typeof record.attachment.prompt === "string" ? trailingMarkers(record.attachment.prompt) : [];
+  if (record.type !== "user" || record.message?.role !== "user") return [];
+  const { content } = record.message;
+  if (typeof content === "string") return trailingMarkers(content);
+  if (!Array.isArray(content)) return [];
+  return (content as Array<{ type?: unknown; text?: unknown } | null>).flatMap((part) => (part?.type === "text" && typeof part.text === "string" ? trailingMarkers(part.text) : []));
+}
+
+/** Every prompt's marker in a Claude transcript, read in chunks, whole lines only: a torn last line is a prompt not yet durable. An empty set
+ *  when the file does not exist (the agent writes it with the first prompt, M5), null when it cannot be read, which proves nothing. */
 export function transcriptMarkers(path: string, chunkBytes = 4 * 1024 * 1024): Map<string, SeatMarker> | null {
-  const overlap = 256;
   const found = new Map<string, SeatMarker>();
   let fd: number;
   try { fd = fs.openSync(path, "r"); } catch (err) {
@@ -124,14 +146,22 @@ export function transcriptMarkers(path: string, chunkBytes = 4 * 1024 * 1024): M
     for (;;) {
       const read = fs.readSync(fd, buffer, 0, chunkBytes, null);
       if (read === 0) return found;
-      const text = tail + buffer.toString("latin1", 0, read);
-      for (const match of text.matchAll(NATIVE_MARKER_RE)) {
-        const marker = { id: match[1]!, nonce: match[2]! };
-        found.set(seatMarkerKey(marker), marker);
+      const lines = (tail + buffer.toString("latin1", 0, read)).split("\n");
+      tail = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.includes("[openrig-msg ")) continue;
+        for (const marker of claudeRecordMarkers(line)) found.set(seatMarkerKey(marker), marker);
       }
-      tail = text.slice(-overlap);
     }
   } catch { return null; } finally { fs.closeSync(fd); }
+}
+
+/** Is this exact marker in a prompt Claude took? Null when the file cannot be read. */
+export function transcriptHasPrompt(path: string, needle: string): boolean | null {
+  const found = transcriptMarkers(path);
+  if (found === null) return null;
+  const key = /^\[openrig-msg (.+)\]$/.exec(needle)?.[1];
+  return key !== undefined && found.has(key);
 }
 
 export interface SeenReconcile { received: SeatMarker[]; cleared: SeatMarker[]; unsettled: SeatMarker[] }
