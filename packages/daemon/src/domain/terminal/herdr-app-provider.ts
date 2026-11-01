@@ -50,8 +50,15 @@ export function balancedSplits(count: number): Array<{ pane: number; direction: 
   return plan;
 }
 
-/** `herdr-app` did not answer: no window is open (it exits non-zero and starts nothing), or the program is absent. */
-export class HerdrAppUnavailableError extends Error {}
+/** `herdr-app` did not answer: no window is open (it exits non-zero and starts nothing), or the program is absent. `fix` is
+ *  what the operator can do about THIS cause, written for the host the daemon runs on: a machine without the app cannot
+ *  "start" it, and one with no desktop session cannot show it. */
+export class HerdrAppUnavailableError extends Error {
+  constructor(message: string, readonly fix?: string) { super(message); }
+}
+
+const FIX_NOT_INSTALLED = "Install the Herdr app on the daemon's host and open it, or, from a terminal on that host, attach to a seat with its `hc attach` command.";
+const FIX_NOT_RUNNING = "Open the Herdr app on that machine's desktop, then run this again; with no desktop session, attach to a seat from a terminal on that host with its `hc attach` command.";
 /** `herdr-app do <command>` answered an error, or something that is not JSON. */
 export class HerdrAppCommandError extends Error {}
 
@@ -76,8 +83,8 @@ export function createHerdrAppCli(binary = "herdr-app", exec: HerdrAppExec = nod
   return {
     async ls(): Promise<AppLs> {
       const out = await exec(binary, ["ls"], APP_TIMEOUT_MS);
-      if (out.missing) throw new HerdrAppUnavailableError("herdr-app is not installed");
-      if (out.code !== 0) throw new HerdrAppUnavailableError("the Herdr app is not running (herdr-app ls found no window)");
+      if (out.missing) throw new HerdrAppUnavailableError("herdr-app is not installed", FIX_NOT_INSTALLED);
+      if (out.code !== 0) throw new HerdrAppUnavailableError("the Herdr app is not running (herdr-app ls found no window)", FIX_NOT_RUNNING);
       try {
         const parsed: unknown = JSON.parse(out.stdout);
         if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as { spaces?: unknown }).spaces)) return parsed as AppLs;
@@ -86,7 +93,7 @@ export function createHerdrAppCli(binary = "herdr-app", exec: HerdrAppExec = nod
     },
     async do(command, args): Promise<Record<string, unknown>> {
       const out = await exec(binary, ["do", command, JSON.stringify(args)], APP_TIMEOUT_MS);
-      if (out.missing) throw new HerdrAppUnavailableError("herdr-app is not installed");
+      if (out.missing) throw new HerdrAppUnavailableError("herdr-app is not installed", FIX_NOT_INSTALLED);
       let body: unknown = {};
       try { body = JSON.parse(out.stdout); } catch { /* an error answer need not be JSON */ }
       const error = body !== null && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
@@ -130,7 +137,7 @@ export class HerdrAppProvider implements TerminalProvider {
     } catch (err) {
       return {
         provider: this.name, ok: false, opened, absent, degraded, pages: 0, code: "herdr_unavailable",
-        error: `${err instanceof Error ? err.message : String(err)}; nothing was opened. Start the Herdr app, then run this again.`,
+        error: `${err instanceof Error ? err.message : String(err)}; nothing was opened. ${(err instanceof HerdrAppUnavailableError ? err.fix : undefined) ?? "Start the Herdr app, then run this again."}`,
       };
     }
     if (view.pages.length === 0) return { provider: this.name, ok: view.opened.length === 0, opened, absent, degraded, pages: 0 };
