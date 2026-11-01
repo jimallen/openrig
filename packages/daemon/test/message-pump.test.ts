@@ -332,6 +332,16 @@ describe("the message pump", () => {
       expect(w.hop.calls[1]!.ids).toEqual(["w1"]);
     });
 
+    it("a claim is every row's or none's: a row another pass took leaves the rest unclaimed", async () => {
+      wake("w1"); wake("w2");
+      handOff.adoptClaimed(["w1", "w2"]);
+      const rows = store.groupOf(store.headOf(SEAT)!);
+      expect(rows).toHaveLength(2);
+      await settle();
+      expect(store.claimAttempts([{ ...rows[0]!, attempts: 1 }, rows[1]!], T0 + MIN)).toBe(false);
+      expect([row(db, "w1").attempts, row(db, "w2").attempts]).toEqual([1, 1]);
+    });
+
     it("rows bound to different occupants are not one text", async () => {
       await pair();
       db.prepare("UPDATE outbox_entries SET occupant_generation = 'g2' WHERE outbox_id = 'w2'").run();
@@ -375,6 +385,7 @@ describe("the message pump", () => {
       await pump.tick();
       expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["s1"]);
       expect(row(db, "c1")).toMatchObject({ attempts: 0, message_pause_reason: "lane_held" });
+      expect(store.headOf(SEAT)?.pauseReason).toBe("lane_held");
       inLane("s2", MESSAGE_LANES.startup);
       await pump.tick();
       w.gate.record(messageId("s2"));
@@ -518,10 +529,13 @@ describe("the message pump", () => {
       handOff.accept({ id: messageId("m2"), seat: "two@r", sender: "lead@r", body: "x" });
       expect(handOff.cancel(messageId("m1"), "unwound")).toBe(true);
       expect(await handOff.awaitReceived(messageId("m1"), 0)).toBe("undeliverable");
+      await new Promise((r) => setImmediate(r));
       accept("m3");
       await pump.tick();
-      expect(w.hop.calls.map((c) => c.ids[0])).not.toContain("m3");
+      expect(row(db, "m3").attempts).toBe(0);
       release();
+      await new Promise((r) => setImmediate(r));
+      expect(row(db, "m3").attempts).toBe(1);
     });
   });
 
