@@ -99,8 +99,8 @@ describe("the seat gate in the relay, daemon stopped", () => {
 
   it("is off for a runtime whose gate has not been switched on", () => {
     const s = seat();
-    expect(submit(s, `x\n\n${marker("m-1")}`, { env: { OPENRIG_RUNTIME: "codex" } }).ran).toBe(true);
-    expect(submit(s, `x\n\n${marker("m-1")}`, { env: { OPENRIG_RUNTIME: "codex" } }).ran).toBe(true);
+    expect(submit(s, `x\n\n${marker("m-1")}`, { env: { OPENRIG_RUNTIME: "pi" } }).ran).toBe(true);
+    expect(submit(s, `x\n\n${marker("m-1")}`, { env: { OPENRIG_RUNTIME: "pi" } }).ran).toBe(true);
     expect(existsSync(join(s.home, "state", "seat-gates"))).toBe(false);
   });
 

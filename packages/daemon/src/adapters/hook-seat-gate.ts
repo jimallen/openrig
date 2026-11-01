@@ -15,7 +15,8 @@ export interface HookSeatGateDeps {
   nonceOf: (id: MessageId) => string | null;
   /** The files this seat's prompts land in, when known. */
   transcriptsOf: (seat: string) => string[];
-  fileIncludes: (path: string, needle: string) => boolean;
+  /** null: the file could not be read, which proves nothing either way. */
+  fileIncludes: (path: string, needle: string) => boolean | null;
 }
 
 export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
@@ -30,7 +31,9 @@ export function hookSeatGate(deps: HookSeatGateDeps): SeatGate {
       if (read.kind === "unavailable") return read;
       const needle = `[openrig-msg ${id}:${nonce}]`;
       for (const path of deps.transcriptsOf(seat)) {
-        if (deps.fileIncludes(path, needle)) return { kind: "seen", record: { id, recordedAt: fs.statSync(path).mtime.toISOString(), nonce } };
+        const included = deps.fileIncludes(path, needle);
+        if (included === null) return { kind: "unavailable", cause: "transcript_unreadable" };
+        if (included) return { kind: "seen", record: { id, recordedAt: fs.statSync(path).mtime.toISOString(), nonce } };
       }
       return { kind: "not_seen" };
     },

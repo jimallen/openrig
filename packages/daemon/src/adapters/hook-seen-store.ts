@@ -142,6 +142,8 @@ export interface SeenReconcile { received: SeatMarker[]; cleared: SeatMarker[]; 
 export function reconcileSeen(input: {
   store: HookSeenStore; seat: string; transcripts: readonly (string | null | undefined)[];
   processAlive: (pid: number) => boolean; markers?: (path: string) => Map<string, SeatMarker> | null;
+  /** The caller has proved the seat's agent gone, as a seat restart has. A runtime whose hook names no pid (Codex) relies on this. */
+  agentGone?: boolean;
 }): SeenReconcile {
   const read = input.markers ?? transcriptMarkers;
   const records = input.store.list(input.seat);
@@ -166,7 +168,7 @@ export function reconcileSeen(input: {
   for (const record of records) {
     const marker = { id: record.id, nonce: record.nonce };
     if (record.durable || present.has(seatMarkerKey(marker))) continue;
-    if (record.agentPid === null || input.processAlive(record.agentPid)) continue;
+    if (input.agentGone !== true && (record.agentPid === null || input.processAlive(record.agentPid))) continue;
     if (!complete || paths.size === 0) { result.unsettled.push(marker); continue; }
     input.store.clear(input.seat, marker);
     result.cleared.push(marker);
