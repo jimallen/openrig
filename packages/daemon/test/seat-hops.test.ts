@@ -5,11 +5,12 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
-import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, markedText, readClaudeComposer, type HopGuard } from "../src/adapters/seat-hops.js";
+import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, isSeatAgent, markedText, readClaudeComposer, type HopGuard } from "../src/adapters/seat-hops.js";
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { CLAUDE_SOCKET_REPEAT_WINDOW_MS } from "../src/domain/seat-messaging/claude-last-hop.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
+import type { HcTerminal } from "../src/adapters/hc-client.js";
 import type { PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
 import { parseNativeMarkers } from "../src/domain/claude-native-inbox.js";
 import { splitMarkedBlock } from "../src/adapters/seat-gate-marker.js";
@@ -17,6 +18,39 @@ import { splitMarkedBlock } from "../src/adapters/seat-gate-marker.js";
 const SEAT = "dev@r";
 const ID = messageId("m-1");
 const T0 = 9_000_000;
+
+// Foregrounds as hc reported them on real seats: Sparky's terminals.json at d-proof-p and d-proof-x, and the process names of live agents.
+describe("is the terminal's foreground the seat's agent?", () => {
+  const SEAT_NAME = "d-a@dp";
+  const of = (name: string, argv: string[]) => ({ foreground: { pid: 1, name, argv, cwd: "/w" } });
+  const runner = of("node", ["node", "/x/lib/node_modules/@openrig/cli/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT_NAME, "--state-root", "/s", "--cwd", "/w", "--launch-id", "l", "--no-approve"]);
+  const launch = of("sh", ["/bin/sh", "/run/tmp/openrig-tmux-send-3129529-70b8a3b4-7f24-4564-bba7-b8303afe5b"]);
+
+  it.each([
+    ["a real Pi runner", runner, "pi", true],
+    ["another seat's runner", runner, "pi", false, "other@dp"],
+    ["a stub runner", of("node", ["node", "/x/dist/adapters/stub-runner.js", "--session-name", SEAT_NAME]), "pi", false],
+    ["node at a prompt", of("node", ["node"]), "pi", false],
+    ["a real Codex launch script, with codex its child", launch, "codex", true],
+    ["codex itself", of("codex", ["/x/vendor/codex", "--yolo"]), "codex", true],
+    ["claude by name", of("claude", ["claude"]), "claude-code", true],
+    ["claude by its version, as Sparky shows it", of("2.1.303", ["/x/versions/2.1.303", "--resume"]), "claude-code", true],
+    ["a launch script, for Claude", launch, "claude-code", true],
+    ["a login shell", of("-bash", ["-bash"]), "codex", false],
+    ["a login shell by flag", of("zsh", ["/bin/zsh", "-l"]), "claude-code", false],
+    ["a login shell, for Pi", of("bash", ["bash", "-l"]), "pi", false],
+    ["a shell running something else", of("sh", ["/bin/sh", "/tmp/other.sh"]), "codex", false],
+    ["vim", of("vim", ["vim", "notes"]), "codex", false],
+    ["python", of("python3", ["python3"]), "claude-code", false],
+  ] as ReadonlyArray<[string, Pick<HcTerminal, "foreground">, "pi" | "codex" | "claude-code", boolean, string?]>)("%s", (_name, terminal, runtime, expected, seat = SEAT_NAME) => {
+    expect(isSeatAgent(terminal, runtime, seat)).toBe(expected);
+  });
+
+  it("no foreground proves nothing, so it is not the agent", () => {
+    expect(isSeatAgent({ foreground: null }, "codex", SEAT_NAME)).toBe(false);
+    expect(isSeatAgent({}, "pi", SEAT_NAME)).toBe(false);
+  });
+});
 
 describe("the hops", () => {
   let db: Database.Database;
@@ -32,7 +66,8 @@ describe("the hops", () => {
   let held: boolean;
   const endpoint = { socket_path: "/s" } as NativeEndpointRow;
   const guard: HopGuard = { operation: (_n, fn, onHeld) => (held ? onHeld!({ nodeId: "n", session: SEAT, occupant: null, pane: null }) : fn()) };
-  const client = { call: async <T,>(method: string): Promise<T> => (method === "terminal.get" ? { state: terminalState, status: { state: status } } : { text: screen }) as T };
+  let foreground: { pid: number; name: string; argv: string[]; cwd: string } | null;
+  const client = { call: async <T,>(method: string): Promise<T> => (method === "terminal.get" ? { state: terminalState, status: { state: status }, foreground } : { text: screen }) as T };
   const input = {
     submitText: async (_s: string, text: string) => { calls.push(`paste:${text}`); return { ok: true as const }; },
     sendKeys: async (_s: string, keys: string[]) => { calls.push(`keys:${keys.join("+")}`); return { ok: true as const }; },
@@ -48,6 +83,7 @@ describe("the hops", () => {
   beforeEach(() => {
     db = createDb(); migrate(db, ALL_MIGRATIONS); store = new MessageStore(db);
     calls = []; writes = []; status = "idle"; screen = "❯ \n──────────────\n"; terminalState = "live"; eligible = true; written = "all"; now = T0; held = false;
+    foreground = { pid: 1, name: "claude", argv: ["claude"], cwd: "/w" };
     store.accept({ id: ID, seat: SEAT, sender: "lead@r", body: "Do the thing" });
     store.claimAttempt(store.headOf(SEAT)!, 0);
   });
@@ -158,6 +194,14 @@ describe("the hops", () => {
       eligible = true;
       await expect(claude().attempt(message)).resolves.toEqual({ kind: "sent" });
     });
+    it("a seat at its login shell gets no paste, and the socket does not depend on it", async () => {
+      foreground = { pid: 1, name: "-zsh", argv: ["-zsh"], cwd: "/w" };
+      eligible = false;
+      await expect(claude().attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
+      expect(calls).toEqual([]);
+      eligible = true;
+      await expect(claude().attempt(message)).resolves.toEqual({ kind: "sent" });
+    });
     it("a stopped seat pauses", async () => {
       eligible = false;
       terminalState = "exited";
@@ -182,6 +226,7 @@ describe("the hops", () => {
   });
 
   describe("Codex", () => {
+    beforeEach(() => { foreground = { pid: 1, name: "sh", argv: ["/bin/sh", "/run/tmp/openrig-tmux-send-1-2"], cwd: "/w" }; });
     const codex = () => new CodexSeatHop({ rows: store, guard, client, input });
     const FOOTER = "  GPT-6-Luna low · /work\n";
     it("every paste carries the marker", async () => {
@@ -206,6 +251,12 @@ describe("the hops", () => {
       await expect(codex().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(calls).toEqual([`paste:${text()}`]);
     });
+    it("a seat at its login shell gets nothing, however empty the composer looks", async () => {
+      foreground = { pid: 1, name: "-bash", argv: ["-bash"], cwd: "/w" };
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
+      expect(calls).toEqual([]);
+    });
     it("a held seat pauses", async () => {
       held = true;
       await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "guard_held" });
@@ -215,11 +266,19 @@ describe("the hops", () => {
   describe("Pi and OMP", () => {
     let state: Partial<PiRunnerState> | null;
     const pi = () => new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null });
-    beforeEach(() => { state = { seatGate: 1 }; screen = "[pi-runner] READY\n"; });
+    beforeEach(() => {
+      state = { seatGate: 1 }; screen = "[pi-runner] READY\n";
+      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
+    });
 
     it("every paste carries the marker", async () => {
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(calls).toEqual([`paste:${text()}`]);
+    });
+    it("a dead runner gets nothing, with its sidecar still saying ready: a paste into the shell runs each line", async () => {
+      foreground = { pid: 1, name: "-bash", argv: ["-bash"], cwd: "/w" };
+      await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
+      expect(calls).toEqual([]);
     });
     it("a busy agent still gets it: the runner steers, and the gate drops a repeat", async () => {
       status = "working";

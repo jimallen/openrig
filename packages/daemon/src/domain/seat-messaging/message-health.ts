@@ -26,9 +26,15 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
     const now = this.clock();
     const notice = (reason: string): HealthSourceCoverage => ({ source: this.name, evaluatedAt: now.toISOString(), status: "notice", partial: false, reason });
     const rows: HealthSourceCoverage[] = [];
-    const ended = this.store.endedSince(new Date(now.getTime() - ENDED_WINDOW_MS).toISOString());
-    if (ended.received > 0 || ended.undeliverable > 0) {
-      rows.push(notice(`${ended.received} message(s) received and ${ended.undeliverable} undeliverable, returned to their senders, in the last 24 h.`));
+    const since = new Date(now.getTime() - ENDED_WINDOW_MS).toISOString();
+    const ended = this.store.endedSince(since);
+    if (ended.received > 0 || ended.returned > 0) {
+      rows.push(notice(`${ended.received} message(s) received and ${ended.returned} returned to their senders as undeliverable, in the last 24 h.`));
+    }
+    const unreturned = this.store.unreturnedSince(since);
+    if (unreturned.length > 0) {
+      const first = unreturned[0]!;
+      rows.push(notice(`${unreturned.length} message(s) could not be delivered and have no sender to return them to, in the last 24 h (oldest ${first.id} to ${first.seat}: ${first.reason ?? "no reason recorded"}). Nobody else was told; each text stays on its outbox row.`));
     }
     for (const seat of this.store.openBySeat()) {
       const ageMs = now.getTime() - parseSqliteUtcMs(seat.oldestAcceptedAt);

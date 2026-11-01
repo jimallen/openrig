@@ -48,10 +48,17 @@ export class GuardHeldMessages implements HeldMessages {
 }
 
 /** The sender's queue item for a message that can never arrive. Its text travels with it, so nothing is lost with the seat. */
+/** Who a queue item can reach: a seat's address. A send with no identity has the sender `unknown`, which is what the compaction enforcer sends as,
+ *  and the daemon's own senders read no queue: `watchdog@system` and the like, and `daemon@kernel`, whose rig exists so the queue would take it. */
+function hasQueue(sender: string): boolean {
+  return /^[^@\s]+@[^@\s]+$/.test(sender) && !sender.endsWith("@system") && sender !== "daemon@kernel";
+}
+
 export class QueueSenderReturn implements SenderReturn {
   constructor(private readonly queue: Pick<QueueRepository, "create">) {}
 
   async returnToSender(message: { id: string; seat: string; sender: string; body: string }, reason: string): Promise<SenderReturnResult> {
+    if (!hasQueue(message.sender)) return { kind: "no_return_path", reason: `no sender a queue can reach (${message.sender})` };
     const qitemId = returnQitemId(message.id);
     try {
       await this.queue.create({

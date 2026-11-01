@@ -94,7 +94,7 @@ interface MessageRow {
 /** Open and the pump's. A `retained` row is the guard's until its hold is released; a `retired` or settled row is nobody's. */
 const OPEN = "message_state IN ('accepted', 'attempting') AND (delivery_state = 'pending' OR (delivery_state = 'retained' AND message_hold_released_at IS NOT NULL))";
 
-const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "gate_unavailable"];
+const PAUSE_REASONS: readonly string[] = ["busy", "blocked", "guard_held", "seat_stopped", "draft", "agent_absent", "gate_unavailable"];
 
 function pauseReasonOf(raw: string | null): MessagePauseReason | null {
   return raw !== null && PAUSE_REASONS.includes(raw) ? raw as MessagePauseReason : null;
@@ -294,10 +294,17 @@ export class MessageStore {
   }
 
   /** How many messages reached each end since `sinceIso`. SELECT only. */
-  endedSince(sinceIso: string): { received: number; undeliverable: number } {
-    const count = (state: MessageState, column: string) => (this.db.prepare(`SELECT count(*) AS n FROM outbox_entries WHERE message_state = ? AND ${column} >= ?`)
-      .get(state, sinceIso) as { n: number }).n;
-    return { received: count("received", "gate_recorded_at"), undeliverable: count("undeliverable", "message_closed_at") };
+  endedSince(sinceIso: string): { received: number; returned: number } {
+    const received = this.db.prepare("SELECT count(*) AS n FROM outbox_entries WHERE message_state = 'received' AND gate_recorded_at >= ?").get(sinceIso) as { n: number };
+    const returned = this.db.prepare("SELECT count(*) AS n FROM outbox_entries WHERE message_state = 'undeliverable' AND ack_evidence = 'seat_gone' AND ack_detail IS NOT NULL AND message_closed_at >= ?").get(sinceIso) as { n: number };
+    return { received: received.n, returned: returned.n };
+  }
+
+  /** Messages that ended with nobody told, oldest first: their seat is gone, and no queue can reach their sender. Their text stays on the row. SELECT only. */
+  unreturnedSince(sinceIso: string): Array<{ id: string; seat: string; reason: string | null }> {
+    return this.db.prepare(`SELECT outbox_id AS id, destination_session AS seat, message_closed_reason AS reason FROM outbox_entries
+      WHERE message_state = 'undeliverable' AND ack_evidence = 'seat_gone' AND ack_detail IS NULL AND message_closed_at >= ? ORDER BY message_closed_at, rowid`)
+      .all(sinceIso) as Array<{ id: string; seat: string; reason: string | null }>;
   }
 
   private read(id: string): MessageRow | undefined {

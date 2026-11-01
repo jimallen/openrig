@@ -127,7 +127,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
   async function seatFixture(flags: string[] = [], runtime = "codex"): Promise<Seat> {
     const dir = mkdtempSync(join(core.root, "w-"));
     for (const flag of flags) writeFileSync(join(dir, flag), "");
-    writeFileSync(join(dir, "seat.py"), SEAT_PROGRAM);
+    writeFileSync(join(dir, "codex-seat.py"), SEAT_PROGRAM);
     writeFileSync(join(dir, "seat.log"), "");
     writeFileSync(join(dir, "hop.log"), "");
     const id = ++serial;
@@ -147,7 +147,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     const seen = join(gateDir, "seen");
     const address = hcTerminalName(name);
     const launch = async () => {
-      await core.client.call("terminal.run", { argv: ["/usr/bin/python3", "-I", join(dir, "seat.py"), dir, seen], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await core.client.call("terminal.run", { argv: ["/usr/bin/python3", "-I", join(dir, "codex-seat.py"), dir, seen], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true });
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes("Ask Codex"), "the seat's first paint");
     };
     await launch();

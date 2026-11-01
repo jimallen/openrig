@@ -3,9 +3,11 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HcAttach } from "../src/adapters/hc-attach.js";
+import { HcInput } from "../src/adapters/hc-input.js";
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
 import { seatGateFolder, seatGateRoot } from "../src/adapters/hook-seen-store.js";
 import { createDb } from "../src/db/connection.js";
@@ -33,7 +35,11 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
   const core = new PrivateCore("dr");
   let children: ChildProcess[] = [];
   const HOME = join(core.root, "h", "openrig");
+  // The stub goes by the agent's name: the hop looks for the agent in the terminal, as it must on a real seat.
+  let CODEX_SEAT = ""; let CLAUDE_SEAT = "";
   beforeAll(() => {
+    CODEX_SEAT = join(core.root, "codex-seat.py"); CLAUDE_SEAT = join(core.root, "claude-seat.py");
+    copyFileSync(SEATPY, CODEX_SEAT); copyFileSync(SEATPY, CLAUDE_SEAT);
     expect(Buffer.byteLength(core.socketPath)).toBeLessThan(103);
     expect(core.socketPath.startsWith(`${core.root}/`)).toBe(true);
     expect(Object.keys(core.env).filter((k) => k.startsWith("HC_") && k !== "HC_SESSION")).toEqual([]);
@@ -64,7 +70,7 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     const launch = async (ackDelay: number | null = null) => {
       const env = [...(ackDelay !== null ? [`NODE_OPTIONS=--require ${SHIM}`, `DELIVERY_ACK_DELAY_MS=${ackDelay}`, `DELIVERY_ACK_LOG=${join(dir, "ack.log")}`] : []),
         `OPENRIG_SESSION_NAME=${name}`, `OPENRIG_RUNTIME=${runtime}`, `OPENRIG_HOME=${HOME}`, `OPENRIG_NODE_ID=${node.id}`, `OPENRIG_URL=http://127.0.0.1:${qport}`, `OPENRIG_ACTIVITY_HOOK_TOKEN=${TOKEN}`];
-      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/usr/bin/python3", "-I", SEATPY, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
+      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/usr/bin/python3", "-I", runtime === "codex" ? CODEX_SEAT : CLAUDE_SEAT, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes(runtime === "codex" ? "Ask Codex" : "❯"), "first paint");
       await until(() => existsSync(join(gateDir, "gate.json")), Boolean, "the relay's declaration");
     };
@@ -346,6 +352,89 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
         expect(effects()).toEqual(["first", "during compaction", "after it"]);
       }, 120_000);
     }
+  });
+
+  describe("real proof F3: the pump never types into a seat whose agent is not there", () => {
+    it("a Pi seat at a login shell, with a sidecar still saying ready: nothing is typed, so nothing runs; the runner comes back and it arrives once", async () => {
+      const s = fixture([], "pi");
+      const pi = fakePi(s.dir);
+      const root = join(HOME, "state", "pi");
+      const canary = join(s.dir, "it-ran");
+      mkdirSync(join(root, s.name), { recursive: true });
+      writeFileSync(join(root, s.name, "runner-state.json"), JSON.stringify({ ready: true, updatedAt: new Date().toISOString(), aliveAt: new Date().toISOString(), seatGate: 1 }));
+      await core.client.call("terminal.run", { argv: ["/bin/bash", "-l"], name: s.address, cwd: s.dir, env: { PATH: `${pi.bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(core.root, "h"), HISTFILE: join(s.dir, "history") }, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground, Boolean, "the shell");
+      s.accept("m1", `touch ${canary}`);
+      daemon(s);
+      await hopSaw(s, "paused:agent_absent m1");
+      await wait(600);
+      expect(existsSync(canary)).toBe(false);
+      expect(s.read("m1")).toMatchObject({ message_state: "attempting", attempts: 0, message_pause_reason: "agent_absent" });
+      expect(await screen(s)).not.toContain("openrig-msg");
+
+      await core.client.call("terminal.send", { terminal: s.address, text: `cd ${resolve(here, "..")} && exec node --import tsx ${RUNNER} --session-name ${s.name} --state-root ${root} --cwd ${s.dir} --launch-id l2 --no-approve --model openrouter/fixture`, force: true });
+      await until(() => screen(s), (t) => t.includes("[pi-runner] READY"), "the runner back", 30_000);
+      await state(s, "m1", "received", 40_000);
+      expect(readFileSync(pi.effects, "utf8").split("\n").filter(Boolean)).toHaveLength(1);
+      expect(existsSync(canary)).toBe(false);
+    }, 120_000);
+
+    it("a Codex seat back at its login shell: nothing is typed", async () => {
+      const s = fixture();
+      await core.client.call("terminal.run", { argv: ["/bin/bash", "-l"], name: s.address, cwd: s.dir, env: { PATH: "/usr/bin:/bin", HOME: join(core.root, "h"), PS1: "\u203a " }, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground, Boolean, "the shell");
+      mkdirSync(s.gateDir, { recursive: true }); writeFileSync(join(s.gateDir, "gate.json"), JSON.stringify({ version: 1 }));
+      const canary = join(s.dir, "it-ran");
+      s.accept("m1", `touch ${canary}`);
+      daemon(s);
+      await hopSaw(s, "paused:agent_absent m1");
+      await wait(400);
+      expect(existsSync(canary)).toBe(false);
+    }, 60_000);
+  });
+
+  describe("real proof: lifecycle text with no sender to return to", () => {
+    for (const sender of ["unknown", "watchdog@system", "daemon@kernel"]) {
+      it(`from ${sender}: no queue item for nobody; the row ends, and health says so with its text kept`, async () => {
+        const s = fixture(); await s.launch();
+        s.withDb((c) => {
+          new OutboxHandler(c).retain({ outboxId: "l1", senderSession: sender, destinationSession: s.name, body: "lifecycle text", messageClass: "lifecycle" }, { nodeId: s.nodeId, session: s.name, occupant: "the-old-occupant", pane: null });
+        });
+        daemon(s);
+        await state(s, "l1", "undeliverable");
+        await hopSaw(s, "booted");
+        expect(queueItems(s)).toEqual([]);
+        expect(String(s.read("l1").message_closed_reason)).toContain("no sender");
+        expect(s.read("l1").body).toBe("lifecycle text");
+        const health = http(s, "/api/health").text;
+        expect(health).toContain("no sender to return them to");
+        expect(health).toContain("l1");
+      }, 40_000);
+    }
+
+    it("a lifecycle message with a real sender goes back to that sender", async () => {
+      const s = fixture(); await s.launch();
+      s.withDb((c) => {
+        new OutboxHandler(c).retain({ outboxId: "l2", senderSession: s.lead, destinationSession: s.name, body: "lifecycle text", messageClass: "lifecycle" }, { nodeId: s.nodeId, session: s.name, occupant: "the-old-occupant", pane: null });
+      });
+      daemon(s);
+      await state(s, "l2", "undeliverable");
+      expect(queueItems(s).map((q) => q.d)).toEqual([s.lead]);
+    }, 40_000);
+  });
+
+  describe("real proof F4: a draft shows on rig health at once", () => {
+    it("/api/health names the draft while the row is minutes old, and the message goes when it clears", async () => {
+      const s = fixture(); await s.launch();
+      expect(await new HcInput(core.client, new HcAttach(core.socketPath)).sendText(s.name, "half a thought", undefined, { bracketed: false })).toMatchObject({ ok: true });
+      await until(() => screen(s), (t) => t.includes("half a thought"), "the draft");
+      s.accept("m1"); daemon(s);
+      await hopSaw(s, "paused:draft m1");
+      await hopSaw(s, "booted");
+      expect(http(s, "/api/health").text).toContain("wait behind a draft");
+      await core.client.call("terminal.keys", { terminal: s.address, keys: ["ctrl+u"] });
+      await state(s, "m1", "received", 30_000);
+    }, 70_000);
   });
 
   describe("QA F4: a lost Enter never needs a person, whatever the body looks like", () => {

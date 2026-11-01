@@ -52,11 +52,12 @@ function guarded(guard: HopGuard, seat: string, fn: () => Promise<LastHopResult>
 }
 
 /** The seat's terminal and screen, or the pause that reading them came to. */
-async function readSeat(client: HopClient, seat: string): Promise<{ status: string | null; screen: string } | LastHopResult> {
+async function readSeat(client: HopClient, seat: string, runtime: SeatRuntime): Promise<{ status: string | null; screen: string } | LastHopResult> {
   const terminal = hcTerminalName(seat);
   try {
     const found = await client.call<HcTerminal>("terminal.get", { terminal });
     if (found.state !== "live") return { kind: "paused", reason: "seat_stopped" };
+    if (!isSeatAgent(found, runtime, seat)) return { kind: "paused", reason: "agent_absent" };
     const { text } = await client.call<{ text: string }>("terminal.read", { terminal, lines: 200 });
     return { status: found.status?.state ?? null, screen: text };
   } catch (error) {
@@ -69,6 +70,29 @@ async function readSeat(client: HopClient, seat: string): Promise<{ status: stri
 function sentOrRefused(sent: { ok: true } | { ok: false; code: string; message: string }): LastHopResult {
   if (sent.ok) return { kind: "sent" };
   return sent.code === "seat_blocked" ? { kind: "paused", reason: "blocked" } : { kind: "refused", reason: sent.code };
+}
+
+type SeatRuntime = "claude-code" | "codex" | "pi";
+
+/** Is the terminal's foreground this seat's agent? Answered from real seats (hc 0.1.15 and 0.1.16, Sparky and Mac):
+ *   - Pi and OMP: `node <...>/pi-runner.js --session-name <seat> ...`, so the seat itself is proved.
+ *   - Codex, and Claude when it was launched the same way: `/bin/sh <...>/openrig-tmux-send-<...>`, our launch script, with the agent its child.
+ *     So a shell is not enough to refuse: only a shell with no script is at its prompt, where a pasted line is a command.
+ *   - Claude: `claude`, or a bare version such as `2.1.303`, which is what the binary shows as its process name. Codex: `codex`.
+ *  No foreground proves nothing, so it is not the agent. hc reports one about 365 ms after a start: the pump comes back. */
+export function isSeatAgent(terminal: Pick<HcTerminal, "foreground">, runtime: SeatRuntime, seat: string): boolean {
+  const foreground = terminal.foreground;
+  if (!foreground) return false;
+  const argv = foreground.argv;
+  if (runtime === "pi") {
+    const session = argv.indexOf("--session-name");
+    return session > 0 && argv[session + 1] === seat && argv.some((arg) => /(^|\/)pi-runner\.[cm]?[jt]s$/.test(arg));
+  }
+  if (argv.some((arg) => /(^|\/)openrig-tmux-send-[^/]*$/.test(arg))) return true;
+  const names = [foreground.name, ...argv.slice(0, 3).map((arg) => arg.split("/").pop() ?? "")];
+  return runtime === "codex"
+    ? names.some((name) => /codex/i.test(name))
+    : names.some((name) => /claude/i.test(name) || /^\d+\.\d+\.\d+$/.test(name));
 }
 
 const AT_REST = new Set(["idle", "done"]);
@@ -120,7 +144,7 @@ export class ClaudeSeatHop implements LastHop {
 
   private paste(message: SeatMessage, text: string): Promise<LastHopResult> {
     return guarded(this.deps.guard, message.seat, async () => {
-      const seat = await readSeat(this.deps.client, message.seat);
+      const seat = await readSeat(this.deps.client, message.seat, "claude-code");
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
       const step = decideClaudeRetry({
@@ -141,7 +165,7 @@ export class ClaudeSeatHop implements LastHop {
     const text = markedText(message, this.deps.rows);
     if (text === null) return;
     await guarded(this.deps.guard, message.seat, async () => {
-      const seat = await readSeat(this.deps.client, message.seat);
+      const seat = await readSeat(this.deps.client, message.seat, "claude-code");
       if ("kind" in seat) return seat;
       const step = decideClaudeRetry({
         text, socketEligible: false, nowMs: this.now(), lastSocketAttemptMs: null, gateSeen: true,
@@ -167,7 +191,10 @@ export class CodexSeatHop implements LastHop {
   attempt(message: SeatMessage): Promise<LastHopResult> {
     const text = markedText(message, this.deps.rows);
     if (text === null) return Promise.resolve(unmarked);
-    return guarded(this.deps.guard, message.seat, () => this.hop.attempt({ ...message, body: text }));
+    return guarded(this.deps.guard, message.seat, async () => {
+      const seat = await readSeat(this.deps.client, message.seat, "codex");
+      return "kind" in seat ? seat : this.hop.attempt({ ...message, body: text });
+    });
   }
 }
 
@@ -189,7 +216,7 @@ export class PiSeatHop implements LastHop {
     const text = markedText(message, this.deps.rows);
     if (text === null) return Promise.resolve(unmarked);
     return guarded(this.deps.guard, message.seat, async () => {
-      const seat = await readSeat(this.deps.client, message.seat);
+      const seat = await readSeat(this.deps.client, message.seat, "pi");
       if ("kind" in seat) return seat;
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
       const state = this.deps.runnerState(message.seat);

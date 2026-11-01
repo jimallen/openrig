@@ -117,6 +117,15 @@ describe("the fleet, as the pump reads it", () => {
       expect(rows[0]!.body).toContain("rig gone is archived");
     });
 
+    it("no queue item is made for a sender with no queue", async () => {
+      const back = new QueueSenderReturn({ create: async () => { throw new Error("must not be asked"); } });
+      for (const sender of ["unknown", "watchdog@system", "model-monitor@system", "daemon@kernel"]) {
+        const result = await back.returnToSender({ id: messageId("m1"), seat: "dev@r", sender, body: "t" }, "gone");
+        expect(result).toMatchObject({ kind: "no_return_path" });
+      }
+      expect(await new QueueSenderReturn({ create: async () => ({}) as never }).returnToSender({ id: messageId("m1"), seat: "dev@r", sender: "human@kernel", body: "t" }, "gone")).toMatchObject({ kind: "returned" });
+    });
+
     it("a sender no queue can admit has no return path; any other failure is 'not now'", async () => {
       const refused = new QueueSenderReturn({ create: async () => { throw new QueueRepositoryError("unknown_destination_rig", "no such rig"); } });
       const message = { id: messageId("m1"), seat: "dev@gone", sender: "x@nowhere", body: "t" };
@@ -148,8 +157,16 @@ describe("the fleet, as the pump reads it", () => {
       store.recordReceived({ id: messageId("r2"), recordedAt: new Date(NOW.getTime() - 25 * 3_600_000).toISOString(), nonce: null }, 1);
       store.recordUndeliverable(messageId("u1"), "x", null, new Date(NOW.getTime() - 1000).toISOString());
       store.recordUndeliverable(messageId("u2"), "x", null, new Date(NOW.getTime() - 25 * 3_600_000).toISOString());
-      expect(reasons()).toEqual(["1 message(s) received and 1 undeliverable, returned to their senders, in the last 24 h."]);
+      const row = reasons();
+      expect(row[0]).toBe("1 message(s) received and 0 returned to their senders as undeliverable, in the last 24 h.");
+      expect(row[1]).toContain("1 message(s) could not be delivered and have no sender to return them to");
+      expect(row[1]).toContain("u1");
+      expect(row).toHaveLength(2);
       expect(source().coverage()[0]).toMatchObject({ source: "seat-messaging", status: "notice", partial: false });
+      accept("u3");
+      store.recordUndeliverable(messageId("u3"), "x", "q1", new Date(NOW.getTime() - 1000).toISOString());
+      expect(reasons()[0]).toBe("1 message(s) received and 1 returned to their senders as undeliverable, in the last 24 h.");
+      expect(reasons()[1]).toContain("1 message(s) could not");
     });
 
     it("names a stuck seat's oldest message, its attempts and why it is paused, one row per seat", () => {
@@ -165,6 +182,15 @@ describe("the fleet, as the pump reads it", () => {
       const row = reasons();
       expect(row).toHaveLength(1);
       expect(row[0]).toContain("2 message(s) to dev@r not received (oldest old, 16 min, 2 attempt(s), last refused: no)");
+    });
+
+    it("says why a stuck seat is stuck when its agent is not in its terminal", () => {
+      const store = new MessageStore(db);
+      accept("a1");
+      age("a1", MESSAGE_STUCK_AFTER_MS + 60_000);
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("a1"), "agent_absent", 2);
+      expect(reasons()[0]).toContain("paused: agent_absent");
     });
 
     it("names a draft at once: only a person can clear it, and they may not know a message waits behind it", () => {

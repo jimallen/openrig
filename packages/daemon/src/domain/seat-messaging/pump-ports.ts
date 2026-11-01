@@ -44,7 +44,8 @@ export interface HeldMessages {
 
 export type SenderReturnResult =
   | { readonly kind: "returned"; readonly qitemId: string }
-  /** No queue can reach the sender: the row ends `undeliverable` naming why, since nothing later can change it. */
+  /** No queue can reach the sender (it has none, or its rig is gone): the row ends `undeliverable` naming why, keeps its text, and health
+   *  names it, since nothing later can change it. */
   | { readonly kind: "no_return_path"; readonly reason: string };
 
 /** Gives the sender a queue item for a message that can never arrive. Repeatable: a crash after it runs repeats it on the same item.

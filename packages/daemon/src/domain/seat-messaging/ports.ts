@@ -59,10 +59,11 @@ export interface SeatGate {
 
 /** Bytes left, or did not. Neither says the seat took the message; only the gate does. `paused` is a reason to come back, never
  *  a failure: the seat is busy, blocked on a dialog, held by the typing guard, or stopped, or its composer holds text that may be a person's
- *  (`draft`, Jim's rule: never touched, and the message goes the moment it clears). */
+ *  (`draft`, Jim's rule: never touched, and the message goes the moment it clears), or the process in its terminal is not its agent
+ *  (`agent_absent`: a paste into a login shell runs each line as a command, so nothing is typed until the agent is back). */
 export type LastHopResult =
   | { readonly kind: "sent" }
-  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" }
+  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" }
   | { readonly kind: "refused"; readonly reason: string };
 
 /** How bytes reach a seat: the socket, a paste, a runner. Safe to repeat, because the gate drops a repeat. */
