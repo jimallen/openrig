@@ -30,7 +30,7 @@ function baseDeps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     exists: () => true,
     baseDir: "/tmp",
     readFile: () => null,
-    exec: () => "hc 0.1.15",
+    exec: () => "hc 0.1.16",
     readHcHello: async () => ({ kind: "no_core", detail: "fixture: no core" }),
     checkPort: async () => true,
     configStore: {

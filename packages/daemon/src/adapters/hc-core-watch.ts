@@ -4,9 +4,11 @@ import { createConnection, type Socket } from "node:net";
 import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
 import { OPERATOR_SECRET_ENV_NAMES } from "./hc-seat.js";
 
-/** The hc this build was written and measured against (spikes 1 to 4: 0.1.15). hc is a preview with no stability
- *  statement, so any other version is refused until the pin is moved on purpose, as a tested release step. */
-export const HC_PINNED_VERSION = "0.1.15";
+/** The hc this build is tested against. Written and measured on 0.1.15 (spikes 1 to 4); moved to 0.1.16 after W36 re-ran every
+ *  `*.real.test.ts` (daemon 171, CLI 21) on a private 0.1.16 core: the OpenRPC schema differs from 0.1.15 only in `info.version`.
+ *  hc is a preview with no stability statement, so any other version is refused until the pin is moved on purpose, as a
+ *  tested release step. */
+export const HC_PINNED_VERSION = "0.1.16";
 
 /** The core sends `heartbeat` this often when nothing else is sent (measured: first beat 15.0 s after the last event). */
 export const HC_HEARTBEAT_INTERVAL_MS = 15_000;

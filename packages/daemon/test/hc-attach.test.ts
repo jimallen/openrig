@@ -53,7 +53,7 @@ async function fakeCore(options: {
         if (end < 0) return;
         const hello = JSON.parse(line.subarray(0, end).toString()) as { id: number; method: string; params: unknown };
         hellos.push({ method: hello.method, params: hello.params });
-        socket.write(JSON.stringify({ jsonrpc: "2.0", id: hello.id, result: { generation: HC_GENERATION, version: "0.1.15", core: { id: "c", name: "n" }, framed: true, methods: [], features: [], ...options.hello } }) + "\n");
+        socket.write(JSON.stringify({ jsonrpc: "2.0", id: hello.id, result: { generation: HC_GENERATION, version: "0.1.16", core: { id: "c", name: "n" }, framed: true, methods: [], features: [], ...options.hello } }) + "\n");
         framed = true;
         chunk = line.subarray(end + 1);
         if (chunk.length === 0) return;

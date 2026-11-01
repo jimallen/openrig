@@ -10,7 +10,7 @@ import { HC_GENERATION, HcClient, HcError, HcUnavailableError } from "../src/ada
 import { connectHcCore, type HcCoreWatch } from "../src/adapters/hc-core-watch.js";
 
 const hello = (over: Record<string, unknown> = {}) => ({
-  generation: HC_GENERATION, version: "0.1.15", core: { id: "core-a", name: "n" }, ...over,
+  generation: HC_GENERATION, version: "0.1.16", core: { id: "core-a", name: "n" }, ...over,
 });
 
 /** A core on a unix socket that answers `hello`, `events.subscribe` and one probe method. */

@@ -14,14 +14,14 @@ import {
 
 // The pin is restated, not imported: a change to it must fail here and be a deliberate, reviewed edit.
 describe("the pins", () => {
-  it("are hc 0.1.15 and protocol generation 1", () => {
-    expect(HC_PINNED_VERSION).toBe("0.1.15");
+  it("are hc 0.1.16 and protocol generation 1", () => {
+    expect(HC_PINNED_VERSION).toBe("0.1.16");
     expect(HC_GENERATION).toBe(1);
   });
 });
 
 describe("parseHcVersion", () => {
-  it.each([["hc 0.1.15\n", "0.1.15"], ["hc 12.30.4", "12.30.4"], ["usage: hc", null], ["", null]])("%j -> %j", (output, expected) => {
+  it.each([["hc 0.1.16\n", "0.1.16"], ["hc 12.30.4", "12.30.4"], ["usage: hc", null], ["", null]])("%j -> %j", (output, expected) => {
     expect(parseHcVersion(output)).toBe(expected);
   });
 });
@@ -32,8 +32,8 @@ describe("probeHcInstall (hc --version alone)", () => {
   beforeEach(() => { seen.length = 0; });
 
   it("is pinned only for exactly the pinned version", () => {
-    expect(run(() => "hc 0.1.15\n")).toEqual({ installed: true, available: true, version: "0.1.15", detail: null, code: "pinned" });
-    for (const other of ["0.1.14", "0.1.16", "0.2.0", "1.1.15"]) {
+    expect(run(() => "hc 0.1.16\n")).toEqual({ installed: true, available: true, version: "0.1.16", detail: null, code: "pinned" });
+    for (const other of ["0.1.14", "0.1.15", "0.2.0", "1.1.15"]) {
       expect(run(() => `hc ${other}\n`), other).toMatchObject({ installed: true, available: false, version: other, code: "version_mismatch" });
     }
   });
@@ -44,7 +44,7 @@ describe("probeHcInstall (hc --version alone)", () => {
   });
 
   it("runs only `hc --version`: no command that starts a core", () => {
-    run(() => "hc 0.1.15");
+    run(() => "hc 0.1.16");
     run(() => { throw new Error("x"); });
     expect(seen).toEqual(["hc --version", "hc --version"]);
   });
@@ -52,9 +52,9 @@ describe("probeHcInstall (hc --version alone)", () => {
 
 describe("classifyHcCore", () => {
   const cases: Array<[string, HcHelloOutcome, { code: string; available: boolean }]> = [
-    ["pinned version, this generation", { kind: "hello", generation: 1, version: "0.1.15" }, { code: "available", available: true }],
-    ["another generation", { kind: "hello", generation: 2, version: "0.1.15" }, { code: "unsupported_generation", available: false }],
-    ["generation 0", { kind: "hello", generation: 0, version: "0.1.15" }, { code: "unsupported_generation", available: false }],
+    ["pinned version, this generation", { kind: "hello", generation: 1, version: "0.1.16" }, { code: "available", available: true }],
+    ["another generation", { kind: "hello", generation: 2, version: "0.1.16" }, { code: "unsupported_generation", available: false }],
+    ["generation 0", { kind: "hello", generation: 0, version: "0.1.16" }, { code: "unsupported_generation", available: false }],
     ["another version on this generation", { kind: "hello", generation: 1, version: "0.1.14" }, { code: "version_mismatch", available: false }],
     ["a refusal of our generation", { kind: "refused", refusal: "unsupported_generation", detail: "this core speaks generation 2" }, { code: "unsupported_generation", available: false }],
     ["a refusal of another kind", { kind: "refused", refusal: "invalid_params", detail: "bad" }, { code: "unhealthy", available: false }],
@@ -73,10 +73,10 @@ describe("classifyHcCore", () => {
 describe("probeHcHostAsync", () => {
   const hc = (version: string) => async () => `hc ${version}\n`;
   const hello = (outcome: HcHelloOutcome) => async () => outcome;
-  const good: HcHelloOutcome = { kind: "hello", generation: 1, version: "0.1.15" };
+  const good: HcHelloOutcome = { kind: "hello", generation: 1, version: "0.1.16" };
 
   it("is available only when installed, pinned and the core agrees", async () => {
-    expect(await probeHcHostAsync(hc("0.1.15"), hello(good))).toMatchObject({ code: "available", available: true, version: "0.1.15" });
+    expect(await probeHcHostAsync(hc("0.1.16"), hello(good))).toMatchObject({ code: "available", available: true, version: "0.1.16" });
   });
 
   it("does not ask the core when hc is missing or not the pin", async () => {
@@ -88,11 +88,11 @@ describe("probeHcHostAsync", () => {
   });
 
   it("keeps the CLI's version when the core reports none (no core)", async () => {
-    expect(await probeHcHostAsync(hc("0.1.15"), hello({ kind: "no_core", detail: "d" }))).toMatchObject({ code: "no_core", available: true, version: "0.1.15" });
+    expect(await probeHcHostAsync(hc("0.1.16"), hello({ kind: "no_core", detail: "d" }))).toMatchObject({ code: "no_core", available: true, version: "0.1.16" });
   });
 
   it("reports the core's version when the core is the one that differs", async () => {
-    expect(await probeHcHostAsync(hc("0.1.15"), hello({ kind: "hello", generation: 1, version: "0.1.14" }))).toMatchObject({ code: "version_mismatch", version: "0.1.14" });
+    expect(await probeHcHostAsync(hc("0.1.16"), hello({ kind: "hello", generation: 1, version: "0.1.14" }))).toMatchObject({ code: "version_mismatch", version: "0.1.14" });
   });
 });
 
@@ -147,9 +147,9 @@ describe("readHcHello over a socket", () => {
   it("sends hello pinned to our generation, and reads the generation and version", async () => {
     await core((line, socket) => {
       const request = JSON.parse(line) as { id: number };
-      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { generation: 1, version: "0.1.15", core: { id: "c", name: "n" } } })}\n`);
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { generation: 1, version: "0.1.16", core: { id: "c", name: "n" } } })}\n`);
     });
-    expect(await readHcHello(sockPath)).toEqual({ kind: "hello", generation: 1, version: "0.1.15" });
+    expect(await readHcHello(sockPath)).toEqual({ kind: "hello", generation: 1, version: "0.1.16" });
     expect(received).toHaveLength(1);
     expect(JSON.parse(received[0]!)).toMatchObject({ jsonrpc: "2.0", method: "hello", params: { generation: HC_GENERATION, framed: false } });
   });
@@ -164,7 +164,7 @@ describe("readHcHello over a socket", () => {
 
   it("reads a reply split across writes", async () => {
     await core((line, socket) => {
-      const text = `${JSON.stringify({ jsonrpc: "2.0", id: (JSON.parse(line) as { id: number }).id, result: { generation: 1, version: "0.1.15" } })}\n`;
+      const text = `${JSON.stringify({ jsonrpc: "2.0", id: (JSON.parse(line) as { id: number }).id, result: { generation: 1, version: "0.1.16" } })}\n`;
       socket.write(text.slice(0, 10));
       setTimeout(() => socket.write(text.slice(10)), 20);
     });
@@ -174,7 +174,7 @@ describe("readHcHello over a socket", () => {
   it("is unreadable, not healthy, when the reply is garbled, incomplete, or the core hangs up or stays silent", async () => {
     for (const [label, behave, wait] of [
       ["not JSON", (_l: string, s: Socket) => { s.write("{{{\n"); }, 3000],
-      ["no generation", (_l: string, s: Socket) => { s.write(`${JSON.stringify({ id: 1, result: { version: "0.1.15" } })}\n`); }, 3000],
+      ["no generation", (_l: string, s: Socket) => { s.write(`${JSON.stringify({ id: 1, result: { version: "0.1.16" } })}\n`); }, 3000],
       ["hangs up", (_l: string, s: Socket) => { s.end(); }, 3000],
       ["silent", () => {}, 150],
     ] as const) {

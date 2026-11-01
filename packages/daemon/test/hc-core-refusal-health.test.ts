@@ -45,7 +45,7 @@ describe("HcCoreRefusalHealthSource", () => {
   });
 });
 
-const hello = (over: Record<string, unknown> = {}) => ({ generation: HC_GENERATION, version: "0.1.15", core: { id: "core-a", name: "n" }, ...over });
+const hello = (over: Record<string, unknown> = {}) => ({ generation: HC_GENERATION, version: "0.1.16", core: { id: "core-a", name: "n" }, ...over });
 
 /** A core on a unix socket that answers `hello`, `events.subscribe` and one probe method. */
 class ScriptedCore {
