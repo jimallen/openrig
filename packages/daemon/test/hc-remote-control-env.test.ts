@@ -264,6 +264,7 @@ describe("the paths that make a terminal", () => {
   });
   it("sends terminal.run only from the host, a respawn and a probe", () => {
     const found = files(src).flatMap((path) => (readFileSync(path, "utf8").match(/"terminal\.run"/g) ?? []).map(() => relative(src, path))).sort();
-    expect(found).toEqual(["adapters/hc-host.ts", "adapters/hc-lifecycle.ts", "adapters/hc-lifecycle.ts"]);
+    // hc-client.ts names the method only to clear its launch block when a launch succeeds: it starts nothing itself.
+    expect(found).toEqual(["adapters/hc-client.ts", "adapters/hc-host.ts", "adapters/hc-lifecycle.ts", "adapters/hc-lifecycle.ts"]);
   });
 });
