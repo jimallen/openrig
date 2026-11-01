@@ -33,12 +33,14 @@ const POISON_ENV = {
   XDG_RUNTIME_DIR: `${POISON_DIR}/run`,
 };
 
-function childVitest(testNamePattern: string, extraEnv: Record<string, string>) {
+function childVitest(testNamePattern: string, extraEnv: Record<string, string | undefined>) {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const [key, value] of Object.entries(extraEnv)) { if (value === undefined) delete env[key]; else env[key] = value; }
   const vitestBin = join(dirname(createRequire(import.meta.url).resolve("vitest/package.json")), "vitest.mjs");
   return spawnSync(
     process.execPath,
     [vitestBin, "run", "test/hc-hermetic-harness.test.ts", "-t", testNamePattern],
-    { cwd: DAEMON_ROOT, env: { ...process.env, ...extraEnv }, encoding: "utf8", timeout: 150_000 },
+    { cwd: DAEMON_ROOT, env, encoding: "utf8", timeout: 150_000 },
   );
 }
 
@@ -70,11 +72,22 @@ describe("hc seat poison: the setup neutralises a seat's ambient core env", () =
 });
 
 describe("the real-Codex opt-in still scrubs the core's socket (security review F8)", () => {
-  it("OPENRIG_E2E_REAL_CODEX=1 with HC_* and XDG_RUNTIME_DIR naming a core passes the same hygiene rows, with the real HOME kept", () => {
-    const child = childVitest("hc env hygiene", { ...POISON_ENV, OPENRIG_E2E_REAL_CODEX: "1" });
-    const output = `${child.stdout}\n${child.stderr}`;
-    expect(output).toMatch(/3 passed/);
-    expect(child.status, output).toBe(0);
+  it("OPENRIG_E2E_REAL_CODEX=1 with a real-looking HOME and HC_* and XDG_RUNTIME_DIR naming a core passes the same hygiene rows", () => {
+    // This worker's own setup already scrubbed its env, and a child inherits that. So the child gets a stand-in for the developer's
+    // real HOME and loses everything this worker's setup set, as a developer's shell would not have it: only the child's own
+    // setup can then keep its socket away from the stand-in's `.local/state` (the row that names a socket under the fixture home).
+    const standIn = mkdtempSync(join(tmpdir(), "hc-real-home-"));
+    try {
+      const child = childVitest("hc env hygiene", {
+        ...POISON_ENV, OPENRIG_E2E_REAL_CODEX: "1", HOME: standIn,
+        XDG_STATE_HOME: undefined, XDG_CONFIG_HOME: undefined, XDG_DATA_HOME: undefined, XDG_CACHE_HOME: undefined, OPENRIG_HOME: undefined,
+      });
+      const output = `${child.stdout}\n${child.stderr}`;
+      expect(output).toMatch(/3 passed/);
+      expect(child.status, output).toBe(0);
+    } finally {
+      rmSync(standIn, { recursive: true, force: true });
+    }
   }, 180_000);
 });
 
