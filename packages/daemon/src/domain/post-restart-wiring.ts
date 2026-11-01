@@ -71,7 +71,7 @@ export function wirePostRestartPrompt(o: PostRestartWiringOptions): PostRestartW
     ...o.timing,
   });
 
-  const run = (event: { seq: number; rigId: string; result: RestoreResult; createdAt: string }): Promise<PostRestartOutcome[]> =>
+  const run = (event: { seq: number; rigId: string; result: RestoreResult; createdAt: string; pumpOnly?: boolean }): Promise<PostRestartOutcome[]> =>
     notifier.onRestoreCompleted({ ...event, createdAt: sqliteUtcToIso(event.createdAt) });
 
   o.eventBus.subscribe((event: PersistedEvent) => {
@@ -89,12 +89,14 @@ export function wirePostRestartPrompt(o: PostRestartWiringOptions): PostRestartW
       const rows = db
         .prepare("SELECT seq, rig_id AS rigId, payload, created_at AS createdAt FROM events WHERE type = 'restore.completed' ORDER BY seq DESC LIMIT 200")
         .all() as Array<{ seq: number; rigId: string | null; payload: string; createdAt: string }>;
-      const open = rows.filter((r) => nowMs() - Date.parse(sqliteUtcToIso(r.createdAt)) < windowMs && r.rigId);
+      // The window is the ungated loop's. A seat the pump serves has none, so a restore past it is still handled for such a seat (its id is fixed, so
+      // a row that exists ends the call), and not for the others. Without this a daemon down across the restore for over 30 minutes never told the seat.
+      const open = rows.filter((r) => r.rigId);
       const settled = await Promise.all(open.map(async (r) => {
         try {
           const payload = JSON.parse(r.payload) as { result?: RestoreResult };
           if (!payload.result || !Array.isArray(payload.result.nodes)) return [];
-          return await run({ seq: r.seq, rigId: r.rigId as string, result: payload.result, createdAt: r.createdAt });
+          return await run({ seq: r.seq, rigId: r.rigId as string, result: payload.result, createdAt: r.createdAt, pumpOnly: !(nowMs() - Date.parse(sqliteUtcToIso(r.createdAt)) < windowMs) });
         } catch (err) {
           o.log(`[post-restart] restore.completed seq ${r.seq} not re-derived: ${err instanceof Error ? err.message : String(err)}`);
           return [];

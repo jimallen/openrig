@@ -122,16 +122,18 @@ export class PostRestartNotifier {
    * `restore.completed`: one delivery per resumed seat, run concurrently. Resolves when every seat is settled.
    * `createdAt` (ISO) is when the restore completed: the window runs from it, and a seat whose session started after it
    * is a replacement, not the seat this restore resumed. Without it (tests) the window runs from now and no seat is
-   * judged replaced.
+   * judged replaced. `pumpOnly`: the restore is past the window (a daemon booting late). Only a seat the pump serves is handled, because the
+   * pump has no window and carries the row until the gate records it; a seat with no gate keeps the loop and its window, so it is left alone.
    */
-  async onRestoreCompleted(event: { seq: number; rigId: string; result: RestoreResult; createdAt?: string }): Promise<PostRestartOutcome[]> {
+  async onRestoreCompleted(event: { seq: number; rigId: string; result: RestoreResult; createdAt?: string; pumpOnly?: boolean }): Promise<PostRestartOutcome[]> {
     if (!this.deps.enabled()) return [];
     const nodes = event.result.nodes.filter(needsPostRestartPrompt);
     if (nodes.length === 0) return [];
     const rigName = this.deps.rigNameOf(event.rigId) ?? event.rigId;
     const at = event.createdAt === undefined ? Number.NaN : Date.parse(event.createdAt);
     const restoredAtMs = Number.isNaN(at) ? null : at;
-    return Promise.all(nodes.map((node) => this.deliverOne(event.seq, node.nodeId, rigName, restoredAtMs)));
+    const outcomes = await Promise.all(nodes.map((node) => this.deliverOne(event.seq, node.nodeId, rigName, restoredAtMs, event.pumpOnly === true)));
+    return outcomes.filter((o): o is PostRestartOutcome => o !== null);
   }
 
   /** The pump's check, read at every attempt: the prompt says "your conversation resumed", which is false for a later occupant. So this row
@@ -165,13 +167,14 @@ export class PostRestartNotifier {
     return row !== null && row.deliveryState !== "pending";
   }
 
-  private async deliverOne(restoreSeq: number, nodeId: string, rigName: string, restoredAtMs: number | null): Promise<PostRestartOutcome> {
+  private async deliverOne(restoreSeq: number, nodeId: string, rigName: string, restoredAtMs: number | null, pumpOnly: boolean): Promise<PostRestartOutcome | null> {
     const deliveryId = postRestartDeliveryId(restoreSeq, nodeId);
     if (this.inFlight.has(deliveryId) || this.settled(deliveryId)) {
       return { nodeId, sessionName: null, outcome: "already_sent", attempts: 0 };
     }
     const taken = this.acceptForPump(deliveryId, nodeId, rigName, restoredAtMs);
     if (taken) return taken;
+    if (pumpOnly) return null;
     this.inFlight.add(deliveryId);
     try {
       const started = restoredAtMs ?? this.now().getTime();
