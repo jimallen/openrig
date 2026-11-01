@@ -1,5 +1,6 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { hcExactTerminalRef } from "./hc-identity.js";
+import { refusedLaunch } from "./hc-launch-refusal.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment } from "./hc-seat.js";
 import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import type { SeatLaunchHints, TmuxResult } from "./tmux.js";
@@ -200,7 +201,7 @@ export class HcLifecycle {
     } catch (err) {
       // A finished record named by its old address while a newer terminal already holds the seat's name: nothing is started.
       if (err instanceof HcError && err.kind === "name_taken") return { ok: false, code: "pane_superseded", message: `${seat}: ${target} is no longer the seat's terminal (the name is held by a live one)` };
-      const result = failure(err, seat);
+      const result = (await refusedLaunch(this.client, err, seat)) ?? failure(err, seat);
       // The old program is already gone: say so, so the caller does not read "nothing happened".
       return result.ok ? result : { ...result, message: `${result.message} (the previous program had already ended)` };
     }
@@ -334,7 +335,7 @@ export class HcLifecycle {
       return { ok: true };
     } catch (err) {
       if (err instanceof HcError && err.kind === "name_taken") return { ok: false, code: "duplicate_session", message: `duplicate session: ${name}` };
-      return failure(err, name);
+      return (await refusedLaunch(this.client, err, name)) ?? failure(err, name);
     }
   }
 

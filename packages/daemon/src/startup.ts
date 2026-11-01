@@ -1252,9 +1252,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Coverage-only: says so in `rig health` when the core watch refused the core (the client then fails every call, closed, until a restart).
   const { HcCoreRefusalHealthSource } = await import("./domain/hc-core-refusal-health.js");
   const hcCoreRefusalHealth = new HcCoreRefusalHealthSource(() => hcClient?.refusedBecause ?? null);
+  const { HcLaunchBlockedHealthSource } = await import("./domain/hc-launch-blocked-health.js");
+  const hcLaunchBlockedHealth = new HcLaunchBlockedHealthSource(() => hcClient?.launchBlockedBecause ?? null);
   const { HcUntestedVersionHealthSource } = await import("./domain/hc-untested-version-health.js");
   const hcUntestedVersionHealth = new HcUntestedVersionHealthSource(() => hcCoreVersion);
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcUntestedVersionHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth, hcLaunchBlockedHealth, hcUntestedVersionHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
