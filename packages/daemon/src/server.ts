@@ -56,6 +56,8 @@ import type { SessionTransport } from "./domain/session-transport.js";
 import type { AgentActivityStore } from "./domain/agent-activity-store.js";
 import { transcriptRoutes } from "./routes/transcripts.js";
 import { transportRoutes } from "./routes/transport.js";
+import { messageRoutes } from "./routes/messages.js";
+import { MESSAGING_CAPABILITY, type FarDaemons } from "./domain/seat-messaging/far-daemon.js";
 import { compactionRoutes } from "./routes/compaction.js";
 import type { ClaudeCompactionEnforcer } from "./domain/claude-compaction-enforcer.js";
 import { activityRoutes } from "./routes/activity.js";
@@ -197,6 +199,8 @@ export interface AppDeps {
   runtimeAdapters?: Record<string, import("./domain/runtime-adapter.js").RuntimeAdapter>;
   transcriptStore?: TranscriptStore;
   sessionTransport?: SessionTransport;
+  /** Seat Messaging across hosts: the client of the far daemons, shared with the pump's far ports. */
+  farDaemons?: FarDaemons;
   askService?: AskService;
   wakeResolveService?: WakeResolveService;
   chatRepo?: ChatRepository;
@@ -702,8 +706,10 @@ export function createApp(deps: CreateAppDeps): Hono {
     // S01 — the wake ladder's heartbeat is half of the operator rung's honest delivery
     // floor (escalation view + daemon-health); same additive contract.
     const wakeLadder = deps.wakeLadderStatus ? { wakeLadder: deps.wakeLadderStatus.snapshot() } : {};
+    // S4h: this daemon takes `/api/messages/accept` and its pump runs. Absent: an older build, or the pump is off (ADDITIVE; absent = legacy body).
+    const messaging = deps.sessionTransport?.messageHandOff ? { messaging: MESSAGING_CAPABILITY } : {};
     if (!monitor) {
-      return c.json({ status: "ok", pid: process.pid, ...stamp, ...selfHost, ...slowOperations, ...bind, ...stuckSweep, ...wakeLadder });
+      return c.json({ status: "ok", pid: process.pid, ...stamp, ...selfHost, ...slowOperations, ...bind, ...stuckSweep, ...wakeLadder, ...messaging });
     }
     const eventLoop = monitor.snapshot();
     return c.json({
@@ -717,6 +723,7 @@ export function createApp(deps: CreateAppDeps): Hono {
       ...bind,
       ...stuckSweep,
       ...wakeLadder,
+      ...messaging,
     });
   });
 
@@ -745,6 +752,7 @@ export function createApp(deps: CreateAppDeps): Hono {
   app.route("/api/startup", startupRoutes);
   app.route("/api/transcripts", transcriptRoutes());
   app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
+  app.route("/api/messages", messageRoutes({ bearerToken: deps.terminalBearerToken ?? null, far: deps.farDaemons }));
   // OPR.0.4.3.14 — manual compaction trigger (same terminal-bearer posture as
   // transport, since it drives a send into the target seat).
   app.route("/api/compaction", compactionRoutes({ bearerToken: deps.terminalBearerToken ?? null }));

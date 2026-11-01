@@ -260,8 +260,8 @@ export class MessageStore {
   recordReceived(record: GateRecord, gateVersion: number): boolean {
     return this.db.prepare(`UPDATE outbox_entries SET message_state = 'received', gate_recorded_at = ?, message_gate_version = ?, gate_nonce = ?,
         next_attempt_at = NULL, message_pause_reason = NULL, delivery_state = 'delivered', delivered_at = ?,
-        delivery_path = NULL, ack_evidence = 'gate_seen', ack_detail = NULL
-      WHERE outbox_id = ? AND ${OPEN}`).run(record.recordedAt, gateVersion, record.nonce, record.recordedAt, record.id).changes === 1;
+        delivery_path = NULL, ack_evidence = ?, ack_detail = NULL
+      WHERE outbox_id = ? AND ${OPEN}`).run(record.recordedAt, gateVersion, record.nonce, record.recordedAt, record.evidence ?? "gate_seen", record.id).changes === 1;
   }
 
   /** Terminal. `returnQitem` is the sender's queue item, when one could be made. */

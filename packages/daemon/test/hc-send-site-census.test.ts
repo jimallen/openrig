@@ -22,6 +22,7 @@ const SITES: Array<{ file: string; calls: number; class: Class; id: string; note
   { file: "domain/claude-compaction-enforcer.ts", calls: 5, class: "transport-commits-row", id: "seat-msg-compaction-<attempt>-<prep|compact|turn_boundary|restore_prompt|compliance_prompt>", note: "the three post-compact stages, prep, /compact (a Command: no message state, the enforcer keeps its retry)" },
   { file: "domain/session-transport.ts", calls: 1, class: "transport-commits-row", id: "<id>:<seat>, or minted per recipient", note: "broadcast's per-recipient send" },
   { file: "domain/post-restart-notifier.ts", calls: 1, class: "transport-commits-row", id: "post-restart-<seq>-<node>; the row stays open between its own retries", note: "the wiring in startup.ts" },
+  { file: "routes/messages.ts", calls: 1, class: "transport-commits-row", id: "seat-msg-xh-<hash of origin host and sender's id>; only for a seat the pump takes, so it hands off and writes nothing", note: "the far daemon's cross-host accept" },
   { file: "domain/queue-repository.ts", calls: 1, class: "row-exists-first", id: "wake-intent-*, or guard-nudge-<qitem>-<hash>", note: "wake intents: committed ids; a plain nudge goes through the transport's row under its fixed id" },
 ];
 
@@ -56,9 +57,9 @@ describe("every daemon send into SessionTransport is classified", () => {
     expect([...found.entries()].sort()).toEqual([...known.entries()].sort());
   });
 
-  it("has a positive control: the population is not empty and sums to the classified total (17)", () => {
-    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(17);
-    expect(SITES.reduce((a, s) => a + s.calls, 0)).toBe(17);
+  it("has a positive control: the population is not empty and sums to the classified total (18)", () => {
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBe(18);
+    expect(SITES.reduce((a, s) => a + s.calls, 0)).toBe(18);
   });
 
   it("every class is one the rule names", () => {
