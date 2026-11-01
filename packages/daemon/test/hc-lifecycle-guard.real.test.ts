@@ -114,7 +114,9 @@ describe.skipIf(!HC)("HcAdapter's lifecycle through the delivery guard, on a pri
 
   it("refuses a kill by the address of a terminal that is not a seat's, which stays live", async () => {
     const plain = await core.client.call<HcTerminal>("terminal.run", { argv: ["sleep", "120"], name: "person", no_parent: true, no_notify: true, outlive_parent: true });
-    await expect(adapter.killSession(plain.address)).resolves.toMatchObject({ ok: false });
+    await expect(adapter.killSession(plain.address)).resolves.toMatchObject({ ok: false, code: "guard_target_unknown" });
+    // Without a guard the refusal is the lifecycle's own: nothing else stands between the address and the kill.
+    await expect(new HcAdapter(core.client).killSession(plain.address)).resolves.toMatchObject({ ok: false, code: "not_a_seat" });
     expect((await core.client.call<HcTerminal>("terminal.get", { terminal: plain.address })).state).toBe("live");
     await core.client.call("terminal.kill", { terminal: plain.address });
   });
