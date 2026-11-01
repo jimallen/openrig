@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isUnconfirmedHcSend } from "./outbox-handler.js";
 
 /**
  * Slice 27 — Claude auto-compaction policy enforcer.
@@ -128,6 +129,17 @@ export type EnforcerSkipReason =
   | "no_pending_stage";
 
 /** Out-of-contract thresholds (0, 101, NaN, a non-integer) are treated as disabled. */
+/**
+ * Whether a post-compact stage's send counts as made. Delivered does. So does an hc send the transport called "not failed"
+ * (`waiting_on_person`, `delivery_outcome_unknown`): the core may still hold the text and will type it, so sending the stage
+ * again on the next tick would queue a second copy (the prompt carries no delivery id, so each attempt has its own token and
+ * the on-screen check cannot match the earlier one). The stage advances instead, as the pre-compact path does ("Never replay
+ * uncertainty"). Retained (the typing guard held it, nothing typed) and a plain failure are not sent: the same stage retries.
+ */
+function stageSent(result: { ok: boolean; outcome?: string; reason?: string }): boolean {
+  return result.outcome !== "retained" && (result.ok || isUnconfirmedHcSend(result));
+}
+
 function isValidThresholdPercent(value: unknown): boolean {
   return typeof value === "number"
     && Number.isFinite(value)
@@ -512,7 +524,7 @@ export class ClaudeCompactionEnforcer {
         buildPostCompactTurnBoundaryPrompt(),
         sendOpts,
       );
-      if (!boundary.ok || boundary.outcome === "retained") {
+      if (!stageSent(boundary)) {
         // Busy/never-idle → no delivery, no advance; the SAME stage retries next tick.
         return { triggered: false, reason: "send_failed" };
       }
@@ -536,7 +548,7 @@ export class ClaudeCompactionEnforcer {
         })),
         sendOpts,
       );
-      if (!restore.ok || restore.outcome === "retained") {
+      if (!stageSent(restore)) {
         // Restore is exact-once + operator-authorized: if the seat is still busy
         // (mid-compaction/boundary), do NOT advance to restore-sent on an
         // undelivered send — retry the SAME stage next tick.
@@ -553,7 +565,7 @@ export class ClaudeCompactionEnforcer {
         inertStartupText(buildPostCompactCompliancePrompt(policy.postRestoreAuditInstruction)),
         sendOpts,
       );
-      if (!compliance.ok || compliance.outcome === "retained") {
+      if (!stageSent(compliance)) {
         // Audit cannot overtake restore: only advances once the restore turn is
         // idle and this send delivers; a busy tick retries the SAME stage.
         return { triggered: false, reason: "send_failed" };

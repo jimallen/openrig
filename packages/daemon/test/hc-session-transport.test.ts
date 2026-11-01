@@ -17,7 +17,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { CaptureObserver, hashSentText, type Observation } from "../src/domain/capture-observer.js";
 
 const SEAT = "dev-impl@my-rig";
-const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true, commandLed: false };
+const PENDING: HcPendingSend = { version: 1, seat: SEAT, address: "t4", token: null, sendStartedAtMs: 4_100_000_000_000, preTurn: 3, preStatus: "idle", preReported: true, commandLed: false, preScreen: null };
 
 type TmuxCalls = { sendText: ReturnType<typeof vi.fn>; sendKeys: ReturnType<typeof vi.fn>; capture: ReturnType<typeof vi.fn> };
 

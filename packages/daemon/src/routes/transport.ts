@@ -19,6 +19,9 @@ const UNKNOWN_SENDER_NOTICE =
 // sender renders "From: <marker>" as its first line.
 const UNKNOWN_SENDER_MARKER = wrapPaneEnvelope(undefined, "", "").split("\n")[0]!.replace(/^From: /, "");
 
+/** Recorded as `retired_by` when the close came from a shell with no seat identity (no X-OpenRig-Session header). */
+export const UNATTRIBUTED_OPERATOR = "operator (no seat identity)";
+
 export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
   const router = new Hono();
 
@@ -153,11 +156,13 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       // A send to an hc seat the core may still deliver (or whose reply was lost) is accepted, not failed, and not settled: it is
       // recorded `indeterminate` with its pending record, exactly as /broadcast records it, so the sweep can settle it and `rig
       // health` can name it. Without the row it left no trace anywhere once this response was read (the one rule, at its other site).
-      if (derivedActor && !body.submitOnly && isUnconfirmedHcSend(result)) {
+      // An unattributed send is recorded too (sender unknown, origin-unknown provenance): its sender was told 202 "not failed", and
+      // without a row `rig health` could never name it. The success path still records only an attributed send.
+      if (!body.submitOnly && isUnconfirmedHcSend(result)) {
         const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
         if (outbox) {
           try {
-            const entry = outbox.record({ senderSession: derivedActor, destinationSession: body.session, body: body.text, identityProvenance: "transport:v1" });
+            const entry = outbox.record({ senderSession: derivedActor ?? UNKNOWN_SENDER_MARKER, destinationSession: body.session, body: body.text, identityProvenance: derivedActor ? "transport:v1" : "origin-unknown:v1" });
             outbox.markIndeterminate(entry.outboxId, labelForTmuxSend(result));
           } catch (err) {
             console.warn(`[transport/send] outbox auto-record of an unconfirmed hc send failed: ${(err as Error).message}`);
@@ -214,8 +219,10 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
     if (!outbox) return c.json({ error: "Outbox unavailable" }, 503);
     const body = await c.req.json<{ reason?: unknown }>().catch(() => ({} as { reason?: unknown }));
-    const actor = transportSenderSession(c);
-    if (!actor || typeof body.reason !== "string" || !body.reason.trim()) return c.json({ error: "Sender identity and reason required" }, 400);
+    // The close is a person's: from a plain shell there is no seat identity, and refusing would leave the one exit of a crash-left row
+    // closed to the person `rig health` tells to use it. A missing identity is recorded as such, not refused (as /send does).
+    const actor = transportSenderSession(c) ?? UNATTRIBUTED_OPERATOR;
+    if (typeof body.reason !== "string" || !body.reason.trim()) return c.json({ error: "A reason is required" }, 400);
     try {
       const entry = outbox.retireHcUnsettled(c.req.param("id"), c.req.param("seat"), actor, body.reason);
       return c.json({ entry: { outboxId: entry.outboxId, destinationSession: entry.destinationSession, deliveryState: entry.deliveryState, retiredAt: entry.retiredAt, retiredBy: entry.retiredBy, retirementReason: entry.retirementReason },

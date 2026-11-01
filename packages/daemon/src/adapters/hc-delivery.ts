@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { hcTerminalName } from "./hc-seat.js";
 import type { BlockedPolicy, HcSubmitOptions, HcSubmitResult } from "./hc-input.js";
@@ -54,6 +55,10 @@ export interface HcPendingSend {
    *  is the same afterwards as after a send that never arrived), so "no turn" proves nothing about such a send. Absent on a
    *  record saved before the field existed: read as true, the side that never claims "gone". */
   commandLed: boolean;
+  /** sha256 of the screen (and its recent history) read just before the send; null when it could not be read. A screen that is the
+   *  same afterwards is the only way, for a seat with no token, to say the text never arrived. Absent on a record saved before the
+   *  field existed: read as null, the side that never claims "gone". */
+  preScreen: string | null;
 }
 
 export type HcNotDelivered =
@@ -61,11 +66,11 @@ export type HcNotDelivered =
 
 /** Why a send is `waiting`, for whoever reads it: the core may still hold the text; the core restarted and the text was
  *  either delivered first or lost; or the text is on the screen and nothing started (typed but not submitted, or taken by a
- *  command: not told apart). */
-export type HcWaitingCause = "queued_in_core" | "restart_unsettled" | "text_present_no_turn";
+ *  command: not told apart); or the screen could not be read, so whether the text is on it is not known. */
+export type HcWaitingCause = "queued_in_core" | "restart_unsettled" | "text_present_no_turn" | "screen_unreadable";
 
 export type HcDeliveryOutcome =
-  | { state: "delivered"; evidence: "reply" | "already_on_screen" | "turn_advanced" | "token_on_screen"; verified: boolean; started: boolean | null; status: string | null; turn: number | null }
+  | { state: "delivered"; evidence: "reply" | "turn_advanced"; verified: boolean; started: boolean | null; status: string | null; turn: number | null }
   /** Nothing was typed, or the send is proved gone. The only state a blind retry is allowed to follow. */
   | { state: "not_delivered"; reason: HcNotDelivered; message: string; code: string }
   /** The core still holds the send and nothing says it was delivered: a person is typing, or the program is slow. Not a failure. */
@@ -131,15 +136,21 @@ export class HcDelivery {
     if (options.ifStatus && status !== options.ifStatus) {
       return { state: "not_delivered", reason: "status_mismatch", code: "status_mismatch", message: `${seat} is ${status ?? "silent"}, not ${options.ifStatus}. Nothing was typed.` };
     }
-    // A token already on the screen is this delivery already made: the idempotent answer, with nothing typed.
-    if (options.token && (await this.tokenOnScreen(seat, options.token)) === true) {
-      return { state: "delivered", evidence: "already_on_screen", verified: false, started: null, status, turn: pre.facts.terminal.turn ?? null };
-    }
+    const screen = await this.readScreen(seat);
     const pending: HcPendingSend = {
       version: 1, seat, address: pre.facts.terminal.address, token: options.token ?? null, sendStartedAtMs: this.now(),
       preTurn: pre.facts.terminal.turn ?? 0, preStatus: status, preReported: pre.facts.terminal.reported === true,
-      commandLed: startsLikeCommand(text),
+      commandLed: startsLikeCommand(text), preScreen: screen === null ? null : hashScreen(screen),
     };
+    if (options.token) {
+      // A token already on the screen means an earlier attempt's paste is there. That is not "delivered": the paste is all the
+      // screen shows, and the text may sit typed and unsubmitted (the Enter lost). Nothing is typed again, and nothing is claimed:
+      // a person is told. A screen that cannot be read says nothing either, so nothing is typed then too.
+      if (screen === null) {
+        return { state: "not_delivered", reason: "core_unreachable", code: "transport_unavailable", message: `the screen of ${seat} could not be read to check whether this message is already there; nothing was typed.` };
+      }
+      if (screen.includes(options.token)) return { state: "waiting", reason: "waiting_on_person", cause: "text_present_no_turn", pending, message: textPresentMessage(seat, true) };
+    }
     const sent = await this.submitter.submitText(seat, text, {
       ...(blocked === "allow" ? { force: true } : {}), ...(options.ifStatus ? { ifStatus: options.ifStatus } : {}),
       ...(options.beforeInput ? { beforeInput: options.beforeInput } : {}), ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -166,44 +177,39 @@ export class HcDelivery {
     if (terminal.address !== pending.address) {
       return { state: "unknown", reason: "terminal_replaced", pending, message: `${pending.seat} is a different terminal now (${pending.address} became ${terminal.address}); the old send's fate is not known. Do not resend.` };
     }
-    const evidence = await this.evidence(pending, terminal);
-    if (evidence === "token_without_turn") {
-      // The text is on the screen and the program took no turn. Measured (core killed between the paste and the Enter, and
-      // again with `hc server restart`): the paste landed, the Enter did not, and the text sits unsubmitted in the input,
-      // token and all. A command the program ran and cleared leaves the same record. Neither is "delivered", and a resend
-      // would type the text a second time (measured: the composer then held it twice).
-      return { state: "waiting", reason: "waiting_on_person", cause: "text_present_no_turn", pending, message: `the text for ${pending.seat} is on its screen, but ${pending.seat} reports no turn started since: it may be typed and never submitted (the Enter lost), or it may have been a command the program ran without a turn. Not told apart. Do not resend: look at the seat (rig capture), press Enter there if the text is waiting in the input, and close this row once it is dealt with.` };
+    // Delivered needs the Enter to have reached the program, and only a turn shows that: the paste alone (the token on the screen)
+    // also looks like this when the Enter was lost, when the program was busy, and when it reports no status (measured: the text
+    // sits typed and unsubmitted with the token on the screen and the status unchanged). So a token is never delivery.
+    if (turnAdvanced(pending, terminal)) {
+      return { state: "delivered", evidence: "turn_advanced", verified: false, started: null, status: terminal.status?.state ?? null, turn: terminal.turn ?? null };
     }
-    if (evidence) {
-      return { state: "delivered", evidence, verified: false, started: null, status: terminal.status?.state ?? null, turn: terminal.turn ?? null };
+    const screen = await this.readScreen(pending.seat);
+    if (screen === null) {
+      // The screen could not be read, so the text may be on it. Not delivered (no turn) and not gone (an absence never observed).
+      return { state: "waiting", reason: "waiting_on_person", cause: "screen_unreadable", pending, message: `the screen of ${pending.seat} could not be read to look for this message, so whether the text is there is not known. Do not resend: look at the seat (rig capture) when it can be read, and close this row once it is dealt with.` };
     }
-    if (coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS && neverReachedProgram(pending, terminal)) {
-      // A newer core began after the send was issued, so a send still queued in the old one is gone (spike 1+2, 2.2). That
-      // alone does not say the text never landed (it may have been delivered first), so the program has to show it too.
-      return { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: `the hc core restarted after the send to ${pending.seat} was issued, and ${pending.seat} reports no turn started since: the queued send did not survive the restart. Nothing was delivered, so sending again is safe.` };
+    if (pending.token !== null && screen.includes(pending.token)) {
+      return { state: "waiting", reason: "waiting_on_person", cause: "text_present_no_turn", pending, message: textPresentMessage(pending.seat, false) };
     }
-    if (coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS) {
-      // Restarted, and the program cannot say it never took the text: delivered before the restart, or lost with it. Not told apart.
+    const restarted = coreStartedAtMs !== null && coreStartedAtMs >= pending.sendStartedAtMs + CORE_RESTART_MARGIN_MS;
+    if (restarted && neverReachedProgram(pending, terminal) && pending.preScreen !== null && hashScreen(screen) === pending.preScreen) {
+      // A newer core began after the send was issued, so a send still queued in the old one is gone (spike 1+2, 2.2). That alone
+      // does not say the text never landed (it may have been delivered first or pasted with its Enter lost), so the program must show
+      // it never took the text (at rest, no turn, not a command) and the screen must be exactly as it was before the send.
+      return { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: `the hc core restarted after the send to ${pending.seat} was issued, ${pending.seat} reports no turn started since, and its screen is as it was before the send: the queued send did not survive the restart. Nothing was delivered. It is not sent again for you: send it again by hand.` };
+    }
+    if (restarted) {
+      // Restarted, and nothing shows the text never took: delivered before the restart, typed and unsubmitted, or lost with it.
       return { state: "waiting", reason: "waiting_on_person", cause: "restart_unsettled", pending, message: `the hc core restarted after the send to ${pending.seat} was issued, and the text was either delivered before the restart or lost with it; ${pending.seat} reports nothing that tells which. Do not resend: check the seat (rig capture) and send again only if the text is not there.` };
     }
     return { state: "waiting", reason: "waiting_on_person", cause: "queued_in_core", pending, message: `the text for ${pending.seat} is queued in the hc core and not delivered yet (a person may be typing there). It will arrive; do not resend.` };
   }
 
-  /** The turn advanced, or the token is on the screen. Null: neither, which proves nothing. A token on the screen with no turn
-   *  behind it is `token_without_turn`: present, and not shown to have been submitted. */
-  private async evidence(pending: HcPendingSend, now: HcTerminal): Promise<"turn_advanced" | "token_on_screen" | "token_without_turn" | null> {
-    if (pending.token && (await this.tokenOnScreen(pending.seat, pending.token)) === true) return noTurnSince(pending, now) ? "token_without_turn" : "token_on_screen";
-    // The turn counts only for a program that reports status and was not already mid-turn: otherwise it advances for
-    // work the send did not start.
-    if (pending.preReported && pending.preStatus !== null && pending.preStatus !== "working" && (now.turn ?? 0) > pending.preTurn) return "turn_advanced";
-    return null;
-  }
-
-  /** True/false when the screen was read, null when it could not be. */
-  private async tokenOnScreen(seat: string, token: string): Promise<boolean | null> {
+  /** The screen and its recent history as one string, or null when it could not be read. */
+  private async readScreen(seat: string): Promise<string | null> {
     try {
       const read = await this.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(seat), lines: this.tokenLines });
-      return read.text.includes(token);
+      return read.text;
     } catch {
       return null;
     }
@@ -260,6 +266,20 @@ const AT_REST = new Set(["idle", "done"]);
 export function neverReachedProgram(pending: HcPendingSend, now: HcTerminal): boolean {
   // A command takes no turn, so for a command-led text "no turn" is what both a lost send and a consumed one look like.
   return !pending.commandLed && noTurnSince(pending, now);
+}
+
+function hashScreen(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/** The turn counter moved past the send's baseline, for a program that reports status and was not already mid-turn (otherwise it
+ *  advances for work this send did not start). The one evidence that the Enter reached the program. */
+function turnAdvanced(pending: HcPendingSend, now: HcTerminal): boolean {
+  return pending.preReported && pending.preStatus !== null && pending.preStatus !== "working" && (now.turn ?? 0) > pending.preTurn;
+}
+
+function textPresentMessage(seat: string, resend: boolean): string {
+  return `${resend ? "this message is already on the screen of " : "the text for "}${seat}${resend ? " from an earlier attempt, and" : " is on its screen, but"} no turn that this send started is shown: it may be typed and never submitted (the Enter lost), the seat may have been busy or reports no status, or it may have been a command run without a turn. Not told apart. Do not resend: look at the seat (rig capture), press Enter there if the text is waiting in the input, and close this row once it is dealt with.`;
 }
 
 /** A program that reports status was at rest before the send, is at rest now, and its turn counter is where it was. */

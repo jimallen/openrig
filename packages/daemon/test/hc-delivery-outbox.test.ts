@@ -16,7 +16,7 @@ import { parsePending, sweepHcUnsettled } from "../src/domain/hc-unsettled-sweep
 import type { HcDeliveryOutcome, HcPendingSend } from "../src/adapters/hc-delivery.js";
 import type { RestoreResult } from "../src/domain/types.js";
 
-const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: "tok-9", sendStartedAtMs: 4_100_000_000_000, preTurn: 2, preStatus: "idle", preReported: true, commandLed: false };
+const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: "tok-9", sendStartedAtMs: 4_100_000_000_000, preTurn: 2, preStatus: "idle", preReported: true, commandLed: false, preScreen: null };
 
 type HcResult = Awaited<ReturnType<QueueNudgeTransport["send"]>>;
 const unknownResult = (reason: "waiting_on_person" | "delivery_outcome_unknown"): HcResult => ({ ok: false, path: "hc", reason, error: `Delivery to 'reviewer@rig' is not confirmed (${reason})`, hcPending: PENDING });
@@ -154,25 +154,33 @@ describe("the sweep of rows the core may still deliver", () => {
     return h.handoff();
   }
   const sweep = (verify: (p: HcPendingSend) => Promise<HcDeliveryOutcome>) => sweepHcUnsettled({ outbox: h.outbox, verify, recordNudgeAttempt: (id, r) => h.repo.recordNudgeAttempt(id, r) });
-  const delivered: HcDeliveryOutcome = { state: "delivered", evidence: "token_on_screen", verified: false, started: null, status: "idle", turn: 3 };
+  const delivered: HcDeliveryOutcome = { state: "delivered", evidence: "turn_advanced", verified: false, started: null, status: "idle", turn: 3 };
 
   it("settles a row delivered on evidence, labels it, and tells the queue it is verified", async () => {
     const { qitemId, outboxId } = await waitingRow();
     const verify = vi.fn(async () => delivered);
     expect(await sweep(verify)).toEqual({ delivered: 1, gone: 0, open: 0, unreadable: [], noRecord: 0 });
     expect(verify).toHaveBeenCalledWith(PENDING);
-    expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "delivered", deliveryPath: "hc", ackEvidence: "verified_after_wait", ackDetail: "token_on_screen" });
+    expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "delivered", deliveryPath: "hc", ackEvidence: "verified_after_wait", ackDetail: "turn_advanced" });
     expect(h.outbox.getById(outboxId)!.deliveredAt).not.toBeNull();
     expect(h.repo.getById(qitemId)?.lastNudgeResult).toBe("verified");
   });
 
-  it("settles a row failed only when the send is proved gone, which is what lets the queue retry it", async () => {
+  it("keeps a row proved gone in the unsettled list as send_gone, not failed: nothing retries a failed hc row, so it must stay with a person (QA F5)", async () => {
     const { qitemId, outboxId } = await waitingRow();
     const gone: HcDeliveryOutcome = { state: "not_delivered", reason: "core_restarted_send_gone", code: "send_gone", message: "gone" };
     expect(await sweep(async () => gone)).toEqual({ delivered: 0, gone: 1, open: 0, unreadable: [], noRecord: 0 });
-    expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "failed", deliveryPath: "hc", ackEvidence: "send_failed", ackDetail: "core_restarted_send_gone" });
+    expect(h.outbox.getById(outboxId)).toMatchObject({ deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: "send_gone" });
+    expect(JSON.parse(h.outbox.getById(outboxId)!.ackDetail!)).toEqual(PENDING);  // the pending record is kept as evidence
     expect(h.outbox.getById(outboxId)!.deliveredAt).toBeNull();
+    expect(h.outbox.listHcUnsettled().map((r) => r.outboxId)).toEqual([outboxId]);
     expect(h.repo.getById(qitemId)?.lastNudgeResult).toBe("failed:core_restarted_send_gone");
+    // Decided once: the next sweep asks nothing about it, and it cannot be settled delivered or marked gone again.
+    const verify = vi.fn(async () => delivered);
+    expect(await sweep(verify)).toEqual({ delivered: 0, gone: 0, open: 0, unreadable: [], noRecord: 1 });
+    expect(verify).not.toHaveBeenCalled();
+    expect(h.outbox.settleHcUnsettled(outboxId, "delivered", { path: "hc", evidence: "verified_after_wait" })).toBe(false);
+    expect(h.outbox.markHcSendGone(outboxId)).toBe(false);
   });
 
   it.each([
@@ -249,6 +257,13 @@ describe("parsePending", () => {
   it("takes the record as it was written", () => {
     expect(parsePending(JSON.stringify(PENDING))).toEqual(PENDING);
     expect(parsePending(JSON.stringify({ ...PENDING, token: null, preStatus: null }))).toMatchObject({ token: null, preStatus: null });
+  });
+
+  it("reads a record saved before `preScreen` existed as having no fingerprint: never gone", () => {
+    const { preScreen: _omitted, ...old } = PENDING;
+    expect(parsePending(JSON.stringify(old))?.preScreen).toBeNull();
+    expect(parsePending(JSON.stringify({ ...PENDING, preScreen: "abc" }))?.preScreen).toBe("abc");
+    expect(parsePending(JSON.stringify({ ...PENDING, preScreen: 5 }))).toBeNull();
   });
 
   it("reads a record saved before `commandLed` existed as command-led: the side that never settles a row gone", () => {

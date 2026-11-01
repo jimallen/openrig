@@ -30,6 +30,7 @@ import { NodeLauncher } from "./domain/node-launcher.js";
 import { TmuxOptionDefaultsApplier } from "./domain/tmux-option-defaults.js";
 import { registeredPaneOf } from "./domain/binding-pane.js";
 import { sweepHcUnsettled } from "./domain/hc-unsettled-sweep.js";
+import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
 import { HcAdapter } from "./adapters/hc-adapter.js";
 import { HcClient } from "./adapters/hc-client.js";
@@ -2211,10 +2212,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const payload = previous?.guardBinding ? previous.body : formatWatchdogDeliveryMessage(source, message);
           const result = await sessionTransport.send(targetSession, payload,
             { deliveryId, actorSession: "watchdog@system", auditPointer: source.jobId });
-          if (result.outcome === "retained") return { status: "retained", outboxIds: result.outboxIds, continuityActionCompleted };
-          return result.ok
-            ? { status: "ok", continuityActionCompleted }
-            : { status: "failed", error: result.error, continuityActionCompleted };
+          return watchdogDeliveryOutcome(result, continuityActionCompleted);
         } catch (err) {
           return {
             status: "failed",

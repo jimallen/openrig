@@ -458,6 +458,51 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(send.mock.calls.length).toBe(queuedSends + 3);
   });
 
+  // Security review F2: the transport says `waiting_on_person` / `delivery_outcome_unknown` for an hc send the core may still
+  // deliver. The stage prompt has no delivery id, so a second send is a second token and a second copy.
+  describe("a stage send the core may still deliver is not sent again", () => {
+    // A transport result of the hc kind. Built, not cast: `ok: false` with the reason the transport gives, as hcRefusal does.
+    const unconfirmed = (reason: string): { ok: boolean } => Object.assign({ ok: false }, { reason, path: "hc", error: `Not failed: ${reason}` });
+
+    it.each(["waiting_on_person", "delivery_outcome_unknown"])("%s: each of the three stages is sent once, in order, however many ticks follow", async (reason) => {
+      const { enforcer, send, queuedSends } = await queueStageWithGen("gen-uuid-1");
+      send.mockImplementation(async () => unconfirmed(reason));
+      expect(await drainTick(enforcer)).toEqual({ triggered: true });
+      expect(await drainTick(enforcer)).toEqual({ triggered: true });
+      expect(await drainTick(enforcer)).toEqual({ triggered: true });
+      expect(send.mock.calls.slice(queuedSends).map((call) => String(call[1]))).toEqual([
+        expect.stringContaining("OpenRig post-compaction turn boundary."),
+        expect.stringContaining("restoring this Claude session after compaction"),
+        expect.stringContaining("Now audit your compaction restore"),
+      ]);
+      expect(enforcer.hasPendingPostCompactStage("claude-seat@rig")).toBe(false);
+      for (let i = 0; i < 3; i++) await drainTick(enforcer);
+      expect(send.mock.calls.length).toBe(queuedSends + 3);  // nothing re-sent on the later ticks
+    });
+
+    it("a stage that stays unconfirmed does not repeat while it is the pending stage", async () => {
+      const { enforcer, send, queuedSends } = await queueStageWithGen("gen-uuid-1");
+      send.mockImplementation(async () => unconfirmed("waiting_on_person"));
+      await drainTick(enforcer);  // turn boundary: unconfirmed, advanced
+      expect(send.mock.calls.length).toBe(queuedSends + 1);
+      expect(enforcer.hasPendingPostCompactStage("claude-seat@rig")).toBe(true);  // the restore is next, not the boundary again
+      send.mockImplementation(async () => ({ ok: true }));
+      await drainTick(enforcer);
+      expect(String(send.mock.calls[queuedSends + 1]?.[1])).toContain("restoring this Claude session after compaction");
+    });
+
+    it("a plain failure and a typing-guard retention still retry the SAME stage next tick", async () => {
+      const { enforcer, send, queuedSends } = await queueStageWithGen("gen-uuid-1");
+      send.mockImplementation(async () => ({ ok: false }));
+      expect(await drainTick(enforcer)).toEqual({ triggered: false, reason: "send_failed" });
+      send.mockImplementation(async () => Object.assign({ ok: true }, { outcome: "retained" }));
+      expect(await drainTick(enforcer)).toEqual({ triggered: false, reason: "send_failed" });
+      send.mockImplementation(async () => ({ ok: true }));
+      expect(await drainTick(enforcer)).toEqual({ triggered: true });
+      expect(send.mock.calls.slice(queuedSends).map((call) => String(call[1])).every((text) => text.includes("OpenRig post-compaction turn boundary."))).toBe(true);
+    });
+  });
+
   it("the sampled drain keeps ordinary send readiness", async () => {
     const { enforcer, send, queuedSends } = await queueStageWithGen("gen-uuid-1");
     expect(await belowTick(enforcer)).toEqual({ triggered: true });

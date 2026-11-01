@@ -53,7 +53,9 @@ export interface DeliveryRequest {
 }
 
 export interface DeliveryOutcome {
-  status: "ok" | "failed" | "retained";
+  /** `unconfirmed`: an hc send the core may still deliver (or whose reply was lost). Not a failure and not a delivery: it is not
+   *  sent again, and its condition receipt is banked, because the next scan would otherwise queue the same wake a second time. */
+  status: "ok" | "failed" | "retained" | "unconfirmed";
   outboxIds?: string[];
   error?: string;
   /** Structured continuity custody was durably created or identified. */
@@ -561,10 +563,11 @@ export class WatchdogPolicyEngine {
     }
     // OPR.0.5.8.1 S2 — a policy's condition receipt is banked ONLY on positive
     // delivery. `status` is "ok" | "failed"; anything that is not a definite ok
-    // leaves the receipt untouched so the next scan retries. A policy that does
+    // leaves the receipt untouched so the next scan retries. EXCEPT `unconfirmed` (hc): the text may still land, and a retry types
+    // it again, so it banks like an ok. A policy that does
     // not propose a receipt is untouched by this, so no other policy's
     // behaviour changes.
-    if (outcome.conditionReceipt !== undefined && delivery.status === "ok") {
+    if (outcome.conditionReceipt !== undefined && (delivery.status === "ok" || delivery.status === "unconfirmed")) {
       this.jobsRepo.recordConditionReceipt(job.jobId, outcome.conditionReceipt);
     }
     this.jobsRepo.setActionable(job.jobId, true, evaluatedAt, job.lastActionableAt);

@@ -18,7 +18,7 @@ export const HC_UNSETTLED_ESCALATE_AFTER_MS = 15 * 60 * 1000;
 /** How many rows one read looks at (the list is oldest first, so the oldest is always in it). */
 const HC_UNSETTLED_READ_LIMIT = 500;
 
-export interface HcUnsettledRow { outboxId: string; destination: string; since: string }
+export interface HcUnsettledRow { outboxId: string; destination: string; since: string; /** The sweep proved the send lost with a core restart: it is safe to send again. */ lost?: boolean }
 
 export class HcUnsettledHealthSource implements HealthObservationSource {
   readonly name = "hc-unsettled-sends";
@@ -38,6 +38,7 @@ export class HcUnsettledHealthSource implements HealthObservationSource {
       .sort((a, b) => a.sinceMs - b.sinceMs || a.outboxId.localeCompare(b.outboxId));
     if (overdue.length === 0) return [];
     const oldest = overdue[0]!;
+    const lost = overdue.filter((r) => r.lost === true);
     const minutes = Math.floor((nowMs - oldest.sinceMs) / 60_000);
     return [{
       source: this.name,
@@ -45,12 +46,13 @@ export class HcUnsettledHealthSource implements HealthObservationSource {
       status: "notice",
       partial: false,
       reason: `${overdue.length} message(s) to hc seats are still not confirmed delivered or lost after more than ${Math.floor(HC_UNSETTLED_ESCALATE_AFTER_MS / 60_000)} min `
-        + `(oldest ${oldest.outboxId} to ${oldest.destination}, ${minutes} min). They are not resent: the text may already be there. Check the seat (rig capture ${oldest.destination}) and send again only if it is not, then close the row: rig seat retire-unsettled-send ${oldest.destination} ${oldest.outboxId} --reason "<what you found>".`,
+        + `(oldest ${oldest.outboxId} to ${oldest.destination}, ${minutes} min). They are not resent: the text may already be there. Check the seat (rig capture ${oldest.destination}) and send again only if it is not, then close the row: rig seat retire-unsettled-send ${oldest.destination} ${oldest.outboxId} --reason "<what you found>".`
+        + (lost.length > 0 ? ` ${lost.length} of them (${lost.slice(0, 3).map((r) => `${r.outboxId} to ${r.destination}`).join(", ")}${lost.length > 3 ? ", ..." : ""}) were proved lost with a core restart: nothing resends them, so send those again by hand.` : ""),
     }];
   }
 }
 
 /** The open rows of an outbox, oldest first. SELECT only. */
 export function outboxHcUnsettledRows(outbox: Pick<OutboxHandler, "listHcUnsettled">): () => HcUnsettledRow[] {
-  return () => outbox.listHcUnsettled(HC_UNSETTLED_READ_LIMIT).map((e: OutboxEntry) => ({ outboxId: e.outboxId, destination: e.destinationSession, since: e.tsDispatched }));
+  return () => outbox.listHcUnsettled(HC_UNSETTLED_READ_LIMIT).map((e: OutboxEntry) => ({ outboxId: e.outboxId, destination: e.destinationSession, since: e.tsDispatched, lost: e.ackEvidence === "send_gone" }));
 }

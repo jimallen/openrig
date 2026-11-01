@@ -16,7 +16,7 @@ import type { HcPendingSend } from "../src/adapters/hc-delivery.js";
 const T0 = Date.parse("2031-03-04T05:00:00.000Z");
 const MIN = 60_000;
 const sqliteStamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
-const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: null, sendStartedAtMs: T0, preTurn: 0, preStatus: null, preReported: false, commandLed: false };
+const PENDING: HcPendingSend = { version: 1, seat: "reviewer@rig", address: "t4", token: null, sendStartedAtMs: T0, preTurn: 0, preStatus: null, preReported: false, commandLed: false, preScreen: null };
 
 describe("HcUnsettledHealthSource", () => {
   let db: Database.Database;
@@ -105,6 +105,19 @@ describe("HcUnsettledHealthSource", () => {
     const notice = source().coverage()[0];
     if (notice?.status !== "notice") throw new Error("expected a notice row");
     expect(notice.reason).toContain('rig seat retire-unsettled-send reviewer@rig old --reason "<what you found>"');
+  });
+
+  it("says which rows were proved lost, and that nothing resends them (QA F5)", () => {
+    unsettled("waits", 40, "a@rig");
+    unsettled("lost-1", 30, "b@rig");
+    expect(outbox.markHcSendGone("lost-1")).toBe(true);
+    const notice = source().coverage()[0];
+    if (notice?.status !== "notice") throw new Error("expected a notice row");
+    expect(notice.reason).toContain("2 message(s)");
+    expect(notice.reason).toContain("1 of them (lost-1 to b@rig) were proved lost with a core restart: nothing resends them");
+    const none = new HcUnsettledHealthSource(() => [{ outboxId: "x", destination: "a@rig", since: sqliteStamp(T0 - 40 * MIN) }], () => new Date(T0)).coverage()[0];
+    if (none?.status !== "notice") throw new Error("expected a notice row");
+    expect(none.reason).not.toContain("proved lost");
   });
 
   it("closes when an operator retires the row", () => {

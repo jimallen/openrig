@@ -200,6 +200,16 @@ describe("RSI B1 health-finding wake (rev2 §3.4)", () => {
     expect(h.receipt()?.fps).toEqual([fp("r1")]);
   });
 
+  it("an unconfirmed hc delivery banks the receipt and is not sent again next hour: the core may still type it (security review F2)", async () => {
+    const h = harness(() => "unconfirmed");
+    h.source.rigs = ["r1"];
+    await h.scan();
+    expect(h.receipt()?.fps).toEqual([fp("r1")]);
+    const next = await h.scan();
+    expect(next.outcome).toMatchObject({ action: "skip" });
+    expect(h.sends.map((s) => s.status)).toEqual(["unconfirmed"]);
+  });
+
   it("a retained wake is retried under a NEW delivery id and then delivered (the bucket defeats the retained trap)", async () => {
     // The transport's readback (session-transport.ts): a delivery id already retained stays
     // retained; a new id is a new send. The first attempt is retained.

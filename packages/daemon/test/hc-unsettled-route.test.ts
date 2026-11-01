@@ -10,11 +10,11 @@ import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
-import { transportRoutes } from "../src/routes/transport.js";
+import { transportRoutes, UNATTRIBUTED_OPERATOR } from "../src/routes/transport.js";
 import type { SessionTransport } from "../src/domain/session-transport.js";
 import type { HcPendingSend } from "../src/adapters/hc-delivery.js";
 
-const PENDING: HcPendingSend = { version: 1, seat: "dev@rig", address: "t4", token: null, sendStartedAtMs: 1_600_000_000_000, preTurn: 0, preStatus: null, preReported: false, commandLed: false };
+const PENDING: HcPendingSend = { version: 1, seat: "dev@rig", address: "t4", token: null, sendStartedAtMs: 1_600_000_000_000, preTurn: 0, preStatus: null, preReported: false, commandLed: false, preScreen: null };
 const MIN = 60_000;
 const sqliteStamp = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
 
@@ -58,11 +58,20 @@ describe("/send records a send to an hc seat that is not confirmed", () => {
     expect(JSON.parse(rows[0]!.ackDetail!)).toEqual(PENDING);
   });
 
-  it("records nothing for a definite refusal, for a send with no derived sender, or for submit-only (nothing was typed or nobody to attribute)", async () => {
+  it("records an unattributed unconfirmed send too: its sender was told 202, and without a row health could never name it (QA F7)", async () => {
+    const anon = app(outbox, () => unconfirmed("waiting_on_person"));
+    expect((await post(anon.hono, "/api/transport/send", { session: "dev@rig", text: "hello" }, null)).status).toBe(202);
+    const rows = outbox.listHcUnsettled();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ destinationSession: "dev@rig", deliveryState: "indeterminate", deliveryPath: "hc", ackEvidence: "waiting_on_person" });
+    expect(rows[0]!.senderSession).not.toBe("planner@rig");
+    expect(db.prepare("SELECT identity_provenance AS p FROM outbox_entries").get()).toEqual({ p: "origin-unknown:v1" });
+  });
+
+  it("records nothing for a definite refusal, or for submit-only (nothing was typed)", async () => {
     const refused = app(outbox, () => ({ ok: false, sessionName: "dev@rig", path: "hc", reason: "session_missing", error: "gone" }));
     expect((await post(refused.hono, "/api/transport/send", { session: "dev@rig", text: "hello" })).status).toBe(404);
     const anon = app(outbox, () => unconfirmed("waiting_on_person"));
-    expect((await post(anon.hono, "/api/transport/send", { session: "dev@rig", text: "hello" }, null)).status).toBe(202);
     expect((await post(anon.hono, "/api/transport/send", { session: "dev@rig", submitOnly: true }, "planner@rig")).status).toBe(202);
     expect(db.prepare("SELECT count(*) AS n FROM outbox_entries").get()).toEqual({ n: 0 });
   });
@@ -159,9 +168,23 @@ describe("POST /retire-unsettled/:seat/:id: the operator's close", () => {
     expect(outbox.getById("other")?.deliveryState).toBe("indeterminate");
   });
 
-  it("refuses without a sender identity or a reason, and names an unknown row", async () => {
+  it("closes from a plain shell with no seat identity, recorded as unattributed rather than refused (QA F6)", async () => {
+    row("shell", 60);
+    const res = await retire("shell", { reason: "looked from my shell" }, "dev@rig", null);
+    expect(res.status).toBe(200);
+    expect(outbox.getById("shell")).toMatchObject({ deliveryState: "retired", retiredBy: UNATTRIBUTED_OPERATOR, retirementReason: "looked from my shell" });
+  });
+
+  it("closes a row the sweep proved lost (send_gone), which is what leaves it in the list with a person", async () => {
+    row("lost", 60);
+    expect(outbox.markHcSendGone("lost")).toBe(true);
+    expect(outbox.listHcUnsettled().map((r) => r.outboxId)).toEqual(["lost"]);
+    expect((await retire("lost")).status).toBe(200);
+    expect(outbox.listHcUnsettled()).toEqual([]);
+  });
+
+  it("refuses without a reason, and names an unknown row", async () => {
     row("old", 60);
-    expect((await retire("old", { reason: "x" }, "dev@rig", null)).status).toBe(400);
     expect((await retire("old", {})).status).toBe(400);
     expect((await retire("old", { reason: "   " })).status).toBe(400);
     expect((await retire("old", "not an object")).status).toBe(400);

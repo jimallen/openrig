@@ -83,11 +83,15 @@ export const OUTBOX_ACK_EVIDENCE = [
   // are `indeterminate` and hold the pending record in `ack_detail`; a sweep settles them (`verified_after_wait` when the
   // evidence arrived). Never resent from here.
   "waiting_on_person", "outcome_unknown", "verified_after_wait",
+  // hc cutover: the sweep proved the queued send was lost with a core restart (the program never took it, its screen is as it was).
+  // The row stays `indeterminate` and listed, for a person to send again by hand: nothing resends it, and `failed` would have left
+  // the list and `rig health` with no retry behind it.
+  "send_gone",
 ] as const;
 export type OutboxAckEvidence = (typeof OUTBOX_ACK_EVIDENCE)[number];
 
 /** The labels of an hc send nobody has settled: the core may hold it, its reply was lost, or a crash left the claim. */
-const HC_UNSETTLED_EVIDENCE = ["waiting_on_person", "outcome_unknown", "crash_reconciled"] as const;
+const HC_UNSETTLED_EVIDENCE = ["waiting_on_person", "outcome_unknown", "crash_reconciled", "send_gone"] as const;
 const HC_UNSETTLED_EVIDENCE_SQL = HC_UNSETTLED_EVIDENCE.map((e) => `'${e}'`).join(", ");
 
 /** How a row was settled. `detail` is the transport's own reason code, when it gave one. */
@@ -577,6 +581,14 @@ export class OutboxHandler {
     return this.db.prepare(`UPDATE outbox_entries SET delivery_state = ?, delivered_at = ?, delivery_path = ?, ack_evidence = ?, ack_detail = ?
       WHERE outbox_id = ? AND delivery_state = 'indeterminate' AND delivery_path = 'hc' AND ack_evidence IN ('waiting_on_person', 'outcome_unknown')`)
       .run(state, state === "delivered" ? new Date().toISOString() : null, label.path, label.evidence, label.detail ?? null, outboxId).changes === 1;
+  }
+
+  /** The sweep proved a waiting row's send lost. Only a row still waiting moves; it stays `indeterminate` (see `send_gone`). */
+  markHcSendGone(outboxId: string): boolean {
+    if (!this.hasOutcomeLabelColumns) return false;
+    return this.db.prepare(`UPDATE outbox_entries SET ack_evidence = 'send_gone'
+      WHERE outbox_id = ? AND delivery_state = 'indeterminate' AND delivery_path = 'hc' AND ack_evidence IN ('waiting_on_person', 'outcome_unknown')`)
+      .run(outboxId).changes === 1;
   }
 
   /** Labels a row another writer has just settled (the queue's superseded wake). No-op before migration 117. */

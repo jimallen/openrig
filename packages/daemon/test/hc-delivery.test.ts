@@ -24,6 +24,8 @@ class FakeCore {
   reported = true;
   screen = "READY\n";
   unreachable = false;
+  /** `terminal.get` and `server.status` answer, `terminal.read` does not (a read that times out, or a screen the core cannot give). */
+  readFails = false;
   missing = false;
   /** Sends accepted by the core and not yet typed: a person is at the keyboard. */
   queue: string[] = [];
@@ -61,7 +63,9 @@ class FakeCore {
     if (this.missing && method === "terminal.get") throw new HcError("no such terminal", "not_found", -32000);
     switch (method) {
       case "terminal.get": return this.terminal();
-      case "terminal.read": return { text: this.screen, complete: true, how: "screen" };
+      case "terminal.read":
+        if (this.readFails) throw new HcUnavailableError("the screen could not be read");
+        return { text: this.screen, complete: true, how: "screen" };
       case "server.status": return { uptime_ms: this.clock - this.coreStartedAt, pid: 1 };
       default: throw new Error(`unexpected method ${method}`);
     }
@@ -355,7 +359,72 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     core.restartCore();
     core.screen += "hello <tok-1>\n";
     core.turn += 1;  // the program took the text and its turn ended: the Enter did reach it
-    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
+    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "turn_advanced" });
+  });
+
+  describe("a screen that cannot be read is not a screen without the token (security review F1)", () => {
+    /** The paste landed and the Enter did not, the core restarted well after the send, and the read then fails. */
+    async function stagedThenUnreadable() {
+      const core = new FakeCore();
+      const { delivery, send } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      core.clock += 10_000;
+      core.restartCore();
+      core.screen += "hello <tok-1>\n";  // the token IS on the screen
+      core.clock += 5_000;
+      core.readFails = true;             // and the sweep cannot read it
+      return { core, delivery, send, first };
+    }
+
+    it("after a restart, at rest with the same turn, it is waiting: not gone, so nothing may retry", async () => {
+      const { delivery, first } = await stagedThenUnreadable();
+      const verdict = await delivery.verify(pendingOf(first));
+      expect(verdict).toMatchObject({ state: "waiting", reason: "waiting_on_person", cause: "screen_unreadable" });
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+    });
+
+    it("and the retry that follows types nothing: it cannot tell the message is already there", async () => {
+      const { delivery, send, first } = await stagedThenUnreadable();
+      const again = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      expect(again).toMatchObject({ state: "not_delivered", reason: "core_unreachable", code: "transport_unavailable" });
+      expect(send.sent).toHaveLength(1);
+      expect(first.state).toBe("waiting");
+    });
+
+    it("waiting too when no restart is in sight: the read said nothing either way", async () => {
+      const core = new FakeCore();
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      core.readFails = true;
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "screen_unreadable" });
+    });
+
+    it("a turn that advanced still settles it delivered: the evidence did not need the screen", async () => {
+      const { core, delivery, first } = await stagedThenUnreadable();
+      core.turn += 1;
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "turn_advanced" });
+    });
+
+    it("a send with no token needs the screen too: its fingerprint is the only proof of gone, so an unread screen is waiting", async () => {
+      const core = new FakeCore();
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello");
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      core.readFails = true;
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "screen_unreadable" });
+    });
+
+    it("a screen that reads and lacks the token is still the absence the proof rests on", async () => {
+      const core = new FakeCore();
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "not_delivered", reason: "core_restarted_send_gone" });
+    });
   });
 
   it("does not take a token as delivery when the seat started no turn: the paste may have landed and the Enter not (measured)", async () => {
@@ -381,16 +450,104 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     core.screen += "hello <tok-1>\n";
     expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
     core.turn += 1;
-    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
+    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "turn_advanced" });
   });
 
-  it("takes a token as delivery while the program is mid-turn: it is working on it", async () => {
-    const core = new FakeCore();
-    const { delivery } = build(core, "silent");
-    const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
-    core.screen += "hello <tok-1>\n";
-    core.status = "working";
-    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
+  describe("the token is the paste, never the Enter: no `delivered` without a turn (QA F1, F2)", () => {
+    it("a program mid-turn now: the token proves a paste, and the turn it is in may be other work", async () => {
+      const core = new FakeCore();
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      core.screen += "hello <tok-1>\n";
+      core.status = "working";
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
+    });
+
+    it("a seat that was busy at the send, restart between paste and Enter: typed and unsubmitted reads waiting, not delivered", async () => {
+      const core = new FakeCore();
+      core.status = "working";
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      core.clock += 10_000;
+      core.restartCore();
+      core.screen += "hello <tok-1>\n";
+      core.status = "idle";  // the turn it was in ended on its own; the text is in the input
+      const verdict = await delivery.verify(pendingOf(first));
+      expect(verdict).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+    });
+
+    it("a seat that reports no status, same state: waiting, not delivered", async () => {
+      const core = new FakeCore();
+      core.reported = false;
+      core.status = null;
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-2>", { token: "tok-2" });
+      core.screen += "hello <tok-2>\n";
+      core.personStops();
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
+    });
+
+    it("a resend of the same token while the text sits on the screen types nothing and claims nothing: waiting, not already delivered", async () => {
+      const core = new FakeCore();
+      core.screen += "earlier <tok-3>\n";  // the first attempt's paste, its Enter lost
+      const { delivery, send } = build(core, "reply");
+      const again = await delivery.deliver(SEAT, "again <tok-3>", { token: "tok-3" });
+      expect(again).toMatchObject({ state: "waiting", cause: "text_present_no_turn" });
+      expect(isBlindRetrySafe(again)).toBe(false);
+      expect(send.sent).toHaveLength(0);
+    });
+
+    it("the same resend after the first attempt's own waiting verdict stays waiting (the two agree)", async () => {
+      const core = new FakeCore();
+      const { delivery, send } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" });
+      core.screen += "hello <tok-1>\n";
+      expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting" });
+      expect(await delivery.deliver(SEAT, "hello <tok-1>", { token: "tok-1" })).toMatchObject({ state: "waiting" });
+      expect(send.sent).toHaveLength(1);
+    });
+  });
+
+  describe("`gone` needs the screen exactly as it was before the send (QA F3)", () => {
+    /** Idle, reports status, same turn, restart long after the send: everything the old rule asked for. Then the screen changes. */
+    async function restartedWithScreen(change: (core: FakeCore) => void, token?: string) {
+      const core = new FakeCore();
+      const { delivery, send } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, token ? `hello <${token}>` : "hello", token ? { token } : {});
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      change(core);
+      return { verdict: await delivery.verify(pendingOf(first)), send };
+    }
+
+    it("a token-free seat whose text is in the input (the screen changed): not gone", async () => {
+      const { verdict } = await restartedWithScreen((c) => { c.screen += "hello\n"; });
+      expect(verdict).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
+      expect(isBlindRetrySafe(verdict)).toBe(false);
+    });
+
+    it("a token that is not rendered (a collapsed paste leaves a placeholder): the screen changed, so not gone", async () => {
+      const { verdict } = await restartedWithScreen((c) => { c.screen += "[Pasted text #1 +2 lines]\n"; }, "tok-9");
+      expect(verdict).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
+    });
+
+    it("a screen that is byte-for-byte as it was, for a token-free seat, is the proof (a retry is safe)", async () => {
+      const { verdict } = await restartedWithScreen(() => undefined);
+      expect(verdict).toMatchObject({ state: "not_delivered", reason: "core_restarted_send_gone" });
+      expect(verdict.state === "not_delivered" && verdict.message).toMatch(/by hand/);
+    });
+
+    it("a record saved with no screen fingerprint never reads gone: absent is null", async () => {
+      const core = new FakeCore();
+      const { delivery } = build(core, "silent");
+      const first = await delivery.deliver(SEAT, "hello");
+      core.clock += 10_000;
+      core.restartCore();
+      core.clock += 5_000;
+      expect(await delivery.verify({ ...pendingOf(first), preScreen: null })).toMatchObject({ state: "waiting", cause: "restart_unsettled" });
+    });
   });
 
   it("does not take a turn for this send when the seat was already working", async () => {
@@ -422,24 +579,6 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     const first = await delivery.deliver(SEAT, "hello");
     core.turn += 1;
     expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "waiting" });
-  });
-
-  it("settles by the token alone for a program that reports no status", async () => {
-    const core = new FakeCore();
-    core.reported = false;
-    core.status = null;
-    const { delivery } = build(core, "silent");
-    const first = await delivery.deliver(SEAT, "hello <tok-2>", { token: "tok-2" });
-    core.personStops();
-    expect(await delivery.verify(pendingOf(first))).toMatchObject({ state: "delivered", evidence: "token_on_screen" });
-  });
-
-  it("sends nothing when the token is already on the screen: the delivery was already made", async () => {
-    const core = new FakeCore();
-    core.screen += "earlier <tok-3>\n";
-    const { delivery, send } = build(core, "reply");
-    expect(await delivery.deliver(SEAT, "again <tok-3>", { token: "tok-3" })).toMatchObject({ state: "delivered", evidence: "already_on_screen" });
-    expect(send.sent).toHaveLength(0);
   });
 
   it("will not settle for a different terminal, a finished one, or an unreachable core", async () => {
@@ -483,7 +622,7 @@ describe("HcDelivery: delivery_outcome_unknown means verify, and verify never se
     const { delivery } = build(core, "silent");
     const first = await delivery.deliver(SEAT, "hello <tok-4>", { token: "tok-4" });
     const stored: HcPendingSend = JSON.parse(JSON.stringify(pendingOf(first)));
-    expect(stored).toEqual({ version: 1, seat: SEAT, address: ADDRESS, token: "tok-4", sendStartedAtMs: T0, preTurn: 0, preStatus: "idle", preReported: true, commandLed: false });
+    expect(stored).toEqual({ version: 1, seat: SEAT, address: ADDRESS, token: "tok-4", sendStartedAtMs: T0, preTurn: 0, preStatus: "idle", preReported: true, commandLed: false, preScreen: expect.stringMatching(/^[0-9a-f]{64}$/) });
     core.personStops();
     expect(await delivery.verify(stored)).toMatchObject({ state: "delivered" });
   });
