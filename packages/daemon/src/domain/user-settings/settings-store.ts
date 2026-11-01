@@ -632,7 +632,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "recovery.auto_drive_provider_prompts": return false;
     case "recovery.provider_auth_env_allowlist": return "";
     case "recovery.post_restart_prompt": return true;
-    case "transport.native_claude": return false;
+    case "transport.native_claude": return true;
     // V1 Phase 4 — Advisor default per universal-shell.md L83;
     // Operator default empty per L84 ("not configured").
     case "agents.advisor_session": return "advisor-lead@kernel";

@@ -119,8 +119,9 @@ import { InboxHandler } from "./domain/inbox-handler.js";
 import { OutboxHandler, labelForTmuxSend } from "./domain/outbox-handler.js";
 import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
 import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
+import { HookSeenStore, nativeSeatGate, seatGateRoot } from "./adapters/hook-seen-store.js";
 import { createNativeSettlementHandler, failOverToTmux } from "./domain/native-inbox-settlement.js";
-import { fileIncludes, listProcesses as listProcessesForNative, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
+import { fileIncludes, listProcesses as listProcessesForNative, processIsAlive, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
 import { ClassificationAttemptLedger } from "./domain/classification-attempts.js";
@@ -1354,6 +1355,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   };
   const claudeNativeInbox: ClaudeNativeInbox = new ClaudeNativeInbox({
     db,
+    gate: nativeSeatGate(new HookSeenStore(seatGateRoot(OPENRIG_HOME)), processIsAlive),
     onSettled: createNativeSettlementHandler(nativeSettlementDeps),
     // OF-180 N2: a row unacked past the deadline with no prompt boundary since is named in the daemon log, once.
     onStalled: (row, ageMs) => console.warn(`[native-inbox] ${row.outboxId} to ${row.destinationSession} was written natively ${Math.round(ageMs / 1000)}s ago and the seat has had no prompt boundary since. The seat may be busy, or it may be holding the message behind a prompt (for example a managed or policy setting that overrides crossSessionInbound; not measured).`),

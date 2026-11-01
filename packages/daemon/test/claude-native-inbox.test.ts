@@ -7,7 +7,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { OutboxHandler, WAKE_INTENT_PREFIX } from "../src/domain/outbox-handler.js";
 import {
-  ClaudeNativeInbox, nativeMarker, parseNativeMarkers, ACCEPT_SETTING_ARGV_FRAGMENT, type NativeInboxDeps, type ProcessRow,
+  ClaudeNativeInbox, nativeMarker, parseNativeMarkers, ACCEPT_SETTING_ARGV_FRAGMENT, type NativeInboxDeps, type NativeSeatGate, type ProcessRow,
 } from "../src/domain/claude-native-inbox.js";
 
 const dbs: Database.Database[] = [];
@@ -168,7 +168,7 @@ describe("OF-191: a re-registration of the process that already passed keeps its
     expect([r?.probe_result, r?.claude_version, r?.exec_path, r?.name_envelope, r?.registered_at])
       .toEqual(["pass", "2.1.316", "/opt/claude/bin/claude.exe", 1, new Date(s.f.clock.t).toISOString()]);
     expect(s.f.inbox.endpointFor("node-a")).toMatchObject({ probe_result: "pass", claude_version: "2.1.316" });
-    const e = await s.f.inbox.eligibility(SEAT, SENDER);
+    const e = await s.f.inbox.eligibility(SEAT);
     expect(e.ok).toBe(true);
   });
 
@@ -306,7 +306,7 @@ describe("ncomms-3d: the sender-name envelope", () => {
     const f = make();
     f.probe = probe;
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER);
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text, endpoint: e.endpoint });
     const id = res.outboxIds[0]!;
@@ -333,26 +333,120 @@ describe("ncomms-3d: the sender-name envelope", () => {
   });
 });
 
+describe("the seat's gate", () => {
+  function gated(over?: Partial<NativeInboxDeps>) {
+    const calls = { reconcile: [] as Array<Array<string | null>>, marked: [] as string[] };
+    const answers = { received: [] as Array<{ id: string; nonce: string }>, cleared: [] as Array<{ id: string; nonce: string }>,
+      seen: null as { agentPid: number | null; durable: boolean } | null };
+    const gate: NativeSeatGate = {
+      reconcile: (_seat, transcripts) => { calls.reconcile.push(transcripts); return { received: answers.received, cleared: answers.cleared }; },
+      seenBy: () => answers.seen,
+      markReceived: (_seat, marker) => { calls.marked.push(marker.id); },
+    };
+    return { f: make({ gate, ...over }), calls, answers };
+  }
+  async function pendingRow(f: Fake) {
+    const r = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hi", endpoint: f.inbox.endpointFor("node-a")! });
+    return { id: r.outboxIds[0]!, nonce: row(f.db, r.outboxIds[0]!)!.nonce! };
+  }
+  const pastDeadline = (f: Fake) => { f.clock.t += 121_000; };
+
+  it("a new process reconciles, against the transcript it left and the one it opened", async () => {
+    const { f, calls } = gated();
+    await register(f);
+    await f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: SOCK, transcriptPath: "/new.jsonl", claudePid: 5151, execPath: "/bin/claude" });
+    expect(calls.reconcile).toEqual([[null, TRANSCRIPT], [TRANSCRIPT, "/new.jsonl"]]);
+  });
+
+  it("a /clear or /compact in the same process does not: its transcript lags, and a /clear changes the file", async () => {
+    const { f, calls } = gated();
+    await register(f);
+    await register(f);
+    expect(calls.reconcile).toHaveLength(1);
+  });
+
+  it("a prompt found with no record settles its row, and tells the sender's queue", async () => {
+    const { f, answers } = gated();
+    await register(f);
+    const m = await pendingRow(f);
+    answers.received = [m];
+    await f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: SOCK, transcriptPath: TRANSCRIPT, claudePid: 5151, execPath: "/bin/claude" });
+    expect(row(f.db, m.id)).toMatchObject({ state: "delivered", evidence: "native_transcript", detail: "no_seen_record" });
+    expect(f.settled).toEqual([{ id: m.id, kind: "delivered", detail: "no_seen_record" }]);
+  });
+
+  it("a gate that throws does not stop the seat registering", async () => {
+    const { f } = gated({ gate: { reconcile: () => { throw new Error("disk"); }, seenBy: () => null, markReceived: () => undefined } });
+    expect(await register(f)).toMatchObject({ probe_result: "pass" });
+  });
+
+  it("the sweep settles a row from the seen record of the running process, with no ack and no boundary (the daemon was down)", async () => {
+    const { f, answers } = gated();
+    await register(f);
+    const m = await pendingRow(f);
+    answers.seen = { agentPid: 4242, durable: false };
+    pastDeadline(f);
+    expect(f.inbox.sweep()).toMatchObject({ fallbacks: [], settled: [{ outboxId: m.id, state: "delivered", evidence: "native_hook_delivered" }] });
+    expect(row(f.db, m.id)).toMatchObject({ state: "delivered", detail: "seen_record" });
+  });
+
+  it("a durable record settles it whatever process made it", async () => {
+    const { f, answers } = gated();
+    await register(f);
+    const m = await pendingRow(f);
+    answers.seen = { agentPid: 1, durable: true };
+    pastDeadline(f);
+    f.inbox.sweep();
+    expect(row(f.db, m.id)?.state).toBe("delivered");
+  });
+
+  it("a record left by a dead process proves nothing: the row falls to the boundary rule, and fails over", async () => {
+    const { f, answers } = gated();
+    await register(f);
+    const m = await pendingRow(f);
+    answers.seen = { agentPid: 1, durable: false };
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 1_000).toISOString());
+    pastDeadline(f);
+    expect(f.inbox.sweep().fallbacks.map((x) => x.outboxId)).toEqual([m.id]);
+  });
+
+  it("a live seat whose hook crashed: the marker in the transcript records it, so a repeat is refused", async () => {
+    const { f, calls } = gated();
+    await register(f);
+    const m = await pendingRow(f);
+    f.files.set(TRANSCRIPT, nativeMarker(m.id, m.nonce));
+    recordActivity(f.db, "Stop", new Date(f.clock.t + 1_000).toISOString());
+    pastDeadline(f);
+    f.inbox.sweep();
+    expect(calls.marked).toEqual([m.id]);
+    expect(row(f.db, m.id)).toMatchObject({ state: "delivered", evidence: "native_transcript" });
+  });
+});
+
 describe("eligibility: every condition, or tmux (criteria 4 and 5)", () => {
   it("control: a registered, probed, live seat with the accept setting is eligible for an agent sender", async () => {
     const f = make(); await register(f);
-    expect(await f.inbox.eligibility(SEAT, SENDER)).toMatchObject({ ok: true, nodeId: "node-a" });
+    expect(await f.inbox.eligibility(SEAT)).toMatchObject({ ok: true, nodeId: "node-a" });
   });
 
   it.each([
-    ["the daemon's own identity", "watchdog@system", true],
-    ["daemon@kernel", "daemon@kernel", true],
-    ["a codex agent seat", "dev-codex@rig1", true],
-    ["a human terminal seat", "operator-human@rig1", false],
-    ["the operator's inbox address", "human@kernel", false],
-    ["no sender", null, false],
-    ["an unknown sender", "unknown", false],
-    ["an unregistered name", "nobody@nowhere", false],
-  ] as const)("sender %s → native %s", async (_label, sender, ok) => {
+    ["the daemon's own identity", "watchdog@system"],
+    ["a codex agent seat", "dev-codex@rig1"],
+    ["a human terminal seat", "operator-human@rig1"],
+    ["the operator's inbox address", "human@kernel"],
+    ["no sender", null],
+    ["an unknown sender", "unknown"],
+    ["an unregistered name", "nobody@nowhere"],
+  ] as const)("Jim's decision 5: %s takes the socket too; only the seat decides", async (_label, sender) => {
     const f = make(); await register(f);
-    const r = await f.inbox.eligibility(SEAT, sender);
-    expect(r.ok).toBe(ok);
-    if (!ok) expect(r).toMatchObject({ reason: "sender_not_native" });
+    const r = await f.inbox.deliver({ sessionName: SEAT, senderSession: sender ?? "unknown", text: "hi", endpoint: f.inbox.endpointFor("node-a")! });
+    expect(r).toMatchObject({ kind: "written" });
+    expect(f.writes).toHaveLength(1);
+  });
+
+  it("isNativeSender still tells a person from an agent, for the sender notice", () => {
+    const f = make();
+    expect([f.inbox.isNativeSender(SENDER), f.inbox.isNativeSender("watchdog@system"), f.inbox.isNativeSender("operator-human@rig1"), f.inbox.isNativeSender(null)]).toEqual([true, true, false, false]);
   });
 
   it.each([
@@ -369,19 +463,19 @@ describe("eligibility: every condition, or tmux (criteria 4 and 5)", () => {
   ])("%s → tmux (%s)", async (_label, mutate, reason) => {
     const f = make(); await register(f);
     mutate(f);
-    expect(await f.inbox.eligibility(SEAT, SENDER)).toEqual({ ok: false, reason });
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason });
   });
 
   it("no endpoint registered → tmux", async () => {
     const f = make();
-    expect(await f.inbox.eligibility(SEAT, SENDER)).toEqual({ ok: false, reason: "no_endpoint" });
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "no_endpoint" });
   });
 });
 
 describe("deliver: the row first, then the write (R1)", () => {
   async function eligible(f: Fake) {
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER);
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     return e.endpoint;
   }
@@ -464,7 +558,7 @@ describe("deliver: the row first, then the write (R1)", () => {
 describe("ack: only the matching native row, at the hooking seat (R2); late duplicates are blocked (R4)", () => {
   async function pending(f: Fake) {
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER);
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     const id = res.outboxIds[0]!;
@@ -512,7 +606,7 @@ describe("ack: only the matching native row, at the hooking seat (R2); late dupl
 describe("sweep: the deadline rule (R3)", () => {
   async function pending(f: Fake) {
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER);
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     return res.outboxIds[0]!;
@@ -587,7 +681,7 @@ describe("sweep: the deadline rule (R3)", () => {
 describe("review F1: a late copy of an indeterminate row is acked, not blocked", () => {
   async function written(f: Fake, write: "all" | "partial" = "all") {
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER);
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     f.writeResult = write;
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
@@ -621,7 +715,7 @@ describe("review F1: a late copy of an indeterminate row is acked, not blocked",
 describe("review F2 at the inbox: a repeated delivery id", () => {
   async function endpoint(f: Fake) {
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, "watchdog@system");
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     return e.endpoint;
   }
@@ -651,7 +745,7 @@ describe("review F2 at the inbox: a repeated delivery id", () => {
 describe("review N3 and N5", () => {
   it("N3: after a /clear moved the seat to a new transcript, the marker is still found in the transcript of the write", async () => {
     const f = make(); await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await f.inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     const id = res.outboxIds[0]!;
     f.files.set(TRANSCRIPT, `...${nativeMarker(id, row(f.db, id)!.nonce!)}...`);
@@ -666,14 +760,14 @@ describe("review N3 and N5", () => {
     const f = make();
     await f.inbox.registerEndpoint({ nodeId: "node-a", sessionName: SEAT, generation: "gen-1", socketPath: "/tmp/cc-socks/9999.sock", transcriptPath: TRANSCRIPT, claudePid: 4242, execPath: "/bin/claude" });
     f.sockets.add("/tmp/cc-socks/9999.sock");
-    expect(await f.inbox.eligibility(SEAT, SENDER)).toEqual({ ok: false, reason: "socket_pid_mismatch" });
+    expect(await f.inbox.eligibility(SEAT)).toEqual({ ok: false, reason: "socket_pid_mismatch" });
   });
 });
 
 describe("settlement notifications (review F3 and the R3 notice)", () => {
   async function pending(f: Fake) {
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await f.inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     return { id: res.outboxIds[0]!, nonce: row(f.db, res.outboxIds[0]!)!.nonce! };
   }
@@ -700,7 +794,7 @@ describe("settlement notifications (review F3 and the R3 notice)", () => {
 
   it("D12: a partial write is reported unconfirmed (write_partial), once", async () => {
     const f = make(); await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await f.inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     f.writeResult = "partial";
     const res = await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     f.clock.t += 3_600_000;
@@ -738,7 +832,7 @@ describe("OF-181 N3: the default ack window is 1.5 s", () => {
     const waits: number[] = [];
     const f = make({ ackWindowMs: undefined, sleep: async (ms) => { waits.push(ms); } });
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await f.inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     expect(waits).toEqual([1_500]);
   });
@@ -754,7 +848,7 @@ describe("OF-180 N7: a wake group's tmux fallback is one message", () => {
     return ids;
   }
   async function eligibleFor(f: Fake, sender: string): Promise<Eligible> {
-    const e = await f.inbox.eligibility(SEAT, sender);
+    const e = await f.inbox.eligibility(SEAT);
     if (!e.ok) throw new Error(e.reason);
     return e;
   }
@@ -850,7 +944,7 @@ describe("OF-180 N2: a stalled native row is named once", () => {
     const calls: Array<{ id: string; ageMs: number }> = [];
     const f = make({ onStalled: (r, ageMs) => { calls.push({ id: r.outboxId, ageMs }); }, ...over });
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await f.inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     const id = (await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint })).outboxIds[0]!;
     return { f, calls, id };
   }
@@ -874,7 +968,7 @@ describe("OF-180 N2: a stalled native row is named once", () => {
   it("a callback that throws does not stop the sweep", async () => {
     const f = make({ onStalled: () => { throw new Error("log failed"); } });
     await register(f);
-    const e = await f.inbox.eligibility(SEAT, SENDER); if (!e.ok) throw new Error(e.reason);
+    const e = await f.inbox.eligibility(SEAT); if (!e.ok) throw new Error(e.reason);
     await f.inbox.deliver({ sessionName: SEAT, senderSession: SENDER, text: "hello", endpoint: e.endpoint });
     f.clock.t += 130_000;
     expect(() => f.inbox.sweep()).not.toThrow();

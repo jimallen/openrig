@@ -51,10 +51,21 @@ export interface NativeEndpointRow {
 
 export interface ProcessRow { pid: number; ppid: number; args: string }
 
+/** S2: the seat's own gate, the seen store its relay writes before the agent sees a prompt (adapters/hook-seen-store.ts). Absent: the
+ *  daemon runs as it did before S2, on the ack alone. */
+export interface NativeSeatGate {
+  /** Settles the seat's store against its transcripts: a record with no prompt is cleared, a prompt with no record is recorded. */
+  reconcile(sessionName: string, transcripts: Array<string | null>): { received: Array<{ id: string; nonce: string }>; cleared: Array<{ id: string; nonce: string }> };
+  /** The seat's record of this exact (id, nonce), or null. */
+  seenBy(sessionName: string, marker: { id: string; nonce: string }): { agentPid: number | null; durable: boolean } | null;
+  markReceived(sessionName: string, marker: { id: string; nonce: string }): void;
+}
+
 /** OS and tmux access, injected so tests never reach a live seat, socket or process. */
 export interface NativeInboxDeps {
   db: Database.Database;
   outbox: OutboxHandler;
+  gate?: NativeSeatGate;
   /** `transport.native_claude`; read at each decision, so the setting takes effect without a restart. */
   enabled: () => boolean;
   /** The pid of the seat's pane process (its shell or claude), or null. */
@@ -178,6 +189,7 @@ export class ClaudeNativeInbox {
    *  relay reports is used only when the pid gives none (no current Claude Code puts it in a hook's environment). */
   async registerEndpoint(input: { nodeId: string; sessionName: string; generation: string | null; socketPath: string; transcriptPath: string | null; claudePid: number | null; execPath: string | null }): Promise<NativeEndpointRow | null> {
     if (!this.hasTables()) return null;
+    const prior = this.endpointFor(input.nodeId);
     let version: string | null = null;
     let probe = input.claudePid ? "fail:exec_path_unresolved" : "fail:no_claude_pid";
     let execPath: string | null = null;
@@ -208,7 +220,29 @@ export class ClaudeNativeInbox {
       ON CONFLICT(node_id) DO UPDATE SET session_name=excluded.session_name, generation=excluded.generation, socket_path=excluded.socket_path,
         transcript_path=excluded.transcript_path, claude_pid=excluded.claude_pid, exec_path=excluded.exec_path, claude_version=excluded.claude_version,
         probe_result=excluded.probe_result, name_envelope=excluded.name_envelope, registered_at=excluded.registered_at`).run(row);
+    if (input.claudePid !== null && prior?.claude_pid !== input.claudePid) this.reconcileGate(input.sessionName, [prior?.transcript_path ?? null, input.transcriptPath]);
     return row;
+  }
+
+  /** S2, a new agent process on the seat: the crash window (M5) and a hook that crashed both leave the seen store and the transcript
+   *  disagreeing. A /clear or /compact fires SessionStart in the same process, whose transcript lags its hook, so it does not get here.
+   *  A row found in the transcript settles at once. A row whose record was cleared stays with the sweep: still `sending`, it fails over.
+   *  One the ack already called delivered is named in the log, and only the pump (S3) can resend it. */
+  private reconcileGate(sessionName: string, transcripts: Array<string | null>): void {
+    if (!this.deps.gate) return;
+    try {
+      const { received, cleared } = this.deps.gate.reconcile(sessionName, transcripts);
+      for (const marker of received) {
+        if (this.deps.outbox.settleNative(marker.id, "delivered", { path: "native", evidence: "native_transcript", detail: "no_seen_record" })) {
+          this.notify(marker.id, { kind: "delivered", evidence: "native_transcript", detail: "no_seen_record" });
+        }
+      }
+      for (const marker of cleared) {
+        if (this.deps.outbox.getById(marker.id)?.deliveryState === "delivered") console.warn(`[native-inbox] ${marker.id} to ${sessionName} was acked, but the seat died before persisting it.`);
+      }
+    } catch (err) {
+      console.warn(`[native-inbox] gate reconcile for ${sessionName} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** OF-191: the endpoint row of the very process that already passed its launch probe, or null. Every SessionStart
@@ -242,9 +276,7 @@ export class ClaudeNativeInbox {
     return row ?? null;
   }
 
-  /** Criterion 5: only daemon and agent-to-agent messages go native. The daemon's own identities (`<name>@system`,
-   *  `daemon@kernel`) and managed agent seats qualify; a human, terminal seat, unregistered or unnamed sender stays on
-   *  tmux, because a native message reaches the model framed as a peer message. */
+  /** Whether a sender is the daemon or a managed agent seat, not a person: `<name>@system`, `daemon@kernel`, an agent runtime's seat. */
   isNativeSender(senderSession: string | null | undefined): boolean {
     if (!senderSession || senderSession === "unknown") return false;
     if (/^[a-z][a-z0-9-]*@system$/.test(senderSession) || senderSession === "daemon@kernel") return true;
@@ -252,11 +284,11 @@ export class ClaudeNativeInbox {
     return !!seat && !!seat.runtime && AGENT_RUNTIMES.has(seat.runtime);
   }
 
-  /** Criteria 1, 2, 4, 5 and R5/R6: every condition must hold, or the message uses tmux. Each refusal names its reason. */
-  async eligibility(sessionName: string, senderSession: string | null | undefined): Promise<NativeEligibility> {
+  /** Criteria 1, 2, 4 and R5/R6: every condition must hold, or the message uses the paste path. Each refusal names its reason. The
+   *  sender is no condition: a person's message takes the socket too (Jim's decision 5, 2026-11-01), which never touches their draft. */
+  async eligibility(sessionName: string): Promise<NativeEligibility> {
     if (!this.deps.enabled()) return { ok: false, reason: "native_disabled" };
     if (!this.hasTables()) return { ok: false, reason: "native_schema_absent" };
-    if (!this.isNativeSender(senderSession)) return { ok: false, reason: "sender_not_native" };
     const seat = this.seatOf(sessionName);
     if (!seat) return { ok: false, reason: "seat_not_running" };
     if (seat.runtime !== "claude-code") return { ok: false, reason: "runtime_not_claude" };
@@ -392,12 +424,24 @@ export class ClaudeNativeInbox {
       if (!Number.isFinite(writtenAt) || now - writtenAt < this.deadlineMs) continue;
       const seat = this.seatOf(row.destinationSession);
       const endpoint = seat ? this.endpointFor(seat.nodeId) : null;
+      // S2: the seat's own record, which needs no daemon, so it outlives an ack and a boundary event the daemon was down for. A record
+      // made by a process that has since died proves nothing until reconcile has looked for the prompt.
+      const seen = row.nativeNonce ? this.deps.gate?.seenBy(row.destinationSession, { id: row.outboxId, nonce: row.nativeNonce }) : null;
+      if (seen && (seen.durable || (seen.agentPid !== null && seen.agentPid === endpoint?.claude_pid))) {
+        if (this.deps.outbox.settleNative(row.outboxId, "delivered", { path: "native", evidence: "native_hook_delivered", detail: "seen_record" })) {
+          this.notify(row.outboxId, { kind: "delivered", evidence: "native_hook_delivered", detail: "seen_record" });
+        }
+        settled.push({ outboxId: row.outboxId, state: "delivered", evidence: "native_hook_delivered" });
+        continue;
+      }
       const boundary = seat ? this.boundarySince(seat.nodeId, row.nativeWrittenAt!) : false;
       if (boundary) {
         const marker = row.nativeNonce ? nativeMarker(row.outboxId, row.nativeNonce) : null;
         // Review N3: the transcript at write time, and the current one (a /clear moves the seat to a new file).
         const transcripts = [...new Set([row.nativeTranscriptPath, endpoint?.transcript_path].filter((p): p is string => !!p))];
         if (marker && transcripts.some((p) => this.deps.fileIncludes(p, marker))) {
+          // A live seat whose hook crashed: the prompt ran with no record, so a repeat must be refused from now on.
+          try { this.deps.gate?.markReceived(row.destinationSession, { id: row.outboxId, nonce: row.nativeNonce! }); } catch { /* the row still settles */ }
           if (this.deps.outbox.settleNative(row.outboxId, "delivered", { path: "native", evidence: "native_transcript" })) {
             this.notify(row.outboxId, { kind: "delivered", evidence: "native_transcript", detail: null });
           }
