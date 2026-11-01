@@ -36,7 +36,7 @@ import { SeatMessagingHealthSource } from "./domain/seat-messaging/message-healt
 import { PumpHandOff } from "./domain/seat-messaging/hand-off.js";
 import { messageId } from "./domain/seat-messaging/ports.js";
 import { RuntimeSeatPorts } from "./domain/seat-messaging/runtime-ports.js";
-import { NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
+import { MessageObligations, NO_SEAT_MESSAGING_PORTS } from "./domain/seat-messaging/pump-ports.js";
 import { DbSeatDirectory, GuardHeldMessages, QueueSenderReturn } from "./domain/seat-messaging/seat-directory.js";
 import { watchdogDeliveryOutcome } from "./domain/watchdog-delivery-status.js";
 import { resolveOnPath } from "./adapters/tmux-exec.js";
@@ -698,6 +698,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // S2: a Codex seat's restart settles its seen store against the thread's rollout. `contextUsageStore` is read at the restart, not here.
   const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
   const seatMessages = new MessageStore(db);
+  // Each consumer registers its own (S4), before the pump starts.
+  const messageObligations = new MessageObligations();
   const reconcileCodexSeat = (sessionName: string, threadId: string | null) => {
     const { cleared } = reconcileCodexSeatGate(new HookSeenStore(seatGateRoot(OPENRIG_HOME)), sessionName, threadId === null ? null : contextUsageStore.readCodexTranscriptPath(threadId));
     // Rows in `cleared` did not arrive: the pump resends them.
@@ -2253,7 +2255,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     if (messagePumpEnabled) {
       const messagePump = new MessagePump({
         store: seatMessages, ports: seatMessagingPorts, directory: new DbSeatDirectory(db), held: heldMessages,
-        senders: new QueueSenderReturn(queueRepoInstance), timing: opts?.messagePumpTiming,
+        senders: new QueueSenderReturn(queueRepoInstance), obligations: messageObligations, timing: opts?.messagePumpTiming,
       });
       // Before the first pass and before any route: from here no SessionTransport sends a message to a gated seat itself.
       tmuxAdapter.messageHandOff = new PumpHandOff(seatMessages, messagePump, seatMessagingPorts);

@@ -11,9 +11,11 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { ATTEMPT_BACKOFF_MS, MessagePump, PREVIOUS_OCCUPANT_LABEL, PUMP_PAUSE_RECHECK_MS, nextAttemptDelayMs, type MessagePumpDeps } from "../src/domain/seat-messaging/message-pump.js";
+import { PumpHandOff, type MessageHandOff } from "../src/domain/seat-messaging/hand-off.js";
+import { MessageLedger } from "../src/domain/seat-messaging/message-ledger.js";
 import { MESSAGE_LANES, MessageStore } from "../src/domain/seat-messaging/message-store.js";
 import { messageId, type GateLookup, type GateRecord, type LastHop, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
-import type { HeldMessages, HoldStatus, SeatDirectory, SeatFate, SenderReturn, SenderReturnResult } from "../src/domain/seat-messaging/pump-ports.js";
+import { MessageObligations, type HeldMessages, type HoldStatus, type SeatDirectory, type SeatFate, type SenderReturn, type SenderReturnResult } from "../src/domain/seat-messaging/pump-ports.js";
 
 const T0 = 7_000_000;  // 1970: far from wall clock on purpose
 const MIN = 60_000;
@@ -35,6 +37,7 @@ class StubGate implements SeatGate {
 
 class StubHop implements LastHop {
   readonly calls: SeatMessage[] = [];
+  afterReceived?: (message: SeatMessage) => Promise<void>;
   result: LastHopResult | "throw" | Promise<LastHopResult> = { kind: "sent" };
   async attempt(message: SeatMessage): Promise<LastHopResult> {
     this.calls.push(message);
@@ -234,6 +237,291 @@ describe("the message pump", () => {
     it("a row defaults to the content lane", () => {
       accept("m1");
       expect(row(db, "m1").lane).toBe(2);
+    });
+  });
+
+  describe("a wake group (S4 design, N2): N rows, one text, one marker each", () => {
+    let handOff: PumpHandOff;
+    const wake = (id: string, seat = SEAT) => new OutboxHandler(db).record({ outboxId: id, senderSession: "lead@r", destinationSession: seat, body: `wake ${id}`, auditPointer: `q-${id}` });
+    const pair = async () => { wake("w1"); wake("w2"); handOff.adoptClaimed(["w1", "w2"]); await settle(); };
+    const settle = () => new Promise((r) => setImmediate(r));
+    beforeEach(() => { handOff = new PumpHandOff(store, pump, w.deps(store).ports); });
+
+    it("goes out as one attempt: one text, every id, each row counted once", async () => {
+      await pair();
+      expect(w.hop.calls.map((c) => [c.ids, c.body])).toEqual([[["w1", "w2"], "wake w1\nwake w2"]]);
+      expect([row(db, "w1").attempts, row(db, "w2").attempts]).toEqual([1, 1]);
+      expect(store.nonceOf(messageId("w2"))).not.toBeNull();
+    });
+
+    it("the text is in staging order whichever row started the delivery", async () => {
+      wake("w1"); wake("w2");
+      handOff.adoptClaimed(["w2", "w1"]);
+      await settle();
+      expect(w.hop.calls.map((c) => c.ids)).toEqual([["w1", "w2"]]);
+    });
+
+    it("each row needs its own gate record, and a repeat carries only the rows without one", async () => {
+      await pair();
+      w.gate.record(messageId("w1"));
+      await pump.tick();
+      expect(row(db, "w1").message_state).toBe("received");
+      expect(row(db, "w2").message_state).toBe("attempting");
+      expect(w.hop.calls).toHaveLength(1);
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      expect(w.hop.calls.slice(1).map((c) => [c.ids, c.body])).toEqual([[["w2"], "wake w2"]]);
+      expect(row(db, "w2").attempts).toBe(2);
+    });
+
+    it("a repeat is the same text while no row has a record", async () => {
+      await pair();
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.body)).toEqual(["wake w1\nwake w2", "wake w1\nwake w2"]);
+    });
+
+    it("a member recorded while the head was not is settled before the attempt, and is not sent", async () => {
+      wake("w1"); wake("w2"); wake("w3");
+      w.gate.record(messageId("w2"));
+      handOff.adoptClaimed(["w1", "w2", "w3"]);
+      await settle();
+      expect(w.hop.calls.map((c) => c.ids)).toEqual([["w1", "w3"]]);
+      expect(row(db, "w2").message_state).toBe("received");
+    });
+
+    it("a member whose gate cannot be read proves nothing, so nothing goes", async () => {
+      await pair();
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      const lookup = w.gate.lookup.bind(w.gate);
+      w.gate.lookup = async (seat, id) => (id === "w2" ? { kind: "unavailable", cause: "down" } : lookup(seat, id));
+      await pump.tick();
+      expect(w.hop.calls).toHaveLength(1);
+      expect(row(db, "w1").message_pause_reason).toBe("gate_unavailable");
+    });
+
+    it("a pause gives the attempt back on every row, and a refusal is on every row", async () => {
+      w.hop.result = { kind: "paused", reason: "busy" };
+      await pair();
+      expect([row(db, "w1").attempts, row(db, "w2").attempts]).toEqual([0, 0]);
+      expect([row(db, "w1").message_pause_reason, row(db, "w2").message_pause_reason]).toEqual(["busy", "busy"]);
+      w.hop.result = { kind: "refused", reason: "no" };
+      w.now += PUMP_PAUSE_RECHECK_MS;
+      await pump.tick();
+      expect([row(db, "w1").message_last_refusal, row(db, "w2").message_last_refusal]).toEqual(["no", "no"]);
+    });
+
+    it("rows handed over apart go apart, and one row is no group, even at a second forward", async () => {
+      wake("w1"); wake("w2");
+      handOff.adoptClaimed(["w1"]);
+      handOff.adoptClaimed(["w2"]);
+      await settle();
+      w.gate.record(messageId("w1"));
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids)).toEqual([["w1"], ["w2"]]);
+      db.prepare("UPDATE outbox_entries SET message_group = 'stale', message_state = NULL, attempts = 0, delivery_state = 'pending' WHERE outbox_id = 'w2'").run();
+      handOff.adoptClaimed(["w2"]);
+      expect(row(db, "w2").message_group).toBeNull();
+    });
+
+    it("a row that left for another seat is not in the group's text", async () => {
+      await pair();
+      db.prepare("UPDATE outbox_entries SET destination_session = 'other@r' WHERE outbox_id = 'w2'").run();
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      expect(w.hop.calls[1]!.ids).toEqual(["w1"]);
+    });
+
+    it("rows bound to different occupants are not one text", async () => {
+      await pair();
+      db.prepare("UPDATE outbox_entries SET occupant_generation = 'g2' WHERE outbox_id = 'w2'").run();
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      expect(w.hop.calls[1]!.ids).toEqual(["w1"]);
+    });
+
+    it("every row of a group sent to a previous occupant carries the label", async () => {
+      await pair();
+      db.prepare("UPDATE outbox_entries SET message_previous_occupant = 'g0'").run();
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      expect(w.hop.calls[1]!.body).toBe(`${PREVIOUS_OCCUPANT_LABEL} wake w1\n${PREVIOUS_OCCUPANT_LABEL} wake w2`);
+    });
+
+    it("after a repeat, the tidy sees the text the seat was sent, whole", async () => {
+      const tidied: SeatMessage[] = [];
+      w.hop.afterReceived = async (m) => { tidied.push(m); };
+      await pair();
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      w.gate.record(messageId("w1"));
+      w.gate.record(messageId("w2"));
+      await pump.tick();
+      expect(tidied[0]!.ids).toEqual(["w1", "w2"]);
+      expect(tidied[0]!.body).toBe("wake w1\nwake w2");
+    });
+  });
+
+  describe("the content lane's hold (N4: lane 2 waits while a seat's startup is open)", () => {
+    const inLane = (id: string, lane: 0 | 1 | 2, seat = SEAT) => store.accept({ id: messageId(id), seat, sender: "lead@r", body: id, lane });
+
+    it("startup, then startup, then the queued message, though the lane is empty between the two", async () => {
+      const release = pump.holdContentLane(SEAT);
+      inLane("c1", MESSAGE_LANES.content);
+      inLane("s1", MESSAGE_LANES.startup);
+      await pump.tick();
+      w.gate.record(messageId("s1"));
+      await pump.tick();
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["s1"]);
+      expect(row(db, "c1")).toMatchObject({ attempts: 0, message_pause_reason: "lane_held" });
+      inLane("s2", MESSAGE_LANES.startup);
+      await pump.tick();
+      w.gate.record(messageId("s2"));
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["s1", "s2"]);
+      release();
+      await new Promise((r) => setImmediate(r));
+      expect(w.hop.calls.map((c) => c.ids[0])).toEqual(["s1", "s2", "c1"]);
+      expect(row(db, "c1").message_pause_reason).toBeNull();
+    });
+
+    it("holds only lane 2, and only its own seat", async () => {
+      pump.holdContentLane(SEAT);
+      inLane("p1", MESSAGE_LANES.compaction);
+      inLane("o1", MESSAGE_LANES.content, "other@r");
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0]).sort()).toEqual(["o1", "p1"]);
+    });
+
+    it("lifts with its last holder, and a second release changes nothing", async () => {
+      const first = pump.holdContentLane(SEAT);
+      const second = pump.holdContentLane(SEAT);
+      inLane("c1", MESSAGE_LANES.content);
+      first();
+      first();
+      await new Promise((r) => setImmediate(r));
+      await pump.tick();
+      expect(w.hop.calls).toEqual([]);
+      await new Promise((r) => setImmediate(r));
+      second();
+      await new Promise((r) => setImmediate(r));
+      expect(w.hop.calls).toHaveLength(1);
+    });
+
+    it("a record still counts during the hold", async () => {
+      inLane("c1", MESSAGE_LANES.content);
+      await pump.tick();
+      pump.holdContentLane(SEAT);
+      w.gate.record(messageId("c1"));
+      await pump.tick();
+      expect(row(db, "c1").message_state).toBe("received");
+    });
+  });
+
+  describe("a message's obligation (S4 design: a closed item ends its wake, at every attempt)", () => {
+    let obligations: MessageObligations;
+    let reason: string | null;
+    const wake = (id: string) => store.accept({ id: messageId(id), seat: SEAT, sender: "lead@r", body: id, messageClass: "nudge", auditPointer: "q-1" });
+    beforeEach(() => {
+      obligations = new MessageObligations();
+      reason = null;
+      obligations.register("wake-", () => reason);
+      pump = new MessagePump({ ...w.deps(store), obligations });
+    });
+
+    it("is read at every attempt: an item closed after the first ends the row, with no notice and no second attempt", async () => {
+      wake("wake-1");
+      await pump.tick();
+      expect(w.hop.calls).toHaveLength(1);
+      reason = "qitem closed";
+      w.now += ATTEMPT_BACKOFF_MS[0];
+      await pump.tick();
+      expect(w.hop.calls).toHaveLength(1);
+      expect(row(db, "wake-1")).toMatchObject({ message_state: "undeliverable", ack_evidence: "superseded", message_closed_reason: "qitem closed" });
+      expect(w.returned).toEqual([]);
+    });
+
+    it("a gate record beats it: what arrived, arrived", async () => {
+      wake("wake-1");
+      await pump.tick();
+      reason = "qitem closed";
+      w.gate.record(messageId("wake-1"));
+      await pump.tick();
+      expect(row(db, "wake-1").message_state).toBe("received");
+    });
+
+    it("ends a row before its seat's fate does: nobody is told about a wake nobody wants", async () => {
+      wake("wake-1");
+      reason = "qitem closed";
+      w.fates.set(SEAT, { kind: "gone", reason: "archived" });
+      await pump.tick();
+      expect(w.returned).toEqual([]);
+      expect(row(db, "wake-1").ack_evidence).toBe("superseded");
+    });
+
+    it("the check sees the row: attempts, occupant and audit pointer", async () => {
+      const seen: unknown[] = [];
+      obligations.register("job-", (m) => { seen.push([m.id, m.messageClass, m.attempts, m.occupantGeneration, m.auditPointer]); return null; });
+      store.accept({ id: messageId("job-1"), seat: SEAT, sender: "lead@r", body: "x", occupantGeneration: "g1", auditPointer: "j1" });
+      w.fates.set(SEAT, { kind: "live", occupantGeneration: "g1" });
+      await pump.tick();
+      expect(seen).toEqual([["job-1", "content", 0, "g1", "j1"]]);
+    });
+
+    it("a member nobody wants leaves the group's text", async () => {
+      obligations.register("job-", (m) => (m.id === "job-2" ? "stale" : null));
+      for (const id of ["job-1", "job-2"]) new OutboxHandler(db).record({ outboxId: id, senderSession: "lead@r", destinationSession: SEAT, body: id });
+      new PumpHandOff(store, pump, w.deps(store).ports).adoptClaimed(["job-1", "job-2"]);
+      await new Promise((r) => setImmediate(r));
+      expect(w.hop.calls.map((c) => c.ids)).toEqual([["job-1"]]);
+      expect(row(db, "job-2").ack_evidence).toBe("superseded");
+    });
+
+    it("no check for the id, or a check that throws, leaves the message wanted", async () => {
+      accept("other");
+      await pump.tick();
+      expect(w.hop.calls).toHaveLength(1);
+      obligations.register("boom-", () => { throw new Error("read failed"); });
+      store.accept({ id: messageId("boom-1"), seat: "b@r", sender: "lead@r", body: "x" });
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).toContain("boom-1");
+    });
+
+    it("a prefix has one owner", () => {
+      expect(() => obligations.register("wake-", () => null)).toThrow(/already/);
+    });
+  });
+
+  describe("class and lane", () => {
+    it("lifecycle text with no lane named goes in the startup lane, in the store as in the ledger", () => {
+      store.accept({ id: messageId("l1"), seat: SEAT, sender: "lead@r", body: "x", messageClass: "lifecycle" });
+      new MessageLedger(db).accept({ id: "l2", seat: SEAT, sender: "lead@r", body: "x", identityProvenance: "t", messageClass: "lifecycle" });
+      expect([row(db, "l1").lane, row(db, "l2").lane]).toEqual([MESSAGE_LANES.startup, MESSAGE_LANES.startup]);
+    });
+
+    it("a lane named wins, and a nudge stays with content", () => {
+      store.accept({ id: messageId("l1"), seat: SEAT, sender: "lead@r", body: "x", messageClass: "lifecycle", lane: MESSAGE_LANES.compaction });
+      store.accept({ id: messageId("n1"), seat: SEAT, sender: "lead@r", body: "x", messageClass: "nudge" });
+      expect([row(db, "l1").lane, row(db, "n1").lane]).toEqual([MESSAGE_LANES.compaction, MESSAGE_LANES.content]);
+    });
+  });
+
+  describe("the hand-off is the consumers' whole seam", () => {
+    it("takes the row, waits for it, ends it, and holds the lane", async () => {
+      const handOff: MessageHandOff = new PumpHandOff(store, pump, w.deps(store).ports);
+      const accepted = handOff.accept({ id: messageId("m1"), seat: SEAT, sender: "lead@r", body: "x" });
+      await new Promise((r) => setImmediate(r));
+      expect(accepted).toEqual({ kind: "accepted", id: "m1" });
+      expect(await handOff.awaitReceived(messageId("m1"), 0)).toBe("open");
+      const release = handOff.holdContentLane(SEAT);
+      handOff.accept({ id: messageId("m2"), seat: "two@r", sender: "lead@r", body: "x" });
+      expect(handOff.cancel(messageId("m1"), "unwound")).toBe(true);
+      expect(await handOff.awaitReceived(messageId("m1"), 0)).toBe("undeliverable");
+      accept("m3");
+      await pump.tick();
+      expect(w.hop.calls.map((c) => c.ids[0])).not.toContain("m3");
+      release();
     });
   });
 

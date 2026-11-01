@@ -213,10 +213,13 @@ export const CODEX_PASTE_LIMIT = 1000;
 
 /** A long message's stand-in: short, with its marker, naming the command that prints its body. The gate sees the same id and nonce. */
 function codexPointer(message: SeatMessage, text: string): string {
-  const id = message.ids[0];
+  const read = (id: MessageId) => `rig seat read-message ${message.seat} ${id}`;
   const markers = text.slice(message.body.length + 1);
   const label = message.body.startsWith(PREVIOUS_OCCUPANT_LABEL) ? `${PREVIOUS_OCCUPANT_LABEL} ` : "";
-  return `${label}A message too long to paste is waiting for you. Read it with: rig seat read-message ${message.seat} ${id}\n${markers}`;
+  // A wake group's rows are read one by one, each with its own id, so none of the text is left behind.
+  const how = message.ids.length === 1 ? `A message too long to paste is waiting for you. Read it with: ${read(message.ids[0])}`
+    : `Messages too long to paste are waiting for you. Read them in order with:\n${message.ids.map(read).join("\n")}`;
+  return `${label}${how}\n${markers}`;
 }
 
 export class CodexSeatHop implements LastHop {

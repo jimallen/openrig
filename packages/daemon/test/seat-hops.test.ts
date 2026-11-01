@@ -302,6 +302,18 @@ describe("the hops", () => {
       expect(sent).toContain(`rig seat read-message ${SEAT} m-1`);
       expect(splitMarkedBlock(sent).markers).toEqual([{ id: "m-1", nonce: store.nonceOf(ID) }]);
     });
+    it("a long wake group's pointer names every row, in order, so no text is left unread", async () => {
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      const second = messageId("m-2");
+      store.accept({ id: second, seat: SEAT, sender: "lead@r", body: "second" });
+      store.claimAttempt({ ...store.headOf(SEAT)!, id: second, attempts: 0 }, T0 + 1);
+      const group: SeatMessage = { ...message, ids: [ID, second], body: "y".repeat(CODEX_PASTE_LIMIT) };
+      await expect(codex().attempt(group)).resolves.toEqual({ kind: "sent" });
+      const sent = calls[0]!.replace("paste:", "");
+      expect(sent.indexOf(`rig seat read-message ${SEAT} m-1`)).toBeGreaterThan(-1);
+      expect(sent.indexOf(`rig seat read-message ${SEAT} m-2`)).toBeGreaterThan(sent.indexOf(`rig seat read-message ${SEAT} m-1`));
+      expect(splitMarkedBlock(sent).markers.map((m) => m.id)).toEqual(["m-1", "m-2"]);
+    });
     it("at the limit it goes whole; a multi-byte body is judged by its bytes", async () => {
       screen = `› Ask Codex to do anything\n${FOOTER}`;
       const marker = `\n[openrig-msg m-1:${store.nonceOf(ID)}]`;

@@ -3,7 +3,7 @@
  * has lifted, and how a message goes back to its sender. Each is a question about the fleet, asked in the Seat Messaging words, so
  * the pump never reads `nodes`, `rigs` or a guard table itself.
  */
-import type { LastHop, MessageId, SeatGate } from "./ports.js";
+import type { LastHop, MessageId, SeatGate, SeatMessageClass } from "./ports.js";
 
 /** Which seats the pump may serve (design: migration note 6). A seat with no gate is left as it is, and shows on health. */
 export interface SeatMessagingPorts {
@@ -40,6 +40,38 @@ export type HoldStatus = "held" | "lifted" | "occupant_changed";
 
 export interface HeldMessages {
   status(binding: HeldBinding | null, seat: string): HoldStatus;
+}
+
+/** The row as an obligation check sees it. */
+export interface ObligedMessage {
+  readonly id: MessageId;
+  readonly seat: string;
+  readonly messageClass: SeatMessageClass;
+  readonly attempts: number;
+  readonly occupantGeneration: string | null;
+  readonly auditPointer: string | null;
+}
+
+/** Why nobody should still deliver this message, or null while it is wanted. */
+export type ObligationCheck = (message: ObligedMessage) => string | null;
+
+/**
+ * What a message stands for, read at every attempt, since it can end after the row committed: a closed queue item ends its wake, a job's new
+ * occurrence ends an older row that never went out, a session started after a restore ends that restore's notice. Each owner registers its
+ * own id prefix (`DAEMON_OUTBOX_ID_PREFIXES` names the families), so the pump knows none of them. A message no check claims is wanted; so is
+ * one whose check throws, because a repeat is free and a dropped message is not. An end here tells nobody: the owner is the one who knows.
+ */
+export class MessageObligations {
+  private readonly checks: Array<{ idPrefix: string; check: ObligationCheck }> = [];
+
+  register(idPrefix: string, check: ObligationCheck): void {
+    if (this.checks.some((entry) => entry.idPrefix === idPrefix)) throw new Error(`An obligation check for ${idPrefix} is already registered.`);
+    this.checks.push({ idPrefix, check });
+  }
+
+  whyNoLongerWanted(message: ObligedMessage): string | null {
+    return this.checks.find((entry) => message.id.startsWith(entry.idPrefix))?.check(message) ?? null;
+  }
 }
 
 export type SenderReturnResult =
