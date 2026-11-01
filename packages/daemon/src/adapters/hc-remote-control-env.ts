@@ -49,6 +49,21 @@ export function remoteControlEnvWarnings(env: Readonly<Record<string, string | u
   ];
 }
 
+/** The names `REMOTE_CONTROL_CONDITIONAL_ENV` holds that a seat would have inherited and the launch wrapper removes: set (non-empty)
+ *  in the inherited env, and not stated by the seat itself (a name the seat states is kept, and `remoteControlEnvWarnings` speaks). */
+export function remoteControlClearedConditional(inherited: Readonly<Record<string, string | undefined>>, seat: Readonly<Record<string, string>>): string[] {
+  return REMOTE_CONTROL_CONDITIONAL_ENV.filter((name) => (inherited[name] ?? "") !== "" && !(name in seat));
+}
+
+/** One launch warning naming what the wrapper cleared. Jim, 2026-11-01: clearing stays, but a person who set one of these is told by
+ *  name that the seat no longer has it. Names only, never a value. */
+export function remoteControlClearedWarnings(inherited: Readonly<Record<string, string | undefined>>, seat: Readonly<Record<string, string>>): string[] {
+  const cleared = remoteControlClearedConditional(inherited, seat);
+  return cleared.length === 0 ? [] : [
+    `This seat declares remote_control, so ${cleared.join(", ")} (set in the environment it would have inherited) ${cleared.length === 1 ? "was" : "were"} removed from it: ${cleared.length === 1 ? "it makes" : "they make"} Claude Remote Control unavailable under a Trusted Devices policy. State ${cleared.length === 1 ? "it" : "them"} in the seat's own env to keep ${cleared.length === 1 ? "it" : "them"}.`,
+  ];
+}
+
 function isAnthropicApiEndpoint(value: string): boolean {
   try { return new URL(value).hostname === "api.anthropic.com"; } catch { return false; }
 }

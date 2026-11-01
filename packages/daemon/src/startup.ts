@@ -1263,7 +1263,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Coverage-only, read-only: says so in `rig health` when a send to an hc seat has stayed unsettled for over 15 minutes (it is never resent).
   const { HcUnsettledHealthSource, outboxHcUnsettledRows } = await import("./domain/hc-unsettled-health.js");
   const hcUnsettledHealth = new HcUnsettledHealthSource(outboxHcUnsettledRows(outboxHandlerInstance));
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  // Coverage-only: says so in `rig health` when the core watch refused the core (the client then fails every call, closed, until a restart).
+  const { HcCoreRefusalHealthSource } = await import("./domain/hc-core-refusal-health.js");
+  const hcCoreRefusalHealth = new HcCoreRefusalHealthSource(() => hcClient?.refusedBecause ?? null);
+  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony, ...rsiTelemetrySources, humanInboxWaitingHealth, hcUnsettledHealth, hcCoreRefusalHealth], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

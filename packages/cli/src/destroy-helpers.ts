@@ -29,6 +29,9 @@ export interface DestroyPlan {
   managedTmuxSessions: string[];
   /** Canonical seat names whose binding is `hc` (or that have no binding at all), each killed by terminal. */
   managedHcSeats: string[];
+  /** One entry per list that could not be read from a database that is there ("hc seats", "tmux-bound seats"). A full destroy with
+   *  any stops before it touches anything: without the list, deleting the state would delete the only record of which terminals were ours. */
+  seatEnumerationFailures: string[];
   targets: DestroyTarget[];
   warnings: string[];
 }
@@ -52,6 +55,8 @@ export interface DestroyResult {
   hcRefused: string[];
   /** Seats whose fate is unknown (core unreachable, no reply, kill not observed). State is left untouched while any. */
   hcUnconfirmed: string[];
+  /** Copied from the plan: a full destroy that could not list its seats did nothing at all (daemon, seats and state untouched). */
+  seatEnumerationFailures: string[];
   warnings: string[];
 }
 
@@ -184,16 +189,25 @@ export function buildDestroyPlan(
 
   let managedTmuxSessions: string[] = [];
   let managedHcSeats: string[] = [];
+  const seatEnumerationFailures: string[] = [];
+  // A database that is not there has no seats to list, so it is not a failure. One that is there and cannot be read is: the run stops.
   if (scope === "all" && deps.exists(config.dbPath)) {
+    const cause = (err: unknown) => (err instanceof Error ? err.message : String(err));
     try {
       managedTmuxSessions = deps.listManagedTmuxSessions(config.dbPath);
     } catch (err) {
-      warnings.push(`Failed to enumerate managed tmux sessions from ${config.dbPath}: ${err instanceof Error ? err.message : String(err)}`);
+      seatEnumerationFailures.push(`tmux-bound seats: ${cause(err)}`);
     }
     try {
       managedHcSeats = deps.listManagedHcSeats(config.dbPath);
     } catch (err) {
-      warnings.push(`Failed to enumerate managed hc seats from ${config.dbPath}: ${err instanceof Error ? err.message : String(err)}`);
+      seatEnumerationFailures.push(`hc seats: ${cause(err)}`);
+    }
+    if (seatEnumerationFailures.length > 0) {
+      warnings.push(
+        `Could not list the seats in ${config.dbPath} (${seatEnumerationFailures.join("; ")}). Without that list the state cannot be deleted without orphaning running terminals. `
+        + "Nothing was stopped, ended or deleted. Fix: repair or restore the database and repeat, or use --state to leave seats alone."
+      );
     }
   }
 
@@ -205,6 +219,7 @@ export function buildDestroyPlan(
     daemonPort: config.daemonPort,
     managedTmuxSessions,
     managedHcSeats,
+    seatEnumerationFailures,
     targets,
     warnings,
   };
@@ -218,6 +233,16 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
   const warnings = [...plan.warnings];
   const backupPaths: string[] = [];
   let stateRecreated = false;
+
+  // The seats could not be listed: stop before the daemon is touched, so the run can be repeated as it was.
+  if (plan.scope === "all" && plan.seatEnumerationFailures.length > 0) {
+    return {
+      scope: plan.scope, backup: plan.backup, stateRoot: plan.stateRoot, backupPaths,
+      daemonStopped: false, portCleared: false, stateRecreated,
+      tmuxKilled: 0, tmuxMissing: 0, tmuxUnended: [], hcKilled: 0, hcMissing: 0, hcRefused: [], hcUnconfirmed: [],
+      seatEnumerationFailures: plan.seatEnumerationFailures, warnings,
+    };
+  }
 
   try {
     await deps.stopDaemon();
@@ -272,6 +297,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
       hcMissing: 0,
       hcRefused: [],
       hcUnconfirmed: [],
+      seatEnumerationFailures: [],
       warnings,
     };
   }
@@ -336,6 +362,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
       hcMissing,
       hcRefused,
       hcUnconfirmed,
+      seatEnumerationFailures: [],
       warnings,
     };
   }
@@ -368,6 +395,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
     hcMissing,
     hcRefused,
     hcUnconfirmed,
+    seatEnumerationFailures: [],
     warnings,
   };
 }

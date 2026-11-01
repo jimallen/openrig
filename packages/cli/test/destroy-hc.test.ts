@@ -140,7 +140,7 @@ function deps(overrides: Partial<DestroyDeps> = {}) {
 function plan(overrides: Partial<DestroyPlan> = {}): DestroyPlan {
   return {
     scope: "all", backup: false, stateRoot: "/x/.openrig", daemonHost: "127.0.0.1", daemonPort: 7433,
-    managedTmuxSessions: [], managedHcSeats: [], targets: [{ path: "/x/.openrig", kind: "state_root" }], warnings: [],
+    managedTmuxSessions: [], managedHcSeats: [], seatEnumerationFailures: [], targets: [{ path: "/x/.openrig", kind: "state_root" }], warnings: [],
     ...overrides,
   };
 }
@@ -220,12 +220,13 @@ describe("executeDestroy with hc seats", () => {
     expect(killHcSeat).not.toHaveBeenCalled();
   });
 
-  it("warns, and carries on, when the hc seats cannot be enumerated", () => {
+  it("records, and does not carry on, when the hc seats cannot be enumerated (Jim, 2026-11-01: see destroy-enumeration-failure.test.ts)", () => {
     const d = deps({ listManagedHcSeats: () => { throw new Error("db locked"); }, listManagedTmuxSessions: () => ["t@r"] });
     const built = buildDestroyPlan("all", false, { stateRoot: "/x/.openrig", dbPath: "/x/.openrig/db", transcriptsPath: "/x/.openrig/t", daemonHost: "127.0.0.1", daemonPort: 7433 }, d);
     expect(built.managedHcSeats).toEqual([]);
     expect(built.managedTmuxSessions).toEqual(["t@r"]);
-    expect(built.warnings.join("\n")).toContain("Failed to enumerate managed hc seats");
+    expect(built.seatEnumerationFailures).toEqual(["hc seats: db locked"]);
+    expect(built.warnings.join("\n")).toContain("db locked");
   });
 });
 

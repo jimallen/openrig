@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { PARENT_SESSION_ENV_KEYS, removeParentSessionEnv } from "../domain/parent-session-env.js";
-import { REMOTE_CONTROL_ENV_NAMES, remoteControlEnvWarnings, type SeatLaunchHints } from "./hc-remote-control-env.js";
+import { REMOTE_CONTROL_ENV_NAMES, remoteControlClearedWarnings, remoteControlEnvWarnings, type SeatLaunchHints } from "./hc-remote-control-env.js";
 
 /** Label holding a seat's canonical name; hc's own name cannot hold it (`verify-qa@eztrack` is refused). */
 export const SEAT_LABEL = "openrig.seat";
@@ -30,7 +30,8 @@ export interface SeatEnvironment {
   env: Record<string, string>;
   /** Names the launch wrapper removes: the API cannot unset a core variable, and the core's env is not the daemon's. */
   unset: string[];
-  /** Launch warnings, names only: what the seat's own env keeps that turns Remote Control off. Empty for a plain seat. */
+  /** Launch warnings, names only: what the seat's own env keeps that turns Remote Control off, and the two policy-dependent names the
+   *  wrapper cleared from the daemon's env. Empty for a plain seat. */
   warnings: string[];
 }
 
@@ -53,5 +54,5 @@ export function seatEnvironment(seat: Readonly<Record<string, string>> = {}, dae
     if (value.includes("\0")) throw new Error(`environment value of ${key} holds a NUL`);
   }
   const candidates = [...PARENT_SESSION_ENV_KEYS, "CLAUDE_EFFORT", ...HOST_ENV_KEYS, ...OPERATOR_SECRET_ENV_NAMES, ...remoteControlNames];
-  return { env, unset: candidates.filter((key) => !(key in env)), warnings: hints.remoteControl === true ? remoteControlEnvWarnings(env) : [] };
+  return { env, unset: candidates.filter((key) => !(key in env)), warnings: hints.remoteControl === true ? [...remoteControlEnvWarnings(env), ...remoteControlClearedWarnings(daemon, seat)] : [] };
 }

@@ -63,6 +63,12 @@ export { selectCodexProviderAuth, type CodexProviderAuth } from "../provider-aut
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const INSTALL_COMMAND_TIMEOUT_MS = 5 * 60_000;
 const HERDR_INSTALL_COMMAND = "curl -fsSL https://herdr.dev/install.sh | sh";
+// herdr-core's own installer (https://herdr.dev/core/). `HC_VERSION` picks the version (the script's header): it reads that version's
+// manifest (https://releases.herdr.dev/core/<version>/manifest.json), downloads the target's archive and refuses it on a sha256 mismatch.
+// It is not https://herdr.dev/install.sh, which installs `herdr` (the TUI), always the latest. The variable goes to `sh`, the right of the
+// pipe, where the script runs; and a failed curl still ends the pipe with status 0, so only the version read afterwards says it worked.
+const HC_INSTALL_URL = "https://releases.herdr.dev/core/install.sh";
+const hcInstallCommand = (): string => `curl -fsSL ${HC_INSTALL_URL} | HC_VERSION=${HC_PINNED_VERSION} sh`;
 
 const CORE_STEP_IDS = [
   "brew",
@@ -143,6 +149,56 @@ function findHerdrCommand(deps: SetupDeps): string | null {
   return null;
 }
 
+/** Where the hc installer puts `herdr-core` (its HC_INSTALL_DIR default). */
+function hcInstallDir(deps: SetupDeps): string {
+  const env = deps.env ?? process.env;
+  return env["HC_INSTALL_DIR"] ?? path.join(env["HOME"] ?? homedir(), ".local", "bin");
+}
+
+/** hc is absent: install the pinned version, then read the version back. Never runs over an hc that is there, and never an unpinned one. */
+function installHc(deps: SetupDeps, platform: NodeJS.Platform): SetupStep {
+  const reason = "OpenRig runs agent seats in hc terminals.";
+  const manual = `Install hc (herdr-core) ${HC_PINNED_VERSION} with \`${hcInstallCommand()}\`, then rerun rig setup.`;
+  if (!/^\d+\.\d+\.\d+$/.test(HC_PINNED_VERSION)) {
+    return { id: "hc_install", status: "fail", message: "hc not found.", reason: `${reason} The pinned hc version is not a plain version, so setup will not build an install command from it.`, fixHint: manual };
+  }
+  if (platform !== "darwin" && platform !== "linux") {
+    return { id: "hc_install", status: "fail", message: "hc not found.", reason: `${reason} The hc installer supports macOS and Linux.`, fixHint: manual };
+  }
+  const existing = path.join(hcInstallDir(deps), "herdr-core");
+  if (deps.exists(existing)) {
+    return {
+      id: "hc_install", status: "fail", message: "hc not found.",
+      reason: `${reason} A herdr-core is already at ${existing} but \`hc\` does not run, and the installer would swap that binary under any core using it, so setup did not run it.`,
+      fixHint: `Put ${existing} on your PATH as hc (a link named hc beside it), or update it yourself with hc update, then rerun rig setup. OpenRig is pinned to hc ${HC_PINNED_VERSION}.`,
+    };
+  }
+  try {
+    installCommand(deps, hcInstallCommand());
+  } catch (err) {
+    return { id: "hc_install", status: "fail", message: `Could not install hc ${HC_PINNED_VERSION}: ${(err as Error).message}`, reason, fixHint: manual };
+  }
+  // Read back, not taken from the installer: `hc` on PATH first, then where the installer puts it.
+  const fallback = `${shellQuote(existing)} --version`;
+  let probe = probeHcInstall((cmd) => deps.exec(cmd));
+  let viaPath = true;
+  if (probe.code === "not_installed") {
+    probe = probeHcInstall(() => deps.exec(fallback));
+    viaPath = false;
+  }
+  if (probe.code === "pinned") {
+    return {
+      id: "hc_install", status: "applied", message: `Installed hc ${probe.version}.`,
+      ...(viaPath ? {} : { fixHint: `Add ${hcInstallDir(deps)} to your shell PATH so hc is found.` }),
+    };
+  }
+  if (probe.code === "not_installed") {
+    return { id: "hc_install", status: "fail", message: "The hc installer returned, but hc could not be verified.", reason: `${reason} ${probe.detail ?? ""}`.trim(), fixHint: manual };
+  }
+  const failure = buildHcHostFailure(probe.code, probe.detail ?? "unknown hc failure");
+  return { id: "hc_install", status: "fail", message: failure.message, reason: failure.reason, fixHint: failure.fix };
+}
+
 function installHerdr(deps: SetupDeps, platform: NodeJS.Platform): SetupStep {
   if (platform !== "darwin" && platform !== "linux") {
     return { id: "herdr_install", status: "skipped", message: "Automatic herdr installation is supported on macOS and Linux." };
@@ -165,7 +221,7 @@ function installHerdr(deps: SetupDeps, platform: NodeJS.Platform): SetupStep {
     return {
       id: "herdr_install", status: "warn",
       message: `Could not install or verify herdr: ${(err as Error).message}`,
-      reason: "The OpenRig view can use plain tmux without herdr. Existing cmux workflows remain available.",
+      reason: "The OpenRig view is shown by herdr; without it there is no view to open. Existing cmux workflows remain available.",
       fixHint: `Retry \`${HERDR_INSTALL_COMMAND}\`, or follow https://herdr.dev/docs/install/.`,
     };
   }
@@ -370,20 +426,14 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     }
   }
 
-  // 2. hc: the seat host. Setup checks it is installed and the pinned version, by `hc --version` alone: nothing here
-  // starts a core. It does not install hc: how hc is installed on a machine without it is not settled (the herdr
-  // installer below installs `herdr` only, measured from its script), so a missing or wrong hc is a failure with a hint.
+  // 2. hc: the seat host. Setup reads `hc --version` alone (nothing here starts a core). A pinned hc passes; an absent one is installed at
+  // the pinned version (herdr-core's own installer, HC_VERSION, sha256-checked) and read back; an hc that is there at another version is
+  // never replaced (hc update swaps a binary under running terminals), it fails with the fix.
   const hcProbe = probeHcInstall((cmd) => deps.exec(cmd));
   if (hcProbe.code === "pinned") {
     steps.push({ id: "hc_install", status: "pass", message: `hc ${hcProbe.version} available.` });
   } else if (hcProbe.code === "not_installed") {
-    steps.push({
-      id: "hc_install",
-      status: "fail",
-      message: "hc not found.",
-      reason: "OpenRig runs agent seats in hc terminals.",
-      fixHint: `Install hc (herdr-core) ${HC_PINNED_VERSION}, then rerun rig setup.`,
-    });
+    steps.push(installHc(deps, platform));
   } else {
     const failure = buildHcHostFailure(hcProbe.code, hcProbe.detail ?? "unknown hc failure");
     steps.push({
@@ -570,7 +620,7 @@ export function goldenPathNextSteps(): string[] {
     "     For an existing kernel or blocked startup: rig context get reference/getting-started.md#incomplete-setup-and-restart",
     "  4. Show the person OpenRig: open the OpenRig TUI and operator for them now. Say so first; it's the next step, not a question",
     "     It opens a NEW terminal tab/window, or a space in their current Herdr, and preserves this terminal",
-    "     rig terminal open saved:kernel --window --json (TUI and operator, advisor on its own tab; herdr, otherwise plain tmux)",
+    "     rig terminal open saved:kernel --window --json (TUI and operator, advisor on its own tab; shown in herdr)",
     "     rig context get reference/getting-started.md#open-the-kernel-conversations",
     "     If they said not now: give the command to open it later. Over headless SSH: ask the person to open a new terminal/tab and give the exact connection/attach command",
     "     Herdr needs a terminal the person can see; switching the shared TUI to :terminals does not open one",
@@ -578,7 +628,7 @@ export function goldenPathNextSteps(): string[] {
     "     On a desktop, no copying or typing for the person; check the result notes, not just CLI success",
     "     On a Mac, offer Ghostty once: on Yes run rig setup --ghostty; preserve earlier choices such as --no-herdr and --providers",
     "     On No use --no-ghostty; Terminal.app remains available",
-    "     Setup installs herdr by default; use --no-herdr if the person declines. Plain tmux remains available",
+    "     Setup installs herdr by default; use --no-herdr if the person declines; without herdr there is no view",
     "     Only if the window cannot open: rig tui --shared is the dashboard-only fallback, not the operator's conversation",
     "     If opening fails, inspect any new surface before retrying; report the error and finish the local action",
     "     Do not replace a failed desktop action with commands for the person to copy or type",
@@ -648,7 +698,7 @@ export function setupCommand(depsOverride?: SetupDeps): Command {
     .option("--dry-run", "Show the plan without making changes")
     .option("--json", "Machine-readable JSON output")
     .option("--full", "Install broader operator workstation tools")
-    .option("--no-herdr", "Skip the default herdr installation; the OpenRig view can use plain tmux")
+    .option("--no-herdr", "Skip the default herdr installation (the OpenRig view is shown by herdr)")
     .option("--ghostty", "Install Ghostty on macOS after the person accepts the offer")
     .option("--no-ghostty", "Decline Ghostty; Terminal.app remains available on macOS")
     .option("--providers <list>", "The person's provider choice: claude, codex, or both. One not chosen is skipped (not installed or checked), never failed")

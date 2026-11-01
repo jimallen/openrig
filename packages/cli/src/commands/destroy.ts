@@ -147,8 +147,13 @@ function printPlan(
 
 function printResult(result: Awaited<ReturnType<typeof executeDestroy>>): void {
   console.log("DESTROY RESULT");
-  console.log(`  daemon: ${result.daemonStopped ? "stopped" : "still responding"}`);
-  console.log(`  port: ${result.portCleared ? "cleared" : "still occupied"}`);
+  if (result.seatEnumerationFailures.length > 0) {
+    console.log("  daemon: not touched (the seats could not be listed)");
+    console.log("  port: not touched");
+  } else {
+    console.log(`  daemon: ${result.daemonStopped ? "stopped" : "still responding"}`);
+    console.log(`  port: ${result.portCleared ? "cleared" : "still occupied"}`);
+  }
   if (result.scope === "all") {
     console.log(`  tmux sessions removed: ${result.tmuxKilled}`);
     if (result.tmuxMissing > 0) {

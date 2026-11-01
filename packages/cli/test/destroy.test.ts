@@ -270,6 +270,7 @@ describe("destroy helpers", () => {
       daemonPort: 7433,
       managedTmuxSessions: [],
       managedHcSeats: [],
+      seatEnumerationFailures: [],
       targets: [{ path: stateRoot, kind: "state_root" }],
       warnings: [],
     }, deps);
@@ -299,6 +300,7 @@ describe("destroy helpers", () => {
       daemonPort: 7433,
       managedTmuxSessions: [],
       managedHcSeats: [],
+      seatEnumerationFailures: [],
       targets: [{ path: join(tmpDir, ".openrig-http"), kind: "state_root" }],
       warnings: [],
     }, deps);
@@ -347,6 +349,7 @@ describe("destroy helpers", () => {
       daemonPort: 7433,
       managedTmuxSessions: [],
       managedHcSeats: [],
+      seatEnumerationFailures: [],
       targets: [],
       warnings: [],
     }, deps);
