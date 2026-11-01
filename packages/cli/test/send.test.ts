@@ -145,6 +145,13 @@ describe("Send CLI", () => {
           const parsed = JSON.parse(body);
           lastSendBody = parsed;
           sendBodies.push(parsed);
+          if (parsed.session === "gated-session" || parsed.session === "held-session") {
+            const handed = parsed.session === "gated-session";
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, sessionName: parsed.session, sent: false, verified: false, outcome: "retained", messageId: "seat-msg-7",
+              reason: handed ? "handed_to_pump" : "typing_guard_enabled", warning: handed ? "Accepted, not yet received: OpenRig carries it until the seat's gate records it." : "Inspect with rig seat held-messages." }));
+            return;
+          }
           if (parsed.session === "staged-session" || parsed.session === "consumed-session" || parsed.session === "stale-scroll-session" || parsed.session === "unrelated-paste-session" || parsed.session === "codex153-session") {
             // S3 RED fixture: the TRANSPORT believes it delivered (its verify
             // is measured-unreliable in exactly this direction) — the staged
@@ -783,6 +790,21 @@ describe("Send CLI", () => {
   // staged-vs-consumed is discriminated by PANE EFFECT (the walk pattern
   // generalized), the staged report names its evidence, and the remedy is the
   // single submit path — never a blind re-send.
+  describe("a gated seat's answer", () => {
+    it("a message the pump took reads Accepted, with its id, and never Retained", async () => {
+      const { logs } = await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "gated-session", "hello"]); });
+      const text = logs.join("\n");
+      expect(text).toContain("Accepted for gated-session (seat-msg-7).");
+      expect(text).toContain("Accepted, not yet received");
+      expect(text).not.toContain("Retained");
+    });
+
+    it("a message the typing guard holds still reads Retained", async () => {
+      const { logs } = await captureLogs(async () => { await makeCmd().parseAsync(["node", "rig", "send", "held-session", "hello"]); });
+      expect(logs.join("\n")).toContain("Retained, not delivered to held-session.");
+    });
+  });
+
   describe("S3 — delivery honesty (OPR.0.5.4.6): staged-vs-consumed by pane effect", () => {
     it("PROOF-1: a send whose text sits AT the prompt is reported STAGED — by pane effect, not the transport's verified:true", async () => {
       const { logs } = await captureLogs(async () => {

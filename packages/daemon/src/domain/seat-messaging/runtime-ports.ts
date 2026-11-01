@@ -5,7 +5,7 @@ import { hookSeatGate } from "../../adapters/hook-seat-gate.js";
 import type { HookSeenStore } from "../../adapters/hook-seen-store.js";
 import { parsePiRunnerState, piSeatPaths, type PiRunnerState } from "../../adapters/pi-runner-protocol.js";
 import { piSeatGate } from "../../adapters/seat-gate-readers.js";
-import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, type HcHopInput, type HopGuard, type HopRows } from "../../adapters/seat-hops.js";
+import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, type ForegroundGroupOf, type HcHopInput, type HopGuard, type HopRows } from "../../adapters/seat-hops.js";
 import type { HcClient } from "../../adapters/hc-client.js";
 import type { ClaudeNativeInbox } from "../claude-native-inbox.js";
 import type { LastHop, MessageId, SeatGate } from "./ports.js";
@@ -23,6 +23,7 @@ export interface RuntimeSeatPortsDeps {
   inbox: () => Pick<ClaudeNativeInbox, "eligibility" | "writeToSeat" | "transcriptOf">;
   fileIncludes: (path: string, needle: string) => boolean | null;
   rolloutOf: (seat: string) => string | null;
+  foregroundGroup?: ForegroundGroupOf;
 }
 
 /** Which gate a seat declared at launch. Only these runtimes have one: pda, terminal and stub seats are not the pump's, and a seat of a
@@ -36,10 +37,11 @@ export class RuntimeSeatPorts implements SeatMessagingPorts {
     const { rows, guard, client, input } = deps;
     this.claudeHop = new ClaudeSeatHop({
       rows, guard, client, input,
+      foregroundGroup: deps.foregroundGroup,
       eligibility: (seat) => deps.inbox().eligibility(seat),
       writeToSeat: (endpoint, sender, text) => deps.inbox().writeToSeat(endpoint, sender, text),
     });
-    this.codexHop = new CodexSeatHop({ rows, guard, client, input });
+    this.codexHop = new CodexSeatHop({ rows, guard, client, input, foregroundGroup: deps.foregroundGroup });
     this.piHop = new PiSeatHop({ rows, guard, client, input, runnerState: (seat) => this.runnerState(seat) });
   }
 

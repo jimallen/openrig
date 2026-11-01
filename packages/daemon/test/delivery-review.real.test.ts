@@ -70,7 +70,9 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
     const launch = async (ackDelay: number | null = null) => {
       const env = [...(ackDelay !== null ? [`NODE_OPTIONS=--require ${SHIM}`, `DELIVERY_ACK_DELAY_MS=${ackDelay}`, `DELIVERY_ACK_LOG=${join(dir, "ack.log")}`] : []),
         `OPENRIG_SESSION_NAME=${name}`, `OPENRIG_RUNTIME=${runtime}`, `OPENRIG_HOME=${HOME}`, `OPENRIG_NODE_ID=${node.id}`, `OPENRIG_URL=http://127.0.0.1:${qport}`, `OPENRIG_ACTIVITY_HOOK_TOKEN=${TOKEN}`];
-      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/usr/bin/python3", "-I", runtime === "codex" ? CODEX_SEAT : CLAUDE_SEAT, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
+      const launcher = join(dir, "openrig-tmux-send-stub");  // a real Codex seat's foreground: our launch script, with the agent its child
+      writeFileSync(launcher, `/usr/bin/python3 -I ${runtime === "codex" ? CODEX_SEAT : CLAUDE_SEAT} "$@"\n:\n`);
+      await core.client.call("terminal.run", { argv: ["/usr/bin/env", ...env, "/bin/sh", launcher, dir, RELAY, process.execPath, runtime], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true, cwd: dir });
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes(runtime === "codex" ? "Ask Codex" : "❯"), "first paint");
       await until(() => existsSync(join(gateDir, "gate.json")), Boolean, "the relay's declaration");
     };
@@ -379,6 +381,66 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       expect(existsSync(canary)).toBe(false);
     }, 120_000);
 
+    // The launch `hc-input.ts` types for a sourced seat: `( . cmd )`, so the agent runs inside a forked subshell, whose argv is the login shell's.
+    // Live seats on Sparky show this: claude pgid 2149701 tpgid 2149701, under a zsh of that pid, under the login zsh.
+    const shellSeat = async (s: F, shell: string, runtime: string) => {
+      const seatEnv = { PATH: `${dirname(HC)}:/usr/bin:/bin`, HOME: join(core.root, "h"), OPENRIG_SESSION_NAME: s.name, OPENRIG_RUNTIME: runtime, OPENRIG_HOME: HOME, OPENRIG_NODE_ID: s.nodeId, OPENRIG_URL: `http://127.0.0.1:${s.qport}`, OPENRIG_ACTIVITY_HOOK_TOKEN: TOKEN };
+      await core.client.call("terminal.run", { argv: [shell, "-l"], name: s.address, cwd: s.dir, env: seatEnv, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground, Boolean, "the shell");
+      await wait(400);
+    };
+    const agentCommand = (s: F, runtime: string, name: string) => `exec -a ${name} /usr/bin/python3 -I ${runtime === "codex" ? CODEX_SEAT : CLAUDE_SEAT} ${s.dir} ${RELAY} ${process.execPath} ${runtime}`;
+
+    for (const shell of ["/bin/bash", "/bin/zsh"]) {
+      it(`a healthy Claude launched sourced under ${shell}: hc reads the shell, the agent is in the foreground group, and the paste goes`, async () => {
+        const s = fixture([], "claude-code");
+        await shellSeat(s, shell, "claude-code");
+        // No `exec` in the subshell, as a non-managed launch has none: `:` keeps it from turning the last command into one.
+        // The macOS python3 shim drops an `exec -a` name, so the group gets a process that really is called claude.
+        const named = join(s.dir, "claude");
+        spawnSync("/bin/ln", ["-s", "/bin/sleep", named]);
+        s.flag("launch.sh", `${named} 600 &\n${agentCommand(s, "claude-code", "claude").replace("exec -a claude ", "")}\n:\n`);
+        await core.client.call("terminal.send", { terminal: s.address, text: `( . ${join(s.dir, "launch.sh")} )`, force: true });
+        await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: s.address })).text, (t) => t.includes("❯"), "the agent's composer");
+        const seat = await until(() => core.client.call<{ pid: number; foreground?: { pid: number; name: string; argv: string[] } | null }>("terminal.get", { terminal: s.address }), (t) => t.foreground?.pid !== t.pid, "the subshell to lead the foreground", 8_000);
+        expect(seat.foreground?.argv).toEqual([shell, "-l"]);  // the shape QA measured, and Sparky's live seats show: the leader's argv says shell
+        s.accept("m1"); daemon(s);
+        await state(s, "m1", "received", 30_000);
+        await until(() => agent(s, "m1"), (l) => l.length > 0, "the agent's copy");
+        expect(agent(s, "m1")).toHaveLength(1);
+      }, 70_000);
+    }
+
+    it("a bare prompt with the agent backgrounded is still a bare prompt: nothing is typed", async () => {
+      const s = fixture([], "claude-code");
+      await shellSeat(s, "/bin/bash", "claude-code");
+      mkdirSync(s.gateDir, { recursive: true }); writeFileSync(join(s.gateDir, "gate.json"), JSON.stringify({ version: 1 }));
+      s.flag("hold");
+      s.flag("launch.sh", `( ${agentCommand(s, "claude-code", "claude")} ) </dev/null >/dev/null 2>&1 &\n`);
+      const named = join(s.dir, "claude");
+      spawnSync("/bin/ln", ["-s", "/bin/sleep", named]);
+      s.flag("launch.sh", `( ${named} 600 ) </dev/null >/dev/null 2>&1 &\n`);
+      await core.client.call("terminal.send", { terminal: s.address, text: `. ${join(s.dir, "launch.sh")}`, force: true });
+      await wait(800);
+      const canary = join(s.dir, "it-ran");
+      s.accept("m1", `touch ${canary}`);
+      daemon(s);
+      await hopSaw(s, "paused:agent_absent m1");
+      await until(() => s.read("m1"), (r) => r.message_pause_reason === "agent_absent" && r.attempts === 0, "the pause on the row");
+      await wait(400);
+      expect(existsSync(canary)).toBe(false);
+    }, 60_000);
+
+    it("health names a seat with no agent at once, not after 15 minutes", async () => {
+      const s = fixture([], "codex");
+      await shellSeat(s, "/bin/bash", "codex");
+      mkdirSync(s.gateDir, { recursive: true }); writeFileSync(join(s.gateDir, "gate.json"), JSON.stringify({ version: 1 }));
+      s.accept("m1"); daemon(s);
+      await hopSaw(s, "paused:agent_absent m1");
+      await hopSaw(s, "booted");
+      expect(http(s, "/api/health").text).toContain("its agent is not running");
+    }, 50_000);
+
     it("a Codex seat back at its login shell: nothing is typed", async () => {
       const s = fixture();
       await core.client.call("terminal.run", { argv: ["/bin/bash", "-l"], name: s.address, cwd: s.dir, env: { PATH: "/usr/bin:/bin", HOME: join(core.root, "h"), PS1: "\u203a " }, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
@@ -421,6 +483,42 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await state(s, "l2", "undeliverable");
       expect(queueItems(s).map((q) => q.d)).toEqual([s.lead]);
     }, 40_000);
+  });
+
+  describe("a long Codex message never collapses", () => {
+    it("it goes as a short paste with its marker, the body reads back by command, and a lost Enter is finished with Enter alone", async () => {
+      const s = fixture(["lose-enter"]); await s.launch();
+      const body = "x".repeat(1500);
+      s.accept("long", body); daemon(s);
+      await state(s, "long", "received", 30_000);
+      await until(() => agent(s, "long"), (l) => l.length > 0, "the agent's copy");
+      expect(agent(s, "long")).toHaveLength(1);
+      const seen = agent(s, "long")[0]!;
+      expect(seen.length).toBeLessThan(600);
+      expect(seen).not.toContain("xxxx");
+      expect(seen).toContain(`rig seat read-message ${s.name} long`);
+      expect(s.log().filter((l) => l.startsWith("dropped"))).toEqual([]);
+      await hopSaw(s, "booted");
+      const read = http(s, `/api/transport/read-message/${encodeURIComponent(s.name)}/long`);
+      expect(read.status).toBe(200);
+      expect((JSON.parse(read.text) as { body: string }).body).toBe(body);
+      expect(http(s, `/api/transport/read-message/${encodeURIComponent("other@rig")}/long`).status).toBe(404);
+      expect(read.text).not.toContain(String(s.read("long").native_nonce));
+    }, 60_000);
+  });
+
+  describe("a real approval dialog", () => {
+    it("pauses as blocked, and health names it at once", async () => {
+      const s = fixture([], "codex"); await s.launch();
+      s.flag("start-blocked");
+      await until(async () => (await core.client.call<{ status?: { state: string } | null }>("terminal.get", { terminal: s.address })).status?.state, (v) => v === "blocked", "the dialog");
+      s.accept("m1"); daemon(s);
+      await hopSaw(s, "paused:blocked m1");
+      await hopSaw(s, "booted");
+      expect(http(s, "/api/health").text).toContain("waiting on a dialog");
+      s.flag("unblock");
+      await state(s, "m1", "received", 30_000);
+    }, 60_000);
   });
 
   describe("real proof F4: a draft shows on rig health at once", () => {

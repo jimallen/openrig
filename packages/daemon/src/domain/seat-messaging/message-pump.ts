@@ -1,3 +1,4 @@
+import { PREVIOUS_OCCUPANT_LABEL } from "./message-label.js";
 import { messageId, type GateLookup, type LastHopResult, type MessageId, type SeatGate, type SeatMessage } from "./ports.js";
 import type { MessageAcceptInput, MessageOutcome, MessageStore, StoredMessage } from "./message-store.js";
 import type { HeldMessages, SeatDirectory, SeatMessagingPorts, SenderReturn } from "./pump-ports.js";
@@ -10,8 +11,7 @@ import type { HeldMessages, SeatDirectory, SeatMessagingPorts, SenderReturn } fr
  *
  * The values are the design's, to be tuned on M7.
  */
-/** On a held message that outlived the occupant it was for (Jim's decision): the new occupant is told it was not written to them. */
-export const PREVIOUS_OCCUPANT_LABEL = "[sent to the previous occupant of this seat]";
+export { PREVIOUS_OCCUPANT_LABEL };
 export const PUMP_TICK_MS = 5_000;
 /** How soon a paused seat is looked at again. A pause is not an attempt, so it spends no backoff. */
 export const PUMP_PAUSE_RECHECK_MS = 15_000;

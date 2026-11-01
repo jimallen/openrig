@@ -43,6 +43,16 @@ export class SeatMessagingHealthSource implements HealthObservationSource {
         rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait behind a draft in its composer (oldest ${seat.oldestId}). The draft is never touched; they go the moment it is sent or cleared.`));
         continue;
       }
+      // So is a dialog: an agent waiting for an answer takes nothing until a person gives one.
+      if (seat.pauseReason === "blocked") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: it is waiting on a dialog (oldest ${seat.oldestId}). Nothing is typed into a dialog; they go when it is answered.`));
+        continue;
+      }
+      // So is a seat with no agent: nothing restarts it from here, so "keeps trying" alone would hide that a person or a restore must act.
+      if (seat.pauseReason === "agent_absent") {
+        rows.push(notice(`${seat.open} message(s) to ${seat.seat} wait: its agent is not running in its terminal (oldest ${seat.oldestId}). Nothing is typed there; they go when the agent is back, or return to their senders if the seat is archived.`));
+        continue;
+      }
       if (!(ageMs > MESSAGE_STUCK_AFTER_MS)) continue;
       const age = `${seat.open} message(s) to ${seat.seat} not received (oldest ${seat.oldestId}, ${Math.floor(ageMs / 60_000)} min`;
       if (!this.ports.gateFor(seat.seat)) { rows.push(notice(`${age}): the seat declares no gate, so the pump does not serve it.`)); continue; }

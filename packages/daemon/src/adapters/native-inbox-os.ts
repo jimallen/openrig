@@ -55,6 +55,28 @@ export async function listProcesses(): Promise<ProcessRow[]> {
   return out;
 }
 
+/** The processes of a process group, while it is its terminal's foreground group: each one's OS name and argv[0]. Empty when it is not, which
+ *  is what a bare prompt with an agent in the background looks like, and when `ps` cannot answer: nothing may be typed on doubt. */
+export async function foregroundGroupPrograms(pgid: number): Promise<Array<{ name: string; argv0: string }>> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("ps", ["-A", "-ww", "-o", "pgid=,tpgid=,comm=,args="], { maxBuffer: 64 * 1024 * 1024, timeout: 10_000 }));
+  } catch { return []; }
+  return parseForegroundGroup(stdout, pgid);
+}
+
+/** `comm` is one word on Linux, and may be a full path with spaces on macOS: the split that matters is to `args`, whose first word is argv[0]. */
+export function parseForegroundGroup(ps: string, pgid: number): Array<{ name: string; argv0: string }> {
+  const out: Array<{ name: string; argv0: string }> = [];
+  for (const line of ps.split("\n")) {
+    const m = /^\s*(\d+)\s+(-?\d+)\s+(.*)$/.exec(line);
+    if (!m || Number(m[1]) !== pgid || Number(m[2]) !== pgid) continue;
+    const [name = "", argv0 = ""] = m[3]!.trim().split(/\s+/);
+    out.push({ name, argv0: argv0 === "" ? name : argv0 });
+  }
+  return out;
+}
+
 /** Whether `path` contains `needle`, read in chunks with an overlap so a match across a chunk edge is found. False when
  *  the file cannot be read. A plain byte search: it does not depend on the file's format. */
 /** Whether a process with this pid exists. EPERM means it does, under another user. */

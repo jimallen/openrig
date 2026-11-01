@@ -102,6 +102,15 @@ def submit():
 hook({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s-1", "transcript_path": transcript})
 status(b"idle")
 draw()
+import threading
+def dialog():
+    while not flag("start-blocked"):
+        time.sleep(0.02)
+    status(b"blocked")
+    while not flag("unblock"):
+        time.sleep(0.02)
+    status(b"idle")
+threading.Thread(target=dialog, daemon=True).start()
 if flag("hold"):
     while not flag("go"):
         time.sleep(0.02)

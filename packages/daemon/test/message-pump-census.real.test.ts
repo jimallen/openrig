@@ -128,6 +128,8 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     const dir = mkdtempSync(join(core.root, "w-"));
     for (const flag of flags) writeFileSync(join(dir, flag), "");
     writeFileSync(join(dir, "codex-seat.py"), SEAT_PROGRAM);
+    // A real Codex seat's foreground: our launch script, with the agent its child. The `:` keeps sh from exec'ing the last command.
+    writeFileSync(join(dir, "openrig-tmux-send-stub"), `/usr/bin/python3 -I ${join(dir, "codex-seat.py")} "$@"\n:\n`);
     writeFileSync(join(dir, "seat.log"), "");
     writeFileSync(join(dir, "hop.log"), "");
     const id = ++serial;
@@ -147,7 +149,7 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
     const seen = join(gateDir, "seen");
     const address = hcTerminalName(name);
     const launch = async () => {
-      await core.client.call("terminal.run", { argv: ["/usr/bin/python3", "-I", join(dir, "codex-seat.py"), dir, seen], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await core.client.call("terminal.run", { argv: ["/bin/sh", join(dir, "openrig-tmux-send-stub"), dir, seen], name: address, labels: { "openrig.seat": name }, no_parent: true, no_notify: true, outlive_parent: true });
       await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: address })).text, (t) => t.includes("Ask Codex"), "the seat's first paint");
     };
     await launch();
@@ -220,20 +222,19 @@ describe.skipIf(!HC)("the census crash table, on the wired pump", () => {
       expect(lines(s, "dropped")).toEqual([]);  // Enter alone: no second copy was typed
     }, 90_000);
 
-    it("P1, staged and collapsed with its Enter lost: it cannot be told from a person's paste, so it holds as a draft, shows on health, and goes the moment it clears", async () => {
+    it("P1, a long message with its Enter lost: it went as a short pointer, so its marker shows, and the restart presses Enter alone, once", async () => {
       const s = await seatFixture(["lose-enter"]);
       s.acceptBody("long", "x".repeat(1500));
       const first = daemon(s, "after_bytes");
       await hopSaw(s, "sent long");
-      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[Pasted Content"), "the collapsed copy");
+      await until(async () => (await core.client.call<{ text: string }>("terminal.read", { terminal: hcTerminalName(s.name) })).text, (t) => t.includes("[openrig-msg long:"), "the staged marker");
       await kill(first);
+      expect(s.log()).toEqual([]);
       daemon(s);
-      await hopSaw(s, "paused:draft long");
-      expect(s.read("long")).toMatchObject({ message_pause_reason: "draft", message_state: "attempting" });
-      expect(lines(s, "ctrl-u")).toEqual([]);
-      await core.client.call("terminal.keys", { terminal: hcTerminalName(s.name), keys: ["ctrl+u"] });  // the person clears it
       await received(s, "long");
       agentOnce(s, "long");
+      expect(lines(s, "ctrl-u")).toEqual([]);
+      expect(lines(s, "dropped")).toEqual([]);
     }, 90_000);
 
     it("a person's collapsed paste of exactly that size, with no paste of ours behind it, is left alone", async () => {

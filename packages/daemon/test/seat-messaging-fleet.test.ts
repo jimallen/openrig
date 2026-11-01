@@ -184,13 +184,26 @@ describe("the fleet, as the pump reads it", () => {
       expect(row[0]).toContain("2 message(s) to dev@r not received (oldest old, 16 min, 2 attempt(s), last refused: no)");
     });
 
-    it("says why a stuck seat is stuck when its agent is not in its terminal", () => {
+    it("names a seat with no agent at once, and says trying alone will not help", () => {
       const store = new MessageStore(db);
       accept("a1");
-      age("a1", MESSAGE_STUCK_AFTER_MS + 60_000);
       store.claimAttempt(store.headOf("dev@r")!, 1);
       store.recordHopPause(messageId("a1"), "agent_absent", 2);
-      expect(reasons()[0]).toContain("paused: agent_absent");
+      const row = reasons();
+      expect(row).toHaveLength(1);
+      expect(row[0]).toContain("its agent is not running in its terminal");
+      expect(row[0]).toContain("a1");
+    });
+
+    it("names a dialog at once: nothing moves until a person answers it", () => {
+      const store = new MessageStore(db);
+      accept("b1");
+      store.claimAttempt(store.headOf("dev@r")!, 1);
+      store.recordHopPause(messageId("b1"), "blocked", 2);
+      const row = reasons();
+      expect(row).toHaveLength(1);
+      expect(row[0]).toContain("waiting on a dialog");
+      expect(row[0]).toContain("b1");
     });
 
     it("names a draft at once: only a person can clear it, and they may not know a message waits behind it", () => {

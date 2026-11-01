@@ -198,6 +198,15 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     return c.json(answer);
   });
 
+  // The body of a message too long to paste into its seat: the seat's copy names this (rig seat read-message). Reading changes nothing.
+  router.get("/read-message/:seat/:id", (c) => {
+    const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
+    if (!outbox) return c.json({ error: "Outbox unavailable" }, 503);
+    const entry = outbox.getById(c.req.param("id"));
+    if (entry?.destinationSession !== c.req.param("seat")) return c.json({ error: `No message ${c.req.param("id")} for ${c.req.param("seat")}` }, 404);
+    return c.json({ id: entry.outboxId, seat: entry.destinationSession, sender: entry.senderSession, body: entry.body });
+  });
+
   // The operator's end of a message nothing can deliver (rig seat cancel-message): by id, naming its seat, with a reason. No state of the pump
   // needs this to move, but a message that will never pass a gate holds its seat's queue, and this is the way out.
   router.post("/cancel-message/:seat/:id", async (c) => {

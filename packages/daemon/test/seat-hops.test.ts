@@ -5,12 +5,14 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
-import { ClaudeSeatHop, CodexSeatHop, PiSeatHop, isSeatAgent, markedText, readClaudeComposer, type HopGuard } from "../src/adapters/seat-hops.js";
+import { CODEX_PASTE_LIMIT, ClaudeSeatHop, CodexSeatHop, PiSeatHop, foregroundHoldsAgent, isSeatAgent, markedText, readClaudeComposer, type HopGuard } from "../src/adapters/seat-hops.js";
 import type { NativeEligibility, NativeEndpointRow } from "../src/domain/claude-native-inbox.js";
 import { CLAUDE_SOCKET_REPEAT_WINDOW_MS } from "../src/domain/seat-messaging/claude-last-hop.js";
 import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { PREVIOUS_OCCUPANT_LABEL } from "../src/domain/seat-messaging/message-label.js";
 import { messageId, type SeatMessage } from "../src/domain/seat-messaging/ports.js";
 import type { HcTerminal } from "../src/adapters/hc-client.js";
+import { parseForegroundGroup } from "../src/adapters/native-inbox-os.js";
 import type { PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
 import { parseNativeMarkers } from "../src/domain/claude-native-inbox.js";
 import { splitMarkedBlock } from "../src/adapters/seat-gate-marker.js";
@@ -40,10 +42,31 @@ describe("is the terminal's foreground the seat's agent?", () => {
     ["a login shell by flag", of("zsh", ["/bin/zsh", "-l"]), "claude-code", false],
     ["a login shell, for Pi", of("bash", ["bash", "-l"]), "pi", false],
     ["a shell running something else", of("sh", ["/bin/sh", "/tmp/other.sh"]), "codex", false],
+    ["a program given a file of that name", of("vi", ["vi", "codex"]), "codex", false],
+    ["a program given Claude's name as an argument", of("less", ["less", "/x/claude"]), "claude-code", false],
+    ["our script's name further along argv", of("bash", ["bash", "--rcfile", "/x/openrig-tmux-send-1"]), "codex", false],
     ["vim", of("vim", ["vim", "notes"]), "codex", false],
     ["python", of("python3", ["python3"]), "claude-code", false],
   ] as ReadonlyArray<[string, Pick<HcTerminal, "foreground">, "pi" | "codex" | "claude-code", boolean, string?]>)("%s", (_name, terminal, runtime, expected, seat = SEAT_NAME) => {
     expect(isSeatAgent(terminal, runtime, seat)).toBe(expected);
+  });
+
+  it("hc reads a sourced launch as the shell: the agent is found in the terminal's foreground group", () => {
+    expect(foregroundHoldsAgent([{ name: "zsh", argv0: "-zsh" }, { name: "claude", argv0: "claude" }], "claude-code")).toBe(true);
+    expect(foregroundHoldsAgent([{ name: "2.1.303", argv0: "/x/versions/2.1.303" }], "claude-code")).toBe(true);
+    expect(foregroundHoldsAgent([{ name: "sh", argv0: "/bin/sh" }, { name: "codex", argv0: "/x/vendor/codex" }], "codex")).toBe(true);
+    expect(foregroundHoldsAgent([{ name: "codex", argv0: "codex" }], "claude-code")).toBe(false);
+  });
+
+  it("a bare prompt's group is the shell alone", () => {
+    expect(foregroundHoldsAgent([{ name: "bash", argv0: "-bash" }], "codex")).toBe(false);
+    expect(foregroundHoldsAgent([], "claude-code")).toBe(false);
+  });
+
+  it("reads ps: only the group that is its terminal's foreground, on Linux's and macOS's output", () => {
+    const ps = ["   500    500 zsh             -zsh", "   500    500 /Users/j/.local/bin/claude claude --resume", "   700    500 claude          claude", "   800     -1 bash            bash", "   500    700 vi              vi x"].join("\n");
+    expect(parseForegroundGroup(ps, 500)).toEqual([{ name: "zsh", argv0: "-zsh" }, { name: "/Users/j/.local/bin/claude", argv0: "claude" }]);
+    expect(parseForegroundGroup(ps, 700)).toEqual([]);
   });
 
   it("no foreground proves nothing, so it is not the agent", () => {
@@ -202,6 +225,18 @@ describe("the hops", () => {
       eligible = true;
       await expect(claude().attempt(message)).resolves.toEqual({ kind: "sent" });
     });
+    it("a sourced launch: the leader reads as the shell, the agent is in its group, and the paste goes", async () => {
+      foreground = { pid: 900, name: "zsh", argv: ["/bin/zsh", "-l"], cwd: "/w" };
+      eligible = false;
+      const asked: number[] = [];
+      const hop = new ClaudeSeatHop({
+        rows: store, guard, client, input, now: () => now, eligibility: async () => ({ ok: false, reason: "no" }), writeToSeat: async () => "none",
+        foregroundGroup: async (pgid) => { asked.push(pgid); return [{ name: "zsh", argv0: "/bin/zsh" }, { name: "claude", argv0: "claude" }]; },
+      });
+      await expect(hop.attempt(message)).resolves.toEqual({ kind: "sent" });
+      expect(asked).toEqual([900]);
+      expect(calls).toEqual([`paste:${text()}`]);
+    });
     it("a stopped seat pauses", async () => {
       eligible = false;
       terminalState = "exited";
@@ -256,6 +291,38 @@ describe("the hops", () => {
       screen = `› Ask Codex to do anything\n${FOOTER}`;
       await expect(codex().attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
       expect(calls).toEqual([]);
+    });
+    it("a message past the paste limit goes as a short pointer with its own marker, so it can never collapse", async () => {
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      const long = { ...message, body: "y".repeat(CODEX_PASTE_LIMIT) };
+      await expect(codex().attempt(long)).resolves.toEqual({ kind: "sent" });
+      const sent = calls[0]!.replace("paste:", "");
+      expect(Buffer.byteLength(sent)).toBeLessThanOrEqual(CODEX_PASTE_LIMIT);
+      expect(sent).not.toContain("yyy");
+      expect(sent).toContain(`rig seat read-message ${SEAT} m-1`);
+      expect(splitMarkedBlock(sent).markers).toEqual([{ id: "m-1", nonce: store.nonceOf(ID) }]);
+    });
+    it("at the limit it goes whole; a multi-byte body is judged by its bytes", async () => {
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      const marker = `\n[openrig-msg m-1:${store.nonceOf(ID)}]`;
+      const fits = "z".repeat(CODEX_PASTE_LIMIT - Buffer.byteLength(marker));
+      await codex().attempt({ ...message, body: fits });
+      expect(calls[0]).toContain(fits);
+      calls.length = 0;
+      await codex().attempt({ ...message, body: "é".repeat(CODEX_PASTE_LIMIT / 2) });
+      expect(calls[0]).toContain("read-message");
+    });
+    it("a pointer keeps the label of a message sent to the previous occupant", async () => {
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      await codex().attempt({ ...message, body: `${PREVIOUS_OCCUPANT_LABEL} ${"y".repeat(CODEX_PASTE_LIMIT)}` });
+      expect(calls[0]).toContain(`paste:${PREVIOUS_OCCUPANT_LABEL} A message too long`);
+    });
+    it("a sourced Codex seat: the agent is found in the foreground group", async () => {
+      foreground = { pid: 900, name: "bash", argv: ["/bin/bash", "-l"], cwd: "/w" };
+      screen = `› Ask Codex to do anything\n${FOOTER}`;
+      const hop = new CodexSeatHop({ rows: store, guard, client, input, foregroundGroup: async () => [{ name: "bash", argv0: "bash" }, { name: "codex", argv0: "codex" }] });
+      await expect(hop.attempt(message)).resolves.toEqual({ kind: "sent" });
+      expect(new CodexSeatHop({ rows: store, guard, client, input, foregroundGroup: async () => [{ name: "bash", argv0: "bash" }] }).attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
     });
     it("a held seat pauses", async () => {
       held = true;

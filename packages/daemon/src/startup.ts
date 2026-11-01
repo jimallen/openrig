@@ -131,7 +131,7 @@ import { ClaudeNativeInbox } from "./domain/claude-native-inbox.js";
 import { nativeClaudeFlag } from "./domain/native-claude-setting.js";
 import { HookSeenStore, nativeSeatGate, seatGateRoot, transcriptHasPrompt } from "./adapters/hook-seen-store.js";
 import { createNativeSettlementHandler, failOverToTmux } from "./domain/native-inbox-settlement.js";
-import { fileIncludes, listProcesses as listProcessesForNative, processIsAlive, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
+import { fileIncludes, foregroundGroupPrograms, listProcesses as listProcessesForNative, processIsAlive, probeClaudeBinary, processStart, resolveClaudeExecPath, socketExists, writeSocketLines } from "./adapters/native-inbox-os.js";
 import { ProjectClassifier } from "./domain/project-classifier.js";
 import { ClassifierLeaseManager } from "./domain/classifier-lease-manager.js";
 import { ClassificationAttemptLedger } from "./domain/classification-attempts.js";
@@ -1289,7 +1289,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Seat Messaging: one setting, read at boot, default on. Off, no pump and no health source exist, and every path is as it was.
   const realSeatMessagingPorts = opts?.seatMessagingPorts ?? (hcClient && hcAdapter ? new RuntimeSeatPorts({
     db, rows: seatMessages, hookStore: new HookSeenStore(seatGateRoot(OPENRIG_HOME)), stateRoots: { pi: piStateRoot, omp: ompStateRoot },
-    client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,
+    foregroundGroup: foregroundGroupPrograms, client: hcClient, guard: deliveryGuard, inbox: () => claudeNativeInbox, fileIncludes: transcriptHasPrompt,
     rolloutOf: (seat) => {
       const row = db.prepare("SELECT resume_token AS token FROM sessions WHERE session_name = ? AND resume_token IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(seat) as { token: string } | undefined;
       return row ? contextUsageStore.readCodexTranscriptPath(row.token) : null;
