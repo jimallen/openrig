@@ -14,6 +14,7 @@ import { createRestoreCheckService, RESTORE_CHECK_PROBE_TIMEOUT_MS } from "../sr
 import type { RigRepository } from "../src/domain/rig-repository.js";
 import type { SessionRegistry } from "../src/domain/session-registry.js";
 import type { SnapshotRepository } from "../src/domain/snapshot-repository.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 type Probe = "present" | "absent" | "throw" | "hang";
 
@@ -23,7 +24,7 @@ function tmuxWith(table: Record<string, Probe>): { adapter: TmuxAdapter; probed:
   const base = mockTmuxAdapter() as unknown as Record<string, unknown>;
   const adapter = {
     ...base,
-    hasSession: async (name: string) => {
+    probeSession: probeSessionFromHasSession, hasSession: async (name: string) => {
       probed.push(name);
       const answer = table[name] ?? "absent";
       if (answer === "throw") throw new Error("tmux probe failed (injected)");

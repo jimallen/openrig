@@ -31,7 +31,7 @@ import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 import { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "../src/domain/runtime-adapter.js";
-import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
+import type { SessionProbe, TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { guardedAgentRefFsOps } from "../src/domain/agent-ref-guard.js";
 import { mergeManagedBlock } from "../src/domain/managed-blocks.js";
 
@@ -251,7 +251,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
     retarget("bbbbbbb");
     delivered = [];
     vi.mocked(tmux.createSession).mockClear();
-    vi.mocked(tmux.hasSession).mockClear();
+    vi.mocked(tmux.probeSession).mockClear();
     return { rigId: first.rigId, snapshotId, impl: idOf("dev.impl"), qa: idOf("dev.qa") };
   }
 
@@ -298,8 +298,8 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
     expect(outcome.message).toContain("has live sessions");
     expect(outcome.message).not.toContain("liveness is unknown");
     // Positive control: the liveness probe ran (and named a real session); the refusal is not an unrelated failure.
-    expect(tmux.hasSession).toHaveBeenCalled();
-    expect(vi.mocked(tmux.hasSession).mock.calls.map((c) => c[0])).toContain(liveSeat === "dev.impl" ? "dev-impl@team" : "dev-qa@team");
+    expect(tmux.probeSession).toHaveBeenCalled();
+    expect(vi.mocked(tmux.probeSession).mock.calls.map((c) => c[0])).toContain(liveSeat === "dev.impl" ? "dev-impl@team" : "dev-qa@team");
     // Ordering/absence: no fresh decision, no seat pipeline, and nothing written.
     expectNoSeatPipeline(s);
     expect(fingerprint()).toBe(before);
@@ -311,7 +311,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
   it("R2 a hung tmux that would otherwise reach the fresh decision: refused as liveness-unknown within one deadline, no seat pipeline entered", async () => {
     const rig = await launchTwo();
     alive.clear(); // reality: every seat is gone, so a readable tmux would let this restore reach the --fresh decision
-    vi.mocked(tmux.hasSession).mockImplementation(() => new Promise<boolean>(() => { /* wedged tmux: never settles */ }));
+    vi.mocked(tmux.probeSession).mockImplementation(() => new Promise<SessionProbe>(() => { /* wedged tmux: never settles */ }));
     const before = fingerprint();
     const s = spies();
     const started = Date.now();
@@ -329,7 +329,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
     expect(outcome.message).toContain("liveness is unknown");
     expect(outcome.message).not.toContain("has live sessions");
     // Bounded: one deadline (2000 ms), not one per seat, and not forever.
-    expect(vi.mocked(tmux.hasSession)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(tmux.probeSession)).toHaveBeenCalledTimes(1);
     expect(elapsed).toBeGreaterThanOrEqual(1900);
     expect(elapsed).toBeLessThan(5000);
     expectNoSeatPipeline(s);
@@ -363,7 +363,7 @@ describe("integ21 nit 1: OF-33 liveness refusal x OF-32s3 --fresh through one re
     expect(releaseOf(storedFiles(rig.impl))).toEqual(["CULTURE.md:B", "guidance/role.md:B"]);
     expect(releaseOf(storedFiles(rig.qa))).toEqual(["CULTURE.md:A", "guidance/role.md:A"]);
     // Ordering: the liveness probe was asked before the spec was read and before any session was created.
-    const firstProbe = Math.min(...vi.mocked(tmux.hasSession).mock.invocationCallOrder);
+    const firstProbe = Math.min(...vi.mocked(tmux.probeSession).mock.invocationCallOrder);
     expect(firstProbe).toBeLessThan(s.reads.mock.invocationCallOrder[0]!);
     expect(firstProbe).toBeLessThan(Math.min(...vi.mocked(tmux.createSession).mock.invocationCallOrder));
     // Both seats' sessions were started (positive control for the absence rows above).

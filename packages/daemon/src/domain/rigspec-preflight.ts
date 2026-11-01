@@ -7,6 +7,7 @@ import { runtimeProbeFailure } from "../adapters/preflight-exec.js";
 import { piVersionNotice } from "../adapters/pi-readiness.js";
 import type { LegacyRigSpec as RigSpec, PreflightResult, RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { deriveSessionName, validateSessionName, validateSessionComponents, VIRTUAL_DOMAIN_TOKENS } from "./session-name.js";
+import { probePresence, type SessionPresence } from "./session-liveness.js";
 
 const RUNTIME_COMMANDS: Record<string, string> = {
   "claude-code": "claude --version",
@@ -69,9 +70,13 @@ export class RigSpecPreflight {
     for (const node of spec.nodes) {
       const sessionName = deriveSessionName(spec.name, node.id);
       if (validateSessionName(sessionName)) {
-        const exists = await this.tmuxAdapter.hasSession(sessionName);
-        if (exists) {
+        // An answer is needed here: "no such session" lets the launch go ahead. A host that does not answer (OF-177) is not that.
+        let presence: SessionPresence;
+        try { presence = await probePresence(this.tmuxAdapter, sessionName); } catch { presence = "unknown"; }
+        if (presence === "present") {
           errors.push(`tmux session '${sessionName}' already exists for node '${node.id}'`);
+        } else if (presence === "unknown") {
+          errors.push(`could not check whether session '${sessionName}' already exists for node '${node.id}': the seat host did not answer`);
         }
       }
     }

@@ -12,7 +12,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import { registeredPaneOf } from "../src/domain/binding-pane.js";
-import { TmuxAdapter, type TmuxPane } from "../src/adapters/tmux.js";
+import { TmuxAdapter, type SessionProbe, type TmuxPane } from "../src/adapters/tmux.js";
 
 function refuse(): never { throw new Error("hc stand-in: no exec"); }
 
@@ -23,6 +23,7 @@ class HcHostStandIn extends TmuxAdapter {
     super(async () => refuse(), undefined, async () => refuse());
   }
   override async hasSession(): Promise<boolean> { return true; }
+  override async probeSession(): Promise<SessionProbe> { return { state: "present" }; }
   override async listPanes(): Promise<TmuxPane[]> {
     const got = this.panes();
     if (got instanceof Error) throw got;
@@ -88,6 +89,7 @@ describe("SessionReconciler on an hc host writes the terminal address (B1)", () 
     class TmuxStandIn extends TmuxAdapter {
       constructor() { super(async () => refuse(), undefined, async () => refuse()); }
       override async hasSession(): Promise<boolean> { return true; }
+      override async probeSession(): Promise<SessionProbe> { return { state: "present" }; }
       override async listPanes(): Promise<TmuxPane[]> { return [{ id: "%7", index: 0, cwd: "/", width: 80, height: 24, active: true }]; }
       override async getPaneCommand(): Promise<string | null> { return "zsh"; }
     }

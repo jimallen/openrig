@@ -47,7 +47,7 @@ const response = await app.request("/api/rigs/import/preflight", {
 });
 // The legacy caller uses the same production preflight executor.
 const legacy = new RigSpecPreflight({
-  rigRepo: { listRigs: () => [] }, tmuxAdapter: { hasSession: async () => false },
+  rigRepo: { listRigs: () => [] }, tmuxAdapter: { hasSession: async () => false, probeSession: async () => ({ state: "absent" as const }) },
   exec: execPreflightCommand, cmuxExec: async () => "",
 } as never);
 const legacyResult = await legacy.check({

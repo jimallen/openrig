@@ -19,6 +19,7 @@ import { NativePermissionStore } from "../src/domain/native-permission-store.js"
 import type { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORKSPACE = existingRigRoot("workspace");
 
@@ -116,7 +117,7 @@ describe("legacy (non-pod) restore passes the persisted declaration to the resum
     const codexResume = { canResume: vi.fn(() => false), resume: vi.fn() } as unknown as CodexResumeAdapter;
     const tmux = {
       createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })), listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => false), sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false), sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "claude"),
     } as unknown as TmuxAdapter;
     const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });

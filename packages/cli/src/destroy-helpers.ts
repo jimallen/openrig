@@ -43,6 +43,9 @@ export interface DestroyResult {
   stateRecreated: boolean;
   tmuxKilled: number;
   tmuxMissing: number;
+  /** Seats still bound to tmux (a binding from before the hc cutover). This build runs no tmux, so it cannot end them: they are
+   *  named, and state is left untouched while any, as for `hcUnconfirmed`. Always empty when a caller supplies `killTmuxSession`. */
+  tmuxUnended: string[];
   hcKilled: number;
   hcMissing: number;
   /** Seats whose terminal was named by a different seat's label: left untouched. */
@@ -68,7 +71,8 @@ export interface DestroyDeps {
   removePath: (path: string) => void;
   mkdirp: (path: string) => void;
   listManagedTmuxSessions: (dbPath: string) => string[];
-  killTmuxSession: (sessionName: string) => boolean;
+  /** No production caller supplies one: this build runs no tmux (hc cutover), and a seat still bound to tmux is reported, not killed. */
+  killTmuxSession?: (sessionName: string) => boolean;
   listManagedHcSeats: (dbPath: string) => string[];
   killHcSeat: (seat: string) => Promise<HcSeatOutcome>;
   sleep: (ms: number) => Promise<void>;
@@ -263,6 +267,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
       stateRecreated,
       tmuxKilled: 0,
       tmuxMissing: 0,
+      tmuxUnended: [],
       hcKilled: 0,
       hcMissing: 0,
       hcRefused: [],
@@ -273,13 +278,15 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
 
   let tmuxKilled = 0;
   let tmuxMissing = 0;
+  const tmuxUnended: string[] = [];
   let hcKilled = 0;
   let hcMissing = 0;
   const hcRefused: string[] = [];
   const hcUnconfirmed: string[] = [];
   if (plan.scope === "all") {
     for (const sessionName of plan.managedTmuxSessions) {
-      if (deps.killTmuxSession(sessionName)) tmuxKilled += 1;
+      if (!deps.killTmuxSession) tmuxUnended.push(sessionName);  // nothing here runs tmux: the seat is not ended, and is not "gone"
+      else if (deps.killTmuxSession(sessionName)) tmuxKilled += 1;
       else tmuxMissing += 1;
     }
     for (const seat of plan.managedHcSeats) {
@@ -307,7 +314,12 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
   for (const seat of hcRefused) {
     warnings.push(`The hc terminal named for seat ${seat} carries a different seat label; it was left untouched.`);
   }
-  if (hcUnconfirmed.length > 0) {
+  if (tmuxUnended.length > 0) {
+    warnings.push(
+      `${tmuxUnended.length} seat${tmuxUnended.length === 1 ? " is" : "s are"} still bound to tmux (${tmuxUnended.join(", ")}) and this build runs no tmux, so ${tmuxUnended.length === 1 ? "it was" : "they were"} not ended. State was left untouched. End ${tmuxUnended.length === 1 ? "it" : "them"} with the tmux of the host that started ${tmuxUnended.length === 1 ? "it" : "them"}, or use --state to leave seats alone.`
+    );
+  }
+  if (hcUnconfirmed.length > 0 || tmuxUnended.length > 0) {
     return {
       scope: plan.scope,
       backup: plan.backup,
@@ -318,6 +330,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
       stateRecreated,
       tmuxKilled,
       tmuxMissing,
+      tmuxUnended,
       hcKilled,
       hcMissing,
       hcRefused,
@@ -349,6 +362,7 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
     stateRecreated,
     tmuxKilled,
     tmuxMissing,
+    tmuxUnended,
     hcKilled,
     hcMissing,
     hcRefused,
@@ -367,15 +381,6 @@ export function findListeningPidWithLsof(port: number): number | null {
     return Number.isNaN(pid) ? null : pid;
   } catch {
     return null;
-  }
-}
-
-export function killTmuxSessionWithCli(sessionName: string): boolean {
-  try {
-    execFileSync("tmux", ["kill-session", "-t", sessionName], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
   }
 }
 

@@ -55,7 +55,7 @@ import { validatePreRestore, startupInputFindings, type FreshSeatStartupOverride
 import { newestUsableSnapshotCopy, noUsableCopyMessage, noUsableCopyRemedy, seatStartupForRestore, unreadableSnapshotsNote, type SeatStartupForRestore } from "./own-startup-replay.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
 import { savedRowDamage, savedRowDamageMessage } from "./node-row-damage.js";
-import { classifySessionLiveness } from "./session-liveness.js";
+import { classifySessionLiveness, probePresence, type SessionPresence } from "./session-liveness.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
@@ -638,8 +638,10 @@ export class RestoreOrchestrator {
 
       for (const session of sessions) {
         try {
-          const alive = await this.tmuxAdapter.hasSession(session.sessionName);
-          if (alive) {
+          // The classified probe: a host that does not answer is `unknown` (held back), never a session that is gone (OF-177).
+          const presence = await probePresence(this.tmuxAdapter, session.sessionName);
+          if (presence === "unknown") { isUnknown = true; continue; }
+          if (presence === "present") {
             // A preserved shell is not a running agent. Reuse the process-lineage
             // check's positive idle-shell evidence; opaque wrappers stay untouched.
             isLive = true;
@@ -736,7 +738,9 @@ export class RestoreOrchestrator {
       let unknown = false;
       for (const session of sessions) {
         try {
-          if (await this.tmuxAdapter.hasSession(session.sessionName)) { running = true; break; }
+          const presence = await probePresence(this.tmuxAdapter, session.sessionName);
+          if (presence === "present") { running = true; break; }
+          if (presence === "unknown") unknown = true;  // the host did not answer: not proven dead, so the row is left as it is (OF-177)
         } catch {
           unknown = true;
         }
@@ -2268,16 +2272,19 @@ export class RestoreOrchestrator {
     }
 
     // Precondition #1: tmux session exists.
-    let alive = false;
+    let presence: SessionPresence;
     try {
-      alive = await this.tmuxAdapter.hasSession(sessionName);
+      presence = await probePresence(this.tmuxAdapter, sessionName);
     } catch {
       // L1 fail-closed: ambiguous probe failure stays as not-alive for the
       // reconciler. Original failure event remains untouched.
-      alive = false;
+      presence = "unknown";
     }
-    if (!alive) {
-      return { ok: false, code: "tmux_session_missing", detail: `Tmux session ${sessionName} is not currently alive.` };
+    if (presence !== "present") {
+      // Nothing is reconciled either way; what differs is what the operator is told (OF-177: a host that did not answer is not a gone session).
+      return { ok: false, code: "tmux_session_missing", detail: presence === "unknown"
+        ? `Whether tmux session ${sessionName} is alive is not known: the seat host did not answer. Nothing was reconciled; retry once it is reachable.`
+        : `Tmux session ${sessionName} is not currently alive.` };
     }
 
     // Resolve runtime and prove exact native-token process lineage. Executable

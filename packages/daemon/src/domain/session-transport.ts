@@ -24,6 +24,7 @@ import { describeAmbiguousSessionName, distinctRigIds, findSessionNameMatches } 
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { HcDeliveryOutcome, HcPendingSend } from "../adapters/hc-delivery.js";
+import { probePresence } from "./session-liveness.js";
 import { carriesDeliveryToken, deliveryKeyOf, deliveryTokenFor, withDeliveryToken } from "../adapters/hc-delivery-token.js";
 import type { DialogInput } from "../adapters/hc-dialog-input.js";
 import { decisionView, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
@@ -627,8 +628,10 @@ export async function probeSessionActivity(input: {
   }
 
   try {
-    const exists = await tmuxAdapter.hasSession(sessionName);
-    if (!exists) {
+    // The classified probe: an unreachable host is `tmux_unavailable` below, never a session that is missing (OF-177).
+    const presence = await probePresence(tmuxAdapter, sessionName);
+    if (presence === "unknown") throw new Error("the seat host did not answer");
+    if (presence === "absent") {
       return {
         state: "unknown",
         reason: "session_missing",

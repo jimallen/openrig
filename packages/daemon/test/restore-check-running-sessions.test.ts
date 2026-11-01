@@ -28,10 +28,11 @@ describe("restore-check and restore agree on whether the rig would run, over eve
   const dropToken = (nodeId: string) => h.db.prepare("UPDATE sessions SET resume_token = NULL WHERE node_id = ?").run(nodeId);
   /** What tmux answers for each session name; anything not listed answers absent. */
   function tmuxSays(table: Record<string, "present" | "absent" | "throw">) {
-    (h.tmux.hasSession as any).mockImplementation(async (name: string) => {
+    // The decision sites ask the classified probe (hc cutover N4), so that is what the table steers.
+    (h.tmux.probeSession as any).mockImplementation(async (name: string) => {
       const answer = table[name] ?? "absent";
       if (answer === "throw") throw new Error("tmux probe failed (injected)");
-      return answer === "present";
+      return { state: answer };
     });
   }
   /** An applicable identity verdict that relabels the seat's running row `detached` in the inventory. */

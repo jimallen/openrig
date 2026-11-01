@@ -14,6 +14,7 @@ import {
 } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { paneBindingFields } from "./binding-pane.js";
+import { probePresence, type SessionPresence } from "./session-liveness.js";
 
 /**
  * OPR.0.3.4.3 — outcome of the no-launch reconcile (adopt a hand-resumed
@@ -332,8 +333,17 @@ export class SessionReconciler {
     }
     const guard = this.tmuxAdapter.deliveryGuard;
     const observedTarget = guard?.target(nodeRow.id);
-    const alive = await this.tmuxAdapter.hasSession(sessionName);
-    if (!alive) {
+    // The classified probe: a host that does not answer is not a session that is gone (OF-177).
+    let presence: SessionPresence;
+    try {
+      presence = await probePresence(this.tmuxAdapter, sessionName);
+    } catch (err) {
+      return { ok: false, code: "reconcile_error", message: `Could not probe the seat host for "${sessionName}": ${err instanceof Error ? err.message : String(err)}. Nothing was changed.` };
+    }
+    if (presence === "unknown") {
+      return { ok: false, code: "reconcile_error", message: `The seat host did not answer, so whether "${sessionName}" is running is not known. It is not read as gone: nothing was changed. Retry once the host is reachable.` };
+    }
+    if (presence === "absent") {
       return {
         ok: false,
         code: "session_not_found",

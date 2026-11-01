@@ -14,6 +14,7 @@ import type { ExpansionRequest } from "../src/domain/types.js";
 import { convergeOp, SUPPORTED_OP_KINDS, isSupportedOpKind } from "../src/domain/topology-converge.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 /** Fully-instrumented tmux adapter: records every call by method name. */
 function spyTmux(overrides?: Partial<Record<string, unknown>>) {
@@ -24,7 +25,7 @@ function spyTmux(overrides?: Partial<Record<string, unknown>>) {
       return impl(...args);
     });
   const adapter = {
-    hasSession: record("hasSession", async () => true),
+    probeSession: probeSessionFromHasSession, hasSession: record("hasSession", async () => true),
     createSession: record("createSession", async () => ({ ok: true as const })),
     killSession: record("killSession", async () => ({ ok: true as const })),
     sendText: record("sendText", async () => ({ ok: true as const })),
@@ -187,7 +188,7 @@ describe("SessionReconciler.reconcileSession (OPR.0.3.4.3)", () => {
   });
 
   it("session_not_found when no live tmux session has the canonical name (never adopts a ghost)", async () => {
-    const spy = spyTmux({ hasSession: vi.fn(async () => false) });
+    const spy = spyTmux({ probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false) });
     const localDb = createFullTestDb();
     const local = createTestApp(localDb, { tmux: spy.adapter });
     const rig = local.rigRepo.createRig("ghost-rig");

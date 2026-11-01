@@ -118,6 +118,7 @@ import { CodexResumeAdapter } from "../../src/adapters/codex-resume.js";
 import { CmuxAdapter } from "../../src/adapters/cmux.js";
 import type { TmuxAdapter } from "../../src/adapters/tmux.js";
 import type { ExecFn } from "../../src/adapters/tmux.js";
+import { probeSessionFromHasSession } from "./probe-from-has-session.js";
 import type { CmuxTransportFactory } from "../../src/adapters/cmux.js";
 import { PackageRepository } from "../../src/domain/package-repository.js";
 import { InstallRepository } from "../../src/domain/install-repository.js";
@@ -213,7 +214,7 @@ export function mockTmuxAdapter(): TmuxAdapter {
     listPanes: async () => [],
     listClients: vi.fn(async () => []),
     switchClient: vi.fn(async () => ({ ok: true as const })),
-    hasSession: vi.fn(async () => false),
+    probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
     sendText: vi.fn(async () => ({ ok: true as const })),
     sendKeys: vi.fn(async () => ({ ok: true as const })),
     startPipePane: vi.fn(async () => ({ ok: true as const })),
@@ -228,7 +229,7 @@ export function mockTmuxAdapter(): TmuxAdapter {
  * default double stays exactly as the lifecycle tests rely on it.
  */
 export function mockTmuxAdapterProbing(state: "present" | "absent"): TmuxAdapter {
-  return { ...mockTmuxAdapter(), hasSession: vi.fn(async () => state === "present") } as unknown as TmuxAdapter;
+  return { ...mockTmuxAdapter(), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => state === "present") } as unknown as TmuxAdapter;
 }
 
 export function unavailableCmuxAdapter(): CmuxAdapter {
@@ -397,7 +398,7 @@ export function createTestApp(
     contextUsageStore,
   }));
   const whoamiService = new WhoamiService({ db, rigRepo, sessionRegistry, transcriptStore, contextUsageStore });
-  const cmuxTmux = { ...tmux, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
+  const cmuxTmux = { ...tmux, probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true) } as unknown as TmuxAdapter;
   const nodeCmuxService = new NodeCmuxService(rigRepo, sessionRegistry, cmux, cmuxTmux);
   const agentActivityStore = new AgentActivityStore({
     db,

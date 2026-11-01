@@ -21,6 +21,7 @@ import type { ResolvedAgentSpec } from "../src/domain/agent-resolver.js";
 import type { RigSpecPodMember } from "../src/domain/types.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { lexicalAgentFs } from "./helpers/lexical-agent-fs.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 // OF-69: launch refuses a seat folder that does not exist, so the fixture seats get a real one.
 const WORKSPACE = existingRigRoot("workspace");
 
@@ -119,7 +120,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       createSession: vi.fn(async () => ({ ok: true as const })),
       killSession: vi.fn(async () => ({ ok: true as const })),
       listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       listWindows: vi.fn(async () => []),
       listPanes: vi.fn(async () => []),
       getPaneCommand: vi.fn(async () => "claude"),
@@ -178,7 +179,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       createSession: vi.fn(async () => ({ ok: true })),
       killSession: vi.fn(async () => ({ ok: true })),
       listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => false),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
       sendText: vi.fn(async () => ({ ok: true })),
       sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []),
@@ -261,7 +262,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       createSession: vi.fn(async () => ({ ok: true as const })),
       killSession: vi.fn(async () => ({ ok: true as const })),
       listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       listWindows: vi.fn(async () => []),
       listPanes: vi.fn(async () => []),
       getPaneCommand: vi.fn(async () => "codex"),
@@ -315,7 +316,7 @@ describe("Effort Lifecycle E2E: profile -> launch -> snapshot -> restore (#75)",
       createSession: vi.fn(async () => ({ ok: true })),
       killSession: vi.fn(async () => ({ ok: true })),
       listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => false),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
       sendText: vi.fn(async () => ({ ok: true })),
       sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []),
@@ -411,7 +412,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       createSession: vi.fn(async () => ({ ok: true as const })),
       killSession: vi.fn(async () => ({ ok: true as const })),
       listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       listWindows: vi.fn(async () => []),
       listPanes: vi.fn(async () => []),
       getPaneCommand: vi.fn(async () => "claude"),
@@ -512,7 +513,7 @@ describe("Effort clear: removing effort from resolved config clears stored node 
       createSession: vi.fn(async () => ({ ok: true })),
       killSession: vi.fn(async () => ({ ok: true })),
       listSessions: vi.fn(async () => []),
-      hasSession: vi.fn(async () => false),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
       sendText: vi.fn(async () => ({ ok: true })),
       sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []),
@@ -566,7 +567,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
     const mockCodexResume = { canResume: vi.fn(() => true), resume: vi.fn(async () => ({ ok: true, code: "resumed" })) } as unknown as CodexResumeAdapter;
     const mockTmux = {
       createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })),
-      listSessions: vi.fn(async () => []), hasSession: vi.fn(async () => false),
+      listSessions: vi.fn(async () => []), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
       sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "codex"),
     } as any;
@@ -602,7 +603,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
     const mockClaudeResume = { canResume: vi.fn(() => true), resume: vi.fn(async () => ({ ok: true, code: "resumed" })) } as unknown as ClaudeResumeAdapter;
     const mockTmux = {
       createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })),
-      listSessions: vi.fn(async () => []), hasSession: vi.fn(async () => false),
+      listSessions: vi.fn(async () => []), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
       sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "claude"),
     } as any;
@@ -647,7 +648,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
       const codexResume = { canResume: vi.fn(() => runtime === "codex"), resume: vi.fn(async () => ({ ok: true, code: "resumed" })) } as unknown as CodexResumeAdapter;
       const mockTmux = {
         createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })),
-        listSessions: vi.fn(async () => []), hasSession: vi.fn(async () => false),
+        listSessions: vi.fn(async () => []), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
         sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
         listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => runtime === "codex" ? "codex" : "claude"),
       } as any;
@@ -683,7 +684,7 @@ describe("Effort precedence, latest wins: a choice saved after the snapshot (OPR
     const mockCodexResume = { canResume: vi.fn(() => true), resume: vi.fn(async () => ({ ok: true, code: "resumed" })) } as unknown as CodexResumeAdapter;
     const mockTmux = {
       createSession: vi.fn(async () => ({ ok: true })), killSession: vi.fn(async () => ({ ok: true })),
-      listSessions: vi.fn(async () => []), hasSession: vi.fn(async () => false),
+      listSessions: vi.fn(async () => []), probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => false),
       sendText: vi.fn(async () => ({ ok: true })), sendKeys: vi.fn(async () => ({ ok: true })),
       listWindows: vi.fn(async () => []), listPanes: vi.fn(async () => []), getPaneCommand: vi.fn(async () => "codex"),
     } as any;

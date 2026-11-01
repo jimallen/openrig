@@ -17,6 +17,7 @@ import { SessionReconciler } from "../src/domain/session-reconciler.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { tmuxStub } from "./helpers/tmux-stub.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 
 type SidecarResult = { ok: true; data: { session_id?: string; sampled_at?: string } } | { ok: false; reason: string };
@@ -52,7 +53,7 @@ describe("SessionReconciler FR-3 — adoption-boundary resume-token capture", ()
       sendText: vi.fn(async () => ({ ok: true as const })),
       sendKeys: vi.fn(async () => ({ ok: true as const })),
       startPipePane: vi.fn(async () => ({ ok: true as const })),
-      hasSession: vi.fn(async () => true),
+      probeSession: probeSessionFromHasSession, hasSession: vi.fn(async () => true),
       getPaneCommand: vi.fn(async () => "zsh"),
       getPanePid: vi.fn(async () => 4242),
     });

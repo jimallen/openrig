@@ -11,7 +11,6 @@ import {
   executeDestroy,
   findListeningPidWithLsof,
   killHcSeatWithCore,
-  killTmuxSessionWithCli,
   listManagedHcSeatsFromDb,
   listManagedTmuxSessionsFromDb,
   type DestroyDeps,
@@ -118,7 +117,6 @@ function realDestroyDeps(): DestroyDeps {
     removePath: (targetPath: string) => rmSync(targetPath, { recursive: true, force: true }),
     mkdirp: (targetPath: string) => mkdirSync(targetPath, { recursive: true }),
     listManagedTmuxSessions: listManagedTmuxSessionsFromDb,
-    killTmuxSession: killTmuxSessionWithCli,
     listManagedHcSeats: listManagedHcSeatsFromDb,
     killHcSeat: killHcSeatWithCore,
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -139,7 +137,7 @@ function printPlan(
   console.log(`  state root: ${runtimeConfig.stateRoot}`);
   console.log(`  daemon: http://${formatDaemonHostForUrl(runtimeConfig.daemonHost)}:${runtimeConfig.daemonPort}`);
   console.log(`  backup: ${backup ? "enabled" : "disabled"}`);
-  console.log(`  tmux cleanup: ${scope === "all" ? `enabled (${managedTmuxSessions.length} managed session${managedTmuxSessions.length === 1 ? "" : "s"})` : "disabled"}`);
+  console.log(`  tmux-bound seats: ${scope === "all" ? `${managedTmuxSessions.length} (this build runs no tmux: any stops the run before state is touched)` : "not looked at"}`);
   console.log(`  hc cleanup: ${scope === "all" ? `enabled (${managedHcSeats.length} managed seat${managedHcSeats.length === 1 ? "" : "s"})` : "disabled"}`);
   for (const warning of warnings) {
     console.log(`  warning: ${warning}`);
@@ -156,6 +154,7 @@ function printResult(result: Awaited<ReturnType<typeof executeDestroy>>): void {
     if (result.tmuxMissing > 0) {
       console.log(`  tmux sessions missing/already gone: ${result.tmuxMissing}`);
     }
+    if (result.tmuxUnended.length > 0) console.log(`  tmux-bound seats NOT ended (this build runs no tmux): ${result.tmuxUnended.length}`);
   }
   if (result.scope === "all") {
     console.log(`  hc seats ended: ${result.hcKilled}`);

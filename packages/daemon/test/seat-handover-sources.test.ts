@@ -14,6 +14,7 @@ import { buildRebuildPrimingChain } from "../src/domain/rebuild-priming-chain.js
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 // OPR.0.5.5.5 (05-handover-sources-real) — fork/rebuild handover sources EXECUTE
 // the plan they print. The v0 B3 refusal (`source_not_supported`) is replaced by
@@ -91,7 +92,7 @@ describe("SeatHandoverService source execution (OPR.0.5.5.5)", () => {
   });
 
   function tmux(): TmuxAdapter {
-    return { hasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    return { hasSession, probeSession: probeSessionFromHasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
   }
 
   function codexAdapter(): RuntimeAdapter {

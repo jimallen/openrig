@@ -14,10 +14,12 @@ import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { probeSessionFromHasSession } from "./helpers/probe-from-has-session.js";
 
 function makeTmux(overrides?: Partial<Record<string, (...args: unknown[]) => unknown>>) {
   return {
     createSession: vi.fn(async () => ({ ok: true as const })),
+    probeSession: probeSessionFromHasSession,
     hasSession: vi.fn(async () => false),
     sendKeys: vi.fn(async () => {}),
     capturePaneContent: vi.fn(async () => ""),
@@ -684,5 +686,64 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     const events = db.prepare("SELECT payload FROM events WHERE type = 'node.held'").all() as { payload: string }[];
     expect(events).toHaveLength(1);
     expect(JSON.parse(events[0]!.payload).logicalId).toBe("dev.guard");
+  });
+
+  // hc cutover N4 (OF-177): on hc an unreachable core is not a seat that is gone. The holder keeps every program alive through
+  // a core outage, so a row the daemon says is running must not be marked detached, nor its seat held, on that answer.
+  describe("on an hc host whose core does not answer", () => {
+    const unreachable = async () => ({ state: "transport_unavailable" as const, cause: "hc core not reachable" });
+    const hostIsHc = (probe: () => Promise<{ state: "transport_unavailable"; cause: string } | { state: "absent" } | { state: "present" }>) => {
+      Object.assign(tmux, { hostKind: "hc" as const, probeSession: vi.fn(probe) });
+    };
+
+    it("a non-target seat is left running: not detached, not held", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds);
+      const session = sessionRegistry.registerSession(nodeIds[1]!, "dev-guard@test-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      hostIsHc(unreachable);
+
+      await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
+
+      expect((db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string }).status).toBe("running");
+      expect(db.prepare("SELECT payload FROM events WHERE type = 'node.held'").all()).toHaveLength(0);
+    });
+
+    it("control: the same seat with the core answering 'absent' is detached and held", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds);
+      const session = sessionRegistry.registerSession(nodeIds[1]!, "dev-guard@test-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      hostIsHc(async () => ({ state: "absent" }));
+
+      await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
+
+      expect((db.prepare("SELECT status FROM sessions WHERE id = ?").get(session.id) as { status: string }).status).toBe("detached");
+      expect(db.prepare("SELECT payload FROM events WHERE type = 'node.held'").all()).toHaveLength(1);
+    });
+
+    it("a target whose core does not answer is launched with the liveness_probe_unknown warning, as an unreadable probe is", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds);
+      const session = sessionRegistry.registerSession(nodeIds[0]!, "dev-driver@test-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      hostIsHc(unreachable);
+
+      const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
+
+      expect(result.warnings?.some((w) => w.includes("liveness_probe_unknown") && w.includes("dev.driver"))).toBe(true);
+    });
+
+    it("control: a target the core says is absent is launched with no such warning", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds);
+      const session = sessionRegistry.registerSession(nodeIds[0]!, "dev-driver@test-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      hostIsHc(async () => ({ state: "absent" }));
+
+      const result = await orchestrator.launchNodeSubset(rigId, ["dev.driver"]);
+
+      expect(result.warnings?.some((w) => w.includes("liveness_probe_unknown")) ?? false).toBe(false);
+    });
   });
 });
