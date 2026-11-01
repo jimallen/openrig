@@ -58,4 +58,3 @@ def split_seats(alive):
     every other seat is in the team tab."""
     lead = pick_lead(alive)
     return lead, [n for n in alive if n is not lead]
-
