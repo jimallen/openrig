@@ -35,6 +35,8 @@ export const MAX_RUNNER_INPUT_BYTES = 1024 * 1024;
  *  its text is on the line, so OF-153 sets `pasteLeftover`: `rig send` is refused until the line is submitted or cleared
  *  (Ctrl-C), and a retry does not clear it. */
 export const PASTE_OPEN_HINT_MS = 2_000;
+/** What the editor never echoes from a message: the ESC byte. */
+const ECHO_UNSAFE = /\u001b/g;
 
 export interface RunnerInputOptions {
   /** The "[<label>]" prefix of the editor's own pane lines. Default "pi-runner". */
@@ -186,13 +188,17 @@ export function createRunnerInput(
         // appended to it. Leftover is reported BEFORE the open flag is cleared: the sidecar never shows neither.
         const recoveredLostPaste = pasteOpenReported;
         if (!discarded) {
-          const line = editor.line.slice(0, editor.cursor) + paste + editor.line.slice(editor.cursor);
+          // Security N11 (hc cutover W47): the editor echoes this text on the pane, so it never holds an ESC byte. An ESC in a
+          // message would otherwise reach the terminal as a cursor, erase or screen sequence (a wiped pane, a forged
+          // "[<label>] ERROR" row). The runner's own redraw is written by the editor and keeps its escapes.
+          const text = paste.replace(ECHO_UNSAFE, "");
+          const line = editor.line.slice(0, editor.cursor) + text + editor.line.slice(editor.cursor);
           if (Buffer.byteLength(line) > MAX_RUNNER_INPUT_BYTES) { clear(); reject(); }
           else {
             // rl.write(text) treats pasted newlines as submits. These public
             // editing fields insert the whole literal paste without submitting.
-            setLine(line, editor.cursor + paste.length);
-            if (recoveredLostPaste && paste.length > 0) reportPasteLeftover(true);
+            setLine(line, editor.cursor + text.length);
+            if (recoveredLostPaste && text.length > 0) reportPasteLeftover(true);
           }
         }
         disarmPasteHint();
