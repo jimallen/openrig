@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,6 +147,7 @@ describe("hc scratch tripwire: the run's registry (unit)", () => {
     const entries = readdirSync(registry);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatch(/^hcs-/);
+    expect(JSON.parse(readFileSync(join(registry, entries[0]!), "utf8")).test, "the entry names the test file that asked").toMatch(/hc-hermetic-harness\.test\.ts$/);
     expect(readdirSync(base)).toEqual([]);
     expect(findLeakedHcScratch(registry)).toEqual([]);
   });
@@ -184,6 +185,17 @@ describe("hc tripwire probe (child run only)", () => {
     if (process.env.OPENRIG_HC_TRIPWIRE_PROBE_CLEANS === "1") rmSync(root, { recursive: true, force: true });
     expect(true).toBe(true);
   });
+});
+
+// scripts/run-scenarios.mjs builds a hermetic scaffold outside any vitest run, which loads hc-scratch.ts. Importing vitest there
+// throws ("Vitest failed to access its internal state"): the first W20 revision did, and run-scenarios-flag-refusal and two
+// orphan-reaper rows failed in the full run for it.
+describe("hc-scratch.ts and the scaffold load outside vitest", () => {
+  it.each(["helpers/hc-scratch.ts", "helpers/hermetic-env.ts"])("%s imports in a plain node process", (file) => {
+    const r = spawnSync(process.execPath, ["--import", "tsx", "-e", `import(${JSON.stringify(join(HERE, file))}).then(() => console.log("loaded"))`], { cwd: DAEMON_ROOT, encoding: "utf8", timeout: 60_000 });
+    expect(`${r.stdout}${r.stderr}`).toContain("loaded");
+    expect(r.status).toBe(0);
+  }, 90_000);
 });
 
 describe("hc scratch tripwire: the run fails (real vitest)", () => {

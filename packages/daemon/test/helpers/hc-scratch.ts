@@ -39,7 +39,6 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, join, relative, isAbsolute } from "node:path";
-import { expect } from "vitest";
 import { registerHcScratchRoot } from "../../../../test/hc-scratch-tripwire.js";
 import { HcClient, resolveHcSocket } from "../../src/adapters/hc-client.js";
 import {
@@ -170,9 +169,14 @@ export interface StartHcScratchOptions {
   ownerPid?: number;
 }
 
-/** The test file that is running, for the tripwire's report; null outside a vitest test. */
+/**
+ * The test file that asked for the root, for the tripwire's report: the first `*.test.*` frame of the call stack, or undefined.
+ * It reads the stack, not vitest's state, because this module is also loaded outside vitest (scripts/run-scenarios.mjs builds a
+ * hermetic scaffold, which starts scratch cores), where importing vitest throws.
+ */
 function askingTestFile(): string | undefined {
-  try { return expect.getState().testPath ?? undefined; } catch { return undefined; }
+  const frame = /\(?(?:file:\/\/)?(\/[^\s():]+\.test\.[cm]?[jt]s):\d+:\d+/.exec(new Error().stack ?? "");
+  return frame?.[1];
 }
 
 /** The `hc` on PATH, or null (a suite skips on null). */
