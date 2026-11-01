@@ -138,7 +138,6 @@ describe("AgentSpec startup integration", () => {
     const binding: NodeBinding = {
       id: "b1", nodeId: node.id, tmuxSession: "r01-impl",
       tmuxWindow: null, tmuxPane: null,
-     
       updatedAt: "", cwd: ".",
     };
 
