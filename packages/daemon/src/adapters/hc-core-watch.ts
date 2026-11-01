@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcHello, type HcTerminal } from "./hc-client.js";
+import { HC_GENERATION, HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, setHcHelloCheck, type HcHello, type HcTerminal } from "./hc-client.js";
 
 /** The hc this build was written and measured against (spikes 1 to 4: 0.1.15). hc is a preview with no stability
  *  statement, so any other version is refused until the pin is moved on purpose, as a tested release step. */
@@ -66,7 +66,7 @@ function errorCode(err: unknown): string | undefined {
  *  judged here; see verifyHello. */
 export async function probeCore(socketPath: string, options: { helloTimeoutMs?: number } = {}): Promise<HcCorePresence> {
   try {
-    return { state: "present", hello: await new HcClient(socketPath, options.helloTimeoutMs ?? HELLO_TIMEOUT_MS).hello() };
+    return { state: "present", hello: await new HcClient(socketPath, options.helloTimeoutMs ?? HELLO_TIMEOUT_MS, false).hello() };
   } catch (err) {
     // A generation the core refuses still proves a core is there; the caller's verify names the refusal.
     if (err instanceof HcError && err.kind === "unsupported_generation") throw new HcCoreRefusedError(err.message, "unsupported_generation");
@@ -567,7 +567,7 @@ export class HcCoreWatch {
   }
 
   private async refreshStale(generation: number): Promise<void> {
-    const client = new HcClient(this.options.socketPath);
+    const client = new HcClient(this.options.socketPath, undefined, false);
     for (const address of [...this.current.stale]) {
       try {
         const terminal = await client.call<HcViewTerminal>("terminal.get", { terminal: address });
@@ -588,6 +588,22 @@ export interface ConnectHcCoreOptions {
   startCore?: () => Promise<void>;
   pin?: Pick<HcCorePin, "versions">;
   firstAttemptMs?: number;
+}
+
+/** Make every later `hello` to this socket (every `call`, attach and size watch of this build) pass the pin, not only the first:
+ *  a core swapped for another version or another core id after startup is refused as an HcError of the same kind, so a read of
+ *  "absent" from the wrong core can never be taken for the seat's. The core id is the one the watch saw first (none yet if the
+ *  core was down at start: then only the version is checked, until the watch has seen one). Returns the function that lifts it. */
+export function pinCallsToCore(socketPath: string, watch: Pick<HcCoreWatch, "pinnedCoreId">, pin: HcCorePin = {}): () => void {
+  setHcHelloCheck(socketPath, (hello) => {
+    try {
+      verifyHello(hello, { ...pin, coreId: watch.pinnedCoreId() });
+    } catch (err) {
+      if (err instanceof HcCoreRefusedError) throw new HcError(err.message, err.kind, -32000);
+      throw err;
+    }
+  });
+  return () => setHcHelloCheck(socketPath, null);
 }
 
 /** The daemon's link to the seat host: pins the core's generation and version at startup and keeps watching. A refused core

@@ -19,6 +19,14 @@ const TMUX_ID = /^[%@$]\d+$/;
  * or window or pane N above 0.
  */
 export function hcTerminalRef(target: string): string | null {
+  const name = hcTargetName(target);
+  if (name === null) return null;
+  return ADDRESS.test(name) ? name : hcTerminalName(name);
+}
+
+/** The seat name a target spells (tmux exact forms stripped), or null for a tmux id, a window or pane above 0, or nothing.
+ *  An address comes back as it is: use `hcSeatName` where only a seat may be named. */
+function hcTargetName(target: string): string | null {
   let name = target.startsWith("=") ? target.slice(1) : target;
   const qualified = /^(.+):(\d+)(?:\.(\d+))?$/.exec(name);
   if (qualified) {
@@ -28,7 +36,15 @@ export function hcTerminalRef(target: string): string | null {
     name = name.slice(0, -1);
   }
   if (name === "" || TMUX_ID.test(name)) return null;
-  return ADDRESS.test(name) ? name : hcTerminalName(name);
+  return name;
+}
+
+/** The canonical seat name a target spells, or null when it spells an hc address (`t7`, `machine/t7`) or nothing. For a caller
+ *  that is not the daemon's own bookkeeping (the terminal WebSocket): an address is never a seat's name, so a target that
+ *  reads as one is refused rather than looked up. The caller still checks the terminal's `openrig.seat` label. */
+export function hcSeatName(target: string): string | null {
+  const name = hcTargetName(target);
+  return name === null || ADDRESS.test(name) ? null : name;
 }
 
 /**

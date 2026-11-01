@@ -104,17 +104,22 @@ delete process.env["RIGGED_HOME"];
 // to this fixture. Merely changing HOME would not override OPENRIG_HOME or DB.
 // Keep ordinary user files outside the state root, as in a real installation.
 // Otherwise file-transfer correctly rejects every ~/ path as OpenRig state.
+// The hc core's socket is resolved from env (HC_SOCKET, XDG_RUNTIME_DIR, then XDG_STATE_HOME or HOME), and a host's default core
+// is the one the app shows. That scrub is NOT optional, even for a real-Codex run (security review F8): the opt-in needs a real HOME
+// and CODEX_HOME for its auth, not a way to the host's core, and the two real-Codex e2e tests build their own private core's env
+// (helpers/hc-scratch.ts: PATH and nothing else from the caller). With HOME real, dropping XDG_RUNTIME_DIR alone would fall to
+// the host's `~/.local/state/herdr-core/default`, so the state dir is pointed into the fixture too.
+const userHome = `${fixtureHome}-user-home`;
+// resolveHcSocket prefers XDG_RUNTIME_DIR (a seat on Linux has /run/user/<uid>) over the state dir set below, which
+// would name the host's default core even with HC_* gone. Dropped, the socket path falls to the fixture state dir.
+delete process.env["XDG_RUNTIME_DIR"];
+process.env["XDG_STATE_HOME"] = path.join(userHome, ".local/state");
 if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
-  const userHome = `${fixtureHome}-user-home`;
   fs.mkdirSync(userHome, { recursive: true });
   process.env["HOME"] = userHome;
   delete process.env["CODEX_HOME"];
-  // resolveHcSocket prefers XDG_RUNTIME_DIR (a seat on Linux has /run/user/<uid>) over the state dir set below, which
-  // would name the host's default core even with HC_* gone. Dropped, the socket path falls to the fixture state dir.
-  delete process.env["XDG_RUNTIME_DIR"];
   for (const [key, suffix] of Object.entries({
-    XDG_CONFIG_HOME: ".config", XDG_STATE_HOME: ".local/state",
-    XDG_DATA_HOME: ".local/share", XDG_CACHE_HOME: ".cache",
+    XDG_CONFIG_HOME: ".config", XDG_DATA_HOME: ".local/share", XDG_CACHE_HOME: ".cache",
   })) process.env[key] = path.join(userHome, suffix);
 }
 

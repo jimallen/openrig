@@ -128,6 +128,15 @@ export function codexHcLaunchRefusal(version: CodexVersionCheck, daemon: CodexDa
   return null;
 }
 
+/** The launch-time decision both Codex launch paths (prepareLaunch and resume) make when the host is hc: the version probe, then
+ *  `codexHcLaunchRefusal` with the daemon-support answer the launch already has (one probe per launch). A probe that is not wired
+ *  is not asked, as with `detectDaemonSupport` itself ("absent keeps the existing invocation"): production wires both in startup.ts,
+ *  which a test pins, and an adapter composed without them (a fixture) is not refused for it. Returns the refusal text, or null. */
+export async function codexHcPreflight(cwd: string, detectVersion: CodexVersionDetector | undefined, daemonSupport: CodexDaemonSupport | undefined): Promise<string | null> {
+  const version: CodexVersionCheck = detectVersion ? await detectVersion(cwd) : { kind: "ok", version: CODEX_MINIMUM_VERSION };
+  return codexHcLaunchRefusal(version, daemonSupport ?? { kind: "supported" });
+}
+
 // ── Codex: no self-update ────────────────────────────────────────────────────────────────────────────────────────
 // Codex's startup update check is the config key `check_for_update_on_startup` (default true): codex-rs/tui/src/
 // updates.rs returns no upgrade when it is false, so the prompt that offers `npm install -g @openai/codex` is never

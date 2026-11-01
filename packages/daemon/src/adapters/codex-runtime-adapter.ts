@@ -29,6 +29,7 @@ import {
 } from "../domain/codex-thread-id.js";
 import { assessNativeResumeProbe, buildCodexResumeCore, hasCodexUpdateHeader, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { codexHcPreflight, type CodexVersionDetector } from "./hc-runtime-requirements.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE, codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
@@ -114,6 +115,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // #69: whether the installed Codex supports --no-daemon. Startup wires the real probe;
   // absent (unit tests, other embedders) keeps the existing invocation unchanged.
   private detectDaemonSupport?: CodexDaemonSupportDetector;
+  private detectVersion?: CodexVersionDetector;
   // #275: Codex's own answer on whether the plain floor may get network access. Startup wires the
   // real reader; absent keeps every invocation unchanged.
   private readNetworkDefault?: CodexNetworkDefaultReader;
@@ -153,6 +155,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     launchPath?: string;
     verifyProfilePreflight?: (profile: string) => Promise<CodexProfileProbeResult>;
     detectDaemonSupport?: CodexDaemonSupportDetector;
+    /** hc host only: the Codex version a seat would run, checked against the floor (hc-runtime-requirements.ts). */
+    detectVersion?: CodexVersionDetector;
     readNetworkDefault?: CodexNetworkDefaultReader;
     readSeatMcpServers?: (nodeId: string) => SeatMcpSelection;
     mcpTrustIo?: PathJudgeIo;
@@ -169,6 +173,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.codexHome = deps.codexHome;
     this.launchPath = deps.launchPath;
     this.detectDaemonSupport = deps.detectDaemonSupport;
+    this.detectVersion = deps.detectVersion;
     this.readNetworkDefault = deps.readNetworkDefault;
     this.readSeatMcpServers = deps.readSeatMcpServers;
     this.mcpTrustIo = deps.mcpTrustIo;
@@ -572,6 +577,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // #69: one daemon-support decision for this launch, for the Codex the seat pane runs
     // (its cwd, the launch PATH), applied to fresh, fork and resume.
     const daemonSupport = this.detectDaemonSupport ? await this.detectDaemonSupport(binding.cwd) : undefined;
+    // Under hc the version floor and the --no-daemon requirement are enforced (design section 15). On tmux nothing changes.
+    if (this.tmux.hostKind === "hc") {
+      const refusal = await codexHcPreflight(binding.cwd, this.detectVersion, daemonSupport);
+      if (refusal) return { ok: false, error: refusal };
+    }
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, error: unknownDaemonSupportMessage(daemonSupport.detail) };
     }

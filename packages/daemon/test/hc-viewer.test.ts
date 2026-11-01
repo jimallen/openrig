@@ -4,7 +4,8 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HcError, HcUnavailableError, HC_GENERATION, type HcClient, type HcTerminal } from "../src/adapters/hc-client.js";
-import { FakeHc } from "./helpers/hc-fake-client.js";
+import { FakeHc, notFound } from "./helpers/hc-fake-client.js";
+import { SEAT_LABEL, hcTerminalName } from "../src/adapters/hc-seat.js";
 import type { HcAttachEnd, HcAttachHandlers, HcAttachOpener, HcAttachParams, HcAttachment } from "../src/adapters/hc-attach.js";
 import {
   CoreSizeSource, HcViewer, HcViewerUnsupportedError, ModeTracker, cursorOfPaint, fullScreenHistoryReadIsUnsafe,
@@ -12,6 +13,13 @@ import {
 } from "../src/adapters/hc-viewer.js";
 
 const TERMINAL: HcTerminal = { address: "t1", name: "n", labels: {}, argv: [], cwd: "/", state: "live", created_ms: 0, screen: "exact", cols: 200, rows: 120 };
+/** The seats these tests name. The core answers `terminal.get` for a seat's hc name with a terminal carrying the seat label. */
+const SEATS = ["dev@rig", "dev-impl@rig"];
+const seatGet = (over: Partial<HcTerminal> = {}) => (params: Record<string, unknown>): HcTerminal => {
+  const seat = SEATS.find((name) => hcTerminalName(name) === params.terminal);
+  if (!seat) throw notFound();
+  return { ...TERMINAL, ...over, labels: { [SEAT_LABEL]: seat } };
+};
 const bytes = (text: string) => Buffer.from(text, "latin1");
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -86,7 +94,7 @@ function rig(options: { delays?: number[]; client?: HcClient } = {}) {
   const sizes = new FakeSizes();
   const slept: number[] = [];
   const viewer = new HcViewer({
-    opener, sizes, client: options.client ?? new FakeHc({}), reconnectDelaysMs: options.delays ?? [10, 20],
+    opener, sizes, client: options.client ?? new FakeHc({ "terminal.get": seatGet() }), reconnectDelaysMs: options.delays ?? [10, 20],
     sleep: async (ms) => { slept.push(ms); },
     paintSettleMs: 5, paintMaxMs: 30, paintFirstMs: 40,
   });
@@ -328,13 +336,61 @@ describe("HcViewer.view", () => {
     expect(opener.asked[0]).not.toMatchObject({ cols: 90, rows: 27 });
   });
 
-  it("addresses an hc address as it is, and a terminal hc could not hold as absent", async () => {
-    const { opener, viewer } = rig();
-    await viewer.view("t7", recorder().handlers);
-    expect(opener.asked[0]!.terminal).toBe("t7");
-    const none = await viewer.view("%3", recorder().handlers);
-    expect(none).toEqual({ ok: false, end: { reason: "absent" } });
-    expect(opener.asked).toHaveLength(1);
+  describe("only a seat of this daemon may be viewed (security review F2)", () => {
+    const strangers: [string, string][] = [["a bare address", "t7"], ["an address past t19", "t1b"], ["a machine address", "m1/t7"], ["an exact form of an address", "=t7"], ["an address with a window", "t7:0"]];
+    for (const [what, target] of strangers) {
+      it(`refuses ${what} (${target}) with no read, no attach and no size watch`, async () => {
+        const client = new FakeHc({ "terminal.get": () => TERMINAL, "terminal.read": () => ({ text: "SECRET" }) });
+        const { opener, sizes, viewer } = rig({ client });
+        expect(await viewer.view(target, recorder().handlers)).toEqual({ ok: false, end: { reason: "absent" } });
+        expect(await viewer.readHistory(target, 10)).toBeNull();
+        expect(await viewer.snapshot(target)).toBeNull();
+        expect(opener.asked).toEqual([]);
+        expect(sizes.watches).toEqual([]);
+        expect(client.calls).toEqual([]);  // not even a terminal.get: the name alone refuses it
+      });
+    }
+
+    it("refuses an unlabelled terminal that sits under a seat's hc name, and a terminal labelled for another seat", async () => {
+      for (const labels of [{}, { [SEAT_LABEL]: "other@rig" }, { "openrig.seat ": "dev@rig" }]) {
+        const client = new FakeHc({ "terminal.get": () => ({ ...TERMINAL, labels }) });
+        const { opener, viewer } = rig({ client });
+        expect(await viewer.view("dev@rig", recorder().handlers)).toEqual({ ok: false, end: { reason: "absent" } });
+        expect(await viewer.readHistory("dev@rig", 10)).toBeNull();
+        expect(await viewer.snapshot("dev@rig")).toBeNull();
+        expect(opener.asked).toEqual([]);
+        expect(client.calls.map((c) => c.method)).toEqual(["terminal.get", "terminal.get", "terminal.get"]);
+      }
+    });
+
+    it("refuses a seat the core does not hold, and answers unavailable (not absent) when it cannot ask", async () => {
+      const none = rig({ client: new FakeHc({ "terminal.get": () => { throw notFound(); } }) });
+      expect(await none.viewer.view("dev@rig", recorder().handlers)).toEqual({ ok: false, end: { reason: "absent" } });
+      const down = rig({ client: new FakeHc({ "terminal.get": () => { throw new HcUnavailableError("no socket"); } }) });
+      expect(await down.viewer.view("dev@rig", recorder().handlers)).toEqual({ ok: false, end: { reason: "unavailable", cause: "no socket" } });
+      expect(await down.viewer.readHistory("dev@rig", 10)).toBeNull();
+      expect(down.opener.asked).toEqual([]);
+    });
+
+    it("reads history only after the label check, through the capture it was given", async () => {
+      const asked: string[] = [];
+      const build = (labels: Record<string, string>) => new HcViewer({
+        opener: new FakeOpener(), sizes: new FakeSizes(), client: new FakeHc({ "terminal.get": () => ({ ...TERMINAL, labels }) }),
+        capture: { capturePaneContent: async (t: string) => { asked.push(t); return "history"; } },
+      });
+      expect(await build({}).readHistory("dev@rig", 5)).toBeNull();
+      expect(asked).toEqual([]);
+      expect(await build({ [SEAT_LABEL]: "dev@rig" }).readHistory("dev@rig", 5)).toBe("history");
+      expect(asked).toEqual(["dev@rig"]);
+    });
+
+    it("still refuses a tmux id, and views a seat by its hc name", async () => {
+      const { opener, viewer } = rig();
+      expect(await viewer.view("%3", recorder().handlers)).toEqual({ ok: false, end: { reason: "absent" } });
+      expect(opener.asked).toHaveLength(0);
+      await viewer.view("=dev@rig:0.0", recorder().handlers);
+      expect(opener.asked[0]!.terminal).toBe(hcTerminalName("dev@rig"));
+    });
   });
 
   it("tells the size before the first byte, even when the first paint came with the attach reply", async () => {
@@ -410,17 +466,19 @@ describe("HcViewer.view", () => {
     });
 
     it("reports a terminal that had finished with the facts it left", async () => {
-      const client = new FakeHc({ "terminal.get": () => ({ ...TERMINAL, state: "finished", exit_code: 3, reason: "exited", finished_ms: 99, signal: null }) });
+      const client = new FakeHc({ "terminal.get": seatGet({ state: "finished", exit_code: 3, reason: "exited", finished_ms: 99, signal: null } as Partial<HcTerminal>) });
       const { opener, viewer } = rig({ client });
       opener.queue.push({ reject: new HcError("finished", "finished", -32000, "read what it left") });
-      expect(await viewer.view("t4", recorder().handlers)).toEqual({ ok: false, end: { reason: "program_ended", exitCode: 3, signal: null, endReason: "exited", finishedMs: 99 } });
-      expect(client.calls).toEqual([{ method: "terminal.get", params: { terminal: "t4" } }]);
+      expect(await viewer.view("dev@rig", recorder().handlers)).toEqual({ ok: false, end: { reason: "program_ended", exitCode: 3, signal: null, endReason: "exited", finishedMs: 99 } });
+      const ask = { method: "terminal.get", params: { terminal: hcTerminalName("dev@rig") } };
+      expect(client.calls).toEqual([ask, ask]);  // the seat check, then the facts it left
     });
 
     it("reports a finished terminal whose facts cannot be read as ended, with no facts", async () => {
-      const { opener, viewer } = rig({ client: new FakeHc({ "terminal.get": () => { throw new HcUnavailableError("gone"); } }) });
+      let asked = 0;  // the seat check is answered, the read of the facts is not
+      const { opener, viewer } = rig({ client: new FakeHc({ "terminal.get": (params) => { if (asked++ === 0) return seatGet()(params); throw new HcUnavailableError("gone"); } }) });
       opener.queue.push({ reject: new HcError("finished", "finished", -32000) });
-      expect(await viewer.view("t4", recorder().handlers)).toEqual({ ok: false, end: { reason: "program_ended", exitCode: null, signal: null, endReason: null, finishedMs: null } });
+      expect(await viewer.view("dev@rig", recorder().handlers)).toEqual({ ok: false, end: { reason: "program_ended", exitCode: null, signal: null, endReason: null, finishedMs: null } });
     });
 
     it("ends with the CLOSE frame's exit code, signal and reason", async () => {
@@ -497,7 +555,7 @@ describe("HcViewer.view", () => {
       const open = opener.open.bind(opener);
       let attempts = 0;
       opener.open = async (params, handlers) => { if (++attempts === 2) await gate; return open(params, handlers); };
-      const viewer = new HcViewer({ opener, sizes: new FakeSizes(), client: {} as HcClient, reconnectDelaysMs: [10] });
+      const viewer = new HcViewer({ opener, sizes: new FakeSizes(), client: new FakeHc({ "terminal.get": seatGet() }), reconnectDelaysMs: [10] });
       const { log, handlers } = recorder();
       const opened = await viewer.view("dev@rig", handlers);
       if (!opened.ok) throw new Error("not open");
@@ -529,7 +587,7 @@ describe("HcViewer.view", () => {
       gone.opener.attachments[0]!.end({ reason: "core_lost" });
       await expect.poll(() => goneLog.log.ends).toEqual([{ reason: "absent" }]);
 
-      const lost = rig({ client: new FakeHc({ "terminal.get": () => ({ ...TERMINAL, state: "finished", reason: "holder_lost", exit_code: null, finished_ms: 5 }) }) });
+      const lost = rig({ client: new FakeHc({ "terminal.get": seatGet({ state: "finished", reason: "holder_lost", exit_code: null, finished_ms: 5 }) }) });
       const lostLog = recorder();
       await lost.viewer.view("dev@rig", lostLog.handlers);
       lost.opener.queue.push({ reject: new HcError("fin", "finished", -32000) });
@@ -655,6 +713,7 @@ describe("the tmux adapter's viewer methods", () => {
     const silent = rig();
     expect(await silent.viewer.getPaneCursorPosition("dev@rig")).toBeNull();
     expect(await rig().viewer.getPaneCursorPosition("%3")).toBeNull();
+    expect(await rig().viewer.getPaneCursorPosition("t1")).toBeNull();
   });
 
   it("startPipePane is refused by decision, naming the viewer, and holds nothing", async () => {
@@ -716,7 +775,7 @@ describe("a person's typing", () => {
 
   it("reads history through the injected capture, as plain text", async () => {
     const asked: unknown[] = [];
-    const viewer = new HcViewer({ opener: new FakeOpener(), sizes: new FakeSizes(), client: {} as HcClient, capture: { capturePaneContent: async (t: string, n?: number) => { asked.push([t, n]); return "a\nb\n"; } } });
+    const viewer = new HcViewer({ opener: new FakeOpener(), sizes: new FakeSizes(), client: new FakeHc({ "terminal.get": seatGet() }), capture: { capturePaneContent: async (t: string, n?: number) => { asked.push([t, n]); return "a\nb\n"; } } });
     expect(await viewer.readHistory("dev@rig", 57)).toBe("a\nb\n");
     expect(asked).toEqual([["dev@rig", 57]]);
   });

@@ -98,6 +98,36 @@ describe.skipIf(!HC)("the terminal WebSocket on herdr-core (private core)", () =
     }
   }, 30_000);
 
+  it("reads a seat and refuses every other terminal of the core: an address, a bare name, an unlabelled terminal under a seat's hc name", async () => {
+    const MARK = "NOT_A_SEAT_SECRET";
+    const printer = `process.stdout.write('${MARK}\\r\\n');setInterval(()=>{},1e6);`;
+    // An unlabelled terminal under its own name, and another that sits under the hc name a seat would have, with no seat label.
+    const plain = await core.client.call<HcTerminal>("terminal.run", { argv: [process.execPath, "-e", printer], name: "plain", cwd: core.root, no_parent: true, no_notify: true, outlive_parent: true });
+    await core.client.call("terminal.run", { argv: [process.execPath, "-e", printer], name: hcTerminalName("ghost@rig"), cwd: core.root, no_parent: true, no_notify: true, outlive_parent: true });
+    // Positive control for the zero below: the core does hold the marker, so a view that shows none was refused, not empty.
+    await waitUntil(async () => JSON.stringify(await core.client.call("terminal.read", { terminal: "plain", lines: 0 })), (text) => text.includes(MARK), "the unlabelled terminal paints");
+
+    const targets = [plain.address, "plain", hcTerminalName("ghost@rig"), "ghost@rig", `=${plain.address}`];
+    for (const target of targets) {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/terminal/${encodeURIComponent(target)}`);
+      const seen: string[] = [];
+      ws.onmessage = (event) => { if (typeof event.data === "string") seen.push(event.data); };
+      const closed = new Promise<void>((resolve) => { ws.onclose = () => resolve(); ws.onerror = () => resolve(); });
+      await new Promise<void>((resolve) => { ws.onopen = () => resolve(); setTimeout(resolve, 3_000); });
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "scroll", offset: 5 }));
+      await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 1_500))]);
+      ws.close();
+      expect(seen.join(""), `target ${target}`).not.toContain(MARK);
+    }
+    // The control: a seat of the same core, through the same route, is read.
+    const { ws, messages } = await connect("dialog@rig");
+    try {
+      await waitUntil(async () => messages.join(""), (text) => text.includes("READY"), "the seat's paint");
+    } finally {
+      ws.close();
+    }
+  }, 30_000);
+
   it("marks a person's typing as human input under the seat's delivery guard, when the daemon has one", async () => {
     const log: string[] = [];
     const guarded = new Hono();
