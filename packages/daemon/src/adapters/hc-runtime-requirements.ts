@@ -273,6 +273,15 @@ export function remoteControlEnvFindings(env: Readonly<Record<string, string | u
   return { blocking, conditional: REMOTE_CONTROL_CONDITIONAL_ENV.filter(set) };
 }
 
+/** One launch warning per kind of finding in a seat's own env. Names only, as the findings are. */
+export function remoteControlEnvWarnings(env: Readonly<Record<string, string | undefined>>): string[] {
+  const { blocking, conditional } = remoteControlEnvFindings(env);
+  return [
+    ...(blocking.length > 0 ? [`This seat declares remote_control but sets ${blocking.join(", ")} itself, which makes Claude Remote Control unavailable.`] : []),
+    ...(conditional.length > 0 ? [`This seat declares remote_control but sets ${conditional.join(", ")} itself, which makes Claude Remote Control unavailable under a Trusted Devices policy.`] : []),
+  ];
+}
+
 function isAnthropicApiEndpoint(value: string): boolean {
   try { return new URL(value).hostname === "api.anthropic.com"; } catch { return false; }
 }

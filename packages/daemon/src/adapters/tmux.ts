@@ -79,6 +79,12 @@ export function defaultTmuxFileOps(): TmuxFileOps {
   };
 }
 
+/** What a launch knows about a seat that its env does not say. The tmux host ignores these: seats there get the daemon's env. */
+export interface SeatLaunchHints {
+  /** The seat declared `remote_control: true`, so the host keeps the names that switch it off away from the seat. */
+  remoteControl?: boolean;
+}
+
 export type TmuxResult =
   | { ok: true; warnings?: string[] }
   | { ok: false; code: string; message: string };
@@ -618,7 +624,7 @@ export class TmuxAdapter {
     return probe.state === "present";
   }
 
-  async createSession(name: string, cwd?: string, env?: Record<string, string>): Promise<TmuxResult> {
+  async createSession(name: string, cwd?: string, env?: Record<string, string>, _hints?: SeatLaunchHints): Promise<TmuxResult> {
     if (this.deliveryGuard && (!env?.OPENRIG_NODE_ID || !this.deliveryGuard.ownsLifecycle(env.OPENRIG_NODE_ID))) {
       return { ok: false, code: "guard_lease_required", message: "Managed launch requires a lifecycle lease before terminal creation." };
     }
@@ -1003,7 +1009,7 @@ export class TmuxAdapter {
   async respawnPane(
     paneTarget: string,
     command?: string,
-    opts?: { cwd?: string; env?: Record<string, string> },
+    opts?: { cwd?: string; env?: Record<string, string> } & SeatLaunchHints,
   ): Promise<TmuxResult> {
     return this.guardedInput(paneTarget, pane => this.respawnPaneUnchecked(pane, command, opts));
   }

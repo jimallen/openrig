@@ -1,7 +1,7 @@
 import { HcClient, HcError, HcOutcomeUnknownError, HcUnavailableError, type HcTerminal } from "./hc-client.js";
 import { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
 import { sessionEnvLabels } from "./hc-identity.js";
-import type { SessionProbe, TmuxResult } from "./tmux.js";
+import type { SeatLaunchHints, SessionProbe, TmuxResult } from "./tmux.js";
 
 export { SEAT_LABEL, hcTerminalName, seatEnvironment, type SeatEnvironment } from "./hc-seat.js";
 
@@ -16,7 +16,7 @@ export class HcHost {
   constructor(private readonly client: HcClient = new HcClient(), private readonly options: HcHostOptions = {}) {}
 
   /** A seat's terminal, running a login shell as a tmux session does. No `keep`: a lost seat reads as lost. */
-  async createSession(name: string, cwd?: string, env?: Record<string, string>): Promise<TmuxResult> {
+  async createSession(name: string, cwd?: string, env?: Record<string, string>, hints?: SeatLaunchHints): Promise<TmuxResult> {
     const { ownsLifecycle } = this.options;
     if (ownsLifecycle && (!env?.OPENRIG_NODE_ID || !ownsLifecycle(env.OPENRIG_NODE_ID))) {
       return { ok: false, code: "guard_lease_required", message: "Managed launch requires a lifecycle lease before terminal creation." };
@@ -24,7 +24,7 @@ export class HcHost {
     const daemon = this.options.daemonEnv ?? process.env;
     let seat: SeatEnvironment;
     try {
-      seat = seatEnvironment(env, daemon);
+      seat = seatEnvironment(env, daemon, hints);
     } catch (err) {
       return { ok: false, code: "invalid_env", message: (err as Error).message };
     }
@@ -34,7 +34,7 @@ export class HcHost {
         argv, env: seat.env, name: hcTerminalName(name), labels: { ...sessionEnvLabels(env ?? {}), [SEAT_LABEL]: name },
         ...(cwd != null ? { cwd } : {}), no_parent: true, no_notify: true, outlive_parent: true,
       });
-      return { ok: true };
+      return seat.warnings.length > 0 ? { ok: true, warnings: seat.warnings } : { ok: true };
     } catch (err) {
       if (err instanceof HcError && err.kind === "name_taken") {
         return { ok: false, code: "duplicate_session", message: `duplicate session: ${name}` };

@@ -1586,6 +1586,8 @@ describe("SeatHandoverService", () => {
     const successorBinding = launchHarness.mock.calls[0]![0] as Record<string, unknown>;
     if (remoteControl) expect(successorBinding.remoteControl).toBe(true);
     else expect("remoteControl" in successorBinding).toBe(false);
+    // The respawn is what makes the successor's terminal, so the hint for the launch wrapper travels on it too.
+    expect((respawnPane.mock.calls[0]![2] as Record<string, unknown>).remoteControl).toBe(remoteControl ? true : undefined);
   });
 
   it("OPR.0.7.0.7: a seat's saved effort choice wins over its authored effort at handover (the shared resolver)", async () => {

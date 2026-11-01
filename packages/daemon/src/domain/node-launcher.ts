@@ -216,7 +216,8 @@ export class NodeLauncher {
         );
       }
     }
-    const tmuxResult = await this.tmuxAdapter.createSession(sessionName, seatCwd, openRigEnv);
+    // The one place a session is made for a seat, so every launch that comes through here carries the persisted declaration.
+    const tmuxResult = await this.tmuxAdapter.createSession(sessionName, seatCwd, openRigEnv, ...(node.remoteControl ? [{ remoteControl: true }] as const : [] as const));
     if (!tmuxResult.ok) {
       return { ok: false, code: tmuxResult.code, message: tmuxResult.message };
     }
